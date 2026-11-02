@@ -29,6 +29,7 @@ import {
   runRepairs,
   spawnBabysitterAgent,
   takePrBodyProposal,
+  takeRepairPrBodyProposal,
   validateAndCommit,
   waitForPushedHead,
   withBabysitterWriteScope,
@@ -564,6 +565,27 @@ Deno.test("a proposed PR description keeps the closing references it dropped", a
   }
 });
 
+Deno.test("a runner repair may replace the first PR description proposal", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "Retry proposal");
+    assertEquals(
+      await takeRepairPrBodyProposal(
+        dir,
+        "Closes #4674",
+        "First proposal",
+      ),
+      "Retry proposal\n\nCloses #4674",
+    );
+    assertEquals(
+      await takeRepairPrBodyProposal(dir, "Closes #4674", "First proposal"),
+      "First proposal",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("an empty or oversized PR description proposal is not applied", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -600,7 +622,11 @@ Deno.test("agent browser limits hand the local gate to the runner", () => {
     );
     assertStringIncludes(
       prompt,
-      "A runner check failure is returned for repair before any commit or push",
+      "BABYSITTER_READY means your changes are ready for runner validation",
+    );
+    assertStringIncludes(
+      prompt,
+      "A runner check failure is returned for one repair pass before any commit or push",
     );
   }
 });
@@ -675,7 +701,7 @@ Deno.test("a host-only failure in an unrelated check is named, not a blocker", (
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
     assertStringIncludes(
       prompt,
-      "unrelated to the files you changed and passes in CI on the base branch",
+      "A check failure unrelated to changed files that passes in CI on the base branch",
     );
   }
 });

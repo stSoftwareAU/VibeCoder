@@ -119,7 +119,9 @@ profile is not a general host-data or
 network boundary: repository code can read other host files and use outbound
 network access. A failed check is returned to the repair agent once; if the
 sandbox cannot start, the babysitter reports the capability failure and does
-not commit or push. See [the babysitter workflow](docs/workflows/fleet-pr-babysitter.md).
+not commit or push. `BABYSITTER_READY` marks agent readiness for this runner
+check, not a successful gate; a failed gate gets one repair pass and must pass
+again before commit. See [the babysitter workflow](docs/workflows/fleet-pr-babysitter.md).
 
 ### 🔒 Lockfile Enforcement at Every Deno Launch Site
 

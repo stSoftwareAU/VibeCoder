@@ -24,6 +24,24 @@ export class BabysitterValidationError extends Error {
   }
 }
 
+/** Retry one failed local gate once, after the agent reports its repair ready. */
+export async function validateWithSingleRepair<T>(options: {
+  validate: () => Promise<T>;
+  repair: (failure: BabysitterValidationError) => Promise<void>;
+}): Promise<T> {
+  try {
+    return await options.validate();
+  } catch (error) {
+    if (
+      !(error instanceof BabysitterValidationError) || error.kind !== "failed"
+    ) {
+      throw error;
+    }
+    await options.repair(error);
+  }
+  return await options.validate();
+}
+
 function quoteProfilePath(path: string): string {
   if (path.includes("\0")) throw new Error("Sandbox path contains NUL");
   return JSON.stringify(path);

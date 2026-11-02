@@ -13,11 +13,14 @@ runner-owned check runs outside Codex's browser-restricting profile, under a
 separate sandbox that denies the worker configuration, configured credential
 paths, the user's Keychains directory and `securityd`; it receives no
 credential-shaped environment variables and keeps the clone's `.git` read-only.
-This lets browser checks launch
-Chromium without giving the check runner credentials. A failed check is
-returned to Codex once with bounded output; an unavailable sandbox is reported
-and prevents a push so a later pass can retry. Repositories without `quality.sh`
-have no runner-owned local gate. After validation, the babysitter checks for
+This lets browser checks launch Chromium without giving the check runner the
+listed credentials. `BABYSITTER_READY` means Codex has finished its repair and
+the runner may validate it; it does not mean `quality.sh` passed. A failed check
+is returned to Codex once with bounded output, and the runner repeats the gate
+before committing. A retry may also replace the first PR-description proposal.
+An unavailable sandbox is reported and prevents a push so a later pass can
+retry. Repositories without `quality.sh` have no runner-owned local gate. After
+validation, the babysitter checks for
 whitespace errors and conflict markers, commits locally, and rechecks the PR.
 It pushes only if the PR still matches the original head. Once a review fix is
 pushed, the babysitter dismisses the addressed review if it is still the current
@@ -237,9 +240,10 @@ the same check earlier.
 Codex still runs checks it can safely run inside its per-spawn profile. The
 runner owns the final local `quality.sh` result for every repair, including
 browser checks Codex cannot launch. A failed runner check is fed back for one
-repair attempt; a missing runner sandbox is reported as unavailable and does
-not produce a commit or push. The runner clears the attempt record for this
-unavailable-capability case so a later pass can retry.
+repair attempt and must pass on revalidation before commit; a missing runner
+sandbox is reported as unavailable and does not produce a commit or push. The
+runner clears the attempt record for this unavailable-capability case so a
+later pass can retry.
 
 This MVP uses the configured GitHub App and Codex; it does not yet select
 providers by remaining quota, handle Dependabot, select per-repository quality

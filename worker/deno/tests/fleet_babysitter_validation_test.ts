@@ -11,6 +11,7 @@ import {
   buildBabysitterValidationProfile,
   readBoundedOutput,
   runBabysitterValidation,
+  validateWithSingleRepair,
 } from "../lib/fleet_babysitter_validation.ts";
 import { validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
 
@@ -308,7 +309,7 @@ Deno.test("runner failure includes bounded actionable gate output", async () => 
                 code: 1,
                 stdout: `${
                   "x".repeat(25_000)
-                }\nbrowser assertion failed: element was outside viewport`,
+                }\nbrowser assertion failed: element was outside viewport\nGH_TOKEN=ghp_123456789012345678901234567890123456`,
                 stderr: "",
               };
             },
@@ -320,6 +321,10 @@ Deno.test("runner failure includes bounded actionable gate output", async () => 
     assertEquals(error.kind, "failed");
     assertStringIncludes(error.message, "element was outside viewport");
     assert(error.message.length < 22_000, "runner output was not bounded");
+    assert(
+      !error.message.includes("ghp_123456789012345678901234567890123456"),
+      "runner validation leaked a credential",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
     await Deno.remove(scratch, { recursive: true });
@@ -396,42 +401,200 @@ Deno.test("runner sandbox rejects invalid or overlapping protected paths", () =>
   );
 });
 
+Deno.test("runner retries one failed gate after a ready repair and validates again", async () => {
+  let validations = 0;
+  let repairs = 0;
+  const result = await validateWithSingleRepair({
+    validate: async () => {
+      validations++;
+      if (validations === 1) {
+        throw new BabysitterValidationError("browser check failed", "failed");
+      }
+      return "committed";
+    },
+    repair: async (failure) => {
+      repairs++;
+      assertEquals(failure.message, "browser check failed");
+    },
+  });
+  assertEquals(result, "committed");
+  assertEquals(validations, 2);
+  assertEquals(repairs, 1);
+});
+
+Deno.test("runner does not repair an unavailable validation capability", async () => {
+  let repairs = 0;
+  const error = await assertRejects(
+    () =>
+      validateWithSingleRepair({
+        validate: async () => {
+          throw new BabysitterValidationError(
+            "sandbox unavailable",
+            "unavailable",
+          );
+        },
+        repair: async () => {
+          repairs++;
+        },
+      }),
+    BabysitterValidationError,
+    "sandbox unavailable",
+  );
+  assertEquals(error.kind, "unavailable");
+  assertEquals(repairs, 0);
+});
+
+Deno.test("runner stops after one repair when validation still fails", async () => {
+  let validations = 0;
+  let repairs = 0;
+  await assertRejects(
+    () =>
+      validateWithSingleRepair({
+        validate: async () => {
+          validations++;
+          throw new BabysitterValidationError(
+            "browser check still fails",
+            "failed",
+          );
+        },
+        repair: async () => {
+          repairs++;
+        },
+      }),
+    BabysitterValidationError,
+    "browser check still fails",
+  );
+  assertEquals(validations, 2);
+  assertEquals(repairs, 1);
+});
+
+Deno.test("runner does not revalidate after lock loss or an agent HEAD change", async () => {
+  for (
+    const message of [
+      "PR lock renewal failed; refusing to retry agent",
+      "repair agent changed HEAD; refusing to commit",
+    ]
+  ) {
+    let validations = 0;
+    let repairs = 0;
+    await assertRejects(
+      () =>
+        validateWithSingleRepair({
+          validate: async () => {
+            validations++;
+            throw new BabysitterValidationError("gate failed", "failed");
+          },
+          repair: async () => {
+            repairs++;
+            throw new Error(message);
+          },
+        }),
+      Error,
+      message,
+    );
+    assertEquals(validations, 1);
+    assertEquals(repairs, 1);
+  }
+});
+
 Deno.test({
-  name: "macOS sandbox denies a credential read during runner validation",
+  name: "macOS runner sandbox launches Chromium without exposing credentials",
   ignore: Deno.build.os !== "darwin",
   fn: async () => {
     const root = await Deno.makeTempDir();
+    const scratch = await Deno.makeTempDir();
+    const home = await Deno.makeTempDir();
     const secretDir = await Deno.makeTempDir();
+    const keychainDir = `${home}/Library/Keychains`;
     try {
       const secret = `${secretDir}/credential`;
-      const profilePath = `${root}/sandbox.sb`;
-      await Deno.writeTextFile(secret, "must not be readable\n");
+      const secretLink = `${home}/credential-link`;
+      const configPath = `${home}/worker-config.json`;
+      const chromium = Deno.env.get("CHROMIUM_PATH");
+      assert(chromium, "CHROMIUM_PATH must name the macOS Chromium binary");
+      await Deno.mkdir(keychainDir, { recursive: true });
       await Deno.mkdir(`${root}/.git`);
-      const profile = buildBabysitterValidationProfile(
-        root,
-        root,
-        [secret],
+      await Deno.writeTextFile(secret, "must not be readable\n");
+      await Deno.symlink(secret, secretLink);
+      await Deno.writeTextFile(
+        configPath,
+        JSON.stringify({
+          github_app_private_key_path: secret,
+          ssh_key_path: secretLink,
+        }),
       );
-      await Deno.writeTextFile(profilePath, profile, { mode: 0o600 });
-      const result = await new Deno.Command("/usr/bin/sandbox-exec", {
-        args: ["-f", profilePath, "/bin/cat", secret],
+      await Deno.writeTextFile(
+        `${root}/index.html`,
+        "<!doctype html><title>runner browser check</title><p>runner-browser-ok</p>",
+      );
+      const browserArgs = [
+        "--headless",
+        "--disable-gpu",
+        "--no-first-run",
+        `--user-data-dir=${root}/browser-profile`,
+        `file://${root}/index.html`,
+      ];
+
+      // The earlier agent seatbelt omitted the Mach lookups Chromium needs.
+      const restrictedPath = `${root}/agent-restrictions.sb`;
+      const restrictedProfile = buildBabysitterValidationProfile(
+        root,
+        root,
+        [secret, secretLink, keychainDir],
+      ).replace("(allow mach-lookup)\n", "");
+      await Deno.writeTextFile(restrictedPath, restrictedProfile, {
+        mode: 0o600,
+      });
+      const restrictedLaunch = await new Deno.Command("/usr/bin/sandbox-exec", {
+        args: ["-f", restrictedPath, chromium, ...browserArgs],
         stdout: "null",
         stderr: "piped",
       }).output();
-      assert(!result.success, "sandbox unexpectedly allowed credential read");
-      const gitWrite = await new Deno.Command("/usr/bin/sandbox-exec", {
-        args: [
-          "-f",
-          profilePath,
-          "/usr/bin/touch",
-          `${root}/.git/runner-write`,
-        ],
-        stdout: "null",
-        stderr: "piped",
-      }).output();
-      assert(!gitWrite.success, "sandbox unexpectedly allowed a .git write");
+      assert(
+        !restrictedLaunch.success,
+        "Chromium unexpectedly launched with the agent's restricted Mach lookups",
+      );
+
+      await Deno.writeTextFile(
+        `${root}/quality.sh`,
+        `#!/bin/bash
+set -euo pipefail
+${
+          JSON.stringify(chromium)
+        } --headless --disable-gpu --no-first-run --user-data-dir="$TMPDIR/browser-profile" --dump-dom "file://$PWD/index.html" > "$TMPDIR/rendered.html"
+grep -q runner-browser-ok "$TMPDIR/rendered.html"
+${
+          JSON.stringify(chromium)
+        } --headless --disable-gpu --no-first-run --user-data-dir="$TMPDIR/screenshot-profile" --screenshot="$PWD/browser-check.png" "file://$PWD/index.html"
+test -s browser-check.png
+if cat ${JSON.stringify(configPath)} >/dev/null 2>&1; then exit 30; fi
+if cat ${JSON.stringify(secret)} >/dev/null 2>&1; then exit 31; fi
+if cat ${JSON.stringify(secretLink)} >/dev/null 2>&1; then exit 32; fi
+if ls ${JSON.stringify(keychainDir)} >/dev/null 2>&1; then exit 33; fi
+if touch .git/runner-write 2>/dev/null; then exit 34; fi
+if /usr/bin/security list-keychains -d user >/dev/null 2>&1; then exit 35; fi
+touch gate-ran
+`,
+      );
+      await Deno.chmod(`${root}/quality.sh`, 0o700);
+      const result = await runBabysitterValidation(
+        root,
+        scratch,
+        configPath,
+        home,
+        { platform: "darwin", sandboxExec: "/usr/bin/sandbox-exec" },
+      );
+      assertEquals(result.kind, "passed");
+      assert((await Deno.stat(`${root}/browser-check.png`)).size > 0);
+      assert((await Deno.stat(`${root}/gate-ran`)).isFile);
+      await assertRejects(
+        () => Deno.stat(`${root}/.git/runner-write`),
+        Deno.errors.NotFound,
+      );
     } finally {
       await Deno.remove(root, { recursive: true });
+      await Deno.remove(scratch, { recursive: true });
+      await Deno.remove(home, { recursive: true });
       await Deno.remove(secretDir, { recursive: true });
     }
   },
