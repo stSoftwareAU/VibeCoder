@@ -1,5 +1,20 @@
 ## Summary
 
+CI repair for PR #4716: distinguish the base branch's `deployment-health.json`
+ledger from repair attempt markers in the CLI fixture. Preserve the ledger and
+all existing assertions about retained and released attempts. The focused suite
+reproduced all 11 CI failures before the fix and passes all 17 tests afterwards;
+no duplicated fixture rule was found. The exact shard command
+`.github/scripts/deno-test-shard.sh 3 4` cannot start on this macOS host because
+`setsid` is unavailable.
+
+Validation: manifest checks passed (847 tests), as did the local gate's static
+checks, including whole-tree type checking, formatting, lint, Markdown and
+Mermaid. The full unit pass hit Deno 2.9.5's permission-restoration panic;
+all four shards passed for base-tip PR #4666. The release-tag check passed
+when rerun with an isolated gh configuration after the gate's default config
+read was denied. Semgrep and Checkov were unavailable on this host.
+
 Merge conflict repair: retain the base branch's mirror-based clone API and its
 clone tests, while creating the Linux validation fixture in the local repair
 clone and preserving the platform-specific prompt tests.

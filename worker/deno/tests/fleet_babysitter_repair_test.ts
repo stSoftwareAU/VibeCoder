@@ -116,7 +116,10 @@ async function repairScenario(
           `${root}/state/vibe-coder/fleet-pr-babysitter`,
         )
       ) {
-        if (entry.isFile) attempts.push(entry.name);
+        // The shift-left ledger shares this directory with attempt markers.
+        if (entry.isFile && entry.name !== "deployment-health.json") {
+          attempts.push(entry.name);
+        }
       }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
