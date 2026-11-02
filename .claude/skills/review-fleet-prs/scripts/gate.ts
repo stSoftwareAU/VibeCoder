@@ -37,8 +37,8 @@
 // Output: one line of JSON, { ready: [...], auditBlocked: [...],
 // skipped: { <reason>: count }, upkeep: [...] }. Unlike the review itself, each pass also does the
 // Dependabot upkeep in dependabot.ts (conflict waits, arming auto-merge) and
-// brings a fleet or Dependabot PR that is approved at its head but behind its base up to
-// date (branch_update.ts), once per head; --dry-run reports that upkeep
+// sends approved behind PRs through the shared strict-base refresh policy
+// (branch_update.ts), once per head; --dry-run reports that upkeep
 // without doing it. A failed upkeep action is reported in `upkeep` too, and
 // is not retried at the same head commit.
 
@@ -723,7 +723,8 @@ export async function skipReason(
     return "already-reviewed";
   }
   // The owner, or another reviewer, approved this head by hand: a second
-  // approval adds nothing, and the PR merges once it is up to date.
+  // approval adds nothing; the shared refresh policy decides whether a behind
+  // PR can now be updated.
   if (approvedAtHead(pr.reviews.nodes, pr.headRefOid)) return "approved";
   const since = sentBackAt(
     pr.reviews.nodes,
@@ -1182,10 +1183,9 @@ export async function pass(
       (oid) => wasChangeRequestAt(log, repo, pr.number, oid),
       (oid) => heldPolicyAt(log, repo, pr.number, oid),
     );
-    // Review first, then up to date (Issues #3225, #3663): an approved fleet
-    // or Dependabot PR behind its base cannot merge,
-    // so the base is merged in once per head. An unapproved PR is reviewed
-    // as it is; post.ts brings it up to date after the approval.
+    // Review first, then ask the shared policy (Issues #3225, #3663, #4613).
+    // On strict, non-queue bases only an armed, approved PR with passing
+    // current-head required checks is refreshed; post.ts uses the same path.
     const key = prKey(repo, pr.number);
     if (
       needsBranchUpdate(pr, kind, updateAsked[key], reviewer) &&

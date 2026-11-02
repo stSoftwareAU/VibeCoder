@@ -1,11 +1,9 @@
 // Bringing an approved fleet or Dependabot PR up to date (Issues #3225, #3663).
 //
-// Every fleet PR is armed with auto-merge on three conditions: CI green,
-// approved, and branch up to date. The review comes first, so the approval
-// is of the diff as reviewed; this module then asks GitHub to merge the base
-// into the PR (the `update-branch` endpoint, as the worker's own merge path
-// does), so the third condition clears and the PR merges once CI re-runs.
-// Dependabot uses this same leased update after the reviewer's approval;
+// On a strict, non-queue base, the shared policy refreshes an approved, armed
+// PR only after its current-head required checks pass. The review comes first,
+// so the approval is of the diff as reviewed; the branch update then reruns CI
+// against the current base. Other bases keep their existing update path, while
 // conflicting branches wait without a push or a bot-command comment.
 
 import { prKey, sameLogin } from "./review_log.ts";

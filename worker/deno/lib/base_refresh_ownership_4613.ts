@@ -44,7 +44,6 @@ export interface GitHubBaseRefreshOwnershipOptions {
   workerId: string;
   ghCommandFn?: (args: string[]) => Promise<string>;
   anchorPrForBase: (repo: string, base: string) => Promise<number>;
-  prNumbersForBase?: (repo: string, base: string) => Promise<number[]>;
   authorOptions?: AlertDedupAuthorOptions;
   log?: (message: string) => void;
   sleepFn?: (ms: number) => Promise<void>;
@@ -75,7 +74,11 @@ function parseOwner(body: string): Omit<BaseRefreshOwnerRecord, "id"> | null {
   }
 }
 
-/** GitHub comment-backed store, serialised by the existing distributed PR lock. */
+/**
+ * GitHub comment-backed store, serialised by the existing distributed PR lock.
+ * The oldest repository PR is a stable comment anchor, including after close;
+ * the comment record itself is still keyed by repository and base.
+ */
 export function makeGitHubBaseRefreshOwnershipPort(
   options: GitHubBaseRefreshOwnershipOptions,
 ): BaseRefreshOwnershipPort {
@@ -139,9 +142,7 @@ export function makeGitHubBaseRefreshOwnershipPort(
     now: () => Math.floor(Date.now() / 1000),
     withBaseLock,
     read: async (repo, base) => {
-      const prNumbers = options.prNumbersForBase
-        ? await options.prNumbersForBase(repo, base)
-        : [await anchor(repo, base)];
+      const prNumbers = [await anchor(repo, base)];
       const rows = (await Promise.all(
         prNumbers.map((prNumber) =>
           fetchMarkerComments(repo, prNumber, BASE_REFRESH_OWNER_PREFIX, gh)

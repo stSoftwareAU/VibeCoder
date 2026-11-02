@@ -483,49 +483,45 @@ export async function requestReadyBranchUpdate(
       };
     }
     const workerId = Deno.env.get("VIBE_RUN_ID") ?? `worker-${Deno.pid}`;
-    const openPrNumbers = async (ownerRepo: string, ownerBase: string) => {
+    const stableAnchorPr = async (ownerRepo: string, _ownerBase: string) => {
       const rows = JSON.parse(
         await gh([
           "pr",
           "list",
           "--repo",
           ownerRepo,
-          "--base",
-          ownerBase,
           "--state",
-          "open",
+          "all",
           "--json",
           "number",
+          "--sort",
+          "created",
+          "--order",
+          "asc",
           "--limit",
-          "1000",
+          "1",
         ]),
       );
       if (!Array.isArray(rows)) {
-        throw new Error("open PR anchor list is malformed");
+        throw new Error("stable PR anchor list is malformed");
       }
-      if (rows.length >= 1000) {
-        throw new Error("open PR owner scan reached its 1000-row limit");
-      }
-      return rows.map((row) => {
-        const number = object(row, "open PR anchor").number;
+      const numbers = rows.map((row) => {
+        const number = object(row, "stable PR anchor").number;
         if (
           typeof number !== "number" || !Number.isSafeInteger(number) ||
           number <= 0
         ) throw new Error("open PR anchor has no valid number");
         return number;
-      }).sort((a, b) => a - b);
+      });
+      if (numbers.length !== 1) {
+        throw new Error("stable PR anchor lookup did not return one PR");
+      }
+      return numbers[0]!;
     };
     const port = makeGitHubBaseRefreshOwnershipPort({
       workerId,
       ghCommandFn: gh,
-      anchorPrForBase: async (ownerRepo, ownerBase) => {
-        const numbers = await openPrNumbers(ownerRepo, ownerBase);
-        if (numbers.length === 0) {
-          throw new Error("no open PR can anchor base ownership");
-        }
-        return numbers[0]!;
-      },
-      prNumbersForBase: openPrNumbers,
+      anchorPrForBase: stableAnchorPr,
       ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
       ...(ownershipAuthorOptions
         ? { authorOptions: ownershipAuthorOptions }

@@ -203,9 +203,7 @@ Deno.test("GitHub comment ownership serialises independent host ports", async ()
         await barrier;
       },
       authorOptions: { fleetAuthors: ["VibeCoderST"] },
-      anchorPrForBase: async (_repo, base) => base === "main" ? 1 : 2,
-      prNumbersForBase: async (_repo, base) =>
-        base === "main" ? [1, 10, 11] : [2, 20],
+      anchorPrForBase: async () => 1,
     });
   const hostA = makePort("host-a");
   const hostB = makePort("host-b");
