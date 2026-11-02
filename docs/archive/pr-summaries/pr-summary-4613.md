@@ -15,6 +15,11 @@ existing granular permissions and retries a moving test merge at the same head.
 Blocking-PR stall repair now uses the same readiness and ownership policy.
 Review fixes recognise GitHub’s unprotected branch summary and renew the same
 PR’s ownership when it needs another refresh; competing PRs remain excluded.
+Verifier fixes release the maintenance lane's own PR lock before the shared
+policy takes the per-base lock (the anchor can be the same PR), clear the
+branch-update failure streak after a successful shared refresh, and pass the
+`pr-maintenance` command's loaded fleet identity to the ownership port so a
+`CONFIG_FILE`-only host is not refused.
 
 ## Spec
 
@@ -92,6 +97,14 @@ Backend-only change; no visual evidence applies.
   sweep wiring to successful eligible refreshes. Its production stall-repair
   callback refuses an unreviewed candidate and a candidate competing with an
   existing owner, while allowing an eligible unowned candidate.
+- `worker/deno/tests/pr_branch_update_streak_wiring_test.ts` seeds a real
+  escalated streak and shows a shared-policy refresh clears it;
+  `worker/deno/tests/pr_branch_update_test.ts` shows the PR lock is released
+  before the policy runs; `worker/deno/tests/pr_maintenance_command_test.ts`
+  drives the command to an `update-branch` PUT using only its loaded fleet
+  authors; `worker/deno/tests/merge_block_escalation_test.ts` shows the default
+  merge-time updater refuses an unreviewed behind PR on a strict base. Each was
+  red with only its own change reverted.
 - `worker/deno/tests/pr_branch_update_test.ts` confirms behind maintenance uses
   the shared guard and conflict repair bypasses that behind-only route. The
   shared owner tests also cover the default merge-block and command callers'
@@ -120,8 +133,8 @@ Commands below run from `worker/deno` unless another directory is stated.
   post-check and immediate base/head or merge freshness guard removed, plus the
   production stall-repair guard bypassed. Each probe failed its targeted
   behavioural test; no exemption is claimed.
-- `deno task test:unit tests/base_refresh_ownership_4613_test.ts tests/required_branch_checks_4613_test.ts tests/pr_branch_update_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_dependabot_test.ts tests/merge_block_escalation_test.ts tests/reviewer_strict_refresh_permissions_4613_test.ts`
-  — 162 passed, 0 failed on the final run, including the CLI fixture with its
+- `deno task test:unit tests/base_refresh_ownership_4613_test.ts tests/required_branch_checks_4613_test.ts tests/pr_branch_update_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_dependabot_test.ts tests/merge_block_escalation_test.ts tests/reviewer_strict_refresh_permissions_4613_test.ts tests/pr_branch_update_streak_wiring_test.ts tests/pr_maintenance_command_test.ts`
+  — 200 passed, 0 failed on the final run, including the CLI fixture with its
   consistency delay mocked and the tightened stall assertions.
 - `deno task test:unit tests/reviewer_strict_refresh_permissions_4613_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/required_branch_checks_4613_test.ts`
   — 39 passed, 0 failed after the fixture and stall assertions were tightened.

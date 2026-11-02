@@ -19,6 +19,7 @@ import {
 import { _resetMergeQueueMemo } from "../lib/merge_queue_runtime.ts";
 import type { WorkerConfig } from "../types.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
 
 function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
   return { ...buildDefaultWorkerConfig(), ...overrides };
@@ -370,6 +371,82 @@ Deno.test("pr-maintenance command - update-open-pr-branches takes no action on a
     assertEquals(
       result.message,
       "PR branch update complete: 0 updated, 1 already current, 0 failed (Issue #379)",
+    );
+  } finally {
+    _resetGhSpawnRunner();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+// A strict-base behind PR is refreshed using the command's loaded fleet
+// identity, not a second read of CONFIG_PATH / .config.json (Issue #4613).
+Deno.test("pr-maintenance command - update-open-pr-branches refreshes a strict-base PR with the loaded fleet identity (Issue #4613)", async () => {
+  _resetMergeQueueMemo();
+  const refresh = strictRefreshFixture(MERGE_QUEUE_REPO, "main", "VibeCoderST");
+  const calls: string[] = [];
+  const runner: GhSpawnRunner = async (args) => {
+    calls.push(args.join(" "));
+    const ok = (stdout: string) => ({
+      code: 0,
+      success: true,
+      stdout,
+      stderr: "",
+    });
+    if (args[0] === "pr" && args[1] === "list") {
+      return ok(JSON.stringify([{
+        number: 42,
+        headRefName: "issue-42-fix-bug",
+        baseRefName: "main",
+        body: "",
+      }]));
+    }
+    if (
+      args[0] === "pr" && args[1] === "view" && args.includes("mergeable") &&
+      args.includes("--jq")
+    ) return ok("MERGEABLE\n");
+    if (
+      args[0] === "api" &&
+      args[1] === `repos/${MERGE_QUEUE_REPO}/compare/main...issue-42-fix-bug`
+    ) return ok("3\n");
+    if (args[0] === "api" && args[1] === `repos/${MERGE_QUEUE_REPO}`) {
+      return ok("main\n");
+    }
+    if (
+      args[0] === "api" &&
+      args[1] === `repos/${MERGE_QUEUE_REPO}/rules/branches/main` &&
+      args.includes("--jq")
+    ) return ok("pull_request,required_status_checks\n");
+    try {
+      return ok(await refresh.gh([...args]));
+    } catch (error) {
+      return {
+        code: 1,
+        success: false,
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+  const workDir = await Deno.makeTempDir({ prefix: "pr_maint_strict_" });
+  _setGhSpawnRunner(runner);
+  try {
+    const result = await prMaintenanceCommand.execute(
+      {
+        operation: "update-open-pr-branches",
+        "github-user": "testbot",
+        repos: MERGE_QUEUE_REPO,
+        "work-dir": workDir,
+      },
+      makeConfig({
+        repos: [MERGE_QUEUE_REPO],
+        fleetPrAuthors: ["VibeCoderST"],
+      }),
+    );
+    assertEquals(result.success, true);
+    assertEquals(
+      refresh.calls.some((c) => c.includes("--method") && c.includes("PUT")),
+      true,
+      `expected an update-branch PUT, got: ${JSON.stringify(calls)}`,
     );
   } finally {
     _resetGhSpawnRunner();

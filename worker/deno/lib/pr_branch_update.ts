@@ -1198,11 +1198,9 @@ export async function executePrBranchUpdates(
     // shared ready-check and per-base owner; actual conflicts keep the local
     // repair path below as the explicit exception.
     if (action.reason === "behind" && deps.requestReadyRefresh) {
-      const update = await deps.requestReadyRefresh(
-        action.repo,
-        action.prNumber,
-        action.baseBranch,
-      );
+      // The shared policy takes its own per-base lock on the repository's
+      // oldest PR, which can be this very PR. Release this PR's lock first
+      // so the policy never contends with the lane that called it.
       if (lockCommentId !== undefined) {
         await doReleaseLock({
           repo: action.repo,
@@ -1210,8 +1208,22 @@ export async function executePrBranchUpdates(
           lockCommentId,
         });
       }
+      const update = await deps.requestReadyRefresh(
+        action.repo,
+        action.prNumber,
+        action.baseBranch,
+      );
       if (update.ok) {
         updatedCount++;
+        // Issue #335: one success ends the streak, as on the local path.
+        if (streak) {
+          await clearPrBranchUpdateFailure(
+            streak.statePath,
+            action.repo,
+            action.branchName,
+            (message: string) => deps.logger.warn(message),
+          );
+        }
         deps.logger.info(
           `PR #${action.prNumber} branch refresh requested under the shared ready policy`,
           { repo: action.repo, prNumber: action.prNumber },

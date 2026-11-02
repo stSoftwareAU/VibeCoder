@@ -12,6 +12,7 @@ import {
   requestBranchUpdate,
 } from "../lib/merge_block_escalation.ts";
 import type { Logger, Result } from "../types.ts";
+import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
 
 function makeSilentLogger(): Logger {
   const noop = () => {};
@@ -373,4 +374,23 @@ Deno.test("handleMergeAttempt - a retired sync PR is not escalated to a human (I
 
   assertEquals(handling.disposition, "await_checks");
   assertEquals(calls, []);
+});
+
+Deno.test("handleMergeAttempt default updater - a behind PR that no reviewer has approved on a strict base is not refreshed (Issue #4613)", async () => {
+  const f = strictRefreshFixture();
+  f.state.decision = "REVIEW_REQUIRED";
+  const result = await handleMergeAttempt({
+    repo: "owner/repo",
+    prNumber: 12,
+    outcome: { kind: "behind_target" },
+    logger: makeSilentLogger(),
+    ghFn: f.gh,
+  });
+  assertEquals(result.disposition, "retry");
+  assertEquals(result.branchUpdateRequested, false);
+  assertEquals(
+    f.calls.some((c) => c.includes("--method")),
+    false,
+    "no update-branch write for an unreviewed PR",
+  );
 });

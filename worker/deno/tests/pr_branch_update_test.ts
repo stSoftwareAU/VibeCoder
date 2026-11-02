@@ -861,6 +861,28 @@ Deno.test("executePrBranchUpdates - behind refresh uses the shared readiness pol
   }
 });
 
+Deno.test("executePrBranchUpdates - behind refresh releases the PR lock before the shared policy runs", async () => {
+  const events: string[] = [];
+  const deps = makeExecDeps({
+    workerId: "test-worker",
+    acquireLock: async () => ({
+      ok: true,
+      value: { acquired: true, lockCommentId: 999 } as BranchUpdateLockResult,
+    }),
+    releaseLock: async () => {
+      events.push("release");
+      return { ok: true, value: undefined };
+    },
+    requestReadyRefresh: async () => {
+      events.push("refresh");
+      return { ok: true, value: undefined };
+    },
+  });
+  const result = await executePrBranchUpdates([makeAction()], deps);
+  assertEquals(result.ok, true);
+  assertEquals(events, ["release", "refresh"]);
+});
+
 Deno.test("executePrBranchUpdates - conflicting PR is updated successfully", async () => {
   const actions = [makeAction({ reason: "conflicting", behindBy: 0 })];
   let readyCalls = 0;

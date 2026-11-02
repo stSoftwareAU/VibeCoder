@@ -474,7 +474,23 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
         // Issue #4613: behind-only refreshes share the strict-base readiness
         // policy and persisted per-base owner across maintenance lanes.
         requestReadyRefresh: (repo, prNumber, base) =>
-          requestReadyBranchUpdate(repo, prNumber, runGhCommand, base),
+          requestReadyBranchUpdate(
+            repo,
+            prNumber,
+            runGhCommand,
+            base,
+            undefined,
+            undefined,
+            {
+              // The command's own loaded identity, so `CONFIG_FILE`-only
+              // hosts resolve the same fleet author set as the scan.
+              fleetAuthors: resolveFleetMaintenanceAuthorSet({
+                githubUser,
+                fleetPrAuthors: config.fleetPrAuthors ?? [],
+                serviceAccounts: config.serviceAccounts ?? [],
+              }),
+            },
+          ),
         setupRepo: async (repo: string, wd: string) => {
           const cmdResult = await setupRepo(repo, wd);
           if (!cmdResult.success) {
