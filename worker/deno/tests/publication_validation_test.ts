@@ -113,6 +113,31 @@ Deno.test("publication validation identifies unavailable dependency services", a
   }
 });
 
+Deno.test("publication validation classifies an observed JSR manifest outage", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: async () => ({
+        ok: true,
+        value: {
+          success: false,
+          code: 1,
+          stdout: "",
+          stderr:
+            "JSR package manifest for '@std/crypto' failed to load. Import 'https://jsr.io/@std/crypto/meta.json' failed.",
+          timedOut: false,
+        },
+      }),
+    });
+    assertEquals(result.status, "unavailable");
+    if (result.status === "unavailable") {
+      assert(result.reason.includes("JSR package manifest"));
+    }
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
 Deno.test("publication validation treats skipped strict checks as unavailable", async () => {
   const cwd = await checkout("#!/bin/sh\nexit 0\n");
   try {
@@ -175,6 +200,27 @@ Deno.test("publication failure classification handles a long non-match", async (
           stdout: `strict mode ${
             "x".repeat(100_000)
           } ended without the skip summary`,
+          stderr: "",
+          timedOut: false,
+        },
+      }),
+    });
+    assertEquals(result.status, "failed");
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication failure classifier rejects a long partial JSR message", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: async () => ({
+        ok: true,
+        value: {
+          success: false,
+          code: 1,
+          stdout: `JSR package manifest ${"x".repeat(100_000)} not failed to load`,
           stderr: "",
           timedOut: false,
         },
