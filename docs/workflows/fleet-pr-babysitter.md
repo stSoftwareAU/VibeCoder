@@ -42,7 +42,7 @@ sequenceDiagram
         A-->>R: Updated fix
         R->>Q: Re-run quality.sh
     else Runner sandbox unavailable
-        R-->>G: No push; report capability failure
+        R-->>G: No push, report capability failure
     end
 ```
 

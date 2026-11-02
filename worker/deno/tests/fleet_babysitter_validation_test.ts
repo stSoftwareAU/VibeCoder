@@ -239,6 +239,7 @@ Deno.test("successful runner check uses an isolated sandbox and environment", as
           assertEquals(options.cwd, await Deno.realPath(dir));
           assertEquals(options.env.HOME, scratch);
           assertEquals(options.env.TMPDIR, scratch);
+          assertEquals(options.env.DENO_DIR, `${scratch}/deno`);
           assertEquals(options.env.GH_TOKEN, undefined);
           assertEquals(options.env.GITHUB_APP_PRIVATE_KEY, undefined);
           const profile = await Deno.readTextFile(args[1]!);
@@ -261,6 +262,10 @@ Deno.test("successful runner check uses an isolated sandbox and environment", as
           assertStringIncludes(
             profile,
             `(deny file-read* (subpath "${home}/.aws"))`,
+          );
+          assertStringIncludes(
+            profile,
+            `(deny file-read* (subpath "${home}/.config/gcloud"))`,
           );
           assertStringIncludes(
             profile,
@@ -326,6 +331,7 @@ Deno.test("runner sandbox and environment deny runner credentials", async () => 
   const env = babysitterValidationEnv({
     PATH: "/usr/bin",
     HOME: "/home/test",
+    DENO_DIR: "/home/test/.cache/deno-with-auth",
     GH_TOKEN: "write-token",
     GITHUB_TOKEN: "app-token",
     GITHUB_APP_PRIVATE_KEY: "private-key",

@@ -84,7 +84,6 @@ export function babysitterValidationEnv(
       "PATH",
       "HOME",
       "TMPDIR",
-      "DENO_DIR",
       "CHROMIUM_PATH",
       "PLAYWRIGHT_BROWSERS_PATH",
       "CI",
@@ -208,6 +207,12 @@ export async function runBabysitterValidation(
       `${home}/Library/Keychains`,
       `${home}/.ssh`,
       `${home}/.aws`,
+      `${home}/.config/gcloud`,
+      `${home}/.azure`,
+      `${home}/.kube`,
+      `${home}/.docker`,
+      `${home}/.netrc`,
+      `${home}/.npmrc`,
     ],
   );
   const profile = buildBabysitterValidationProfile(
@@ -220,6 +225,7 @@ export async function runBabysitterValidation(
   const env = babysitterValidationEnv(options.env ?? Deno.env.toObject());
   env.HOME = checkedScratch;
   env.TMPDIR = checkedScratch;
+  env.DENO_DIR = `${checkedScratch}/deno`;
   const run = options.run ?? runIsolatedCommand;
   let result: Awaited<ReturnType<typeof runIsolatedCommand>>;
   try {
