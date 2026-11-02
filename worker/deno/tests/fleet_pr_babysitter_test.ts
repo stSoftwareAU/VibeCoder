@@ -626,7 +626,7 @@ Deno.test("agent browser limits hand the local gate to the runner", () => {
     );
     assertStringIncludes(
       prompt,
-      "A runner check failure is returned for one repair pass before any commit or push",
+      "A runner check failure is returned for repair before any commit or push",
     );
   }
 });
@@ -701,7 +701,7 @@ Deno.test("a host-only failure in an unrelated check is named, not a blocker", (
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
     assertStringIncludes(
       prompt,
-      "A check failure unrelated to changed files that passes in CI on the base branch",
+      "unrelated to the files you changed and passes in CI on the base branch",
     );
   }
 });
