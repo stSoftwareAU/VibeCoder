@@ -116,9 +116,9 @@ Review-fix validation: the five focused ownership, required-check, backlog,
 auto-merge and Dependabot suites passed (75 tests). The local formatter, lint,
 type check and markdownlint passed. The full parallel suite could not finish:
 this host's Deno 2.9.7 panicked while restoring test permissions. Semgrep and
-the pinned Checkov version were unavailable locally; CI runs those checks.
-The summary freshness check reads commit history and will see this update after
-the babysitter commits it.
+the pinned Checkov version were unavailable locally; CI runs those checks. The
+summary freshness check reads commit history and will see this update after the
+babysitter commits it.
 
 Commands below run from `worker/deno` unless another directory is stated.
 
@@ -144,20 +144,20 @@ Commands below run from `worker/deno` unless another directory is stated.
   `tests/merge_block_escalation_test.ts` (24 tests at head),
   `tests/reviewer_strict_refresh_permissions_4613_test.ts` (3 tests at head),
   `tests/pr_branch_update_streak_wiring_test.ts` (7 tests at head) and
-  `tests/pr_maintenance_command_test.ts` (28 tests at head, including the
-  three added for #4742) all passed, 0 failed.
+  `tests/pr_maintenance_command_test.ts` (28 tests at head, including the three
+  added for #4742) all passed, 0 failed.
 - **Required item 1 — mutation baseline:** `tests/fleet_babysitter_app_test.ts`
-  (18 tests at head) passed, 0 failed. `tests/fleet_pr_babysitter_test.ts`
-  (56 tests at head) ran 55 passed, 1 failed on this host:
+  (18 tests at head) passed, 0 failed. `tests/fleet_pr_babysitter_test.ts` (56
+  tests at head) ran 55 passed, 1 failed on this host:
   `babysitter default heartbeat resolves its checkout revision` could not
-  download `https://jsr.io/@std/crypto/meta.json` (no network access to JSR
-  from the subprocess). It passed once the cache was populated in the earlier
-  run; the failure is environmental, not a change in this PR. No mutation-check
-  skip was set.
+  download `https://jsr.io/@std/crypto/meta.json` (no network access to JSR from
+  the subprocess). It passed once the cache was populated in the earlier run;
+  the failure is environmental, not a change in this PR. No mutation-check skip
+  was set.
 - **Required item 2 — coverage carry-over baseline:** measured at merge base
   `18cbb398e5ac7ca39f4d9b58554c112840eddce0` in a disposable worktree on an
-  earlier run; not re-run for the #4742 fix, so no figure is restated here.
-  No coverage carry-over skip was set.
+  earlier run; not re-run for the #4742 fix, so no figure is restated here. No
+  coverage carry-over skip was set.
 - #4742 mutation survivors at `worker/deno/commands/pr_maintenance.ts:488-490`
   (`githubUser`, `fleetPrAuthors`, `serviceAccounts` passed to
   `resolveFleetMaintenanceAuthorSet` for the behind-only refresh): killed by the
