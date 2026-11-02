@@ -327,21 +327,22 @@ export function buildChangedWorkflowGateMessage(
 ): string {
   // One phrase, shared with `detectFailureCategory` (Issue #2044), so a
   // worker-authored refusal is never diagnosed `unknown` whichever opening
-  // it takes.
+  // it takes. The text names no VibeCoder issue number (Issue #4641): a bare
+  // `#N` in the target repo links to an unrelated issue there.
   const opening = existingPr
     ? `Workflow files changed by this run ${WORKFLOW_GATE_MARKER}, so PR ` +
       `#${existingPr.number} (${existingPr.url}) cannot merge until the ` +
-      "finding below is fixed on it (Issue #1859). The work is on that PR — " +
+      "finding below is fixed on it. The work is on that PR — " +
       "nothing needs redoing; push the fix to the same branch."
     : `Workflow files changed by this run ${WORKFLOW_GATE_MARKER}, so no PR ` +
-      "was raised (Issue #1859).";
+      "was raised.";
   const lines: string[] = [
     `${opening} Only files this run ` +
     "touched are checked, so the fix is in the file itself: correct it. " +
     "A finding that genuinely does not apply cannot be cleared from the " +
     "run — this gate honours no in-file suppression marker, and prose in " +
     "the PR summary does not clear it either — so it needs a human to " +
-    "review it, or a fix to the scanner (Issue #3683).",
+    "review it, or a fix to the scanner.",
   ];
 
   if (result.findings.length > 0) {
