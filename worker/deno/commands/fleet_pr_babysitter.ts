@@ -1,6 +1,10 @@
+import { resolveBuildCommitStamp } from "../lib/worker_build_info.ts";
+import { fileURLToPath } from "node:url";
 /** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
 import { resolve } from "node:path";
+import { atomicWrite } from "../lib/file_utils.ts";
+import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
@@ -1285,6 +1289,70 @@ function babysitterStateDir(): string {
   }/vibe-coder/fleet-pr-babysitter`;
 }
 
+/** Persist the babysitter's current build and resolved policy heartbeat. */
+export async function recordBabysitterDeployment(
+  stateDir: string,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  codeRevision?: string,
+  observedAt = new Date().toISOString(),
+): Promise<void> {
+  codeRevision ??= Deno.env.get("VIBE_BUILD_COMMIT") ??
+    await resolveBuildCommitStamp(
+      fileURLToPath(new URL("../../../", import.meta.url)),
+    );
+  const policyFingerprint = await fingerprintWorkerReviewPolicy(config);
+  await Deno.mkdir(stateDir, { recursive: true });
+  const result = await atomicWrite({
+    targetFile: `${stateDir}/deployment-health.json`,
+    content: JSON.stringify({
+      component: "babysitter",
+      codeRevision,
+      policyFingerprint,
+      observedAt,
+    }) + "\n",
+  });
+  if (!result.ok) {
+    throw new Error(
+      `could not record babysitter deployment heartbeat: ${result.error.message}`,
+    );
+  }
+}
+
+/**
+ * Record the heartbeat best-effort but loud: a failure is logged with its
+ * cause and the babysitter carries on, because a missing heartbeat must not
+ * stop the repairs it is only a health signal for. Returns whether the
+ * heartbeat was recorded.
+ */
+export async function publishBabysitterDeployment(
+  stateDir: string,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  log: (message: string) => void = console.error,
+): Promise<boolean> {
+  try {
+    await recordBabysitterDeployment(stateDir, config);
+    return true;
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    log(`[babysitter] deployment heartbeat not recorded: ${cause}`);
+    return false;
+  }
+}
+
+/**
+ * Load the worker config for one babysitter pass and record the deployment
+ * heartbeat for it, so every pass is stamped with the config it ran under.
+ */
+export async function loadConfigAndPublishDeployment(
+  configPath: string,
+  stateDir: string,
+  load: typeof loadConfig = loadConfig,
+): Promise<Awaited<ReturnType<typeof loadConfig>>> {
+  const config = await load(configPath);
+  await publishBabysitterDeployment(stateDir, config);
+  return config;
+}
+
 /**
  * Find CI failures that keep recurring on fleet PRs and could have been
  * caught locally, and file each in the repository that owns the fix
@@ -1443,7 +1511,10 @@ if (import.meta.main) {
   do {
     try {
       const configPath = resolve(Deno.env.get("CONFIG_PATH") ?? ".config.json");
-      const config = await loadConfig(configPath);
+      const config = await loadConfigAndPublishDeployment(
+        configPath,
+        babysitterStateDir(),
+      );
       const accessible = await accessibleBabysitterRepositories(app);
       const repositories = selectBabysitterRepositories(
         config.repos,

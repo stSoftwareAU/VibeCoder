@@ -475,6 +475,47 @@ Deno.test("issue assignment - the treatment omits build facts when absent", asyn
   });
 });
 
+Deno.test("issue assignment - the treatment records the review policy fingerprint when given (Issue #4658)", async () => {
+  await withTempDir(async (dir) => {
+    const ledger = `${dir}/ledger.jsonl`;
+    const { store } = fakeStore();
+    const fingerprint = "f".repeat(64);
+    await recordIssueAssignment(
+      inputFor({ reviewPolicyFingerprint: fingerprint }),
+      seamsFor({
+        store,
+        ledgerPath: ledger,
+        host: "host-a",
+        runId: "vibe-run-0001",
+        mintId: countingMint().mintId,
+      }),
+    );
+    const [event] = assignmentsOf(await readLifecycleLedger(ledger));
+    assert(event !== undefined);
+    assertEquals(event.treatment.reviewPolicyFingerprint, fingerprint);
+  });
+});
+
+Deno.test("issue assignment - the treatment omits the review policy fingerprint when absent (legacy shape, Issue #4658)", async () => {
+  await withTempDir(async (dir) => {
+    const ledger = `${dir}/ledger.jsonl`;
+    const { store } = fakeStore();
+    await recordIssueAssignment(
+      inputFor(),
+      seamsFor({
+        store,
+        ledgerPath: ledger,
+        host: "host-a",
+        runId: "vibe-run-0001",
+        mintId: countingMint().mintId,
+      }),
+    );
+    const [event] = assignmentsOf(await readLifecycleLedger(ledger));
+    assert(event !== undefined);
+    assertEquals("reviewPolicyFingerprint" in event.treatment, false);
+  });
+});
+
 Deno.test("issue assignment - a marker round trips through format and parse", () => {
   const whole: AssignmentMarker = {
     assignmentId: ASSIGNMENT_ID,

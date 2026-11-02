@@ -348,3 +348,8 @@ the parent PID and finds its own child. The unit regression requires exactly the
 two prefixes and still rejects blanket sysctl reads and `kern.procargs2`.
 The browser integration attempt remains blocked by this host's nested sandbox
 refusal, so the new grants and earlier OS-level probes remain unverified.
+
+Merge conflict repair for PR #4716: preserve absolute resolution of the selected
+configuration path and use the base branch deployment-publishing loader for each
+babysitter pass. Both deployment heartbeats and protected-path validation retain
+the selected configuration.
