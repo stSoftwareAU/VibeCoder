@@ -428,6 +428,21 @@ Deno.test("audit_hook - callerFromStack resolves a PR processor's push through c
   assertEquals(pushKind(callerFromStack(feedbackStack)), "repair");
 });
 
+Deno.test("audit_hook - recovery push retains the requesting processor kind", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at recoverFromPushRejection (file:///srv/VibeCoder/worker/deno/lib/git_push_recovery.ts:300:5)",
+    "    at pushUnpushedCommits (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:400:5)",
+    "    at finalise (file:///srv/VibeCoder/worker/deno/lib/pr_feedback_processor.ts:1684:7)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/lib/pr_feedback_processor.ts",
+  );
+  assertEquals(pushKind(callerFromStack(stack)), "repair");
+});
+
 Deno.test("audit_hook - callerFromStack keeps a lib subdirectory caller", () => {
   const stack = [
     "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",

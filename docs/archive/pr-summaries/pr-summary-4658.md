@@ -37,9 +37,12 @@ The report is a Deno command and Deno task. No Node tooling, `package.json` or
   intervention; `humanAssistedMerged` can only be non-zero from recorded human
   actions in an `--input` snapshot. Accepted trade-off: collected data cannot
   yet tell a human repair from an unrecorded one.
-- Commits match the first confirmed, verified push or fleet branch-update call
-  at or after their committer date; branch updates do not count as fix rounds.
-  one push may deliver multiple commits. Branch linking begins at the first
+- Commits match the first confirmed, verified push at or after their committer
+  date. A branch-update call matches only one commit within ten minutes either
+  side of the call, covering GitHub's asynchronous update without absorbing
+  earlier human repairs. Branch updates do not count as fix rounds; failed
+  reviews and repair pushes do not count as completed rounds. One push may
+  deliver multiple commits. Branch linking begins at the first
   commit, covering WIP pushes before PR creation and delayed completion pushes.
   Time-based matching cannot distinguish an earlier unrecorded push.
 - Matching window for reviews/dismissals: ±10 minutes; for `merge` the fleet action
@@ -255,6 +258,31 @@ does not claim those deliverables.
   insert" held.
 
 ## Test Plan
+
+- PR #4709 review follow-up: `git_push_recovery.ts` is audit plumbing, so a
+  rejected push's successful retry retains the requesting processor's repair
+  provenance. A production-stack audit test and a collector case cover the
+  rejected push and retry, which count as one confirmed fix round.
+- Collector regression: an unjournalled manual repair followed by a fleet
+  branch update and bot merge stays unknown, never unattended. GitHub's update
+  commit dated two seconds after the call is matched. A second nearby commit
+  remains unknown. Removing only the one-to-one guard makes the test fail;
+  removing only the ten-minute branch-update window also makes it fail.
+- Confirmed-only matcher regression: a failed fleet review near a GitHub
+  approval leaves an unknown review action and an unknown merged PR. Removing
+  only the matcher's confirmed-outcome guard makes this test fail. Only
+  confirmed review/repair actions contribute to round counts.
+- Validation: `check:manifests` passes (847 tests). `quality.sh` passes
+  formatter, linter, type check, markdownlint, Mermaid and completeness checks.
+  Its full parallel test pass aborts in Deno 2.9.5 on macOS with
+  `pledge test permissions called before restoring previous pledge`; test
+  shards pass in CI on this PR and on #4718, which produced the current base.
+  The release-ruleset check passes when rerun with an accessible `GH_CONFIG_DIR`
+  (the default config is sandbox restricted). Semgrep and Checkov are absent;
+  config integration has no local configuration.
+- The audit-hook, snapshot, report and command suites pass (117 tests). New
+  audit recovery, asynchronous update, and retry cases failed against the
+  original implementation. No existing assertion was removed.
 
 - Review fixes: verified failed fleet attempts remain in verified history, but
   cannot account for GitHub events or provide delivery evidence. Confirmed

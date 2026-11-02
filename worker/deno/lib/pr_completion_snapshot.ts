@@ -648,9 +648,9 @@ function gitHubEvents(
 
 /**
  * Match reviews, dismissals and merges one-to-one; commits can share the first
- * confirmed implementation or repair push or branch-update call at or after
- * their committer date. Matched events add nothing: the audit action already
- * stands for them. Unmatched events become `unknown` actions, never attributed
+ * confirmed implementation or repair push at or after their committer date.
+ * Branch updates match one commit within MATCH_WINDOW_MS either side of the call.
+ * Matched events add nothing: the audit action already stands for them. Unmatched events become `unknown` actions, never attributed
  * to a human or the fleet.
  *
  * A review or dismissal matches within {@link MATCH_WINDOW_MS} of it. A merge
@@ -676,13 +676,19 @@ function unmatchedActions(
       if (action.outcome !== "confirmed") continue;
       const isPush = action.kind === "implementation" ||
         action.kind === "repair" || action.kind === "branch-update";
-      if (isCommit ? !isPush : used.has(action) || action.kind !== event.kind) {
+      if (
+        isCommit
+          ? !isPush || (action.kind === "branch-update" && used.has(action))
+          : used.has(action) || action.kind !== event.kind
+      ) {
         continue;
       }
       const actionMs = utcMillis(action.timestamp, "action timestamp");
       const gap = Math.abs(actionMs - event.ms);
       const inWindow = event.kind === "merge"
         ? actionMs >= createdMs && actionMs <= event.ms + MATCH_WINDOW_MS
+        : isCommit && action.kind === "branch-update"
+        ? gap <= MATCH_WINDOW_MS
         : isCommit
         ? actionMs >= event.ms &&
           actionMs <=

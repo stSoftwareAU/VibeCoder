@@ -497,6 +497,7 @@ export function buildPrCompletionReport(
 
     const actions = actionsByPr.get(key) ?? [];
     for (const action of actions) {
+      if (action.outcome !== "confirmed") continue;
       if (action.kind === "review") reviewRounds++;
       if (action.kind === "repair") fixRounds++;
     }

@@ -93,6 +93,7 @@ const PLUMBING_FILES: ReadonlyArray<string> = [
   "gh_spawn.ts",
   "gh_wrapper.ts",
   "git_push.ts",
+  "git_push_recovery.ts",
   "git_timeout.ts",
   "github.ts",
   "retry.ts",

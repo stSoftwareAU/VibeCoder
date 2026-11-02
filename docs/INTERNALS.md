@@ -1165,10 +1165,14 @@ if any directory's chains fail, or a directory has no journals, every PR's
 
 **Match rule.** Reviews and dismissals match one verified fleet action of the
 same kind on the same PR within ten minutes. Each commit is attributed to the
-first confirmed, verified implementation or repair push, or fleet branch-update
-call, at or after its committer date within the PR lifetime. A branch update
-does not count as a fix round. Failed fleet attempts remain verified history but
-cannot match a GitHub event or provide implementation or merge evidence. One
+first confirmed, verified implementation or repair push at or after its
+committer date within the PR lifetime. A confirmed fleet branch-update call
+accounts for only one commit within ten minutes either side of the call,
+including GitHub's asynchronous update commit. Earlier unmatched commits remain
+unknown. A branch update does not count as a fix round. Only confirmed reviews
+and repair pushes count as review and fix rounds; a rejected push and its
+successful recovery retry count as one fix round. Failed fleet attempts remain
+verified history but cannot match a GitHub event or provide implementation or merge evidence. One
 push can deliver several commits, including commits
 made long before the completion gate finishes. This time-based attribution
 cannot distinguish an unrecorded push before a later verified push.

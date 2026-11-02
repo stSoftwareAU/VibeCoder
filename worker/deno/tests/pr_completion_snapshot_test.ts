@@ -21,7 +21,7 @@ import {
   recordMutation,
 } from "../lib/audit_journal.ts";
 import type { AuditMutation } from "../lib/audit_entry.ts";
-import { actionKindFor } from "../lib/audit_hook.ts";
+import { actionKindFor, callerFromStack } from "../lib/audit_hook.ts";
 import { classifyGhMutation } from "../lib/audit_mutation_classifier.ts";
 import {
   buildLifecycleEvent,
@@ -137,7 +137,7 @@ Deno.test("collect - a confirmed update-branch accounts for its GitHub commit wi
           commits: {
             [pk(1)]: [
               commit("sha1", "2026-10-20T00:25:00Z"),
-              commit("update", "2026-10-20T01:29:00Z"),
+              commit("update", "2026-10-20T01:30:02Z"),
             ],
           },
         })),
@@ -147,6 +147,140 @@ Deno.test("collect - a confirmed update-branch accounts for its GitHub commit wi
     const report = buildPrCompletionReport(snapshot.input);
     assertEquals(report.completion.unattendedMerged, 1);
     assertEquals(report.delivery.fixRounds, 0);
+    for (const manualAt of ["01:00:00", "01:30:03"]) {
+      const manual = await collectPrCompletionSnapshot(options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          commits: {
+            [pk(1)]: [
+              commit("sha1", "2026-10-20T00:25:00Z"),
+              ...(manualAt === "01:00:00"
+                ? [commit("manual", `2026-10-20T${manualAt}Z`)]
+                : []),
+              commit("update", "2026-10-20T01:30:02Z"),
+              ...(manualAt === "01:30:03"
+                ? [commit("manual", `2026-10-20T${manualAt}Z`)]
+                : []),
+            ],
+          },
+        })),
+        { auditDirs: [dir] },
+      ));
+      assert(
+        manual.input.actions.some((a) =>
+          a.actor === "unknown" && a.actionId.endsWith(":manual")
+        ),
+      );
+      const manualReport = buildPrCompletionReport(manual.input);
+      assertEquals(manualReport.completion.unattendedMerged, 0);
+      assertEquals(manualReport.completion.unknownMerged, 1);
+    }
+  });
+});
+
+Deno.test("collect - a failed review cannot account for a GitHub approval", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "push",
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "pr-review",
+        actionKind: "review",
+        actionId: "failed-review",
+        repo: REPO,
+        prNumber: 1,
+        outcome: "error",
+        timestamp: "2026-10-20T01:00:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+          reviews: { [pk(1)]: [review(601, "2026-10-20T01:00:00Z")] },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    assert(
+      snapshot.input.actions.some((a) =>
+        a.kind === "review" && a.actor === "unknown"
+      ),
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unknownMerged, 1);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.delivery.reviewRounds, 0);
+  });
+});
+
+Deno.test("collect - a rejected repair push followed by recovery is one confirmed fix round", async () => {
+  await withDir(async (dir) => {
+    const caller = callerFromStack([
+      "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+      "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+      "    at recoverFromPushRejection (file:///srv/VibeCoder/worker/deno/lib/git_push_recovery.ts:300:5)",
+      "    at pushUnpushedCommits (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:400:5)",
+      "    at finalise (file:///srv/VibeCoder/worker/deno/lib/pr_feedback_processor.ts:1684:7)",
+    ].join("\n"));
+    const kind = actionKindFor(
+      { verb: "git-push", target: "issue-1", scope: "cwd" },
+      caller,
+      ["push", "origin", "issue-1"],
+    );
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "repair",
+        actionId: "rejected",
+        target: "issue-1",
+        outcome: "error",
+        timestamp: "2026-10-20T00:29:00Z",
+      },
+      {
+        verb: "git-push",
+        actionKind: kind,
+        actionId: "retry",
+        caller,
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.completion.unknownMerged, 0);
+    assertEquals(report.delivery.fixRounds, 1);
   });
 });
 
