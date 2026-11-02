@@ -1,156 +1,180 @@
 ## Summary
 
-Added runner-owned strict repository validation before issue completion,
-PR-feedback and CI-repair pushes, and babysitter repair pushes. Validation is
-tied to the checked-out tree and is repeated after an edit or push-rejection
-recovery; a missing, failed or unavailable required check cannot be reported as
-passed. Closes #4625.
+Added runner-owned repository validation before issue completion, PR-feedback,
+CI-repair and babysitter publication, including agent self-pushes and push
+rejection recovery. Required checks must execute and pass for the tree being
+published. Unavailable execution defers repairs without spending their failure
+allowances. Closes #4625.
 
-Version bump: no version file changed for this change.
+Version bump: no version file changed.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Previous publication paths could rely on agent readiness, a whitespace check,
-  or CI after publication instead of a worker-run quality result.
-- One shared result contract uses each target repository's own strict
-  `quality.sh`, so check policy remains in the repository that owns it.
+- Agent readiness and targeted checks did not prove that a completed repair
+  passed its repository's required checks before publication.
+- The shared runner uses the trusted configured `quality_command`, preserving
+  its flags and working directory, or `./quality.sh --strict` by default.
+- Repository Deno unit tasks own test policy, permissions and manifests. The
+  runner executes the full task even when the quality entry point uses an
+  impacted filter; an empty execution cannot pass.
 
 ### Essential Design Decisions
 
-- The result binds the commit, working-tree digest, command, working directory,
-  environment and Bash/Deno tool versions; publishers recheck it at the push
-  boundary and rerun when stale.
-- Existing checkpoints remain separate from validated completion.
-  Conflict/merge-specific wiring remains for #4616 to consume through
-  `QualityDeps`.
-- Failed commands return redacted head-and-tail output; unavailable check hosts
-  return a recoverable infrastructure result.
+- Success binds the commit, working-tree digest, resolved commands and working
+  directories, environment, and Bash/Deno versions. Every publisher checks
+  freshness immediately before pushing and after recovery changes the tree.
+- The agent hook applies the same validator. Validation refusals retain their
+  typed gate/infrastructure outcome through internal and outer recovery;
+  recovery and retry pushes receive the guard too.
+- Unavailable CI validation refunds its retry and writes no failed-attempt
+  marker. Feedback releases its claim without charging a review failure.
+  Babysitter releases the per-head attempt and retains its committed checkout,
+  including when the state directory is on another filesystem.
+- Project discovery and unit-task priority reuse the merge gates' owners. The
+  manifest-task reader moved to `project_manifests.ts` and remains re-exported
+  from its old module. Infrastructure classification reads execution diagnostics
+  and check outcomes; substantive failures take precedence.
 
 ### Undiscoverable Facts
 
-- The full strict gate was observed failing on this host because JSR could not
-  load `@std/crypto`'s manifest and a temp checkout was inaccessible to the
-  untrusted account; the gate output is recorded below.
-- The new library module required an entry in the existing lib-sweep coverage
-  inventory.
+- The merge-base heartbeat child fails fetching JSR metadata on this host. The
+  head fixture explicitly supplies its repository Deno configuration and cache
+  selection instead of depending on the child's configuration discovery.
+- Unchanged milestone gate tests also fail their account-access probes on this
+  host; the two real-check failures reproduce at the merge base.
+- The prior three full strict-gate attempts failed on host prerequisites, JSR
+  access and inaccessible untrusted checkouts. This follow-up ran focused
+  checks; it does not claim a successful full strict gate.
 
 ## Evidence
 
-Backend and worker changes; no screenshot applies. `quality.sh --strict` uses
-this repository's existing full parallel and serial unit-test passes and
-test-target type check. CI derives four shards from the same unit-test
-manifests. The implementation adds no cross-repository gate policy, new
-dependency, workflow change, or summary/accounting gate.
+Backend/worker changes; no screenshot applies. No dependency, workflow or
+cross-repository check policy was added. Deno projects use their own
+`test:unit`, then `test` task, or normal Deno discovery where no task exists.
+The runner requires a positive executed-test count. This repository's unit task
+uses the same parallel/serial manifests that CI divides across four shards.
 
 ```mermaid
 flowchart LR
-    A[Repair or issue changes] --> B[Format and commit]
-    B --> C[Target repository quality.sh --strict]
-    C -->|failed or unavailable| D[Return actionable failure; do not publish]
-    C -->|passed| E[Compare checkout identity]
-    E -->|stale| C
-    E -->|current| F[Push]
-    F -->|push rejection and recovery edit| C
+    A[Committed repair or agent push] --> B[Configured repository gate]
+    B --> C[Full required Deno task selection]
+    C -->|failed, empty or unavailable| D[Withhold publication]
+    C -->|passed| E[Compare tree and command identity]
+    E -->|stale| B
+    E -->|current| F[Guarded push]
+    F -->|rejection changes tree| B
 ```
 
 ## Test Plan
 
-- `deno task test:unit tests/git_push_test.ts tests/publication_validation_test.ts tests/completion_phase_pre_push_gate_3689_test.ts tests/pr_ci_processor_test.ts tests/pr_feedback_processor_test.ts tests/lib_sweep_coverage_test.ts`
-  — passed, 201 passed, 0 failed.
-- `deno fmt --check` on the changed TypeScript files — passed.
-- `deno lint` on the changed TypeScript files — passed.
-- `deno check --frozen --lock=deno.lock --config=deno.json` on changed sources
-  and tests — passed.
-- `deno task check:manifests` — passed, 847 passed, 0 failed, 1 ignored.
-- `deno task test:unit tests/git_push_test.ts` — passed, 26 passed, 0 failed.
-  With the direct pre-push callback removed,
-  `pushUnpushedCommits - creates remote branch on first push (Issue #1463 regression)`
-  failed at the callback-count assertion; restoring the callback made it pass.
-- `tests/publication_validation_test.ts` exercises an actual failing command and
-  its cause, a Deno test compilation failure, unexecuted command rejection,
-  unavailable dependency-service recovery, skipped strict checks, inaccessible
-  checkouts, stale tree identity, and long hostile classifier input.
-- Caller mutation checks: removing issue-completion recovery validation made
-  `completion - push recovery revalidates a stale successful result` fail;
-  removing CI validation made
-  `processCiFailure - a gated head with no fix PR in flight pushes to a milestone-fix branch and raises a PR (Issue #2907)`
-  fail; removing PR-feedback validation made
-  `processPrFeedback - pushes commits after Claude makes changes (Issue #1412)`
-  fail; making babysitter validation return pass without running the runner made
-  `babysitter stages resolved merge files and refuses conflict markers` fail.
-- `deno task test:unit tests/fleet_pr_babysitter_test.ts` — 55 passed, 1 failed.
-  The unrelated existing babysitter heartbeat test could not download
-  `https://jsr.io/@std/crypto/meta.json`; its JSR manifest request failed.
-- The observed JSR error classification test goes red when its JSR matcher is
-  removed; the long partial-JSR input remains a failed-check result rather than
-  an unavailable result.
-- Final `timeout 900 ./quality.sh --strict < /dev/null` attempt — failed: the
-  Deno test stage failed on the observed JSR manifest outage and inaccessible
-  untrusted checkout; markdownlint found the new heading-wrap issue at
-  `docs/INTERNALS.md:146`, and Deno fmt found one wrapping issue in
-  `tests/publication_validation_test.ts`. Both formatting issues were fixed;
-  `deno fmt --check` passed afterward. The full gate was not rerun after those
-  fixes because the three full-gate attempts were exhausted. The config
-  integration check and Checkov also reported unavailable host prerequisites.
-  The shared runner classifies the observed JSR and checkout-access failures as
-  unavailable, never passed.
-- `markdownlint-cli2 docs/INTERNALS.md` after the line 146 fix — failed with 14
-  MD018 findings on unchanged lines in that file; line 146 is no longer
-  reported.
+- Focused worker suite: 323 passed, 0 failed. Files:
+  `publication_validation_test.ts`,
+  `completion_phase_pre_push_gate_3689_test.ts`, `pr_ci_processor_test.ts`,
+  `pr_feedback_processor_test.ts`, `fleet_pr_babysitter_test.ts`,
+  `fleet_babysitter_app_test.ts`, `git_push_test.ts`, `pre_push_hook_test.ts`,
+  `pre_push_gate_cli_test.ts`, `agent_pre_flight_test.ts`, and
+  `project_manifests_4413_test.ts` and `lib_sweep_coverage_test.ts`, using
+  `deno task test:unit` in `worker/deno`.
+- `deno fmt --check`, `deno lint`, and frozen `deno check` on all changed
+  TypeScript sources/tests — passed.
+- `deno task check:manifests` — 847 passed, 0 failed, 1 ignored.
+- The validator's passing-negative-test-name/failing-assertion, repeated-prefix
+  hostile input, and zero-exit empty-selection regressions each failed before
+  their fixes and passed afterwards.
+- Initial completion and both later repair processors execute real full, sharded
+  and impacted Deno fixtures, accepting sound trees and refusing required
+  regressions and empty selections. The self-push regression uses a real bare
+  remote and confirms failed or unexecuted tests leave it unchanged.
+- The real rejection regression advances origin between lookup and push,
+  observes the recovered tree in the guard, refuses its check and confirms
+  origin remains unchanged. The completion regression separately exercises the
+  outer recovery callback. The former evidence labelled “push recovery
+  revalidates a stale successful result” exercised only a push-boundary refresh;
+  it is now named accurately and is not recovery evidence.
+- Eight deliberate mutations in a disposable checkout made their focused tests
+  fail: removing completion recovery validation, internal recovery validation,
+  the agent publication gate, CI/feedback unavailable result types, configured
+  command resolution, full Deno selection, or babysitter attempt release.
+  Restored implementations passed the focused suite.
+- Unavailable-then-recovered regressions cover CI retry accounting, review
+  failure allowances, and a retained babysitter commit validated through an
+  alternative entry point without `quality.sh`. A real cross-filesystem test
+  covers checkpoint persistence.
+- Broader milestone suites reproduced host access failures: the resolution
+  suite's repository-task account probe fails, and three merge-gate account
+  probes fail. The two real-check cases also fail on the untouched merge base.
+  Project discovery and manifest-task selection checks pass independently.
 
-Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
-`await validateAndCommit(dir, 123, { login: "test-app[bot]", id: "12345" });`
+### REQUIRED ITEM 1 — mutation baseline
 
-- Required by: "BABYSITTER_READY plus a successful agent exit is not a
-  runner-verified quality result."
-- Replaced by: `assertRejects(..., "required quality checks failed")`.
+The notice reported failed baseline execution, with no surviving `file:line`
+mutations. The two named head suites now pass together: 77 passed, 0 failed. The
+heartbeat child now uses the checked-in Deno configuration and selected cache.
+The eight guard mutations above are additional observed red checks; this summary
+does not claim an exhaustive mutation pass or any untestable-line exemption. A
+subsequent run of the actual diff-scoped mutation runner also got past its
+baselines and killed its one selected mutant. It reported `budget_exhausted`
+with `limit: mutant_cap`: 1 tested/killed out of 298 candidates, no survivors
+among those tested. This capped probe is evidence that the baseline now runs,
+not an exhaustive mutation verdict. No mutation-check skip was configured.
 
-Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
-`assertStringIncludes(prompt, "confirm they pass before");`
+### REQUIRED ITEM 2 — coverage carry-over baseline
 
-- Required by: "The babysitter's prompt asks the model to run repository checks,
-  but BABYSITTER_READY plus a successful agent exit is not a runner-verified
-  quality result."
-- Replaced by:
-  `assertStringIncludes(prompt, "required quality.sh before it can push");`.
+Reproduced at merge-base `a9dcdc3792313a96b714bf09083aafa839511053` in a
+separate worktree, using all five named suites: 203 passed, 1 failed. The only
+failure was `babysitter default heartbeat resolves its checkout revision`, whose
+child reported `JSR package manifest for '@std/crypto' failed to load`. The
+other four suites passed. This historical baseline failure is not evidence of
+lost head coverage. The head heartbeat fixture is fixed and the focused head
+suites pass, but a carry-over verdict at the historical base remains unmeasured;
+no coverage-check skip was configured.
 
-Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
-`assertStringIncludes(prompt, "name it in your final response");`
+### REQUIRED ITEM 3 — verifier defects
 
-- Required by: "A missing tool, incompatible environment, unavailable dependency
-  service or insufficient disk is a recoverable capability/infrastructure
-  outcome; release/defer/route through the existing fleet instead of pushing as
-  passed."
-- Replaced by:
-  `assertStringIncludes(prompt, "A missing gate, failed required check or unavailable check host blocks the repair push");`.
+- Completion and CI recovery/retry pushes carry the validator, and gate refusals
+  stop completion before ordinary push recovery. Real-remote and processor
+  regressions cover these paths.
+- Agent self-pushes use the shared validator through the production hook.
+- Typed unavailable results release/defer instead of charging CI or review
+  failures; babysitter attempts are released and useful commits retained.
+- Test names and quoted assertion data no longer classify infrastructure;
+  substantive failures survive mixed output. Repeated-prefix scanning is linear
+  rather than an unbounded repeated search.
+- Configured alternative gates preserve their command/flags and participate in
+  identity checks; default `quality.sh` remains strict.
+- Full repository-owned Deno task selection and positive execution evidence
+  reject empty or incomplete impacted runs. Real execution covers initial
+  completion and subsequent CI/feedback repair.
+- Updated the operator guide, internals and all three prompt copies to name the
+  configured entry point and the shared agent hook.
 
-Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
-`assertStringIncludes(prompt, "does not by itself withhold BABYSITTER_READY");`
+Removed/changed assertions in `worker/deno/tests/fleet_pr_babysitter_test.ts`:
 
-- Required by: "A missing tool, incompatible environment, unavailable dependency
-  service or insufficient disk is a recoverable capability/infrastructure
-  outcome; release/defer/route through the existing fleet instead of pushing as
-  passed."
-- Replaced by:
-  `assertStringIncludes(prompt, "A missing gate, failed required check or unavailable check host blocks the repair push");`.
+- The old direct `validateAndCommit` success expectation is replaced by a
+  required-check rejection: agent readiness alone is not validation.
+- The prompt's “confirm they pass before”, host-unavailable waiver,
+  unrelated-failure waiver, commit-history waiver, and “reads commit history”
+  expectations are replaced by runner-owned validation after committing,
+  immediately before pushing, with unavailable checks blocking publication.
+  Those waivers contradict #4625's requirement to pass checks before repair
+  publication.
+- “required quality.sh before it can push” now reads “required repository gate
+  before it can push”, because the trusted configured alternative is supported.
+  Actual alternative-command execution and identity tests cover that contract.
 
-Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
-`assertStringIncludes(prompt, "unrelated to the files you changed and passes in CI on the base branch");`
+The `publication_validation_test.ts` runner helper no longer asserts that every
+invocation receives only `--strict`: configured entry points own their flags.
+Real execution now asserts the configured flag, failure exit, working directory
+and command-bound identity, covering the replacement contract.
 
-- Required by: "require it to pass, before a PR is raised or a fix is pushed."
-- Replaced by:
-  `assertStringIncludes(prompt, "unavailable check host blocks the repair push");`.
-
-Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
-`assertStringIncludes(prompt, "reads commit history");`
-
-- Required by: "Tie results to the validated tree/commit and command/toolchain."
-- Replaced by: `assertStringIncludes(prompt, "after committing the repair");`
-  and `assertStringIncludes(prompt, "immediately before pushing");`.
+Twinned rules checked: initial/retry/recovery publisher callbacks, the agent
+hook, merge/publication unit-task priority, `docs/CONFIGURATION.md`,
+`docs/INTERNALS.md`, and issue/CI/feedback prompt descriptions were updated
+together. No summary/accounting gate was added.
 
 ## Deno regression avoided
 
-Used the existing Deno tasks, frozen lockfile and Deno quality gate; added no
-Node tooling or dependency.
+Used Deno tasks, the frozen lockfile and repository-owned gates. No Node tool or
+dependency was added; checkpoint copying uses the runtime standard library.

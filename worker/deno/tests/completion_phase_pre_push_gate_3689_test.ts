@@ -1,3 +1,9 @@
+import {
+  type PublicationFixtureMode,
+  runPublicationFixtureChecks,
+  writePublicationFixture,
+} from "./support/publication_fixture.ts";
+import { publicationValidationIsCurrent } from "../lib/publication_validation.ts";
 /**
  * Issue #3689: the issue worker's final-mile push runs the pre-push gate.
  *
@@ -82,6 +88,7 @@ function stubClient(): GitHubClient {
 type GitResult = Result<{ code: number; stdout: string; stderr: string }>;
 
 interface Scenario {
+  execution?: { mode: PublicationFixtureMode; regression: boolean };
   /** A real git hook rejects the uncommitted recovery fix. */
   recoveryCommitFailure?: boolean;
   landedWhen?: "before-recovery" | "during-push" | "before-bookkeeping";
@@ -114,6 +121,8 @@ interface Scenario {
   baseUnresolvable?: boolean;
   /** The host's warn-once latch, shared to model one process (Issue #2689). */
   warner?: MissingScopeWarner;
+  failAfterRejection?: boolean;
+  failRefresh?: boolean;
   publicationStatus?: "passed" | "failed" | "unavailable";
   invokePushRecoveryGuard?: boolean;
   staleOnPushRecovery?: boolean;
@@ -248,17 +257,29 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       { mode: 0o755 },
     );
   }
+  if (scenario.execution) {
+    await writePublicationFixture(
+      repoPath,
+      scenario.execution.mode,
+      scenario.execution.regression,
+    );
+  }
   const deps = createMockDeps({
     quality: {
       validatePublication: async () => {
         publicationChecks++;
+        if (scenario.execution) {
+          return await runPublicationFixtureChecks(repoPath);
+        }
         return scenario.publicationStatus === "unavailable"
           ? {
             status: "unavailable" as const,
             identity: "test",
             reason: "host unavailable",
           }
-          : scenario.publicationStatus === "failed"
+          : (scenario.publicationStatus === "failed" ||
+              (scenario.failAfterRejection && recoveries > 0) ||
+              (scenario.failRefresh && publicationChecks > 1))
           ? {
             status: "failed" as const,
             identity: "test",
@@ -266,10 +287,14 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           }
           : { status: "passed" as const, identity: "test" };
       },
-      publicationValidationIsCurrent: async () => {
+      publicationValidationIsCurrent: async (result, cwd) => {
+        if (scenario.execution) {
+          return await publicationValidationIsCurrent(result, cwd);
+        }
         publicationCurrentChecks++;
-        return !(scenario.staleOnPushRecovery &&
-          publicationCurrentChecks === 2);
+        return !(scenario.failAfterRejection && recoveries > 0) &&
+          !(scenario.staleOnPushRecovery &&
+            publicationCurrentChecks === 2);
       },
     },
     logger: {
@@ -512,8 +537,22 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           },
         };
       },
-      recoverFromPushRejection: () => {
+      recoverFromPushRejection: async (
+        _branch,
+        _options,
+        _detail,
+        beforePush,
+      ) => {
         recoveries++;
+        if (scenario.failAfterRejection) {
+          assert(
+            beforePush,
+            "outer recovery must receive the publication guard",
+          );
+          const checked = await beforePush();
+          if (!checked.ok) return checked;
+          pushes++;
+        }
         return Promise.resolve({
           ok: true as const,
           value: "Push succeeded after rebase recovery",
@@ -686,7 +725,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "completion - push recovery revalidates a stale successful result",
+  name: "completion - push boundary revalidates a stale successful result",
   permissions: { read: true, write: true, env: true },
   async fn() {
     const o = await runCompletion({
@@ -1433,4 +1472,54 @@ Deno.test("completion - an uncommitted recovery fix cannot pass the gate and adv
     o.originBefore,
     "origin must retain its original commit",
   );
+});
+
+Deno.test("completion stops a validation refusal before push-error recovery", async () => {
+  const o = await runCompletion({
+    ...base,
+    pushRefused: false,
+    gateAnswers: ["pass"],
+    invokePushRecoveryGuard: true,
+    staleOnPushRecovery: true,
+    failRefresh: true,
+  });
+  assertEquals(o.status, "failure");
+  assertEquals(o.category, "pre_push_gate");
+  assertEquals(o.recoveries, 0);
+  assertEquals(o.prCreates, 0);
+});
+
+Deno.test("completion passes its guard to rejection recovery and stops on a failed recovered-tree check", async () => {
+  const o = await runCompletion({
+    ...base,
+    pushRefused: true,
+    gateAnswers: ["pass"],
+    failAfterRejection: true,
+  });
+  assertEquals(o.status, "failure");
+  assertEquals(o.category, "pre_push_gate");
+  assertEquals(o.recoveries, 1);
+  assertEquals(o.pushes, 1, "only the originally refused push is attempted");
+  assertEquals(o.prCreates, 0);
+});
+
+Deno.test("completion executes full, sharded and impacted Deno validation and rejects empty selection", async () => {
+  for (const mode of ["full", "sharded", "impacted", "empty"] as const) {
+    for (const regression of [false, true]) {
+      const o = await runCompletion({
+        ...base,
+        pushRefused: false,
+        gateAnswers: ["pass"],
+        execution: { mode, regression },
+      });
+      const passed = !regression && mode !== "empty";
+      assertEquals(
+        o.status,
+        passed ? "continue" : "failure",
+        `${mode}/${regression}: ${o.reason}`,
+      );
+      assertEquals(o.pushes, passed ? 1 : 0, `${mode}/${regression}`);
+      assertEquals(o.prCreates, passed ? 1 : 0, `${mode}/${regression}`);
+    }
+  }
 });

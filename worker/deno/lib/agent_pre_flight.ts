@@ -1,8 +1,8 @@
 /**
- * Registry of per-repo pre-flight commands for agent spawns (Issue #3394).
+ * Registry of per-repo pre-flight and publication commands for agent spawns (Issue #3394).
  *
  * The agent runner installs a git pre-push hook so the agent's own
- * `git push` runs the repo's pre-flight. Resolving the commands here, keyed
+ * `git push` runs the repo's pre-flight and required publication checks. Resolving the commands here, keyed
  * by `owner/repo`, avoids threading config through every runner caller.
  * `loadConfig` is the producer: it registers the validated `repoConfig`.
  *
@@ -10,7 +10,7 @@
  */
 
 import type { RepoConfig } from "../types.ts";
-import { getPreFlightCommands } from "./repo_config.ts";
+import { getPreFlightCommands, getRepoConfig } from "./repo_config.ts";
 
 let registered: Record<string, RepoConfig> | undefined;
 
@@ -32,4 +32,12 @@ export function agentPreFlightCommands(
 /** Clear the registry between tests. */
 export function resetAgentPreFlightConfigsForTest(): void {
   registered = undefined;
+}
+
+/** Trusted quality entry point used by the agent's publication hook. */
+export function agentPublicationCommand(repo: string | undefined): string {
+  return repo
+    ? getRepoConfig(registered, repo, "qualityCommand") ||
+      "./quality.sh --strict"
+    : "./quality.sh --strict";
 }

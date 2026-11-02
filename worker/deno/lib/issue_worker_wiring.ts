@@ -540,9 +540,7 @@ export interface InfrastructureDeps {
 /** Quality — quality gate, helpers. */
 export interface QualityDeps {
   /** Run the target repository's required local gate before publication. */
-  validatePublication?: (
-    cwd: string,
-  ) => Promise<PublicationValidationResult>;
+  validatePublication?: typeof validateRepositoryForPublication;
   publicationValidationIsCurrent?: (
     result: PublicationValidationResult,
     cwd: string,

@@ -33,7 +33,6 @@ import {
   manifestsFor,
   runRepositoryCommand,
 } from "./untrusted_gate_spawn.ts";
-import { stripJsonc } from "./jsonc.ts";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
   shouldSkipEphemeralCargoBuild,
@@ -42,12 +41,14 @@ import {
   findProjectManifests,
   isFile,
   type ProjectKind,
+  readManifestTasks,
 } from "./project_manifests.ts";
 export {
   findProjectManifests,
   MERGE_GATE_MAX_DEPTH,
   type ProjectKind,
   type ProjectManifest,
+  readManifestTasks,
 } from "./project_manifests.ts";
 
 /** How long the merged-tree type check may run before it is killed. */
@@ -192,40 +193,6 @@ export async function cargoCheckArgs(dir: string): Promise<string[]> {
   const args = ["check", "--workspace", "--all-targets"];
   if (await isFile(`${dir}/Cargo.lock`)) args.push("--locked");
   return args;
-}
-
-/**
- * The task names a Deno manifest defines.
- *
- * Only tasks with a non-empty command string count: a manifest whose `tasks`
- * key is malformed defines none, and an unparseable manifest is read the same
- * way — the caller then falls back to a check it can run rather than trying to
- * run a task that may not exist.
- *
- * Shared with the conflict-resolution gate (Issue #1559), which runs more of a
- * repository's own tasks than a type check alone.
- *
- * @param manifestPath - Path to `deno.json` or `deno.jsonc`
- * @returns Every task name the manifest defines; empty when it defines none
- */
-export async function readManifestTasks(
-  manifestPath: string,
-): Promise<string[]> {
-  try {
-    const parsed = JSON.parse(
-      stripJsonc(await Deno.readTextFile(manifestPath)),
-    );
-    const tasks = parsed?.tasks;
-    if (!tasks || typeof tasks !== "object") return [];
-    return Object.entries(tasks as Record<string, unknown>)
-      .filter(([, command]) =>
-        typeof command === "string" && command.trim().length > 0
-      )
-      .map(([name]) => name);
-  } catch {
-    // Unparseable manifest — it defines nothing this gate can run.
-    return [];
-  }
 }
 
 /**

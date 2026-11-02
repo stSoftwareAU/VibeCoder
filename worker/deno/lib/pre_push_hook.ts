@@ -7,7 +7,9 @@
  *   H --> C[pre_push_gate_cli.ts]
  *   C --> F[changed-file fmt/lint]
  *   F --> P[repo pre-flight commands]
- *   P -->|all pass| OK[push proceeds]
+ *   P --> V[shared publication validator]
+ *   V -->|passed with executed tests| OK[push proceeds]
+ *   V -->|failed or unavailable| X[push refused]
  *   F -->|fail| X[push refused]
  *   P -->|fail| X
  * ```
@@ -62,7 +64,7 @@ if [ ! -f ${spec} ]; then
   exit 1
 fi
 
-exec ${deno} run --quiet --no-config --no-lock --allow-read --allow-run --allow-env ${module} --spec ${spec} -- "$@"
+exec ${deno} run --quiet --no-config --no-lock --allow-read --allow-write --allow-run --allow-env --allow-sys=hostname ${module} --spec ${spec} -- "$@"
 `;
 }
 
@@ -79,6 +81,7 @@ export interface PrePushHook {
 export async function installPrePushHook(opts: {
   baseEnv: Record<string, string>;
   preFlightCommands: readonly string[];
+  publicationCommand?: string;
   timeoutSeconds?: number;
   denoPath?: string;
   modulePath?: string;
@@ -110,6 +113,9 @@ export async function installPrePushHook(opts: {
       specPath,
       JSON.stringify({
         preFlightCommands: [...opts.preFlightCommands],
+        ...(opts.publicationCommand
+          ? { publicationCommand: opts.publicationCommand }
+          : {}),
         ...(opts.timeoutSeconds === undefined
           ? {}
           : { timeoutSeconds: opts.timeoutSeconds }),

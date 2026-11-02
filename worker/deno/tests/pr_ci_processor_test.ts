@@ -1,3 +1,8 @@
+import {
+  runPublicationFixtureChecks,
+  writePublicationFixture,
+} from "./support/publication_fixture.ts";
+import { publicationValidationIsCurrent } from "../lib/publication_validation.ts";
 /**
  * Tests for pr_ci_processor.ts — CI fix processing.
  *
@@ -3461,5 +3466,160 @@ Deno.test("processCiFailure - refuses history rebuild when commit authors cannot
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("CI publication validation defers an unavailable host without charging and succeeds after recovery", async () => {
+  const dir = await Deno.makeTempDir();
+  let available = false, publications = 0;
+  const ghCalls: string[][] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: openPrGh(async (args) => {
+        ghCalls.push(args);
+        return "";
+      }),
+    },
+    claude: {
+      runClaudeWithRetry: async () => ({
+        ok: true,
+        value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+      }),
+    },
+    quality: {
+      validatePublication: async () =>
+        available ? { status: "passed", identity: "head" } : {
+          status: "unavailable",
+          identity: "head",
+          reason: "dependency service unavailable",
+        },
+      publicationValidationIsCurrent: async () => true,
+    },
+    git: {
+      commitAndPushPending: async (...args) => {
+        const checked = await args[7]!();
+        if (!checked.ok) return checked;
+        publications++;
+        return {
+          ok: true,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+            finalUnpushedSource: "remote-head",
+          },
+        };
+      },
+    },
+  });
+  try {
+    const options: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${dir}/state`,
+      workDir: dir,
+      workRoot: dir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    };
+    const deferred = await processCiFailure(makeInput(), options);
+    assertEquals(deferred.ok, true);
+    if (deferred.ok) {
+      assertEquals(deferred.value.processed, false);
+      assertEquals(deferred.value.changesPushed, false);
+      assertEquals(deferred.value.retryCount, 0);
+      assertStringIncludes(
+        deferred.value.summary,
+        "dependency service unavailable",
+      );
+    }
+    assertEquals(publications, 0);
+    assertEquals(
+      await getCiCheckRetryCount(
+        `${dir}/state`,
+        "org/repo",
+        makeInput().checkRunId,
+      ),
+      0,
+    );
+    assertEquals(
+      ghCalls.some((args) =>
+        args.some((arg) => arg.includes("<!-- vibe-ci-fix-attempt"))
+      ),
+      false,
+    );
+    available = true;
+    const resumed = await processCiFailure(makeInput(), options);
+    assertEquals(resumed.ok, true);
+    if (resumed.ok) {
+      assertEquals(resumed.value.changesPushed, true);
+      assertEquals(resumed.value.retryCount, 1);
+    }
+    assertEquals(publications, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("CI repair executes full, sharded and impacted Deno validation and refuses empty execution", async () => {
+  for (const mode of ["full", "sharded", "impacted", "empty"] as const) {
+    for (const regression of [false, true]) {
+      const dir = await Deno.makeTempDir();
+      let publications = 0;
+      try {
+        await writePublicationFixture(dir, mode, regression);
+        const deps = createMockDeps({
+          github: { runGhCommand: openPrGh() },
+          claude: {
+            runClaudeWithRetry: async () => ({
+              ok: true,
+              value: { output: "Fixed", exitCode: 0, timedOut: false },
+            }),
+          },
+          quality: {
+            validatePublication: runPublicationFixtureChecks,
+            publicationValidationIsCurrent,
+          },
+          git: {
+            commitAndPushPending: async (...args) => {
+              const checked = await args[7]!();
+              if (!checked.ok) return checked;
+              publications++;
+              return {
+                ok: true,
+                value: {
+                  committedNewChanges: true,
+                  commitsPushed: 1,
+                  finalUnpushedCount: 0,
+                  finalUnpushedSource: "remote-head",
+                },
+              };
+            },
+          },
+        });
+        const options: CiProcessorDeps = {
+          promptsDir: PROMPTS_DIR,
+          logger: makeSilentLogger(),
+          deps,
+          stateDir: `${dir}/state`,
+          workDir: dir,
+          workRoot: dir,
+          verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        };
+        const result = await processCiFailure(makeInput(), options);
+        assertEquals(result.ok, true);
+        const passed = !regression && mode !== "empty";
+        assertEquals(publications, passed ? 1 : 0, `${mode}/${regression}`);
+        if (result.ok) {
+          assertEquals(
+            result.value.changesPushed,
+            passed,
+            `${mode}/${regression}: ${result.value.summary}`,
+          );
+        }
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    }
   }
 });

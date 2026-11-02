@@ -75,12 +75,14 @@ export function sanitiseRepoName(repo: string): string {
  * @param stateDir - Directory for retry state files
  * @param repo - Repository in "owner/name" format
  * @param checkId - The GitHub check run ID
+ * @param increment - One for an attempt; minus one refunds unavailable validation.
  * @returns The new retry count
  */
 export async function recordCiCheckRetry(
   stateDir: string,
   repo: string,
   checkId: string,
+  increment = 1,
 ): Promise<number> {
   const safeRepo = sanitiseRepoName(repo);
   const stateFile = `${stateDir}/${safeRepo}_${checkId}.retries`;
@@ -93,7 +95,7 @@ export async function recordCiCheckRetry(
     // File doesn't exist yet — this is the first attempt.
   }
 
-  const newCount = currentCount + 1;
+  const newCount = Math.max(0, currentCount + increment);
   // Issues #552 and #580 found this from opposite ends and the resolution
   // keeps both halves. The write threw EROFS on every pass once the checkout
   // went read-only, and because it threw, the whole CI-fix lane died with it:

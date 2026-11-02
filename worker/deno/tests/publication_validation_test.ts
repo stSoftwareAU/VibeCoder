@@ -33,9 +33,8 @@ async function checkout(script: string): Promise<string> {
 
 function shellRunner(): typeof runRepositoryCommand {
   return (executable, args, options) => {
-    assertEquals(args, ["--strict"]);
-    const child = new Deno.Command("bash", {
-      args: [executable, ...args],
+    const child = new Deno.Command(executable, {
+      args: [...args],
       cwd: options.cwd,
       stdin: "null",
       stdout: "piped",
@@ -305,3 +304,155 @@ Deno.test("publication tree identity includes committed and untracked inputs", a
     await Deno.remove(cwd, { recursive: true });
   }
 });
+
+Deno.test("publication classification keeps an assertion failure despite a passing negative test name", async () => {
+  const cwd = await checkout(
+    "#!/bin/sh\nexec deno test --no-config --no-lock example_test.ts\n",
+  );
+  try {
+    await Deno.writeTextFile(
+      `${cwd}/example_test.ts`,
+      'Deno.test("node not installed is handled", () => {});\nDeno.test("regression", () => { throw new Error("actual regression"); });\n',
+    );
+    const result = await validateRepositoryForPublication(cwd, {
+      run: shellRunner(),
+    });
+    assertEquals(result.status, "failed");
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication classification handles many repeated strict prefixes in linear time", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    const started = performance.now();
+    const result = await validateRepositoryForPublication(cwd, {
+      identity: async () => "fixture",
+      run: async () => ({
+        ok: true,
+        value: {
+          success: false,
+          code: 1,
+          stdout: "strict mode ".repeat(32_000),
+          stderr: "",
+          timedOut: false,
+        },
+      }),
+    });
+    assertEquals(result.status, "failed");
+    assert(
+      performance.now() - started < 500,
+      "repeated prefixes must not cause quadratic scans",
+    );
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication validation rejects empty Deno execution even with a zero exit", async () => {
+  const cwd = await checkout(
+    "#!/bin/sh\nexec deno test --no-config --no-lock --filter=absent example_test.ts\n",
+  );
+  try {
+    await Deno.writeTextFile(
+      `${cwd}/example_test.ts`,
+      'Deno.test("required regression", () => { throw new Error("regression"); });\n',
+    );
+    const result = await validateRepositoryForPublication(cwd, {
+      run: shellRunner(),
+    });
+    assertEquals(result.status, "failed");
+    if (result.status === "failed") assert(result.output.includes("execut"));
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication uses a configured gate with its flags and binds that command", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 99\n");
+  try {
+    await Deno.remove(`${cwd}/quality.sh`);
+    await Deno.writeTextFile(
+      `${cwd}/verify.sh`,
+      '#!/bin/sh\ntest "$1" = custom-flag || exit 7\ntest -f verify.sh || exit 8\n',
+    );
+    const result = await validateRepositoryForPublication(cwd, {
+      command: "sh ./verify.sh custom-flag",
+      run: shellRunner(),
+    });
+    assertEquals(result.status, "passed");
+    assert(await publicationValidationIsCurrent(result, cwd));
+    const other = await validateRepositoryForPublication(cwd, {
+      command: "sh ./verify.sh wrong-flag",
+      run: shellRunner(),
+    });
+    assertEquals(other.status, "failed");
+    assert(
+      result.identity !== other.identity,
+      "command and flags must be bound to the identity",
+    );
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication retains a substantive failure alongside unavailable dependencies", async () => {
+  const cwd = await checkout(
+    "#!/bin/sh\necho 'error: failed to download from service' >&2\necho 'FAILED | 1 passed | 1 failed'\nexit 1\n",
+  );
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: shellRunner(),
+    });
+    assertEquals(result.status, "failed");
+    if (result.status === "failed") {
+      assert(result.output.includes("failed to download"));
+      assert(result.output.includes("1 failed"));
+    }
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+for (const task of ["test:unit", "test"]) {
+  Deno.test(`publication executes the full ${task} selection after a misleading impacted gate`, async () => {
+    const cwd = await checkout(
+      "#!/bin/sh\nexec deno test --no-config --no-lock --filter=passing first_test.ts\n",
+    );
+    try {
+      await Deno.writeTextFile(
+        `${cwd}/deno.json`,
+        JSON.stringify({ tasks: { [task]: "deno test --no-lock" } }),
+      );
+      await Deno.writeTextFile(
+        `${cwd}/first_test.ts`,
+        'Deno.test("passing", () => {});\n',
+      );
+      await Deno.writeTextFile(
+        `${cwd}/required_test.ts`,
+        'Deno.test("required regression", () => { throw new Error("required regression"); });\n',
+      );
+      const failed = await validateRepositoryForPublication(cwd, {
+        run: shellRunner(),
+      });
+      assertEquals(failed.status, "failed");
+      if (failed.status === "failed") {
+        assert(failed.output.includes("required regression"));
+      }
+      await Deno.writeTextFile(
+        `${cwd}/required_test.ts`,
+        'Deno.test("required regression", () => {});\n',
+      );
+      const passed = await validateRepositoryForPublication(cwd, {
+        run: shellRunner(),
+      });
+      assertEquals(passed.status, "passed");
+      if (passed.status === "passed") {
+        assertEquals(passed.deno?.[0]?.executedTests, 2);
+      }
+    } finally {
+      await Deno.remove(cwd, { recursive: true });
+    }
+  });
+}

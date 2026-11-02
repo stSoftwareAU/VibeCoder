@@ -22,7 +22,10 @@ import {
   type AgentMcpServerRequest,
   ensureAgentMcpConfig,
 } from "./agent_mcp_config.ts";
-import { agentPreFlightCommands } from "./agent_pre_flight.ts";
+import {
+  agentPreFlightCommands,
+  agentPublicationCommand,
+} from "./agent_pre_flight.ts";
 import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
@@ -1467,6 +1470,7 @@ async function runClaudeWithTimeoutBody(
     // env. Fail closed, like the shim.
     const hookOutcome = await installPrePushHook({
       baseEnv: ghGuard?.env ?? baseEnv,
+      publicationCommand: agentPublicationCommand(repo),
       preFlightCommands: options.preFlightCommands ??
         agentPreFlightCommands(repo),
     });

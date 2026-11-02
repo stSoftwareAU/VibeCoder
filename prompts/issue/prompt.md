@@ -679,7 +679,7 @@ reviewer.
   every other gate you ran. When the run budget did not cover the full gate,
   record the skip in the PR summary with the note the `<quality_instructions>`
   block gives you. That note records only what you ran in the agent session:
-  the worker still runs the target repository's own strict `quality.sh` before
+  the worker still runs the target repository's configured quality entry point (`quality.sh --strict` by default) before
   publishing, and an unavailable or failing required check cannot be reported
   as validated completion.
 

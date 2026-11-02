@@ -8,6 +8,7 @@
 import { assertEquals } from "@std/assert";
 import {
   agentPreFlightCommands,
+  agentPublicationCommand,
   registerAgentPreFlightConfigs,
   resetAgentPreFlightConfigsForTest,
 } from "../lib/agent_pre_flight.ts";
@@ -49,4 +50,20 @@ Deno.test({
       await Deno.remove(dir, { recursive: true }).catch(() => undefined);
     }
   },
+});
+
+Deno.test("agent publication command preserves trusted quality configuration and defaults", () => {
+  try {
+    registerAgentPreFlightConfigs({
+      "o/r": { qualityCommand: "cd package && deno task verify --ci" },
+    });
+    assertEquals(
+      agentPublicationCommand("o/r"),
+      "cd package && deno task verify --ci",
+    );
+    assertEquals(agentPublicationCommand("o/other"), "./quality.sh --strict");
+    assertEquals(agentPublicationCommand(undefined), "./quality.sh --strict");
+  } finally {
+    resetAgentPreFlightConfigsForTest();
+  }
 });

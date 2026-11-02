@@ -4940,6 +4940,14 @@ flowchart TD
 
 #### Agent pre-push hook and the changed-files check
 
+The hook also runs the shared publication validator after these changed-file
+and pre-flight checks. It resolves the trusted repository `quality_command`
+(`./quality.sh --strict` by default), runs the repository's full Deno unit task
+where present, and requires executed tests. A missing, failed or unavailable
+required check blocks the agent's push. Worker pushes use the same validator
+at their final publication boundary and again after rejection recovery; an
+unavailable check defers repairs without consuming their failure allowance.
+
 The commit chokepoint above only sees the worker's own push. An agent that runs
 `git push` itself during its run would otherwise skip it (Issue #3394). For
 every agent run, the worker writes a per-run
@@ -5013,7 +5021,7 @@ or not the repo configures a pre-flight, so a repo with no Step 1b gate still
 has the miss fixed before CI sees it. A hook that throws is logged, and Step 1b
 still checks everything. WIP-preservation pushes pass no hook.
 
-The hook runs two stages:
+The hook runs three stages:
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
@@ -5075,7 +5083,13 @@ The hook runs two stages:
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
-   only the changed-files check.
+   the changed-files check and the default publication command.
+
+3. **Shared required publication checks.** The trusted `quality_command`, or
+   `./quality.sh --strict`, and the repository's required Deno unit-task
+   selection. Successful execution must include tests; an empty selection
+   does not pass. Validation runs after the earlier stages and immediately
+   before Git publishes the tree.
 
 It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
@@ -5095,10 +5109,12 @@ flowchart TD
     C --> O{"pass?"}
     O -->|no| B["[PRE_PUSH_BLOCKED]<br/>push refused"]
     O -->|yes| F{"pre-flight commands<br/>passed to hook?"}
-    F -->|no| G["push proceeds"]
+    F -->|no| V["shared required publication checks"]
+    V -->|passed with executed tests| G["push proceeds"]
+    V -->|failed or unavailable| B
     F -->|yes| R["run pre-flight commands"]
     R --> Q{"all exit 0?"}
-    Q -->|yes| G
+    Q -->|yes| V
     Q -->|no| B
     style B fill:#7f1d1d,stroke:#450a0a,color:#fff
     style G fill:#14532d,stroke:#052e16,color:#fff

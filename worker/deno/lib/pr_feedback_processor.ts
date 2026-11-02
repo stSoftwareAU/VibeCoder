@@ -1,3 +1,4 @@
+import { getRepoConfig } from "./repo_config.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * PR feedback processor (Issue #967).
@@ -33,6 +34,7 @@ import {
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
   publicationValidationIsCurrent,
+  PublicationValidationUnavailableError,
   validateRepositoryForPublication,
 } from "./publication_validation.ts";
 import {
@@ -1734,10 +1736,15 @@ async function _processFeedbackWithHeartbeat(
     }
     const validate = processorDeps.publicationValidationFn ??
       deps.quality.validatePublication ?? validateRepositoryForPublication;
-    publicationValidation = await validate(processorDeps.workDir);
+    publicationValidation = await validate(processorDeps.workDir, {
+      command: getRepoConfig(processorDeps.repoConfigs, repo, "qualityCommand"),
+    });
     const validation = publicationValidation;
     if (validation.status === "unavailable") {
-      return { ok: false as const, error: new Error(validation.reason) };
+      return {
+        ok: false as const,
+        error: new PublicationValidationUnavailableError(validation.reason),
+      };
     }
     if (validation.status === "failed") {
       return { ok: false as const, error: new Error(validation.output) };
@@ -1846,6 +1853,36 @@ async function _processFeedbackWithHeartbeat(
       value: { processed: false, changesPushed: false, summary: message },
     };
   };
+  const deferUnavailableValidation = async (error: Error) => {
+    if (!(error instanceof PublicationValidationUnavailableError)) {
+      return undefined;
+    }
+    carrier.reviewSettlement = "released";
+    const markError = await removeProcessedMark(
+      repo,
+      commentType,
+      commentId,
+      (args: string[]) => deps.github.runGhCommand(args),
+      (message: string) => logger.warn(message),
+    );
+    if (markError) {
+      logger.warn("Could not release feedback processed mark", {
+        error: markError,
+      });
+    }
+    return {
+      ok: true as const,
+      value: {
+        processed: false,
+        changesPushed: false,
+        summary: `Required validation deferred: ${error.message}`,
+      },
+    };
+  };
+  if (!finaliseResult.ok) {
+    const deferred = await deferUnavailableValidation(finaliseResult.error);
+    if (deferred) return deferred;
+  }
   if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
   if (commentType === "pr_review" && !finaliseResult.ok) {
     return await holdUnverifiedReview(finaliseResult.error);
@@ -1879,6 +1916,10 @@ async function _processFeedbackWithHeartbeat(
         verifyBeforePush,
       );
       if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
+      if (!recoveryResult.ok) {
+        const deferred = await deferUnavailableValidation(recoveryResult.error);
+        if (deferred) return deferred;
+      }
       if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
       // Issue #211: keep the reason the recovery failed — it names the step
       // (fetch, merge conflict, rejected retry push, unconfirmed push)
@@ -1899,6 +1940,12 @@ async function _processFeedbackWithHeartbeat(
           verifyBeforePush,
         );
         if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
+        if (!retryFinalise.ok) {
+          const deferred = await deferUnavailableValidation(
+            retryFinalise.error,
+          );
+          if (deferred) return deferred;
+        }
         if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
         if (retryFinalise.ok) {
           finalUnpushedCount = retryFinalise.value.finalUnpushedCount;

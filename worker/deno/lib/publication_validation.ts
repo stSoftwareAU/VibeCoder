@@ -1,18 +1,32 @@
 /** Runner-owned repository checks required before completed work is published. */
 
+import { stripAnsi } from "./github_actions_log_fetcher.ts";
+import { PrePushGateInfrastructureError } from "./pre_push_gate.ts";
+import {
+  findProjectManifests,
+  readManifestTasks,
+  UNIT_SUITE_TASKS,
+} from "./project_manifests.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { computeWorkingTreeDigest } from "./quality_gate_cache.ts";
 import { redactedHeadTail } from "./redacted_text.ts";
-import { runRepositoryCommand } from "./untrusted_gate_spawn.ts";
+import { manifestsFor, runRepositoryCommand } from "./untrusted_gate_spawn.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 
 export type PublicationValidationResult =
-  | { status: "passed"; identity: string }
+  | {
+    status: "passed";
+    identity: string;
+    command?: string;
+    deno?: { command: string; cwd: string; executedTests: number }[];
+  }
   | { status: "failed"; identity: string | null; output: string }
   | { status: "unavailable"; identity: string | null; reason: string };
 
 export interface PublicationValidationDeps {
+  /** Operator-configured quality_command, preserving its flags and working directory. */
+  command?: string;
   run?: typeof runRepositoryCommand;
   identity?: (cwd: string) => Promise<string | null>;
 }
@@ -20,6 +34,10 @@ export interface PublicationValidationDeps {
 const MAX_OUTPUT = 12_000;
 const CHECK_TIMEOUT_MS = 30 * 60 * 1000;
 const TOOL_PROBE_TIMEOUT_MS = 5_000;
+export class PublicationValidationUnavailableError
+  extends PrePushGateInfrastructureError {}
+
+const DEFAULT_COMMAND = "./quality.sh --strict";
 const UNAVAILABLE_MARKER = "[PUBLICATION_VALIDATION_UNAVAILABLE]";
 
 async function digest(value: string): Promise<string> {
@@ -35,6 +53,7 @@ async function digest(value: string): Promise<string> {
 /** Identify the exact checkout contents, including staged, unstaged and new files. */
 export async function publicationTreeIdentity(
   cwd: string,
+  command = DEFAULT_COMMAND,
 ): Promise<string | null> {
   let root: string;
   try {
@@ -55,7 +74,7 @@ export async function publicationTreeIdentity(
     return null;
   }
   // Repositories may use a different toolchain. Record Deno when installed,
-  // but let their own quality.sh decide whether it is required.
+  // but let their own configured entry point decide whether it is required.
   const denoVersion = deno.ok && deno.value.code === 0 && !deno.value.timedOut
     ? deno.value.stdout
     : "deno-unavailable";
@@ -66,7 +85,8 @@ export async function publicationTreeIdentity(
     head.ok ? head.value.stdout.trim() : "",
     root,
     tree,
-    "./quality.sh --strict",
+    command,
+    JSON.stringify(await requiredDenoTasks(cwd)),
     bash.ok ? bash.value.stdout : "",
     denoVersion,
     Deno.execPath(),
@@ -79,7 +99,9 @@ export async function validateRepositoryForPublication(
   cwd: string,
   deps: PublicationValidationDeps = {},
 ): Promise<PublicationValidationResult> {
-  const identify = deps.identity ?? publicationTreeIdentity;
+  const command = deps.command || DEFAULT_COMMAND;
+  const identify = deps.identity ??
+    ((dir: string) => publicationTreeIdentity(dir, command));
   const before = await identify(cwd);
   if (before === null) {
     return {
@@ -90,12 +112,10 @@ export async function validateRepositoryForPublication(
   }
   let result: Awaited<ReturnType<typeof runRepositoryCommand>>;
   try {
-    result = await (deps.run ?? runRepositoryCommand)("./quality.sh", [
-      "--strict",
-    ], {
+    result = await (deps.run ?? runRepositoryCommand)("bash", ["-c", command], {
       cwd,
       timeoutMs: CHECK_TIMEOUT_MS,
-      manifests: ["quality.sh"],
+      manifests: command === DEFAULT_COMMAND ? ["quality.sh"] : [],
     });
   } catch (error) {
     return {
@@ -125,11 +145,11 @@ export async function validateRepositoryForPublication(
     return {
       status: "unavailable",
       identity: before,
-      reason: `${UNAVAILABLE_MARKER} quality.sh timed out; ${output}`,
+      reason: `${UNAVAILABLE_MARKER} repository gate timed out; ${output}`,
     };
   }
   if (result.value.code !== 0) {
-    if (isUnavailableOutput(fullOutput)) {
+    if (isUnavailableOutput(result.value.stderr, fullOutput)) {
       return {
         status: "unavailable",
         identity: before,
@@ -137,6 +157,88 @@ export async function validateRepositoryForPublication(
       };
     }
     return { status: "failed", identity: before, output };
+  }
+  if (
+    /\b0 passed\s*\|\s*0 failed/.test(stripAnsi(fullOutput))
+  ) {
+    return {
+      status: "failed",
+      identity: before,
+      output:
+        "required Deno selection executed no tests; a zero exit is insufficient",
+    };
+  }
+  // Execute the repository's full Deno task independently of any impacted
+  // filter in the quality command. Its task owns CI permissions/manifests and
+  // full versus serial/sharded selection; exit zero still needs executed tests.
+  const deno: { command: string; cwd: string; executedTests: number }[] = [];
+  let plans: Awaited<ReturnType<typeof requiredDenoTasks>>;
+  try {
+    plans = await requiredDenoTasks(cwd);
+  } catch (error) {
+    return {
+      status: "unavailable",
+      identity: before,
+      reason: `${UNAVAILABLE_MARKER} ${redactSecrets(String(error))}`,
+    };
+  }
+  for (const plan of plans) {
+    let checked: Awaited<ReturnType<typeof runRepositoryCommand>>;
+    try {
+      checked = await (deps.run ?? runRepositoryCommand)(
+        "deno",
+        plan.args,
+        {
+          cwd: plan.cwd,
+          timeoutMs: CHECK_TIMEOUT_MS,
+          manifests: await manifestsFor("deno", plan.cwd),
+        },
+      );
+    } catch (error) {
+      return {
+        status: "unavailable",
+        identity: before,
+        reason: `${UNAVAILABLE_MARKER} ${redactSecrets(String(error))}`,
+      };
+    }
+    if (!checked.ok || checked.value.timedOut) {
+      return {
+        status: "unavailable",
+        identity: before,
+        reason: `${UNAVAILABLE_MARKER} ${
+          checked.ok ? "Deno tests timed out" : checked.error.message
+        }`,
+      };
+    }
+    const transcript = `${checked.value.stdout}\n${checked.value.stderr}`;
+    if (checked.value.code !== 0) {
+      const detail = redactedHeadTail(
+        transcript,
+        MAX_OUTPUT / 2,
+        MAX_OUTPUT / 2,
+      );
+      return isUnavailableOutput(checked.value.stderr, transcript)
+        ? {
+          status: "unavailable",
+          identity: before,
+          reason: `${UNAVAILABLE_MARKER} ${detail}`,
+        }
+        : { status: "failed", identity: before, output: detail };
+    }
+    const executedTests = executedDenoTests(transcript);
+    if (executedTests === 0) {
+      return {
+        status: "failed",
+        identity: before,
+        output:
+          "required Deno selection executed no tests; a zero exit is insufficient",
+      };
+    }
+    deno.push({
+      command: ["deno", ...plan.args].join(" "),
+      cwd: plan.cwd,
+      executedTests,
+    });
   }
   const after = await identify(cwd);
   if (after === null) {
@@ -150,15 +252,106 @@ export async function validateRepositoryForPublication(
     return {
       status: "failed",
       identity: before,
-      output: "checkout changed while quality.sh was running; rerun validation",
+      output:
+        "checkout changed while repository checks were running; rerun validation",
     };
   }
-  return { status: "passed", identity: before };
+  return {
+    status: "passed",
+    identity: before,
+    command,
+    ...(deno.length ? { deno } : {}),
+  };
 }
 
-function isUnavailableOutput(output: string): boolean {
-  return /(?:strict mode.*skipped checks are not allowed|untrusted account cannot use|command not found|not installed|insufficient disk|no space left on device|disk quota exceeded|could not resolve|temporary failure in name resolution|connection (?:timed out|refused)|failed to (?:download|fetch)|error sending request|network (?:error|is unreachable)|jsr package manifest [^\n]{0,160}failed to load|import 'https?:\/\/[^'\n]+' failed)/i
-    .test(output);
+/** Count Deno's execution summaries, excluding ignored and filtered tests. */
+function executedDenoTests(output: string): number {
+  let count = 0;
+  for (const line of output.split("\n")) {
+    const match = /(?:ok|FAILED) \| (\d+) passed \| (\d+) failed/.exec(
+      stripAnsi(line),
+    );
+    if (match) count += Number(match[1]) + Number(match[2]);
+  }
+  return count;
+}
+
+/** The full unit task is the repository's CI-equivalent selection owner.
+ * Reuse the merge gate's project discovery and task priority, including nested
+ * projects. Projects without a unit task or Deno test files have no test target.
+ */
+async function requiredDenoTasks(
+  cwd: string,
+): Promise<{ cwd: string; args: string[] }[]> {
+  const files = await runGitCommand([
+    "ls-files",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "-z",
+  ], { cwd });
+  if (!files.ok || files.value.code !== 0) {
+    throw new Error("could not select required Deno tests from the checkout");
+  }
+  const tests = files.value.stdout.split("\0").filter((file) =>
+    /(?:_test|\.test)\.[cm]?[jt]sx?$/.test(file)
+  );
+  const plans: { cwd: string; args: string[] }[] = [];
+  for (const project of await findProjectManifests(cwd)) {
+    if (project.kind !== "deno") continue;
+    const defined = await readManifestTasks(project.manifest);
+    const task = UNIT_SUITE_TASKS.find((name) => defined.includes(name));
+    const relative = project.dir === cwd
+      ? ""
+      : project.dir.slice(cwd.length + 1) + "/";
+    if (task || tests.some((file) => file.startsWith(relative))) {
+      plans.push({ cwd: project.dir, args: task ? ["task", task] : ["test"] });
+    }
+  }
+  if (plans.length === 0 && tests.length > 0) {
+    plans.push({ cwd, args: ["test", "--no-config", "--no-lock"] });
+  }
+  return plans;
+}
+
+/** Only execution diagnostics classify infrastructure, never arbitrary test names.
+ * Substantive failures win when a command reports both kinds of failure.
+ * Each expression is bounded to one line, with no repeated-prefix rescans.
+ */
+function isUnavailableOutput(stderr: string, output: string): boolean {
+  let unavailable = false;
+  let substantive = false;
+  for (const raw of output.split("\n")) {
+    const line = stripAnsi(raw).trim();
+    const summaryFields = line.split(/ {2,}/);
+    if (
+      (summaryFields.length > 1 && summaryFields.at(-1) === "FAILED") ||
+      (line.startsWith("✗") && line.includes(": FAILED"))
+    ) substantive = true;
+    if (
+      /^(?:error: )?(?:AssertionError|TypeError|TS\d+(?: \[ERROR\]|:))/.test(
+        line,
+      ) ||
+      /^(?:ok|FAILED) \| \d+ passed \| [1-9]\d* failed/.test(line)
+    ) substantive = true;
+    if (
+      line.startsWith("untrusted account cannot use ") ||
+      line === "Result: FAILED (strict mode — skipped checks are not allowed)"
+    ) unavailable = true;
+  }
+  for (const raw of stderr.split("\n")) {
+    const line = stripAnsi(raw).trim();
+    if (
+      /^(?:error: |JSR package manifest |bash:|\.\/[^ :]+:)/i.test(line) &&
+      /(?:command not found|not installed|no space left on device|disk quota exceeded|could not resolve|connection refused|failed to (?:download|fetch)|error sending request|failed to load|Import 'https?:)/i
+        .test(line)
+    ) {
+      unavailable = true;
+    } else if (/^error(?:\[|:)/i.test(line)) {
+      substantive = true;
+    }
+  }
+  return unavailable && !substantive;
 }
 
 /** Refuse publication when the successful result no longer describes the tree. */
@@ -168,5 +361,8 @@ export async function publicationValidationIsCurrent(
   identify = publicationTreeIdentity,
 ): Promise<boolean> {
   return result.status === "passed" &&
-    await identify(cwd) === result.identity;
+    (result.deno === undefined ||
+      (result.deno.length > 0 &&
+        result.deno.every((selection) => selection.executedTests > 0))) &&
+    await identify(cwd, result.command) === result.identity;
 }

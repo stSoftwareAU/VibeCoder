@@ -6,13 +6,16 @@
  * work under `--no-config`, so nothing in its import graph may rely on an
  * import map (no bare specifiers at runtime).
  *
- * The spec is JSON: `{ "preFlightCommands": string[], "timeoutSeconds"?: n }`.
+ * The spec is JSON: `{ "preFlightCommands": string[], "timeoutSeconds"?: n,
+ * "publicationCommand"?: string }`. Production agent hooks always include the
+ * trusted publication command. Legacy callers can still use just pre-flight.
  * A missing or invalid spec, unreadable stdin or any thrown error blocks the
  * push (exit 1). Git's own hook arguments (remote name, URL) are ignored.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import { validateRepositoryForPublication } from "./publication_validation.ts";
 import type { Result } from "../types.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { installConsoleRedaction } from "./console_redaction.ts";
@@ -28,6 +31,7 @@ export interface PrePushCliDeps {
 
 interface PrePushSpec {
   preFlightCommands: string[];
+  publicationCommand?: string;
   timeoutSeconds?: number;
 }
 
@@ -49,6 +53,16 @@ async function readSpec(path: string): Promise<Result<PrePushSpec, string>> {
   const record = raw as Record<string, unknown>;
   const commands = parsePreFlightCommands(record.preFlightCommands ?? []);
   if (!commands.ok) return { ok: false, error: commands.error };
+  if (
+    record.publicationCommand !== undefined &&
+    (typeof record.publicationCommand !== "string" ||
+      !record.publicationCommand.trim())
+  ) {
+    return {
+      ok: false,
+      error: "publicationCommand must be a non-empty string",
+    };
+  }
   const timeout = record.timeoutSeconds;
   if (
     timeout !== undefined &&
@@ -61,7 +75,11 @@ async function readSpec(path: string): Promise<Result<PrePushSpec, string>> {
   }
   return {
     ok: true,
-    value: { preFlightCommands: commands.value, timeoutSeconds: timeout },
+    value: {
+      preFlightCommands: commands.value,
+      timeoutSeconds: timeout,
+      publicationCommand: record.publicationCommand as string | undefined,
+    },
   };
 }
 
@@ -115,6 +133,19 @@ export async function runPrePushGateCli(
           "Fix the failure above and push again; never bypass this gate.\n",
       );
       return 1;
+    }
+    if (spec.value.publicationCommand) {
+      const validated = await validateRepositoryForPublication(
+        (deps.cwd ?? Deno.cwd)(),
+        {
+          command: spec.value.publicationCommand,
+        },
+      );
+      if (validated.status !== "passed") {
+        return block(
+          validated.status === "failed" ? validated.output : validated.reason,
+        );
+      }
     }
     writeErr(
       `pre-push gate passed (${result.value.checksRun.length} changed-file ` +

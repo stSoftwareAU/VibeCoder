@@ -220,3 +220,94 @@ Deno.test("integration: doc-only push is blocked by markdownlint, fixed content 
     await Deno.remove(fx.root, { recursive: true });
   }
 });
+
+Deno.test("integration: agent self-push requires executed passing Deno tests", async () => {
+  const fx = await makeFixture();
+  const hook = await installPrePushHook({
+    baseEnv: Deno.env.toObject(),
+    preFlightCommands: [],
+    publicationCommand: "true",
+  });
+  assert(hook.ok);
+  try {
+    await Deno.chmod(fx.root, 0o755);
+    await Deno.chmod(fx.clone, 0o777);
+    await Deno.writeTextFile(
+      `${fx.clone}/deno.json`,
+      JSON.stringify({
+        tasks: { test: "deno test --no-config --no-lock --no-check" },
+      }),
+    );
+    await Deno.writeTextFile(
+      `${fx.clone}/required_test.ts`,
+      'Deno.test("required regression", () => { throw new Error("required regression"); });\n',
+    );
+    assertEquals(
+      (await run("deno", ["fmt", "deno.json", "required_test.ts"], fx.clone))
+        .code,
+      0,
+    );
+    await commitAll(fx.clone, "required regression");
+    const blocked = await run(
+      "git",
+      ["push", "-q", "origin", "HEAD:main"],
+      fx.clone,
+      hook.value.env,
+    );
+    assert(blocked.code !== 0, blocked.stderr);
+    assert(blocked.stderr.includes("required regression"), blocked.stderr);
+    assertEquals(await remoteHead(fx.remote), "");
+
+    await Deno.writeTextFile(
+      `${fx.clone}/deno.json`,
+      JSON.stringify({
+        tasks: {
+          test: "deno test --no-config --no-lock --no-check --filter=absent",
+        },
+      }),
+    );
+    assertEquals(
+      (await run("deno", ["fmt", "deno.json", "required_test.ts"], fx.clone))
+        .code,
+      0,
+    );
+    await commitAll(fx.clone, "empty selection");
+    const empty = await run(
+      "git",
+      ["push", "-q", "origin", "HEAD:main"],
+      fx.clone,
+      hook.value.env,
+    );
+    assert(empty.code !== 0, empty.stderr);
+    assert(empty.stderr.includes("executed no tests"), empty.stderr);
+    assertEquals(await remoteHead(fx.remote), "");
+
+    await Deno.writeTextFile(
+      `${fx.clone}/deno.json`,
+      JSON.stringify({
+        tasks: { test: "deno test --no-config --no-lock --no-check" },
+      }),
+    );
+    await Deno.writeTextFile(
+      `${fx.clone}/required_test.ts`,
+      'Deno.test("required regression", () => {});\n',
+    );
+    assertEquals(
+      (await run("deno", ["fmt", "deno.json", "required_test.ts"], fx.clone))
+        .code,
+      0,
+    );
+    await commitAll(fx.clone, "repair regression");
+    const allowed = await run(
+      "git",
+      ["push", "-q", "origin", "HEAD:main"],
+      fx.clone,
+      hook.value.env,
+    );
+    assertEquals(allowed.code, 0, allowed.stderr);
+    assert((await remoteHead(fx.remote)) !== "");
+  } finally {
+    await hook.value.cleanup();
+    await Deno.remove(fx.root, { recursive: true });
+  }
+});

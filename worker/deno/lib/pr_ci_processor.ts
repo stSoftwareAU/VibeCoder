@@ -1,3 +1,4 @@
+import { getRepoConfig } from "./repo_config.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * PR CI fix processor (Issue #967).
@@ -167,6 +168,7 @@ import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
   publicationValidationIsCurrent,
+  PublicationValidationUnavailableError,
   validateRepositoryForPublication,
 } from "./publication_validation.ts";
 import {
@@ -2171,16 +2173,16 @@ async function _processCiWithHeartbeat(
     }
     const validate = processorDeps.publicationValidationFn ??
       deps.quality.validatePublication ?? validateRepositoryForPublication;
-    publicationValidation = await validate(cwd);
+    publicationValidation = await validate(cwd, {
+      command: getRepoConfig(processorDeps.repoConfigs, repo, "qualityCommand"),
+    });
     const validation = publicationValidation;
     if (validation.status !== "passed") {
       return {
         ok: false as const,
-        error: new Error(
-          validation.status === "failed"
-            ? validation.output
-            : validation.reason,
-        ),
+        error: validation.status === "failed"
+          ? new Error(validation.output)
+          : new PublicationValidationUnavailableError(validation.reason),
       };
     }
     if (!await current(validation, cwd)) {
@@ -2204,6 +2206,26 @@ async function _processCiWithHeartbeat(
     validateBeforePush,
   );
 
+  const deferUnavailableValidation = async (error: Error) => {
+    if (!(error instanceof PublicationValidationUnavailableError)) {
+      return undefined;
+    }
+    await recordCiCheckRetry(stateDir, repo, checkRunId, -1);
+    return {
+      ok: true as const,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount - 1,
+        summary: `Required validation deferred: ${error.message}`,
+      },
+    };
+  };
+  if (!finaliseResult.ok) {
+    const deferred = await deferUnavailableValidation(finaliseResult.error);
+    if (deferred) return deferred;
+  }
   let pushSucceeded = false;
   let hasChanges = postQualityResult.committedChanges;
   // Issue #579: `undefined` means NOT MEASURED, which is not the same as
@@ -2235,7 +2257,13 @@ async function _processCiWithHeartbeat(
       const recoveryResult = await deps.git.recoverFromPushRejection(
         pushBranch,
         { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+        undefined,
+        validateBeforePush,
       );
+      if (!recoveryResult.ok) {
+        const deferred = await deferUnavailableValidation(recoveryResult.error);
+        if (deferred) return deferred;
+      }
       // Issue #211: keep the reason the recovery failed — it names the step
       // (fetch, merge conflict, rejected retry push, unconfirmed push)
       // and carries git's stderr. Without it the log said only "push failed".
@@ -2251,7 +2279,14 @@ async function _processCiWithHeartbeat(
           preFlight,
           undefined,
           formatRound,
+          validateBeforePush,
         );
+        if (!retryFinalise.ok) {
+          const deferred = await deferUnavailableValidation(
+            retryFinalise.error,
+          );
+          if (deferred) return deferred;
+        }
         if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
           hasChanges = true;
           pushSucceeded = true;

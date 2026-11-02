@@ -1836,7 +1836,9 @@ async function completionBody(
           ),
         };
       }
-      publicationValidation = await validate(state.repoPath);
+      publicationValidation = await validate(state.repoPath, {
+        command: getRepoConfig(config.repoConfig, repo, "qualityCommand"),
+      });
       if (publicationValidation.status === "unavailable") {
         return {
           ok: false as const,
@@ -1975,27 +1977,49 @@ async function completionBody(
     }
     const validate = deps.quality.validatePublication ??
       validateRepositoryForPublication;
-    const refreshed = await validate(state.repoPath);
+    const refreshed = await validate(state.repoPath, {
+      command: getRepoConfig(config.repoConfig, repo, "qualityCommand"),
+    });
     if (refreshed.status !== "passed") {
       return {
         ok: false,
-        error: new Error(
-          refreshed.status === "failed"
-            ? `Required repository checks failed: ${refreshed.output}`
-            : `Required repository checks unavailable: ${refreshed.reason}`,
-        ),
+        error: refreshed.status === "failed"
+          ? new PrePushGateBlockedError(
+            `[PRE_PUSH_BLOCKED] Required repository checks failed: ${refreshed.output}`,
+          )
+          : new PrePushGateInfrastructureError(
+            `Required repository checks unavailable: ${refreshed.reason}`,
+          ),
       };
     }
     if (!await isCurrent(refreshed, state.repoPath)) {
       return {
         ok: false,
-        error: new Error(
-          "Checkout changed after repository checks; rerun validation",
+        error: new PrePushGateBlockedError(
+          "[PRE_PUSH_BLOCKED] Checkout changed after repository checks; rerun validation",
         ),
       };
     }
     publicationValidation = refreshed;
     return { ok: true, value: undefined };
+  };
+
+  const validationRefusal = (error: Error): PhaseResult | undefined => {
+    if (error instanceof PrePushGateBlockedError) {
+      return {
+        status: "failure",
+        category: "pre_push_gate",
+        reason: `${PRE_PUSH_GATE_MARKER}: ${error.message}`,
+      };
+    }
+    if (error instanceof PrePushGateInfrastructureError) {
+      return {
+        status: "failure",
+        category: "push_failure",
+        reason: `${PRE_PUSH_LOOKUP_FAILED_MARKER}: ${error.message}`,
+      };
+    }
+    return undefined;
   };
 
   // Push branch
@@ -2008,6 +2032,8 @@ async function completionBody(
     validateImmediatelyBeforePush,
   );
   if (!pushResult.ok) {
+    const refused = validationRefusal(pushResult.error);
+    if (refused) return refused;
     // Issue #1952: GitHub refusing a workflow file for want of the scope is
     // not a stale branch. Fetch, merge and retry cannot supply a missing
     // scope, so stop on the first refusal with the fix named — and with the
@@ -2040,8 +2066,11 @@ async function completionBody(
         cwd: state.repoPath,
       },
       pushResult.error.message,
+      validateImmediatelyBeforePush,
     );
     if (!recoveryResult.ok) {
+      const refused = validationRefusal(recoveryResult.error);
+      if (refused) return refused;
       return {
         category: "push_failure",
         status: "failure",
@@ -2056,10 +2085,17 @@ async function completionBody(
     // Retry push after recovery — recovery can add commits, so gate again.
     const blockedBeforeRetry = await gateBeforePush();
     if (blockedBeforeRetry) return blockedBeforeRetry;
-    const retryPush = await deps.git.pushUnpushedCommits(state.branchName, {
-      cwd: state.repoPath,
-    });
+    const retryPush = await deps.git.pushUnpushedCommits(
+      state.branchName,
+      {
+        cwd: state.repoPath,
+      },
+      false,
+      validateImmediatelyBeforePush,
+    );
     if (!retryPush.ok) {
+      const refused = validationRefusal(retryPush.error);
+      if (refused) return refused;
       return {
         category: "push_failure",
         status: "failure",

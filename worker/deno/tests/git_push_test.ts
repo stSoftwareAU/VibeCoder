@@ -11,6 +11,7 @@ import {
   detectExistingPr,
   detectPushRejection,
   findOpenPrForBranch,
+  PrePushGateBlockedError,
   pushUnpushedCommits,
   resolveLocalDefaultBranch,
 } from "../lib/git_push.ts";
@@ -600,3 +601,80 @@ Deno.test(
     }
   },
 );
+
+Deno.test("push rejection validates the merged tree and preserves a gate refusal without advancing origin", async () => {
+  const root = await Deno.makeTempDir({ prefix: "publication-recovery-" });
+  const remote = `${root}/remote.git`,
+    local = `${root}/local`,
+    other = `${root}/other`;
+  const git = async (args: string[], cwd: string) => {
+    const r = await runGit(args, cwd);
+    assertEquals(r.code, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  try {
+    await git(["init", "--bare", "-b", "main", remote], root);
+    await git(["clone", remote, local], root);
+    for (
+      const args of [["config", "user.name", "Test"], [
+        "config",
+        "user.email",
+        "t@t",
+      ]]
+    ) await git(args, local);
+    await Deno.writeTextFile(`${local}/seed.txt`, "seed\n");
+    await git(["add", "."], local);
+    await git(["commit", "-qm", "seed"], local);
+    await git(["checkout", "-b", "feature"], local);
+    await git(["push", "-u", "origin", "feature"], local);
+    await git(["clone", "-b", "feature", remote, other], root);
+    for (
+      const args of [["config", "user.name", "Test"], [
+        "config",
+        "user.email",
+        "t@t",
+      ]]
+    ) await git(args, other);
+    await Deno.writeTextFile(`${other}/remote.txt`, "remote change\n");
+    await git(["add", "."], other);
+    await git(["commit", "-qm", "concurrent change"], other);
+    await Deno.writeTextFile(`${local}/local.txt`, "local change\n");
+    await git(["add", "."], local);
+    await git(["commit", "-qm", "repair"], local);
+    let checks = 0;
+    const refusal = new PrePushGateBlockedError(
+      "required merged-tree regression failed",
+    );
+    let remoteBefore = "";
+    const result = await pushUnpushedCommits(
+      "feature",
+      { cwd: local },
+      true,
+      async () => {
+        checks++;
+        if (checks === 1) {
+          // Advance origin after the caller's remote lookups, forcing an actual
+          // non-fast-forward push refusal and the internal merge recovery.
+          await git(["push", "origin", "feature"], other);
+          remoteBefore = await git(["rev-parse", "feature"], remote);
+          return { ok: true, value: undefined };
+        }
+        assertEquals(
+          await Deno.readTextFile(`${local}/remote.txt`),
+          "remote change\n",
+        );
+        return { ok: false, error: refusal };
+      },
+    );
+    assertEquals(checks, 2);
+    assert(!result.ok);
+    assertEquals(
+      result.error,
+      refusal,
+      "the typed gate refusal must survive recovery",
+    );
+    assertEquals(await git(["rev-parse", "feature"], remote), remoteBefore);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

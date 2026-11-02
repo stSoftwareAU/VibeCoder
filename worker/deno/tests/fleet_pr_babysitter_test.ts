@@ -1,3 +1,6 @@
+import { runWithTimeout } from "../lib/subprocess_timeout.ts";
+import { PublicationValidationUnavailableError } from "../lib/publication_validation.ts";
+import { runPublicationFixtureChecks } from "./support/publication_fixture.ts";
 import { classifyPrBaseChange } from "../lib/pr_base_change_guard.ts";
 
 Deno.test("babysitter default heartbeat resolves its checkout revision", async () => {
@@ -6,6 +9,8 @@ Deno.test("babysitter default heartbeat resolves its checkout revision", async (
     const command = new Deno.Command(Deno.execPath(), {
       args: [
         "eval",
+        "--config",
+        new URL("../deno.json", import.meta.url).pathname,
         `
         import { recordBabysitterDeployment } from ${
           JSON.stringify(
@@ -22,7 +27,13 @@ Deno.test("babysitter default heartbeat resolves its checkout revision", async (
         dir,
       ],
       clearEnv: true,
-      env: { PATH: Deno.env.get("PATH") ?? "", TMPDIR: dir },
+      env: {
+        PATH: Deno.env.get("PATH") ?? "",
+        TMPDIR: dir,
+        ...(Deno.env.get("DENO_DIR")
+          ? { DENO_DIR: Deno.env.get("DENO_DIR")! }
+          : {}),
+      },
       stdout: "piped",
       stderr: "piped",
     });
@@ -63,6 +74,7 @@ import {
   cloneForRepair,
   type CloneForRepairDeps,
   defaultRemoteUrl,
+  deferBabysitterValidation,
   eligibleAuthor,
   loadConfigAndPublishDeployment,
   prBodyEditArgs,
@@ -955,7 +967,7 @@ Deno.test("a review repair runs the local checks covering the changed files", ()
     "",
   );
   assertStringIncludes(prompt, "formatter, linter, type or compile check");
-  assertStringIncludes(prompt, "required quality.sh before it can push");
+  assertStringIncludes(prompt, "required repository gate before it can push");
 });
 
 Deno.test("a conflict repair still checks the packages it touched, not the whole suite", () => {
@@ -1484,4 +1496,129 @@ Deno.test("a base already merged into the head is detected, a newer base is not"
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("babysitter unavailable validation releases its head attempt and preserves the committed checkpoint", async () => {
+  const state = await Deno.makeTempDir();
+  const dir = `${state}/repair`;
+  const attempt = `${state}/attempt`;
+  try {
+    await Deno.mkdir(dir);
+    await fixtureGit(["init", "-q"], dir);
+    await commitFile(dir, "fixed.txt", "useful fix");
+    await Deno.writeTextFile(attempt, "head attempted");
+    const checkpoint = await deferBabysitterValidation(dir, attempt, state);
+    assertEquals(
+      await Deno.readTextFile(`${checkpoint}/fixed.txt`),
+      "useful fix\n",
+    );
+    assertEquals(
+      await fixtureGit(["log", "-1", "--format=%s"], checkpoint),
+      "useful fix",
+    );
+    await Deno.writeTextFile(attempt, "retry", { createNew: true });
+    assertEquals(await Deno.readTextFile(attempt), "retry");
+  } finally {
+    await Deno.remove(state, { recursive: true });
+  }
+});
+
+Deno.test("babysitter validation unavailable then recovered preserves a useful commit and uses an alternative gate", async () => {
+  const state = await Deno.makeTempDir();
+  const dir = `${state}/repair`;
+  const attempt = `${state}/attempt`;
+  try {
+    await Deno.mkdir(dir);
+    await fixtureGit(["init", "-q"], dir);
+    await commitFile(dir, "fixed.txt", "initial");
+    await Deno.writeTextFile(`${dir}/fixed.txt`, "repair\n");
+    await Deno.writeTextFile(`${dir}/verify.sh`, "#!/bin/sh\nexit 0\n");
+    await Deno.writeTextFile(attempt, "attempted");
+    await assertRejects(
+      () =>
+        validateAndCommit(
+          dir,
+          123,
+          { login: "test-app[bot]", id: "12345" },
+          async () => ({
+            status: "unavailable",
+            identity: "head",
+            reason: "dependency outage",
+          }),
+        ),
+      PublicationValidationUnavailableError,
+      "dependency outage",
+    );
+    const checkpoint = await deferBabysitterValidation(dir, attempt, state);
+    assertEquals(
+      await Deno.readTextFile(`${checkpoint}/fixed.txt`),
+      "repair\n",
+    );
+    const checked = await runPublicationFixtureChecks(checkpoint, {
+      command: "sh ./verify.sh",
+    });
+    assertEquals(checked.status, "passed");
+    await Deno.writeTextFile(attempt, "retry", { createNew: true });
+  } finally {
+    await Deno.remove(state, { recursive: true });
+  }
+});
+
+Deno.test({
+  name:
+    "babysitter retains a checkpoint across filesystems before releasing the attempt",
+  ignore: Deno.build.os !== "linux",
+  async fn() {
+    if (Deno.env.get("BABYSITTER_CROSS_DEVICE_CHILD") !== "1") {
+      const result = await runWithTimeout(Deno.execPath(), [
+        "test",
+        "--allow-all",
+        "--frozen",
+        "--config",
+        new URL("../deno.json", import.meta.url).pathname,
+        "--filter",
+        "babysitter retains a checkpoint across filesystems",
+        new URL(import.meta.url).pathname,
+      ], {
+        timeoutMs: 20_000,
+        clearEnv: true,
+        env: {
+          PATH: Deno.env.get("PATH") ?? "",
+          ...(Deno.env.get("HOME") ? { HOME: Deno.env.get("HOME")! } : {}),
+          ...(Deno.env.get("DENO_DIR")
+            ? { DENO_DIR: Deno.env.get("DENO_DIR")! }
+            : {}),
+          BABYSITTER_CROSS_DEVICE_CHILD: "1",
+        },
+      });
+      assert(result.ok);
+      assertEquals(
+        result.value.code,
+        0,
+        result.value.stdout + result.value.stderr,
+      );
+      return;
+    }
+    const state = await Deno.makeTempDir();
+    const dir = await Deno.makeTempDir({
+      dir: "/dev/shm",
+      prefix: "babysitter-checkpoint-",
+    });
+    try {
+      await Deno.writeTextFile(`${dir}/fixed.txt`, "repair\n");
+      const attempt = `${state}/attempt`;
+      await Deno.writeTextFile(attempt, "attempted");
+      const checkpoint = await deferBabysitterValidation(dir, attempt, state);
+      assertEquals(
+        await Deno.readTextFile(`${checkpoint}/fixed.txt`),
+        "repair\n",
+      );
+      await Deno.writeTextFile(attempt, "retry", { createNew: true });
+    } finally {
+      await Deno.remove(state, { recursive: true });
+      await Deno.remove(dir, { recursive: true }).catch((error) => {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      });
+    }
+  },
 });

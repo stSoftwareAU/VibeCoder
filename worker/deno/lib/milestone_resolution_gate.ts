@@ -33,6 +33,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { UNIT_SUITE_TASKS } from "./project_manifests.ts";
 import {
   checkMergedTree,
   collapseRepeatedLines,
@@ -98,9 +99,6 @@ export const RESOLUTION_GATE_TASKS = [
  * and `cargo test` branches above already extend.
  */
 export const QUALITY_SCRIPT = "quality.sh";
-
-/** The unit-suite task names, most specific first. */
-const UNIT_SUITE_TASKS = ["test:unit", "test"] as const;
 
 /** One task to run in one project. */
 export interface ResolutionTask {

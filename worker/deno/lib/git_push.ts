@@ -411,6 +411,10 @@ export async function pushUnpushedCommits(
       if (recoveryResult.ok) {
         return { ok: true, value: unpushedCount };
       }
+      if (
+        recoveryResult.error instanceof PrePushGateBlockedError ||
+        recoveryResult.error instanceof PrePushGateInfrastructureError
+      ) return recoveryResult;
       // Issue #211: the recovery error names the step that failed — fetch,
       // merge (conflict), or the plain retry push (Issue #2808) — and carries
       // git's stderr. Dropping it left callers logging a bare

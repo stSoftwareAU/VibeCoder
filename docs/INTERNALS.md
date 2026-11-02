@@ -132,18 +132,26 @@ gate; see "Agent pre-push hook and the changed-files check" in
 [CONFIGURATION.md](CONFIGURATION.md).
 
 Before issue completion, PR-feedback pushes, CI-repair pushes and babysitter
-repair pushes, `publication_validation.ts` also runs the target repository's
-`./quality.sh --strict` through `untrusted_gate_spawn.ts`. Strict mode makes a
-skipped required check fail closed. The runner distinguishes a failed check
-from an unavailable host, redacts actionable output, and binds success to the
-checkout contents, the gate command and the installed Bash and Deno versions;
-the publisher rechecks that identity immediately before pushing. A formatter
-or repair edit therefore requires a fresh run. In this repository the command
-uses `quality.sh`'s existing Deno gate: its full parallel and serial unit-test
-passes, test-target type check, and strict skipped-check handling. CI shards the
-same unit-test manifests across four jobs. The target repository's gate remains
-its own policy; this runner does not define checks across repositories. This
-shared implementation addresses Issue #4625.
+repair pushes, `publication_validation.ts` runs the target repository's trusted
+`quality_command`, or `./quality.sh --strict` by default, through
+`untrusted_gate_spawn.ts`. The agent's pre-push hook uses the same validator,
+so agent self-pushes also require the checks. A zero exit with no executed Deno
+tests cannot pass. The runner discovers Deno projects through the existing
+project-manifest helper and executes each repository's full `test:unit` or
+`test` task independently of an impacted filter in the quality command. Those
+tasks own permissions and parallel, serial or shard selection; this repository
+uses the same unit-test manifests as its four CI shards.
+
+The result binds success to checkout contents, the resolved commands and
+working directories, environment, and installed Bash and Deno versions. Every
+publisher rechecks the identity at its push boundary, including rejection
+recovery and retry pushes. Failed checks remain content failures; unavailable
+execution defers the repair without consuming CI or review allowances. The
+babysitter releases its per-head attempt and retains the committed checkout in
+its state directory for unavailable validation. Actionable output is redacted,
+and substantive failures take precedence over simultaneous infrastructure
+messages. Test names and assertion data cannot classify an outage. This shared
+implementation addresses Issue #4625.
 
 The **semgrep** stage (`worker/deno/lib/semgrep_check.ts`, Issue #559) closes
 the gap that let two PRs sit blocked on the same

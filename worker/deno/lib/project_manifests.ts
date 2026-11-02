@@ -11,6 +11,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { stripJsonc } from "./jsonc.ts";
+
+/** Unit test tasks in repository priority order, shared with publication. */
+export const UNIT_SUITE_TASKS = ["test:unit", "test"] as const;
+
 /** Directory levels searched below the repo root for a Deno project. */
 export const MERGE_GATE_MAX_DEPTH = 2;
 
@@ -118,4 +123,25 @@ export async function findProjectManifests(
     level = next;
   }
   return found;
+}
+
+/** Read the executable tasks declared by a repository manifest. */
+export async function readManifestTasks(
+  manifestPath: string,
+): Promise<string[]> {
+  try {
+    const parsed = JSON.parse(
+      stripJsonc(await Deno.readTextFile(manifestPath)),
+    );
+    const tasks = parsed?.tasks;
+    if (!tasks || typeof tasks !== "object") return [];
+    return Object.entries(tasks as Record<string, unknown>)
+      .filter(([, command]) =>
+        typeof command === "string" && command.trim().length > 0
+      )
+      .map(([name]) => name);
+  } catch {
+    // Unparseable manifest — it defines nothing this gate can run.
+    return [];
+  }
 }
