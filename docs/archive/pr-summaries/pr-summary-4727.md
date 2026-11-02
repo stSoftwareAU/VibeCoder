@@ -3,8 +3,8 @@
 The fleet PR babysitter cloned the target repository from scratch
 (`gh repo clone … -- --no-checkout`) for every repair, so a large repository
 such as GRQ could cross gh's 600 s limit. `cloneForRepair` now keeps one bare
-mirror per repository under the babysitter state directory, fetches into it,
-and clones the repair's checkout from it locally. Closes #4727.
+mirror per repository under the babysitter state directory, fetches into it, and
+clones the repair's checkout from it locally. Closes #4727.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -33,23 +33,24 @@ flowchart LR
 - The repair's clone is a full local clone with `--no-hardlinks`: the agent's
   checkout holds complete history (merge bases, `git diff` against the base)
   with no lazy fetch, and no object file is shared with the mirror, so nothing
-  the agent does in its checkout can reach the mirror. `--reference`/`--dissociate`
-  was not used because it contacts GitHub on every repair.
+  the agent does in its checkout can reach the mirror.
+  `--reference`/`--dissociate` was not used because it contacts GitHub on every
+  repair.
 - `origin` is reset to the GitHub URL after the local clone (ssh when
   `gh config get git_protocol` says `ssh`, otherwise https), so the existing
   fetch and push steps in `fix` are unchanged.
 - The mirror fetches `refs/heads/*` and `refs/tags/*` only, not the thousands of
   `refs/pull/*` refs a `--mirror` would carry.
 - Serialisation is in-process per mirror (`SIMPLE-ON-PURPOSE` marker in the
-  code); two babysitter processes sharing one state directory rely on git's
-  own ref locks, and a failed fetch is retried next pass.
+  code); two babysitter processes sharing one state directory rely on git's own
+  ref locks, and a failed fetch is retried next pass.
 
 ### Undiscoverable Facts
 
-- The issue's "sandbox denies the host SSH key" constraint is why partial
-  clones were not used; the mirror lives under `$XDG_STATE_HOME/vibe-coder/fleet-pr-babysitter/mirrors`,
-  outside the agent's only write grants (clone and scratch directory,
-  `buildBabysitterSandboxArgs`).
+- The issue's "sandbox denies the host SSH key" constraint is why partial clones
+  were not used; the mirror lives under
+  `$XDG_STATE_HOME/vibe-coder/fleet-pr-babysitter/mirrors`, outside the agent's
+  only write grants (clone and scratch directory, `buildBabysitterSandboxArgs`).
 
 ## Evidence
 
@@ -84,9 +85,10 @@ URL, which points at that local repository).
   rewritten for the new `deps` argument (the old third argument was a gh
   runner). Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
   `assertEquals(attempts, 1)`
-  - Replaced by: `assertEquals(calls.filter((args) => args.includes("clone")).length, 1)`
-    in the same test; the rejection still asserts the original
-    `clone timed out` message.
+  - Replaced by:
+    `assertEquals(calls.filter((args) => args.includes("clone")).length, 1)` in
+    the same test; the rejection still asserts the original `clone timed out`
+    message.
   - Required by: "downloading the whole history of the target repository each
     time" — the clone is no longer a gh call, so the count is of the git clone
     calls. Red check: retrying the bare clone gave two clone calls and the test
@@ -110,10 +112,11 @@ URL, which points at that local repository).
   `tests/fleet_babysitter_app_test.ts` ("production repair forwards CONFIG_PATH
   and denies canonical credential targets"), whose fixture
   `tests/fixtures/fleet_babysitter_repair_preload.ts` faked `gh repo clone` and
-  now fakes `gh config get git_protocol`, `git clone --bare` and `git remote
-  set-url`; that test passes after the fixture update. Two reruns of the full
-  gate then passed every stage up to `deno tests` and were killed by the 590 s
-  command cap there, so the final full gate did not complete.
+  now fakes `gh config get git_protocol`, `git clone --bare` and
+  `git remote
+  set-url`; that test passes after the fixture update. Two reruns
+  of the full gate then passed every stage up to `deno tests` and were killed by
+  the 590 s command cap there, so the final full gate did not complete.
 
 <!-- vibe-quality-gate-skipped: full gate exceeded the 590 s command cap in `deno tests` on two reruns after the fixture fix; the touched suites, fmt, lint and type check pass; CI runs the full gate -->
 
@@ -122,8 +125,8 @@ Fixture edit: `tests/fixtures/fleet_babysitter_repair_preload.ts` — removed th
 
 ## Known gaps
 
-- Two babysitter processes sharing one state directory are not serialised
-  across processes (git's ref locks decide; the next pass retries).
+- Two babysitter processes sharing one state directory are not serialised across
+  processes (git's ref locks decide; the next pass retries).
 - A `.tmp` sibling left by an interrupted first download is removed before the
   next first download of that repository; it is not cleaned by
   `recoverTemporaryClones`.
