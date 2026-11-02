@@ -108,8 +108,6 @@ const MATCH_WINDOW_MS = 10 * MINUTE_MS;
  * belong to the PR.
  */
 const LIFETIME_SLACK_MS = 10 * MINUTE_MS;
-/** Commits closer than this together form one push group. */
-const PUSH_GROUP_MS = 2 * MINUTE_MS;
 const STRANDED_AGE_MS = DAY_MS;
 const PER_PAGE = 100;
 /** Pages read for reviews, issue events and commits of one PR. */
@@ -608,8 +606,7 @@ function blockersFor(
 
 /**
  * The GitHub-observed events for one PR: submitted reviews, dismissals, the
- * merge, and one implementation (first) or repair (later) event per push
- * group. Commits within {@link PUSH_GROUP_MS} of the previous one share a group.
+ * merge, and each commit. Commit delivery is matched to a subsequent verified push.
  */
 function gitHubEvents(
   observed: ObservedPr,
@@ -638,36 +635,24 @@ function gitHubEvents(
       ms: utcMillis(record.mergedAt, "PR mergedAt"),
     });
   }
-  const groups: Commit[][] = [];
-  for (const commit of [...evidence.commits].sort(byTime)) {
-    const current = groups[groups.length - 1];
-    if (
-      current && commit.ms - current[current.length - 1]!.ms <= PUSH_GROUP_MS
-    ) {
-      current.push(commit);
-    } else {
-      groups.push([commit]);
-    }
-  }
-  groups.forEach((group, index) => {
-    const last = group[group.length - 1]!;
+  evidence.commits.forEach((commit, index) => {
     out.push({
       kind: index === 0 ? "implementation" : "repair",
-      id: last.sha,
-      at: last.at,
-      ms: last.ms,
+      id: commit.sha,
+      at: commit.at,
+      ms: commit.ms,
     });
   });
   return out;
 }
 
 /**
- * Match each GitHub event to at most one verified fleet action of the same
- * kind on the same PR. Matched events add nothing: the audit action already
+ * Match reviews, dismissals and merges one-to-one; commits can share the first
+ * verified implementation or repair push at or after their committer date. Matched events add nothing: the audit action already
  * stands for them. Unmatched events become `unknown` actions, never attributed
  * to a human or the fleet.
  *
- * A non-merge event matches within {@link MATCH_WINDOW_MS} of it. A merge
+ * A review or dismissal matches within {@link MATCH_WINDOW_MS} of it. A merge
  * matches from the PR's creation to {@link MATCH_WINDOW_MS} after `mergedAt`:
  * the fleet merges with `gh pr merge --auto`, so the audit entry is stamped
  * when auto-merge is armed, possibly hours before GitHub records the merge.
@@ -685,11 +670,23 @@ function unmatchedActions(
     let best: TrustedPrAction | undefined;
     let bestGap = Number.POSITIVE_INFINITY;
     for (const action of verifiedFleet) {
-      if (used.has(action) || action.kind !== event.kind) continue;
+      const isCommit = event.kind === "implementation" ||
+        event.kind === "repair";
+      const isPush = action.kind === "implementation" ||
+        action.kind === "repair";
+      if (isCommit ? !isPush : used.has(action) || action.kind !== event.kind) {
+        continue;
+      }
       const actionMs = utcMillis(action.timestamp, "action timestamp");
       const gap = Math.abs(actionMs - event.ms);
       const inWindow = event.kind === "merge"
         ? actionMs >= createdMs && actionMs <= event.ms + MATCH_WINDOW_MS
+        : isCommit
+        ? actionMs >= event.ms &&
+          actionMs <=
+            Date.parse(
+                record.mergedAt ?? record.closedAt ?? record.observedAt!,
+              ) + LIFETIME_SLACK_MS
         : gap <= MATCH_WINDOW_MS;
       if (inWindow && gap < bestGap) {
         best = action;
@@ -1212,13 +1209,14 @@ function pushWithinLifetime(
  * that carries a repo links within that repo. A push without one, which is
  * what production writes, links across every supplied repo by branch name, and
  * only when that branch name belongs to PRs in a single repo. Either way the
- * push must fall inside the PR's lifetime, and the latest PR created on the
+ * push must fall between the branch's first commit and the PR's end, and the latest PR created on the
  * branch wins. Anything ambiguous or unresolvable stays unlinked, which leaves
  * the PR's commits as honest `unknown` actions.
  */
 function linkBranchPush(
   entry: AuditEntry,
   observed: ObservedPr[],
+  evidenceByPr: Map<string, PrEvidence>,
 ): AuditEntry {
   if (entry.verb !== "git-push" || entry.prNumber || !entry.target) {
     return entry;
@@ -1235,7 +1233,15 @@ function linkBranchPush(
   let best: PrCompletionRecord | undefined;
   for (const record of named) {
     if (entry.repo && record.repo !== entry.repo) continue;
-    if (!pushWithinLifetime(record, pushedMs)) continue;
+    const commits =
+      evidenceByPr.get(keyOf(record.repo, record.number))!.commits;
+    const firstCommitMs = Math.min(...commits.map((commit) => commit.ms));
+    const lifetimeRecord = {
+      ...record,
+      createdAt: new Date(Math.min(Date.parse(record.createdAt), firstCommitMs))
+        .toISOString(),
+    };
+    if (!pushWithinLifetime(lifetimeRecord, pushedMs)) continue;
     if (!best || Date.parse(record.createdAt) > Date.parse(best.createdAt)) {
       best = record;
     }
@@ -1316,8 +1322,15 @@ export async function collectPrCompletionSnapshot(
     notes.push(CI_SCOPE_NOTE);
   }
 
+  const evidenceByPr = new Map<string, PrEvidence>();
+  for (const { record } of observed) {
+    evidenceByPr.set(
+      keyOf(record.repo, record.number),
+      await fetchEvidence(options.gh, record.repo, record.number, notes),
+    );
+  }
   const linked = audit.entries.map(({ entry, verified }) => ({
-    entry: linkBranchPush(entry, observed),
+    entry: linkBranchPush(entry, observed, evidenceByPr),
     verified,
   }));
   const verifiedActions = prActionsFromAuditJournal(
@@ -1355,12 +1368,7 @@ export async function collectPrCompletionSnapshot(
   let prsWithReviewEvents = 0;
   for (const o of observed) {
     const { record } = o;
-    const evidence = await fetchEvidence(
-      options.gh,
-      record.repo,
-      record.number,
-      notes,
-    );
+    const evidence = evidenceByPr.get(keyOf(record.repo, record.number))!;
     if (evidence.reviews.length > 0) {
       reviewEvents += evidence.reviews.length;
       prsWithReviewEvents++;

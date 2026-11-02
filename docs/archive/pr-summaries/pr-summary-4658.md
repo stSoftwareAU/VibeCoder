@@ -37,7 +37,11 @@ The report is a Deno command and Deno task. No Node tooling, `package.json` or
   intervention; `humanAssistedMerged` can only be non-zero from recorded human
   actions in an `--input` snapshot. Accepted trade-off: collected data cannot
   yet tell a human repair from an unrecorded one.
-- Matching window: ±10 minutes of the GitHub event; for `merge` the fleet action
+- Commits match the first verified push at or after their committer date;
+  one push may deliver multiple commits. Branch linking begins at the first
+  commit, covering WIP pushes before PR creation and delayed completion pushes.
+  Time-based matching cannot distinguish an earlier unrecorded push.
+- Matching window for reviews/dismissals: ±10 minutes; for `merge` the fleet action
   may be from PR creation up to `mergedAt` + 10 minutes, because the fleet arms
   auto-merge long before GitHub merges. Accepted trade-off: a fleet-armed merge
   completed by a person is attributed to the fleet.
@@ -333,3 +337,23 @@ does not claim those deliverables.
   new audit fields: `verb`, `caller`, `outcome`.
 - Not done: live GitHub was never called; no cross-host data was available; the
   review skill still does not journal to the audit chain.
+
+### PR #4709 review repairs
+
+Named checkpoint, WIP preservation, declared handoff and push recovery modules
+as implementation push callers. The host babysitter resolves its checkout
+revision when the container build stamp is unset. Corrected the shared review
+log parser dependency and documented the assignment policy fingerprint. Added
+production-shaped collector and default heartbeat regression tests; both failed
+before their fixes. The former ten-minute commit-window fixture now uses a push before the commit,
+preserving the unknown-delivery assertions while replacing the obsolete time
+window contract. Review/dismissal window rejection remains covered separately.
+The heartbeat test accepts the existing resolver's explicit dirty suffix.
+
+Validation of the review repairs: 116 focused tests passed with the local gate
+permissions; check:manifests passed (847 tests). The gate passed formatting,
+lint, type checking, Markdown lint and Mermaid checks. Its full parallel test
+pass hit a Deno 2.9.5 macOS runtime panic (pledge test permissions called before
+restoring previous pledge). Release-ruleset checking could not read sandboxed
+gh configuration; Semgrep and Checkov are unavailable on this host. The current
+PR checks and the latest main merge (PR #4714) were green in GitHub CI.

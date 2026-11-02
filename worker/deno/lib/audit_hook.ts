@@ -138,6 +138,10 @@ function resolveCaller(): string | undefined {
  * rather than assumed to be the worker.
  */
 const WORKER_CALLERS: ReadonlyArray<string> = [
+  "wip_checkpoint",
+  "run_wip_preservation",
+  "declared_handoff",
+  "push_recovery_retry",
   "agent_pr_adoption",
   "completion_phase",
   "pr_ci_processor",
@@ -177,6 +181,10 @@ const REPAIR_PUSH_CALLERS: ReadonlyArray<string> = [
  * so they are named here rather than left `unknown`.
  */
 const IMPLEMENTATION_PUSH_CALLERS: ReadonlyArray<string> = [
+  "wip_checkpoint",
+  "run_wip_preservation",
+  "declared_handoff",
+  "push_recovery_retry",
   "agent_pr_adoption",
   "completion_phase",
   "pr_body_length",

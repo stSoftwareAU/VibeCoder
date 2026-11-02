@@ -1163,13 +1163,12 @@ invisible to the report. Journals are authenticated only by chain verification:
 if any directory's chains fail, or a directory has no journals, every PR's
 `actionsComplete` is false.
 
-**Match rule.** A GitHub event is attributed to the fleet only when a verified
-fleet action of the same kind on the same PR lies within ten minutes of it. The
-actions are audit actions, and for reviews also the review-fleet-prs log records
-(see below). Matching is one-to-one. The events are submitted reviews (`review`), review
-dismissals (`dismissal`), the merge (`merge`), and one push group per run of
-commits less than two minutes apart: the first group is `implementation` and
-later groups are `repair`.
+**Match rule.** Reviews and dismissals match one verified fleet action of the
+same kind on the same PR within ten minutes. Each commit is attributed to the
+first verified implementation or repair push at or after its committer date,
+within the PR lifetime. One push can deliver several commits, including commits
+made long before the completion gate finishes. This time-based attribution
+cannot distinguish an unrecorded push before a later verified push.
 
 **Merge window.** Auto-merge journals the merge when it is armed, which can be
 hours before GitHub records `mergedAt`. So a fleet `merge` action matches a
@@ -1182,7 +1181,7 @@ the push target. Such a push links across every supplied repository by branch
 name. The name is the target, or the part after the `:` of a refspec, with
 `refs/heads/` removed. The push links only when that name belongs to cohort PRs
 in a single repository and the push falls inside the PR's lifetime: from its
-creation less ten minutes, to its merge, close or observation, plus ten
+first commit (or creation if earlier) less ten minutes, to its merge, close or observation, plus ten
 minutes. The latest PR created on the branch wins. A push that carries a
 repository links within that repository under the same lifetime rule.
 Pushes whose target is `HEAD` cannot be linked, because the journal does not
@@ -1195,9 +1194,9 @@ reviews through its own `gh` calls, which do not pass the audit hook, so no
 audit action records them. After each post, the skill appends one line to its
 `log.jsonl` (`LOG_FILE` in `.claude/skills/review-fleet-prs/scripts/review_log.ts`,
 in the skill's state directory, `stateDir()`). `--review-log <log.jsonl,...>`
-reads those files, one per host, with the skill's own `parseLog`, and the
-collector imports it from the skill's module, so the worker depends on that
-file. Each record carries `at`, `repo`, `number` and `headSha`, and an
+reads those files, one per host, with `parseLog`. The review-log contract and
+parser live in `worker/deno/lib/fleet_review_log.ts`, shared by the collector
+and the skill, which re-exports them. There is no worker-to-skill import. Each record carries `at`, `repo`, `number` and `headSha`, and an
 `outcome` of `approved`, `changes_requested` or `held`. Each is a posted GitHub
 review: a held PR is posted as a COMMENTED review.
 

@@ -1,3 +1,5 @@
+import { resolveBuildCommitStamp } from "../lib/worker_build_info.ts";
+import { fileURLToPath } from "node:url";
 /** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
@@ -960,9 +962,13 @@ function babysitterStateDir(): string {
 export async function recordBabysitterDeployment(
   stateDir: string,
   config: Awaited<ReturnType<typeof loadConfig>>,
-  codeRevision = Deno.env.get("VIBE_BUILD_COMMIT") ?? "unknown",
+  codeRevision?: string,
   observedAt = new Date().toISOString(),
 ): Promise<void> {
+  codeRevision ??= Deno.env.get("VIBE_BUILD_COMMIT") ??
+    await resolveBuildCommitStamp(
+      fileURLToPath(new URL("../../../", import.meta.url)),
+    );
   const policyFingerprint = await fingerprintWorkerReviewPolicy(config);
   await Deno.mkdir(stateDir, { recursive: true });
   const result = await atomicWrite({

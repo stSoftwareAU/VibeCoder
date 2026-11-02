@@ -47,6 +47,47 @@ const COHORT = {
 };
 const JOURNAL_DATE = "2026-10-25";
 
+Deno.test("collect - pre-PR checkpoints and delayed completion deliver all commits", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      ...[20, 30, 52].map((minute) => ({
+        verb: "git-push",
+        actionKind: "implementation" as const,
+        actionId: `push-${minute}`,
+        target: "issue-1",
+        timestamp: `2026-10-20T00:${minute}:00Z`,
+      })),
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge-1",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const fixture = emptyFixture({
+      pulls: { [REPO]: [pull(1, { created_at: "2026-10-20T00:53:00Z" })] },
+      commits: {
+        [pk(1)]: [10, 20, 30, 40].map((minute) =>
+          commit(`sha-${minute}`, `2026-10-20T00:${minute}:00Z`)
+        ),
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), { auditDirs: [dir] }),
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      1,
+    );
+    assertEquals(
+      snapshot.input.actions.filter((a) => a.actor === "unknown"),
+      [],
+    );
+  });
+});
+
 interface Fixture {
   pulls?: Record<string, Json[]>;
   reviews?: Record<string, Json[]>;
@@ -376,7 +417,7 @@ Deno.test("collect - a push outside the PR's lifetime stays unlinked", async () 
   assertEquals(pushed, undefined);
 });
 
-Deno.test("collect - a fleet action 15 minutes from the GitHub event does not match", async () => {
+Deno.test("collect - a push before a commit cannot have delivered it", async () => {
   await withDir(async (dir) => {
     await journal(dir, [{
       verb: "git-push",
@@ -389,7 +430,7 @@ Deno.test("collect - a fleet action 15 minutes from the GitHub event does not ma
       pulls: {
         [REPO]: [pull(6, { merged_at: null, state: "open", closed_at: null })],
       },
-      commits: { [pk(6)]: [commit("sha6", "2026-10-20T00:00:00Z")] },
+      commits: { [pk(6)]: [commit("sha6", "2026-10-20T00:30:00Z")] },
     });
     const snapshot = await collectPrCompletionSnapshot(
       options(fakeGh(fixture), { auditDirs: [dir] }),
@@ -399,7 +440,7 @@ Deno.test("collect - a fleet action 15 minutes from the GitHub event does not ma
         action.actionId === "gh:org/repo#6:implementation:sha6" &&
         action.actor === "unknown" && action.verified === false
       ),
-      "a push 15 minutes away must leave the commit group unknown",
+      "a push before the commit must leave its delivery unknown",
     );
   });
 });

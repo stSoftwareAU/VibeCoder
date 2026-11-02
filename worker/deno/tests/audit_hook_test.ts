@@ -542,6 +542,16 @@ Deno.test("audit_hook - actionKindFor leaves a review sub-endpoint other than /d
 });
 
 Deno.test("audit_hook - actionKindFor names an implementation push only from its own caller", () => {
+  for (
+    const name of [
+      "wip_checkpoint",
+      "run_wip_preservation",
+      "declared_handoff",
+      "push_recovery_retry",
+    ]
+  ) {
+    assertEquals(pushKind(callerIn("lib", `${name}.ts`)), "implementation");
+  }
   assertEquals(
     pushKind(callerIn("lib", "agent_pr_adoption.ts")),
     "implementation",

@@ -1,4 +1,41 @@
 import { classifyPrBaseChange } from "../lib/pr_base_change_guard.ts";
+
+Deno.test("babysitter default heartbeat resolves its checkout revision", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const command = new Deno.Command(Deno.execPath(), {
+      args: [
+        "eval",
+        `
+        import { recordBabysitterDeployment } from ${
+          JSON.stringify(
+            new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).href,
+          )
+        };
+        import { buildDefaultWorkerConfig } from ${
+          JSON.stringify(
+            new URL("../lib/config_defaults.ts", import.meta.url).href,
+          )
+        };
+        await recordBabysitterDeployment(Deno.args[0], buildDefaultWorkerConfig());
+      `,
+        dir,
+      ],
+      clearEnv: true,
+      env: { PATH: Deno.env.get("PATH") ?? "", TMPDIR: dir },
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const result = await command.output();
+    assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    const heartbeat = JSON.parse(
+      await Deno.readTextFile(`${dir}/deployment-health.json`),
+    );
+    assert(/^[a-f0-9]{40}(-dirty)?$/.test(heartbeat.codeRevision));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 import {
   assert,
   assertEquals,
