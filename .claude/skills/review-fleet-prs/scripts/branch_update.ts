@@ -117,10 +117,16 @@ export async function updateBranchOnce(
         if (result.updated) {
           await writeMemory(dir, BRANCH_UPDATE_FILE, { [key]: pr.headSha });
         } else {
-          if (
-            result.error.includes("merge-queue base is exempt") ||
-            result.error.includes("base refresh owned by")
-          ) {
+          if ([
+            "merge-queue base is exempt",
+            "base does not require strict up-to-date checks",
+            "base refresh owned by",
+            "PR no longer ready for a branch update",
+            "PR changed while its required checks were read",
+            "required current-head checks have not passed",
+            "required-check read failed:",
+            "test merge or required checks changed before branch update",
+          ].some((marker) => result.error.includes(marker))) {
             console.info(`${key} branch refresh skipped: ${result.error}`);
             return undefined;
           }

@@ -5,11 +5,13 @@
 Each gate pass also looks after open Dependabot PRs into a default branch,
 with no model involved (`scripts/dependabot.ts`):
 
-- **Behind and approved by the reviewer at its head:** asks GitHub's
-  `update-branch` endpoint to merge in the base, once per head, with
-  `expected_head_sha` set to that reviewed head. An unapproved or draft PR
-  gets no update. The post-approval path uses the same leased update and
-  shares its success and refusal memory with the gate.
+- **Behind and approved by the reviewer at its head:** requests GitHub's
+  `update-branch` only after the shared readiness policy confirms an open,
+  non-draft, armed, mergeable PR and passing required checks on its verified
+  head and test merge. On a strict base without a merge queue, shared
+  per-base ownership serialises refreshes across hosts and lanes. An
+  unapproved or draft PR gets no update. The post-approval path uses the same
+  guarded request as the gate.
 - **Conflicting:** posts no comment and makes no push; reports
   `<repo>#<n> conflicting, waiting on Dependabot`. Once another actor updates
   a Dependabot branch, Dependabot stops its own updates. If that branch later
@@ -21,7 +23,8 @@ Dependabot PRs are still reviewed like any other; this upkeep only
 gets an approved one merged. The pass reports what it did in `upkeep`. A
 failed upkeep action is reported there as `<repo>#<n> auto-merge failed:
 <first line of the error>` (or `branch update failed: ...`), logged, and does not
-stop the pass; that action is not retried until the PR's head commit changes.
+stop the pass. A request refusal is remembered for that head; an unreadable
+readiness result remains retryable and is checked again on a later pass.
 Successful updates report `<repo>#<n> branch update requested`. No upkeep
 path posts a Dependabot command, and the old rebase-request cache is unused.
 

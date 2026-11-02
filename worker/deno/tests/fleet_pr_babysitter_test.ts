@@ -575,7 +575,7 @@ Deno.test("babysitter selects only conflicts and failed CI", () => {
       mergeStateStatus: "BEHIND",
       statusCheckRollup: [{ status: "IN_PROGRESS" }],
     }),
-    null,
+    "branch behind base",
   );
   assertEquals(
     reason({ ...pr, mergeStateStatus: "BEHIND" }),

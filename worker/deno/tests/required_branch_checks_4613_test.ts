@@ -1,5 +1,6 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  readRequiredChecksFailed,
   readRequiredChecksPassed,
   requestReadyBranchUpdate,
   requiredChecksPassed,
@@ -54,6 +55,64 @@ Deno.test("required branch checks use the contract, not optional jobs", () => {
   );
 });
 
+Deno.test("required check failure reconciliation ignores optional and pending jobs", async () => {
+  const head = "a".repeat(40);
+  let gateStatus = "completed";
+  let gateConclusion: string | null = "failure";
+  let optionalFailure = false;
+  const gh = (args: string[]): Promise<string> => {
+    const endpoint = args[1] ?? "";
+    if (endpoint.includes("/rules/branches/")) {
+      return Promise.resolve(JSON.stringify([rules]));
+    }
+    if (endpoint.includes("/branches/")) {
+      return Promise.resolve(JSON.stringify({
+        protection: {
+          required_status_checks: { contexts: [], checks: [], strict: false },
+        },
+      }));
+    }
+    if (endpoint.includes("/check-runs?")) {
+      return Promise.resolve(JSON.stringify([{
+        check_runs: [
+          {
+            ...passed,
+            status: gateStatus,
+            conclusion: gateConclusion,
+          },
+          ...(optionalFailure
+            ? [{
+              name: "optional",
+              status: "completed",
+              conclusion: "failure",
+              app: { id: 2, slug: "external-ci" },
+            }]
+            : []),
+        ],
+      }]));
+    }
+    if (endpoint.includes("/status?")) {
+      return Promise.resolve(JSON.stringify([{ statuses: [] }]));
+    }
+    throw new Error("unexpected required-check failure read");
+  };
+  assertEquals(
+    await readRequiredChecksFailed("owner/repo", "main", head, gh),
+    true,
+  );
+  gateStatus = "in_progress";
+  gateConclusion = null;
+  assertEquals(
+    await readRequiredChecksFailed("owner/repo", "main", head, gh),
+    false,
+  );
+  optionalFailure = true;
+  assertEquals(
+    await readRequiredChecksFailed("owner/repo", "main", head, gh),
+    false,
+  );
+});
+
 Deno.test("ready updater checks the live head and sends its SHA", async () => {
   const head = "a".repeat(40);
   const mergeHead = "b".repeat(40);
@@ -62,6 +121,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   let decision = "APPROVED";
   let strictPolicy = true;
   let queued = false;
+  let classicProtection: unknown = null;
   let retarget = false;
   let wrongParent = false;
   let views = 0;
@@ -154,14 +214,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       ]]));
     }
     if (endpoint.includes("/branches/")) {
-      return Promise.resolve(
-        JSON.stringify({
-          protection: {
-            enabled: false,
-            required_status_checks: { strict: false, contexts: [], checks: [] },
-          },
-        }),
-      );
+      return Promise.resolve(JSON.stringify({ protection: classicProtection }));
     }
     if (endpoint.includes("/check-runs?")) {
       return Promise.resolve(
@@ -184,13 +237,8 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   assertEquals(writes[0]?.slice(-2), ["-f", `expected_head_sha=${head}`]);
   strictPolicy = false;
   const nonStrict = await requestReadyBranchUpdate("owner/repo", 12, gh);
-  assertEquals(nonStrict.ok, false);
-  if (!nonStrict.ok) {
-    assertEquals(
-      nonStrict.error.message,
-      "base does not require strict up-to-date checks",
-    );
-  }
+  assertEquals(nonStrict.ok, true);
+  assertEquals(writes.length, 2);
   strictPolicy = true;
   queued = true;
   const mergeQueue = await requestReadyBranchUpdate("owner/repo", 12, gh);
@@ -229,7 +277,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     (await requestReadyBranchUpdate("owner/repo", 12, gh)).ok,
     false,
   );
-  assertEquals(writes.length, 1);
+  assertEquals(writes.length, 2);
 });
 
 Deno.test("ready updater rejects an invalid PR number before invoking gh", async () => {
@@ -330,7 +378,7 @@ Deno.test("required-check reader collects effective rules and current-head check
         JSON.stringify({
           protection: {
             enabled: false,
-            required_status_checks: { contexts: [], checks: [] },
+            required_status_checks: { contexts: [], checks: [], strict: false },
           },
         }),
       );
@@ -397,7 +445,7 @@ Deno.test("reader checks Actions event eligibility and test-merge status", async
         JSON.stringify({
           protection: {
             enabled: false,
-            required_status_checks: { contexts: [], checks: [] },
+            required_status_checks: { contexts: [], checks: [], strict: false },
           },
         }),
       );

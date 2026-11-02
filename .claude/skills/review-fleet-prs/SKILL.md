@@ -128,16 +128,16 @@ escalation.
    to date. While a round reviews a PR, its claim comment at that head (see
    [Several hosts](references/running-unattended.md#several-hosts)) keeps the
    other hosts from starting a second round on it.
-9. **Approve first, then bring the branch up to date.** Every fleet PR is
-   armed with auto-merge on three conditions: CI green, approved, and branch
-   up to date. The review is of the diff as it stands; when the outcome is an
-   approval and the PR is behind its base, `post.ts` then asks GitHub to merge
-   the base in (`update-branch`, at the reviewed head), so CI re-runs on the
-   merge commit and the PR merges with no further round. The gate does the
-   same once per head for a fleet PR already approved at its head but still
-   behind, and for a Dependabot PR approved by the reviewer at its head.
-   Gate and post share successful request and GitHub refusal memory, so neither path
-   repeats the request until that head changes.
+9. **Approve first, then refresh only when ready.** Every fleet PR is armed
+   with auto-merge on three conditions: CI green, approved, and branch up to
+   date. The review is of the diff as it stands; when the outcome is an
+   approval, the gate and post-approval upkeep may request a behind-branch
+   refresh only when the PR is open, non-draft, armed, mergeable, approved,
+   and its required current-head and test-merge checks pass. On a strict base
+   without a merge queue, a shared persisted owner lets one PR refresh at a
+   time across hosts and lanes until it merges, fails required checks, closes,
+   or the bounded owner expires. Other bases retain the existing updater
+   behaviour; merge-queue bases are not refreshed just for being behind.
    A PR is never brought up to date before its review: the approval
    would then be of a head nobody read. Conflicting Dependabot PRs wait with
    no push or comment (see

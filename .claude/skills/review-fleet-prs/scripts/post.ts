@@ -82,6 +82,7 @@ interface Input {
     title: string;
     url: string;
     headSha: string;
+    baseRef: string;
     kind?: "dependabot" | "fleet";
     testChanges: { removed: string[]; edited: string[] };
     // From the gate entry; required, so a stale entry fails loudly rather
@@ -529,7 +530,11 @@ export async function main() {
       live.mergeable,
     )
   ) {
-    branchUpdate = await updateBranchOnce(pr, dir, (args) => run("gh", args));
+    branchUpdate = await updateBranchOnce(
+      { ...pr, baseRefName: pr.baseRef },
+      dir,
+      (args) => run("gh", args),
+    );
     if (branchUpdate?.updated === false) {
       console.error(
         `could not bring ${pr.repo}#${pr.number} up to date: ${branchUpdate.error}`,

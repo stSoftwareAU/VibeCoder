@@ -58,6 +58,7 @@ import { getWorkerUniqueId } from "../lib/worker_identity.ts";
 import { resolveRunId } from "../lib/audit_journal.ts";
 import { prBranchFailureStatePath } from "../lib/pr_branch_update_failure_streak.ts";
 import { makeIsMergeQueueBase } from "../lib/merge_queue_runtime.ts";
+import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
 
 // Re-export library functions for external use
 export {
@@ -470,6 +471,10 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
         // so a PR that merged inside the scan→push window is a no-op rather
         // than a `(stale info)` push failure.
         getPrState: makeGhPrStateFetcher(runGhCommand),
+        // Issue #4613: behind-only refreshes share the strict-base readiness
+        // policy and persisted per-base owner across maintenance lanes.
+        requestReadyRefresh: (repo, prNumber, base) =>
+          requestReadyBranchUpdate(repo, prNumber, runGhCommand, base),
         setupRepo: async (repo: string, wd: string) => {
           const cmdResult = await setupRepo(repo, wd);
           if (!cmdResult.success) {

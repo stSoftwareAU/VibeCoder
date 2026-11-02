@@ -83,6 +83,21 @@ function requiredChecks(rules: unknown, protection: unknown): RequiredCheck[] {
   return required;
 }
 
+function classicChecksFromBranch(branch: ObjectValue): ObjectValue | null {
+  if (!("protection" in branch)) {
+    throw new Error("branch response has no branch protection summary");
+  }
+  if (branch.protection === null) return null;
+  const summary = object(branch.protection, "branch protection summary");
+  if (!("required_status_checks" in summary)) {
+    throw new Error("branch protection summary has no required checks field");
+  }
+  if (summary.required_status_checks === null) {
+    return { contexts: [], checks: [] };
+  }
+  return object(summary.required_status_checks, "classic required checks");
+}
+
 /** Fail closed on malformed rules; optional check runs do not affect the result. */
 export function requiredChecksPassed(
   rules: unknown,
@@ -269,17 +284,7 @@ export async function readRequiredChecksPassed(
     ),
     "branch",
   );
-  const protectionSummary = object(
-    branchInfo.protection,
-    "branch protection summary",
-  );
-  if (typeof protectionSummary.enabled !== "boolean") {
-    throw new Error("branch protection summary has no enabled flag");
-  }
-  const protection = object(
-    protectionSummary.required_status_checks,
-    "classic required checks",
-  );
+  const protection = classicChecksFromBranch(branchInfo);
   const flatRules = rules.flat();
   const names = new Set(
     requiredChecks(flatRules, protection).map((c) => c.context),
@@ -312,37 +317,45 @@ export async function readRequiredChecksFailed(
   gh: (args: string[]) => Promise<string>,
 ): Promise<boolean> {
   const branch = encodeURIComponent(base);
-  const pages = JSON.parse(await gh([
-    "api",
-    `repos/${repo}/rules/branches/${branch}?per_page=100`,
-    "--paginate",
-    "--slurp",
-  ]));
+  const pages = JSON.parse(
+    await gh([
+      "api",
+      `repos/${repo}/rules/branches/${branch}?per_page=100`,
+      "--paginate",
+      "--slurp",
+    ]),
+  );
   if (!Array.isArray(pages) || !pages.every(Array.isArray)) {
     throw new Error("effective rules pages are malformed");
   }
-  const branchInfo = object(JSON.parse(await gh([
-    "api",
-    `repos/${repo}/branches/${branch}`,
-  ])), "branch");
-  const protection = object(
-    object(branchInfo.protection, "branch protection summary")
-      .required_status_checks,
-    "classic required checks",
+  const branchInfo = object(
+    JSON.parse(
+      await gh([
+        "api",
+        `repos/${repo}/branches/${branch}`,
+      ]),
+    ),
+    "branch",
   );
+  const protection = classicChecksFromBranch(branchInfo);
   const required = requiredChecks(pages.flat(), protection);
   const checkNames = new Set(required.map(({ context }) => context));
   const checks = await readCommitChecks(repo, head, checkNames, gh);
   return required.some(({ context, appId }) => {
     const runs = checks.checkRuns.filter((run) =>
       run.name === context &&
-      (appId === undefined || object(run.app, "required check app").id === appId)
+      (appId === undefined ||
+        object(run.app, "required check app").id === appId)
     );
-    const statuses = checks.statuses.filter((status) => status.context === context);
+    const statuses = checks.statuses.filter((status) =>
+      status.context === context
+    );
     return statuses.some((status) => status.state !== "success") ||
-      runs.some((run) => run.status === "completed" &&
+      runs.some((run) =>
+        run.status === "completed" &&
         run.conclusion !== "success" && run.conclusion !== "neutral" &&
-        run.conclusion !== "skipped");
+        run.conclusion !== "skipped"
+      );
   });
 }
 
@@ -420,25 +433,141 @@ export async function requestReadyBranchUpdate(
         ),
         "live PR",
       );
+    const hasCurrentTarget = (pr: ObjectValue) =>
+      pr.state === "OPEN" && typeof pr.baseRefName === "string" &&
+      (expectedBase === undefined || pr.baseRefName === expectedBase) &&
+      typeof pr.headRefOid === "string" &&
+      (expectedHead === undefined || pr.headRefOid === expectedHead);
     const ready = (pr: ObjectValue) =>
       pr.state === "OPEN" && pr.isDraft === false && !!pr.autoMergeRequest &&
       pr.mergeable === "MERGEABLE" && pr.mergeStateStatus === "BEHIND" &&
       (pr.reviewDecision === "APPROVED" || pr.reviewDecision === "" ||
         pr.reviewDecision === null) &&
       typeof pr.baseRefName === "string" &&
-      (expectedBase === undefined || pr.baseRefName === expectedBase) &&
       typeof pr.headRefOid === "string";
     const current = await readLivePr();
-    if (
-      !ready(current) || typeof current.baseRefName !== "string" ||
-      typeof current.headRefOid !== "string" ||
-      (expectedHead !== undefined && current.headRefOid !== expectedHead)
-    ) {
+    if (!hasCurrentTarget(current)) {
+      return {
+        ok: false,
+        error: new Error("PR base or head changed before branch update"),
+      };
+    }
+    const policy = await readStrictBasePolicy(
+      repo,
+      current.baseRefName as string,
+      gh,
+    );
+    if (policy.mergeQueue) {
+      return {
+        ok: false,
+        error: new Error("merge-queue base is exempt from behind-only refresh"),
+      };
+    }
+    if (!policy.strict) {
+      return await requestBranchUpdate(
+        repo,
+        prNumber,
+        gh,
+        current.headRefOid as string,
+      );
+    }
+    if (!ready(current)) {
       return {
         ok: false,
         error: new Error("PR no longer ready for a branch update"),
       };
     }
+    const workerId = Deno.env.get("VIBE_RUN_ID") ?? `worker-${Deno.pid}`;
+    const openPrNumbers = async (ownerRepo: string, ownerBase: string) => {
+      const rows = JSON.parse(
+        await gh([
+          "pr",
+          "list",
+          "--repo",
+          ownerRepo,
+          "--base",
+          ownerBase,
+          "--state",
+          "open",
+          "--json",
+          "number",
+          "--limit",
+          "1000",
+        ]),
+      );
+      if (!Array.isArray(rows)) {
+        throw new Error("open PR anchor list is malformed");
+      }
+      if (rows.length >= 1000) {
+        throw new Error("open PR owner scan reached its 1000-row limit");
+      }
+      return rows.map((row) => {
+        const number = object(row, "open PR anchor").number;
+        if (
+          typeof number !== "number" || !Number.isSafeInteger(number) ||
+          number <= 0
+        ) throw new Error("open PR anchor has no valid number");
+        return number;
+      }).sort((a, b) => a - b);
+    };
+    const port = makeGitHubBaseRefreshOwnershipPort({
+      workerId,
+      ghCommandFn: gh,
+      anchorPrForBase: async (ownerRepo, ownerBase) => {
+        const numbers = await openPrNumbers(ownerRepo, ownerBase);
+        if (numbers.length === 0) {
+          throw new Error("no open PR can anchor base ownership");
+        }
+        return numbers[0]!;
+      },
+      prNumbersForBase: openPrNumbers,
+      log: (message) => console.warn(message),
+    });
+    await reconcileBaseRefreshOwner(
+      port,
+      repo,
+      current.baseRefName,
+      async (owner): Promise<BaseRefreshStatus> => {
+        try {
+          const live = object(
+            JSON.parse(
+              await gh([
+                "pr",
+                "view",
+                String(owner.prNumber),
+                "--repo",
+                repo,
+                "--json",
+                "state,headRefOid",
+              ]),
+            ),
+            "refresh owner PR",
+          );
+          if (live.state === "MERGED") return "merged";
+          if (live.state === "CLOSED") return "closed";
+          if (live.state !== "OPEN" || typeof live.headRefOid !== "string") {
+            return "failed";
+          }
+          return await readRequiredChecksFailed(
+              repo,
+              owner.base,
+              live.headRefOid,
+              gh,
+            )
+            ? "failed"
+            : "active";
+        } catch (error) {
+          console.warn(
+            `Refresh owner state is unreadable for ${repo}#${owner.prNumber}; retaining ownership for retry: ${
+              redactSecrets(
+                error instanceof Error ? error.message : String(error),
+              )
+            }`,
+          );
+          return "active";
+        }
+      },
+    );
     const merge = await readTestMerge(
       repo,
       prNumber,
@@ -488,103 +617,6 @@ export async function requestReadyBranchUpdate(
         ),
       };
     }
-    const workerId = Deno.env.get("VIBE_RUN_ID") ?? `worker-${Deno.pid}`;
-    const openPrNumbers = async (ownerRepo: string, ownerBase: string) => {
-      const rows = JSON.parse(
-        await gh([
-          "pr",
-          "list",
-          "--repo",
-          ownerRepo,
-          "--base",
-          ownerBase,
-          "--state",
-          "open",
-          "--json",
-          "number",
-          "--limit",
-          "1000",
-        ]),
-      );
-      if (!Array.isArray(rows)) {
-        throw new Error("open PR anchor list is malformed");
-      }
-      return rows.map((row) => object(row, "open PR anchor").number)
-        .filter((number): number is number =>
-          typeof number === "number" && Number.isSafeInteger(number) &&
-          number > 0
-        )
-        .sort((a, b) => a - b);
-    };
-    const port = makeGitHubBaseRefreshOwnershipPort({
-      workerId,
-      ghCommandFn: gh,
-      anchorPrForBase: async (ownerRepo, ownerBase) => {
-        const numbers = await openPrNumbers(ownerRepo, ownerBase);
-        if (numbers.length === 0) {
-          throw new Error("no open PR can anchor base ownership");
-        }
-        return numbers[0]!;
-      },
-      prNumbersForBase: openPrNumbers,
-      log: (message) => console.warn(message),
-    });
-    const policy = await readStrictBasePolicy(repo, current.baseRefName, gh);
-    if (!policy.strict || policy.mergeQueue) {
-      return {
-        ok: false,
-        error: new Error(
-          policy.mergeQueue
-            ? "merge-queue base is exempt from behind-only refresh"
-            : "base does not require strict up-to-date checks",
-        ),
-      };
-    }
-    await reconcileBaseRefreshOwner(
-      port,
-      repo,
-      current.baseRefName,
-      async (owner): Promise<BaseRefreshStatus> => {
-        try {
-          const live = object(
-            JSON.parse(
-              await gh([
-                "pr",
-                "view",
-                String(owner.prNumber),
-                "--repo",
-                repo,
-                "--json",
-                "state,headRefOid",
-              ]),
-            ),
-            "refresh owner PR",
-          );
-          if (live.state === "MERGED") return "merged";
-          if (live.state === "CLOSED") return "closed";
-          if (live.state !== "OPEN" || typeof live.headRefOid !== "string") {
-            return "failed";
-          }
-          return await readRequiredChecksFailed(
-            repo,
-            owner.base,
-            live.headRefOid,
-            gh,
-          )
-            ? "failed"
-            : "active";
-        } catch (error) {
-          console.warn(
-            `Refresh owner state is unreadable for ${repo}#${owner.prNumber}; retaining ownership for retry: ${
-              redactSecrets(
-                error instanceof Error ? error.message : String(error),
-              )
-            }`,
-          );
-          return "active";
-        }
-      },
-    );
     const ownership = await acquireBaseRefreshOwner(port, {
       repo,
       base: current.baseRefName,
@@ -628,7 +660,9 @@ export async function requestReadyBranchUpdate(
           immediateMerge.mergeSha,
         )
       ) {
-        throw new Error("PR test merge or required checks changed before branch update");
+        throw new Error(
+          "PR test merge or required checks changed before branch update",
+        );
       }
     } catch (error) {
       await releaseBaseRefreshOwner(
@@ -711,10 +745,12 @@ async function readStrictBasePolicy(
     ),
     "base branch",
   );
-  const protection = object(
-    object(branch.protection, "branch protection").required_status_checks,
-    "classic required checks",
-  );
-  if (typeof protection.strict === "boolean") strict ||= protection.strict;
+  const protection = classicChecksFromBranch(branch);
+  if (protection !== null) {
+    if (typeof protection.strict !== "boolean") {
+      throw new Error("classic strict up-to-date policy is unreadable");
+    }
+    strict ||= protection.strict;
+  }
   return { strict, mergeQueue };
 }

@@ -333,12 +333,10 @@ export async function handleMergeAttempt(
   }
 
   const updateBranchFn = options.updateBranchFn ??
-    ((r: string, n: number) => requestBranchUpdate(r, n, ghFn));
+    ((r: string, n: number) => requestReadyBranchUpdate(r, n, ghFn));
 
   if (disposition === "update_branch") {
-    const update = options.updateBranchFn
-      ? await updateBranchFn(repo, prNumber)
-      : await requestReadyBranchUpdate(repo, prNumber, ghFn);
+    const update = await updateBranchFn(repo, prNumber);
     if (update.ok) {
       logger.info(
         "PR is behind its base — branch updated, checks will re-run",

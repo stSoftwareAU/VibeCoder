@@ -22,6 +22,7 @@ import {
 import {
   needsBranchUpdate,
   updateBranch,
+  updateBranchOnce,
 } from "../../../.claude/skills/review-fleet-prs/scripts/branch_update.ts";
 
 const REVIEWER = "nleck";
@@ -320,37 +321,58 @@ Deno.test("needsBranchUpdate: only an approved, behind, non-draft fleet PR not a
   );
 });
 
-Deno.test("updateBranch: asks GitHub to merge the base into the PR at the expected head; a refusal is reported, not thrown (Issue #3225)", async () => {
+Deno.test("updateBranch refuses an unreadable ready state before requesting an update (Issue #4613)", async () => {
   const calls: string[][] = [];
-  const ok = await updateBranch(
-    { repo: "acme/app", number: 20, headSha: "head-20" },
+  const result = await updateBranch(
+    {
+      repo: "acme/app",
+      number: 20,
+      headSha: "a".repeat(40),
+      baseRefName: "main",
+    },
     (args) => {
       calls.push(args);
       return Promise.resolve("{}");
     },
   );
-  assertEquals(ok, { updated: true });
-  assertEquals(calls, [[
-    "api",
-    "--method",
-    "PUT",
-    "repos/acme/app/pulls/20/update-branch",
-    "-f",
-    "expected_head_sha=head-20",
-  ]]);
-
-  const refused = await updateBranch(
-    { repo: "acme/app", number: 20, headSha: "head-20" },
-    () =>
-      Promise.reject(new Error("gh api: HTTP 422: expected head sha\nmore")),
+  assertEquals(result.updated, false);
+  assertEquals(
+    calls.some((args) => args.some((arg) => arg.endsWith("/update-branch"))),
+    false,
   );
-  assertEquals(refused, {
-    updated: false,
-    error: "gh api: HTTP 422: expected head sha",
-  });
 });
 
-Deno.test("pass: a fleet PR approved at its head but behind is brought up to date once per head, including an approved Dependabot one (Issue #3225)", async () => {
+Deno.test("updateBranchOnce refuses an unreadable ready state before the update request", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "review-4613-" });
+  const calls: string[][] = [];
+  try {
+    const result = await updateBranchOnce(
+      {
+        repo: "acme/app",
+        number: 20,
+        headSha: "a".repeat(40),
+        baseRefName: "main",
+      },
+      dir,
+      async (args) => {
+        calls.push(args);
+        if (args[0] === "pr" && args[1] === "view") {
+          return JSON.stringify({ state: "OPEN" });
+        }
+        return "{}";
+      },
+    );
+    assertEquals(result, undefined);
+    assertEquals(
+      calls.some((args) => args.some((arg) => arg.endsWith("/update-branch"))),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("pass: approved behind PRs reach the shared readiness policy, while an unreviewed PR is not refreshed (Issue #4613)", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const approvedBehind = fleetPr(30, {
@@ -382,19 +404,8 @@ Deno.test("pass: a fleet PR approved at its head but behind is brought up to dat
     const { gh, calls } = makeGh(prs);
     const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
     const updates = calls.filter((c) => c[3]?.endsWith("/update-branch"));
-    assertEquals(updates.map((c) => c[3]), [
-      "repos/acme/app/pulls/30/update-branch",
-      "repos/acme/app/pulls/31/update-branch",
-      "repos/acme/app/pulls/34/update-branch",
-    ]);
-    assertEquals(
-      result.upkeep.filter((u) => u.includes("branch")),
-      [
-        "acme/app#30 branch update requested",
-        "acme/app#31 branch update requested",
-        "acme/app#34 branch update requested",
-      ],
-    );
+    assertEquals(updates, []);
+    assertEquals(result.upkeep.filter((u) => u.includes("branch")), []);
     // Review first, update second: the unreviewed PR is reviewed as it is
     // and is only brought up to date once approved (post.ts does that).
     assertEquals(result.ready.map((p) => p.number), [33]);
@@ -404,7 +415,8 @@ Deno.test("pass: a fleet PR approved at its head but behind is brought up to dat
       false,
     );
 
-    // Same heads next pass: nothing is asked twice.
+    // Unreadable branch-rule state is retryable: no failed-head marker was
+    // written, so a later pass is free to evaluate it again.
     const { gh: gh2, calls: calls2 } = makeGh(prs);
     await pass(REPOS, FLEET, REVIEWER, { gh: gh2, dir });
     assertEquals(calls2.some((c) => c[3]?.endsWith("/update-branch")), false);
@@ -413,38 +425,41 @@ Deno.test("pass: a fleet PR approved at its head but behind is brought up to dat
   }
 });
 
-Deno.test("pass: a refused branch update is reported in upkeep and not retried at the same head (Issue #3225)", async () => {
+Deno.test("pass: unreadable refresh policy is logged as a retryable skip (Issue #4613)", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const pr = fleetPr(40, {
       mergeStateStatus: "BEHIND",
-      reviews: { nodes: [review("owner", "APPROVED", "head-40")] },
+      reviews: { nodes: [review(REVIEWER, "APPROVED", "head-40")] },
     });
-    const refusing = () => {
+    const unreadable = () => {
       const calls: string[][] = [];
       const inner = makeGh([pr]).gh;
       const gh = (args: string[]) => {
         calls.push(args);
-        if (args[3]?.endsWith("/update-branch")) {
-          return Promise.reject(new Error("gh api: HTTP 403: locked\nstack"));
-        }
         return inner(args);
       };
       return { gh, calls };
     };
-    const first = refusing();
+    const first = unreadable();
     const result = await pass(REPOS, FLEET, REVIEWER, { gh: first.gh, dir });
-    assertEquals(result.upkeep, [
-      "acme/app#40 branch update failed: gh api: HTTP 403: locked",
-    ]);
+    assertEquals(result.upkeep, []);
     assertEquals(result.ready, []);
-    const second = refusing();
+    assertEquals(
+      first.calls.some((c) => c[3]?.endsWith("/update-branch")),
+      false,
+    );
+    const second = unreadable();
     const again = await pass(REPOS, FLEET, REVIEWER, { gh: second.gh, dir });
     assertEquals(
       second.calls.some((c) => c[3]?.endsWith("/update-branch")),
       false,
     );
     assertEquals(again.upkeep, []);
+    assertEquals(
+      second.calls.some((c) => c[0] === "pr" && c[1] === "view"),
+      true,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

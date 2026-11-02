@@ -835,11 +835,44 @@ Deno.test("executePrBranchUpdates - behind PR is updated successfully", async ()
   }
 });
 
+Deno.test("executePrBranchUpdates - behind refresh uses the shared readiness policy", async () => {
+  let readyCalls = 0;
+  let gitUpdates = 0;
+  const deps = makeExecDeps({
+    requestReadyRefresh: async (repo, prNumber, base) => {
+      readyCalls++;
+      assertEquals([repo, prNumber, base], ["org/repo", 42, "main"]);
+      return { ok: false, error: new Error("required checks are pending") };
+    },
+    performBranchUpdate: async () => {
+      gitUpdates++;
+      return { ok: true, value: "unexpected local update" };
+    },
+  });
+  const result = await executePrBranchUpdates([makeAction()], deps);
+  assertEquals([readyCalls, gitUpdates], [1, 0]);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.details[0]?.status, "contended");
+    assertEquals(
+      result.value.details[0]?.message,
+      "Refresh skipped: required checks are pending",
+    );
+  }
+});
+
 Deno.test("executePrBranchUpdates - conflicting PR is updated successfully", async () => {
   const actions = [makeAction({ reason: "conflicting", behindBy: 0 })];
-  const deps = makeExecDeps();
+  let readyCalls = 0;
+  const deps = makeExecDeps({
+    requestReadyRefresh: async () => {
+      readyCalls++;
+      return { ok: false, error: new Error("must keep conflict repair path") };
+    },
+  });
 
   const result = await executePrBranchUpdates(actions, deps);
+  assertEquals(readyCalls, 0);
 
   assertEquals(result.ok, true);
   if (result.ok) {

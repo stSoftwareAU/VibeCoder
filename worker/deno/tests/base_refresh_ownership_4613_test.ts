@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import {
   acquireBaseRefreshOwner,
   type BaseRefreshOwnershipPort,
+  makeGitHubBaseRefreshOwnershipPort,
   reconcileBaseRefreshOwner,
   releaseBaseRefreshOwner,
 } from "../lib/base_refresh_ownership_4613.ts";
@@ -119,6 +120,7 @@ Deno.test("base refresh ownership expires and can be reconciled", async () => {
     workerId: "host-a",
     ttlSeconds: 10,
   });
+  if (!port.setNow) throw new Error("test port has no clock setter");
   port.setNow(111);
   assertEquals(
     await reconcileBaseRefreshOwner(port, "owner/repo", "main", () => "active"),
@@ -142,4 +144,147 @@ Deno.test("base refresh owner releases after failure, merge, or closure", async 
       { released: true, reason: status },
     );
   }
+});
+
+Deno.test("GitHub comment ownership serialises independent host ports", async () => {
+  const comments = new Map<
+    number,
+    Array<{
+      id: number;
+      body: string;
+      author: string;
+      created_at: string;
+    }>
+  >();
+  let nextId = 1;
+  let barrierEnabled = true;
+  let arrivals = 0;
+  let releaseBarrier!: () => void;
+  const barrier = new Promise<void>((resolve) => releaseBarrier = resolve);
+  const gh = async (args: string[]): Promise<string> => {
+    if (args[0] === "issue" && args[1] === "comment") {
+      const prNumber = Number(args[2]);
+      const rows = comments.get(prNumber) ?? [];
+      const id = nextId++;
+      rows.push({
+        id,
+        body: args[args.indexOf("--body") + 1]!,
+        author: "VibeCoderST",
+        created_at: new Date(id * 1000).toISOString(),
+      });
+      comments.set(prNumber, rows);
+      return `https://github.com/owner/repo/issues/${prNumber}#issuecomment-${id}`;
+    }
+    if (args[0] === "api" && args[1]?.includes("/comments?")) {
+      const prNumber = Number(args[1].split("/issues/")[1]?.split("/")[0]);
+      return JSON.stringify((comments.get(prNumber) ?? []).map((row) => ({
+        ...row,
+      })));
+    }
+    if (args[0] === "api" && args.includes("DELETE")) {
+      const id = Number(args.at(-1)?.split("/").at(-1));
+      for (const [prNumber, rows] of comments) {
+        comments.set(prNumber, rows.filter((row) => row.id !== id));
+      }
+      return "";
+    }
+    throw new Error(
+      `Unexpected GitHub ownership command: ${args.slice(0, 3).join(" ")}`,
+    );
+  };
+  const makePort = (workerId: string) =>
+    makeGitHubBaseRefreshOwnershipPort({
+      workerId,
+      ghCommandFn: gh,
+      sleepFn: async () => {
+        if (!barrierEnabled) return;
+        arrivals++;
+        if (arrivals === 2) releaseBarrier();
+        await barrier;
+      },
+      authorOptions: { fleetAuthors: ["VibeCoderST"] },
+      anchorPrForBase: async (_repo, base) => base === "main" ? 1 : 2,
+      prNumbersForBase: async (_repo, base) =>
+        base === "main" ? [1, 10, 11] : [2, 20],
+    });
+  const hostA = makePort("host-a");
+  const hostB = makePort("host-b");
+  const results = await Promise.allSettled([
+    acquireBaseRefreshOwner(hostA, {
+      repo: "owner/repo",
+      base: "main",
+      prNumber: 10,
+      headSha: "a".repeat(40),
+      workerId: "host-a",
+      ttlSeconds: 60,
+    }),
+    acquireBaseRefreshOwner(hostB, {
+      repo: "owner/repo",
+      base: "main",
+      prNumber: 11,
+      headSha: "b".repeat(40),
+      workerId: "host-b",
+      ttlSeconds: 60,
+    }),
+  ]);
+  barrierEnabled = false;
+  const winners = results.filter((result) =>
+    result.status === "fulfilled" && result.value.acquired
+  );
+  assertEquals(winners.length, 1);
+  const winnerResult = winners[0];
+  if (
+    !winnerResult || winnerResult.status !== "fulfilled" ||
+    !winnerResult.value.acquired
+  ) {
+    throw new Error("GitHub ownership race did not select one host");
+  }
+  assertEquals(
+    results.filter((result) => result.status === "rejected").length,
+    1,
+  );
+  const winner = winnerResult.value;
+  await releaseBaseRefreshOwner(
+    results[0]?.status === "fulfilled" && results[0].value.acquired
+      ? hostA
+      : hostB,
+    "owner/repo",
+    "main",
+    winner.ownerId,
+  );
+  assertEquals(
+    (await acquireBaseRefreshOwner(
+      results[0]?.status === "fulfilled" && results[0].value.acquired
+        ? hostB
+        : hostA,
+      {
+        repo: "owner/repo",
+        base: "main",
+        prNumber:
+          results[0]?.status === "fulfilled" && results[0].value.acquired
+            ? 11
+            : 10,
+        headSha: results[0]?.status === "fulfilled" && results[0].value.acquired
+          ? "b".repeat(40)
+          : "a".repeat(40),
+        workerId:
+          results[0]?.status === "fulfilled" && results[0].value.acquired
+            ? "host-b"
+            : "host-a",
+        ttlSeconds: 60,
+      },
+    )).acquired,
+    true,
+  );
+  assertEquals(
+    (await acquireBaseRefreshOwner(hostB, {
+      repo: "owner/repo",
+      base: "release",
+      prNumber: 20,
+      headSha: "c".repeat(40),
+      workerId: "host-b",
+      ttlSeconds: 60,
+    })).acquired,
+    true,
+  );
 });
