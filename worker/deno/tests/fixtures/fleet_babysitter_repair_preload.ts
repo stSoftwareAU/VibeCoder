@@ -48,6 +48,13 @@ function commandOutput(
       return "";
     }
     if (args[0] === "repo" && args[1] === "clone") return "";
+    // No cancelled runs, so the failed-CI repair proceeds to the agent.
+    if (
+      args[0] === "api" &&
+      args[1]?.startsWith("repos/owner/repo/actions/runs?head_sha=abc")
+    ) {
+      return "[]";
+    }
   }
   if (executable === "git") {
     if (args.includes("fetch") || args.includes("checkout")) return "";
