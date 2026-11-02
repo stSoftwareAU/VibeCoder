@@ -6,8 +6,21 @@
  * it". The worker has no access to branch protection from here, so any
  * PR-triggered job that runs the mutation tool and can fail the workflow is
  * treated as blocking. A job that is marked `continue-on-error`, or a step
- * that is, or a line that ends in `|| true`, cannot fail the workflow and so
- * does not count.
+ * that is, or a command line that ends in a no-op tail (`|| true`, `|| :`,
+ * `|| exit 0` or `|| /bin/true`; see `isNonFailing`), cannot fail the workflow
+ * and so does not count.
+ *
+ * Known limits:
+ * - A job that only calls a reusable workflow (`uses:`) is not inspected, so a
+ *   mutation run inside that called workflow is not detected.
+ * - Only cargo-mutants (`cargo mutants` or `cargo-mutants`, optionally with a
+ *   `+toolchain` word such as `cargo +nightly mutants`) and `deno task` with a
+ *   task name containing `mutat` are recognised. Other tools are not.
+ * - Any PR-triggered job counts. Job-level `if:` and path filters are not
+ *   evaluated, and branch protection is not read.
+ * - A no-op tail is taken to cover the whole logical line, so
+ *   `cargo mutants; echo done || true` is treated as non-failing even though
+ *   the `cargo mutants` failure would stop the step.
  *
  * Files that cannot be read or parsed are reported in `unreadable` rather than
  * being treated as non-blocking silently, so the caller can log them.
@@ -36,7 +49,7 @@ export interface CiMutationContract {
 
 type Mapping = Record<string, unknown>;
 
-const CARGO_MUTANTS = /\bcargo[ -]mutants\b/;
+const CARGO_MUTANTS = /\bcargo(?:\s+\+\S+)?[ -]mutants\b/;
 const DENO_MUTATION_TASK = /\bdeno\s+task\s+\S*mutat\S*/i;
 
 /** Only `*.yml` / `*.yaml` names are workflows. */
@@ -86,16 +99,61 @@ function triggersOnPullRequest(doc: Mapping): boolean {
   return false;
 }
 
+/** No-op tails that stop a command from failing the step, matched at line end. */
+const NON_FAILING_TAILS = [
+  "|| true",
+  "||true",
+  "|| :",
+  "|| exit 0",
+  "|| /bin/true",
+];
+
+/** A ` #` comment marker: a tail after it would sit inside the comment. */
+const COMMENT_MARKER = /(?:^|\s)#/;
+
+/**
+ * Whether a logical line ends in a no-op tail, so its command cannot fail the
+ * step. The line is trimmed and one trailing `;` removed before matching. A
+ * line with a ` #` comment marker is never non-failing, because the tail would
+ * sit inside the comment and the command would still fail the step.
+ */
+function isNonFailing(line: string): boolean {
+  if (COMMENT_MARKER.test(line)) return false;
+  const body = line.trim().replace(/;$/, "").trimEnd();
+  return NON_FAILING_TAILS.some((tail) => body.endsWith(tail));
+}
+
+/**
+ * The logical lines of a `run` script. A line ending in `\` continues onto the
+ * next line, so the two are joined with one space.
+ */
+function logicalLines(run: string): string[] {
+  const lines: string[] = [];
+  let carry: string | null = null;
+  for (const raw of run.split("\n")) {
+    const text: string = carry === null ? raw : `${carry} ${raw.trimStart()}`;
+    const trimmed: string = text.trimEnd();
+    if (trimmed.endsWith("\\")) {
+      carry = trimmed.slice(0, -1).trimEnd();
+    } else {
+      lines.push(text);
+      carry = null;
+    }
+  }
+  if (carry !== null) lines.push(carry);
+  return lines;
+}
+
 /**
  * Whether one `run` script contains a mutation-tool invocation that can fail
- * the step. Scans line by line; a line with `|| true` never fails.
+ * the step. Each logical line (see `logicalLines`) is checked unless it is
+ * non-failing (see `isNonFailing`).
  */
 function runFailsOnMutation(run: string): boolean {
-  for (const line of run.split("\n")) {
-    if (line.includes("|| true")) continue;
-    if (CARGO_MUTANTS.test(line) || DENO_MUTATION_TASK.test(line)) return true;
-  }
-  return false;
+  return logicalLines(run).some((line) =>
+    !isNonFailing(line) &&
+    (CARGO_MUTANTS.test(line) || DENO_MUTATION_TASK.test(line))
+  );
 }
 
 /** Whether a job runs the mutation tool in a step that can fail the job. */

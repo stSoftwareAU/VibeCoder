@@ -1530,7 +1530,10 @@ The file MUST contain:
    the covering tests; a mutation the tests do not catch is reported (to you
    once, then on the pull request) unless the summary names it as
    `` `path:line` `` with
-   `exempt (untestable): <reason>` (a non-empty reason), the same convention.
+   `exempt (untestable): <reason>` (a non-empty reason), the same convention. Where the repository's own CI runs a
+   blocking mutants job, that line does not clear the survivor: CI does not read
+   the summary, so the survivor must be killed by a test or excluded the way that
+   CI job allows.
    A named test that does not exist at the head is the same finding as
    above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct

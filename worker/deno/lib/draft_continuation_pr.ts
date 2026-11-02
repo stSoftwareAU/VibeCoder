@@ -19,6 +19,7 @@
  */
 
 import { withholdIssueClose } from "./missing_criterion_close_guard.ts";
+import { mdSafe } from "./mutation_gate.ts";
 
 /** Marks a PR body as a draft continuation (timed out, or criteria unmet). */
 export const DRAFT_CONTINUATION_MARKER = "<!-- vibe-draft-continuation -->";
@@ -194,8 +195,8 @@ export function buildMutationHoldDraftBody(
   body: string,
   hold: { job: string; workflow: string; comment: string },
 ): string {
-  const job = hold.job.replaceAll("`", "").replace(/[\r\n]+/g, " ");
-  const workflow = hold.workflow.replaceAll("`", "").replace(/[\r\n]+/g, " ");
+  const job = mdSafe(hold.job);
+  const workflow = mdSafe(hold.workflow);
   return [
     DRAFT_CONTINUATION_MARKER,
     "",

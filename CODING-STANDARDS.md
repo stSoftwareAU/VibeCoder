@@ -888,9 +888,10 @@ criteria or Definition of done, cannot be `exempt (untestable)`. Name the
 search so a reviewer can check it (Issue #3428). The diff-scoped mutation
 check (Issue #3393, `docs/mutation-check.md`) reports any added line whose
 mutation the tests do not catch; it does not stop the pull request, unless the
-repository's CI runs a blocking mutation job (Issue #4617), when a survivor that
-remains after the recovery turn raises the pull request as a draft. A fix to
-an existing PR re-checks every branch its own commits add, not only those a
+repository's CI runs a blocking mutation job (Issue #4617). There a survivor that
+remains after the recovery turn holds the pull request as a draft that is not
+auto-merged; on the deferral path it is raised ready for review, a known gap
+(`docs/mutation-check.md`). A fix to an existing PR re-checks every branch its own commits add, not only those a
 review finding named.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a

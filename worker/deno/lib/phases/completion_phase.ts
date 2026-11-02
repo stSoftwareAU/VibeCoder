@@ -2851,10 +2851,11 @@ async function completionBody(
       });
     }
     // Issue #4617: a survivor that remains on the pass after the recovery turn
-    // holds the PR as a draft. Assigned on every pass (undefined when no hold
-    // applies) because the state is reused across passes.
-    state.mutationHold = gate.ciBlock !== undefined &&
-        (state.summaryRuleBlocks?.length ?? 0) > 0
+    // holds the PR as a draft. The hold only matters on the pass that reaches
+    // PR creation: a CI block always blocks the gate, so the first pass returns
+    // for the recovery turn before any PR is created. Assigned on every pass
+    // (undefined when no hold applies) because the state is reused across passes.
+    state.mutationHold = gate.ciBlock !== undefined
       ? {
         job: gate.ciBlock.job,
         workflow: gate.ciBlock.workflow,
@@ -3563,8 +3564,11 @@ async function completionBody(
   });
 
   // Issue #4617: a held pull request is raised as a draft whose body says
-  // validation is incomplete. The deferred and REST paths below get the same
-  // body, but neither can open a draft (see the report on this change).
+  // validation is incomplete. The REST fallback below converts the PR to a
+  // draft after creation. The deferred-creation path (a GitHub secondary rate
+  // limit parked the PR; `lib/deferred_pr_drain.ts` opens it later over REST)
+  // cannot open a draft, so a held PR created that way is raised ready for
+  // review. This is a known gap.
   const createBody = state.mutationHold
     ? buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold)
     : prBody;

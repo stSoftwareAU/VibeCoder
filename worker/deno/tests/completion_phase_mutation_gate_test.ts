@@ -117,6 +117,8 @@ interface Scenario {
   repoConfig?: Record<string, unknown>;
   /** Written as `.github/workflows/mutants.yml` before the run (Issue #4617). */
   workflow?: string;
+  /** Makes `.github/workflows` a regular file, so reading it throws (Issue #4617). */
+  workflowsDirIsFile?: boolean;
   /** The branch already has an open PR, so the existing-PR path runs. */
   existingPrForBranch?: boolean;
   /** `gh pr create` fails on the primary quota, so the REST fallback opens the PR (Issue #4617). */
@@ -150,7 +152,13 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     recursive: true,
   });
   await Deno.writeTextFile(summaryPath, scenario.summary ?? SUMMARY);
-  if (scenario.workflow !== undefined) {
+  if (scenario.workflowsDirIsFile) {
+    await Deno.mkdir(`${repoPath}/.github`, { recursive: true });
+    await Deno.writeTextFile(
+      `${repoPath}/.github/workflows`,
+      "not a directory",
+    );
+  } else if (scenario.workflow !== undefined) {
     await Deno.mkdir(`${repoPath}/.github/workflows`, { recursive: true });
     await Deno.writeTextFile(
       `${repoPath}/.github/workflows/mutants.yml`,
@@ -851,4 +859,46 @@ Deno.test("completion - a held PR the REST fallback opens is converted to a draf
     "auto-merge is not armed",
   );
   assertEquals(outcome.finalisePrCalls, 0, "finalisePr is never called");
+});
+
+Deno.test("completion - a workflow lookup that throws is noted as non-blocking and the PR is raised ready", async () => {
+  // listWorkflowFiles rethrows a non-NotFound read error, so the completion
+  // phase's catch branch must log it and leave the survivor advisory.
+  const outcome = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflowsDirIsFile: true,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.claudeCalls, 1, "one in-session note");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(createCall(outcome).includes("--draft"), false, "raised ready");
+  assertEquals(
+    outcome.warnings.some((w) => w.includes("treated as non-blocking")),
+    true,
+    `warnings: ${JSON.stringify(outcome.warnings)}`,
+  );
+  assertEquals(outcome.comments.length, 1);
+  assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
+});
+
+Deno.test("completion - an unreadable workflow file is logged by name and does not hold the PR", async () => {
+  // A malformed workflow leaves CI's contract unknown. That is logged, but it
+  // is not a blocking job, so the survivor stays advisory and the PR is ready.
+  const outcome = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow: "jobs: [unclosed\n",
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(createCall(outcome).includes("--draft"), false, "raised ready");
+  assertEquals(
+    outcome.warnings.some((w) =>
+      w.includes("could not be read or parsed") && w.includes("mutants.yml")
+    ),
+    true,
+    `warnings: ${JSON.stringify(outcome.warnings)}`,
+  );
+  assertEquals(outcome.finalisePrCalls, 1, "auto-merge is armed");
 });

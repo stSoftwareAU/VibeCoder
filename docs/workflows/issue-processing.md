@@ -1448,7 +1448,9 @@ pre-PR verifier (#3395) and unmet criteria (#4146). Each is advice: the first
 report is one in-session note, and whatever remains is one pull-request
 comment (Issue #4234). The mutation check is the exception where the repository's
 CI runs a blocking mutation job (Issue #4617): a survivor that remains after the
-recovery turn raises the pull request as a draft that is not auto-merged (see
+recovery turn holds the pull request as a draft that is not auto-merged, except
+on the secondary-rate-limit deferral path, which raises it ready for review (a
+known gap; see
 [Diff-scoped mutation check](../mutation-check.md#repositories-with-a-blocking-ci-mutation-job)).
 The security-fix and changed-workflow gates do not —
 they report defects in the change, so they still stop the run.

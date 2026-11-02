@@ -1582,7 +1582,8 @@ export function evaluateMutationGate(
   };
 }
 
-function mdSafe(s: string): string {
+/** Strips backticks and line breaks so untrusted text is safe in Markdown. */
+export function mdSafe(s: string): string {
   return s.replaceAll("`", "").replace(/[\r\n]+/g, " ");
 }
 

@@ -2,11 +2,13 @@
  * Tests for lib/ci_mutation_contract.ts — whether the repository's CI blocks
  * on a mutation-testing job (Issue #4617).
  *
- * Covers: the cargo-mutants and `deno task *mutat*` invocations, the
- * continue-on-error exemptions at job and step level, the `|| true` exemption,
- * trigger shapes (string, array, object, `pull_request_target`), a missing
- * workflows directory, unreadable workflow files, mentions that are not in a
- * `run`, multi-line `run` blocks, and a pathological line that must not stall.
+ * Covers: the cargo-mutants and `deno task *mutat*` invocations (including a
+ * `+toolchain` word and line continuations), the continue-on-error exemptions
+ * at job and step level, the no-op tail exemptions (`|| true`, `|| :`,
+ * `|| exit 0`, `|| /bin/true`), trigger shapes (string, array, object,
+ * `pull_request_target`), a missing workflows directory, unreadable workflow
+ * files, mentions that are not in a `run`, multi-line `run` blocks, and
+ * pathological lines that must not stall.
  *
  * Each fixture is a fresh temporary repository, removed in `finally`.
  *
@@ -295,5 +297,160 @@ Deno.test("a 200000-space run line returns promptly without a match", async () =
   }, async (repo) => {
     const result = await findBlockingMutationJob(repo);
     assertEquals(result.blocking, null);
+  });
+});
+
+/**
+ * A pull_request workflow whose single step runs `script` as a block scalar, so
+ * shell punctuation such as `:` needs no YAML quoting.
+ */
+function prWorkflow(script: string): string {
+  const body = script.split("\n").map((line) => `          ${line}`).join("\n");
+  return [
+    "on: pull_request",
+    "jobs:",
+    "  mutants:",
+    "    steps:",
+    "      - run: |",
+    body,
+    "",
+  ].join("\n");
+}
+
+Deno.test("each no-op tail on a cargo mutants line is not blocking", async () => {
+  const tails = [
+    "|| true",
+    "||true",
+    "|| :",
+    "|| exit 0",
+    "|| /bin/true",
+    "|| true;",
+    "|| true ;",
+  ];
+  for (const tail of tails) {
+    await withRepo(
+      { "mutants.yml": prWorkflow(`cargo mutants ${tail}`) },
+      async (repo) => {
+        assertEquals(
+          await findBlockingMutationJob(repo),
+          { blocking: null, unreadable: [] },
+          `tail: ${tail}`,
+        );
+      },
+    );
+  }
+});
+
+Deno.test("a no-op tail after a comment marker does not exempt cargo mutants", async () => {
+  // In shell the `|| true` sits inside the comment, so the step still fails.
+  await withRepo(
+    { "mutants.yml": prWorkflow("cargo mutants # || true") },
+    async (repo) => {
+      assertEquals(await findBlockingMutationJob(repo), {
+        blocking: { workflow: "mutants.yml", job: "mutants" },
+        unreadable: [],
+      });
+    },
+  );
+});
+
+Deno.test("a trailing || true after an && chain is non-failing", async () => {
+  // `(cargo mutants && echo done) || true` exits 0 whether or not mutants fails.
+  await withRepo({
+    "mutants.yml": prWorkflow("cargo mutants && echo done || true"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a no-op tail on a different command does not exempt cargo mutants", async () => {
+  await withRepo({
+    "mutants.yml": prWorkflow('echo "|| true" ; cargo mutants'),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: { workflow: "mutants.yml", job: "mutants" },
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("cargo +toolchain mutants is blocking", async () => {
+  await withRepo({
+    "mutants.yml": prWorkflow("cargo +nightly mutants --in-place"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: { workflow: "mutants.yml", job: "mutants" },
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a line continuation joins cargo and mutants", async () => {
+  await withRepo({
+    "mutants.yml": prWorkflow(["cargo \\", "  mutants --in-place"].join("\n")),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: { workflow: "mutants.yml", job: "mutants" },
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a line continuation into a no-op tail is not blocking", async () => {
+  await withRepo({
+    "mutants.yml": prWorkflow(["cargo mutants \\", "  || true"].join("\n")),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("hostile: cargo then a 200000-char run returns promptly without a match", async () => {
+  await withRepo({
+    "mutants.yml": prWorkflow("cargo" + " ".repeat(200000) + "x"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("hostile: deno task with a 200000-char name and no mutat returns promptly", async () => {
+  await withRepo({
+    "check.yml": prWorkflow("deno task " + "a".repeat(200000)),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("hostile: cargo + with a 200000-char toolchain and no mutants returns promptly", async () => {
+  await withRepo({
+    "mutants.yml": prWorkflow("cargo +" + "x".repeat(200000)),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("hostile: a 200000-space run before a non-no-op tail returns promptly", async () => {
+  // The line does not end in a no-op tail, so cargo mutants still counts.
+  await withRepo({
+    "mutants.yml": prWorkflow("cargo mutants" + " ".repeat(200000) + "|| x"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: { workflow: "mutants.yml", job: "mutants" },
+      unreadable: [],
+    });
   });
 });
