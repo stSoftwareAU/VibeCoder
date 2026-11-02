@@ -56,10 +56,10 @@ both production callers reported by the verifier: `fix` calls
 `startBabysitterAgent`, which calls `babysitterProtectedPaths`.
 
 After merging main (which added the cancelled-CI re-run lookup from #4684), the
-offline repair preload fixture stubs the `repos/owner/repo/actions/runs?head_sha=…`
-lookup to return no cancelled runs, so the failed-CI repair still reaches the
-agent launch the test asserts on. This is a test-fixture change only; no
-production behaviour changed.
+offline repair preload fixture stubs the
+`repos/owner/repo/actions/runs?head_sha=…` lookup to return no cancelled runs,
+so the failed-CI repair still reaches the agent launch the test asserts on. This
+is a test-fixture change only; no production behaviour changed.
 
 Read the credential-boundary section of `docs/workflows/fleet-pr-babysitter.md`.
 Updated that manual and control C36 in `docs/THREAT-MODEL.md` to describe actual
