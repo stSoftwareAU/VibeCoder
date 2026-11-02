@@ -391,3 +391,7 @@ the selected configuration.
 Merge conflict repair: preserve both historical gitleaks fixture exemptions and
 the base credential-logging instruction, while retaining the platform-specific
 runner validation prompts and both prompt regression tests.
+
+Merge conflict repair: retain the base branch ancestor-check import and its
+regressions alongside the platform-aware repair-prompt alias. Both the stale
+GitHub conflict guard and the platform-specific prompt coverage remain intact.

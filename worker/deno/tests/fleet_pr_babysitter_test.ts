@@ -57,6 +57,7 @@ import {
 import {
   attemptKey,
   babysitterRtkInstruction,
+  baseAlreadyMerged,
   buildRepairPrompt as buildPlatformRepairPrompt,
   cancelledRunsToRerun,
   cloneForRepair,
@@ -1595,4 +1596,32 @@ Deno.test("a call that arrives while another is queued still waits for the runni
   b.resolve();
   await Promise.all([second, third]);
   assertEquals(starts, ["a", "b", "c"]);
+});
+
+// Issue #4739: GitHub flagged GRQ-AutoTrader#5082 as conflicting although its
+// base was already an ancestor of the head; the agent had nothing to resolve.
+Deno.test("a base already merged into the head is detected, a newer base is not", async () => {
+  const dir = await Deno.makeTempDir();
+  const git = async (...args: string[]) => {
+    const out = await new Deno.Command("git", { args, cwd: dir }).output();
+    assert(out.success, new TextDecoder().decode(out.stderr));
+  };
+  try {
+    await git("init", "-q", "-b", "main");
+    await git("config", "user.name", "Test");
+    await git("config", "user.email", "test@example.com");
+    await git("commit", "-q", "--allow-empty", "-m", "base");
+    await git("update-ref", "refs/remotes/origin/main", "HEAD");
+    await git("checkout", "-q", "-b", "feature");
+    await git("commit", "-q", "--allow-empty", "-m", "feature");
+    assertEquals(await baseAlreadyMerged(dir, "main"), true);
+
+    await git("checkout", "-q", "main");
+    await git("commit", "-q", "--allow-empty", "-m", "newer base");
+    await git("update-ref", "refs/remotes/origin/main", "HEAD");
+    await git("checkout", "-q", "feature");
+    assertEquals(await baseAlreadyMerged(dir, "main"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
