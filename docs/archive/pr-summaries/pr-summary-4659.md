@@ -108,6 +108,17 @@ Backend-only change; no UI file is touched.
 
 ## Test Plan
 
+- CI repair: `.github/gitleaks.toml` now exempts only the exact
+  `PARENT_CREDENTIAL` declaration of the synthetic environment variable name
+  used by the gate tests, including its historical copies before extraction
+  into the shared harness. No file-wide exception or scanner rule was removed.
+  Gitleaks 8.24.3 reproduced all three CI findings with
+  `detect --redact -v --exit-code=2 --report-format=sarif --report-path=results.sarif --log-level=debug`
+  and `--log-opts="--no-merges --first-parent 85e73ca2bc8a401344bc658673754b49e29e212f^..26682b2fe72de60f773735410cc1f099a6c5cf40"`.
+  The identical scan with the updated config passes (seven commits, no leaks).
+  Real-scanner stdin controls accept both exact declarations and still detect
+  the same value assigned to `OTHER_CREDENTIAL`. The workflow and action share
+  this config; no second config copy was found.
 - `deno task test:unit tests/untrusted_gate_spawn_test.ts tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/lib_sweep_coverage_test.ts`
   (from `worker/deno`): 84 passed in the parallel pass and 40 in the serial
   pass, 0 failed. `deno task check:manifests`, `deno fmt --check` and
