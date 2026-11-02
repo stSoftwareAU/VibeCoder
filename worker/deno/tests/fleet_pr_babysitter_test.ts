@@ -25,6 +25,7 @@ import {
   eligibleAuthor,
   reason,
   recoverTemporaryClones,
+  removeRepairDirs,
   requestedReviews,
   runRepairs,
   spawnBabysitterAgent,
@@ -664,4 +665,28 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
     assertStringIncludes(prompt, "reads commit history");
   }
+});
+
+// Issue #4710: a clone still being written by the agent's leftover test
+// processes could not be removed, and the error from `finally` replaced the
+// repair's real outcome. Clean-up warns and leaves it for a later pass.
+Deno.test("repair clean-up warns instead of throwing, and still removes the rest", async () => {
+  const removed: string[] = [];
+  const warnings: string[] = [];
+  await removeRepairDirs(
+    ["/tmp/clone", undefined, "/tmp/scratch"],
+    (path) => {
+      if (path === "/tmp/clone") {
+        return Promise.reject(new Error("Directory not empty (os error 66)"));
+      }
+      removed.push(path);
+      return Promise.resolve();
+    },
+    (message) => warnings.push(message),
+  );
+  assertEquals(removed, ["/tmp/scratch"]);
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0]!, "WARNING");
+  assertStringIncludes(warnings[0]!, "/tmp/clone");
+  assertStringIncludes(warnings[0]!, "Directory not empty");
 });

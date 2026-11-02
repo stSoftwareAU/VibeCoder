@@ -909,11 +909,35 @@ async function fix(
         lockCommentId: id,
       });
     } finally {
-      try {
-        if (dir) await Deno.remove(dir, { recursive: true });
-      } finally {
-        if (scratch) await Deno.remove(scratch, { recursive: true });
-      }
+      await removeRepairDirs([dir, scratch]);
+    }
+  }
+}
+
+/**
+ * Remove a repair's clone and scratch directories without ever throwing
+ * (Issue #4710). A removal can fail while processes the agent started are
+ * still writing there; an error thrown from `fix`'s `finally` would replace
+ * the repair's real outcome. A directory left behind is removed by
+ * {@link recoverTemporaryClones} once this pass has exited.
+ */
+export async function removeRepairDirs(
+  paths: Array<string | undefined>,
+  remove: (path: string) => Promise<void> = (path) =>
+    Deno.remove(path, { recursive: true }),
+  warn: (message: string) => void = (message) => console.warn(message),
+): Promise<void> {
+  for (const path of paths) {
+    if (!path) continue;
+    try {
+      await remove(path);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      warn(
+        `WARNING: could not remove babysitter directory ${path}: ${
+          error instanceof Error ? error.message : String(error)
+        }; a later pass removes it`,
+      );
     }
   }
 }
