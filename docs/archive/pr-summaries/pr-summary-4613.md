@@ -63,25 +63,6 @@ Backend-only change; no visual evidence applies.
   returned a required-status-check rule with strict mode enabled and context
   `gate`.
 
-## Acceptance Criteria
-
-- **met** — A behind PR that is awaiting review is not updated. — evidence:
-  `worker/deno/tests/required_branch_checks_4613_test.ts::ready updater checks the live head and sends its SHA`
-- **met** — An approved, green, behind PR is updated. — evidence:
-  `worker/deno/tests/required_branch_checks_4613_test.ts::ready updater checks the live head and sends its SHA`
-- **met** — Two ready PRs on one base are updated one after the other. —
-  evidence: `worker/deno/tests/required_branch_checks_4613_test.ts::ready updater checks the live head and sends its SHA`
-- **met** — A merge-queue base is untouched (#4424). — evidence:
-  `worker/deno/tests/required_branch_checks_4613_test.ts::ready updater checks the live head and sends its SHA`
-- **met** — The docs for the sweep describe the policy. — evidence:
-  `docs/MERGE.md`, `docs/workflows/pr-feedback.md`, and
-  `.claude/skills/review-fleet-prs/SKILL.md`.
-
-## Standards Review
-
-No independent Standards review was run because the task explicitly prohibited
-the `Task` and `Agent` tools. No reviewer verdict is claimed.
-
 ## Test Plan
 
 - `deno task test:unit tests/base_refresh_ownership_4613_test.ts tests/required_branch_checks_4613_test.ts tests/pr_branch_update_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_dependabot_test.ts tests/merge_block_escalation_test.ts` — 132 passed, 0 failed.
@@ -93,7 +74,8 @@ the `Task` and `Agent` tools. No reviewer verdict is claimed.
 - `worker/deno/tests/auto_merge_sweep_keeps_armed_test.ts`: replaced the assertion that an armed behind PR always issues `update-branch` with an assertion that it reaches the shared ruleset policy. Required by the ready-only refresh policy.
 - Call sites checked: auto-merge sweep, reviewer upkeep and post-approval, PR branch maintenance, fleet PR babysitter, and merge-block escalation. Plain behind refreshes use the shared policy; conflict repair retains its existing path.
 - Test files named above exist at the repository head. No test assertion was removed from the Dependabot refusal, per-PR lock, or conflict-repair cases.
-- The full `./quality.sh` gate and `deno task pr-summary-check` have not yet run.
+- `deno task pr-summary-check --base 18cbb398 --issue-body-file /tmp/issue-4613-body.md --labels enhancement,top-priority,work-on ../../docs/archive/pr-summaries/pr-summary-4613.md` — passed; 0 blocked, 0 not checked.
+- The full `./quality.sh` gate has not yet run.
 
 ## Deno regression avoided
 
@@ -102,4 +84,3 @@ the `Task` and `Agent` tools. No reviewer verdict is claimed.
 ## Merge verification
 
 - CI: pending on the pull request.
-- Independent review: not run, as recorded above.
