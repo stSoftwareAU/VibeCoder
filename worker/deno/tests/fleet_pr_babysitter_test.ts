@@ -641,6 +641,18 @@ Deno.test("agent browser limits hand the local gate to the runner", () => {
       prompt,
       "BABYSITTER_READY means your changes are ready for runner validation",
     );
+    // Issue #4677: an unrunnable check still does not discard a complete fix.
+    for (
+      const text of [
+        prompt,
+        buildRepairPrompt(why, 1, "owner/repo", "", "boom"),
+      ]
+    ) {
+      assertStringIncludes(
+        text,
+        "does not by itself withhold BABYSITTER_READY when the rest of the fix is complete",
+      );
+    }
     assertStringIncludes(
       prompt,
       "A runner check failure is returned for repair before any commit or push",

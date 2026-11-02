@@ -17,9 +17,10 @@ separate sandbox that denies the worker configuration, configured credential
 paths, the user's Keychains directory and `securityd`; it receives no
 credential-shaped environment variables and keeps the clone's `.git` read-only.
 The runner permits only named logging, notification, font and WindowServer
-Mach lookups, plus registration of browser rendezvous and Crashpad name
-prefixes. Process/container and file-service lookups remain denied; lookup
-alone cannot authorise Chromium's
+Mach lookups, plus lookup and registration of browser rendezvous and
+Crashpad name prefixes (children look up the rendezvous server their parent
+registers). Process/container and file-service lookups remain denied; a named
+lookup alone cannot authorise Chromium's
 `bootstrap_check_in` during startup. Registration is limited to those browser
 prefixes rather than arbitrary system service names.
 The selected babysitter App key and its canonical target are denied even when
@@ -39,6 +40,19 @@ before committing. The gate runs in its own process group; the 15-minute
 timeout sends SIGKILL to the whole group and closes inherited output pipes. Git staging, commit and push disable hooks as
 defence in depth. The .git and securityd denials follow overlapping allows in
 the profile. A retry may also replace the first PR-description proposal.
+Before it starts any Codex session on macOS, the runner proves the gate can
+run: when the clone has a `quality.sh`, it applies the same sandbox profile to
+a fixed `/usr/bin/true` probe. An unavailable sandbox (for example
+`sandbox_apply: Operation not permitted`) skips that PR with no attempt record
+and no agent session, so a watch pass does not spend a repair session on every
+cycle; the same classification after the agent finishes remains as a backstop.
+Browser cache variables (`PLAYWRIGHT_BROWSERS_PATH`, `CYPRESS_CACHE_FOLDER`,
+`PUPPETEER_CACHE_DIR`) that the operator has not set default to fresh
+directories under repair scratch that hold links to the host's installed
+builds (dot entries such as installer locks are not mirrored). They sit inside
+the gate's write grant, so a gate that runs `playwright install` can create
+its lock and fetch a missing revision, while installed builds are reused.
+Operator-set values are left unchanged.
 An unavailable sandbox is reported and prevents a push so a later pass can
 retry. Repositories without `quality.sh` have no runner-owned local gate. After
 validation, the babysitter checks for

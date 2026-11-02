@@ -19,14 +19,24 @@ registration prefixes while retaining the credential boundary from #4593.
 
 ### Essential Design Decisions
 
-- Permit only named logging, notification, font and WindowServer Mach lookups.
-  Keep browser rendezvous/Crashpad registration prefixes; no unconditional Mach
-  lookup grant or process/container/file-service grant is present.
-- Probe sandbox startup with fixed /usr/bin/true before repository code. A
-  nonzero probe is unavailable, gets no agent retry, and clears the attempt.
-- Preserve explicit browser cache variables; default Playwright, Cypress and
-  Puppeteer caches to their installed locations under the real host home
-  before setting scratch HOME.
+- Permit only named logging, notification, font and WindowServer Mach lookups,
+  plus lookup and registration of the browser rendezvous/Crashpad name
+  prefixes (a child looks up the rendezvous server its parent registers); no
+  unconditional Mach lookup grant or process/container/file-service grant is
+  present. The list is reasoned from Chromium's behaviour and is not yet
+  measured on macOS.
+- Probe sandbox startup with fixed /usr/bin/true before any agent session
+  (`checkBabysitterValidationCapability`, run once the clone exists and skipped
+  when the clone has no quality.sh). An unavailable result skips the PR with no
+  attempt record and no agent session, so a `--watch` pass cannot start a
+  session every cycle. The same probe inside validation remains a backstop: a
+  nonzero probe there is unavailable, gets no agent retry, and clears the
+  attempt.
+- Preserve explicit browser cache variables. An unset Playwright, Cypress or
+  Puppeteer cache defaults to a fresh directory under scratch (inside the
+  gate's write grant) holding links to the host's installed builds, so the gate
+  reuses them and can still run an installer; installer state (dot entries)
+  is not mirrored.
 - Place the .git write and securityd lookup denials after every overlapping
   allow. Disable Git hooks during staging, commit and push as defence in depth.
 - Select the platform before inspecting quality.sh. Linux retains agent
@@ -73,7 +83,7 @@ registration prefixes while retaining the credential boundary from #4593.
 
 ## Evidence
 
-- Focused babysitter suites passed: 103 tests, no failures or ignored cases.
+- Focused babysitter suites passed: 106 tests, no failures or ignored cases.
   The live browser test is in `worker/deno/integration/fleet_babysitter_browser.ts`,
   outside unit discovery. The body-proposal test observes `body-updated` and
   asserts the applied description, including its closing reference.
@@ -130,8 +140,8 @@ registration prefixes while retaining the credential boundary from #4593.
 ## Test Plan
 
 - `deno task test tests/fleet_babysitter_repair_test.ts tests/fleet_babysitter_validation_test.ts tests/fleet_pr_babysitter_test.ts tests/fleet_babysitter_app_test.ts < /dev/null`
-  — 103 passed, zero failed or ignored. The gate-style `deno task test:unit`
-  invocation also passed all 103 tests and its time-budget check. Includes ordering, planted hook,
+  — run as `deno task test:unit` with the same four files: 106 passed, zero
+  failed or ignored. Includes ordering, planted hook,
   Linux script shapes, platform prompts, sandbox-apply failure and inherited-pipe
   timeout regressions. Timeout coverage injects spawn and signal functions: no
   real process-group signal runs in the unit suite. It asserts -pid/SIGKILL,
@@ -182,39 +192,37 @@ the sandbox-protected GitHub configuration.
 
 Review repair for PR #4716:
 
-- Replaced the unconditional Mach lookup rule with a fixed named allowlist;
-  SECURITY.md, C37 and the operator manual now describe that grant. Added a
-  live native bootstrap lookup probe for cfprefsd.agent, a file service excluded
-  from the list, with an unsandboxed positive control.
-- Added a fixed-command sandbox startup probe and unit/CLI coverage of
-  sandbox_apply refusal. The CLI observes only agent-1, no gate or repair retry,
-  no staging/commit/push, and an empty attempt record.
-- Kept installed browser caches visible despite scratch HOME. Tests cover all
-  three host defaults and explicit environment overrides.
-- Replaced the real-process timeout test with injected spawn/signalling seams.
-  Existing timeout exit, captured output and bounded-return assertions remain;
-  added exact group target and destroyed-stream assertions. The old wildcard
-  Mach assertion now requires a named rule and rejects the wildcard, as the
-  review explicitly requests.
-- Full local quality.sh passed formatter, lint, type check, completeness,
-  Markdown, Mermaid and all source/workflow boundary checks. Its Deno 2.9.5
-  parallel unit pass panicked with the permission-restoration runtime bug;
-  serial tests did not run. Release-tag reconciliation cannot read protected
-  gh config. Semgrep, pinned Checkov and operator config integration were
-  unavailable. Base PR #4718 passes its gate and all four unit shards in CI,
-  confirmed with gh.
-- Retried test:browser with installed Google Chrome. A fixed true-command
-  positive control fails at sandbox startup with sandbox_apply: Operation not
-  permitted. Neither Chromium operation, the required Mach list measurement,
-  nor OS-level credential/Mach denials can be verified inside this host's
-  enclosing sandbox. The integration assertions remain enforced and the
-  acceptance criterion remains partial.
-- The proposed PR description is the complete updated archive text, with no
-  closing reference, so merging does not close #4674 while evidence is partial.
+- The Mach grant is a fixed named allowlist with no unconditional lookup, plus
+  lookup and registration for the four browser name prefixes. A unit test
+  rejects any lookup rule that is not a named or browser-prefix rule and
+  requires each prefix; SECURITY.md, C37 and the operator manual describe it.
+  The integration task has a native bootstrap lookup probe for cfprefsd.agent
+  with an unsandboxed positive control. None of this has run on macOS.
+- The sandbox startup probe runs before any agent session. The probe-failure
+  CLI test runs two passes over the same head and observes no agent event, no
+  attempt record and no staging, commit or push. With the pre-agent check
+  removed, the same test failed because each pass started `agent-1`.
+- Default browser caches are scratch directories linking the host's installed
+  builds. A unit test checks that each default is inside the scratch grant,
+  resolves the host build (Puppeteer one level deeper), does not mirror
+  installer state and tolerates the installer creating its own lock; another
+  test shows an operator-set value is unchanged.
+- The macOS repair prompt again says a check the Codex sandbox cannot run
+  (CI-only, or covered by the runner's quality.sh) does not by itself withhold
+  BABYSITTER_READY when the rest of the fix is complete. The test for all
+  three repair kinds asserts it for the first prompt and a runner-failure retry
+  prompt, next to the runner-ownership assertions; Linux keeps its own.
+- Timeout coverage uses injected spawn/signal seams, with exact group target
+  and destroyed-stream assertions.
+- Remaining and unverified: `deno task test:browser` has not passed on macOS;
+  this host refuses nested `sandbox-exec` with `sandbox_apply: Operation not
+  permitted`, so neither Chromium, the Mach list nor OS-level credential and
+  Mach denials are verified. The acceptance criterion stays partial and the
+  description carries no closing reference, so merging leaves #4674 open.
 
-Regression red checks: temporarily restoring wildcard Mach lookup, removing
-browser-cache defaults, deleting the sandbox startup probe, and signalling
-the positive PID instead of the negative group PID each made its targeted
-test fail. All mutations were restored. The final gate-style focused run
-passed 103 tests with zero failures or ignored cases; final formatting,
-targeted lint and frozen/locked type checking passed.
+Regression red checks: removing the pre-agent capability check failed the
+two-pass probe CLI test; the earlier mutations (wildcard Mach lookup, browser
+cache defaults, deleted in-validation probe, positive instead of negative group
+PID) each failed their targeted test and were restored. Final formatting,
+lint and type checking passed; `deno task test:unit` over the four babysitter
+suites passed 106 tests.

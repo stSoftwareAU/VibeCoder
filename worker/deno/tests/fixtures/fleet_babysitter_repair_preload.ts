@@ -9,7 +9,15 @@ const root = Deno.env.get("BABYSITTER_REPAIR_FIXTURE");
 if (!root) throw new Error("BABYSITTER_REPAIR_FIXTURE is required");
 const scenario = Deno.env.get("BABYSITTER_REPAIR_SCENARIO");
 const repair = scenario !== undefined;
-const events: string[] = [];
+// A later pass over the same fixture continues the earlier pass's record.
+const events: string[] = (() => {
+  try {
+    return JSON.parse(Deno.readTextFileSync(`${root}/events.json`));
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    return [];
+  }
+})();
 let agentCalls = 0;
 let gateCalls = 0;
 let renewLock: (() => void) | undefined;

@@ -14,6 +14,7 @@ async function repairScenario(
     appliedBody: string | undefined;
     proposedBody: string | undefined;
   }) => void,
+  passes = 1,
 ): Promise<void> {
   const root = await Deno.realPath(await Deno.makeTempDir());
   try {
@@ -63,47 +64,62 @@ async function repairScenario(
     assert(info.ok);
     assert(info.value.success, info.value.stderr);
     const { denoDir } = JSON.parse(info.value.stdout);
-    const output = await runWithTimeout(Deno.execPath(), [
-      "run",
-      "--allow-all",
-      "--cached-only",
-      "--config",
-      new URL("../deno.json", import.meta.url).pathname,
-      "--preload",
-      new URL("./fixtures/fleet_babysitter_repair_preload.ts", import.meta.url)
-        .pathname,
-      new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
-      "--repo=owner/repo",
-      "--pr=1",
-    ], {
-      cwd: root,
-      timeoutMs: 20_000,
-      clearEnv: true,
-      env: {
-        HOME: home,
-        TMPDIR: `${root}/tmp`,
-        XDG_STATE_HOME: `${root}/state`,
-        ...(scenario === "default-config" ? {} : {
-          CONFIG_PATH: scenario === "relative-config"
-            ? "operator-config.json"
-            : configPath,
-        }),
-        BABYSITTER_REPAIR_FIXTURE: root,
-        BABYSITTER_REPAIR_SCENARIO: scenario,
-        DENO_DIR: denoDir,
-      },
-    });
+    const runPass = () =>
+      runWithTimeout(Deno.execPath(), [
+        "run",
+        "--allow-all",
+        "--cached-only",
+        "--config",
+        new URL("../deno.json", import.meta.url).pathname,
+        "--preload",
+        new URL(
+          "./fixtures/fleet_babysitter_repair_preload.ts",
+          import.meta.url,
+        )
+          .pathname,
+        new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
+        "--repo=owner/repo",
+        "--pr=1",
+      ], {
+        cwd: root,
+        timeoutMs: 20_000,
+        clearEnv: true,
+        env: {
+          HOME: home,
+          TMPDIR: `${root}/tmp`,
+          XDG_STATE_HOME: `${root}/state`,
+          ...(scenario === "default-config" ? {} : {
+            CONFIG_PATH: scenario === "relative-config"
+              ? "operator-config.json"
+              : configPath,
+          }),
+          BABYSITTER_REPAIR_FIXTURE: root,
+          BABYSITTER_REPAIR_SCENARIO: scenario,
+          DENO_DIR: denoDir,
+        },
+      });
+    // Each pass is a fresh process over the same state directory and head.
+    let output = await runPass();
+    for (let pass = 1; pass < passes; pass++) output = await runPass();
     assert(output.ok);
-    const events: string[] = JSON.parse(
-      await Deno.readTextFile(`${root}/events.json`),
-    );
+    // A pass that starts no agent records no event and no attempt.
+    let events: string[] = [];
+    try {
+      events = JSON.parse(await Deno.readTextFile(`${root}/events.json`));
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
     const attempts: string[] = [];
-    for await (
-      const entry of Deno.readDir(
-        `${root}/state/vibe-coder/fleet-pr-babysitter`,
-      )
-    ) {
-      attempts.push(entry.name);
+    try {
+      for await (
+        const entry of Deno.readDir(
+          `${root}/state/vibe-coder/fleet-pr-babysitter`,
+        )
+      ) {
+        attempts.push(entry.name);
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
     let appliedBody: string | undefined;
     try {
@@ -260,7 +276,9 @@ for (const scenario of ["linux-symlink", "linux-oversized"]) {
   });
 }
 
-Deno.test("babysitter CLI releases attempt without a repair retry when sandbox apply fails", async () => {
+Deno.test("babysitter CLI starts no agent and records no attempt when sandbox apply fails", async () => {
+  // Two passes over the same head: the probe fails before any agent session,
+  // so a repeated pass cannot start one either.
   await repairScenario("probe-unavailable", (result) => {
     assertEquals(result.success, false);
     assertStringIncludes(result.stderr, "Runner validation unavailable");
@@ -268,8 +286,8 @@ Deno.test("babysitter CLI releases attempt without a repair retry when sandbox a
       result.stderr,
       "sandbox_apply: Operation not permitted",
     );
-    assertEquals(result.events, ["agent-1"]);
+    assertEquals(result.events, []);
     assertEquals(result.attempts, []);
     assertEquals(result.appliedBody, undefined);
-  });
+  }, 2);
 });

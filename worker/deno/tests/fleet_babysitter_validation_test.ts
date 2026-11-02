@@ -9,6 +9,7 @@ import {
   babysitterValidationEnv,
   BabysitterValidationError,
   buildBabysitterValidationProfile,
+  checkBabysitterValidationCapability,
   runBabysitterValidation,
   runIsolatedCommand,
   validateWithSingleRepair,
@@ -309,18 +310,16 @@ Deno.test("successful runner check uses an isolated sandbox and environment", as
               ? ["/usr/bin/true"]
               : ["/bin/bash", "./quality.sh"],
           );
-          assertEquals(
-            options.env.PLAYWRIGHT_BROWSERS_PATH,
-            `${home}/Library/Caches/ms-playwright`,
-          );
-          assertEquals(
-            options.env.CYPRESS_CACHE_FOLDER,
-            `${home}/Library/Caches/Cypress`,
-          );
-          assertEquals(
-            options.env.PUPPETEER_CACHE_DIR,
-            `${home}/.cache/puppeteer`,
-          );
+          // Unset caches default inside the gate's write grant (scratch).
+          for (
+            const name of [
+              "PLAYWRIGHT_BROWSERS_PATH",
+              "CYPRESS_CACHE_FOLDER",
+              "PUPPETEER_CACHE_DIR",
+            ]
+          ) {
+            assert(options.env[name]!.startsWith(`${scratch}/`), name);
+          }
           assertEquals(options.cwd, await Deno.realPath(dir));
           assertEquals(options.env.HOME, scratch);
           assertEquals(options.env.TMPDIR, scratch);
@@ -891,8 +890,27 @@ Deno.test("validation only grants named Mach services", () => {
     line.startsWith("(allow mach-lookup")
   );
   assert(lookups.length > 0);
+  // Named services or the browser's own rendezvous prefixes, never a blanket.
   for (const line of lookups) {
-    assert(line.startsWith("(allow mach-lookup (global-name "));
+    assert(
+      line.startsWith('(allow mach-lookup (global-name "') ||
+        line.startsWith('(allow mach-lookup (global-name-prefix "'),
+    );
+  }
+  for (
+    const prefix of [
+      "org.chromium.Chromium.MachPortRendezvousServer.",
+      "com.google.Chrome.MachPortRendezvousServer.",
+      "com.google.chrome.for.testing.MachPortRendezvousServer.",
+      "org.chromium.crashpad.",
+    ]
+  ) {
+    assert(
+      lookups.includes(
+        `(allow mach-lookup (global-name-prefix ${JSON.stringify(prefix)}))`,
+      ),
+      prefix,
+    );
   }
   assert(!profile.includes('(global-name "com.apple.cfprefsd.agent")'));
 });
@@ -908,4 +926,174 @@ Deno.test("browser cache overrides survive the environment allowlist", () => {
     CYPRESS_CACHE_FOLDER: "/installed/cypress",
     PUPPETEER_CACHE_DIR: "/installed/puppeteer",
   });
+});
+
+Deno.test("default browser caches are writable scratch dirs linking the host's builds", async () => {
+  const dir = await Deno.realPath(await Deno.makeTempDir());
+  const scratch = await Deno.realPath(await Deno.makeTempDir());
+  const home = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\n");
+    const playwright = `${home}/Library/Caches/ms-playwright`;
+    const cypress = `${home}/Library/Caches/Cypress`;
+    const puppeteer = `${home}/.cache/puppeteer`;
+    await Deno.mkdir(`${playwright}/chromium-1`, { recursive: true });
+    await Deno.mkdir(`${playwright}/.links`, { recursive: true });
+    await Deno.mkdir(`${cypress}/13.0.0`, { recursive: true });
+    await Deno.mkdir(`${puppeteer}/chrome/mac-1`, { recursive: true });
+    const seen: Record<string, string>[] = [];
+    await runBabysitterValidation(dir, scratch, `${home}/config.json`, home, {
+      platform: "darwin",
+      sandboxExec: "/usr/bin/sandbox-exec",
+      env: { PATH: "/usr/bin", HOME: home },
+      run: async (_binary, _args, options) => {
+        const env = options.env;
+        seen.push(env);
+        // Writable (inside the grant) and resolving the host's installed builds.
+        for (
+          const [name, host, entry] of [
+            ["PLAYWRIGHT_BROWSERS_PATH", playwright, "chromium-1"],
+            ["CYPRESS_CACHE_FOLDER", cypress, "13.0.0"],
+            ["PUPPETEER_CACHE_DIR", puppeteer, "chrome/mac-1"],
+          ] as const
+        ) {
+          const cache = env[name]!;
+          assert(cache.startsWith(`${scratch}/`), name);
+          assertEquals(
+            await Deno.realPath(`${cache}/${entry}`),
+            await Deno.realPath(`${host}/${entry}`),
+          );
+          // An installer's own state is not mirrored; it can create its own.
+          await Deno.writeTextFile(`${cache}/.lock`, "");
+        }
+        await assertRejects(() =>
+          Deno.lstat(`${env.PLAYWRIGHT_BROWSERS_PATH}/.links`)
+        );
+        return { success: true, code: 0, stdout: "", stderr: "" };
+      },
+    });
+    assertEquals(seen.length, 2);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(scratch, { recursive: true });
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("an operator browser cache value is left unchanged", async () => {
+  const dir = await Deno.realPath(await Deno.makeTempDir());
+  const scratch = await Deno.realPath(await Deno.makeTempDir());
+  const home = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\n");
+    let playwright: string | undefined;
+    await runBabysitterValidation(dir, scratch, `${home}/config.json`, home, {
+      platform: "darwin",
+      sandboxExec: "/usr/bin/sandbox-exec",
+      env: {
+        PATH: "/usr/bin",
+        HOME: home,
+        PLAYWRIGHT_BROWSERS_PATH: "/opt/operator-browsers",
+      },
+      run: (_binary, _args, options) => {
+        playwright = options.env.PLAYWRIGHT_BROWSERS_PATH;
+        return Promise.resolve({
+          success: true,
+          code: 0,
+          stdout: "",
+          stderr: "",
+        });
+      },
+    });
+    assertEquals(playwright, "/opt/operator-browsers");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(scratch, { recursive: true });
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("capability check runs the probe without running the gate", async () => {
+  const dir = await Deno.realPath(await Deno.makeTempDir());
+  const scratch = await Deno.realPath(await Deno.makeTempDir());
+  const home = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const commands: string[][] = [];
+    const options = {
+      platform: "darwin",
+      sandboxExec: "/usr/bin/sandbox-exec",
+      run: (_binary: string, args: string[]) => {
+        commands.push(args.slice(2));
+        return Promise.resolve({
+          success: !args.includes("/usr/bin/true") || commands.length > 1,
+          code: 71,
+          stdout: `${home}/config.json`,
+          stderr: "sandbox_apply: Operation not permitted",
+        });
+      },
+    };
+    // No quality.sh: nothing to run, so no probe.
+    await checkBabysitterValidationCapability(
+      dir,
+      scratch,
+      `${home}/config.json`,
+      home,
+      options,
+    );
+    assertEquals(commands, []);
+    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\nexit 0\n");
+    const error = await assertRejects(
+      () =>
+        checkBabysitterValidationCapability(
+          dir,
+          scratch,
+          `${home}/config.json`,
+          home,
+          options,
+        ),
+      BabysitterValidationError,
+      "sandbox_apply: Operation not permitted",
+    );
+    assertEquals(error.kind, "unavailable");
+    assertEquals(commands, [["/usr/bin/true"]]);
+    // A working probe passes, and still never runs quality.sh.
+    commands.push([]);
+    await checkBabysitterValidationCapability(
+      dir,
+      scratch,
+      `${home}/config.json`,
+      home,
+      options,
+    );
+    assertEquals(commands.slice(2), [["/usr/bin/true"]]);
+    // Linux validates in the agent; another host has no sandbox at all.
+    await checkBabysitterValidationCapability(
+      dir,
+      scratch,
+      `${home}/config.json`,
+      home,
+      {
+        platform: "linux",
+      },
+    );
+    const unsupported = await assertRejects(
+      () =>
+        checkBabysitterValidationCapability(
+          dir,
+          scratch,
+          `${home}/config.json`,
+          home,
+          {
+            platform: "windows",
+          },
+        ),
+      BabysitterValidationError,
+      "macOS sandbox is required",
+    );
+    assertEquals(unsupported.kind, "unavailable");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(scratch, { recursive: true });
+    await Deno.remove(home, { recursive: true });
+  }
 });
