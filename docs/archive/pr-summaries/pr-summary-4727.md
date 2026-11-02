@@ -90,7 +90,7 @@ URL, which points at that local repository).
 ## Test Plan
 
 - `deno task test:unit tests/fleet_pr_babysitter_test.ts` (from `worker/deno`):
-  46 passed, 0 failed.
+  `tests/fleet_pr_babysitter_test.ts` (47 tests at head): 47 passed, 0 failed.
 - Edited test `failed clone is attempted once and preserves its original error`:
   rewritten for the new `deps` argument (the old third argument was a gh
   runner). Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
@@ -120,8 +120,9 @@ URL, which points at that local repository).
   test red. `defaultRemoteUrl` now takes a gh seam (default `runGhCommand`) and
   is exported for its test.
 - Fixture mutations: the `gh config get git_protocol` branch now answers `ssh`
-  and the `clone`/`set-url` branches record their argv, which the app test
-  asserts, so replacing the return value or the matcher goes red. Mutation-check
+  and the `clone` branch records its argv (`clone-calls.log`) and the `set-url`
+  branch records the URL it is given (`origin-url`), which the app test asserts,
+  so replacing the return value or the matcher goes red. Mutation-check
   follow-up (PR #4730): the fixture's `mkdirSync` no longer passes
   `{ recursive: true }` (the code under test creates the mirror root first, so
   the flag was inert) and the `set-url` branch is one comparison,
@@ -133,9 +134,10 @@ URL, which points at that local repository).
 - Failure-reason test: the failed-fetch test asserts git's real stderr text
   (observed from real git) appears in the error.
 - `deno task test:unit tests/fleet_pr_babysitter_test.ts
-  tests/fleet_babysitter_app_test.ts tests/fleet_babysitter_sandbox_test.ts`:
-  90 passed, 0 failed. `deno fmt --check`, `deno lint` and `deno check` on the
-  changed files: clean.
+  tests/fleet_babysitter_app_test.ts`:
+  `tests/fleet_pr_babysitter_test.ts` (47 tests at head) and
+  `tests/fleet_babysitter_app_test.ts` (17 tests at head), all passed, 0 failed.
+  `deno fmt --check`, `deno lint` and `deno check` on the changed files: clean.
 - `./quality.sh`: the first run failed only in `deno tests` on
   `tests/fleet_babysitter_app_test.ts` ("production repair forwards CONFIG_PATH
   and denies canonical credential targets"), whose fixture
