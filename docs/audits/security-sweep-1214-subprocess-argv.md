@@ -92,7 +92,9 @@ this class. The milestone resolution gate's `spawnTask`
 are now routed through `worker/deno/lib/untrusted_gate_spawn.ts`, which gives
 the child an allowlisted environment, starts it with `clearEnv: true`, and runs
 it as the untrusted account where one is available. Declared
-`quality_credentials` are not threaded to the milestone sync path.
+`quality_credentials` are resolved from the trusted per-repository configuration
+and carried through both gates, including the merge-only path. Undeclared
+credentials remain excluded.
 
 ## Findings filed, not fixed here
 

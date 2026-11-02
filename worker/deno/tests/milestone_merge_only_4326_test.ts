@@ -864,3 +864,54 @@ Deno.test("merge-only e2e - root Cargo cannot hide a failing nested Deno resolut
     await Deno.remove(f.root, { recursive: true });
   }
 });
+
+Deno.test("configured milestone sync credentials reach both gates and mint failures refuse both", async () => {
+  const task = `${Deno.execPath()} run --allow-env check.ts`;
+  await withTree({
+    "deno.json": JSON.stringify({ tasks: { check: task, "test:unit": task } }),
+    "check.ts":
+      'if (Deno.env.get("DECLARED_TOKEN") !== "fixture+= spaces") throw new Error("declared credential missing");\n' +
+      'if (Deno.env.get("GH_TOKEN") !== undefined) throw new Error("undeclared credential inherited");\n',
+  }, async (dir) => {
+    for (const mergeOnly of [undefined, REASON]) {
+      for (const fails of [false, true]) {
+        await syncWithMergeOnlyBindings({
+          syncFn: async (
+            _branch,
+            _base,
+            _options,
+            _repo,
+            merge,
+            resolution,
+          ) => {
+            assert(merge && resolution);
+            for (const gate of [merge, resolution]) {
+              const outcome = await gate(dir);
+              assertEquals(
+                outcome.status,
+                fails ? "failed" : "passed",
+                outcome.output,
+              );
+              if (fails) {
+                assertStringIncludes(outcome.output, "Minting credentials");
+              }
+            }
+            return { ok: true, value: { message: "checked fixture gates" } };
+          },
+          milestoneBranch: MILESTONE,
+          defaultBranch: "main",
+          options: { cwd: dir },
+          repo: "owner/repo",
+          mergeOnly,
+          agentFn: undefined,
+          logger: undefined,
+          qualityCredentials: {
+            mint: fails
+              ? "exit 23"
+              : "printf 'DECLARED_TOKEN=fixture+= spaces\\n'",
+          },
+        });
+      }
+    }
+  });
+});

@@ -237,9 +237,9 @@ export const spawnTask = async (
  */
 export async function verifyResolvedTree(
   repoDir: string,
-  runner: ResolutionTaskRunner = spawnTask,
+  runner: ResolutionTaskRunner | undefined = undefined,
   /** The Issue #974 type check. Injected in tests; the real gate otherwise. */
-  typeCheck: MergeGateFn = checkMergedTree,
+  typeCheck: MergeGateFn | undefined = undefined,
   /** Reads the clock. Injected in tests so the budget is deterministic. */
   now: () => number = () => Date.now(),
   /**
@@ -249,6 +249,7 @@ export async function verifyResolvedTree(
    */
   skipCargoBuild: () => Promise<boolean> = () =>
     shouldSkipEphemeralCargoBuild(repoDir),
+  spawnDeps: UntrustedGateSpawnDeps = {},
 ): Promise<MergeGateOutcome> {
   // A tree that cannot be read is a verification that could not be run.
   try {
@@ -275,7 +276,11 @@ export async function verifyResolvedTree(
   // to a whole-tree `deno check` where the manifest names no `check` task.
   // Re-implementing it here would quietly drop that fallback, and a
   // resolution pushed without any type check is the state #974 exists to end.
-  const typed = await typeCheck(repoDir);
+  const typed = await (typeCheck ??
+    ((dir) => checkMergedTree(dir, undefined, undefined, spawnDeps)))(
+      repoDir,
+    );
+  runner ??= (task) => spawnTask(task, spawnDeps);
   if (typed.status !== "passed") {
     return typed.status === "failed" ? typed : {
       status: "skipped",

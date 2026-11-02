@@ -231,6 +231,8 @@ export async function runWithTimeout(
     cwd?: string;
     timeoutMs: number;
     quiet?: boolean;
+    /** Safe diagnostic label when argv contains credentials. */
+    commandLabel?: string;
     /** Environment entries to set on the child. */
     env?: Record<string, string>;
     /** Start from an empty environment rather than inheriting the worker's. */
@@ -265,7 +267,8 @@ export async function runWithTimeout(
     };
   }
 
-  const commandLabel = subprocessCommandLabel(executable, args);
+  const commandLabel = options.commandLabel ??
+    subprocessCommandLabel(executable, args);
   const timeoutMs = clampTimeoutToRunTimeline(requestedMs, commandLabel);
 
   const controller = new AbortController();

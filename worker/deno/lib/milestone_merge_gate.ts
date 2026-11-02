@@ -480,13 +480,14 @@ export const spawnTypeCheck = async (
  */
 export async function checkMergedTree(
   repoDir: string,
-  runner: TypeCheckRunner = spawnTypeCheck,
+  runner: TypeCheckRunner | undefined = undefined,
   /**
    * Whether the ephemeral cargo build must not run (Issue #4326).
    * Defaults to the host-disk budget. A merge still lands; CI builds it.
    */
   skipCargoBuild: () => Promise<boolean> = () =>
     shouldSkipEphemeralCargoBuild(repoDir),
+  spawnDeps: UntrustedGateSpawnDeps = {},
 ): Promise<MergeGateOutcome> {
   // A tree that cannot be read is a check that could not be run, not a
   // repository without one — refuse rather than wave it through as "skipped".
@@ -532,7 +533,8 @@ export async function checkMergedTree(
     const where = `${describeProject(project)} in ${project.dir}`;
     let result: { code: number; output: string };
     try {
-      result = await runner(project);
+      result = await (runner ?? ((project) =>
+        spawnTypeCheck(project, spawnDeps)))(project);
     } catch (err) {
       // Unrunnable is not clean: refuse the push rather than assume it
       // compiles.

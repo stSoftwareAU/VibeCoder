@@ -19,6 +19,9 @@ import {
 import { verifyResolvedTree } from "./milestone_resolution_gate.ts";
 import type { syncMilestoneBranchWithDefault } from "./git_pull.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
+import { resolveRepoCredentials } from "./repo_credentials.ts";
+import type { RepoCredentialSpec } from "./repo_credentials.ts";
+import type { UntrustedGateSpawnDeps } from "./untrusted_gate_spawn.ts";
 import type { Logger } from "../types.ts";
 import type { MilestoneConflictAgentFn } from "./milestone_conflict_ladder.ts";
 import { CARGO_BUDGET_AGENT_WITHHELD } from "./milestone_branch_sync.ts";
@@ -73,6 +76,7 @@ export function mergeOnlyBindings(
   reason: string | undefined,
   realAgent?: MilestoneConflictAgentFn,
   deps: MergeOnlyDeps = {},
+  spawnDeps: UntrustedGateSpawnDeps = {},
 ): MergeOnlyBindings | undefined {
   if (reason === undefined) return undefined;
   const runCheckMergedTree = deps.checkMergedTree ?? checkMergedTree;
@@ -96,6 +100,7 @@ export function mergeOnlyBindings(
         repoDir,
         undefined,
         () => Promise.resolve(true),
+        spawnDeps,
       );
       return outcome.status === "skipped"
         ? { ...outcome, detail: `${outcome.detail} — ${reason}` }
@@ -114,9 +119,15 @@ export function mergeOnlyBindings(
         repoDir,
         undefined,
         (dir) =>
-          runCheckMergedTree(dir, undefined, () => Promise.resolve(true)),
+          runCheckMergedTree(
+            dir,
+            undefined,
+            () => Promise.resolve(true),
+            spawnDeps,
+          ),
         undefined,
         () => Promise.resolve(true),
+        spawnDeps,
       );
       const cargoOnly = projects.length > 0 &&
         projects.every((p) => p.kind === "cargo");
@@ -149,6 +160,8 @@ export interface MergeOnlySyncInput {
   options: GitCommandOptions;
   /** `owner/repo`, for the PR a refused push raises. */
   repo: string;
+  /** Credentials explicitly declared by the trusted operator configuration. */
+  qualityCredentials?: RepoCredentialSpec;
   /** The budget verdict when the sync is merge-only; undefined otherwise. */
   mergeOnly: string | undefined;
   /** The real agent rung, undefined when the grant withholds it. */
@@ -168,9 +181,42 @@ export interface MergeOnlySyncInput {
  * @param input - The sync and the bindings to hand it
  * @returns What the sync returned
  */
-export function syncWithMergeOnlyBindings(
+export async function syncWithMergeOnlyBindings(
   input: MergeOnlySyncInput,
 ): ReturnType<typeof syncMilestoneBranchWithDefault> {
+  // Resolve only at the gate: a sync that needs no checks mints nothing.
+  const withCredentials = (resolution: boolean): MergeGateFn => async (dir) => {
+    const credentials = await resolveRepoCredentials(
+      input.repo,
+      input.qualityCredentials,
+    );
+    if (!credentials.ok) {
+      return {
+        status: "failed",
+        detail: "repository credential resolution failed",
+        output: credentials.error.message,
+      };
+    }
+    const spawnDeps = { repoCredentialEnv: credentials.value.env };
+    const bindings = mergeOnlyBindings(
+      input.mergeOnly,
+      input.agentFn,
+      {},
+      spawnDeps,
+    );
+    return resolution
+      ? bindings?.resolutionGate(dir) ??
+        verifyResolvedTree(
+          dir,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          spawnDeps,
+        )
+      : bindings?.mergeGate(dir) ??
+        checkMergedTree(dir, undefined, undefined, spawnDeps);
+  };
   const bindings = mergeOnlyBindings(input.mergeOnly, input.agentFn);
   return input.syncFn(
     input.milestoneBranch,
@@ -180,8 +226,12 @@ export function syncWithMergeOnlyBindings(
     input.repo,
     // The default gates (the repository's own type check and the stricter
     // resolution gate derived from it) unless the sync is merge-only.
-    bindings?.mergeGate,
-    bindings?.resolutionGate,
+    input.qualityCredentials === undefined
+      ? bindings?.mergeGate
+      : withCredentials(false),
+    input.qualityCredentials === undefined
+      ? bindings?.resolutionGate
+      : withCredentials(true),
     bindings !== undefined && input.agentFn !== undefined
       ? bindings.agentFn
       : input.agentFn,

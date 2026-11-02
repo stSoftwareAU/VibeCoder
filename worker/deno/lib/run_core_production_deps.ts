@@ -6781,6 +6781,7 @@ export async function syncMilestoneBranchForSweep(
   // merge without the repository's build for a cargo tree.
   return syncWithMergeOnlyBindings({
     syncFn: input.syncFn ?? syncMilestoneBranchWithDefault,
+    qualityCredentials: input.config.repoConfig?.[repo]?.qualityCredentials,
     milestoneBranch: input.milestoneBranch,
     defaultBranch: input.defaultBranch,
     options: { cwd: `${input.workDir}/${repo.split("/")[1]}` },

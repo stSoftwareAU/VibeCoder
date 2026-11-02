@@ -20,6 +20,9 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { runRepositoryCommand } from "../lib/untrusted_gate_spawn.ts";
+import { verifyResolvedTree } from "../lib/milestone_resolution_gate.ts";
+import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
+import { mergeOnlyBindings } from "../lib/milestone_merge_only.ts";
 import { spawnTask } from "../lib/milestone_resolution_gate.ts";
 import type { ResolutionTask } from "../lib/milestone_resolution_gate.ts";
 import { spawnTypeCheck } from "../lib/milestone_merge_gate.ts";
@@ -442,5 +445,116 @@ Deno.test("spawnTypeCheck - a spawn failure maps to exit code 1 with the error m
       source: sourceWithSecrets(),
     });
     assertEquals(result, { code: 1, output: "no cargo" });
+  });
+});
+
+Deno.test("milestone spawns carry declared credentials through sudo and exclude undeclared credentials", async () => {
+  await withTempDir(async (dir) => {
+    for (const sudo of [false, true]) {
+      for (const gate of ["shared", "task", "type"] as const) {
+        const source = sourceWithSecrets();
+        source.DECLARED_TOKEN = "declared-fixture+= with spaces";
+        const { spawn, calls } = recordingSpawn();
+        const deps = {
+          spawn,
+          drop: sudo ? sudoWrapper : identity,
+          source,
+          repoCredentialEnv: { DECLARED_TOKEN: source.DECLARED_TOKEN },
+        };
+        if (gate === "shared") {
+          await runRepositoryCommand("bash", ["quality.sh"], {
+            cwd: dir,
+            timeoutMs: 1000,
+          }, deps);
+        } else if (gate === "task") {
+          await spawnTask({
+            kind: "script",
+            task: "quality.sh",
+            dir,
+            args: ["quality.sh"],
+            timeoutMs: 1000,
+          }, deps);
+        } else {
+          await spawnTypeCheck({ kind: "cargo", dir, args: ["check"] }, deps);
+        }
+        const call = onlyCall(calls);
+        assertNoSecrets(call.options?.env, source);
+        assertEquals(
+          call.options?.env?.DECLARED_TOKEN,
+          "declared-fixture+= with spaces",
+        );
+        assertEquals(call.options?.clearEnv, true);
+        assertEquals(
+          call.options?.commandLabel,
+          "repository gate (declared credentials redacted)",
+        );
+        if (sudo) {
+          assert(
+            call.args.includes("DECLARED_TOKEN=declared-fixture+= with spaces"),
+          );
+        }
+      }
+    }
+  });
+});
+
+Deno.test("both milestone gates forward declared credentials to every task, including merge-only", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/deno.json`,
+      JSON.stringify({
+        tasks: {
+          check: "deno check mod.ts",
+          "check:manifests": "deno check mod.ts",
+          "test:unit": "deno test",
+        },
+      }),
+    );
+    for (const mergeOnly of [false, true]) {
+      const source = sourceWithSecrets();
+      const { spawn, calls } = recordingSpawn();
+      const deps = {
+        spawn,
+        drop: sudoWrapper,
+        source,
+        repoCredentialEnv: { DECLARED_TOKEN: "fixture+= spaces" },
+      };
+      if (mergeOnly) {
+        const bindings = mergeOnlyBindings(
+          "fixture budget",
+          undefined,
+          {},
+          deps,
+        )!;
+        assertEquals((await bindings.mergeGate(dir)).status, "passed");
+        assertEquals((await bindings.resolutionGate(dir)).status, "passed");
+      } else {
+        assertEquals(
+          (await checkMergedTree(dir, undefined, undefined, deps)).status,
+          "passed",
+        );
+        assertEquals(
+          (await verifyResolvedTree(
+            dir,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            deps,
+          )).status,
+          "passed",
+        );
+      }
+      assertEquals(
+        calls.length,
+        4,
+        "merge check plus resolution check, manifest and unit suite",
+      );
+      for (const call of calls) {
+        assertNoSecrets(call.options?.env, source);
+        assertEquals(call.options?.env?.DECLARED_TOKEN, "fixture+= spaces");
+        assert(call.args.includes("DECLARED_TOKEN=fixture+= spaces"));
+      }
+    }
   });
 });

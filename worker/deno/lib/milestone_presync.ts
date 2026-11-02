@@ -881,6 +881,7 @@ export async function presyncMilestoneBranchForIssueRun(
         // land the merge without the repository's build for a cargo tree.
         return syncWithMergeOnlyBindings({
           syncFn,
+          qualityCredentials: config.repoConfig?.[repo]?.qualityCredentials,
           milestoneBranch,
           defaultBranch,
           options: { cwd },

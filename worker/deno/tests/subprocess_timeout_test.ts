@@ -342,3 +342,22 @@ Deno.test("commandOutputWithTimeout - a finished child returns its piped output 
   assertEquals(new TextDecoder().decode(output.stdout), "out");
   assertEquals(new TextDecoder().decode(output.stderr), "err");
 });
+
+Deno.test("runWithTimeout uses the safe label instead of credential argv in timeout diagnostics", async () => {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) =>
+    warnings.push(args.map(String).join(" "));
+  try {
+    const secret = "fixture-credential-never-log";
+    const result = await runWithTimeout("sh", ["-c", "sleep 5", secret], {
+      timeoutMs: 200,
+      commandLabel: "safe repository gate",
+    });
+    assert(result.ok && result.value.timedOut);
+    assert(warnings.some((line) => line.includes("safe repository gate")));
+    assert(warnings.every((line) => !line.includes(secret)));
+  } finally {
+    console.warn = originalWarn;
+  }
+});

@@ -21,6 +21,8 @@ import { runWithTimeout } from "./subprocess_timeout.ts";
 
 /** Injected seams for {@link runRepositoryCommand}. Production takes the defaults. */
 export interface UntrustedGateSpawnDeps {
+  /** Credentials explicitly declared for this repository. */
+  repoCredentialEnv?: Record<string, string>;
   /** Spawns the dropped command. Injected in tests. */
   spawn?: typeof runWithTimeout;
   /** Drops the argv to the untrusted account. Injected in tests. */
@@ -41,9 +43,7 @@ export interface UntrustedGateSpawnDeps {
  * `untrustedSpawn` already falls back to running as the worker on an image that
  * predates the account, so the issue's "where the image provides one" holds.
  *
- * Declared `quality_credentials` are not threaded to the milestone sync path,
- * so a task that needs one fails rather than running with the worker's whole
- * environment.
+ * Only explicitly declared repository credentials are added to the allowlist.
  *
  * @param executable - The program to run, e.g. `cargo` or the Deno binary.
  * @param args - The argv after the executable.
@@ -58,11 +58,26 @@ export async function runRepositoryCommand(
   options: { cwd: string; timeoutMs: number },
   deps: UntrustedGateSpawnDeps = {},
 ): ReturnType<typeof runWithTimeout> {
-  const dropped = await (deps.drop ?? untrustedSpawn)([executable, ...args]);
+  const entries = Object.entries(deps.repoCredentialEnv ?? {});
+  for (const [name] of entries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error("Invalid repository credential environment name");
+    }
+  }
+  // env receives literal argv, so credential punctuation is never shell code.
+  // Place it after sudo, whose env_reset would otherwise discard credentials.
+  const argv = entries.length === 0 ? [executable, ...args] : [
+    "env",
+    "--",
+    ...entries.map(([name, value]) => `${name}=${value}`),
+    executable,
+    ...args,
+  ];
+  const dropped = await (deps.drop ?? untrustedSpawn)(argv);
   const env = untrustedQualityCommandEnv({
     spawnable: dropped,
     cwd: options.cwd,
-    repoCredentialEnv: {},
+    repoCredentialEnv: deps.repoCredentialEnv ?? {},
     ...(deps.source === undefined ? {} : { source: deps.source }),
     ...(deps.trimRefused === undefined
       ? {}
@@ -79,5 +94,8 @@ export async function runRepositoryCommand(
     timeoutMs: options.timeoutMs,
     env,
     clearEnv: true,
+    ...(entries.length === 0
+      ? {}
+      : { commandLabel: "repository gate (declared credentials redacted)" }),
   });
 }

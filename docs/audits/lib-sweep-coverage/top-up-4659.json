@@ -5,7 +5,7 @@
   "ledger": "docs/audits/security-sweep-1214-subprocess-argv.md",
   "definition": "security review of the shared spawn that runs the milestone merge and resolution gates' repository tasks with an allowlisted environment and the untrusted account (SEC-1214-02 follow-up)",
   "status": "swept",
-  "sweptAt": "05d4ea3d992ecfc2d201bd24bbdf2035d836f428",
+  "sweptAt": "a86d61ddcef5ed76b534a32db8649525e1cb7882",
   "paths": [
     "worker/deno/lib/untrusted_gate_spawn.ts"
   ]
