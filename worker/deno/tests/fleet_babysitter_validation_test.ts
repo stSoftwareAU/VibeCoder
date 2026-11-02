@@ -1141,12 +1141,23 @@ Deno.test("validation scopes process inspection and sysctls and permits gate res
       name,
     );
   }
-  for (const rule of sysctls) {
+  const prefixes = sysctls.filter((rule) =>
+    rule.includes("sysctl-name-prefix")
+  );
+  assertEquals(prefixes, [
+    '(allow sysctl-read (sysctl-name-prefix "kern.proc.pid."))',
+    '(allow sysctl-read (sysctl-name-prefix "kern.proc.pgrp."))',
+  ]);
+  for (const rule of sysctls.filter((rule) => !prefixes.includes(rule))) {
     assertMatch(
       rule,
       /^\(allow sysctl-read \(sysctl-name "[a-zA-Z0-9_.]+"\)\)$/,
     );
+    assert(!rule.includes("kern.procargs2"));
   }
+  assert(
+    rules.includes('(allow mach-lookup (global-name "com.apple.sysmond"))'),
+  );
   for (
     const rule of [
       "(allow ipc-posix-sem*)",

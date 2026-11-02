@@ -109,6 +109,9 @@ export function buildBabysitterValidationProfile(
     ].map((name) =>
       `(allow sysctl-read (sysctl-name ${JSON.stringify(name)}))`
     ),
+    ...["kern.proc.pid.", "kern.proc.pgrp."].map((prefix) =>
+      `(allow sysctl-read (sysctl-name-prefix ${JSON.stringify(prefix)}))`
+    ),
     "(allow ipc-posix-sem*)",
     "(allow ipc-posix-shm*)",
     "(allow pseudo-tty)",
@@ -126,6 +129,7 @@ export function buildBabysitterValidationProfile(
       "com.apple.FontObjectsServer",
       "com.apple.fonts",
       "com.apple.windowserver.active",
+      "com.apple.sysmond",
     ].map((name) =>
       `(allow mach-lookup (global-name ${JSON.stringify(name)}))`
     ),

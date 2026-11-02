@@ -254,6 +254,8 @@ deno eval 'import { cpus } from "node:os"; if (cpus().length === 0) Deno.exit(1)
 if ./process-probe ${markerProcess.pid}; then exit 46; else test "$?" -eq 1; fi
 sleep 60 &
 child=$!
+test "$(/bin/ps -o ppid= -p $$ | /usr/bin/tr -d ' ')" = "$PPID"
+/usr/bin/pgrep -P $$ | /usr/bin/grep -qx "$child"
 kill -TERM "$child"
 if wait "$child"; then exit 39; else test "$?" -eq 143; fi
 ./resource-probe

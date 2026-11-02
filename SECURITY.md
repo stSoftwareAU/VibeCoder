@@ -111,9 +111,11 @@ can terminate their own test workers and browser children. The live integration
 gate starts, terminates and reaps a background child to exercise this grant.
 
 Process inspection is restricted to the same sandbox; process execution and
-forking are separate grants. Sysctl reads allow only the named CPU, memory,
-page-size and OS-version values in the profile, so a gate cannot inspect an
-unsandboxed process's initial environment. The live integration probe uses a
+forking are separate grants. Sysctl reads allow named hardware and OS values
+and per-PID and process-group record prefixes, but not `kern.procargs2`. The
+`com.apple.sysmond` lookup supports `pgrep` and can expose other processes'
+arguments: operators must not put credentials in command-line arguments. The
+live integration probe for environment access uses a
 same-user process with a marker environment variable and an unsandboxed positive
 control. POSIX semaphore and shared-memory operations and pseudo-terminals
 (including /dev/ptmx and numbered /dev/ttys devices) are allowed for ordinary
@@ -129,7 +131,7 @@ the Codex permissions profile; the privileged Linux runner executes no gate.
 The macOS runner requires a regular, non-symlink `quality.sh` directly in the
 canonical repository root and caps the file size and actual read at 64 KiB. On macOS it runs under a dedicated `sandbox-exec` profile:
 Codex's per-spawn profile remains unchanged, while the runner profile allows
-explicit named Mach lookups for logging, notifications, fonts and WindowServer
+explicit named Mach lookups for logging, notifications, fonts, WindowServer and sysmond
 and lookup and registration of Chromium/Chrome rendezvous and
 Crashpad service name prefixes, but denies the configured worker, GitHub CLI, App, SSH,
 AWS, cloud, container and package-manager credential paths, the worker

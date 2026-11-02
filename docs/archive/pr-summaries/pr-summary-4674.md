@@ -23,10 +23,10 @@ registration prefixes while retaining the credential boundary from #4593.
 
 ### Essential Design Decisions
 
-- Permit only named logging, notification, font and WindowServer Mach lookups,
+- Permit named logging, notification, font, WindowServer and sysmond Mach lookups,
   plus lookup and registration of the browser rendezvous/Crashpad name
   prefixes (a child looks up the rendezvous server its parent registers); no
-  unconditional Mach lookup grant or process/container/file-service grant is
+  unconditional Mach lookup grant or container/file-service grant is
   present. The list is reasoned from Chromium's behaviour and is not yet
   measured on macOS.
 - Probe sandbox startup with fixed /usr/bin/true before any agent session
@@ -339,3 +339,12 @@ Repository Deno formatting, lint and frozen type checking passed, as did all
 37 validation unit tests. The browser integration task was attempted with
 installed Chrome but sandbox startup failed with `sandbox_apply: Operation not
 permitted`; live grants and security denials remain unverified.
+
+Review repair: permit the per-PID and process-group sysctl prefixes and the
+sysmond Mach lookup so macOS gates can run `ps` and `pgrep`. Sysmond can reveal
+other processes' arguments; SECURITY.md, C37 and the operator manual record the
+residual risk and prohibit credentials in arguments. The integration gate checks
+the parent PID and finds its own child. The unit regression requires exactly the
+two prefixes and still rejects blanket sysctl reads and `kern.procargs2`.
+The browser integration attempt remains blocked by this host's nested sandbox
+refusal, so the new grants and earlier OS-level probes remain unverified.
