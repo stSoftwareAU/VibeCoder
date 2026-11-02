@@ -1,8 +1,9 @@
 ## Summary
 
-Adds the Cargo Dependency Updates workflow at `.github/workflows/cargo-upgrade.yml`
-(weekly and on demand: `cargo upgrade`, `cargo update`, then a pull request via
-`peter-evans/create-pull-request`). Closes #4629.
+Adds the Cargo Dependency Updates workflow at
+`.github/workflows/cargo-upgrade.yml` (weekly and on demand: `cargo upgrade`,
+`cargo update`, then a pull request via `peter-evans/create-pull-request`).
+Closes #4629.
 
 ## Spec
 
@@ -14,17 +15,17 @@ Adds the Cargo Dependency Updates workflow at `.github/workflows/cargo-upgrade.y
 
 ### Essential Design Decisions
 
-- Two deviations from the verbatim template, both forced by this repository's own
-  gates: the checkout step sets `persist-credentials: false`
-  (`worker/deno/tests/workflow_hardening_test.ts`, GHA-SECRETS-009), and each SHA
-  pin has a `# owner/action@vX` comment within three lines above it
+- Two deviations from the verbatim template, both forced by this repository's
+  own gates: the checkout step sets `persist-credentials: false`
+  (`worker/deno/tests/workflow_hardening_test.ts`, GHA-SECRETS-009), and each
+  SHA pin has a `# owner/action@vX` comment within three lines above it
   (`supply_chain_gate` rule `action-pin-comment`). The first is safe because
   `create-pull-request` pushes with its own `token` input, not the checkout
   credential; the template's "credential persistence stays on" comment was
   replaced to say so.
 - `docs/audits/dependency-inventory.md` was regenerated with
-  `supply-chain-gate --write-inventory`, because the new workflow adds two actions
-  and a use of `actions/checkout`.
+  `supply-chain-gate --write-inventory`, because the new workflow adds two
+  actions and a use of `actions/checkout`.
 
 ### Undiscoverable Facts
 
