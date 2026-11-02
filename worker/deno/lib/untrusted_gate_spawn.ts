@@ -12,7 +12,7 @@
  * #4113). A command run there could exit 0 with "No matching files found", or
  * fail for a reason unrelated to the tree. So the account is probed first. On
  * any doubt the command runs as the worker with the same allowlisted
- * environment: no credential variable reaches it, and the verdict stays a
+ * environment plus explicitly declared credentials, and the verdict stays a
  * verdict on the tree.
  *
  * The `quality_credentials` the repository declared reach the command through
@@ -67,6 +67,9 @@ const PROBE_UNREADABLE = 1;
 
 /** The probe exits with this when the account cannot write the cargo target. */
 const PROBE_TARGET_UNWRITABLE = 2;
+
+/** Checkout directory modes are host-owned, not recorded in the Git tree. */
+const PROBE_CHECKOUT_UNWRITABLE = 3;
 
 /** The probe is a few `test` and `find` calls. Seconds. */
 const PROBE_TIMEOUT_MS = 15_000;
@@ -132,7 +135,7 @@ export async function manifestsFor(
 async function targetWriteCheck(cwd: string): Promise<string> {
   const exists = (await statOrUndefined(`${cwd}/target`)) !== undefined;
   return exists
-    ? `[ -z "$(find "$1/target" ! -writable -print -quit)" ]`
+    ? `[ -z "$(find "$1/target" ! -exec test -w {} \\; -print -quit)" ]`
     : `test -w "$1"`;
 }
 
@@ -154,15 +157,16 @@ function probeScript(manifests: readonly string[], tail: string): string {
   });
   const readable = `test -r "$1" -a -x "$1"${
     reads.join("")
-  } || exit ${PROBE_UNREADABLE}`;
+  } || exit ${PROBE_UNREADABLE}; test -w "$1" || exit ${PROBE_CHECKOUT_UNWRITABLE}`;
   return tail === ""
     ? readable
     : `${readable}; ${tail} || exit ${PROBE_TARGET_UNWRITABLE}`;
 }
 
 /**
- * Run a repository command with the allowlisted environment and no
- * credentials, as the `agent` account when it can use the checkout.
+ * Run a repository command with the allowlisted environment and explicitly
+ * declared credentials, as `agent` when it can use the checkout and no
+ * credentials need to cross sudo's environment reset.
  *
  * The account is probed with a command of its own. Any failed, timed out or
  * non-zero probe runs the command as the worker, with the same environment.
@@ -245,6 +249,19 @@ export async function runRepositoryCommand(
   let privateTarget: string | undefined;
   try {
     let spawnable = await drop([executable, ...args]);
+    if (
+      Object.keys(declared).length > 0 &&
+      untrustedAccountOf(spawnable) !== undefined
+    ) {
+      // sudo's env_reset discards declared credentials. Until the agent
+      // credential channel exists (#4705), preserve the operator's explicit
+      // grant using the restricted worker environment. Never put secrets in argv.
+      console.error(
+        `[SECURITY] '${executable}' requires declared quality_credentials — ` +
+          `running as the worker with the allowlisted environment (Issue #4705)`,
+      );
+      spawnable = [executable, ...args];
+    }
     if (untrustedAccountOf(spawnable) !== undefined) {
       const writesTarget = executable === "cargo" &&
         buildEnv(spawnable)["CARGO_TARGET_DIR"] === undefined;

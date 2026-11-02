@@ -11,6 +11,7 @@ import {
 import type { untrustedSpawn } from "../lib/quality_gate_phase.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
+import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
 import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 
 type Spawned = Awaited<ReturnType<typeof runWithTimeout>>;
@@ -278,11 +279,11 @@ Deno.test("the probe checks the manifests, and the target only for cargo (Issue 
     await Deno.mkdir(`${cwd}/target`);
     const cargoWithTarget = await probeFor("cargo", ["Cargo.toml"]);
     assert(cargoWithTarget.includes(`find "$1/target"`));
-    assert(!cargoWithTarget.includes(`test -w`));
+    assert(cargoWithTarget.includes(`test -w`));
 
     const deno = await probeFor("deno", ["deno.json"]);
     assert(deno.includes(`"$1/deno.json"`));
-    assert(!deno.includes("test -w"));
+    assert(deno.includes("test -w"));
     assert(!deno.includes("find"));
   });
 });
@@ -541,7 +542,139 @@ Deno.test("a cargo target the environment already names is not probed for writab
       ...SOURCE,
       CARGO_TARGET_DIR: "/var/cache/target",
     });
-    assert(!named.includes(`test -w`));
+    assert(named.includes(`test -w "$1" || exit 3`));
+    assert(!named.includes(`|| exit 2`));
     assert(!named.includes(`find`));
+  });
+});
+
+Deno.test("declared credentials survive an available agent account", async () => {
+  await withCheckout(async (cwd) => {
+    const calls: Call[] = [];
+    const spawn: typeof runWithTimeout = async (executable, args, options) => {
+      calls.push({ executable, args, options });
+      return await runWithTimeout(executable, args, options);
+    };
+    const result = await runRepositoryCommand(
+      "/bin/sh",
+      ["-c", 'printf %s "$NPM_TOKEN"'],
+      { cwd, timeoutMs: 1000 },
+      {
+        spawn,
+        drop: agentDrop,
+        source: SOURCE,
+        trimRefused: false,
+        credentials: async () => ({ NPM_TOKEN: "declared" }),
+      },
+    );
+    assertEquals(calls.length, 1);
+    const final = callAt(calls, 0);
+    assertEquals(final.executable, "/bin/sh");
+    assert(result.ok);
+    assertEquals(result.value.code, 0);
+    assertEquals(result.value.stdout, "declared");
+    assertEquals(final.options.env?.NPM_TOKEN, "declared");
+    assertEquals(final.options.env?.GH_TOKEN, undefined);
+    assertEquals(final.options.clearEnv, true);
+    assert(!final.args.join(" ").includes("declared"));
+  });
+});
+
+Deno.test("real probe permission verdicts", async () => {
+  const uid = await new Deno.Command("id", { args: ["-u"] }).output();
+  if (new TextDecoder().decode(uid.stdout).trim() === "0") return;
+  await withCheckout(async (cwd) => {
+    const manifest = `${cwd}/Cargo.toml`;
+    await Deno.writeTextFile(manifest, "[package]");
+    const code = async (executable = "cargo") => {
+      const { calls, spawn } = recordingSpawn();
+      await runRepositoryCommand(executable, ["check"], {
+        cwd,
+        timeoutMs: 1000,
+        manifests: ["Cargo.toml"],
+      }, { spawn, drop: agentDrop, source: SOURCE, trimRefused: false });
+      return (await new Deno.Command("sh", {
+        args: ["-c", probeScriptOf(callAt(calls, 0)), "sh", cwd],
+      }).output()).code;
+    };
+    assertEquals(await code(), 0);
+    await Deno.chmod(manifest, 0o000);
+    try {
+      assertEquals(await code(), 1);
+    } finally {
+      await Deno.chmod(manifest, 0o644);
+    }
+    await Deno.remove(manifest);
+    assertEquals(await code(), 1);
+    await Deno.writeTextFile(manifest, "[package]");
+    await Deno.chmod(cwd, 0o555);
+    try {
+      for (const executable of ["cargo", "deno", "bash"]) {
+        assertEquals(await code(executable), 3);
+      }
+    } finally {
+      await Deno.chmod(cwd, 0o755);
+    }
+    await Deno.mkdir(`${cwd}/target`);
+    await Deno.writeTextFile(`${cwd}/target/readonly`, "x");
+    await Deno.chmod(`${cwd}/target/readonly`, 0o444);
+    try {
+      assertEquals(await code(), 2);
+    } finally {
+      await Deno.chmod(`${cwd}/target/readonly`, 0o644);
+    }
+    assertEquals(await code(), 0);
+  });
+});
+
+Deno.test("a read-only agent checkout without Cargo.lock still passes the real cargo merge gate", async () => {
+  const uid = await new Deno.Command("id", { args: ["-u"] }).output();
+  if (new TextDecoder().decode(uid.stdout).trim() === "0") return;
+  await withCheckout(async (cwd) => {
+    await Deno.writeTextFile(
+      `${cwd}/Cargo.toml`,
+      '[package]\nname = "gate_fixture"\nversion = "0.1.0"\nedition = "2021"\n',
+    );
+    await Deno.mkdir(`${cwd}/src`);
+    await Deno.writeTextFile(`${cwd}/src/lib.rs`, "pub fn value() -> u8 { 1 }");
+    const calls: string[] = [];
+    const outcome = await checkMergedTree(cwd, async (project) => {
+      const result = await runRepositoryCommand("cargo", project.args, {
+        cwd: project.dir,
+        timeoutMs: 30000,
+        manifests: ["Cargo.toml"],
+      }, {
+        drop: agentDrop,
+        source: { ...Deno.env.toObject(), CARGO_TARGET_DIR: `${cwd}/target` },
+        trimRefused: false,
+        spawn: async (executable, args, options) => {
+          calls.push(executable);
+          if (executable === "sudo") {
+            // Model agent's read-only access, then restore worker's write access.
+            // Execute the actual probe; the repository command must bypass sudo.
+            assert(args.includes("-c"));
+            await Deno.chmod(cwd, 0o555);
+            try {
+              return await runWithTimeout(
+                "sh",
+                args.slice(args.indexOf("sh") + 1),
+                options,
+              );
+            } finally {
+              await Deno.chmod(cwd, 0o755);
+            }
+          }
+          return await runWithTimeout(executable, args, options);
+        },
+      });
+      assert(result.ok);
+      return {
+        code: result.value.code,
+        output: result.value.stdout + result.value.stderr,
+      };
+    }, async () => false);
+    assertEquals(outcome.status, "passed", JSON.stringify(outcome));
+    assertEquals(calls, ["sudo", "cargo"]);
+    assert((await Deno.stat(`${cwd}/Cargo.lock`)).isFile);
   });
 });
