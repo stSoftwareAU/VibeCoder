@@ -665,3 +665,13 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
     assertStringIncludes(prompt, "reads commit history");
   }
 });
+
+// Issue #4720: GRQ-AutoTrader#5066's conflict stopped for an owner because the
+// base had deliberately retired behaviour the PR used; the base already
+// carries that decision, and conflicts are never handed to a human.
+Deno.test("a conflict where the base retired behaviour follows the base, not a human", () => {
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  assertStringIncludes(prompt, "deliberately removed or replaced behaviour");
+  assertStringIncludes(prompt, "follow the base");
+  assertStringIncludes(prompt, "never leave a conflict for a human");
+});
