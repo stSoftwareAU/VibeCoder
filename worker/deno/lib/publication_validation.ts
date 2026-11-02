@@ -152,7 +152,7 @@ export async function validateRepositoryForPublication(
 }
 
 function isUnavailableOutput(output: string): boolean {
-  return /(?:command not found|not installed|insufficient disk|no space left on device|disk quota exceeded|could not resolve|temporary failure in name resolution|connection (?:timed out|refused)|failed to (?:download|fetch)|error sending request|network (?:error|is unreachable))/i
+  return /(?:strict mode.*skipped checks are not allowed|untrusted account cannot use|command not found|not installed|insufficient disk|no space left on device|disk quota exceeded|could not resolve|temporary failure in name resolution|connection (?:timed out|refused)|failed to (?:download|fetch)|error sending request|network (?:error|is unreachable))/i
     .test(output);
 }
 

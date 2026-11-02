@@ -113,6 +113,79 @@ Deno.test("publication validation identifies unavailable dependency services", a
   }
 });
 
+Deno.test("publication validation treats skipped strict checks as unavailable", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: async () => ({
+        ok: true,
+        value: {
+          success: false,
+          code: 1,
+          stdout:
+            "checkov: SKIPPED (not run — no checkov on PATH)\nResult: FAILED (strict mode — skipped checks are not allowed)",
+          stderr: "",
+          timedOut: false,
+        },
+      }),
+    });
+    assertEquals(result.status, "unavailable");
+    if (result.status === "unavailable") {
+      assert(result.reason.includes("no checkov on PATH"));
+    }
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication validation treats inaccessible checkouts as unavailable", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: async () => ({
+        ok: true,
+        value: {
+          success: false,
+          code: 1,
+          stdout: "type check passed\n" +
+            "untrusted account cannot use '/tmp/checkout' (probe 1) — left to CI",
+          stderr: "",
+          timedOut: false,
+        },
+      }),
+    });
+    assertEquals(result.status, "unavailable");
+    if (result.status === "unavailable") {
+      assert(result.reason.includes("untrusted account cannot use"));
+    }
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication failure classification handles a long non-match", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: async () => ({
+        ok: true,
+        value: {
+          success: false,
+          code: 1,
+          stdout: `strict mode ${
+            "x".repeat(100_000)
+          } ended without the skip summary`,
+          stderr: "",
+          timedOut: false,
+        },
+      }),
+    });
+    assertEquals(result.status, "failed");
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
 Deno.test("publication validation binds a pass to the exact tree", async () => {
   const cwd = await checkout("#!/bin/sh\nexit 0\n");
   try {
