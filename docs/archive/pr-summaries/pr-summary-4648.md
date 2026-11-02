@@ -42,9 +42,10 @@ Issue numbers cited as provenance, each looked up with `gh issue view`:
   refusal after a disk shortage climbs straight to the roll-back
 
 Docs sweep: grepped `docs/` (excluding `docs/archive/`) for `second
-over-budget` and `charged on the second`; the only hit was the sentence fixed
-here. The passages at `docs/INTERNALS.md` near line 4560 and
-`docs/CONTAINER.md` near line 1412 already state the current behaviour.
+over-budget`
+and `charged on the second`; the only hit was the sentence fixed here. The
+passages at `docs/INTERNALS.md` near line 4560 and `docs/CONTAINER.md` near line
+1412 already state the current behaviour.
 
 ## Test Plan
 
