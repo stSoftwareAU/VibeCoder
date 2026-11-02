@@ -145,6 +145,11 @@ Deno.test(
     assertStringIncludes(outcome.reason, "WIP");
     assertStringIncludes(outcome.reason, BRANCH);
     assertEquals(
+      outcome.reason.match(/#\d+/g) ?? [],
+      [],
+      "the refusal must carry no issue number: GitHub resolves a bare #N against the target repo",
+    );
+    assertEquals(
       outcome.prCreated,
       false,
       "gh pr create MUST NOT run for a branch holding only an earlier run's WIP commits",

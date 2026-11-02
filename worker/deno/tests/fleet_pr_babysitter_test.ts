@@ -27,6 +27,7 @@ import {
   requestedReviews,
   runRepairs,
   spawnBabysitterAgent,
+  takePrBodyProposal,
   validateAndCommit,
   waitForPushedHead,
   withBabysitterWriteScope,
@@ -491,6 +492,75 @@ Deno.test("a PR labelled needs-human is never a babysitter candidate", () => {
   };
   assertEquals(reason(pr), null);
   assertEquals(reason({ ...pr, labels: [] }), "merge conflict");
+});
+
+// Issue #4668: a review asking for a description change could never be met,
+// because the agent may not edit the PR; the runner applies its proposal.
+Deno.test("a review repair may propose a PR description for the runner to apply", () => {
+  const prompt = buildRepairPrompt(
+    "requested review changes",
+    1,
+    "owner/repo",
+    "",
+  );
+  assertStringIncludes(prompt, ".babysitter-pr-body");
+});
+
+Deno.test("the proposed PR description is taken out of the clone before commit", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "New body\n");
+    assertEquals(
+      await takePrBodyProposal(dir, "Old body"),
+      "New body",
+    );
+    await assertRejects(
+      () => Deno.stat(`${dir}/.babysitter-pr-body`),
+      Deno.errors.NotFound,
+    );
+    assertEquals(await takePrBodyProposal(dir, "Old body"), undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a proposed PR description keeps the closing references it dropped", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      `${dir}/.babysitter-pr-body`,
+      "Rewritten summary. Fixes #12",
+    );
+    assertEquals(
+      await takePrBodyProposal(
+        dir,
+        "Closes #5031\nfixes #12\nResolves other/repo#7\nSee #99",
+      ),
+      "Rewritten summary. Fixes #12\n\nCloses #5031\nResolves other/repo#7",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("an empty or oversized PR description proposal is not applied", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "  \n");
+    assertEquals(await takePrBodyProposal(dir, "Old"), undefined);
+    await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "x".repeat(65_537));
+    await assertRejects(
+      () => takePrBodyProposal(dir, "Old"),
+      Error,
+      "65536",
+    );
+    await assertRejects(
+      () => Deno.stat(`${dir}/.babysitter-pr-body`),
+      Deno.errors.NotFound,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 // Issue #4677: CI is the gate, so a check this host cannot run is reported,
