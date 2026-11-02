@@ -4,8 +4,8 @@
  * The implementing agent may raise its own PR with `gh pr create`, so the
  * body carries no worker marker and {@link syncPrBodyFromSummary} would skip
  * it forever. At every exit of the completion phase this adopts that PR: it
- * rebuilds the body with the marker, digest and withheld close, so later
- * fix-run syncs have a marker and digest to work from.
+ * rebuilds the body with the marker, digest and withheld close, and repairs a
+ * noncanonical title to the worker's issue-reference form (Issue #4621).
  *
  * Only a PR whose head is this run's own worker issue branch, with this
  * checkout's HEAD equal to the pushed head, is adopted. Nothing here throws to
@@ -17,6 +17,8 @@
 import type { Logger, Result } from "../types.ts";
 import type { runGitCommand as runGitCommandType } from "./git_timeout.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
+import { buildPrTitle } from "./pr_title_build.ts";
+import { prTitleMatchesIssue } from "./pr_title_issue_ref.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
 import { prNumberFromUrl } from "./run_outcome.ts";
 
@@ -24,6 +26,8 @@ import { prNumberFromUrl } from "./run_outcome.ts";
 export interface AdoptAgentPrInput {
   /** `owner/repo`. */
   repo: string;
+  /** Current issue title, used to repair noncanonical agent-raised PR titles. */
+  issueTitle: string;
   /** The branch this run works on. */
   branchName: string;
   /** Checkout the run pushed from. */
@@ -51,9 +55,9 @@ export interface AdoptAgentPrDeps {
 /**
  * Adopt the agent-raised PR on this run's branch, if there is one.
  *
- * Cheap local checks run first. The PR body is refreshed only when this
- * checkout's HEAD is the pushed head: a local summary not yet on the remote
- * must never describe the PR. Any fault is logged and swallowed.
+ * Cheap local checks run first. Title and body adoption happen only when this
+ * checkout's HEAD is the pushed head: local state not yet on the remote must
+ * never describe the PR. Title-edit faults are logged; body sync still runs.
  *
  * @param syncFn Injected for tests; defaults to {@link syncPrBodyFromSummary}.
  */
@@ -64,7 +68,8 @@ export async function adoptAgentRaisedPrBody(
 ): Promise<void> {
   const { logger } = deps;
   try {
-    if (issueNumberFromBranch(input.branchName) === null) {
+    const issueNumber = issueNumberFromBranch(input.branchName);
+    if (issueNumber === null) {
       logger.info(
         "Not adopting an agent-raised PR: not a worker issue branch",
         {
@@ -134,6 +139,44 @@ export async function adoptAgentRaisedPrBody(
         },
       );
       return;
+    }
+
+    try {
+      const titleOutput = await deps.runGhCommand([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        input.repo,
+        "--json",
+        "title",
+      ]);
+      const parsed: unknown = JSON.parse(titleOutput);
+      const currentTitle = typeof parsed === "object" && parsed !== null &&
+          "title" in parsed && typeof parsed.title === "string"
+        ? parsed.title
+        : null;
+      if (currentTitle === null) {
+        throw new Error("gh pr view returned no string title");
+      }
+      if (!prTitleMatchesIssue(currentTitle, issueNumber)) {
+        await deps.runGhCommand([
+          "pr",
+          "edit",
+          String(prNumber),
+          "--repo",
+          input.repo,
+          "--title",
+          buildPrTitle(input.issueTitle, issueNumber),
+        ]);
+      }
+    } catch (err) {
+      logger.warn("Could not repair the agent-raised PR title (Issue #4621)", {
+        repo: input.repo,
+        branch: input.branchName,
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     await runPrBodySync(
