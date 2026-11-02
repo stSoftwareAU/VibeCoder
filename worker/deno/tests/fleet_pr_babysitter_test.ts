@@ -1,3 +1,4 @@
+import { classifyPrBaseChange } from "../lib/pr_base_change_guard.ts";
 import {
   assert,
   assertEquals,
@@ -23,8 +24,10 @@ import {
   cancelledRunsToRerun,
   cloneForRepair,
   eligibleAuthor,
+  prBodyEditArgs,
   reason,
   recoverTemporaryClones,
+  removeRepairDirs,
   requestedReviews,
   runRepairs,
   spawnBabysitterAgent,
@@ -641,6 +644,43 @@ Deno.test("only a head whose runs were cancelled and none failed is re-run", () 
   assertEquals(cancelledRunsToRerun([]), []);
 });
 
+// Issue #4704: the description update went out as a raw PATCH with
+// `-F body=@file`, which the base-change guard cannot read and so refuses.
+Deno.test("the PR description update is not mistaken for a base change", () => {
+  const args = prBodyEditArgs("owner/repo", 7, "/tmp/scratch/pr-body.md");
+  assertEquals(classifyPrBaseChange(args, () => "New description"), undefined);
+  // The route it replaces, for contrast: the guard fails closed on it.
+  assertEquals(
+    classifyPrBaseChange(
+      [
+        "api",
+        "-X",
+        "PATCH",
+        "repos/owner/repo/pulls/7",
+        "-F",
+        "body=@/tmp/scratch/pr-body.md",
+      ],
+      () => "New description",
+    )?.newBase,
+    null,
+  );
+});
+
+Deno.test("the PR description update passes the write allowlist for its repo only", async () => {
+  await withBabysitterWriteScope("owner/repo", async () => {
+    await enforceGhWriteAllowlist(
+      prBodyEditArgs("owner/repo", 7, "/tmp/scratch/pr-body.md"),
+    );
+    await assertRejects(
+      () =>
+        enforceGhWriteAllowlist(
+          prBodyEditArgs("other/repo", 7, "/tmp/scratch/pr-body.md"),
+        ),
+      WriteRepoBlockedError,
+    );
+  });
+});
+
 // Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
 // a test the repair never touched; CI on the base is the arbiter.
 Deno.test("a host-only failure in an unrelated check is named, not a blocker", () => {
@@ -674,4 +714,28 @@ Deno.test("other open feedback does not withhold readiness from a CI repair", ()
     prompt,
     "Other open feedback (reviews, verifier or bot comments) is out of scope for a CI repair",
   );
+});
+
+// Issue #4710: a clone still being written by the agent's leftover test
+// processes could not be removed, and the error from `finally` replaced the
+// repair's real outcome. Clean-up warns and leaves it for a later pass.
+Deno.test("repair clean-up warns instead of throwing, and still removes the rest", async () => {
+  const removed: string[] = [];
+  const warnings: string[] = [];
+  await removeRepairDirs(
+    ["/tmp/clone", undefined, "/tmp/scratch"],
+    (path) => {
+      if (path === "/tmp/clone") {
+        return Promise.reject(new Error("Directory not empty (os error 66)"));
+      }
+      removed.push(path);
+      return Promise.resolve();
+    },
+    (message) => warnings.push(message),
+  );
+  assertEquals(removed, ["/tmp/scratch"]);
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0]!, "WARNING");
+  assertStringIncludes(warnings[0]!, "/tmp/clone");
+  assertStringIncludes(warnings[0]!, "Directory not empty");
 });
