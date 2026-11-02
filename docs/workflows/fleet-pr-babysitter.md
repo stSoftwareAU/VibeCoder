@@ -71,6 +71,28 @@ its temporary PR clones after use. A later pass removes clones left by an
 interrupted babysitter after confirming their owner exited; it leaves live and
 unrelated directories alone.
 
+Each repository also has one bare mirror, kept at
+`${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter/mirrors/<owner>--<repo>.git`.
+The first repair of a repository downloads it once with `git clone --bare`,
+bounded to 30 minutes. The download is built in a `.tmp` sibling and renamed
+into place only when complete, so a failed download leaves no mirror. Each
+later repair fetches heads and tags with `--no-auto-maintenance` in the mirror,
+then runs automatic maintenance in the foreground before copying, serialised per
+repository within the process. It then runs
+`git clone --no-checkout --no-hardlinks <mirror> <dir>` to make its temporary
+clone. That clone holds the full history, so merge bases and `git diff` against
+the base work without lazy fetches; it is not a partial clone and does not
+depend on the mirror afterwards. The clone's `origin` is then set back to the
+GitHub URL: `git@github.com:<repo>.git` when `gh config get git_protocol -h github.com`
+reports `ssh`, otherwise HTTPS. Each fetch uses the currently resolved URL, even
+if the mirror was created with a different protocol. If the fetch fails, the repair fails with git's cause,
+the mirror is kept, and the next pass retries. Passes never remove mirrors;
+delete a mirror directory to force a fresh download. Codex reads the filesystem
+under its permissions profile, so it can read a mirror, but it cannot write to
+one because its write grants are only the clone and scratch directory. Mirrors
+are not among the `~/.vibe-coder/fleet-pr-babysitter*` denylist entries, so do
+not treat them as credential-protected.
+
 An optional executable `~/.vibe-coder/fleet-pr-babysitter/health-hook` receives
 the pass exit code as its sole argument. It is bounded to ten minutes; hook
 failure is logged and the next pass retries. Organisation-specific extensions
@@ -100,18 +122,30 @@ approvals disabled, under a per-spawn Codex permissions profile
 (`default_permissions` and a `permissions.<profile>.filesystem` inline table
 passed as one `-c` value) that reads the filesystem, writes only the temporary
 clone (its `.git` read-only) and scratch directory, and has no access (`none`)
-to the App private key, the `~/.vibe-coder/fleet-pr-babysitter*` entries and
-their symlink targets, because the agent shares the runner's OS user and file
-modes alone do not protect them; and it is told not to ask questions. When a fix
+to the babysitter App private key, the worker credential directory, the host
+`gh` config directory, configured reviewer and worker App keys, configured
+service-account SSH key, the `~/.vibe-coder/fleet-pr-babysitter*` entries and
+their resolved symlink targets. Credential locations are read from the same
+`CONFIG_PATH` file and host environment as the worker, including the documented
+defaults `~/.vibe-coder/credentials` and `~/.config/gh`. The configured spelling
+is resolved with filesystem traversal semantics, so `..` after a directory
+symlink follows the target's parent. Normalised locations and their canonical
+targets are also denied; missing tails are resolved through the longest existing
+parent. These entries are denied because the agent shares the runner's
+OS user and file modes alone do not protect them; it is also told not to ask
+questions. When a fix
 needs a human decision, it should report the blocker and stop without a commit.
 The sandbox still applies; an unavailable permission or credential can stop a
 run and must be corrected by the operator. Codex gets its own installation
 token, minted per repair for the target repository only, with read-only
 permissions (contents, pull requests, issues, checks, actions). Every GitHub
-write (lock, push, branch update, review dismissal) is made by the runner with
-its own token. The agent token lasts about an hour and is not refreshed, so
-reads late in a longer repair can fail. PR description fixes reach GitHub only
-via the archived summary.
+write (lock, push, branch update, review dismissal, PR description) is made by
+the runner with its own token. The agent token lasts about an hour and is not
+refreshed, so reads late in a longer repair can fail. When a review asks for a
+description change, the agent writes the full new description to
+`.babysitter-pr-body` in the clone; the runner removes it before committing and
+applies it after the push (or when there is no code change), re-adding any
+closing reference such as `Closes #N` the proposal dropped.
 
 The profile explicitly enables network access so the agent can fetch GitHub
 feedback and check details. Host `[sandbox_workspace_write]` settings do not
@@ -127,20 +161,31 @@ changing the key path, confirm on the host that the agent cannot read the key:
 run a one-off `codex exec` with the same `-c` overrides the babysitter passes
 (built by `buildBabysitterSandboxArgs` in
 `worker/deno/lib/fleet_babysitter_sandbox.ts`), ask it to `cat` the App private
-key, and expect a denied read. The agent's own `gh` login, if it has a
-credential store, is outside this boundary; the GitHub token handed to the agent
-stays read-only.
+key, and expect a denied read. The GitHub token handed to the agent stays
+read-only. This is a path denylist derived from the worker configuration and
+documented host defaults, not a guarantee that every credential on a host is
+unreadable.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs.
 A PR labelled `needs-human` is never a candidate: it waits on a person, for
 example a check that declared a human gate.
 An explicitly selected `--repo` scans that repository regardless of PR author;
 `--pr` narrows the scan to one PR. Both retain the same lock and validation. A
-failed or unproductive agent attempt is recorded under
+red check whose workflow runs were cancelled rather than failed (every run on
+the head finished, one or more cancelled, none failed) starts no agent: the
+runner asks GitHub to re-run the cancelled runs, once per head. That needs the
+App's `actions: write` permission; with `actions: read` the re-run is refused
+and logged as a WARNING naming the permission. A
+PR that a fleet worker holds a live PR-feedback lease claim on
+(`PR_COMMENT_CLAIM` with an unexpired `PR_COMMENT_CLAIM_LEASE`) is skipped for
+that pass, so the babysitter never repairs beside a worker that is about to
+push. A failed or unproductive agent attempt is recorded under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and is
-not retried on that host for the same PR head. Removing the matching state file
-permits a retry. The shared lock prevents simultaneous work; this local attempt
-record does not prevent a different host from retrying later.
+not retried on that host for the same PR head. A review repair is keyed on the
+head and the newest change-request review, so a new review on an attempted head
+gets its own attempt. Removing the matching state file permits a retry. The shared lock prevents simultaneous work; this local attempt
+record does not prevent a different host from retrying later. Repository
+mirrors live in the same state directory, under `mirrors/`, as described above.
 
 ## Shift-left detection
 

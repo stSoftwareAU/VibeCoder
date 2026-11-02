@@ -2,7 +2,7 @@
  * Chokepoint hooks that journal GitHub mutations (Issue #2380).
  *
  * These thin, best-effort wrappers are called from the central `gh` and
- * `git` subprocess entry-points (`runGhCommandRaw` in github.ts and
+ * `git` subprocess entry-points (`spawnGh` in gh_spawn.ts and
  * `runGitCommand` in git_timeout.ts). They classify the command, and when
  * it is a GitHub mutation, append a hash-chained entry to the audit
  * journal. Every failure is swallowed so journalling can never abort — or
@@ -25,6 +25,7 @@ import {
   type RecordOptions,
   resolveRunId,
 } from "./audit_journal.ts";
+import type { AuditActionKind, AuditComponent } from "./audit_entry.ts";
 import {
   classifyGhMutation,
   classifyGitMutation,
@@ -44,6 +45,8 @@ import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
  * call sites pass nothing and behave identically.
  */
 export interface AuditHookOptions extends RecordOptions {
+  /** Proven push range, supplied by the git chokepoint before a push. */
+  deliveredCommits?: string[];
   /**
    * Explicit run id for the journal entry.
    *
@@ -74,30 +77,192 @@ export function isAuditJournalEnabled(
 }
 
 /**
- * Best-effort caller resolution from the stack trace.
+ * Audit and chokepoint plumbing the caller walk passes over.
  *
- * Walks frames to the first `worker/deno/lib/<file>.ts` that is not one of
- * the audit/chokepoint plumbing files, so the recorded caller is the code
- * path that actually requested the mutation.
+ * Each file sits between the requesting module and the hook: the `gh` and
+ * `git` chokepoints, the retry and wrapper layers above them, and the audit
+ * modules themselves. `git_push.ts` is the push primitive (`pushUnpushedCommits`
+ * and `commitAndPushPending`) that every worker push runs through on its way to
+ * `runGitCommand`; it does not decide that a push happens, so the module that
+ * asked for the push is the first frame above it. The first frame outside this
+ * list is therefore the module that asked for the mutation. Matched on the
+ * whole file name, so `infra_retry.ts` is not mistaken for `retry.ts`.
  */
-function resolveCaller(): string | undefined {
-  const stack = new Error().stack;
+const PLUMBING_FILES: ReadonlyArray<string> = [
+  "audit_hook.ts",
+  "audit_journal.ts",
+  "audit_mutation_classifier.ts",
+  "gh_spawn.ts",
+  "gh_wrapper.ts",
+  "git_push.ts",
+  "git_push_recovery.ts",
+  "git_timeout.ts",
+  "github.ts",
+  "retry.ts",
+];
+
+/**
+ * Pick the requesting module out of a stack trace.
+ *
+ * Walks frames to the first `worker/deno/lib/<file>.ts` (or a file under a
+ * `lib/` subdirectory, such as `lib/phases/`) or `worker/deno/commands/<file>.ts`
+ * that is not one of the {@link PLUMBING_FILES}. Exported so the
+ * skip list can be tested against a fixed stack.
+ *
+ * @param stack - A stack trace, or undefined when none was captured.
+ * @returns The `worker/deno/...` path of the requesting module, or undefined.
+ */
+export function callerFromStack(
+  stack: string | undefined,
+): string | undefined {
   if (!stack) return undefined;
-  const skip = [
-    "audit_hook.ts",
-    "audit_journal.ts",
-    "audit_mutation_classifier.ts",
-    "git_timeout.ts",
-    "github.ts",
-  ];
   for (const line of stack.split("\n")) {
-    const match = line.match(/(worker\/deno\/lib\/[A-Za-z0-9_]+\.ts)/);
+    const match = line.match(
+      /(worker\/deno\/(?:lib|commands)\/(?:[A-Za-z0-9_]+\/)*[A-Za-z0-9_]+\.ts)/,
+    );
     if (match && match[1]) {
       const path = match[1];
-      if (!skip.some((s) => path.endsWith(s))) return path;
+      const file = path.slice(path.lastIndexOf("/") + 1);
+      if (!PLUMBING_FILES.includes(file)) return path;
     }
   }
   return undefined;
+}
+
+/** Best-effort caller resolution from the current stack trace. */
+function resolveCaller(): string | undefined {
+  return callerFromStack(new Error().stack);
+}
+
+/**
+ * Modules that positively identify the worker as the requester.
+ *
+ * Only these name the worker. Any other caller, or none, is `unknown`
+ * rather than assumed to be the worker.
+ */
+const WORKER_CALLERS: ReadonlyArray<string> = [
+  "wip_checkpoint",
+  "run_wip_preservation",
+  "declared_handoff",
+  "push_recovery_retry",
+  "agent_pr_adoption",
+  "completion_phase",
+  "pr_ci_processor",
+  "pr_feedback_processor",
+  "pr_maintenance",
+];
+
+/**
+ * Classify the component that requested a mutation from its caller path.
+ *
+ * Exported for tests; production reaches it only through {@link record}.
+ *
+ * @param caller - The `worker/deno/...` caller path, if one was resolved.
+ */
+export function componentFor(caller?: string): AuditComponent {
+  if (!caller) return "unknown";
+  if (caller.includes("fleet_pr_babysitter")) return "babysitter";
+  if (caller.includes("review_round")) return "reviewer";
+  if (WORKER_CALLERS.some((name) => caller.includes(name))) return "worker";
+  return "unknown";
+}
+
+/** Callers whose `git push` updates a PR branch that already exists. */
+const REPAIR_PUSH_CALLERS: ReadonlyArray<string> = [
+  "fleet_pr_babysitter",
+  "pr_ci_processor",
+  "pr_feedback_processor",
+  "pr_merge_conflict_processor",
+  "pr_spelling_processor",
+];
+
+/**
+ * Callers whose `git push` publishes the run's own implementation branch.
+ *
+ * The completion phase's in-run recovery modules make the final push of the
+ * run's branch themselves (`commitAndPushPending` after their recovery turn),
+ * so they are named here rather than left `unknown`.
+ */
+const IMPLEMENTATION_PUSH_CALLERS: ReadonlyArray<string> = [
+  "wip_checkpoint",
+  "run_wip_preservation",
+  "declared_handoff",
+  "push_recovery_retry",
+  "agent_pr_adoption",
+  "completion_phase",
+  "pr_body_length",
+  "pre_push_gate_retry",
+  "screenshot_gate_retry",
+  "summary_rule_gate_retry",
+];
+
+/**
+ * Classify the action a mutation performs, without guessing from the verb
+ * alone.
+ *
+ * A `git push` is only `repair` or `implementation` when its caller positively
+ * names the module that makes that push; any other push is `unknown`.
+ *
+ * Exported for tests; production reaches it only through {@link record}.
+ *
+ * @param info - The classified mutation.
+ * @param caller - The `worker/deno/...` caller path, if one was resolved.
+ * @param args - The raw `gh` or `git` arguments, for the dismissal state.
+ */
+export function actionKindFor(
+  info: MutationInfo,
+  caller: string | undefined,
+  args: readonly string[],
+): AuditActionKind {
+  if (info.verb === "pr-merge") {
+    return args.includes("--disable-auto") ? "unknown" : "merge";
+  }
+  if (info.verb === "pr-review") return "review";
+  if (
+    info.verb === "api-put" &&
+    /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/update-branch$/
+      .test(info.target ?? "")
+  ) return "branch-update";
+  if (
+    info.verb === "api-put" &&
+    /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/reviews\/[1-9]\d*$/
+      .test(info.target ?? "") &&
+    args.some((arg) => /^state=DISMISSED$/i.test(arg))
+  ) return "dismissal";
+  // The worker's own dismissal (`markCommentProcessed` in pr_comments.ts) PUTs
+  // the `/dismissals` sub-endpoint with a `message=` field, not `state=`.
+  if (
+    info.verb === "api-put" &&
+    /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/reviews\/[1-9]\d*\/dismissals$/
+      .test(info.target ?? "")
+  ) return "dismissal";
+  if (info.verb === "git-push" && caller) {
+    if (REPAIR_PUSH_CALLERS.some((name) => caller.includes(name))) {
+      return "repair";
+    }
+    if (IMPLEMENTATION_PUSH_CALLERS.some((name) => caller.includes(name))) {
+      return "implementation";
+    }
+  }
+  return "unknown";
+}
+
+/**
+ * The PR number a mutation targets, or undefined when it targets no PR.
+ *
+ * Taken from a `/pulls/N` API path, or from a numeric target of a `pr-` verb.
+ * Exported for tests; production reaches it only through {@link record}.
+ *
+ * @param info - The classified mutation.
+ */
+export function prNumberFor(info: MutationInfo): number | undefined {
+  if (!info.target) return undefined;
+  const apiTarget = info.target.match(/\/pulls\/([1-9]\d*)(?:\/|$)/);
+  const raw = apiTarget?.[1] ??
+    (info.verb.startsWith("pr-") ? info.target : undefined);
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const number = Number(raw);
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
 }
 
 /**
@@ -113,19 +278,27 @@ async function record(
   info: MutationInfo,
   exitCode: number | undefined,
   opts: AuditHookOptions,
+  args: readonly string[],
 ): Promise<void> {
+  const caller = resolveCaller();
   try {
     const result = await recordMutation({
+      actionId: crypto.randomUUID(),
+      component: componentFor(caller),
+      actionKind: actionKindFor(info, caller, args),
+      ...(info.verb === "git-push" && opts.deliveredCommits !== undefined
+        ? { deliveredCommits: opts.deliveredCommits }
+        : {}),
+      ...(prNumberFor(info) !== undefined
+        ? { prNumber: prNumberFor(info) }
+        : {}),
       runId: opts.runId ?? resolveRunId(opts.env ?? processEnvLookup),
       verb: info.verb,
       outcome: exitCode === 0 ? "success" : "error",
       ...(info.repo ? { repo: info.repo } : {}),
       ...(info.target ? { target: info.target } : {}),
       ...(exitCode !== undefined ? { exitCode } : {}),
-      ...(() => {
-        const caller = resolveCaller();
-        return caller ? { caller } : {};
-      })(),
+      ...(caller ? { caller } : {}),
     }, opts);
     if (!result.ok) {
       console.error(
@@ -158,7 +331,7 @@ export async function auditGhMutation(
   if (!isAuditJournalEnabled(opts.env ?? processEnvLookup)) return;
   const info = classifyGhMutation(args);
   if (!info) return;
-  await record(info, exitCode, opts);
+  await record(info, exitCode, opts, args);
 }
 
 /**
@@ -177,5 +350,5 @@ export async function auditGitMutation(
   if (!isAuditJournalEnabled(opts.env ?? processEnvLookup)) return;
   const info = classifyGitMutation(args);
   if (!info) return;
-  await record(info, exitCode, opts);
+  await record(info, exitCode, opts, args);
 }

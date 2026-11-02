@@ -1,0 +1,41 @@
+name: Cargo Audit
+
+on:
+  pull_request:
+    branches: [Develop, main, milestone/*]
+
+permissions:
+  contents: read
+
+# Only the latest run for a given ref matters, so a per-ref group with
+# cancellation stops rapid pushes spawning parallel, redundant work.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes, so the job token must not be left behind
+          # in .git/config where a later step could read it.
+          persist-credentials: false
+      # SHA-pinned, so the toolchain can no longer be read from the ref
+      # name — it is named explicitly instead (Issue #3645).
+      # dtolnay/rust-toolchain@v1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        if: hashFiles('Cargo.lock') != ''
+        with:
+          toolchain: stable
+      # `cargo audit` reads the root Cargo.lock and exits 2 when there is
+      # none. This repository tracks no root lockfile (its only Rust is the
+      # eval fixture under evals/), so there is nothing to audit until one is
+      # committed; the steps then run with no further change.
+      - if: hashFiles('Cargo.lock') != ''
+        run: cargo install cargo-audit
+      - if: hashFiles('Cargo.lock') != ''
+        run: cargo audit

@@ -167,7 +167,9 @@ function quote(criterion: string): string {
 }
 
 /**
- * The PR-body section that says why the PR does not close its issue.
+ * The PR-body section that says why the PR does not close its issue. The
+ * note names the target issue only; it carries no VibeCoder issue number
+ * (Issue #4641), because GitHub resolves a bare `#N` against the PR's repo.
  *
  * @param issueNumber - The issue the PR is part of.
  * @param missing - The unmet entries, from {@link findMissingCriteria}.
@@ -189,7 +191,7 @@ export function buildMissingCriteriaPrNote(
     ...missing.map(quote),
     "",
     `When it merges, the worker leaves ${ref} open with its existing ` +
-    "labels so it remains queued to finish the unmet criteria (Issue #3177).",
+    "labels so it remains queued to finish the unmet criteria.",
     "",
   ].join("\n");
 }

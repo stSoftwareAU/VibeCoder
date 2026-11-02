@@ -6,12 +6,131 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  _resetAuditCaches,
+  auditFilePath,
+  loadEntries,
+} from "../lib/audit_journal.ts";
+import {
+  capturePushCommits,
   getTimeoutForOperation,
   isGitTimeout,
   runGitCommand,
   runGitCommandChecked,
   TIMEOUT_EXIT_CODE,
 } from "../lib/git_timeout.ts";
+import { envFrom } from "./support/env_lookup.ts";
+import { buildPushArgs } from "../lib/git_ref_args.ts";
+
+Deno.test("git timeout - push provenance excludes remote owner commits even with a stale tracking ref", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "push-provenance-" });
+  const cwd = `${dir}/local`;
+  const env = {
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    VIBE_AUDIT_DISABLED: "true",
+  };
+  const git = async (...args: string[]) => {
+    const result = await runGitCommand(args, { cwd, env });
+    assertEquals(result.ok, true);
+    if (!result.ok) throw result.error;
+    assertEquals(result.value.code, 0, result.value.stderr);
+    return result.value.stdout.trim();
+  };
+  try {
+    await Deno.mkdir(cwd);
+    await git("init", "--quiet", "--initial-branch=feature");
+    await git("config", "user.name", "Test");
+    await git("config", "user.email", "test@example.invalid");
+    await git("config", "commit.gpgsign", "false");
+    await git("init", "--quiet", "--bare", `${dir}/remote.git`);
+    await git("remote", "add", "origin", `${dir}/remote.git`);
+    await git("commit", "--quiet", "--allow-empty", "-m", "initial");
+    const initial = await git("rev-parse", "HEAD");
+    assertEquals(
+      await capturePushCommits(["push", "-u", "origin", "feature"], {
+        cwd,
+        env,
+      }),
+      [initial],
+    );
+    await git("push", "origin", "feature");
+    await git("commit", "--quiet", "--allow-empty", "-m", "owner repair");
+    await git("push", "origin", "feature");
+    // Simulate a stale local tracking ref: the remote itself remains authoritative.
+    await git("update-ref", "refs/remotes/origin/feature", initial);
+    await git("commit", "--quiet", "--allow-empty", "-m", "fleet repair");
+    const repair = await git("rev-parse", "HEAD");
+    assertEquals(
+      await capturePushCommits(["push", "origin", "feature"], { cwd, env }),
+      [repair],
+    );
+    const auditEnv = {
+      WORK_DIR: dir,
+      WORKER_UNIQUE_ID: "push-provenance",
+      VIBE_RUN_ID: "push-provenance",
+      VIBE_AUDIT_DISABLED: "0",
+    };
+    try {
+      _resetAuditCaches();
+      const pushed = await runGitCommand(
+        buildPushArgs("origin", "feature", { setUpstream: true }),
+        {
+          cwd,
+          env: { ...env, ...auditEnv },
+        },
+      );
+      assertEquals(pushed.ok, true);
+      if (!pushed.ok) throw pushed.error;
+      assertEquals(pushed.value.code, 0, pushed.value.stderr);
+      const journal = await loadEntries(
+        auditFilePath({ env: envFrom(auditEnv) }),
+      );
+      assertEquals(journal.ok, true);
+      if (!journal.ok) throw journal.error;
+      assertEquals(journal.value.length, 1);
+      assertEquals(journal.value[0]?.deliveredCommits, [repair]);
+    } finally {
+      _resetAuditCaches();
+    }
+    assertEquals(
+      await capturePushCommits(["push", "origin", "feature"], { cwd, env }),
+      [],
+    );
+    assertEquals(
+      await capturePushCommits(["push", "--force", "origin", "feature"], {
+        cwd,
+        env,
+      }),
+      undefined,
+    );
+    assertEquals(
+      await capturePushCommits(["push", "origin", "HEAD"], { cwd, env }),
+      undefined,
+    );
+    assertEquals(
+      await capturePushCommits(["push", "missing", "feature"], { cwd, env }),
+      undefined,
+    );
+    assertEquals(
+      await capturePushCommits(["push", "origin", "feature:other"], {
+        cwd,
+        env,
+      }),
+      [],
+    );
+    await git("commit", "--quiet", "--allow-empty", "-m", "new branch work");
+    const newWork = await git("rev-parse", "HEAD");
+    assertEquals(
+      await capturePushCommits(buildPushArgs("origin", "feature:other"), {
+        cwd,
+        env,
+      }),
+      [newWork],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // getTimeoutForOperation

@@ -88,6 +88,14 @@ export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
       "head are both outside `milestone/*`, so requiring it on `main` would " +
       "gate ordinary merges on a job that never reports",
   },
+  {
+    context: "audit",
+    reason:
+      "advisory (Issue #4628) — the Cargo Security Audit workflow reports on " +
+      "every pull request, but making it block a merge is a ruleset change " +
+      "only a human administrator can make; the ruleset requires `gate` alone " +
+      "and `quality.yml` does not gate this workflow",
+  },
 ];
 
 /** The result of comparing the required contexts against the derived ones. */

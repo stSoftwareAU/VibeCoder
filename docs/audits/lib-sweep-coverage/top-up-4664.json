@@ -1,0 +1,12 @@
+{
+  "issue": 4664,
+  "chunk": "top-up-4664",
+  "title": "top-up: babysitter Codex installer",
+  "ledger": "docs/audits/security-sweep-4664-babysitter-codex.md",
+  "definition": "security review of the babysitter Codex installer added under issue 4664",
+  "status": "swept",
+  "sweptAt": "82b1e121eb7cec130423d0033e209d2e617d11f3",
+  "paths": [
+    "worker/deno/lib/fleet_babysitter_codex.ts"
+  ]
+}

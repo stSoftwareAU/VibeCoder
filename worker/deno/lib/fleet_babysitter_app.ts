@@ -327,5 +327,13 @@ export function babysitterAgentEnv(
   if (token.trim() === "") {
     throw new Error("Refusing to start the babysitter agent without a token");
   }
-  return { TMPDIR: scratch, XDG_CACHE_HOME: scratch, GH_TOKEN: token };
+  // Issue #4722: the inherited GH_CONFIG_DIR and ~/.config/gh are protected
+  // paths, and gh reads its configuration even with GH_TOKEN set, so it would
+  // fail. An empty directory in scratch leaves it the agent's token only.
+  return {
+    TMPDIR: scratch,
+    XDG_CACHE_HOME: scratch,
+    GH_TOKEN: token,
+    GH_CONFIG_DIR: `${scratch}/gh-config`,
+  };
 }

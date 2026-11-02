@@ -5,8 +5,10 @@
 // branch, CI green, no conflict, not a draft, and not yet reviewed at their
 // head commit (by this reviewer, by anyone's approval, or by another host's
 // marker-carrying review), not held by another host's live review claim at its
-// head (Issue #4398), and not sent back awaiting a fix whose only new commits
-// leave their own diff unchanged apart from a strict version re-bump.
+// head (Issue #4398), and not sent back awaiting a fix, or held for the owner,
+// whose only new commits leave their own diff unchanged (for a fix, apart from
+// a strict version re-bump; a held PR must also be held under the current hold
+// policy, Issue #4643).
 // At most --limit (default 5) PRs are
 // reported per pass, counted after every other skip, so a red, approved or
 // claimed PR never takes a slot and the rest come back next pass (Issue #3225).
@@ -64,6 +66,8 @@ import {
 import {
   type FableReview,
   type Finding,
+  heldPolicyAt,
+  HOLD_POLICY_VERSION,
   migrateLegacyStateDir,
   previousFindings,
   prKey,
@@ -142,6 +146,7 @@ type Skip =
   | "already-reviewed" // reviewed at this exact head commit, by this reviewer or by this skill on another host
   | "approved" // someone else approved it at this exact head commit (Issue #3225): nothing left to review
   | "awaiting-fix" // sent back earlier; own diff unchanged or only a strict version re-bump
+  | "awaiting-owner" // held for the owner earlier; own diff unchanged, and the hold is under the current policy (Issue #4643)
   | "checklist-unreadable" // fetching review-checklists.json failed with a gh error other than not-found; retried next pass
   | "in-flight" // already being reviewed in a round on this host (--in-flight, Issue #4395)
   | "claimed-elsewhere" // another host holds a live review claim at this head (Issue #4398)
@@ -368,6 +373,23 @@ export function sentBackAt(
   return null;
 }
 
+// The commit this reviewer last held the PR at for the owner, when its latest
+// counted review is a comment-only review at a commit other than the head; else
+// null (Issue #4643). Only a skill review counts as one, since countsAsReview
+// ignores the owner's own comments, so a COMMENTED review here is the hold.
+export function heldAt(
+  reviews: Review[],
+  reviewer: string,
+  headSha: string,
+): string | null {
+  const counted = reviews.filter((r) => countsAsReview(r, reviewer));
+  const last = counted[counted.length - 1];
+  if (!last) return null;
+  const oid = last.commit?.oid;
+  if (!oid || oid === headSha) return null;
+  return last.state === "COMMENTED" ? oid : null;
+}
+
 // A single line up to (and excluding) its first newline, so a multi-line gh
 // error does not spill a stack trace into `upkeep` or the summary.
 function firstLine(message: string): string {
@@ -561,8 +583,9 @@ function findingNamesFile(
 // filename in either listing is not confirmed.
 //
 // SIMPLE-ON-PURPOSE: the three compare calls below are repeated each pass
-// while the PR awaits its fix, fine for a handful of sent-back PRs — upgrade
-// when awaiting-fix PRs exceed ~50 per pass (cache the verdict per PR, since
+// while the PR awaits its fix or the owner (a held PR too, Issue #4643), fine
+// for a handful of such PRs — upgrade when awaiting-fix or held PRs exceed ~50
+// per pass (cache the verdict per PR, since
 // and head in the state dir).
 export async function ownDiffUnchanged(
   gh: (args: string[]) => Promise<string>,
@@ -659,6 +682,7 @@ export async function skipReason(
   ownDiffUnchangedSince: (since: string) => Promise<boolean> = () =>
     Promise.resolve(false),
   wasChangeRequestSince: (oid: string) => boolean = () => false,
+  heldPolicyAtOid: (oid: string) => number | null = () => null,
 ): Promise<Skip | null> {
   // Only a merge into the default branch needs an approval; PRs into
   // milestone branches are reviewed when the milestone merges.
@@ -709,6 +733,16 @@ export async function skipReason(
   );
   if (since !== null && await ownDiffUnchangedSince(since)) {
     return "awaiting-fix";
+  }
+  // Held for the owner at an earlier commit (Issue #4643). Only the base merged
+  // in since and the own diff is unchanged, so the hold stands. A hold with no
+  // log record, or one made under an older policy, is reviewed afresh.
+  const heldOid = heldAt(pr.reviews.nodes, reviewer, pr.headRefOid);
+  if (
+    heldOid !== null && heldPolicyAtOid(heldOid) === HOLD_POLICY_VERSION &&
+    await ownDiffUnchangedSince(heldOid)
+  ) {
+    return "awaiting-owner";
   }
   return null;
 }
@@ -1127,6 +1161,9 @@ export async function pass(
         }
       }
     }
+    // A held PR has no changes_requested record at its held commit, so its
+    // findings are undefined here: ownDiffUnchanged then takes the strict path
+    // (context must match, and a dropped file means a fresh review), Issue #4643.
     const skip = await skipReason(
       pr,
       reviewer,
@@ -1143,6 +1180,7 @@ export async function pass(
           )?.findings,
         ),
       (oid) => wasChangeRequestAt(log, repo, pr.number, oid),
+      (oid) => heldPolicyAt(log, repo, pr.number, oid),
     );
     // Review first, then up to date (Issues #3225, #3663): an approved fleet
     // or Dependabot PR behind its base cannot merge,

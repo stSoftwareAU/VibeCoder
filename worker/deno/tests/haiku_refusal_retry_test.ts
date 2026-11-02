@@ -431,7 +431,7 @@ Deno.test("buildRefusalFailureReason - names both refusals and avoids infrastruc
     "also refused — `frontier_llm` from `claude-sonnet-5-5`",
   );
   for (const text of [a, b]) {
-    assertStringIncludes(text, "Issue #3406");
+    assert(!/#\d+/.test(text), `reason carries a VibeCoder number: ${text}`);
     assert(
       !/timeout|timed out|rate limit|usage limit|SIGKILL|SIGTERM|zero output|interrupted/i
         .test(text),

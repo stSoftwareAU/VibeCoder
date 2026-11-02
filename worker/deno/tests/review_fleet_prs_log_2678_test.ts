@@ -5,6 +5,7 @@ import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   decideOutcome,
   type FableReview,
+  heldPolicyAt,
   type LogRecord,
   parseFableReview,
   parseLog,
@@ -228,6 +229,67 @@ Deno.test("wasChangeRequestAt: true only for a logged changes_requested record a
   assertEquals(wasChangeRequestAt([sentBack], "o/r", 2, "X"), false);
   // No log record at all: false, not a crash.
   assertEquals(wasChangeRequestAt([], "o/r", 1, "X"), false);
+});
+
+Deno.test("heldPolicyAt: the policy of the latest held record at that exact head, legacy records being version 1 (Issue #4643)", () => {
+  // A held record written before the holdPolicy field is version 1.
+  assertEquals(
+    heldPolicyAt([record({ headSha: "X", outcome: "held" })], "o/r", 1, "X"),
+    1,
+  );
+  // An explicit policy is read as written.
+  assertEquals(
+    heldPolicyAt(
+      [record({ headSha: "X", outcome: "held", holdPolicy: 3 })],
+      "o/r",
+      1,
+      "X",
+    ),
+    3,
+  );
+  // The latest held record for the head decides.
+  assertEquals(
+    heldPolicyAt(
+      [
+        record({ headSha: "X", outcome: "held", holdPolicy: 2 }),
+        record({
+          headSha: "X",
+          outcome: "held",
+          at: "2026-09-27T11:00:00.000Z",
+        }),
+      ],
+      "o/r",
+      1,
+      "X",
+    ),
+    1,
+  );
+  // Another head, repo or PR: no match.
+  const held = record({ headSha: "X", outcome: "held" });
+  assertEquals(heldPolicyAt([held], "o/r", 1, "Y"), null);
+  assertEquals(heldPolicyAt([held], "o/other", 1, "X"), null);
+  assertEquals(heldPolicyAt([held], "o/r", 2, "X"), null);
+  // An approval or a change request at that head is not a hold.
+  assertEquals(
+    heldPolicyAt(
+      [record({ headSha: "X", outcome: "approved" })],
+      "o/r",
+      1,
+      "X",
+    ),
+    null,
+  );
+  assertEquals(
+    heldPolicyAt(
+      [record({ headSha: "X", outcome: "changes_requested" })],
+      "o/r",
+      1,
+      "X",
+    ),
+    null,
+  );
+  // No record at all: null.
+  assertEquals(heldPolicyAt([], "o/r", 1, "X"), null);
 });
 
 Deno.test("parseLog skips a torn last line", () => {

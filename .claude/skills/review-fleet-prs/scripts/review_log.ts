@@ -7,6 +7,24 @@
 // checkout, which the worker resets.
 
 import {
+  type FiledIssue,
+  type Finding,
+  type LogRecord,
+  type Outcome,
+  parseLog,
+  type TestChangeNote,
+} from "../../../../worker/deno/lib/fleet_review_log.ts";
+export { parseLog } from "../../../../worker/deno/lib/fleet_review_log.ts";
+export type {
+  FiledIssue,
+  Finding,
+  LogRecord,
+  Outcome,
+  TestChangeKind,
+  TestChangeNote,
+} from "../../../../worker/deno/lib/fleet_review_log.ts";
+
+import {
   hostLogDirPlatform,
   readConfiguredLogDirSync,
   resolveLogDir,
@@ -25,34 +43,13 @@ import { runFooter, type RunInfo } from "./review_cost.ts";
 
 export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
 
-export type Outcome = "approved" | "changes_requested" | "held";
-
-export interface Finding {
-  file: string;
-  line: number;
-  problem: string;
-  fix?: string;
-  // A gap for an earlier finding also carries that finding (#4446).
-  earlier?: Finding;
-}
-
-// Lives here (not auto_release.ts) so auto_release.ts can import it without a cycle.
-export type TestChangeKind =
-  | "expected-value"
-  | "removed-case"
-  | "added-skip"
-  | "weakened-assertion"
-  | "removed-file"
-  | "other";
-
-export interface TestChangeNote {
-  file: string;
-  line: number;
-  change: string;
-  kind?: TestChangeKind; // what sort of edit it is; only "expected-value" can auto-release (Issue #3397)
-  criterionQuote?: string; // verbatim acceptance criterion of a linked issue that requires the change
-  failsWithoutChange?: boolean | string; // whether the edited test fails without the code change
-}
+/**
+ * The version of the owner-hold policy a held review was made under. Bump it
+ * when the policy for what is held changes (e.g. the owner-approved
+ * test-removal policy in #4655), so existing holds are reassessed once even on
+ * an unchanged head (Issue #4643).
+ */
+export const HOLD_POLICY_VERSION = 1;
 
 // A pre-existing problem Fable noticed that the PR did not cause (already on
 // the base branch, unchanged by the PR): unfair to ask this PR to fix it, too
@@ -71,14 +68,6 @@ export interface UnrelatedIssue {
   existingIssue?: number;
 }
 
-export interface FiledIssue {
-  number: number;
-  url: string;
-  title: string;
-  /** The instance was added to this existing issue, not filed (Issue #3598). */
-  addedTo?: true;
-}
-
 export { MAX_UNRELATED_ISSUES };
 
 // Structurally the same shape as the pre-PR verifier's ReviewReply (Issue #3395).
@@ -94,24 +83,6 @@ export interface FableReview {
   // Per-item verdicts for the repo's review checklists; [] when none apply
   // (Issue #3594).
   checklist: ChecklistVerdict[];
-}
-
-export interface LogRecord {
-  at: string; // ISO time the review was posted
-  repo: string;
-  number: number;
-  title: string;
-  url: string;
-  headSha: string;
-  outcome: Outcome;
-  summary: string;
-  findings: Finding[];
-  testChangeNotes: TestChangeNote[];
-  removedTests: string[];
-  filedIssues?: FiledIssue[];
-  addedNeedsHuman?: boolean; // the skill's own needs-human label is on the PR after this review (Issue #2927)
-  autoReleased?: true; // set only when an issue-required test-change hold was auto-released (Issue #3397)
-  autoReleaseHeld?: string[]; // reasons an opted-in repo's hold was kept; set only on a held PR (Issue #3397)
 }
 
 export const LOG_FILE = "log.jsonl";
@@ -443,16 +414,6 @@ export async function readLog(dir: string): Promise<LogRecord[]> {
   );
 }
 
-export function parseLog(text: string): LogRecord[] {
-  return text.split("\n").filter((l) => l.trim() !== "").flatMap((l) => {
-    try {
-      return [JSON.parse(l) as LogRecord];
-    } catch {
-      return []; // a torn last line from an interrupted write
-    }
-  });
-}
-
 export function latestByPr(records: LogRecord[]): Map<string, LogRecord> {
   const latest = new Map<string, LogRecord>();
   for (const r of records) latest.set(prKey(r.repo, r.number), r);
@@ -485,6 +446,27 @@ export function wasChangeRequestAt(
     r.repo === repo && r.number === number && r.headSha === headSha &&
     r.outcome === "changes_requested"
   );
+}
+
+// The owner-hold policy version of the latest held record for this PR at this
+// exact head commit, or null when there is none (Issue #4643). A record written
+// before the holdPolicy field is version 1.
+export function heldPolicyAt(
+  records: LogRecord[],
+  repo: string,
+  number: number,
+  headSha: string,
+): number | null {
+  let policy: number | null = null;
+  for (const r of records) {
+    if (
+      r.repo === repo && r.number === number && r.headSha === headSha &&
+      r.outcome === "held"
+    ) {
+      policy = r.holdPolicy ?? 1;
+    }
+  }
+  return policy;
 }
 
 const clip = (s: string, max = 200) =>

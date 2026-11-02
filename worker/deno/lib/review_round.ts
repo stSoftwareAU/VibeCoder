@@ -56,6 +56,11 @@ export interface ReviewRoundOptions {
    * {@link REVIEW_RUN_FILE} and streams to its own file there.
    */
   roundDir?: string;
+  deployment?: {
+    component: "reviewer";
+    codeRevision: string;
+    policyFingerprint: string;
+  };
 }
 
 /** What one `claude -p` attempt ended with. */
@@ -140,6 +145,14 @@ export async function runReviewRound(
   const record: ReviewRunRecord = {
     round: roundDir?.split("/").pop() ?? "",
     attempts: [],
+    ...(options.deployment
+      ? {
+        deployment: {
+          ...options.deployment,
+          observedAt: new Date().toISOString(),
+        },
+      }
+      : {}),
   };
   // Each attempt is recorded before it starts, so a review posted while it
   // runs can name its provider and model, and again with its exit status.
@@ -158,6 +171,12 @@ export async function runReviewRound(
       stream: `stream-${n}.jsonl`,
     };
     record.attempts.push(entry);
+    if (options.deployment) {
+      record.deployment = {
+        ...options.deployment,
+        observedAt: new Date().toISOString(),
+      };
+    }
     await deps.recordRun?.(roundDir, record);
     const result = await deps.runClaude(
       attemptArgs,

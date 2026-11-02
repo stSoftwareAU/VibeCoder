@@ -82,8 +82,10 @@ export function buildPromptTooLongReason(output?: string): string {
     0,
     PROMPT_TOO_LONG_MAX_OUTPUT_CHARS,
   );
+  // Posted to the target repo, so it names no VibeCoder issue number
+  // (Issue #4641).
   return `${PROMPT_TOO_LONG_MARKER} — the issue's context does not fit the ` +
-    "model even on a fresh session, so trim or split the issue (Issue #2682)." +
+    "model even on a fresh session, so trim or split the issue." +
     (snippet ? `\n\nAgent output: ${snippet}` : "");
 }
 

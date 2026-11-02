@@ -1693,9 +1693,10 @@ export async function checkClaimChurn(
   // Churn threshold met — record it and cool down (Issue #861). Issue
   // #4158: never `failed` and never a request for a human to add
   // `planning` — the issue is the Vibe Coder's to finish, so it stays
-  // claimable once the cooldown ends.
+  // claimable once the cooldown ends. The posted text carries no VibeCoder
+  // issue number (Issue #4641): GitHub would resolve a bare `#N` in the target repo.
   const churnComment =
-    `## Claim Churn Detected\n\nThis issue has been claimed and released ${churnCount} times in the last hour (threshold: ${threshold}). The worker is releasing it and cooling down before the next attempt; it stays queued and is never parked (Issue #4158).`;
+    `## Claim Churn Detected\n\nThis issue has been claimed and released ${churnCount} times in the last hour (threshold: ${threshold}). The worker is releasing it and cooling down before the next attempt; it stays queued and is never parked.`;
 
   try {
     await ghCommandFn([

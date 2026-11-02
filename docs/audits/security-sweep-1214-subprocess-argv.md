@@ -235,6 +235,40 @@ Named here so a later sweep does not re-litigate them.
   `integration_test_manifest.ts`, `runner_deprecation_scanner.ts`** — controls
   and pure builders, not spawn sites.
 
+## Follow-up: the milestone gates' child environment (Issue #4659)
+
+SEC-1214-02's control did not reach the two gates that run a repository's own
+code for a milestone. `spawnTask` in `milestone_resolution_gate.ts` (the
+repository's `deno task`, `cargo test` or `bash quality.sh`) and
+`spawnTypeCheck` in `milestone_merge_gate.ts` (its `deno task check` or
+`cargo check`) both spawned with the worker's whole environment. They now spawn
+through [`worker/deno/lib/untrusted_gate_spawn.ts`](../../worker/deno/lib/untrusted_gate_spawn.ts):
+an allowlisted environment, `clearEnv: true`, and no inherited repository
+credential. With an available account and no declared credentials, commands
+stay on `agent`: failed, timed out or unreadable/unwritable access probes
+leave the command to CI through the gates' existing environment-fault path.
+A nested project directory or a manifest replaced by a prior repository task
+cannot select the worker account. Symbolic-link manifests and manifests whose
+uid differs from the worker's are refused before probing.
+
+An unwritable cargo `target` gives `agent` a persistent, per-checkout and
+per-account target through `cargoTargetDirForCheckout`. It uses the configured
+cache root when supplied; otherwise it is under the checkout on the work
+volume, away from memory-backed TMPDIR. It is retained for incremental builds,
+and the gates still consult the heavy-build budget before running cargo.
+The existing trim-refused cache placement and an explicitly named target
+remain authoritative.
+
+Each gate's real default runner has a test that plants a parent credential
+and asserts the child cannot see it. Declared `quality_credentials` are
+resolved per checkout through `setGateCredentialSource` and placed last in
+the child environment. A mint failure stops the command. Until #4705 provides
+a credential channel through sudo, operator-declared credentials select the
+logged worker fallback, with the restricted environment and no secrets in
+argv. A host without an available agent account also uses that environment.
+These fallbacks retain access to the worker's credential files; project
+layout and per-command probe results no longer select them.
+
 ## Swept paths
 
 The 54 files reviewed, as listed by the command above at the time of the sweep:

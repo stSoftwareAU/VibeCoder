@@ -186,7 +186,7 @@ export function buildRefusalReleaseComment(
     `branch — a repository configuration fault shared by every issue in the ` +
     `milestone, not a property of this issue — so ${list} ` +
     `${removed.length === 1 ? "has" : "have"} been removed and the issue is ` +
-    `claimable again (Issue #2220).`;
+    `claimable again.`;
 }
 
 /**
