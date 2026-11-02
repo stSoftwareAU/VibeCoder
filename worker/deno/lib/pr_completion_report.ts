@@ -177,6 +177,9 @@ export interface PrCompletionReport {
   };
 }
 
+/** The repository pattern every PR observation must satisfy. */
+export const PR_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
 const keyOf = (repo: string, number: number) => `${repo}#${number}`;
 
 /** Convert only PR-linked journal entries; the caller supplies chain integrity. */
@@ -204,7 +207,8 @@ export function prActionsFromAuditJournal(
   });
 }
 
-function timestamp(value: string, field: string): number {
+/** A UTC (Z) ISO timestamp as epoch milliseconds; throws naming `field`. */
+export function timestamp(value: string, field: string): number {
   const time = Date.parse(value);
   if (!Number.isFinite(time) || !/^\d{4}-\d\d-\d\dT.*Z$/.test(value)) {
     throw new Error(`${field} must be an ISO timestamp in UTC (Z)`);
@@ -340,7 +344,7 @@ export function buildPrCompletionReport(
   let duplicateObservations = 0;
   let excludedPrs = 0;
   for (const pr of input.prs) {
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(pr.repo)) {
+    if (!PR_REPO_PATTERN.test(pr.repo)) {
       throw new Error("PR repo must be owner/name");
     }
     if (!Number.isSafeInteger(pr.number) || pr.number < 1) {
