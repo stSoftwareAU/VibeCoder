@@ -234,6 +234,31 @@ export async function cloneForRepair(
   });
 }
 
+/**
+ * Whether the PR's base is already an ancestor of the checked-out head
+ * (Issue #4739). GitHub can keep reporting `CONFLICTING` after that; the
+ * merge would be a no-op and an agent would have nothing to resolve.
+ */
+export async function baseAlreadyMerged(
+  dir: string,
+  baseRefName: string,
+): Promise<boolean> {
+  const result = await runGitCommand([
+    "merge-base",
+    "--is-ancestor",
+    `refs/remotes/origin/${baseRefName}`,
+    "HEAD",
+  ], { cwd: dir, timeoutSeconds: 60 });
+  if (!result.ok) throw result.error;
+  if (result.value.code === 0) return true;
+  if (result.value.code === 1) return false;
+  throw new Error(
+    `git merge-base --is-ancestor failed (${result.value.code}): ${
+      (result.value.stderr || result.value.stdout).trim()
+    }`,
+  );
+}
+
 /** Give each repair the RTK instructions without depending on host dotfiles. */
 export async function babysitterRtkInstruction(
   probe: typeof runWithTimeout = runWithTimeout,
@@ -928,6 +953,12 @@ async function fix(
     await run("git", buildFetchTrackingRefArgs("origin", pr.baseRefName), dir);
     await run("git", ["checkout", "-b", "babysitter", pr.headRefOid], dir);
     if (pr.mergeable === "CONFLICTING") {
+      if (await baseAlreadyMerged(dir, pr.baseRefName)) {
+        console.log(
+          `${repo}#${pr.number}: GitHub reports a conflict but ${pr.baseRefName} is already merged into the head; skipped until GitHub recomputes`,
+        );
+        return;
+      }
       const merge = await runGitCommand([
         "merge",
         "--no-commit",
