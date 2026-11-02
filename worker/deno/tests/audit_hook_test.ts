@@ -92,13 +92,18 @@ Deno.test("audit_hook - auditGhMutation journals a gh mutation", async () => {
 
 Deno.test("audit_hook - PR mutations carry a worker action id and confirmed PR provenance", async () => {
   await withAuditEnv(async (journalPath, opts) => {
-    await auditGhMutation(["pr", "merge", "42", "--repo", "org/repo"], 0, opts);
+    await auditGhMutation(
+      ["pr", "merge", "42", "--repo", "org/repo"],
+      0,
+      { ...opts, headSha: "a".repeat(40) },
+    );
     const loaded = await loadEntries(journalPath);
     assert(loaded.ok);
     if (!loaded.ok) return;
     const entry = loaded.value[0];
     assertEquals(entry?.actionKind, "merge");
     assertEquals(entry?.prNumber, 42);
+    assertEquals(entry?.headSha, "a".repeat(40));
     assertEquals(entry?.component, "unknown");
     assert(
       entry?.actionId !== undefined && /^[0-9a-f-]{36}$/.test(entry.actionId),

@@ -23,6 +23,7 @@ import {
   cloneForRepair,
   eligibleAuthor,
   reason,
+  recordBabysitterDeployment,
   recoverTemporaryClones,
   requestedReviews,
   runRepairs,
@@ -32,6 +33,7 @@ import {
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 Deno.test("failed clone is attempted once and preserves its original error", async () => {
   let attempts = 0;
@@ -46,6 +48,28 @@ Deno.test("failed clone is attempted once and preserves its original error", asy
     "clone timed out",
   );
   assertEquals(attempts, 1);
+});
+
+Deno.test("babysitter deployment heartbeat stores only revision and policy fingerprint", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await recordBabysitterDeployment(
+      dir,
+      buildDefaultWorkerConfig(),
+      "abcdef0123456789",
+      "2026-11-02T00:00:00.000Z",
+    );
+    const record = JSON.parse(
+      await Deno.readTextFile(`${dir}/deployment-health.json`),
+    );
+    assertEquals(record.component, "babysitter");
+    assertEquals(record.codeRevision, "abcdef0123456789");
+    assertEquals(record.observedAt, "2026-11-02T00:00:00.000Z");
+    assertEquals(/^[0-9a-f]{64}$/.test(record.policyFingerprint), true);
+    assertEquals("issueExecutorSplit" in record, false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("babysitter supplies RTK guidance only when its probe succeeds", async () => {

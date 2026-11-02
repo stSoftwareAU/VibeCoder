@@ -1152,9 +1152,9 @@ rediscovery and processing.
 
 Deployment observations are collected from lifecycle assignment records,
 review-round records and the babysitter's local `deployment-health.json` under
-its existing state directory. Each stores a code revision and a SHA-256
-fingerprint over a fixed allowlist of resolved policy settings; no credentials
-or raw configuration enter the fingerprint. Missing or stale heartbeats,
+its existing state directory. Each stores a code revision and the same SHA-256
+fingerprint over a fixed allowlist of resolved host and per-repository policy
+settings; no credentials or raw configuration enter the fingerprint. Missing or stale heartbeats,
 unknown revisions, policy mismatches and mixed observations make deployment
 status degraded. The report consumes an exported snapshot; it does not itself
 retrieve cross-host audit journals, repair deployment state, or change the

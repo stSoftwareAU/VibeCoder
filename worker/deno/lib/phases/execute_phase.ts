@@ -25,7 +25,7 @@ import { classifyRunFailure } from "../run_outcome_classifier.ts";
 
 import { redactSecrets } from "../secret_redaction.ts";
 import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
-import { fingerprintReviewPolicy } from "../pr_completion_report.ts";
+import { fingerprintWorkerReviewPolicy } from "../pr_completion_report.ts";
 
 import type {
   ExternalOrchestrationSettings,
@@ -579,24 +579,7 @@ async function recordRunAssignment(
       trustedAuthors,
       ...(cohort ? { cohort } : {}),
       roles,
-      reviewPolicyFingerprint: await fingerprintReviewPolicy({
-        issue_executor_split: isIssueExecutorSplitEnabled(
-          "issue",
-          config.repoConfig?.[repo],
-          config,
-        ),
-        issue_sub_agent_tier: resolveIssueSubAgentTier(
-          config,
-          config.repoConfig?.[repo],
-        ),
-        issue_reviewer_agents: config.issueReviewerAgents,
-        external_orchestration: config.externalOrchestration,
-        resolved_role_policy: roles.map((role) =>
-          `${role.role}:${role.provider}:${role.model ?? "-"}:${
-            role.effort ?? "-"
-          }`
-        ).join("|"),
-      }),
+      reviewPolicyFingerprint: await fingerprintWorkerReviewPolicy(config),
       ...(config.subscriptionAllocationLabel
         ? { subscriptionAllocation: config.subscriptionAllocationLabel }
         : {}),

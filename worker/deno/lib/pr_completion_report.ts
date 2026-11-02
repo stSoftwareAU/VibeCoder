@@ -1,6 +1,9 @@
 /** Read-only accounting for unattended fleet PR completion (Issue #4658). */
 
 import type { AuditEntry } from "./audit_entry.ts";
+import type { WorkerConfig } from "../types.ts";
+import { isIssueExecutorSplitEnabled } from "./issue_executor_split.ts";
+import { resolveIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
 
 export type PrState = "open" | "merged" | "closed";
 export type PrActionKind =
@@ -168,6 +171,7 @@ export interface PrCompletionReport {
     unknownPrHistory: number;
     unlinkedActions: number;
     unknownCiDurations: number;
+    deliveredChangesWithoutCiData: number;
     excludedPrs: number;
     incompleteObservationWindow: boolean;
   };
@@ -190,6 +194,7 @@ export function prActionsFromAuditJournal(
       component: entry.component ?? "unknown",
       repo: entry.repo,
       prNumber: entry.prNumber,
+      ...(entry.headSha ? { headSha: entry.headSha } : {}),
       kind: entry.actionKind,
       timestamp: entry.timestamp,
       outcome: entry.outcome === "success" ? "confirmed" : "failed",
@@ -205,6 +210,10 @@ function timestamp(value: string, field: string): number {
     throw new Error(`${field} must be an ISO timestamp in UTC (Z)`);
   }
   return time;
+}
+
+function requireBoolean(value: unknown, field: string): void {
+  if (typeof value !== "boolean") throw new Error(`${field} must be a boolean`);
 }
 
 function median(values: number[]): number | null {
@@ -226,6 +235,22 @@ function deploymentReport(
   input: PrCompletionInput,
 ): PrCompletionReport["deployment"] {
   const { expectedDeployment: expected, cohort } = input;
+  if (!/^[0-9a-f]{64}$/.test(expected.policyFingerprint)) {
+    throw new Error(
+      "expectedDeployment.policyFingerprint must be a SHA-256 fingerprint",
+    );
+  }
+  if (
+    expected.components.length === 0 ||
+    new Set(expected.components).size !== expected.components.length ||
+    expected.components.some((component) =>
+      !/^[a-z][a-z0-9_-]{0,31}$/.test(component)
+    )
+  ) {
+    throw new Error(
+      "expectedDeployment.components must be unique component identifiers",
+    );
+  }
   if (
     !Number.isFinite(expected.maxHeartbeatAgeHours) ||
     expected.maxHeartbeatAgeHours <= 0
@@ -236,6 +261,17 @@ function deploymentReport(
   const byComponent = new Map<string, typeof input.deployments>();
   for (const deployment of input.deployments) {
     timestamp(deployment.observedAt, "deployment.observedAt");
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(deployment.component)) {
+      throw new Error("deployment.component must be a component identifier");
+    }
+    if (
+      deployment.policyFingerprint !== undefined &&
+      !/^[0-9a-f]{64}$/.test(deployment.policyFingerprint)
+    ) {
+      throw new Error(
+        "deployment.policyFingerprint must be a SHA-256 fingerprint",
+      );
+    }
     const rows = byComponent.get(deployment.component) ?? [];
     rows.push(deployment);
     byComponent.set(deployment.component, rows);
@@ -304,11 +340,31 @@ export function buildPrCompletionReport(
   let duplicateObservations = 0;
   let excludedPrs = 0;
   for (const pr of input.prs) {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(pr.repo)) {
+      throw new Error("PR repo must be owner/name");
+    }
+    if (!Number.isSafeInteger(pr.number) || pr.number < 1) {
+      throw new Error(`PR ${pr.repo} number must be positive`);
+    }
+    requireBoolean(
+      pr.actionsComplete,
+      `PR ${pr.repo}#${pr.number}.actionsComplete`,
+    );
+    if (pr.eligible !== undefined) requireBoolean(pr.eligible, "PR eligible");
+    if (pr.ownerGated !== undefined) {
+      requireBoolean(pr.ownerGated, "PR ownerGated");
+    }
+    if (pr.ownerGateVerified !== undefined) {
+      requireBoolean(pr.ownerGateVerified, "PR ownerGateVerified");
+    }
     const createdAt = timestamp(
       pr.createdAt,
       `PR ${pr.repo}#${pr.number}.createdAt`,
     );
     if (createdAt < start || createdAt >= end) continue;
+    if (!["open", "merged", "closed"].includes(pr.state)) {
+      throw new Error(`PR ${pr.repo}#${pr.number} has an unsupported state`);
+    }
     const key = keyOf(pr.repo, pr.number);
     const previous = unique.get(key);
     if (previous) {
@@ -333,11 +389,45 @@ export function buildPrCompletionReport(
   let unlinkedActions = 0;
   const actionsByPr = new Map<string, TrustedPrAction[]>();
   for (const action of input.actions) {
+    if (
+      !action.actionId || !action.runId || !action.repo || !action.component
+    ) {
+      throw new Error("PR action requires actionId, runId, repo and component");
+    }
+    if (!Number.isSafeInteger(action.prNumber) || action.prNumber < 1) {
+      throw new Error("PR action number must be positive");
+    }
+    if (
+      !([
+        "implementation",
+        "repair",
+        "review",
+        "dismissal",
+        "merge",
+        "unknown",
+      ] as const).includes(action.kind)
+    ) {
+      throw new Error(`PR action ${action.actionId} has an unsupported kind`);
+    }
+    if (!(["fleet", "human", "unknown"] as const).includes(action.actor)) {
+      throw new Error(`PR action ${action.actionId} has an unsupported actor`);
+    }
+    if (
+      !(["confirmed", "failed", "unknown"] as const).includes(action.outcome)
+    ) {
+      throw new Error(
+        `PR action ${action.actionId} has an unsupported outcome`,
+      );
+    }
+    requireBoolean(action.verified, `PR action ${action.actionId}.verified`);
+    timestamp(action.timestamp, `PR action ${action.actionId}.timestamp`);
     if (actionIds.has(action.actionId)) continue;
     actionIds.add(action.actionId);
     const key = keyOf(action.repo, action.prNumber);
     const pr = prMap.get(key);
-    if (!pr || !action.headSha || action.headSha !== pr.headSha) {
+    if (
+      !pr || (action.headSha !== undefined && action.headSha !== pr.headSha)
+    ) {
       unlinkedActions++;
       continue;
     }
@@ -461,6 +551,17 @@ export function buildPrCompletionReport(
   const ciRows = input.ciRuns.filter((run) =>
     deliveredKeys.has(keyOf(run.repo, run.prNumber))
   );
+  for (const run of input.ciRuns) {
+    if (!run.runId || !Number.isSafeInteger(run.prNumber) || run.prNumber < 1) {
+      throw new Error("CI run requires a run id and positive PR number");
+    }
+    if (
+      run.durationMinutes !== null &&
+      (!Number.isFinite(run.durationMinutes) || run.durationMinutes < 0)
+    ) {
+      throw new Error(`CI run ${run.runId} has an invalid duration`);
+    }
+  }
   const knownCi = ciRows.flatMap((run) =>
     run.durationMinutes !== null && Number.isFinite(run.durationMinutes) &&
       run.durationMinutes >= 0
@@ -473,6 +574,9 @@ export function buildPrCompletionReport(
     openIntervals: 0,
   };
   for (const blocker of input.blockers) {
+    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(blocker.blocker)) {
+      throw new Error("blocker must be a bounded lowercase identifier");
+    }
     const began = timestamp(blocker.startedAt, "blocker.startedAt");
     const ended = blocker.endedAt === null
       ? observedAt
@@ -489,6 +593,9 @@ export function buildPrCompletionReport(
     timestamp(regression.detectedAt, "regression.detectedAt") >= start &&
     timestamp(regression.detectedAt, "regression.detectedAt") < observedAt
   );
+  for (const regression of input.regressions) {
+    requireBoolean(regression.resolved, "regression.resolved");
+  }
   const attributed =
     regressionRows.filter((row) => prMap.has(keyOf(row.repo, row.prNumber)))
       .length;
@@ -594,17 +701,18 @@ export function buildPrCompletionReport(
       reviewRounds,
       fixRounds,
       ciRuns: ciRows.length,
-      ciMinutes: knownCi.length === ciRows.length
+      ciMinutes: knownCi.length === ciRows.length &&
+          (ciRows.length > 0 || defaultBranchChanges === 0)
         ? knownCi.reduce((sum, value) => sum + value, 0)
         : null,
-      ciRunsPerDeliveredChange: defaultBranchChanges
+      ciRunsPerDeliveredChange: defaultBranchChanges && ciRows.length
         ? ciRows.length / defaultBranchChanges
         : null,
-      ciMinutesPerDeliveredChange:
-        defaultBranchChanges && knownCi.length === ciRows.length
-          ? knownCi.reduce((sum, value) => sum + value, 0) /
-            defaultBranchChanges
-          : null,
+      ciMinutesPerDeliveredChange: defaultBranchChanges && ciRows.length &&
+          knownCi.length === ciRows.length
+        ? knownCi.reduce((sum, value) => sum + value, 0) /
+          defaultBranchChanges
+        : null,
     },
     waiting,
     regressions: {
@@ -623,6 +731,9 @@ export function buildPrCompletionReport(
       ).length,
       unlinkedActions,
       unknownCiDurations: ciRows.length - knownCi.length,
+      deliveredChangesWithoutCiData: defaultBranchChanges && ciRows.length === 0
+        ? defaultBranchChanges
+        : 0,
       excludedPrs,
       incompleteObservationWindow,
     },
@@ -642,7 +753,7 @@ const REVIEW_POLICY_KEYS = new Set([
   "pr_reviewer_parallel",
   "pr_reviewer_auto_release",
   "skip_auto_merge",
-  "resolved_role_policy",
+  "resolved_repo_policies",
   "external_orchestration",
 ]);
 
@@ -658,4 +769,28 @@ export async function fingerprintReviewPolicy(
     new Uint8Array(digest),
     (byte) => byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+/** Fingerprint the same effective host and per-repository policy on each component. */
+export function fingerprintWorkerReviewPolicy(
+  config: WorkerConfig,
+): Promise<string> {
+  const repos = [
+    ...new Set([
+      ...config.repos,
+      ...Object.keys(config.repoConfig ?? {}),
+    ]),
+  ].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const resolvedRepoPolicies = repos.map((repo) => [
+    repo.toLowerCase(),
+    isIssueExecutorSplitEnabled("issue", config.repoConfig?.[repo], config),
+    resolveIssueSubAgentTier(config, config.repoConfig?.[repo]),
+  ]);
+  return fingerprintReviewPolicy({
+    issue_executor_split: config.issueExecutorSplit,
+    issue_sub_agent_tier: config.issueSubAgentTier,
+    issue_reviewer_agents: config.issueReviewerAgents,
+    external_orchestration: config.externalOrchestration,
+    resolved_repo_policies: JSON.stringify(resolvedRepoPolicies),
+  });
 }

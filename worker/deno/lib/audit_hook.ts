@@ -51,6 +51,8 @@ export interface AuditHookOptions extends RecordOptions {
    * Defaults to {@link resolveRunId} over {@link AuditHookOptions.env}.
    */
   runId?: string;
+  /** Current PR head when the caller has observed it safely. */
+  headSha?: string;
 }
 
 /**
@@ -173,6 +175,9 @@ async function record(
       actionKind: actionKindFor(info, caller, args),
       ...(prNumberFor(info) !== undefined
         ? { prNumber: prNumberFor(info) }
+        : {}),
+      ...(opts.headSha && /^[0-9a-f]{40}$/.test(opts.headSha)
+        ? { headSha: opts.headSha }
         : {}),
       runId: opts.runId ?? resolveRunId(opts.env ?? processEnvLookup),
       verb: info.verb,

@@ -19,7 +19,7 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { createReviewRoundDeps, runReviewRound } from "../lib/review_round.ts";
-import { fingerprintReviewPolicy } from "../lib/pr_completion_report.ts";
+import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 
 /** The CLI arguments, given as a JSON array of strings (parsed or not). */
 export function parseClaudeArgs(value: unknown): string[] {
@@ -65,12 +65,7 @@ export const reviewRoundCommand: Command = {
         deployment: {
           component: "reviewer",
           codeRevision: Deno.env.get("VIBE_BUILD_COMMIT") ?? "unknown",
-          policyFingerprint: await fingerprintReviewPolicy({
-            issue_executor_split: config.issueExecutorSplit,
-            issue_sub_agent_tier: config.issueSubAgentTier,
-            issue_reviewer_agents: config.issueReviewerAgents,
-            external_orchestration: config.externalOrchestration,
-          }),
+          policyFingerprint: await fingerprintWorkerReviewPolicy(config),
         },
       },
     );

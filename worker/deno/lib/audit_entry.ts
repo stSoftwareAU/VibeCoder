@@ -31,6 +31,8 @@ export interface AuditMutation {
   component?: "worker" | "reviewer" | "babysitter" | "unknown";
   /** Known PR number; absent when the mutation target is not a PR. */
   prNumber?: number;
+  /** PR head SHA captured by a caller that has the current head in hand. */
+  headSha?: string;
   /** Action class; unknown is explicit when the hook cannot safely infer it. */
   actionKind?: AuditActionKind;
   /** ISO 8601 timestamp. Filled in by `recordMutation` when absent. */
@@ -65,6 +67,7 @@ const PAYLOAD_FIELDS: ReadonlyArray<keyof AuditMutation> = [
   "actionId",
   "component",
   "prNumber",
+  "headSha",
   "actionKind",
   "timestamp",
   "runId",

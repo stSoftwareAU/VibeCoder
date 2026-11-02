@@ -1,7 +1,7 @@
 /** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
-import { fingerprintReviewPolicy } from "../lib/pr_completion_report.ts";
+import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand, runGhCommandRaw } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
@@ -902,12 +902,7 @@ export async function recordBabysitterDeployment(
   codeRevision = Deno.env.get("VIBE_BUILD_COMMIT") ?? "unknown",
   observedAt = new Date().toISOString(),
 ): Promise<void> {
-  const policyFingerprint = await fingerprintReviewPolicy({
-    issue_executor_split: config.issueExecutorSplit,
-    issue_sub_agent_tier: config.issueSubAgentTier,
-    issue_reviewer_agents: config.issueReviewerAgents,
-    external_orchestration: config.externalOrchestration,
-  });
+  const policyFingerprint = await fingerprintWorkerReviewPolicy(config);
   await Deno.mkdir(stateDir, { recursive: true });
   const result = await atomicWrite({
     targetFile: `${stateDir}/deployment-health.json`,

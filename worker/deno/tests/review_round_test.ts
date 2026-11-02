@@ -4,7 +4,7 @@
  * credential pool, and a round the usage limit stopped is run once more on
  * the next subscription with budget.
  */
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   renderStreamLine,
   type ReviewRoundDeps,
@@ -284,6 +284,22 @@ Deno.test("runReviewRound records the attempt it is running, with provider, mode
     "/logs/review-fleet-prs/rounds/20261016-101500/stream-1.jsonl",
   ]);
   assertEquals(final().attempts[0]!.code, 0);
+});
+
+Deno.test("runReviewRound refreshes reviewer build and policy metadata with its attempt log", async () => {
+  const { deps, final } = recordingDeps([{ code: 0, output: "Round done" }]);
+  await runReviewRound("p", ROUND_ARGS, deps, {
+    roundDir: "/logs/review-fleet-prs/rounds/20261016-101500",
+    deployment: {
+      component: "reviewer",
+      codeRevision: "abcdef0123456789",
+      policyFingerprint: "a".repeat(64),
+    },
+  });
+  assertEquals(final().deployment?.component, "reviewer");
+  assertEquals(final().deployment?.codeRevision, "abcdef0123456789");
+  assertEquals(final().deployment?.policyFingerprint, "a".repeat(64));
+  assert(Number.isFinite(Date.parse(final().deployment?.observedAt ?? "")));
 });
 
 Deno.test("runReviewRound records a DeepSeek fallback attempt as deepseek, not claude (Issue #3632)", async () => {

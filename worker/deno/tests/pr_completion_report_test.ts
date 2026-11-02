@@ -2,6 +2,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   buildPrCompletionReport,
   fingerprintReviewPolicy,
+  fingerprintWorkerReviewPolicy,
   type PrCompletionInput,
   type PrCompletionRecord,
 } from "../lib/pr_completion_report.ts";
@@ -90,6 +91,7 @@ Deno.test("PR completion report deduplicates hosts and separates trusted outcome
       action(1, "a1", "implementation", "fleet"),
       action(1, "a2", "repair", "human"),
       action(1, "a3", "merge", "fleet"),
+      action(1, "a8", "review", "fleet"),
       action(2, "a4", "implementation", "fleet"),
       action(2, "a5", "merge", "fleet"),
       action(5, "a6", "implementation", "fleet"),
@@ -112,12 +114,15 @@ Deno.test("PR completion report deduplicates hosts and separates trusted outcome
   assertEquals(report.cohort.openPrs, 2);
   assertEquals(report.cohort.closedUnmergedPrs, 1);
   assertEquals(report.cohort.ownerGatedPrs, 1);
+  assertEquals(report.completion.eligiblePrs, 6);
   assertEquals(report.completion.unattendedMerged, 1);
   assertEquals(report.completion.humanAssistedMerged, 1);
   assertEquals(report.completion.unknownMerged, 2);
   assertEquals(report.delivery.defaultBranchChanges, 3);
   assertEquals(report.delivery.milestonePrs, 1);
   assertEquals(report.delivery.intermediateRollupPrs, 1);
+  assertEquals(report.delivery.reviewRounds, 1);
+  assertEquals(report.delivery.fixRounds, 1);
   assertEquals(report.timings.medianMergeHours, 2);
   assertEquals(report.timings.p90MergeHours, 2);
   assertEquals(report.delivery.ciRuns, 1);
@@ -180,14 +185,41 @@ Deno.test("report marks a cohort window incomplete when observation precedes its
 Deno.test("rollout check separates eligibility, rediscovery and processing before the target window", () => {
   const policyFingerprint = "a".repeat(64);
   const report = buildPrCompletionReport(input({
-    cohort: { start: "2026-10-20T00:00:00.000Z", end: "2026-11-03T00:00:00.000Z", observedAt: "2026-10-25T00:00:00.000Z" },
-    deployments: ["worker", "reviewer", "babysitter"].map((component) => ({ component, revision: "abcdef0123456789", policyFingerprint, observedAt: "2026-10-25T00:00:00.000Z" })),
+    cohort: {
+      start: "2026-10-20T00:00:00.000Z",
+      end: "2026-11-03T00:00:00.000Z",
+      observedAt: "2026-10-25T00:00:00.000Z",
+    },
+    deployments: ["worker", "reviewer", "babysitter"].map((component) => ({
+      component,
+      revision: "abcdef0123456789",
+      policyFingerprint,
+      observedAt: "2026-10-25T00:00:00.000Z",
+    })),
     rollout: {
       verifiedAt: "2026-10-20T00:00:00.000Z",
       strandedPrs: [
-        { repo: "org/repo", prNumber: 30, eligible: true, rediscovered: true, processed: false },
-        { repo: "org/repo", prNumber: 31, eligible: true, rediscovered: false, processed: false },
-        { repo: "org/repo", prNumber: 32, eligible: false, rediscovered: false, processed: false },
+        {
+          repo: "org/repo",
+          prNumber: 30,
+          eligible: true,
+          rediscovered: true,
+          processed: false,
+        },
+        {
+          repo: "org/repo",
+          prNumber: 31,
+          eligible: true,
+          rediscovered: false,
+          processed: false,
+        },
+        {
+          repo: "org/repo",
+          prNumber: 32,
+          eligible: false,
+          rediscovered: false,
+          processed: false,
+        },
       ],
     },
   }));
@@ -201,14 +233,34 @@ Deno.test("rollout check separates eligibility, rediscovery and processing befor
 Deno.test("the 90 percent target is evaluated only after verified deployment and fourteen days", () => {
   const policyFingerprint = "a".repeat(64);
   const report = buildPrCompletionReport(input({
-    cohort: { start: "2026-10-20T00:00:00.000Z", end: "2026-11-03T00:00:00.000Z", observedAt: "2026-11-04T00:00:00.000Z" },
-    prs: [pr(40, { createdAt: "2026-10-21T00:00:00.000Z", mergedAt: "2026-10-21T02:00:00.000Z" })],
-    actions: [action(40, "impl-40", "implementation", "fleet"), action(40, "merge-40", "merge", "fleet")] as PrCompletionInput["actions"],
-    deployments: ["worker", "reviewer", "babysitter"].map((component) => ({ component, revision: "abcdef0123456789", policyFingerprint, observedAt: "2026-11-04T00:00:00.000Z" })),
+    cohort: {
+      start: "2026-10-20T00:00:00.000Z",
+      end: "2026-11-03T00:00:00.000Z",
+      observedAt: "2026-11-04T00:00:00.000Z",
+    },
+    prs: [
+      pr(40, {
+        createdAt: "2026-10-21T00:00:00.000Z",
+        mergedAt: "2026-10-21T02:00:00.000Z",
+      }),
+    ],
+    actions: [
+      action(40, "impl-40", "implementation", "fleet"),
+      action(40, "merge-40", "merge", "fleet"),
+    ] as PrCompletionInput["actions"],
+    deployments: ["worker", "reviewer", "babysitter"].map((component) => ({
+      component,
+      revision: "abcdef0123456789",
+      policyFingerprint,
+      observedAt: "2026-11-04T00:00:00.000Z",
+    })),
     rollout: { verifiedAt: "2026-10-20T00:00:00.000Z", strandedPrs: [] },
   }));
   assertEquals(report.targetEvaluation.status, "met");
   assertEquals(report.targetEvaluation.unattendedWithin24Hours, 1);
+  assertEquals(report.delivery.ciMinutes, null);
+  assertEquals(report.delivery.ciRunsPerDeliveredChange, null);
+  assertEquals(report.coverage.deliveredChangesWithoutCiData, 1);
 });
 
 Deno.test("deployment inventory reports missing and stale components as degraded", () => {
@@ -217,12 +269,46 @@ Deno.test("deployment inventory reports missing and stale components as degraded
       component: "worker",
       revision: "old",
       policyFingerprint: "b".repeat(64),
-      observedAt,
+      observedAt: "2026-10-01T00:00:00.000Z",
     }],
   }));
   assertEquals(report.deployment.status, "degraded");
   assertEquals(report.deployment.missingComponents, ["babysitter", "reviewer"]);
   assertEquals(report.deployment.mismatchedComponents, ["worker"]);
+  assertEquals(report.deployment.staleComponents, ["worker"]);
+});
+
+Deno.test("deployment report exposes mixed revision and policy observations", () => {
+  const report = buildPrCompletionReport(input({
+    deployments: [
+      {
+        component: "worker",
+        revision: "abcdef0123456789",
+        policyFingerprint: "a".repeat(64),
+        observedAt: "2026-11-01T23:00:00.000Z",
+      },
+      {
+        component: "worker",
+        revision: "old",
+        policyFingerprint: "b".repeat(64),
+        observedAt,
+      },
+      {
+        component: "reviewer",
+        revision: "abcdef0123456789",
+        policyFingerprint: "a".repeat(64),
+        observedAt,
+      },
+      {
+        component: "babysitter",
+        revision: "abcdef0123456789",
+        policyFingerprint: "a".repeat(64),
+        observedAt,
+      },
+    ],
+  }));
+  assertEquals(report.deployment.mixedRevisions, ["worker"]);
+  assertEquals(report.deployment.mixedPolicies, ["worker"]);
 });
 
 Deno.test("policy fingerprint includes only the resolved policy allowlist", async () => {
@@ -239,7 +325,10 @@ Deno.test("policy fingerprint includes only the resolved policy allowlist", asyn
     >,
   );
   assertEquals(first, second);
-  assertEquals(first === await fingerprintReviewPolicy({ issue_executor_split: false }), false);
+  assertEquals(
+    first === await fingerprintReviewPolicy({ issue_executor_split: false }),
+    false,
+  );
   assertEquals(
     await fingerprintReviewPolicy({ issue_executor_split: false }),
     await fingerprintReviewPolicy(
@@ -249,4 +338,21 @@ Deno.test("policy fingerprint includes only the resolved policy allowlist", asyn
       >,
     ),
   );
+});
+
+Deno.test("deployment fingerprints cover resolved repository policy for every component", async () => {
+  const config = {
+    repos: ["org/repo"],
+    issueExecutorSplit: true,
+    issueSubAgentTier: "sonnet",
+    issueReviewerAgents: true,
+    externalOrchestration: false,
+    repoConfig: { "org/repo": { issueExecutorSplit: false } },
+  } as unknown as import("../types.ts").WorkerConfig;
+  const first = await fingerprintWorkerReviewPolicy(config);
+  config.repoConfig!["org/repo"]!.issueExecutorSplit = true;
+  const second = await fingerprintWorkerReviewPolicy(config);
+  assert(first !== second);
+  assertEquals(first.length, 64);
+  assertEquals(second.length, 64);
 });
