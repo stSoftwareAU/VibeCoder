@@ -564,3 +564,14 @@ Deno.test("a host-only failure in an unrelated check is named, not a blocker", (
     );
   }
 });
+
+// Issue #4694: a check that reads commit history cannot see the uncommitted
+// fix the agent is forbidden to commit (VibeCoder#4675, #4687).
+Deno.test("a check that reads commit history does not withhold readiness", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "reads commit history");
+  }
+});
