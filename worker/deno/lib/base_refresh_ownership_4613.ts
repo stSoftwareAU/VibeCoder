@@ -2,6 +2,7 @@
 
 import {
   type AlertDedupAuthorOptions,
+  resolveAlertDedupAuthors,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
 import {
@@ -84,6 +85,17 @@ export function makeGitHubBaseRefreshOwnershipPort(
 ): BaseRefreshOwnershipPort {
   const gh = options.ghCommandFn ?? runGhCommand;
   const log = options.log ?? ((message: string) => console.warn(message));
+  const fleet = resolveAlertDedupAuthors(options.authorOptions ?? {}, log);
+  const verifiedAuthors = async () => {
+    const fleetAuthors = await fleet;
+    if (fleetAuthors.length === 0) {
+      const message =
+        "base refresh fleet author set unresolved; no refresh is issued";
+      log(message);
+      throw new Error(message);
+    }
+    return { fleetAuthors };
+  };
   const anchors = new Map<string, number>();
   const ownerCommentRepos = new Map<string, string>();
   const anchor = async (repo: string, base: string) => {
@@ -103,6 +115,7 @@ export function makeGitHubBaseRefreshOwnershipPort(
     base: string,
     fn: () => Promise<T>,
   ) => {
+    const authorOptions = await verifiedAuthors();
     const prNumber = await anchor(repo, base);
     const lock = await acquireBranchUpdateLock({
       repo,
@@ -113,7 +126,7 @@ export function makeGitHubBaseRefreshOwnershipPort(
       ...(options.sleepFn ? { sleepFn: options.sleepFn } : {}),
       log,
       note: `Serialising branch refresh ownership for ${base}.`,
-      authorOptions: options.authorOptions,
+      authorOptions,
     });
     if (
       !lock.ok || !lock.value.acquired || lock.value.lockCommentId === undefined
@@ -151,7 +164,7 @@ export function makeGitHubBaseRefreshOwnershipPort(
       const fleetRows = await selectFleetAuthoredComments(
         rows,
         `base refresh ownership ${repo} ${base}`,
-        options.authorOptions ?? {},
+        await verifiedAuthors(),
         log,
         "unverified ownership is ignored and no refresh is issued",
       );
@@ -174,7 +187,7 @@ export function makeGitHubBaseRefreshOwnershipPort(
       const output = await gh([
         "issue",
         "comment",
-        String(record.prNumber),
+        String(await anchor(record.repo, record.base)),
         "--repo",
         record.repo,
         "--body",

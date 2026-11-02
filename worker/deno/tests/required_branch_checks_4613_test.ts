@@ -134,7 +134,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   const gh = (args: string[]): Promise<string> => {
     const endpoint = args[1] ?? "";
     if (args[0] === "pr" && args[1] === "view") {
-      views++;
+      if (args.at(-1)?.includes("isDraft")) views++;
       return Promise.resolve(
         JSON.stringify({
           state: "OPEN",
@@ -309,6 +309,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     );
   }
   queued = false;
+  comments.length = 0;
   views = 0;
   retarget = true;
   assertEquals(
@@ -331,6 +332,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     (await request()).ok,
     false,
   );
+  conclusion = "success";
   decision = "REVIEW_REQUIRED";
   assertEquals(
     (await request()).ok,
@@ -563,3 +565,148 @@ Deno.test("reader checks Actions event eligibility and test-merge status", async
     true,
   );
 });
+
+import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
+
+const authors = { fleetAuthors: ["VibeCoderST"] };
+const noSleep = async () => {};
+
+for (const status of ["pending", "success", "failure", "error"]) {
+  Deno.test(`required commit status ${status} releases only terminal failures`, async () => {
+    const f = strictRefreshFixture();
+    f.state.statuses = [{ context: "gate", state: status }];
+    assertEquals(
+      await readRequiredChecksFailed("owner/repo", "main", f.head, f.gh),
+      status === "failure" || status === "error",
+    );
+  });
+}
+
+for (const order of [[false, true], [true, false]]) {
+  Deno.test(`strict policy combines every applicable rule: ${order}`, async () => {
+    const f = strictRefreshFixture();
+    f.state.decision = "REVIEW_REQUIRED";
+    f.state.rules = order.map((strict) => ({
+      ...rules[0],
+      parameters: {
+        ...rules[0]!.parameters,
+        strict_required_status_checks_policy: strict,
+      },
+    }));
+    const result = await requestReadyBranchUpdate(
+      "owner/repo",
+      10,
+      f.gh,
+      "main",
+      f.head,
+      noSleep,
+      authors,
+    );
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertEquals(
+        result.error.message,
+        "PR no longer ready for a branch update",
+      );
+    }
+    assertEquals(f.calls.some((args) => args.includes("PUT")), false);
+  });
+}
+
+for (
+  const protection of [{ required_status_checks: null }, {
+    required_status_checks: { contexts: ["gate"], checks: [] },
+  }]
+) {
+  Deno.test(`strict policy supports classic contract ${JSON.stringify(protection)}`, async () => {
+    const f = strictRefreshFixture();
+    f.state.protection = protection;
+    if (protection.required_status_checks !== null) f.state.rules = [];
+    const result = await requestReadyBranchUpdate(
+      "owner/repo",
+      10,
+      f.gh,
+      "main",
+      f.head,
+      noSleep,
+      authors,
+    );
+    if (!result.ok) throw result.error;
+    assertEquals(f.calls.some((args) => args.includes("PUT")), true);
+  });
+}
+
+for (
+  const [field, view, reason] of [
+    ["reviewDecision", 1, "PR no longer ready for a branch update"],
+    ["baseRefName", 1, "PR base or head changed before branch update"],
+    ["headRefOid", 1, "PR base or head changed before branch update"],
+    ["baseRefName", 2, "PR changed while its required checks were read"],
+    ["headRefOid", 2, "PR changed while its required checks were read"],
+    ["reviewDecision", 2, "PR changed while its required checks were read"],
+    ["baseRefName", 3, "PR base or head changed before branch update"],
+    ["headRefOid", 3, "PR base or head changed before branch update"],
+    ["reviewDecision", 3, "PR base or head changed before branch update"],
+  ] as const
+) {
+  Deno.test(`ready updater isolates ${field} guard on candidate read ${view}`, async () => {
+    const f = strictRefreshFixture();
+    f.state.changeAtView = view;
+    f.state.changeField = field;
+    const result = await requestReadyBranchUpdate(
+      "owner/repo",
+      10,
+      f.gh,
+      "main",
+      f.head,
+      noSleep,
+      authors,
+    );
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertEquals(
+        result.error.message.includes(reason),
+        true,
+        result.error.message,
+      );
+    }
+    assertEquals(f.calls.some((args) => args.includes("PUT")), false);
+    assertEquals(
+      f.comments.some((row) => row.body.includes("BASE_REFRESH_OWNER")),
+      false,
+    );
+  });
+}
+
+for (const mergeRead of [2, 3]) {
+  Deno.test(`ready updater refuses moving test merge at read ${mergeRead}`, async () => {
+    const f = strictRefreshFixture();
+    f.state.changeAtMerge = mergeRead;
+    const result = await requestReadyBranchUpdate(
+      "owner/repo",
+      10,
+      f.gh,
+      "main",
+      f.head,
+      noSleep,
+      authors,
+    );
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertEquals(
+        result.error.message.includes(
+          mergeRead === 2
+            ? "PR test merge changed while required checks were read"
+            : "PR test merge or required checks changed before branch update",
+        ),
+        true,
+        result.error.message,
+      );
+    }
+    assertEquals(f.calls.some((args) => args.includes("PUT")), false);
+    assertEquals(
+      f.comments.some((row) => row.body.includes("BASE_REFRESH_OWNER")),
+      false,
+    );
+  });
+}

@@ -94,7 +94,7 @@ function classicChecksFromBranch(branch: ObjectValue): ObjectValue | null {
     throw new Error("branch protection summary has no required checks field");
   }
   if (summary.required_status_checks === null) {
-    return { contexts: [], checks: [] };
+    return null;
   }
   return object(summary.required_status_checks, "classic required checks");
 }
@@ -351,7 +351,9 @@ export async function readRequiredChecksFailed(
     const statuses = checks.statuses.filter((status) =>
       status.context === context
     );
-    return statuses.some((status) => status.state !== "success") ||
+    return statuses.some((status) =>
+      status.state === "failure" || status.state === "error"
+    ) ||
       runs.some((run) =>
         run.status === "completed" &&
         run.conclusion !== "success" && run.conclusion !== "neutral" &&
@@ -482,7 +484,7 @@ export async function requestReadyBranchUpdate(
         error: new Error("PR no longer ready for a branch update"),
       };
     }
-    const workerId = Deno.env.get("VIBE_RUN_ID") ?? `worker-${Deno.pid}`;
+    const workerId = `refresh-${crypto.randomUUID()}`;
     const stableAnchorPr = async (ownerRepo: string, _ownerBase: string) => {
       const payload = await gh([
         "api",
@@ -708,12 +710,11 @@ async function readStrictBasePolicy(
   const mergeQueue = rules.some((raw) =>
     object(raw, "branch rule").type === "merge_queue"
   );
-  const strictRule = rules.find((raw) => {
-    const rule = object(raw, "branch rule");
-    return rule.type === "required_status_checks";
-  });
   let strict = false;
-  if (strictRule !== undefined) {
+  for (const strictRule of rules) {
+    if (object(strictRule, "branch rule").type !== "required_status_checks") {
+      continue;
+    }
     const parameters = object(
       object(strictRule, "required checks rule").parameters,
       "required checks parameters",
@@ -721,7 +722,7 @@ async function readStrictBasePolicy(
     if (typeof parameters.strict_required_status_checks_policy !== "boolean") {
       throw new Error("strict required-status-check policy is unreadable");
     }
-    strict = parameters.strict_required_status_checks_policy;
+    strict ||= parameters.strict_required_status_checks_policy;
   }
   const branch = object(
     JSON.parse(
@@ -732,7 +733,19 @@ async function readStrictBasePolicy(
     ),
     "base branch",
   );
-  const protection = classicChecksFromBranch(branch);
+  let protection = classicChecksFromBranch(branch);
+  if (protection !== null && typeof protection.strict !== "boolean") {
+    // The branch summary omits strictness; the classic contract carries it.
+    protection = object(
+      JSON.parse(
+        await gh([
+          "api",
+          `repos/${repo}/branches/${encoded}/protection/required_status_checks`,
+        ]),
+      ),
+      "classic required-check protection",
+    );
+  }
   if (protection !== null) {
     if (typeof protection.strict !== "boolean") {
       throw new Error("classic strict up-to-date policy is unreadable");

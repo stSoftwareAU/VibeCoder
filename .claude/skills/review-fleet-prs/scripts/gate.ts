@@ -1202,6 +1202,7 @@ export async function pass(
           },
           dir,
           callGh,
+          { fleetAuthors: [...fleet, reviewer] },
         );
       if (result?.updated) {
         if (!DRY_RUN) updateAsked[key] = pr.headRefOid;

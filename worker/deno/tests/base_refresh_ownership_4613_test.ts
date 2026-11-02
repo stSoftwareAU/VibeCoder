@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   acquireBaseRefreshOwner,
   type BaseRefreshOwnershipPort,
@@ -242,6 +242,38 @@ Deno.test("GitHub comment ownership serialises independent host ports", async ()
     1,
   );
   const winner = winnerResult.value;
+  // The transaction lock is gone; persisted ownership must still exclude a host.
+  assertEquals(
+    (await acquireBaseRefreshOwner(hostB, {
+      repo: "owner/repo",
+      base: "main",
+      prNumber: 99,
+      headSha: "f".repeat(40),
+      workerId: "host-b",
+      ttlSeconds: 60,
+    })).acquired,
+    false,
+  );
+  const unresolved = makeGitHubBaseRefreshOwnershipPort({
+    workerId: "unresolved",
+    ghCommandFn: gh,
+    sleepFn: async () => {},
+    authorOptions: { fleetAuthors: [] },
+    anchorPrForBase: async () => 1,
+  });
+  await assertRejects(
+    () =>
+      acquireBaseRefreshOwner(unresolved, {
+        repo: "owner/repo",
+        base: "main",
+        prNumber: 99,
+        headSha: "f".repeat(40),
+        workerId: "unresolved",
+        ttlSeconds: 60,
+      }),
+    Error,
+    "fleet author set unresolved",
+  );
   await releaseBaseRefreshOwner(
     results[0]?.status === "fulfilled" && results[0].value.acquired
       ? hostA

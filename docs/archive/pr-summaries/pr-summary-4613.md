@@ -2,11 +2,17 @@
 
 ## Summary
 
-Strict, non-queue bases now refresh only an armed PR with satisfied review,
+Strict, non-queue bases refresh only an armed PR with satisfied review,
 confirmed mergeability and passing required checks on its current head or
 verified test merge. A shared GitHub comment owner serialises refreshes across
-hosts and updater lanes until merge, closure, required-check failure or bounded
-expiry. Conflict repair remains separate. Closes #4613.
+hosts and updater lanes until merge, closure, terminal required-check failure
+or bounded expiry. Conflict repair remains separate. Closes #4613.
+
+The completion-review fixes align owner writes with the stable read anchor,
+retain ownership for pending statuses, combine all effective strict rules, and
+support explicitly absent classic checks. Reviewer upkeep runs within its
+existing granular permissions and retries a moving test merge at the same head.
+Blocking-PR stall repair now uses the same readiness and ownership policy.
 
 ## Spec
 
@@ -19,101 +25,131 @@ expiry. Conflict repair remains separate. Closes #4613.
 
 ### Essential Design Decisions
 
-- Ownership records are keyed by repository and base branch and persist on a
-  GitHub PR comment. The oldest repository PR is the stable comment and lock
-  anchor, including after it closes; the existing distributed lock protects each
-  short ownership read/write transaction. The refresh owner outlives that lock
-  and expires after six hours.
-- The required-check contract includes ruleset and classic protection checks,
-  publisher pins and the verified test merge. Optional pending or skipped jobs
-  do not block selection. Unreadable state is logged and retried.
-- A ready PR remains the owner while checks are pending. Merge, closure,
-  required-check failure or expiry releases it; a later eligible PR can then
-  proceed.
-- The REST pull-request list sorted by `created` ascending with `per_page=1`
-  supplies a stable repository-wide lock anchor. Separate base records can own
-  refreshes independently; only their brief lock transactions share the anchor.
+- Ownership is keyed by repository and base branch. Both reads and writes use
+  the oldest repository PR as their stable comment anchor, including after it
+  closes. The distributed PR lock protects short ownership transactions; the
+  refresh owner outlives that lock and expires after six hours.
+- The required-check contract combines rulesets and classic protection,
+  publisher pins and the verified test merge. Any effective strict ruleset
+  requires readiness. An explicitly absent classic required-check contract
+  adds no classic restriction; when the branch summary omits classic
+  strictness, the classic required-status-check endpoint supplies it.
+- A ready PR remains the owner while refreshed checks are pending. Only
+  terminal required-check failure, merge, closure or expiry releases it.
+  Optional pending or skipped jobs do not block selection.
+- An unresolved fleet author set refuses ownership recoverably, including
+  before an empty store could be interpreted as available. Loaded fleet
+  identity is passed by worker/reviewer callers. Reviewer post resolves its
+  configured identity without reading environment variables outside its
+  permission contract; refresh IDs use permission-free UUIDs.
+- Reviewer request refusals are remembered at the reviewed head. Readiness
+  refusals, including a changed test merge, leave failed-head memory untouched.
+- Behind-only updates in branch maintenance, the auto-merge sweep, reviewer
+  gate/post, babysitter, merge-block handling and blocking-PR stall repair use
+  the shared policy. Conflict repair retains its separate path.
 
 ### Undiscoverable Facts
 
-- A same-backlog behavioural test counted two legacy refresh requests and one
-  request while the first ready PR owned the base.
-- A read-only ruleset check observed
-  `strict_required_status_checks_policy: true` and required context `gate` on
-  this repository's `main` branch.
-- `gh api repos/stSoftwareAU/VibeCoder/pulls?state=all&sort=created&direction=asc&per_page=1 --jq '.[].number'`
-  returned PR number `6`, confirming the oldest-PR anchor query works with the
-  installed `gh` CLI.
-- No `deno.lock` dependency changed. Version bump: none; no `VERSION` change was
-  needed.
+- The original two-ready-PR backlog fixture issued two legacy refresh requests
+  and one guarded request while the first selected PR owned the base.
+- The baseline download failure came from an isolated child with cleared
+  environment using `/home/vibe/.cache/deno`, while the test runner used
+  `/home/vibe/auto-issue-work/.deno-cache`. Populating the child's existing
+  remote-module cache from the runner's cache resolved it without changing
+  dependencies, tests, repository configuration or check-skip settings.
+- No dependency or lockfile changed. Version bump: none.
 
 ## Evidence
 
 Backend-only change; no visual evidence applies.
 
-- `worker/deno/tests/required_branch_checks_4613_test.ts` exercises current-head
-  readiness, review and queue refusal, optional jobs, a two-ready-PR backlog,
-  and release after a required-check failure. Refresh requests in that fixture
-  fell from 2 to 1 while the owner was active.
-- `worker/deno/tests/base_refresh_ownership_4613_test.ts` exercises competing
-  host ports, same-base exclusion, release and recovery, expiry, and independent
-  repository/base ownership. Removing the active-owner refusal made
-  `base refresh owner serialises lanes and releases for the next PR` fail.
-- Real ruleset response:
-  `gh api repos/stSoftwareAU/VibeCoder/rules/branches/main --paginate --slurp`
-  returned a required-status-check rule with strict mode enabled and context
-  `gate`.
+- `worker/deno/tests/base_refresh_ownership_4613_test.ts::GitHub comment ownership serialises independent host ports`
+  uses anchor #1 with selected PRs #10/#11, then attempts a further acquisition
+  after the transaction lock has gone. Persisted ownership still excludes it;
+  an unresolved fleet identity also refuses acquisition. Release then permits
+  the next host, and a different base can progress independently.
+- `worker/deno/tests/required_branch_checks_4613_test.ts` tests pending,
+  success, failure and error commit statuses; opposing strictness in both ruleset orders;
+  explicit classic absence and the classic protection endpoint; and isolated
+  review, base/head freshness and test-merge freshness guards. These cases use
+  passing CI and no competing owner unless ownership is the behaviour tested.
+- `worker/deno/tests/reviewer_strict_refresh_permissions_4613_test.ts` invokes
+  the real gate, post and compatibility-shim CLIs with
+  `--allow-env=HOME,XDG_STATE_HOME`, their documented run/read/write grants,
+  and an offline GitHub boundary. Each strict path reaches `update-branch`.
+  Only GitHub's consistency delay is accelerated in this in-memory fixture.
+- `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` retains the
+  unreadable-state cases separately and restores successful requests, expected-head SHA,
+  actual HTTP 422/403 refusals, reporting and no retry at the same failed head.
+  A moving test merge leaves no failed-head entry and a later attempt succeeds
+  at the same reviewed head.
+- `worker/deno/tests/auto_merge_sweep_keeps_armed_test.ts` drives production
+  sweep wiring to successful eligible refreshes. Its production stall-repair callback
+  refuses an unreviewed candidate and a candidate competing with an existing
+  owner, while allowing an eligible unowned candidate.
+- `worker/deno/tests/pr_branch_update_test.ts` confirms behind maintenance
+  uses the shared guard and conflict repair bypasses that behind-only route. The shared owner
+  tests also cover the default merge-block and command callers' common store.
 
 ## Test Plan
 
-- `deno task test:unit tests/base_refresh_ownership_4613_test.ts tests/required_branch_checks_4613_test.ts tests/pr_branch_update_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_dependabot_test.ts tests/merge_block_escalation_test.ts`
-  — 132 passed, 0 failed.
-- `deno task test:unit tests/review_fleet_prs_dependabot_test.ts` — 15 passed, 0
-  failed.
-- `deno task test:unit tests/fleet_pr_babysitter_test.ts` — 54 passed, 1 failed
-  because the isolated subprocess could not download
-  `https://jsr.io/@std/crypto/meta.json`
-  (`JSR package manifest for '@std/crypto' failed to load`). The same network
-  error repeated on retry.
-- Targeted `deno fmt --check`, `deno lint` and `deno check` for the changed
-  TypeScript files — passed.
-- `worker/deno/tests/pr_branch_update_test.ts::executePrBranchUpdates - behind refresh uses the shared readiness policy`
-  confirms the branch-maintenance caller uses the shared guard; the adjacent
-  conflict test confirms conflict repair bypasses that behind-only route.
-- `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts`: removed the former
-  expectation that every approved behind PR issues an update. Required by “A
-  behind PR that is awaiting review is not updated.” Replaced by no update
-  requests while rules are unreadable; current-head readiness and approved
-  selection are exercised through the shared-policy tests above.
-- `worker/deno/tests/auto_merge_sweep_keeps_armed_test.ts`: replaced the
-  assertion that an armed behind PR always issues `update-branch` with an
-  assertion that it reaches the shared ruleset policy. Required by the
-  ready-only refresh policy.
-- Call sites checked: auto-merge sweep, reviewer upkeep and post-approval, PR
-  branch maintenance, fleet PR babysitter, and merge-block escalation. Plain
-  behind refreshes use the shared policy; conflict repair retains its existing
-  path.
-- Test files named above exist at the repository head. No test assertion was
-  removed from the Dependabot refusal, per-PR lock, or conflict-repair cases.
+Commands below run from `worker/deno` unless another directory is stated.
+
+- Before the fixes, regression tests reproduced persisted-owner overlap,
+  pending-status release, first-ruleset bypass, explicit-classic-absence
+  rejection and missing classic strictness lookup.
+- Eighteen individual mutation probes in a disposable checkout were killed:
+  owner written to the selected PR, unresolved fleet allowed, pending status
+  released, only the first ruleset read, explicit classic absence rejected,
+  classic endpoint lookup omitted, forbidden worker environment read restored,
+  moving-merge refusal cached, review guard removed, and each initial,
+  post-check and immediate base/head or merge freshness guard removed, plus
+  the production stall-repair guard bypassed.
+  Each probe failed its targeted behavioural test; no exemption is claimed.
+- `deno task test:unit tests/base_refresh_ownership_4613_test.ts tests/required_branch_checks_4613_test.ts tests/pr_branch_update_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_dependabot_test.ts tests/merge_block_escalation_test.ts tests/reviewer_strict_refresh_permissions_4613_test.ts`
+  — 162 passed, 0 failed on the final run, including the CLI fixture with its
+  consistency delay mocked and the tightened stall assertions.
+- `deno task test:unit tests/reviewer_strict_refresh_permissions_4613_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/required_branch_checks_4613_test.ts`
+  — 39 passed, 0 failed after the fixture and stall assertions were tightened.
+- **Required item 1 — mutation baseline:**
+  `deno task test:unit tests/fleet_babysitter_app_test.ts tests/fleet_pr_babysitter_test.ts`
+  — 73 passed, 0 failed after the isolated cache was populated. The original
+  download failure was reproduced first. No mutation-check skip was set.
+- **Required item 2 — coverage carry-over baseline:** at merge base
+  `18cbb398e5ac7ca39f4d9b58554c112840eddce0` in a disposable worktree,
+  `deno task test:unit tests/auto_merge_sweep_keeps_armed_test.ts tests/fleet_pr_babysitter_test.ts tests/pr_branch_update_test.ts tests/required_branch_checks_4613_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_dependabot_test.ts`
+  — 156 passed, 0 failed after the same cache preparation. Before preparation,
+  155 passed and only the babysitter subprocess failed to download its crypto
+  manifest. No coverage carry-over skip was set.
+- Targeted `deno fmt --check`, `deno lint` and `deno check` passed for all
+  changed TypeScript files, including `.claude/skills/review-fleet-prs/scripts/branch_update.ts`.
+- `deno task check:manifests` — passed: 847 passed, 0 failed, 1 ignored.
 - `deno task pr-summary-check --base 18cbb398 --issue-body-file /tmp/issue-4613-body.md --labels enhancement,top-priority,work-on ../../docs/archive/pr-summaries/pr-summary-4613.md`
   — passed; 0 blocked, 0 not checked.
-- `./quality.sh < /dev/null` — failed after the ledger fix: 31,924 passed, 2
-  failed, 5 ignored. `tests/fleet_pr_babysitter_test.ts` could not download
-  `https://jsr.io/@std/crypto/meta.json` in its isolated subprocess; the same
-  failure occurred in the targeted retry.
-  `tests/milestone_resolution_gate_test.ts::verifyResolvedTree - the repository's own task sees only the allowlisted environment`
-  expected `failed` but got `passed`; a targeted run reproduced it (33 passed, 1
-  failed), and its production module, test and child-process helper are
-  unchanged from base `18cbb398`. Config integration and Checkov were skipped by
-  the gate because their runtime/configuration was unavailable.
-  `deno task check:manifests < /dev/null` passed after adding the ownership
-  module to the #4613 sweep-coverage record.
+- `./quality.sh < /dev/null` from the repository root — failed with 31,955
+  passed, 1 failed, 5 ignored. The sole failure is
+  `tests/milestone_resolution_gate_test.ts::verifyResolvedTree - the repository's own task sees only the allowlisted environment (Issue #4659)`:
+  the account-access probe is left to CI and returns `passed`, while the test
+  expects `failed`. Running that unchanged suite at merge base `18cbb398`
+  reproduces the identical failure (33 passed, 1 failed). Its production
+  module and test have no diff from that base. The serial test pass was not
+  run after the parallel failure. Full lint, type check, formatting,
+  markdownlint, semgrep and completeness checks passed; config integration
+  and Checkov were skipped by the gate because their runtime/configuration
+  was unavailable.
+
+The earlier unconditional fleet-refresh assertions were incompatible with
+“One ready PR at a time per base”; success and API-refusal behaviours remain
+covered by the strict-ready cases above. Unreadable readiness cases supplement
+those behaviours. No Dependabot refusal, per-PR lock or conflict-repair assertion
+was removed by these completion fixes.
 
 ## Deno regression avoided
 
-- Kept tooling, tests and dependency management Deno-native; no Node tooling or
-  lockfile dependency was added.
+Tooling, tests and dependency management remain Deno-native. No Node tooling,
+new dependency or lockfile change was introduced.
 
 ## Merge verification
 
-- CI: pending on the pull request.
+CI awaits the worker-created pull request. This run does not create a PR or
+close the issue; the worker reruns the completion checks.

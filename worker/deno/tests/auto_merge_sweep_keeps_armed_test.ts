@@ -18,6 +18,8 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { resetAnnouncedDraftsForTest } from "../lib/auto_merge_sweep.ts";
 import { renderPreprReviewRequest } from "../lib/prepr_review_record.ts";
 
+import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
+
 const REPO = "org/repo-a";
 const WORKER_USER = "worker-bot";
 const PR_NUMBER = 42;
@@ -32,9 +34,17 @@ async function sweepOnePr(
   comments = "[]",
 ): Promise<string[][]> {
   resetAnnouncedDraftsForTest();
+  const refresh = strictRefreshFixture(REPO, "main", WORKER_USER);
   const calls: string[][] = [];
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
+    if (
+      (args[0] === "api" && args[1] !== "graphql" &&
+        !args[1]?.endsWith("/comments")) ||
+      (args[0] === "issue" && args[1] === "comment")
+    ) {
+      return refresh.gh(args);
+    }
     if (args[0] === "pr" && args[1] === "list") {
       return Promise.resolve(JSON.stringify([{
         number: PR_NUMBER,
@@ -47,6 +57,7 @@ async function sweepOnePr(
     if (args[0] === "pr" && args[1] === "view") {
       return Promise.resolve(JSON.stringify({
         state: "OPEN",
+        isDraft: false,
         baseRefName: "main",
         headRefOid: "a".repeat(40),
         mergeable: "MERGEABLE",
@@ -74,57 +85,6 @@ async function sweepOnePr(
           },
         },
       }));
-    }
-    if (args[0] === "api" && args[1]?.endsWith(`/pulls/${PR_NUMBER}`)) {
-      return Promise.resolve(
-        JSON.stringify({
-          state: "open",
-          mergeable: true,
-          merge_commit_sha: "b".repeat(40),
-          head: { sha: "a".repeat(40) },
-          base: { ref: "main", sha: "c".repeat(40) },
-        }),
-      );
-    }
-    if (args[0] === "api" && args[1]?.includes("/git/commits/")) {
-      return Promise.resolve(
-        JSON.stringify({
-          parents: [{ sha: "c".repeat(40) }, { sha: "a".repeat(40) }],
-        }),
-      );
-    }
-    if (args[0] === "api" && args[1]?.includes("/rules/branches/")) {
-      return Promise.resolve(
-        JSON.stringify([[{
-          type: "required_status_checks",
-          parameters: { required_status_checks: [{ context: "gate" }] },
-        }]]),
-      );
-    }
-    if (args[0] === "api" && args[1]?.includes("/branches/")) {
-      return Promise.resolve(
-        JSON.stringify({
-          protection: {
-            enabled: false,
-            required_status_checks: { contexts: [], checks: [] },
-          },
-        }),
-      );
-    }
-    if (args[0] === "api" && args[1]?.includes("/check-runs?")) {
-      return Promise.resolve(
-        JSON.stringify([{
-          check_runs: args[1].includes("b".repeat(40)) ? [] : [{
-            name: "gate",
-            status: "completed",
-            conclusion: "success",
-            app: { id: 1, slug: "external-ci" },
-          }],
-        }]),
-      );
-    }
-    if (args[0] === "api" && args[1]?.includes("/status?")) {
-      return Promise.resolve(JSON.stringify([{ statuses: [] }]));
     }
     if (
       args[0] === "api" &&
@@ -200,8 +160,85 @@ for (
     );
     assertEquals(calls.filter(isDisarm), [], JSON.stringify(calls));
     assert(
-      calls.some((c) => c[1]?.includes("/rules/branches/")),
-      "the armed PR reached the shared refresh policy",
+      calls.some((c) =>
+        c.includes("PUT") && c.some((arg) => arg.endsWith("/update-branch"))
+      ),
+      "the eligible armed PR requested a branch refresh",
     );
+  });
+}
+
+import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
+
+for (const scenario of ["owned", "awaiting-review", "ready"]) {
+  Deno.test(`production stall-repair behind refresh honours shared policy: ${scenario}`, async () => {
+    const workDir = await Deno.makeTempDir();
+    const refresh = strictRefreshFixture(REPO, "main", WORKER_USER);
+    try {
+      if (scenario === "owned") {
+        const first = await requestReadyBranchUpdate(
+          REPO,
+          10,
+          refresh.gh,
+          "main",
+          refresh.head,
+          async () => {},
+          { fleetAuthors: [WORKER_USER] },
+        );
+        assert(first.ok);
+      }
+      if (scenario === "awaiting-review") {
+        refresh.state.decision = "REVIEW_REQUIRED";
+      }
+      const before = refresh.calls.filter((args) =>
+        args.includes("PUT")
+      ).length;
+      let syncResult: { ok: true } | { ok: false; error: Error } | undefined;
+      const { deps } = await createProductionRunCoreDeps({
+        repoDir: workDir,
+        workDir,
+        githubUser: WORKER_USER,
+        logger: createLogger({ write: () => {} }),
+        config: {
+          ...buildDefaultWorkerConfig(),
+          workDir,
+          repos: [REPO],
+          fleetPrAuthors: [WORKER_USER],
+        },
+        stallRepairGhCommandFn: refresh.gh,
+        stallRepairPassFn: async (options) => {
+          const result = await options.repair.syncBranch({
+            repo: REPO,
+            prNumber: 11,
+            headRefName: "feature",
+            baseRefName: "main",
+          });
+          syncResult = result;
+          return { ok: true, value: [] };
+        },
+      });
+      assert((await deps.scanBlockingPrStalls!()).ok);
+      assert(
+        syncResult,
+        "the stall pass must invoke its production sync callback",
+      );
+      assertEquals(syncResult.ok, scenario === "ready");
+      if (!syncResult.ok) {
+        assert(
+          syncResult.error.message.includes(
+            scenario === "owned"
+              ? "base refresh owned by"
+              : "PR no longer ready",
+          ),
+          syncResult.error.message,
+        );
+      }
+      assertEquals(
+        refresh.calls.filter((args) => args.includes("PUT")).length - before,
+        scenario === "ready" ? 1 : 0,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
   });
 }

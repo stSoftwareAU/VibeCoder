@@ -886,6 +886,8 @@ async function fix(
         (args) => run("gh", args),
         pr.baseRefName,
         pr.headRefOid,
+        undefined,
+        { fleetAuthors: authors },
       );
       if (!update.ok) {
         console.log(

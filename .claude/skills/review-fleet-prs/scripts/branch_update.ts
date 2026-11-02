@@ -6,6 +6,8 @@
 // against the current base. Other bases keep their existing update path, while
 // conflicting branches wait without a push or a bot-command comment.
 
+import { loadConfig } from "../../../../worker/deno/lib/config.ts";
+import type { AlertDedupAuthorOptions } from "../../../../worker/deno/lib/alert_dedup_authors.ts";
 import { prKey, sameLogin } from "./review_log.ts";
 import {
   FileLockTimeoutError,
@@ -76,6 +78,7 @@ export type BranchUpdateResult =
 export async function updateBranch(
   pr: { repo: string; number: number; headSha: string; baseRefName: string },
   runGh: RunGh,
+  authorOptions?: AlertDedupAuthorOptions,
 ): Promise<BranchUpdateResult> {
   const result = await requestReadyBranchUpdate(
     pr.repo,
@@ -83,6 +86,16 @@ export async function updateBranch(
     runGh,
     pr.baseRefName,
     pr.headSha,
+    undefined,
+    authorOptions ?? {
+      env: () => undefined,
+      loadConfigFn: () =>
+        loadConfig(
+          Deno.args.find((arg) => arg.startsWith("--config="))?.slice(9) ??
+            new URL("../../../../.config.json", import.meta.url).pathname,
+          { env: () => undefined },
+        ),
+    },
   );
   return result.ok
     ? { updated: true }
@@ -96,6 +109,7 @@ export async function updateBranchOnce(
   pr: { repo: string; number: number; headSha: string; baseRefName: string },
   dir: string,
   runGh: RunGh,
+  authorOptions?: AlertDedupAuthorOptions,
 ): Promise<BranchUpdateResult | undefined> {
   await Deno.mkdir(dir, { recursive: true });
   const key = prKey(pr.repo, pr.number);
@@ -111,21 +125,24 @@ export async function updateBranchOnce(
           updateAsked[key] === pr.headSha ||
           failed[`${key} branch-update`] === pr.headSha
         ) return undefined;
-        const result = await updateBranch(pr, runGh);
+        const result = await updateBranch(pr, runGh, authorOptions);
         if (result.updated) {
           await writeMemory(dir, BRANCH_UPDATE_FILE, { [key]: pr.headSha });
         } else {
-          if ([
-            "merge-queue base is exempt",
-            "base does not require strict up-to-date checks",
-            "base refresh owned by",
-            "PR base or head changed before branch update",
-            "PR no longer ready for a branch update",
-            "PR changed while its required checks were read",
-            "required current-head checks have not passed",
-            "required-check read failed:",
-            "test merge or required checks changed before branch update",
-          ].some((marker) => result.error.includes(marker))) {
+          if (
+            [
+              "merge-queue base is exempt",
+              "base does not require strict up-to-date checks",
+              "base refresh owned by",
+              "PR base or head changed before branch update",
+              "PR no longer ready for a branch update",
+              "PR changed while its required checks were read",
+              "PR test merge changed while required checks were read",
+              "required current-head checks have not passed",
+              "required-check read failed:",
+              "test merge or required checks changed before branch update",
+            ].some((marker) => result.error.includes(marker))
+          ) {
             console.warn(`${key} branch refresh skipped: ${result.error}`);
             return undefined;
           }
