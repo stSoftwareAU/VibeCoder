@@ -42,6 +42,7 @@ export interface TrustedPrAction {
   repo: string;
   prNumber: number;
   headSha?: string;
+  deliveredCommits?: string[];
   kind: PrActionKind;
   timestamp: string;
   outcome: "confirmed" | "failed" | "unknown";
@@ -205,6 +206,9 @@ export function prActionsFromAuditJournal(
       repo: entry.repo,
       prNumber: entry.prNumber,
       ...(entry.headSha ? { headSha: entry.headSha } : {}),
+      ...(entry.deliveredCommits !== undefined
+        ? { deliveredCommits: entry.deliveredCommits }
+        : {}),
       kind: entry.actionKind,
       timestamp: entry.timestamp,
       outcome: entry.outcome === "success" ? "confirmed" : "failed",

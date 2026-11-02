@@ -1161,12 +1161,16 @@ it in `--audit-dir a,b`. An action repeated across directories is counted once,
 and its verified copy is kept. A host whose journals are not supplied is
 invisible to the report. Journals are authenticated only by chain verification:
 if any directory's chains fail, or a directory has no journals, every PR's
-`actionsComplete` is false.
+`actionsComplete` is false. Only `audit-*.jsonl` filenames are covered by the
+chain sweep. Other JSONL files contribute unverified actions and a coverage
+note, and make the directory incomplete, even beside valid journals.
 
 **Match rule.** Reviews and dismissals match one verified fleet action of the
 same kind on the same PR within ten minutes. Each commit is attributed to the
-first confirmed, verified implementation or repair push at or after its
-committer date within the PR lifetime. A confirmed fleet branch-update call
+first confirmed, verified implementation or repair push whose recorded
+`deliveredCommits` contains that commit, at or after its committer date within
+the PR lifetime. The git chokepoint reads the remote branch head before pushing
+and enumerates the old-to-local commit range. A confirmed fleet branch-update call
 accounts for only one commit within ten minutes either side of the call,
 including GitHub's asynchronous update commit. Earlier unmatched commits remain
 unknown. A branch update does not count as a fix round. Only confirmed reviews
@@ -1174,14 +1178,18 @@ and repair pushes count as review and fix rounds; a rejected push and its
 successful recovery retry count as one fix round. Failed fleet attempts remain
 verified history but cannot match a GitHub event or provide implementation or merge evidence. One
 push can deliver several commits, including commits
-made long before the completion gate finishes. This time-based attribution
-cannot distinguish an unrecorded push before a later verified push.
+made long before the completion gate finishes. An earlier owner commit already
+on the remote is excluded from a later fleet push's range. Legacy pushes without
+delivery evidence, unsupported push forms and shallow or unavailable history
+leave commits unknown rather than falling back to time-based attribution.
 
 **Merge window.** Auto-merge journals the merge when it is armed, which can be
 hours before GitHub records `mergedAt`. So a fleet `merge` action matches a
 merge event when its timestamp lies from the PR's creation to ten minutes after
 `mergedAt`. An armed merge stamped before the PR existed does not match, nor
-does one stamped more than ten minutes after the merge.
+does one stamped more than ten minutes after the merge. A verified, successful
+fleet disarm between the arm and GitHub's merge invalidates that arm. A later
+re-arm can match; failed disarms do not withdraw an arm.
 
 **Push linking.** Production writes `git-push` entries with no repository, only
 the push target. Such a push links across every supplied repository by branch

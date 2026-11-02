@@ -45,6 +45,8 @@ import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
  * call sites pass nothing and behave identically.
  */
 export interface AuditHookOptions extends RecordOptions {
+  /** Proven push range, supplied by the git chokepoint before a push. */
+  deliveredCommits?: string[];
   /**
    * Explicit run id for the journal entry.
    *
@@ -284,6 +286,9 @@ async function record(
       actionId: crypto.randomUUID(),
       component: componentFor(caller),
       actionKind: actionKindFor(info, caller, args),
+      ...(info.verb === "git-push" && opts.deliveredCommits !== undefined
+        ? { deliveredCommits: opts.deliveredCommits }
+        : {}),
       ...(prNumberFor(info) !== undefined
         ? { prNumber: prNumberFor(info) }
         : {}),

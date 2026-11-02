@@ -42,6 +42,8 @@ export interface AuditMutation {
    * take no head SHA, so entries from this build never carry it.
    */
   headSha?: string;
+  /** Commits absent from the remote branch immediately before this push. */
+  deliveredCommits?: string[];
   /** Action class; unknown is explicit when the hook cannot safely infer it. */
   actionKind?: AuditActionKind;
   /** ISO 8601 timestamp. Filled in by `recordMutation` when absent. */
@@ -77,6 +79,7 @@ const PAYLOAD_FIELDS: ReadonlyArray<keyof AuditMutation> = [
   "component",
   "prNumber",
   "headSha",
+  "deliveredCommits",
   "actionKind",
   "timestamp",
   "runId",

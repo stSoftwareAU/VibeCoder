@@ -18,7 +18,7 @@ import {
   mountedGitLogin,
 } from "./gh_credential_stage.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
-import { auditGitMutation } from "./audit_hook.ts";
+import { auditGitMutation, isAuditJournalEnabled } from "./audit_hook.ts";
 import {
   gitSubcommandIndex,
   redactGitMessageArgs,
@@ -231,6 +231,68 @@ function readMessageFileSync(path: string): string {
   return Deno.readTextFileSync(path);
 }
 
+/**
+ * Capture the commits a single explicit branch push would add to its remote.
+ * Read the remote itself, never a possibly stale tracking ref. Unsupported
+ * push forms and unavailable/shallow history leave provenance unknown.
+ */
+export async function capturePushCommits(
+  args: string[],
+  options: GitCommandOptions = {},
+): Promise<string[] | undefined> {
+  if (args[0] !== "push") return undefined;
+  const positional = args.slice(1).filter((arg) =>
+    arg !== "-u" && arg !== "--set-upstream"
+  );
+  if (positional.length !== 2) return undefined;
+  const [remote, refspec] = positional;
+  if (!remote || !refspec) return undefined;
+  // Restrict routing to explicit branch names; flags, deletion, force,
+  // matching/multiple refs and HEAD shorthand remain unknown.
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(remote) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._/:-]*$/.test(refspec)
+  ) return undefined;
+  const parts = refspec.split(":");
+  if (parts.length > 2 || parts.some((p) => !p || p === "HEAD")) {
+    return undefined;
+  }
+  const [source, destination = source] = parts;
+  if (!source || !destination) return undefined;
+  const branch = destination.startsWith("refs/heads/")
+    ? destination
+    : `refs/heads/${destination}`;
+  const remoteHead = await runGitCommand([
+    "ls-remote",
+    "--heads",
+    "--end-of-options",
+    remote,
+    branch,
+  ], options);
+  if (!remoteHead.ok || remoteHead.value.code !== 0) return undefined;
+  const lines = remoteHead.value.stdout.trim().split("\n").filter(Boolean);
+  if (lines.length > 1) return undefined;
+  const old = lines[0]?.split(/\s+/)[0];
+  if (old !== undefined && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(old)) {
+    return undefined;
+  }
+  const shallow = await runGitCommand(
+    ["rev-parse", "--is-shallow-repository"],
+    options,
+  );
+  if (
+    !shallow.ok || shallow.value.code !== 0 ||
+    shallow.value.stdout.trim() !== "false"
+  ) return undefined;
+  const commits = await runGitCommand([
+    "rev-list",
+    "--end-of-options",
+    ...(old ? [`${old}..${source}`] : [source]),
+  ], options);
+  if (!commits.ok || commits.value.code !== 0) return undefined;
+  return commits.value.stdout.trim().split("\n").filter(Boolean);
+}
+
 export async function runGitCommand(
   args: string[],
   options: GitCommandOptions = {},
@@ -276,6 +338,14 @@ export async function runGitCommand(
     commandLabel,
   );
   const reportedSeconds = formatTimeoutSeconds(timeoutMs);
+
+  // Audit the same effective environment as the child (env overrides inherit
+  // all unspecified names). This also keeps isolated callers off host journals.
+  const auditEnv = (key: string) => options.env?.[key] ?? Deno.env.get(key);
+  const deliveredCommits =
+    subcommandName === "push" && isAuditJournalEnabled(auditEnv)
+      ? await capturePushCommits(effectiveArgs, options)
+      : undefined;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -345,7 +415,6 @@ export async function runGitCommand(
       if (await repairGitAuthEnvironment()) {
         const retry = await runGitCommand(args, options);
         if (retry.ok) {
-          await auditGitMutation(args, retry.value.code);
           return retry;
         }
       }
@@ -363,7 +432,10 @@ export async function runGitCommand(
 
     // Issue #2380: journal `git push` mutations to the audit log.
     // Best-effort — never lets journalling alter or abort the git call.
-    await auditGitMutation(effectiveArgs, process.code);
+    await auditGitMutation(effectiveArgs, process.code, {
+      env: auditEnv,
+      deliveredCommits,
+    });
 
     return {
       ok: true,

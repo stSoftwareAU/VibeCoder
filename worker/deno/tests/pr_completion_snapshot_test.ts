@@ -56,6 +56,7 @@ Deno.test("collect - failed merge attempts cannot match events but do not taint 
         verb: "git-push",
         actionKind: "implementation" as const,
         actionId: `push-${n}`,
+        deliveredCommits: [`sha${n}`],
         target: `issue-${n}`,
         timestamp: "2026-10-20T00:30:00Z",
       })),
@@ -110,6 +111,7 @@ Deno.test("collect - a confirmed update-branch accounts for its GitHub commit wi
         verb: "git-push",
         actionKind: "implementation",
         actionId: "push",
+        deliveredCommits: ["sha1"],
         target: "issue-1",
         timestamp: "2026-10-20T00:30:00Z",
       },
@@ -255,6 +257,7 @@ Deno.test("collect - a rejected repair push followed by recovery is one confirme
         verb: "git-push",
         actionKind: kind,
         actionId: "retry",
+        deliveredCommits: ["sha1"],
         caller,
         target: "issue-1",
         timestamp: "2026-10-20T00:30:00Z",
@@ -291,6 +294,11 @@ Deno.test("collect - pre-PR checkpoints and delayed completion deliver all commi
         verb: "git-push",
         actionKind: "implementation" as const,
         actionId: `push-${minute}`,
+        deliveredCommits: minute === 20
+          ? ["sha-10", "sha-20"]
+          : minute === 30
+          ? ["sha-30"]
+          : ["sha-40"],
         target: "issue-1",
         timestamp: `2026-10-20T00:${minute}:00Z`,
       })),
@@ -338,6 +346,7 @@ Deno.test("collect - all pushes may precede PR creation by more than ten minutes
         verb: "git-push",
         actionKind: "implementation" as const,
         actionId: `early-push-${minute}`,
+        deliveredCommits: [minute === 20 ? "sha-10" : "sha-30"],
         target: "issue-1",
         timestamp: `2026-10-20T00:${minute}:00Z`,
       })),
@@ -384,6 +393,7 @@ Deno.test("collect - a journalled disarm cannot account for a GitHub merge", asy
         verb: "git-push",
         actionKind: "implementation",
         actionId: "push-1",
+        deliveredCommits: ["sha1"],
         target: "issue-1",
         timestamp: "2026-10-20T01:00:00Z",
       },
@@ -394,6 +404,14 @@ Deno.test("collect - a journalled disarm cannot account for a GitHub merge", asy
         repo: REPO,
         prNumber: 1,
         timestamp: "2026-10-20T01:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "earlier-arm",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:15:00Z",
       },
     ]);
     const snapshot = await collectPrCompletionSnapshot(
@@ -415,6 +433,201 @@ Deno.test("collect - a journalled disarm cannot account for a GitHub merge", asy
       0,
     );
   });
+});
+
+Deno.test("collect - later fleet repair cannot absorb an earlier owner commit", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "initial",
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+        deliveredCommits: ["initial"],
+      },
+      {
+        verb: "git-push",
+        actionKind: "repair",
+        actionId: "repair",
+        target: "issue-1",
+        timestamp: "2026-10-20T01:20:00Z",
+        deliveredCommits: ["repair"],
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          commits: {
+            [pk(1)]: [
+              commit("initial", "2026-10-20T00:25:00Z"),
+              commit("owner", "2026-10-20T01:00:00Z"),
+              commit("repair", "2026-10-20T01:15:00Z"),
+            ],
+          },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    assert(
+      snapshot.input.actions.some((a) =>
+        a.actor === "unknown" && a.actionId.endsWith(":owner")
+      ),
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
+});
+
+Deno.test("collect - an edited non-audit JSONL is never chain verified", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-merge",
+      actionKind: "merge",
+      actionId: "valid",
+      repo: REPO,
+      prNumber: 1,
+      timestamp: "2026-10-20T02:00:00Z",
+    }]);
+    const path = auditFilePath({
+      baseDir: dir,
+      workerId: "test-worker",
+      date: JOURNAL_DATE,
+    });
+    await Deno.writeTextFile(
+      `${dir}/other.jsonl`,
+      (await Deno.readTextFile(path)).replace('"valid"', '"edited"'),
+    );
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    assertEquals(
+      snapshot.input.actions.find((a) => a.actionId === "edited")?.verified,
+      false,
+    );
+    assertEquals(snapshot.input.prs[0]!.actionsComplete, false);
+    assert(
+      snapshot.coverageNotes.some((note) =>
+        note.includes("other.jsonl") && note.includes("unverified")
+      ),
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      0,
+    );
+  });
+});
+
+Deno.test("collect - legacy push records cannot prove commit delivery", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "legacy-push",
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    assert(
+      snapshot.input.actions.some((a) =>
+        a.actor === "unknown" && a.actionId.endsWith(":sha1")
+      ),
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      0,
+    );
+  });
+});
+
+Deno.test("collect - a later re-arm or failed disarm preserves merge evidence", async () => {
+  for (const failed of [false, true]) {
+    await withDir(async (dir) => {
+      await journal(dir, [
+        {
+          verb: "git-push",
+          actionKind: "implementation",
+          actionId: "push",
+          target: "issue-1",
+          deliveredCommits: ["sha1"],
+          timestamp: "2026-10-20T00:30:00Z",
+        },
+        {
+          verb: "pr-merge",
+          actionKind: "merge",
+          actionId: "arm",
+          repo: REPO,
+          prNumber: 1,
+          timestamp: "2026-10-20T01:00:00Z",
+        },
+        {
+          verb: "pr-merge",
+          actionKind: "unknown",
+          actionId: "disarm",
+          repo: REPO,
+          prNumber: 1,
+          outcome: failed ? "error" : "success",
+          timestamp: "2026-10-20T01:15:00Z",
+        },
+        ...(!failed
+          ? [{
+            verb: "pr-merge",
+            actionKind: "merge" as const,
+            actionId: "rearm",
+            repo: REPO,
+            prNumber: 1,
+            timestamp: "2026-10-20T01:30:00Z",
+          }]
+          : []),
+      ]);
+      const snapshot = await collectPrCompletionSnapshot(
+        options(
+          fakeGh(emptyFixture({
+            pulls: { [REPO]: [pull(1)] },
+            commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+          })),
+          { auditDirs: [dir] },
+        ),
+      );
+      assertEquals(
+        buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+        1,
+      );
+    });
+  }
 });
 
 interface Fixture {
@@ -590,6 +803,7 @@ Deno.test("collect - a GitHub merge matched to a verified fleet action is unatte
         verb: "git-push",
         actionKind: "implementation",
         actionId: "a-push-1",
+        deliveredCommits: ["sha1"],
         target: "issue-1",
         timestamp: "2026-10-20T00:30:00Z",
       },
@@ -1662,6 +1876,7 @@ async function reviewedPr(
       verb: "git-push",
       actionKind: "implementation",
       actionId: "a-push-review",
+      deliveredCommits: ["sha1"],
       target: "issue-1",
       timestamp: "2026-10-20T00:30:00Z",
     },
@@ -2006,6 +2221,7 @@ Deno.test("collect - human-looking logins on a matched PR never downgrade it fro
         verb: "git-push",
         actionKind: "implementation",
         actionId: "a-push-31",
+        deliveredCommits: ["sha31"],
         target: "issue-31",
         timestamp: "2026-10-20T00:30:00Z",
       },

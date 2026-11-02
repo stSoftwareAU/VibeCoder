@@ -39,6 +39,7 @@ import {
   _resetAuditCaches,
   auditFilePath,
   loadEntries,
+  verifyAllChains,
 } from "../lib/audit_journal.ts";
 import {
   classifyGhMutation,
@@ -262,6 +263,35 @@ Deno.test("audit_hook - auditGitMutation ignores a non-push git command", async 
 
     const loaded = await loadEntries(journalPath);
     assertEquals(loaded.ok, false, "a local git command must not write");
+  });
+});
+
+Deno.test("audit_hook - push delivery evidence is journalled and chain verified", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGitMutation(["push", "origin", "feature"], 0, {
+      ...opts,
+      deliveredCommits: ["a".repeat(40)],
+    });
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    assertEquals(loaded.value[0]?.deliveredCommits, ["a".repeat(40)]);
+    const verified = await verifyAllChains(
+      journalPath.slice(0, journalPath.lastIndexOf("/")),
+    );
+    assert(verified.ok);
+    assertEquals(verified.value.broken, []);
+    await Deno.writeTextFile(
+      journalPath,
+      (await Deno.readTextFile(journalPath)).replace(
+        "a".repeat(40),
+        "b".repeat(40),
+      ),
+    );
+    const edited = await verifyAllChains(
+      journalPath.slice(0, journalPath.lastIndexOf("/")),
+    );
+    assert(edited.ok);
+    assertEquals(edited.value.broken.length, 1);
   });
 });
 

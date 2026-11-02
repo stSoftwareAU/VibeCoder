@@ -19,7 +19,11 @@
  */
 
 import type { AuditEntry } from "./audit_entry.ts";
-import { loadEntries, verifyAllChains } from "./audit_journal.ts";
+import {
+  isAuditJournalName,
+  loadEntries,
+  verifyAllChains,
+} from "./audit_journal.ts";
 import {
   type AssignmentEvent,
   readLifecycleLedger,
@@ -606,7 +610,7 @@ function blockersFor(
 
 /**
  * The GitHub-observed events for one PR: submitted reviews, dismissals, the
- * merge, and each commit. Commit delivery is matched to a subsequent verified push.
+ * merge, and each commit. Commit delivery requires a verified push's recorded range.
  */
 function gitHubEvents(
   observed: ObservedPr,
@@ -648,7 +652,7 @@ function gitHubEvents(
 
 /**
  * Match reviews, dismissals and merges one-to-one; commits can share the first
- * confirmed implementation or repair push at or after their committer date.
+ * confirmed implementation or repair push whose delivered range contains them.
  * Branch updates match one commit within MATCH_WINDOW_MS either side of the call.
  * Matched events add nothing: the audit action already stands for them. Unmatched events become `unknown` actions, never attributed
  * to a human or the fleet.
@@ -674,6 +678,10 @@ function unmatchedActions(
       const isCommit = event.kind === "implementation" ||
         event.kind === "repair";
       if (action.outcome !== "confirmed") continue;
+      if (
+        isCommit && action.kind !== "branch-update" &&
+        !action.deliveredCommits?.includes(event.id)
+      ) continue;
       const isPush = action.kind === "implementation" ||
         action.kind === "repair" || action.kind === "branch-update";
       if (
@@ -1106,14 +1114,19 @@ interface JournalEntry {
 }
 
 /** Journal files directly under an audit directory. */
-async function listJournals(dir: string): Promise<string[]> {
-  const names: string[] = [];
+async function listJournals(
+  dir: string,
+): Promise<Array<{ path: string; checked: boolean }>> {
+  const names: Array<{ path: string; checked: boolean }> = [];
   for await (const entry of Deno.readDir(dir)) {
     if (entry.isFile && entry.name.endsWith(".jsonl")) {
-      names.push(`${dir}/${entry.name}`);
+      names.push({
+        path: `${dir}/${entry.name}`,
+        checked: isAuditJournalName(entry.name),
+      });
     }
   }
-  return names.sort();
+  return names.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**
@@ -1152,7 +1165,14 @@ async function readAuditEntries(
         complete = false;
         notes.push(`audit dir ${dir}: no audit journals found`);
       }
-      for (const path of journals) {
+      for (const { path, checked } of journals) {
+        const fileVerified = verified && checked;
+        if (!checked) {
+          complete = false;
+          notes.push(
+            `audit journal ${path}: name not covered by chain sweep; unverified`,
+          );
+        }
         const loaded = await loadEntries(path);
         if (!loaded.ok) {
           complete = false;
@@ -1165,8 +1185,8 @@ async function readAuditEntries(
           const id = entry.actionId;
           if (!id) continue;
           const previous = byId.get(id);
-          if (!previous || (!previous.verified && verified)) {
-            byId.set(id, { entry, verified });
+          if (!previous || (!previous.verified && fileVerified)) {
+            byId.set(id, { entry, verified: fileVerified });
           }
         }
       }
@@ -1362,6 +1382,25 @@ export async function collectPrCompletionSnapshot(
   ];
   const fleetByPr = new Map<string, TrustedPrAction[]>();
   for (const action of verifiedFleet) {
+    // A recorded withdrawal invalidates earlier merge arms, but remains in
+    // the output history. Failed withdrawals and later re-arms do not cancel.
+    if (
+      action.kind === "merge" &&
+      linked.some(({ entry, verified }) =>
+        verified && entry.verb === "pr-merge" &&
+        entry.actionKind === "unknown" &&
+        entry.outcome === "success" && entry.repo === action.repo &&
+        entry.prNumber === action.prNumber &&
+        Date.parse(entry.timestamp) >= Date.parse(action.timestamp) &&
+        Date.parse(entry.timestamp) <=
+          Date.parse(
+            observed.find((o) =>
+              o.record.repo === action.repo &&
+              o.record.number === action.prNumber
+            )?.record.mergedAt ?? options.cohort.observedAt,
+          )
+      )
+    ) continue;
     const key = keyOf(action.repo, action.prNumber);
     const list = fleetByPr.get(key) ?? [];
     list.push(action);

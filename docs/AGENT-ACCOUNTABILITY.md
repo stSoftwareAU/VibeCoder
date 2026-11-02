@@ -235,8 +235,14 @@ change carry none of them:
 - `headSha` — the PR head SHA, when a caller records one. No production writer
   sets it yet, because the audit hooks take no head SHA, so entries written by
   this build never carry it. `prActionsFromAuditJournal` reads it when present.
-- `actionKind` — `implementation`, `repair`, `review`, `dismissal`, `merge`, or
-  `unknown`. A `git push` is `implementation` or `repair` only when its caller
+- `deliveredCommits` — full commit IDs absent from the remote branch before a
+  successful push. The git chokepoint reads the remote head and enumerates its
+  old-to-local range. Unsupported push forms, unavailable history and shallow
+  repositories omit this evidence; their commits remain unknown to the collector.
+- `actionKind` — `implementation`, `repair`, `branch-update`, `review`,
+  `dismissal`, `merge`, or `unknown`. `branch-update` records a PUT to
+  `repos/<repo>/pulls/<n>/update-branch`.
+  A `git push` is `implementation` or `repair` only when its caller
   is a module the hook names; any other push is `unknown`.
 
 An absent field does not change an entry's hash: the canonical payload leaves

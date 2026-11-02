@@ -37,18 +37,21 @@ The report is a Deno command and Deno task. No Node tooling, `package.json` or
   intervention; `humanAssistedMerged` can only be non-zero from recorded human
   actions in an `--input` snapshot. Accepted trade-off: collected data cannot
   yet tell a human repair from an unrecorded one.
-- Commits match the first confirmed, verified push at or after their committer
-  date. A branch-update call matches only one commit within ten minutes either
+- Commits match only a confirmed, verified push whose recorded delivered range
+contains them, at or after their committer date. A branch-update call matches only one commit within ten minutes either
   side of the call, covering GitHub's asynchronous update without absorbing
   earlier human repairs. Branch updates do not count as fix rounds; failed
   reviews and repair pushes do not count as completed rounds. One push may
   deliver multiple commits. Branch linking begins at the first
   commit, covering WIP pushes before PR creation and delayed completion pushes.
-  Time-based matching cannot distinguish an earlier unrecorded push.
+Legacy pushes without delivery evidence leave commits unknown. The git
+chokepoint reads the remote head before pushing and records the old-to-local
+commit range, excluding repairs already pushed by an owner.
 - Matching window for reviews/dismissals: ±10 minutes; for `merge` the fleet action
   may be from PR creation up to `mergedAt` + 10 minutes, because the fleet arms
   auto-merge long before GitHub merges. Accepted trade-off: a fleet-armed merge
-  completed by a person is attributed to the fleet.
+completed by a person is attributed to the fleet, unless a verified successful
+fleet disarm withdrew the arm before the merge.
 - Audit `git push` entries carry no repo, so they link to PRs by head-branch
   name inside the PR's lifetime; `HEAD` targets and branch names shared across
   repos stay unlinked. The review skill posts through its own `gh`, so reviews
@@ -199,9 +202,11 @@ does not claim those deliverables.
 - **met** — "A synthetic cohort proves correct deduplication, manual repair
   followed by bot merge, automated action using a user identity, unknown
   history, milestone rollup, owner gate and zero denominator." — evidence:
-  `worker/deno/tests/pr_completion_report_test.ts` — reviewer: partial — reason:
-  the reviewer noted the manual-repair case uses a hand-recorded human action;
-  the report logic is covered, which is what the criterion states.
+  `worker/deno/tests/pr_completion_report_test.ts` and
+  `worker/deno/tests/pr_completion_snapshot_test.ts` — reviewer: met — reason:
+  the collector case covers an owner commit at 01:00, a fleet repair push at
+  01:20 and a fleet merge; the owner commit stays unknown and the PR never
+  counts as unattended.
 - **partial** — "Existing telemetry readers remain compatible." — evidence:
   `worker/deno/tests/lifecycle_ledger_test.ts`,
   `worker/deno/tests/review_round_test.ts` — reviewer: partial — reason: new
@@ -409,3 +414,36 @@ pass hit a Deno 2.9.5 macOS runtime panic (pledge test permissions called before
 restoring previous pledge). Release-ruleset checking could not read sandboxed
 gh configuration; Semgrep and Checkov are unavailable on this host. The current
 PR checks and the latest main merge (PR #4714) were green in GitHub CI.
+
+### PR #4709 provenance review follow-up
+
+Push journals now hash `deliveredCommits`, enumerated from the remote branch's
+head before the push to the local source. The collector requires membership in
+that range; an owner repair already on the remote cannot be absorbed by a later
+fleet repair. Legacy entries, unsupported push forms and unavailable or shallow
+history leave commit provenance unknown. The git chokepoint and audit hook use
+the child's effective environment, allowing isolated audit storage without
+mutating process state. The authentication retry journals its own result once.
+
+The audit sweep and collector share the journal filename predicate. Other JSONL
+files stay unverified, emit a coverage note and make history incomplete. A
+successful verified disarm invalidates earlier merge arms; a later re-arm and
+a failed disarm retain the expected behaviour. The per-entry schema now includes
+`branch-update` and its update-branch endpoint.
+
+Validation: 213 focused audit, collector, report, command and git tests passed.
+The real-git regression additionally drives the push chokepoint and checks its
+journal, with a stale tracking ref and an owner repair on the remote. Tampering
+with recorded commit IDs breaks chain verification. Each collector guard was
+removed separately and its regression went red: delivered-range membership,
+checked filenames and disarm cancellation. No existing assertion was removed.
+The matching rules' documentation copies in INTERNALS and this summary were
+updated together; the filename predicate is shared with the sweep.
+
+`check:manifests` passed (847 tests). The quality gate passed formatting, lint,
+type checking, Markdown lint, Mermaid, completeness and release-ruleset checks.
+The full parallel suite hit the Deno 2.9.5 macOS panic, `pledge test permissions
+called before restoring previous pledge`; its serial pass could not start.
+All four CI test shards passed on this PR and on PR #4730, which produced the
+current main commit `d7073ac1`. Semgrep and Checkov are not installed, and config
+integration has no local configuration. No host or GitHub settings were changed.
