@@ -67,25 +67,28 @@ final version.
 
 Tests (all under `worker/deno/`):
 
-- `tests/untrusted_gate_spawn_test.ts`: nine cases covering
-  `runRepositoryCommand`, `spawnTask` and `spawnTypeCheck`. Each plants
-  `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` in the injected `source` (asserting
-  they are there), then asserts the child's `env` lacks them and `clearEnv` is
-  true; also the `sudo -n -u agent --` wrapping, the no-account fallback, and
-  result/timeout/spawn-failure mapping.
-- Mutation check (follow-up): three further cases in the same file pin the
-  `cwd`, `timeoutMs`, injected `source` and the `CARGO_TARGET_DIR` carry through
-  `sudo`; `runRepositoryCommand` gained optional `trimRefused` and `root` deps
-  (tests only; production omits them) so the ephemeral placement is reachable.
-  Each mutation was applied by hand and turned the file red: deleted `cwd` on
-  the env call (line 60), negated `source` ternary (62), negated `target`
-  ternary (67), deleted `cwd` (70) and `timeoutMs` (71) on the spawn.
-- `worker/deno/lib/untrusted_gate_spawn.ts:61` exempt (untestable): deleting
-  `repoCredentialEnv: {}` is an equivalent mutant, because the callee spreads
-  `undefined` into the overlay as a no-op; the property is only there to satisfy
-  the required type.
-- Red check: with `clearEnv: true` flipped to `false` in
-  `untrusted_gate_spawn.ts`, the file goes `2 passed | 7 failed`.
+- `tests/untrusted_gate_spawn_test.ts` (21 tests at head): covers
+  `runRepositoryCommand`, `spawnTask` and `spawnTypeCheck`. The original cases
+  plant `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` in the injected `source`
+  (asserting they are there), then assert the child's `env` lacks them and
+  `clearEnv` is true; also the `sudo -n -u agent --` wrapping, the no-account
+  fallback, and result/timeout/spawn-failure mapping. Later rounds added the
+  `cwd`, `timeoutMs`, injected `source` and `CARGO_TARGET_DIR` carry through
+  `sudo` (`runRepositoryCommand` has optional `trimRefused` and `root` deps,
+  tests only; production omits them), and the credential and probe cases below.
+- Mutation check, re-run on the head by hand (each mutation applied to
+  `untrusted_gate_spawn.ts`, the file run, then restored; `git diff` empty
+  afterwards). Every one turned the file red:
+  - final spawn `clearEnv: true` -> `false`: `13 passed | 8 failed`;
+  - env call `repoCredentialEnv: deps.repoCredentialEnv ?? {}` -> `{}`:
+    `19 passed | 2 failed`;
+  - `cwd` deleted from the `untrustedQualityCommandEnv` call:
+    `20 passed | 1 failed`;
+  - `deps.source === undefined` ternary negated: `18 passed | 3 failed`;
+  - `target === undefined` (`CARGO_TARGET_DIR`) ternary negated:
+    `19 passed | 2 failed`;
+  - `timeoutMs` deleted from the final spawn: `20 passed | 1 failed`;
+  - `cwd` deleted from the final spawn: `20 passed | 1 failed`.
 - Credential follow-up (head `c3d17dee`): `tests/untrusted_gate_spawn_test.ts`
   adds a test that declared credentials reach both gates and a mint failure
   refuses both, one that they cross `sudo` while undeclared ones stay out, and
