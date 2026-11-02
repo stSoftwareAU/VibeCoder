@@ -157,3 +157,14 @@ subprocess collector, retaining its exact 20,000-character assertions.
 Merge-conflict repair: combined the base CI-repair scope and applicable local-gate
 instructions with the platform-aware runner/browser guidance. Linux continues
 to validate locally, and macOS retains runner validation.
+
+CI repair: the loop recovery integration fixture uses fabricated PIDs outside the
+host PID range, preventing a real probe PID from being mistaken for a VM signal.
+The existing client-signal and untouched-VM assertions remain in place; all
+seven scenarios passed locally, as did targeted Deno formatting and lint.
+The full integration command encountered sandbox-denied system temporary files
+in unrelated fixtures and was stopped; the base PR's integration job passed
+696 tests. The local quality gate passed formatting, lint, type checking,
+Markdown and completeness, but Deno 2.9.0 panicked in its parallel test
+runner, Semgrep and Checkov timed out, and the release-tag check could not read
+the sandbox-protected GitHub configuration.
