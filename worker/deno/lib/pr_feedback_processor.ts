@@ -228,6 +228,13 @@ export interface PrFeedbackProcessorDeps {
    */
   claimAuthorOptions?: AlertDedupAuthorOptions;
   /**
+   * Whether a fleet-trusted holder has a live branch-update lock on the PR
+   * (Issue #4707). When it answers true the run defers before claiming, so
+   * feedback never pushes beside the fleet PR babysitter or a takeover that
+   * holds the PR's head. Unset in tests that do not exercise the lock.
+   */
+  prUpdateLockHeldFn?: (repo: string, prNumber: number) => Promise<boolean>;
+  /**
    * Override the remote push verification (Issue #579). Injected by tests so
    * the "a failed push produces no success claim" regression can be exercised
    * without a repository; production leaves it undefined.
@@ -537,6 +544,29 @@ export async function processPrFeedback(
         summary: `PR #${prNumber} comment #${commentId} — ${
           prLiveSkipReason(liveState)
         }`,
+      },
+    };
+  }
+
+  // Issue #4707: another fleet worker holding the PR's branch-update lock is
+  // editing its head; a feedback push beside it would race that work. Defer
+  // before the claim, so the comment stays unclaimed for a later poll.
+  if (
+    processorDeps.prUpdateLockHeldFn &&
+    await processorDeps.prUpdateLockHeldFn(repo, prNumber)
+  ) {
+    logger.info("PR branch-update lock held by another worker; deferring", {
+      repo,
+      prNumber,
+      commentId,
+    });
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        summary:
+          `PR #${prNumber} comment #${commentId} — another worker holds the branch-update lock; deferred`,
       },
     };
   }
