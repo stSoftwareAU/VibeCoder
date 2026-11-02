@@ -153,3 +153,7 @@ registration prefixes while retaining the credential boundary from #4593.
 PR-summary checks with the issue body and work-on label passed: zero blocked
 or unchecked gates. The output-bound test now exercises the actual isolated
 subprocess collector, retaining its exact 20,000-character assertions.
+
+Merge-conflict repair: combined the base CI-repair scope and applicable local-gate
+instructions with the platform-aware runner/browser guidance. Linux continues
+to validate locally, and macOS retains runner validation.

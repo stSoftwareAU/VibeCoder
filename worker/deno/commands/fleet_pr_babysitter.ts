@@ -694,7 +694,7 @@ export function buildRepairPrompt(
 ): string {
   const runnerValidates = platform === "darwin";
   let verify = why === "failed CI"
-    ? " Reproduce the failing CI check locally first: read the failing step from .github/workflows and run the same command the workflow runs, with the same flags. Fix the root cause, rerun it when this sandbox supports it, and confirm it passes before reporting ready. If Codex cannot launch Chromium, report that limitation and leave the browser check to runner validation."
+    ? " Reproduce the failing CI check locally first: read the failing step from .github/workflows and run the same command the workflow runs, with the same flags. Fix the root cause, rerun it when this sandbox supports it, and confirm it passes before reporting ready. If Codex cannot launch Chromium, report that limitation and leave the browser check to runner validation. Other open feedback (reviews, verifier or bot comments) is out of scope for a CI repair and does not withhold BABYSITTER_READY once the failing checks pass; submitted reviews are addressed by a later review repair. Also run the checks in the repository's local gate (quality.sh, when present) that cover the files you changed."
     : why === "requested review changes"
     ? " After addressing the review, run the repository's formatter, linter, type or compile check and the tests covering the files you changed, the way its local gate (quality.sh, when present) runs them, and confirm they pass before reporting ready. Do not run browser checks that Codex's sandbox cannot launch; the runner owns the final quality.sh gate."
     : " For merge conflicts, focus solely on resolving the conflict. Then run the formatter, linter, type or compile check for the packages you touched, the way the local gate (quality.sh, when present) runs them, and fix what the resolution broke. Do not run browser checks that Codex's sandbox cannot launch; the runner owns the final quality.sh gate. Do not run the full regression suite, manifest checks, or fix unrelated issues. Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY once the conflict is resolved and the checks you can run pass.";
@@ -706,8 +706,10 @@ export function buildRepairPrompt(
       " Do not run browser checks that Codex's sandbox cannot launch; the runner owns the final quality.sh gate.",
       "",
     );
-    verify +=
-      " Also run the checks in the repository's local gate (quality.sh, when present) that cover the files you changed.";
+    if (why !== "failed CI") {
+      verify +=
+        " Also run the checks in the repository's local gate (quality.sh, when present) that cover the files you changed.";
+    }
   }
   const runnerNote = !runnerValidates
     ? " Linux keeps agent validation: run the applicable local checks yourself. A required check this host cannot run is named but does not by itself withhold BABYSITTER_READY; CI runs it on the pushed head."

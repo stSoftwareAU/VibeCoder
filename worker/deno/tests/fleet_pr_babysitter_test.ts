@@ -771,6 +771,16 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
   }
 });
 
+// Issue #4717: a CI repair fixed the failing checks, then held back over the
+// verifier's unrelated findings; a later review repair handles reviews.
+Deno.test("other open feedback does not withhold readiness from a CI repair", () => {
+  const prompt = buildRepairPrompt("failed CI", 1, "owner/repo", "");
+  assertStringIncludes(
+    prompt,
+    "Other open feedback (reviews, verifier or bot comments) is out of scope for a CI repair",
+  );
+});
+
 // Issue #4713: a code fix left VibeCoder's archived PR summary stale, so CI's
 // freshness gate failed and a second session existed only to refresh it.
 Deno.test("a repair updates a CI-checked per-PR summary in the same fix", () => {
