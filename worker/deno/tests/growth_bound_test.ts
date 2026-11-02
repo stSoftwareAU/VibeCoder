@@ -111,8 +111,8 @@ Deno.test("measureGrowth - reports the measured pair and a linear verdict", () =
 });
 
 Deno.test("measureGrowth - keeps the fastest of the repeated runs", () => {
-  // Two readings per size; the second base run is descheduled for 900 ms and
-  // must be discarded in favour of the 100 ms one.
+  // Two readings per size, interleaved base/scaled; the second base run is
+  // descheduled for 900 ms and must be discarded in favour of the 100 ms one.
   const m = measureGrowth(
     (chars) => "a".repeat(chars),
     (input) => input.length,
@@ -121,7 +121,7 @@ Deno.test("measureGrowth - keeps the fastest of the repeated runs", () => {
       sizeFactor: 4,
       repeats: 2,
       graceMs: 0,
-      now: fakeClock([0, 100, 100, 1_000, 1_000, 1_500, 1_500, 1_900]),
+      now: fakeClock([0, 100, 100, 500, 500, 1_400, 1_400, 1_900]),
     },
   );
   assertEquals(m.baseMs, 100);
@@ -212,51 +212,55 @@ Deno.test("assertLinearGrowth - names the shape and both measurements when it fa
   assert(message.includes("super-linear"), `missing verdict: ${message}`);
 });
 
-Deno.test("assertLinearGrowth - catches genuinely quadratic work, measured by counted steps", () => {
-  // Deterministic: the "clock" is a counter of inner-loop steps, so 4x the
-  // characters costs exactly 16x the steps on any host and load. No wall-clock
-  // reading is involved, so a busy CI runner cannot mask the blow-up.
-  let steps = 0;
+Deno.test("assertLinearGrowth - catches genuinely quadratic work on a real clock", () => {
+  // Nested scan over the input: 4x the characters costs ~16x the time on any
+  // host, so the detector fires without an absolute budget anywhere in it.
   const quadratic = (input: string): number => {
     let hits = 0;
     for (let i = 0; i < input.length; i++) {
-      for (let j = 0; j < input.length; j++) {
-        steps++;
-        if (input[i] === input[j]) hits++;
-      }
+      for (let j = 0; j < input.length; j++) if (input[i] === input[j]) hits++;
     }
     return hits;
   };
+  // repeats: 3 (not the real-clock default of 1 elsewhere in this file) —
+  // this is the one test here that reads the real clock instead of a
+  // fakeClock, so a single sample is exposed to scheduler/GC noise on a busy
+  // CI runner inflating the base reading and masking the quadratic blow-up.
+  // Keeping the fastest of several runs is the same noise-cancelling
+  // technique measureGrowth itself defaults to (Issue #3174 CI flake).
   assertThrows(
     () =>
       assertLinearGrowth(
         "nested scan",
         (chars) => "ab".repeat(chars / 2),
         quadratic,
-        {
-          baseChars: 200,
-          sizeFactor: 4,
-          repeats: 3,
-          graceMs: 0,
-          now: () => steps,
-        },
+        { baseChars: 2_000, sizeFactor: 4, repeats: 3, graceMs: 5 },
       ),
     AssertionError,
     "super-linear",
   );
 });
 
-Deno.test("assertLinearGrowth - passes linear work, measured by counted steps", () => {
-  let steps = 0;
-  const linear = (input: string): number => {
-    for (let i = 0; i < input.length; i++) steps++;
-    return input.length;
-  };
-  const out = assertLinearGrowth(
-    "single scan",
-    (chars) => "ab".repeat(chars / 2),
-    linear,
-    { baseChars: 200, sizeFactor: 4, repeats: 3, graceMs: 0, now: () => steps },
+// Issue #4681: a busy spell over the base phase alone used to inflate the
+// allowance past the real quadratic cost. Interleaving the repeats exposes
+// both sizes to it alike, so the fastest of each still shows the blow-up.
+Deno.test("measureGrowth - a busy spell at the start cannot mask quadratic growth", () => {
+  let clock = 0;
+  let runs = 0;
+  const sizes: number[] = [];
+  const m = measureGrowth(
+    (chars) => "a".repeat(chars),
+    (input) => {
+      runs++;
+      sizes.push(input.length);
+      const cost = (input.length / 100) ** 2 * 10; // quadratic: 10 ms, 160 ms
+      clock += runs <= 2 ? cost * 3 : cost; // the first two runs are contended
+      return input.length;
+    },
+    { baseChars: 100, sizeFactor: 4, repeats: 2, graceMs: 0, now: () => clock },
   );
-  assertEquals(out, 800);
+  assertEquals(sizes, [100, 400, 100, 400]);
+  assertEquals(m.baseMs, 10);
+  assertEquals(m.scaledMs, 160);
+  assertEquals(m.superLinear, true);
 });
