@@ -484,39 +484,21 @@ export async function requestReadyBranchUpdate(
     }
     const workerId = Deno.env.get("VIBE_RUN_ID") ?? `worker-${Deno.pid}`;
     const stableAnchorPr = async (ownerRepo: string, _ownerBase: string) => {
-      const rows = JSON.parse(
-        await gh([
-          "pr",
-          "list",
-          "--repo",
-          ownerRepo,
-          "--state",
-          "all",
-          "--json",
-          "number",
-          "--sort",
-          "created",
-          "--order",
-          "asc",
-          "--limit",
-          "1",
-        ]),
-      );
-      if (!Array.isArray(rows)) {
-        throw new Error("stable PR anchor list is malformed");
-      }
-      const numbers = rows.map((row) => {
-        const number = object(row, "stable PR anchor").number;
-        if (
-          typeof number !== "number" || !Number.isSafeInteger(number) ||
-          number <= 0
-        ) throw new Error("open PR anchor has no valid number");
-        return number;
-      });
-      if (numbers.length !== 1) {
+      const payload = await gh([
+        "api",
+        `repos/${ownerRepo}/pulls?state=all&sort=created&direction=asc&per_page=1`,
+        "--jq",
+        "map(.number) | .[]",
+      ]);
+      const value = payload.trim();
+      if (!/^\d+$/.test(value)) {
         throw new Error("stable PR anchor lookup did not return one PR");
       }
-      return numbers[0]!;
+      const number = Number(value);
+      if (!Number.isSafeInteger(number) || number <= 0) {
+        throw new Error("stable PR anchor has no valid number");
+      }
+      return number;
     };
     const port = makeGitHubBaseRefreshOwnershipPort({
       workerId,

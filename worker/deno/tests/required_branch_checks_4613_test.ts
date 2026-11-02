@@ -148,8 +148,8 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
         }),
       );
     }
-    if (args[0] === "pr" && args[1] === "list") {
-      return Promise.resolve(JSON.stringify([{ number: 12 }]));
+    if (args[0] === "api" && endpoint.includes("/pulls?state=all")) {
+      return Promise.resolve("12\n");
     }
     if (args[0] === "pr" && args[1] === "checks") {
       return Promise.resolve(JSON.stringify([]));
