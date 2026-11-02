@@ -1038,9 +1038,9 @@ function isPostedReview(value: unknown): value is LogRecord {
  * hash-chained, so this is a lower-trust source (docs/INTERNALS.md). Records for
  * PRs outside the cohort are ignored. A missing or unreadable file, and a
  * malformed line, is noted and skipped, never silently. The same record across
- * two logs is one action. Its head SHA is not carried: the report drops an
- * action at a different head, and a review posted at an older head still
- * matches its event by time.
+ * two logs is one action. Its head SHA is not carried because nothing uses it:
+ * an action links by repository and PR number whatever its recorded head.
+ * A review posted at an older head still matches its event by time.
  */
 async function reviewLogActions(
   paths: string[],

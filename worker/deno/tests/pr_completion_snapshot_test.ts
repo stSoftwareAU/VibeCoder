@@ -21,6 +21,8 @@ import {
   recordMutation,
 } from "../lib/audit_journal.ts";
 import type { AuditMutation } from "../lib/audit_entry.ts";
+import { actionKindFor } from "../lib/audit_hook.ts";
+import { classifyGhMutation } from "../lib/audit_mutation_classifier.ts";
 import {
   buildLifecycleEvent,
   serialiseLifecycleEvent,
@@ -81,9 +83,101 @@ Deno.test("collect - pre-PR checkpoints and delayed completion deliver all commi
       buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
       1,
     );
+    for (const id of ["push-20", "push-30"]) {
+      assertEquals(
+        snapshot.input.actions.find((a) => a.actionId === id)?.prNumber,
+        1,
+      );
+    }
     assertEquals(
       snapshot.input.actions.filter((a) => a.actor === "unknown"),
       [],
+    );
+  });
+});
+
+Deno.test("collect - all pushes may precede PR creation by more than ten minutes", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      ...[20, 40].map((minute) => ({
+        verb: "git-push",
+        actionKind: "implementation" as const,
+        actionId: `early-push-${minute}`,
+        target: "issue-1",
+        timestamp: `2026-10-20T00:${minute}:00Z`,
+      })),
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge-1",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1, { created_at: "2026-10-20T01:05:00Z" })] },
+          commits: {
+            [pk(1)]: [10, 30].map((minute) =>
+              commit(`sha-${minute}`, `2026-10-20T00:${minute}:00Z`)
+            ),
+          },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      1,
+    );
+    assertEquals(
+      snapshot.input.actions.filter((a) => a.actor === "unknown"),
+      [],
+    );
+  });
+});
+
+Deno.test("collect - a journalled disarm cannot account for a GitHub merge", async () => {
+  await withDir(async (dir) => {
+    const args = ["pr", "merge", "1", "--repo", REPO, "--disable-auto"];
+    const info = classifyGhMutation(args);
+    assert(info);
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "push-1",
+        target: "issue-1",
+        timestamp: "2026-10-20T01:00:00Z",
+      },
+      {
+        verb: info.verb,
+        actionKind: actionKindFor(info, undefined, args),
+        actionId: "disarm-1",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:30:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:30:00Z")] },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    assert(
+      snapshot.input.actions.some((a) =>
+        a.kind === "merge" && a.actor === "unknown"
+      ),
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      0,
     );
   });
 });

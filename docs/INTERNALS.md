@@ -1205,7 +1205,8 @@ A record for a cohort PR becomes a verified fleet `review` action with actor
 same record in two logs is one action. It matches a GitHub review event within
 ten minutes, as an audit action does. Matching uses the repository, the PR
 number and the time only. A review posted at an older head still matches, so the
-record's head SHA is not carried into the report, which would drop the action.
+record's head SHA is not carried because nothing uses it. An action links to
+its PR by repository and number whatever head it was recorded at.
 Records for PRs outside the cohort are ignored. A missing or unreadable file,
 and a malformed line, are coverage notes; the rest of the log is still used.
 
@@ -1299,6 +1300,10 @@ counts CI only for delivered changes.
 
 **Accepted limits.** These are known and not mitigated in this change:
 
+- The host babysitter has no `WORK_DIR`, which the audit hook requires to
+  enable journalling. Its repair pushes and review dismissals are never
+  journalled, so babysitter-repaired PRs stay unknown under `--collect`.
+  Deployment heartbeats do not provide mutation provenance.
 - A merge armed by the fleet (`gh pr merge --auto`) and completed later by a
   person is attributed to the fleet. The audit entry cannot see who clicked
   merge, so verified human-merge detection is not produced.

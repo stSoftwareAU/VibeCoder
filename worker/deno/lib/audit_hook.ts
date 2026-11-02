@@ -211,7 +211,9 @@ export function actionKindFor(
   caller: string | undefined,
   args: readonly string[],
 ): AuditActionKind {
-  if (info.verb === "pr-merge") return "merge";
+  if (info.verb === "pr-merge") {
+    return args.includes("--disable-auto") ? "unknown" : "merge";
+  }
   if (info.verb === "pr-review") return "review";
   if (
     info.verb === "api-put" &&

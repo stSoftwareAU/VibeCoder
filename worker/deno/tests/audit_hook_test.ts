@@ -504,6 +504,17 @@ Deno.test("audit_hook - actionKindFor names merge and review from the verb", () 
   );
 });
 
+Deno.test("audit_hook - disarming auto-merge is not a merge", () => {
+  assertEquals(
+    ghKind(["pr", "merge", "42", "--repo", "org/repo", "--disable-auto"]),
+    "unknown",
+  );
+  assertEquals(
+    ghKind(["pr", "merge", "42", "--repo", "org/repo", "--auto"]),
+    "merge",
+  );
+});
+
 Deno.test("audit_hook - actionKindFor records a review dismissal only when the state is DISMISSED", () => {
   const endpoint = ["api", "-X", "PUT", "repos/org/repo/pulls/42/reviews/777"];
   assertEquals(ghKind([...endpoint, "-f", "state=DISMISSED"]), "dismissal");

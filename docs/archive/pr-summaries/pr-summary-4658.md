@@ -136,7 +136,8 @@ does not claim those deliverables.
   reviewer: partial — reason: worker implementation/repair, merge and dismissal
   pushes are journalled; milestone sync/rollback pushes stay `unknown`, and
   reviews come from the lower-trust review log because the skill does not
-  journal.
+  journal. The host babysitter has no `WORK_DIR`, so its repair pushes and
+  dismissals are never journalled; those PRs stay unknown under `--collect`.
 - **partial** — "distinguish recorded human intervention, verified automated
   completion and unknown history." — evidence:
   `worker/deno/tests/pr_completion_report_test.ts` — reviewer: partial — reason:
@@ -254,6 +255,22 @@ does not claim those deliverables.
 
 ## Test Plan
 
+- Review fixes: `--disable-auto` is an unknown action, never evidence of a
+  fleet merge. New audit-hook and collector regressions failed before the
+  classifier fix. Checkpoint tests assert that `push-20` and `push-30` link to
+  PR 1, and cover a PR opened more than ten minutes after every push. The
+  operator manual and review-log comment now describe repository/number
+  linking independent of head SHA. The accepted host-babysitter provenance
+  limitation is recorded above and in INTERNALS; no assertion was removed.
+  Both checkpoint tests went red with first-commit lifetime widening removed
+  and green after restoration. The targeted audit-hook, snapshot, report and
+  command suites pass (111 tests), as does `check:manifests` (847 tests).
+  `quality.sh` passes formatter, linter, type check, markdownlint, Mermaid and
+  release-ruleset checks. Its parallel suite aborts in Deno 2.9.5 on macOS
+  (`pledge test permissions called before restoring previous pledge`), before
+  the serial pass. CI test shards pass on this PR head and on #4718, which
+  produced the current base. Semgrep and Checkov are absent on this host;
+  configuration integration has no local config.
 - CI-fix push `b8a4a161`: the production babysitter repair test warms the
   command's module graph before its `--cached-only` subprocess, so a shard's
   incomplete Deno cache does not prevent the repair from starting. The CI-fix
