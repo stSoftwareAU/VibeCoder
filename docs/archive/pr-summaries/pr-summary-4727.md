@@ -67,6 +67,16 @@ URL, which points at that local repository).
   - `a failed fetch keeps git's cause and leaves the mirror in place`
   - `a repository name that is not owner/name is refused before any git runs`
   - `concurrent repairs of one repo never mutate its mirror at the same time`
+  - `defaultRemoteUrl follows gh's git_protocol, falling back to https with a warning`
+  - `a later repair prunes deleted branches and fetches new tags into the clone`
+  - `a stale partial download is cleared before the first download`
+  - `the mirror root exists before the bare clone starts`
+  - `every network git call is bounded by the 30-minute clone timeout`
+  - `a call that arrives while another is queued still waits for the running fetch`
+- `worker/deno/tests/fleet_babysitter_app_test.ts`
+  (`production repair forwards CONFIG_PATH and denies canonical credential targets`)
+  now asserts the real CLI clones `--bare` then `--no-checkout --no-hardlinks`
+  and resets `origin` to `git@github.com:owner/repo.git` when gh reports `ssh`.
 - Docs: `docs/workflows/fleet-pr-babysitter.md` gains a mirror paragraph beside
   the temporary-clone paragraph and a line in the state-directory paragraph.
   Sections read: temporary clones, sandbox profile, attempt records. The other
@@ -80,7 +90,7 @@ URL, which points at that local repository).
 ## Test Plan
 
 - `deno task test:unit tests/fleet_pr_babysitter_test.ts` (from `worker/deno`):
-  40 passed, 0 failed.
+  46 passed, 0 failed.
 - Edited test `failed clone is attempted once and preserves its original error`:
   rewritten for the new `deps` argument (the old third argument was a gh
   runner). Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
@@ -102,11 +112,24 @@ URL, which points at that local repository).
   - swallowing fetch errors → failed-fetch test red;
   - old `[\w.-]+` owner pattern → repository-name test red (`../x` passed it);
   - serialiser replaced by `Promise.resolve()` → concurrency test red.
+- Mutation follow-up (each break applied, test run, restored): removing
+  `--prune`, removing the tag refspec, `recursive: true` → `false` in
+  `removeIfPresent`, deleting `removeIfPresent(partial)`, deleting the
+  `Deno.mkdir(mirrorRoot)`, negating the `mirrorTails` clean-up condition, and
+  dropping `timeoutSeconds` from the bare clone or the local clone each turned a
+  test red. `defaultRemoteUrl` now takes a gh seam (default `runGhCommand`) and
+  is exported for its test.
+- Fixture mutations: the `gh config get git_protocol` branch now answers `ssh`
+  and the `clone`/`set-url` branches record their argv, which the app test
+  asserts, so replacing the return value or the matcher goes red.
+  `fleet_babysitter_repair_preload.ts` `args.includes("--bare")` → true is
+  exempt (untestable): it only makes the fake also create the already-existing
+  local clone directory, which no observable behaviour distinguishes.
 - Failure-reason test: the failed-fetch test asserts git's real stderr text
   (observed from real git) appears in the error.
 - `deno task test:unit tests/fleet_pr_babysitter_test.ts
   tests/fleet_babysitter_app_test.ts tests/fleet_babysitter_sandbox_test.ts`:
-  84 passed, 0 failed. `deno fmt --check`, `deno lint` and `deno check` on the
+  90 passed, 0 failed. `deno fmt --check`, `deno lint` and `deno check` on the
   changed files: clean.
 - `./quality.sh`: the first run failed only in `deno tests` on
   `tests/fleet_babysitter_app_test.ts` ("production repair forwards CONFIG_PATH

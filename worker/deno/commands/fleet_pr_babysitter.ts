@@ -103,10 +103,13 @@ async function defaultGit(
 }
 
 /** Use the protocol gh is configured with, so the clone URL matches the host's credentials. */
-async function defaultRemoteUrl(repo: string): Promise<string> {
+export async function defaultRemoteUrl(
+  repo: string,
+  gh: (args: string[]) => Promise<string> = runGhCommand,
+): Promise<string> {
   let protocol = "https";
   try {
-    protocol = (await runGhCommand(["config", "get", "git_protocol"])).trim();
+    protocol = (await gh(["config", "get", "git_protocol"])).trim();
   } catch (error) {
     console.warn(
       `Could not read gh git_protocol; using https: ${

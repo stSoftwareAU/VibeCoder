@@ -24,6 +24,7 @@ import {
   cancelledRunsToRerun,
   cloneForRepair,
   type CloneForRepairDeps,
+  defaultRemoteUrl,
   eligibleAuthor,
   prBodyEditArgs,
   reason,
@@ -1036,4 +1037,168 @@ Deno.test("repair clean-up warns instead of throwing, and still removes the rest
   assertStringIncludes(warnings[0]!, "WARNING");
   assertStringIncludes(warnings[0]!, "/tmp/clone");
   assertStringIncludes(warnings[0]!, "Directory not empty");
+});
+
+Deno.test("defaultRemoteUrl follows gh's git_protocol, falling back to https with a warning", async () => {
+  const asked: string[][] = [];
+  const answer = (protocol: string) => (args: string[]) => {
+    asked.push(args);
+    return Promise.resolve(protocol);
+  };
+  assertEquals(
+    await defaultRemoteUrl("owner/repo", answer("ssh\n")),
+    "git@github.com:owner/repo.git",
+  );
+  assertEquals(asked, [["config", "get", "git_protocol"]]);
+  assertEquals(
+    await defaultRemoteUrl("owner/repo", answer("https\n")),
+    "https://github.com/owner/repo.git",
+  );
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+  try {
+    assertEquals(
+      await defaultRemoteUrl(
+        "owner/repo",
+        () => Promise.reject(new Error("gh is not logged in")),
+      ),
+      "https://github.com/owner/repo.git",
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0]!, "gh is not logged in");
+});
+
+Deno.test("a later repair prunes deleted branches and fetches new tags into the clone", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream, work } = await makeUpstream(root);
+    const deps: CloneForRepairDeps = {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot: `${root}/mirrors`,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    await fixtureGit(["push", "-q", upstream, "--delete", "feature"], work);
+    // A tag on a commit no branch reaches is only fetched by the tag refspec.
+    await fixtureGit(["checkout", "-q", "--detach", "main"], work);
+    await commitFile(work, "e.txt", "tagged only");
+    await fixtureGit(["tag", "v1"], work);
+    await fixtureGit(["push", "-q", upstream, "v1"], work);
+    const dir2 = `${root}/clone-2`;
+    await cloneForRepair("owner/repo", dir2, deps);
+    const branches = await runGitForTest(
+      ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"],
+      { cwd: dir2 },
+    );
+    assert(!branches.includes("origin/feature"), branches);
+    assertEquals(
+      await runGitForTest(["tag", "--list"], { cwd: dir2 }),
+      "v1",
+    );
+  });
+});
+
+Deno.test("a stale partial download is cleared before the first download", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    await Deno.mkdir(`${mirrorRoot}/owner--repo.git.tmp/objects`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${mirrorRoot}/owner--repo.git.tmp/objects/stale`,
+      "left by an interrupted download",
+    );
+    await cloneForRepair("owner/repo", `${root}/clone`, {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    assertEquals(await exists(`${mirrorRoot}/owner--repo.git.tmp`), false);
+    assertEquals(
+      await runGitForTest(["rev-list", "--count", "--all"], {
+        cwd: `${root}/clone`,
+      }),
+      "3",
+    );
+  });
+});
+
+Deno.test("the mirror root exists before the bare clone starts", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/not/yet/created`;
+    await cloneForRepair("owner/repo", `${root}/clone`, {
+      git: async (args, options) => {
+        if (args[0] === "clone" && args[1] === "--bare") {
+          assert(
+            await exists(mirrorRoot),
+            "the mirror root must exist before the bare clone",
+          );
+        }
+        return runGitForTest(args, options);
+      },
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    assert(await exists(`${mirrorRoot}/owner--repo.git`));
+  });
+});
+
+Deno.test("every network git call is bounded by the 30-minute clone timeout", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const calls: { args: string[]; timeoutSeconds?: number }[] = [];
+    const deps: CloneForRepairDeps = {
+      git: (args, options) => {
+        calls.push({ args, timeoutSeconds: options?.timeoutSeconds });
+        return runGitForTest(args, options);
+      },
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot: `${root}/mirrors`,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    await cloneForRepair("owner/repo", `${root}/clone-2`, deps);
+    const timed = calls.filter((call) =>
+      ["clone", "fetch"].includes(call.args[0]!)
+    );
+    // Bare clone, local clone, fetch, local clone.
+    assertEquals(timed.length, 4);
+    for (const call of timed) {
+      assertEquals(call.timeoutSeconds, 30 * 60, call.args.join(" "));
+    }
+  });
+});
+
+Deno.test("a call that arrives while another is queued still waits for the running fetch", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    let active = 0;
+    let maxActive = 0;
+    const deps: CloneForRepairDeps = {
+      git: async (args, options) => {
+        const mutatesMirror = args[0] === "fetch" ||
+          (args[0] === "clone" && args[1] === "--bare");
+        if (!mutatesMirror) return await runGitForTest(args, options);
+        active++;
+        maxActive = Math.max(maxActive, active);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return await runGitForTest(args, options);
+        } finally {
+          active--;
+        }
+      },
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot: `${root}/mirrors`,
+    };
+    const first = cloneForRepair("owner/repo", `${root}/clone-a`, deps);
+    const second = cloneForRepair("owner/repo", `${root}/clone-b`, deps);
+    await first;
+    // The second repair is now fetching; a third must queue behind it.
+    const third = cloneForRepair("owner/repo", `${root}/clone-c`, deps);
+    await Promise.all([second, third]);
+    assertEquals(maxActive, 1);
+  });
 });

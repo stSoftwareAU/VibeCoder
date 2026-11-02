@@ -47,11 +47,7 @@ function commandOutput(
       lock = undefined;
       return "";
     }
-    if (
-      args[0] === "config" && args[1] === "get" && args[2] === "git_protocol"
-    ) {
-      return "https\n";
-    }
+    if (args.join(" ") === "config get git_protocol") return "ssh\n";
     // No cancelled runs, so the failed-CI repair proceeds to the agent.
     if (
       args[0] === "api" &&
@@ -61,13 +57,20 @@ function commandOutput(
     }
   }
   if (executable === "git") {
-    if (args[0] === "clone" && args.includes("--bare")) {
+    if (args[0] === "clone") {
+      Deno.writeTextFileSync(`${root}/clone-calls.log`, args.join(" ") + "\n", {
+        append: true,
+      });
       // The mirror clone's last argv element is the directory git creates.
-      Deno.mkdirSync(args[args.length - 1]!, { recursive: true });
+      if (args.includes("--bare")) {
+        Deno.mkdirSync(args[args.length - 1]!, { recursive: true });
+      }
       return "";
     }
-    if (args[0] === "clone") return "";
-    if (args[0] === "remote" && args[1] === "set-url") return "";
+    if (args[0] === "remote" && args[1] === "set-url") {
+      Deno.writeTextFileSync(`${root}/origin-url`, args[3]!);
+      return "";
+    }
     if (args.includes("fetch") || args.includes("checkout")) return "";
     if (args.includes("rev-parse") && args.includes("HEAD")) return "abc";
     if (args.includes("status") && args.includes("--porcelain")) return "";
