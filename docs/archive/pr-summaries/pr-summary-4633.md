@@ -55,6 +55,12 @@ missing reviewer-key tail beneath an existing directory symlink. This exercises
 both production callers reported by the verifier: `fix` calls
 `startBabysitterAgent`, which calls `babysitterProtectedPaths`.
 
+After merging main (which added the cancelled-CI re-run lookup from #4684), the
+offline repair preload fixture stubs the `repos/owner/repo/actions/runs?head_sha=…`
+lookup to return no cancelled runs, so the failed-CI repair still reaches the
+agent launch the test asserts on. This is a test-fixture change only; no
+production behaviour changed.
+
 Read the credential-boundary section of `docs/workflows/fleet-pr-babysitter.md`.
 Updated that manual and control C36 in `docs/THREAT-MODEL.md` to describe actual
 filesystem traversal. The branch also updates `docs/CONFIGURATION.md` to link
@@ -65,6 +71,9 @@ rule was found; callers share `babysitterProtectedPaths`.
 
 - Focused unit run — passed, 117 tests (105 parallel, 12 serial):
   `deno task test:unit tests/fleet_babysitter_sandbox_test.ts tests/fleet_babysitter_app_test.ts tests/fleet_pr_babysitter_test.ts tests/fleet_pr_babysitter_supervisor_test.ts tests/fleet_pr_babysitter_setup_test.ts tests/fleet_babysitter_codex_test.ts tests/fleet_babysitter_repositories_test.ts tests/service_account_env_test.ts tests/cross_file_anchors_test.ts`.
+- Fixture update for the merged cancelled-run lookup — passed, 17 tests:
+  `deno task test:unit tests/fleet_babysitter_app_test.ts` (the production
+  repair test reaches the agent launch with the stubbed empty run list).
 - Manifest check: `deno task check:manifests` — passed (846 passed, 0 failed, 1
   ignored).
 - Targeted Deno formatting, lint and type checks, including the offline repair
