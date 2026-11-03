@@ -6,9 +6,10 @@ checkout. On a runtime that refuses to trim the work volume, that agent's
 directory. The key comes from the random checkout path, so every verifier pass
 cold-built into a new multi-GB directory that nothing removed. The verifier
 deleted only the checkout itself. This change removes that target directory when
-the verifier finishes, and logs the cleanup before and after it runs so a later
-stall names the step it stopped in. It does not claim to have proven why the
-guest froze. Closes #4743.
+the verifier finishes. Logs bracket the whole cleanup, with the duration covering
+only the target-directory release; they do not distinguish a stall in checkout
+removal from one in target-directory release. It does not claim to have proven
+why the guest froze. Closes #4743.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -173,5 +174,6 @@ merge gate and resolution gate that the same section lists; updated:
   GRQ-3's archive.
 - Agent worktrees and maintenance clones still keep their target dirs until
   relaunch, by design (`docs/CONTAINER.md`).
-- The recursive removal itself is unbounded in time (`Deno.remove`); it now logs
-  its start and duration, and was not given a timeout.
+- Recursive removal is unbounded in time (`Deno.remove`) and has no timeout.
+  The cleanup has a start and an end log, but only the target-directory release
+  is timed.

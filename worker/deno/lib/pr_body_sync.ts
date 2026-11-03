@@ -32,6 +32,13 @@
  * overwrites the body when the summary file was deleted — a missing file is
  * treated as "nothing to refresh", not as "blank the body".
  *
+ * Issue #4712: an adopted body is built from the summary COMMITTED at the
+ * pushed head, never from the working tree. A recovery turn can leave uncommitted
+ * summary edits while HEAD is still the pushed head, and the body must describe
+ * only what the branch holds. The caller passes that sha as
+ * {@link SyncPrBodyInput.committedHeadSha}; publication is then skipped unless
+ * `origin/<branchName>` is still that sha.
+ *
  * The digest is of the summary alone (Issue #4234). A facts file beside the
  * summary is not part of the digest and is not rendered into the body.
  *
@@ -68,7 +75,7 @@ import {
 } from "./pr_body.ts";
 import { buildWorkerFooter } from "./worker_identity.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
-import { loadPrSummary } from "./pr_summary_loader.ts";
+import { loadCommittedPrSummary, loadPrSummary } from "./pr_summary_loader.ts";
 import {
   findBranchEvidenceImages,
   formatBranchEvidenceSection,
@@ -238,10 +245,22 @@ export function assemblePrBody(input: {
  */
 export async function finalisePrBodyImages(
   body: string,
-  opts: { repoPath: string; githubRepo: string; headSha: string | undefined },
+  opts: {
+    repoPath: string;
+    githubRepo: string;
+    headSha: string | undefined;
+    committedFiles?: string[];
+  },
   logger: Logger,
 ): Promise<string> {
-  const imageResolution = await resolveImagePaths(body, opts.repoPath);
+  const committedFiles = opts.committedFiles;
+  const imageResolution = await resolveImagePaths(
+    body,
+    opts.repoPath,
+    committedFiles === undefined
+      ? undefined
+      : { listFilesFn: () => Promise.resolve(committedFiles) },
+  );
   let result = imageResolution.body;
   for (const rewrite of imageResolution.rewrites) {
     logger.info("Repaired evidence image path", {
@@ -261,6 +280,10 @@ export async function finalisePrBodyImages(
       repoPath: opts.repoPath,
       githubRepo: opts.githubRepo,
       commitSha: opts.headSha,
+      ...(committedFiles === undefined ? {} : {
+        fileExistsFn: (_root: string, path: string) =>
+          Promise.resolve(committedFiles.includes(path)),
+      }),
     });
     result = conversion.content;
     for (const converted of conversion.conversions) {
@@ -312,6 +335,15 @@ export interface SyncPrBodyInput {
    * marker present"). Used by the completion phase.
    */
   adoptOnly?: boolean;
+  /**
+   * Issue #4712: the pushed head the body must describe. When set, the summary
+   * is read from that commit (`loadCommittedPrSummary`), never the working
+   * tree, and publication is skipped unless `origin/<branchName>` is still that
+   * sha. The check is a fresh `git ls-remote` made just before `gh pr edit`.
+   * Unset keeps the working-tree read that the fix-run callers (feedback, CI,
+   * merge-conflict, reconcile) rely on.
+   */
+  committedHeadSha?: string;
 }
 
 /** Collaborators {@link syncPrBodyFromSummary} needs — all injectable for testing. */
@@ -496,14 +528,31 @@ export async function buildSyncedPrBodyCandidate(
     }
   }
 
-  const summaryResult = await loadPrSummary(input.repoPath, issueNumber);
+  // Issue #4712: a body for a committed head is built from the summary as that
+  // commit holds it. The working tree can carry uncommitted recovery edits that
+  // are not on the branch, so it is never read on this path. A failed read is
+  // returned as an error and never falls back to the working tree.
+  const committedHeadSha = input.committedHeadSha;
+  const summaryResult = committedHeadSha !== undefined
+    ? await loadCommittedPrSummary(
+      input.repoPath,
+      issueNumber,
+      committedHeadSha,
+      deps.runGitCommand,
+    )
+    : await loadPrSummary(input.repoPath, issueNumber);
   if (!summaryResult.ok) {
     return { ok: false, error: summaryResult.error };
   }
   if (summaryResult.value.source === "not_found") {
     return {
       ok: true,
-      value: { kind: "ineligible", reason: "summary file deleted" },
+      value: {
+        kind: "ineligible",
+        reason: committedHeadSha !== undefined
+          ? "summary not committed at the pushed head"
+          : "summary file deleted",
+      },
     };
   }
 
@@ -560,6 +609,50 @@ export async function buildSyncedPrBodyCandidate(
 }
 
 /**
+ * Issue #4712: the last check before a committed-head body is published.
+ *
+ * Returns the reason to skip, or undefined to proceed. The checkout must still
+ * be at `input.committedHeadSha`, and `origin/<branchName>` must still point at
+ * it. A failed or unreadable `ls-remote` is not treated as proof, so it skips.
+ * Only called when `input.committedHeadSha` is set.
+ */
+async function committedHeadSkipReason(
+  input: SyncPrBodyInput,
+  deps: SyncPrBodyDeps,
+  localHeadSha: string,
+): Promise<string | undefined> {
+  const committedHeadSha = input.committedHeadSha ?? "";
+  if (localHeadSha !== committedHeadSha) {
+    return "checkout moved off the committed head";
+  }
+  const remote = await deps.runGitCommand(
+    ["ls-remote", "origin", `refs/heads/${input.branchName}`],
+    { cwd: input.repoPath },
+  );
+  if (!remote.ok || remote.value.code !== 0) {
+    deps.logger.warn(
+      "Could not verify the pushed head before publishing the PR body (Issue #4712)",
+      { repo: input.repo, prNumber: input.prNumber },
+    );
+    return "pushed head could not be verified";
+  }
+  const pushed = remote.value.stdout.trim().split(/\s+/)[0] ?? "";
+  if (pushed !== committedHeadSha) {
+    deps.logger.warn(
+      "The pushed head moved since the PR body was built — skipping the body publish (Issue #4712)",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        committedHeadSha,
+        remoteHead: pushed,
+      },
+    );
+    return "pushed head moved";
+  }
+  return undefined;
+}
+
+/**
  * Refresh a PR's body from its (possibly rewritten) summary file.
  *
  * A review-fix run rewrites `docs/archive/pr-summaries/pr-summary-<N>.md`
@@ -576,7 +669,10 @@ export async function buildSyncedPrBodyCandidate(
  *   carrying the marker is skipped with "worker marker present" rather than
  *   refreshed;
  * - the summary file was not deleted (a deleted summary means "nothing to
- *   refresh", not "blank the body");
+ *   refresh", not "blank the body"). When `input.committedHeadSha` is set
+ *   (adoption, Issue #4712) the summary is read from that commit instead, and a
+ *   commit with no summary is skipped as "summary not committed at the pushed
+ *   head". The working tree is not read on that path;
  * - the summary actually changed (the digest is of the summary alone,
  *   Issue #4234):
  *   - when the live body carries a summary-digest marker (Issue #3315), that
@@ -592,7 +688,11 @@ export async function buildSyncedPrBodyCandidate(
  *   equal means GitHub's API has not yet caught up with this run's own
  *   verified push — not that someone else pushed — so that case still
  *   proceeds; and
- * - the freshly assembled body actually differs from what is live.
+ * - the freshly assembled body actually differs from what is live; and
+ * - when `input.committedHeadSha` is set (Issue #4712), the checkout is still at
+ *   that sha and `git ls-remote` still reports `origin/<branchName>` at it,
+ *   checked just before `gh pr edit`. Otherwise the call is skipped and the
+ *   live body is left untouched.
  *
  * When the live body carries no leading section and the rebuilt summary newly
  * marks a criterion `partial` or `missing`, the parent issue's follow-up is
@@ -717,9 +817,32 @@ export async function syncPrBodyFromSummary(
     );
   }
 
+  let committedFiles: string[] | undefined;
+  if (input.committedHeadSha !== undefined) {
+    const tree = await deps.runGitCommand(
+      ["ls-tree", "-r", "-z", "--name-only", input.committedHeadSha],
+      { cwd: input.repoPath },
+    );
+    if (!tree.ok || tree.value.code !== 0) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to list committed files for PR #${input.prNumber}: ${
+            tree.ok ? tree.value.stderr : tree.error.message
+          }`,
+        ),
+      };
+    }
+    committedFiles = tree.value.stdout.split("\0").filter(Boolean);
+  }
   body = await finalisePrBodyImages(
     body,
-    { repoPath: input.repoPath, githubRepo: input.repo, headSha },
+    {
+      repoPath: input.repoPath,
+      githubRepo: input.repo,
+      headSha: input.committedHeadSha ?? headSha,
+      committedFiles,
+    },
     logger,
   );
 
@@ -751,6 +874,16 @@ export async function syncPrBodyFromSummary(
       ok: true,
       value: { status: "skipped", reason: "body already current" },
     };
+  }
+
+  // Issue #4712: publish a committed-head body only while the pushed head is
+  // still that commit. Checked here, after the last point that can change the
+  // body, so the window before `gh pr edit` is as short as it can be.
+  if (input.committedHeadSha !== undefined) {
+    const skipReason = await committedHeadSkipReason(input, deps, headSha);
+    if (skipReason !== undefined) {
+      return { ok: true, value: { status: "skipped", reason: skipReason } };
+    }
   }
 
   let tmpPath: string | undefined;
