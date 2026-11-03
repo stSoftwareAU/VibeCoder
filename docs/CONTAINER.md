@@ -1719,6 +1719,14 @@ build artefacts.
   sudo rule carries no `SETENV` tag, so `env_reset` strips a variable handed to
   `sudo` in the child environment; the quality gate's spawn therefore becomes
   `sudo -n -u agent -- env CARGO_TARGET_DIR=… bash -c './quality.sh'`.
+- **The untrusted account reaches the checkout through HOME (Issue #4733).**
+  The image creates HOME `0700`, so the `agent` account could not traverse to
+  any clone under `~/auto-issue-work`. At every launch the entrypoint gives the
+  `vibework` group traverse only (`g+x`, mode `0710`) on HOME. The account can
+  pass through to the clones but cannot list HOME, and the credential
+  directories keep their own `0700`/`0600` modes. A gate probe that still
+  fails names the first directory the account cannot traverse, in the form
+  `untrusted account cannot use '<cwd>' (probe 1; cannot traverse '<dir>')`.
 - **An unusable root is a reported fallback, not a broken build.** If
   `/var/tmp/vibe-cargo-target` cannot be created `1777`, the launch says so and
   the build stays on the volume.

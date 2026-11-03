@@ -737,3 +737,88 @@ Deno.test("an unwritable cargo target uses the configured cache root", async () 
     });
   });
 });
+
+Deno.test("the probe names the topmost directory the account cannot traverse (Issue #4733)", async () => {
+  const uid = await new Deno.Command("id", { args: ["-u"] }).output();
+  if (new TextDecoder().decode(uid.stdout).trim() === "0") return;
+  await withCheckout(async (cwd) => {
+    const outer = `${cwd}/outer`;
+    const inner = `${outer}/inner`;
+    await Deno.mkdir(inner, { recursive: true });
+    await Deno.writeTextFile(`${inner}/Cargo.toml`, "[package]");
+    // bash has no target probe, so the script is the walk and the readability checks.
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand("bash", ["run"], {
+      cwd: inner,
+      timeoutMs: 1000,
+      manifests: ["Cargo.toml"],
+    }, { spawn, drop: agentDrop, source: SOURCE, trimRefused: false });
+    const script = probeScriptOf(callAt(calls, 0));
+    const probeRun = async () => {
+      const out = await new Deno.Command("sh", {
+        args: ["-c", script, "sh", inner],
+      }).output();
+      return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
+    };
+    const open = await probeRun();
+    assertEquals(open.code, 0);
+    assertEquals(open.stdout, "");
+    await Deno.chmod(outer, 0o000);
+    try {
+      const blocked = await probeRun();
+      assertEquals(blocked.code, 1);
+      // The topmost blocked directory, not the inner one that also fails.
+      assertEquals(blocked.stdout.trim(), outer);
+    } finally {
+      await Deno.chmod(outer, 0o755);
+    }
+  });
+});
+
+Deno.test("an unreadable probe names the blocked directory only for one plausible path (Issue #4733)", async () => {
+  await withCheckout(async (cwd) => {
+    const refusalFor = async (verdict: Spawned): Promise<string> => {
+      const { spawn } = recordingSpawn(verdict);
+      const { result } = await captureConsoleError(() =>
+        runRepositoryCommand(
+          "cargo",
+          ["test"],
+          { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+          { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+        )
+      );
+      assertEquals(result.ok, false);
+      assert(!result.ok);
+      assert(result.error instanceof GateAccountUnavailable);
+      return result.error.message;
+    };
+    const unreadable = (stdout: string): Spawned => ({
+      ok: true,
+      value: { ...OK, success: false, code: 1, stdout },
+    });
+
+    const named = await refusalFor(unreadable("/blocked/dir\n"));
+    assert(named.includes(`untrusted account cannot use '${cwd}'`));
+    assert(named.includes(`(probe 1; cannot traverse '/blocked/dir')`));
+
+    const silent = await refusalFor(unreadable(""));
+    assert(silent.includes("(probe 1)"), silent);
+    assert(!silent.includes("cannot traverse"), silent);
+
+    for (
+      const stdout of ["not a path\n", "/x\u0007y\n", `/${"a".repeat(300)}\n`]
+    ) {
+      const message = await refusalFor(unreadable(stdout));
+      assert(message.includes("(probe 1)"), message);
+      assert(!message.includes("cannot traverse"), message);
+    }
+
+    // Only the unreadable verdict names a directory; an unwritable checkout does not.
+    const unwritable = await refusalFor({
+      ok: true,
+      value: { ...OK, success: false, code: 3, stdout: "/blocked/dir\n" },
+    });
+    assert(unwritable.includes("(probe 3)"), unwritable);
+    assert(!unwritable.includes("cannot traverse"), unwritable);
+  });
+});

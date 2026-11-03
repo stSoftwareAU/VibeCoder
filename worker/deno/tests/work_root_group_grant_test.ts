@@ -11,6 +11,12 @@
  * (`audit/`), the self-heal log directory (`logs/`) and the lane worktree
  * root (`worktrees/`) another slot may be running out of.
  *
+ * It also covers the HOME traverse grant (Issue #4733): the image creates HOME
+ * 0700, so the `agent` account could not reach the clones under
+ * `~/auto-issue-work`. The entrypoint gives the `vibework` group traverse-only
+ * (g+x) on HOME, and the tests assert that HOME gains exactly that and nothing
+ * more.
+ *
  * Every case runs the real script with a stub PATH and asserts on the mode
  * bits the volume actually ends up with, so the grant is verified rather
  * than described.
@@ -29,6 +35,13 @@ const GROUP_WRITE = 0o020;
 const GROUP_READ_EXECUTE = 0o050;
 const SETGID = 0o2000;
 const STICKY = 0o1000;
+
+/** Group traverse (x) only, the bit the HOME grant adds (Issue #4733). */
+const GROUP_TRAVERSE = 0o010;
+/** Group read+write and all other-user access: none may appear on HOME. */
+const GROUP_RW_OTHER_ALL = 0o067;
+/** Owner read, write and traverse. */
+const OWNER_RWX = 0o700;
 
 /**
  * A stub PATH the entrypoint's work-root block can actually run through.
@@ -69,6 +82,10 @@ async function runOverWorkRoot(dir: string): Promise<string> {
   await fakeRepo(dir);
   const home = `${dir}/home`;
   const workRoot = `${home}/auto-issue-work`;
+  // The image creates HOME 0700 (Issue #4733); mirror that before the
+  // entrypoint runs so the grant is observed against the real starting mode.
+  await Deno.mkdir(home, { recursive: true });
+  await Deno.chmod(home, OWNER_RWX);
   for (
     const name of [
       "NEAT-AI",
@@ -188,4 +205,55 @@ Deno.test("entrypoint - withholds exactly the reserved work-root names", async (
     [...RESERVED_WORKDIR_NAMES].sort(),
     "the entrypoint's reserved list drifted from RESERVED_WORKDIR_NAMES",
   );
+});
+
+Deno.test("entrypoint - the untrusted account can traverse HOME to reach the work root (Issue #4733)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const workRoot = await runOverWorkRoot(dir);
+    const home = workRoot.replace(/\/auto-issue-work$/, "");
+    const stat = await Deno.stat(home);
+    const mode = stat.mode;
+    assert(mode !== null, "no mode bits on this platform");
+
+    // The image creates HOME 0700, so `agent` could not pass through it and
+    // every gate probe refused the checkout. Group traverse is what lets the
+    // account reach ~/auto-issue-work.
+    assertEquals(
+      mode & GROUP_TRAVERSE,
+      GROUP_TRAVERSE,
+      "HOME must carry group traverse (g+x) so the untrusted account can reach the work root",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - the HOME grant is traversal only (Issue #4733)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const workRoot = await runOverWorkRoot(dir);
+    const home = workRoot.replace(/\/auto-issue-work$/, "");
+    const stat = await Deno.stat(home);
+    const mode = stat.mode;
+    assert(mode !== null, "no mode bits on this platform");
+
+    // Group read or write would let `agent` list HOME and reach the
+    // credential material beside the work root; other-user access is never
+    // granted at all.
+    assertEquals(
+      mode & GROUP_RW_OTHER_ALL,
+      0,
+      "HOME must grant the group traverse only: no group read or write, and nothing for others",
+    );
+
+    // The owner keeps its full access; the grant adds nothing to it.
+    assertEquals(
+      mode & OWNER_RWX,
+      OWNER_RWX,
+      "HOME must keep its owner read, write and traverse bits",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

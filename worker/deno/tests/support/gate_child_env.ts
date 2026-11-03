@@ -36,6 +36,20 @@ const DENO_TASK_SET_NAMES = ["INIT_CWD", "npm_config_user_agent"];
 const BUILD_CACHE_NAMES = ["CARGO_TARGET_DIR"];
 
 /**
+ * Names `sudo` places in a dropped child's environment. When the host has the
+ * `agent` account the gate's real drop goes through sudo, which adds these
+ * after the allowlist is applied. None carries a parent credential (Issue #4733).
+ */
+const SUDO_SET_NAMES = [
+  "MAIL",
+  "SUDO_COMMAND",
+  "SUDO_GID",
+  "SUDO_HOME",
+  "SUDO_UID",
+  "SUDO_USER",
+];
+
+/**
  * The task body a repository would declare: it lists the child's variable
  * names on one line that starts `ENV `, then fails so the gate reports it. One
  * line keeps the names clear of the gate's output tail, and the echoed task
@@ -120,6 +134,7 @@ export function assertOnlyAllowlistedNames(output: string): void {
     ...SHELL_SET_NAMES,
     ...DENO_TASK_SET_NAMES,
     ...BUILD_CACHE_NAMES,
+    ...SUDO_SET_NAMES,
   ]);
   const names = probedNames(output);
   const leaked = names.filter((name) => !permitted.has(name));

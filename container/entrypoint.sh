@@ -143,7 +143,8 @@ TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 # names — RESERVED_WORKDIR_NAMES in worker/deno/lib/stale_workdir.ts, kept in
 # step by worker/deno/tests/work_root_group_grant_test.ts — keep group
 # traversal (the gate reaches its own lane worktree through `worktrees/`) and
-# the setgid inheritance, and nothing more.
+# the setgid inheritance, and nothing more. The one grant outside the root is
+# HOME's traverse bit, g+x (Issue #4733), which lets the account reach the root.
 #
 # Residual risk, recorded rather than hidden: the work ROOT itself stays
 # group-writable, because a monitored repository's own gate clones its
@@ -188,6 +189,17 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
           ;;
       esac
     done
+  fi
+
+  # Issue #4733: the image creates HOME 0700, so the `agent` account could not
+  # reach any clone under ~/auto-issue-work, and the milestone gates' probe
+  # refused every checkout ("untrusted account cannot use ... probe 1").
+  # The grant is traversal only: g+x (mode 0710) lets the account pass through
+  # HOME to the work root, but not list HOME. The credential directories keep
+  # their own 0700/0600 modes. Only a directory this user owns is touched, and
+  # a failure is silent, as in the block above.
+  if [[ -O "${HOME:-}" ]] && chgrp vibework "${HOME}" 2>/dev/null; then
+    chmod g+x "${HOME}" 2>/dev/null || true
   fi
 fi
 

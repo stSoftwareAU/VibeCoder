@@ -9,6 +9,7 @@
  * account where that account can use the checkout.
  *
  * Access failures leave commands to CI and never select the worker account.
+ * A refusal names the topmost directory the account cannot traverse (Issue #4733).
  * Only operator-declared credentials or absence of an agent account select the
  * restricted worker environment. Tree-controlled layouts and permissions cannot.
  * Unwritable cargo targets use the configured, persistent per-account cache.
@@ -138,6 +139,30 @@ async function targetWriteCheck(cwd: string): Promise<string> {
 }
 
 /**
+ * Prints the topmost ancestor of `$1` the account cannot traverse, or nothing.
+ * It walks down from `/`: a deeper `test -x` fails for every descendant of a
+ * blocked ancestor, so only the first failure is the cause (Issue #4733).
+ * Read-only POSIX sh; `$1` is an argument and is never embedded in the text.
+ */
+const TRAVERSAL_WALK =
+  `( IFS=/; set -f; p=; for c in $1; do [ -n "$c" ] || continue; p="$p/$c"; [ -x "$p" ] || { printf '%s\\n' "$p"; break; }; done )`;
+
+/**
+ * The directory a probe named as untraversable, or undefined when its stdout
+ * is not one plausible absolute path. The first line, trimmed, must start with
+ * `/`, hold no control characters, and be at most 300 characters (Issue #4733).
+ */
+function blockedDirectoryOf(stdout: string): string | undefined {
+  const line = (stdout.split("\n")[0] ?? "").trim();
+  if (!line.startsWith("/") || line.length > 300) return undefined;
+  for (let i = 0; i < line.length; i++) {
+    const code = line.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return undefined;
+  }
+  return line;
+}
+
+/**
  * The probe script. `$1` is the checkout and is passed as an argument, never
  * interpolated, so a path cannot change the script.
  *
@@ -153,7 +178,7 @@ function probeScript(manifests: readonly string[], tail: string): string {
     }
     return ` -a -r "$1/${name}"`;
   });
-  const readable = `test -r "$1" -a -x "$1"${
+  const readable = `${TRAVERSAL_WALK}; test -r "$1" -a -x "$1"${
     reads.join("")
   } || exit ${PROBE_UNREADABLE}; test -w "$1" || exit ${PROBE_CHECKOUT_UNWRITABLE}`;
   return tail === ""
@@ -167,7 +192,8 @@ function probeScript(manifests: readonly string[], tail: string): string {
  * credentials need to cross sudo's environment reset.
  *
  * The account is probed with a command of its own. Access faults leave the
- * command to CI, without changing its account.
+ * command to CI, without changing its account. A refusal names the topmost
+ * directory the account cannot traverse, when the probe reports one.
  *
  * @param executable - The command, e.g. `cargo` or `deno`.
  * @param args - Its arguments.
@@ -317,12 +343,19 @@ export async function runRepositoryCommand(
           account: untrustedAccountOf(spawnable)!,
         });
       } else if (!verdict.ok || code !== 0 || verdict.value.timedOut) {
+        // Only the unreadable verdict says which directory blocks the account.
+        const blocked = verdict.ok && code === PROBE_UNREADABLE &&
+            !verdict.value.timedOut
+          ? blockedDirectoryOf(verdict.value.stdout)
+          : undefined;
+        const cause = `probe ${code ?? "failed"}`;
+        const reason = blocked === undefined
+          ? cause
+          : `${cause}; cannot traverse '${blocked}'`;
         return {
           ok: false,
           error: new GateAccountUnavailable(
-            `untrusted account cannot use '${options.cwd}' (probe ${
-              code ?? "failed"
-            }) — left to CI (Issue #4659)`,
+            `untrusted account cannot use '${options.cwd}' (${reason}) — left to CI (Issue #4659)`,
           ),
         };
       }
