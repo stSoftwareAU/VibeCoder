@@ -2,8 +2,9 @@
 
 The entrypoint now gives each shared repository clone root the sticky bit
 (`g+rwxs,+t`) and strips group/other write from the clone's git metadata at
-every launch, then checks that the worker owns each clone's git directory and
-quarantines any clone where it does not. Closes #4737.
+every launch, then checks git ownership in worker-owned clones and quarantines
+those with foreign metadata, leaving agent-owned tier-2 data siblings in place.
+Closes #4737.
 
 Version bump: `VERSION` is not edited by this change; the merged commit records
 the final version.
@@ -23,15 +24,15 @@ the final version.
 - That chmod fails silently on files `agent` already owns (a `.git` swapped on a
   persistent volume before this fix). So the entrypoint also looks for any path
   within two levels of `.git` (so `.git` itself, `config`, `hooks` and its
-  entries) not owned by the worker's uid. If it finds one it warns and moves the
-  clone to `.untrusted-<name>-<epoch>` in the work root with group and other
-  access removed. The worker re-clones it. Skipped when run as root.
+  entries) not owned by the worker's uid. For a worker-owned clone it warns and
+  moves the clone to `.untrusted-<name>-<epoch>` in the work root with group and
+  other access removed. The worker re-clones it. Skipped when run as root.
 
 ### Essential Design Decisions
 
 - `safe.directory '*'` is kept. The worker's git needs it for mounted clones;
-  the control is that the untrusted account can neither replace nor write the
-  git directory.
+  the control prevents the untrusted account replacing or writing git metadata
+  in worker-owned clones. Tier-2 sibling trust is tracked in Issue #4756.
 - No broad chmod grants, and the untrusted-account drop is untouched. Group
   write on the clone stays, so quality-gate output (#4697, #4705 paths) still
   works.
@@ -61,6 +62,12 @@ flowchart LR
 
 ## Test Plan
 
+- Review fix: quarantine only worker-owned clone roots, retaining agent-owned
+  tier-2 data siblings. The new regression test simulates a foreign worker uid
+  and verifies both directory and linked-worktree siblings remain in place; it
+  failed before the fix. The quarantine test simulates foreign git metadata
+  within worker-owned roots and still checks both forms. No twin was found for
+  this ownership decision.
 - Integration CI repair for PR #4754: derive the quarantine fixture's foreign
   uid from `Deno.stat(dir).uid` instead of `Deno.uid()`. The integration runner
   grants file read access but no sys access to uid; no permission grants or

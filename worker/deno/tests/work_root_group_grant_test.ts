@@ -70,16 +70,24 @@ async function fakeRepo(dir: string): Promise<void> {
 async function runOverWorkRoot(
   dir: string,
   workerUid?: number,
+  foreignGit = false,
 ): Promise<string> {
   const binDir = await stubBin(dir);
   if (workerUid !== undefined) {
-    // Report a uid that owns nothing in the fixture, so every git file looks
-    // like the untrusted account's (no test host can chown to another uid).
+    // Simulate a worker uid different from the fixture owner when needed.
     await Deno.writeTextFile(
       `${binDir}/id`,
       `#!/bin/bash\necho ${workerUid}\n`,
     );
     await Deno.chmod(`${binDir}/id`, 0o755);
+  }
+  if (foreignGit) {
+    // Simulate foreign git metadata while retaining real root ownership checks.
+    await Deno.writeTextFile(
+      `${binDir}/find`,
+      '#!/bin/bash\nif [[ "$2" == "-maxdepth" ]]; then printf "%s\\n" "$1"; else exec /usr/bin/find "$@"; fi\n',
+    );
+    await Deno.chmod(`${binDir}/find`, 0o755);
   }
   await fakeRepo(dir);
   const home = `${dir}/home`;
@@ -348,9 +356,9 @@ Deno.test("entrypoint - reserved work-root names gain no sticky bit (Issue #4737
 Deno.test("entrypoint - a clone whose git directory the worker does not own is quarantined (Issue #4737)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
   try {
-    // File ownership uses the read permission already granted by the runner.
-    const foreignUid = ((await Deno.stat(dir)).uid ?? 1000) + 4242;
-    const workRoot = await runOverWorkRoot(dir, foreignUid);
+    const uid = (await Deno.stat(dir)).uid;
+    assert(uid !== null && uid !== 0, "test requires a non-root uid");
+    const workRoot = await runOverWorkRoot(dir, uid, true);
     for (const clone of ["NEAT-AI", "LINKED"]) {
       let stillThere = true;
       try {
@@ -375,6 +383,23 @@ Deno.test("entrypoint - a clone whose git directory the worker does not own is q
     }
     // A clone with no git directory of its own is not touched.
     await Deno.stat(`${workRoot}/NEAT-AI-Discovery`);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - leaves foreign-owned data siblings in place (Issue #4737)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const uid = (await Deno.stat(dir)).uid;
+    assert(uid !== null, "fixture has no uid");
+    const workRoot = await runOverWorkRoot(dir, uid + 4242);
+    for (const clone of ["NEAT-AI", "LINKED"]) {
+      await Deno.stat(`${workRoot}/${clone}/.git`);
+    }
+    for await (const entry of Deno.readDir(workRoot)) {
+      assert(!entry.name.startsWith(".untrusted-"), entry.name);
+    }
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

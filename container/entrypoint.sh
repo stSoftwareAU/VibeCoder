@@ -216,9 +216,12 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
           # before this hardening: safe.directory '*' would still trust its
           # config and hooks, and `agent` could still write them. Check who
           # owns the git directory rather than assume the chmod worked, and
-          # take the clone out of service (Issue #4737). Skipped as root, where
+          # take the clone out of service (Issue #4737). Only worker-owned
+          # clone roots qualify: agent-owned tier-2 data siblings are created
+          # by the quality gate and must stay warm. Skipped as root, where
           # every vibe-owned file would look foreign.
           if [[ "$(id -u)" != "0" ]] && [[ -e "${entry}.git" ]] &&
+            [[ -n "$(find "${entry%/}" -prune -user "$(id -u)" -print 2>/dev/null)" ]] &&
             [[ -n "$(find "${entry}.git" -maxdepth 2 ! -user "$(id -u)" -print -quit 2>/dev/null)" ]]; then
             quarantine="${VIBE_WORK_ROOT}/.untrusted-${entry_name}-$(date +%s)"
             echo "Warning: ${entry}.git holds files not owned by uid $(id -u) — the git directory may have been replaced by the untrusted account (Issue #4737). Moving the clone to ${quarantine} with group and other access removed; the worker will re-clone it." >&2

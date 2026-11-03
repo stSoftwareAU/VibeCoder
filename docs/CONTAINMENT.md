@@ -156,12 +156,14 @@ root filesystem cannot be dropped by a later edit either.
   into it either.
 - The strip cannot reach files `agent` already owns. The entrypoint therefore
   checks the ownership of `.git` and its first two levels (including `config`
-  and `hooks`); a clone with any file not owned by the worker is warned about
-  and moved to `.untrusted-<name>-<epoch>` with group and other access removed,
-  and the worker re-clones it.
+  and `hooks`) in worker-owned clone roots. A clone with any file not owned by
+  the worker is warned about and moved to `.untrusted-<name>-<epoch>` with group
+  and other access removed, and the worker re-clones it. Tier-2 data siblings
+  created and owned by `agent` are left in place.
 - `safe.directory '*'` is kept deliberately: the worker's git needs that trust
-  for the mounted clones. It is safe because `agent` can neither replace nor
-  write the git directory.
+  for the mounted clones. These protections prevent `agent` replacing or
+  writing git metadata in worker-owned clones; tier-2 sibling trust is tracked
+  separately in Issue #4756.
 - The cost: tooling run as `agent` can no longer rename over a vibe-owned
   top-level file, such as a lockfile. Builds write elsewhere: on a runtime that
   refuses trim, cargo's `target/` goes to the ephemeral layer
