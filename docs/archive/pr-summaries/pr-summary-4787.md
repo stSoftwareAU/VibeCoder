@@ -81,6 +81,13 @@ outside `docs/archive/` found no other hit.
 - `deno task test:unit` over `milestone_merge_gate_test.ts`,
   `milestone_resolution_gate_test.ts`, `milestone_sync_merge_gate_test.ts` and
   `merge_gate_fail_closed_test.ts`: 58 passed, 0 failed.
+- Mutation check baseline: the 20 test files that import the changed modules
+  failed together on one test, `merge-only e2e - root Cargo cannot hide a
+  failing nested Deno resolution suite (PR #4343)` in
+  `milestone_merge_only_4326_test.ts`. It pushed an unformatted `web/deno.json`
+  and the pre-push `deno fmt --check` gate blocked the push, so the baseline
+  failed before any mutant ran. The fixture now writes the file already
+  formatted; the 20 files then ran together: 402 passed, 0 failed.
 - `deno task check:manifests`: passed.
 - `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`; config
   integration and checkov were skipped by the gate itself.
