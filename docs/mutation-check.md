@@ -85,6 +85,12 @@ Not evaluated or read: reusable-workflow `uses:` jobs, other mutation tools, job
 `if:` and path filters, flags of a `deno task`, and the repository's branch
 protection (required-check names).
 
+The CI tool must match the mutation result: cargo-mutants checks Rust, and a
+Deno mutation task checks Deno. A result for the other language stays advisory
+and retains summary exemptions, at completion and during review fixes. Runner
+errors carry no language, so an identified CI job still holds an incomplete
+check.
+
 On such a repository the PR-raise gate treats genuine surviving mutants as
 blocking, because CI fails on them whatever the PR summary says:
 
@@ -99,8 +105,10 @@ blocking, because CI fails on them whatever the PR summary says:
    keyword, so the issue stays open), the unmet validation stated in the body,
    and an advisory comment. On the normal path, the existing-PR path and the
    REST fallback it is a draft, auto-merge is not armed and it is not marked
-   ready. On the secondary-rate-limit deferral path the parked record carries
-   `draft: true`, and `worker/deno/lib/deferred_pr_drain.ts` opens the pull
+   ready. The pending issue note names the CI job, says mutation validation is
+   incomplete and the PR will open as a draft, and says the next run continues
+   the branch. On the secondary-rate-limit deferral path the parked record
+   carries `draft: true`, and `worker/deno/lib/deferred_pr_drain.ts` opens the pull
    request as a draft over REST (it never arms auto-merge). The next run
    continues the branch and marks the pull request ready once no survivor is
    left.

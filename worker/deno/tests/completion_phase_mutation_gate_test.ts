@@ -371,7 +371,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
 const completed = (survivors: typeof SURVIVOR[]): MutationCheckResult => ({
   kind: "completed",
-  language: "deno",
+  language: "rust",
   survivors,
   killed: 3 - survivors.length,
   total: 3,
@@ -443,7 +443,7 @@ Deno.test("completion - budget exhausted with no survivor raises the PR and warn
   const outcome = await runCompletion({
     mutation: {
       kind: "budget_exhausted",
-      language: "deno",
+      language: "rust",
       survivors: [],
       killed: 1,
       tested: 1,
@@ -628,7 +628,7 @@ Deno.test("completion - a capped mutation run warns that mutants were left untes
   const outcome = await runCompletion({
     mutation: {
       kind: "budget_exhausted",
-      language: "deno",
+      language: "rust",
       survivors: [],
       killed: 40,
       tested: 40,
@@ -834,7 +834,7 @@ Deno.test("completion - an exhausted mutation budget with a blocking CI job hold
   const outcome = await runCompletion({
     mutation: {
       kind: "budget_exhausted",
-      language: "deno",
+      language: "rust",
       survivors: [],
       killed: 1,
       tested: 1,
@@ -938,6 +938,7 @@ Deno.test("completion - secondary-only deferral parks the hold as a draft", asyn
   });
   assertEquals(outcome.deferred.length, 1);
   assertEquals(outcome.deferred[0]!.draft, true);
+  assertHeldPendingNote(outcome.comments);
   assertStringIncludes(outcome.deferred[0]!.body, DRAFT_CONTINUATION_MARKER);
 });
 
@@ -991,6 +992,7 @@ Deno.test("completion - a held PR parked by the secondary limit is recorded as a
     true,
     "the drain opens it as a draft",
   );
+  assertHeldPendingNote(outcome.comments);
   assertStringIncludes(
     outcome.deferred[0]!.body,
     DRAFT_CONTINUATION_MARKER,
@@ -1051,4 +1053,25 @@ Deno.test("completion - an unreadable workflow file is logged by name and does n
     `warnings: ${JSON.stringify(outcome.warnings)}`,
   );
   assertEquals(outcome.finalisePrCalls, 1, "auto-merge is armed");
+});
+
+function assertHeldPendingNote(comments: string[]): void {
+  const note = comments.find((comment) => comment.includes("PR pending")) ?? "";
+  assertStringIncludes(note, "draft");
+  assertStringIncludes(note, "mutation validation is incomplete");
+  assertStringIncludes(note, "mutants");
+  assertStringIncludes(note, "next run continues");
+  assertEquals(note.includes("no further agent run is needed"), false);
+}
+Deno.test("completion - cargo CI leaves a Deno survivor advisory and armed", async () => {
+  const outcome = await runCompletion({
+    mutation: {
+      ...completed([SURVIVOR]),
+      language: "deno",
+    } as MutationCheckResult,
+    workflow: CI_BLOCKING_WORKFLOW,
+  });
+  assertEquals(createCall(outcome).includes("--draft"), false);
+  assertEquals(outcome.finalisePrCalls, 1);
+  assertStringIncludes(outcome.comments.join("\n"), "auto-merge stays armed");
 });

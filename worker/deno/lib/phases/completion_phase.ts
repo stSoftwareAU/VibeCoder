@@ -2783,7 +2783,9 @@ async function completionBody(
     // mutation tool and can fail. Read before the check so the worker runs
     // `cargo mutants` with the flags CI uses. A lookup fault is logged and
     // read as non-blocking, so it cannot crash the phase.
-    let ciBlock: CiMutationBlock | undefined;
+    let ciBlock:
+      | (CiMutationBlock & { tool: "cargo" | "deno_task" })
+      | undefined;
     let ciCargoArgs: string[] = [];
     try {
       const contract = await findBlockingMutationJob(state.repoPath);
@@ -2794,7 +2796,11 @@ async function completionBody(
         );
       }
       ciBlock = contract.blocking
-        ? { workflow: contract.blocking.workflow, job: contract.blocking.job }
+        ? {
+          workflow: contract.blocking.workflow,
+          job: contract.blocking.job,
+          tool: contract.blocking.tool,
+        }
         : undefined;
       ciCargoArgs = contract.blocking?.cargoArgs ?? [];
     } catch (error: unknown) {

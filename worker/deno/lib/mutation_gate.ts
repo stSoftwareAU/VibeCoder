@@ -1490,7 +1490,7 @@ const ERROR_NEXT_ACTION =
 export function evaluateMutationGate(
   result: MutationCheckResult,
   prSummary: string,
-  ciBlock?: CiMutationBlock,
+  ciBlock?: CiMutationBlock & { tool: "cargo" | "deno_task" },
 ): MutationGateVerdict {
   if (result.kind === "not_applicable") {
     return {
@@ -1502,7 +1502,9 @@ export function evaluateMutationGate(
       note: `mutation check not applicable: ${result.reason}`,
     };
   }
-  const ci = ciBlock
+  const matchesLanguage = result.kind === "error" ||
+    result.language === (ciBlock?.tool === "cargo" ? "rust" : "deno");
+  const ci = ciBlock && matchesLanguage
     ? { workflow: ciLabel(ciBlock.workflow), job: ciLabel(ciBlock.job) }
     : undefined;
   if (result.kind === "error") {

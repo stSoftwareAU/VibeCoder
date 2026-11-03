@@ -54,6 +54,8 @@ export interface BlockingMutationJob {
    * worker's own run can use the same ones. Empty for other tools.
    */
   cargoArgs: string[];
+  /** Mutation tool run by this CI command. */
+  tool: "cargo" | "deno_task";
 }
 
 /** Result of scanning a repository's workflows for a blocking mutation job. */
@@ -66,7 +68,7 @@ export interface CiMutationContract {
 
 type Mapping = Record<string, unknown>;
 
-const CARGO_MUTANTS = /(?:^|[;&|]\s*)\s*cargo(?:\s+\+\S+)?[ -]mutants\b/;
+const CARGO_MUTANTS = /(?:^|[;&|])\s*cargo(?:\s+\+\S+)?[ -]mutants\b/;
 const DENO_MUTATION_TASK = /\bdeno\s+task\s+\S*mutat\S*/i;
 
 /** Only `*.yml` / `*.yaml` names are workflows. */
@@ -222,8 +224,9 @@ const BOOLEAN_FLAGS = new Set([
  * flag.
  */
 export function extractCargoMutantsArgs(line: string): string[] {
-  const at = line.search(CARGO_MUTANTS);
-  if (at < 0) return [];
+  const match = CARGO_MUTANTS.exec(line);
+  if (match === null) return [];
+  const at = match.index + match[0].indexOf("cargo");
   // A quoted value may hold spaces; the quotes are removed by `clean`.
   const words = line.slice(at).match(/(?:[^\s"']|"[^"]*"|'[^']*')+/g) ?? [];
   const out: string[] = [];
@@ -320,6 +323,7 @@ export async function findBlockingMutationJob(
           job: jobName,
           ...(aggregator !== undefined ? { aggregator } : {}),
           cargoArgs: extractCargoMutantsArgs(line),
+          tool: CARGO_MUTANTS.test(line) ? "cargo" : "deno_task",
         };
         break;
       }

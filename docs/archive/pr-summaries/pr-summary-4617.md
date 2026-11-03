@@ -12,8 +12,10 @@ the pull request the same way and names the next action. A pull request parked
 by the secondary-rate-limit deferral is recorded with `draft: true` and opened
 as a draft by the drain. The worker's `cargo mutants` run uses the CI job's
 scope flags (package, features, exclude patterns). The issue stays open, and the
-next run continues the branch. Repositories without such a job behave exactly as
-before. Part of #4617.
+next run continues the branch. CI holds only results for the language its tool checks: cargo-mutants for Rust,
+Deno tasks for Deno. Results for the other language remain advisory, including
+summary exemptions. Runner errors have no language and remain incomplete.
+Repositories without such a job behave exactly as before. Part of #4617.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -47,8 +49,8 @@ flowchart TD
   `if:`/path filters are not evaluated and reusable-workflow callers are not
   followed (the module and `docs/mutation-check.md` say so). An unreadable
   workflow is logged and read as unknown, never as a pass.
-- On a blocking-CI repository a survivor, or a check that cannot finish (runner
-  error, missing tool, baseline failure, worker fault, exhausted budget or
+- On a blocking-CI repository a survivor for the matching language, or a check
+  that cannot finish (runner error, missing tool, baseline failure, worker fault, exhausted budget or
   mutant cap), holds the PR as a draft. The incomplete case carries an
   `incomplete.nextAction` into the draft body and comment. No recovery turn runs
   for the budget case, since a turn cannot add mutants. A repository whose cap
@@ -59,11 +61,10 @@ flowchart TD
   `--examine-re` and similar, values passed as argv words, never through a
   shell) reach the worker's run. A job another job lists under `needs` is
   reported with that aggregator.
-- On a blocking-CI repository a summary `exempt (untestable)` line no longer
-  clears a survivor, since CI never reads the summary; the comment points at the
-  tool's own skip mechanism. No new exemption and no lowered threshold was
-  added.
-- The hold reuses the draft-continuation path (`convertToDraftContinuation`,
+- For matching CI, a summary `exempt (untestable)` line cannot clear a
+  survivor; the comment points at the tool's own skip mechanism. No exemption
+  or lowered threshold was added. The hold reuses the draft-continuation path
+  (`convertToDraftContinuation`,
   `withholdIssueClose`); the fleet's own draft does not hold its issue, so the
   next run resumes the branch.
 
@@ -76,48 +77,39 @@ flowchart TD
 
 ## Evidence
 
-Backend-only change; no UI file is touched. The decision above is exercised
-through the real `workOnIssueCompletion`.
+Backend-only change; no UI file is touched. Tests drive the real detector,
+mutation verdict, completion phase, deferral and review-fix paths.
 
-- `worker/deno/tests/ci_mutation_contract_test.ts` (34 tests): detector forms,
-  look-alikes (`|| true`, `||true`, `|| :`, `|| exit 0`, `# || true`,
-  `echo "|| true"; cargo mutants`), `+toolchain`, `\` continuations, step and
-  job `continue-on-error`, trigger shapes, missing directory, malformed file
-  reported in `unreadable`, and one hostile 200000-character case per pattern.
-- `worker/deno/tests/mutation_gate_test.ts` (10 new tests): with the CI block a
-  summary exemption does not clear a survivor (positive control without it),
-  error and clean results carry no `ciBlock`, and the comment and reason
-  sanitise hostile job names.
-- `worker/deno/tests/completion_phase_mutation_gate_test.ts` (new tests):
-  `completion - a survivor the repository's CI blocks on holds the PR as a draft`,
-  the exemption-ignored and clean/error/`continue-on-error` controls, the
-  existing-PR conversion,
-  `completion - a held PR the REST fallback opens is converted to a draft and not armed`,
-  `completion - a workflow lookup that throws is noted as non-blocking and the PR is raised ready`
-  and
-  `completion - an unreadable workflow file is logged by name and does not hold the PR`.
-- `worker/deno/tests/draft_continuation_mutation_hold_test.ts`: the hold body
-  and the `draftBody` override.
-- `worker/deno/tests/pr_feedback_drift_check_3750_test.ts` (one new test): the
-  review-fix path, the second production caller of `evaluateMutationGate`, now
-  passes the contract, so an exemption no longer clears a survivor there either.
-- Follow-up for the verifier and the unmet criteria:
-  `tests/deferred_pr_drain_test.ts` (draft record reaches the create; ordinary
-  record is not a draft), `tests/pr_create_rest_test.ts` (`-F draft=true`),
-  `completion - a held PR parked by the secondary limit is recorded as a draft for the drain`,
-  `completion - a runner error with a blocking CI job holds the PR as an incomplete-validation draft`,
-  `completion - an exhausted mutation budget with a blocking CI job holds the PR as a draft`,
-  `completion - the CI job's cargo mutants flags reach the worker's runner`,
-  `tests/mutation_runner_test.ts` (flags in the cargo argv), and in
-  `tests/ci_mutation_contract_test.ts` the aggregator, `extractCargoMutantsArgs`
-  and the cases that kill the surviving mutants of `isMapping`, `isTrueFlag`,
-  `listWorkflowFiles` and the trigger fallthrough (directory named `x.yml`,
-  non-workflow extensions, non-mapping documents, `"true"` string flags, a
-  trigger that is a number).
-- Docs: `docs/mutation-check.md` (new section and the sentences it made false),
-  `docs/workflows/issue-processing.md`, `CODING-STANDARDS.md` and its declared
-  twin `prompts/coding_guidelines/prompt.md`, and `prompts/issue/prompt.md`.
-  Ledger entry `docs/audits/lib-sweep-coverage/top-up-4617.json`.
+- `worker/deno/tests/ci_mutation_contract_test.ts`: cargo and Deno tool
+  identification, installation commands excluded, filter aliases carried,
+  aggregator reporting and scope extraction after `;`, `&&` and `||`.
+  Hostile inputs include a separator followed by 200000 spaces and no cargo,
+  cargo whitespace, toolchain text, a Deno task name and a non-no-op tail.
+- `worker/deno/tests/mutation_gate_test.ts`: matching CI ignores summary
+  exemptions; mismatched tools retain exemptions in both language directions;
+  errors, budget, cap and hostile job labels retain their coverage.
+- `worker/deno/tests/completion_phase_mutation_gate_test.ts`: held survivors,
+  existing PRs, runner errors and exhausted budgets; the current REST test is
+  `completion - a held PR the REST fallback opens is a draft and not armed`
+  and asserts the REST draft flag. Both secondary-only and exhausted-create
+  deferrals assert that the issue note names the CI job, calls mutation
+  validation incomplete, promises a draft and says the next run continues.
+  The near-limit summary test checks the held body size. Cargo scope flags
+  reach the runner. A cargo CI job with a Deno survivor stays ready and armed.
+- `worker/deno/tests/pr_feedback_drift_check_3750_test.ts`: a matching Deno CI
+  job ignores the exemption; absent CI and cargo CI honour that Deno exemption.
+- Supporting coverage: `draft_continuation_mutation_hold_test.ts`,
+  `deferred_pr_drain_test.ts`, `pr_create_rest_test.ts` and
+  `mutation_runner_test.ts` cover the held body, persisted draft, REST boolean
+  and cargo argv respectively. `deferred_pr_store_test.ts` and
+  `completion_phase_secondary_limit_test.ts` cover ordinary parked PRs.
+- Read `docs/mutation-check.md`, including its blocking-CI and review-fix
+  sections; updated it for language matching and the held pending note.
+  Earlier changes also update `docs/workflows/issue-processing.md`,
+  `docs/workflows/pr-feedback.md`, `prompts/issue/prompt.md`,
+  `CODING-STANDARDS.md` and its twin `prompts/coding_guidelines/prompt.md`.
+  REST creation carries the draft flag; held bodies obey the GitHub limit.
+  Ledger entry: `docs/audits/lib-sweep-coverage/top-up-4617.json`.
 
 ## Acceptance Criteria
 
@@ -143,7 +135,8 @@ through the real `workOnIssueCompletion`.
   reports genuine unresolved survivors, on the deferred-creation path —
   evidence:
   `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a held PR parked by the secondary limit is recorded as a draft for the drain`,
-  `worker/deno/tests/deferred_pr_drain_test.ts` — reviewer: met
+  `worker/deno/tests/deferred_pr_drain_test.ts`; both held deferral tests also
+  assert the pending note states incomplete mutation validation — reviewer: met
 
 ## Standards Review
 
@@ -155,46 +148,45 @@ through the real `workOnIssueCompletion`.
 
 ## Test Plan
 
-- `deno task test:unit` over `tests/ci_mutation_contract_test.ts`,
-  `tests/mutation_gate_test.ts`, `tests/completion_phase_mutation_gate_test.ts`,
-  `tests/draft_continuation_mutation_hold_test.ts` and
-  `tests/pr_feedback_drift_check_3750_test.ts` from `worker/deno`: passed on the
-  head (with `tests/mutation_runner_test.ts`, `tests/deferred_pr_drain_test.ts`
-  and `tests/pr_create_rest_test.ts`); `deno check` on the edited modules,
-  `deno fmt` and `deno lint`: passed. `deno task check:manifests`: 847 passed, 0
-  failed.
-- Red checks (break applied, test run, restored): hold never set → the
-  held-draft, exemption-ignored and existing-PR tests red; `--draft` not pushed
-  → held tests red; hold intro not used → the advisory test red; recovery arming
-  a held PR → the existing-PR test red; REST-fallback conversion removed → its
-  test red; catch branch rethrows → the lookup-throws test red; review-fix third
-  argument removed → the new review-fix test red; detector's non-failing helper
-  forced false, `+toolchain` removed, continuation join disabled → the matching
-  detector tests red.
-- Callers of `evaluateMutationGate` checked: the completion phase and the
-  review-fix path (`worker/deno/lib/pr_feedback_drift_check.ts`) both pass the
-  contract; the parameter stays optional so the many two-argument test calls
-  keep their old meaning.
-- Existing tests: no assertion was removed or edited in an existing test; the
-  shared double in `completion_phase_mutation_gate_test.ts` gained counters and
-  scenario flags, and its `gh pr view` stub now reports `isDraft: false`.
-- Full `./quality.sh` ran and failed in `deno tests` on three tests this diff
-  does not touch: `babysitter default heartbeat resolves its checkout revision`
-  (a JSR manifest download for `@std/crypto` fails on this host),
-  `verifyResolvedTree - the repository's own task sees only the allowlisted environment (Issue #4659)`
-  (the `agent` account probe fails on this host) and
-  `every non-test module under the ledger roots is claimed by exactly one sweep slice`,
-  which this diff caused and fixed afterwards with the ledger entry; the last
-  was re-run and passes (39 passed). The serial pass did not run after the
-  parallel failure, so CI runs the rest.
-- Docs sweep: grepped `mutation check`, `survivor` and `skip_mutation_check`
-  across `docs/` and the prompts; `docs/CONFIGURATION.md`, `docs/INTERNALS.md`,
-  `docs/CONTAINER.md`, `docs/workflows/pr-feedback.md` and
-  `docs/coverage-carryover-check.md` hits stay true (review-fix and disk-parking
-  text). Twin rule checked: `CODING-STANDARDS.md` and
-  `prompts/coding_guidelines/prompt.md` carry the same sentence.
-
-<!-- vibe-quality-gate-skipped: the full gate ran once and failed on two host-dependent tests this diff does not touch (JSR download, agent-account probe); no re-run fits the remaining budget, CI runs the full suite -->
+- Focused local tests use `deno task test:unit` from `worker/deno`, with the
+  detector, gate, completion, review-fix, deferred store and secondary-limit
+  files named in Evidence. Formatter, linter, type check and manifest checks
+  use the same Deno configuration and frozen lockfile as `quality.sh`.
+- Reproduced before the fix: separator extraction returned no flags; both
+  held deferrals posted the finished-work note; cargo CI held a Deno survivor.
+  Each corresponding regression failed, then passed after the fix. The hostile
+  separator test exercises the removed overlapping whitespace quantifiers.
+- Existing assertions are retained. Detector expectations gain the production
+  tool field; completion hold fixtures now return Rust for cargo CI, and the
+  review-fix hold fixture uses a Deno CI task for its Deno result. Those
+  fixtures keep exercising the original hold behaviour with matching tools.
+- Both production callers pass the tool to the shared `evaluateMutationGate`;
+  it owns language matching, so completion and review fixes use one rule.
+  No second detector or verdict implementation was found.
+- Docs sweep: checked mutation/survivor references in the operator manual and
+  review workflow. `docs/workflows/pr-feedback.md` was corrected earlier in
+  this PR; it is not an unchanged-hit claim. The coding-standard sentence and
+  its prompt twin remain aligned.
+- Results: the six focused files passed (180 tests); full-tree `deno fmt`,
+  `deno lint`, `deno check`, Mermaid and Markdown lint passed. Manifest checks
+  passed (847 tests, one existing ignored case). `pr-summary-check` reported
+  zero blocked gates; closure, independent review and reproduction were not
+  checked without issue-body/label inputs.
+- Full `./quality.sh < /dev/null` failed at the parallel Deno test pass. A
+  repeat of `deno task test:unit` reproduced a Deno 2.9.5 macOS/aarch64 runtime
+  panic: `pledge test permissions called before restoring previous pledge`.
+  The serial pass did not run after that crash. The base branch merge (PR
+  #4715, Quality run 41555343824) and the existing PR head (Quality run
+  41557562405) passed all CI test shards, confirmed with `gh`.
+- Local Semgrep and Checkov were unavailable (no installed binary or cached
+  container); config integration was skipped because no local config exists.
+  CI remains authoritative for those checks. No tests were skipped or changed
+  to work around the runtime panic.
+- Red checks: removing only the language filter made the mixed-language
+  completion test, both-direction exemption test and review-fix control fail.
+  Inverting the detected tool made all edited detector tool expectations and
+  the matching-language completion/review-fix hold tests fail. Restored both
+  changes before the final focused run.
 
 ## Known gaps
 
@@ -203,7 +195,3 @@ through the real `workOnIssueCompletion`.
 - A repository whose workflows cannot be read, or whose `quality_credentials`
   cannot be resolved, is not held: the contract or check is unknown.
 - The review-fix path reports but never holds a push.
-
-Review follow-up: REST creation carries the draft flag, held bodies obey the
-GitHub length limit, and CI detection ignores installation commands while
-carrying the supported cargo-mutants filter flags.

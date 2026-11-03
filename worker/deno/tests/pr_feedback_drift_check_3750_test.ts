@@ -387,7 +387,7 @@ const MUTANTS_WORKFLOW = [
   "    runs-on: ubuntu-latest",
   "    steps:",
   "      - uses: actions/checkout@v4",
-  "      - run: cargo mutants --in-place",
+  "      - run: deno task mutation-check",
   "",
 ].join("\n");
 
@@ -442,13 +442,21 @@ Deno.test("runPrFeedbackDriftCheck - a blocking CI mutants job stops a summary e
     }
   }
 
-  // Positive control: the same exemption with no CI job still clears it.
-  {
+  // Controls: absent CI and CI for the other language still honour exemptions.
+  for (
+    const workflow of [
+      undefined,
+      MUTANTS_WORKFLOW.replace("deno task mutation-check", "cargo mutants"),
+    ]
+  ) {
     const { dir, beforeSha } = await setupBaseline();
     try {
       await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
       await writeFile(dir, SUMMARY_PATH, `${SUMMARY_V1}\n${EXEMPT_LINE}\n`);
 
+      if (workflow !== undefined) {
+        await writeFile(dir, ".github/workflows/mutants.yml", workflow);
+      }
       const calls: AgentCall[] = [];
       const runAgent = makeRunAgent(
         [{ ok: true, output: verdictBlock([]) }],

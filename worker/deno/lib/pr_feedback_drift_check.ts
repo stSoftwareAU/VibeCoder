@@ -1225,7 +1225,7 @@ async function runMutationGateOnce(
   // PR-summary exemption cannot clear them. Review-fix pushes cannot hold a
   // PR, so only this verdict changes. A lookup fault is logged and read as
   // non-blocking, as the completion phase does.
-  let ciBlock: CiMutationBlock | undefined;
+  let ciBlock: (CiMutationBlock & { tool: "cargo" | "deno_task" }) | undefined;
   try {
     const contract = await findBlockingMutationJob(repoPath);
     ciBlock = contract.blocking ?? undefined;
