@@ -1290,6 +1290,39 @@ Deno.test("a fully met summary with no closing keyword keeps the close after a r
   }
 });
 
+Deno.test("a missing criterion withholds the close at finish level and keeps another issue's reference (Issue #4716)", async () => {
+  const fixture = await makeCommittedSummaryRepo(
+    4674,
+    partialSummary(4674, "missing"),
+  );
+  try {
+    const events: string[] = [];
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      body: `Closes #4674\nFixes #9\n\n${buildIdempotencyMarker(4674)}`,
+      onEdit: () => events.push("publish"),
+    });
+    await finishBabysitterRepair(
+      "owner/repo",
+      repairPrFor(fixture.headSha, 7),
+      fixture.path,
+      "babysitter[bot]",
+      changesRequestedBy(),
+      repairFinishDeps({ headSha: fixture.headSha, github, events }),
+      {
+        scratch: fixture.scratch,
+        proposal: "Rewritten. Closes #4674 and fixes #9.",
+      },
+    );
+    assertEquals(events, ["publish", "dismiss"]);
+    assertEquals(closingKeywordLine(github.body(), 4674), null);
+    assertStringIncludes(github.body(), "Part of #4674");
+    assertStringIncludes(github.body(), "ixes #9");
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
 Deno.test("a head that moved before publication publishes nothing and keeps reviews open", async () => {
   const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
   try {

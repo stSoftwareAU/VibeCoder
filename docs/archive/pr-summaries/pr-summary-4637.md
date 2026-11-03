@@ -103,23 +103,23 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   assembled bodies and agent proposals; `Part of` must not restore `Closes` —
   evidence:
   `worker/deno/tests/babysitter_pr_body_guard_test.ts::a proposal that re-closes a partial issue is withheld, with no closing keyword left (Issue #4716)`
-  — reviewer: partial — reason: the reviewer noted the guard also needs a
-  closing keyword in the summary, which `assemblePrBody` does not; the final
-  state is the conservative one (see Essential Design Decisions)
+  and
+  `a fully met summary with no closing keyword keeps the close, as the assembler does`
+  — reviewer: met
 - **met** — When a proposal drops an issue association, preserve it and choose
   closing versus non-closing from the acceptance result, keeping unrelated
   content and links — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a proposal that omits a withheld issue gets Part of #N, not Closes #N`
-  — reviewer: partial — reason: a bare "See #N" mention counts as the
-  association and is left non-closing, which is the safe direction
-- **partial** — Treat publication as part of a description repair: recheck head,
+  and
+  `a fully met summary with no closing keyword keeps the close after a repair, with or without a proposal (Issue #4637)`
+  — reviewer: met
+- **met** — Treat publication as part of a description repair: recheck head,
   body and closing references; retry idempotently; keep the finding outstanding
   and record a recoverable next action until verified — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a failed description edit keeps reviews open, and a retry at the same head publishes and dismisses`
-  — reviewer: partial — reason: a legacy body with the worker marker but no
-  summary digest is re-synchronised only through the before-push diff, so a
-  no-change retry does not refresh it; the recoverable next action is the thrown
-  error and the open review, not a persisted record
+  and
+  `a legacy worker body with no summary digest is rebuilt on a no-change retry, and a second retry makes no edit (Issue #4637)`
+  — reviewer: met
 - **met** — On a no-code-change repair, publish only an independently
   supportable correction; a proposal is data, not authority — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a repair with no code change publishes its proposal after the sync and dismisses last`
@@ -128,11 +128,9 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   summary-only repair are updated before the repair is reported complete —
   evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a clean-tree babysitter retry repairs a marker-less stale body before dismissal`
-  and `the production clean-tree completion path syncs before review dismissal`
-  — reviewer: partial — reason: the reviewer found no babysitter test with a
-  stale-digest marker body; the digest path is the shared
-  `syncPrBodyFromSummary` path covered by
-  `worker/deno/tests/pr_body_sync_test.ts`
+  and
+  `a marker-bearing body with a stale summary digest is rebuilt before dismissal, and a retry at the same head makes no second edit (Issue #4637)`
+  — reviewer: met
 - **met** — #4716 regression: old body `Closes #4674`, result `Part of #4674`
   plus a `partial` criterion; final body and GitHub closing references do not
   close #4674 — evidence:
@@ -142,17 +140,18 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   association, multiple issue references, and a fully met issue whose closing
   reference remains — evidence:
   `worker/deno/tests/babysitter_pr_body_guard_test.ts::a proposal that re-closes a missing issue is withheld, with no closing keyword left (Issue #4716)`,
-  `an unrelated closing reference to another issue is restored beside a withheld issue`,
-  `a fully met issue keeps its legitimate Closes, with no duplicate` — reviewer:
-  met
+  `several references to a withheld issue are all withheld, and another issue's reference is kept (Issue #4716)`,
+  `a fully met issue keeps its legitimate Closes, with no duplicate` and
+  `worker/deno/tests/fleet_pr_babysitter_test.ts::a missing criterion withholds the close at finish level and keeps another issue's reference (Issue #4716)`
+  — reviewer: met
 - **met** — Cover dirty/unpushed summaries, missing committed summary, failed
   publication, head movement, retry at the same head, no-code-change
   publication; unknown evidence never closes — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::an uncommitted working-tree summary never reaches the adopted body`,
   `a head that moved before publication publishes nothing and keeps reviews open`,
-  `a retry at the same head with the description already current makes no second edit`
-  — reviewer: partial — reason: the reviewer's gap was the legacy digest-less
-  retry named above; every other listed case has a named test
+  `a retry at the same head with the description already current makes no second edit`,
+  `a legacy worker body with no summary digest is rebuilt on a no-change retry, and a second retry makes no edit (Issue #4637)`
+  — reviewer: met
 - **met** — Preserve existing security checks and normal CI/review requirements;
   no new prose-format gate — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a stale repair checkout cannot dismiss reviews after body sync skips`

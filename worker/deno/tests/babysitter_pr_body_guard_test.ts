@@ -205,6 +205,18 @@ Deno.test("an unrelated closing reference to another issue is restored beside a 
   assertStringIncludes(output, "\nCloses #99");
 });
 
+Deno.test("several references to a withheld issue are all withheld, and another issue's reference is kept (Issue #4716)", () => {
+  const output = guardPrBodyProposal({
+    proposal: "Closes #4674. Also fixes #4674 and resolves #9.",
+    liveBody: liveBodyFor(4674, "Closes #4674\nFixes #9"),
+    summary: partSummary("missing"),
+    repo: REPO,
+  });
+  assertEquals(closingKeywordLine(output, 4674), null);
+  assertStringIncludes(output, "resolves #9");
+  assertStringIncludes(output, "Part of #4674");
+});
+
 Deno.test("with no committed summary the close is unknown evidence and is withheld", () => {
   const output = guardPrBodyProposal({
     proposal: "Closes #4674",
