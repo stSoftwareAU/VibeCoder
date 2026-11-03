@@ -42,6 +42,8 @@
 // without doing it. A failed upkeep action is reported in `upkeep` too, and
 // is not retried at the same head commit.
 
+import { isEarlierGap } from "../../../../worker/deno/lib/earlier_findings.ts";
+
 // The helpers live at <checkout>/.claude/skills/review-fleet-prs/scripts/,
 // and the checkout's own .config.json is four levels up from there.
 const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
@@ -570,8 +572,8 @@ function findingNamesFile(
     );
 }
 
-// Whether every finding, and every earlier finding in its chain, names a file
-// of the sent-back own diff (Issue #4723). Unknown or empty findings, and any
+// Whether every original finding, including those in structured gaps, names
+// a file of the sent-back own diff (Issue #4723). Unknown or empty findings, and any
 // finding on a non-file such as a commit message, are not content findings.
 function findingsAreContent(
   findings: readonly Pick<Finding, "file" | "earlier">[] | undefined,
@@ -579,9 +581,10 @@ function findingsAreContent(
 ): boolean {
   return findings !== undefined && findings.length > 0 &&
     findings.every((f) =>
-      filenames.some((name) =>
-        f.file === name || f.file.endsWith(`/${name}`)
-      ) &&
+      (isEarlierGap(f) ||
+        filenames.some((name) =>
+          f.file === name || f.file.endsWith(`/${name}`)
+        )) &&
       (f.earlier === undefined || findingsAreContent([f.earlier], filenames))
     );
 }

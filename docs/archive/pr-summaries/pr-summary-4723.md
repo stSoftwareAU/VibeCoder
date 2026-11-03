@@ -21,7 +21,8 @@ send-back. Any other force-push still gets a fresh review. Closes #4723.
 - The exception needs all of: `kind === "dependabot"`, compare status
   `diverged`, a complete `base...head` commit list where every author login is
   `dependabot[bot]` (a null author fails), known non-empty findings that each
-  (and each `earlier`) name a file in the sent-back own diff, and the strict
+  (unwrapping structured earlier-review gaps) name a file in the sent-back own
+  diff, and the strict
   path for every file (`normalisePatch` equality including context, no version
   exception, no file dropped or added; head-only files, the 300-file cap and
   duplicate names are refused as before).
@@ -52,6 +53,15 @@ re-bumps"). Grepped both for `force-push`, `ancestor`, `ahead`, `diverged`; no
 other sentence became false.
 
 ## Test Plan
+
+Second review follow-up: export `isEarlierGap` from the gap builder and use it
+to accept structured wrappers only when their original finding is content.
+The regression builds real records with `earlierFindingGaps`: a content gap
+alone or alongside a plain finding stays `awaiting-fix`; a commit-message gap
+or text-only gap gets a fresh review. The new test failed before the fix
+(null instead of `awaiting-fix`). No existing assertion was removed.
+All 80 tests across the gate, pass-level wiring and earlier-findings suites
+pass, alongside targeted formatting, lint and type checking.
 
 Review follow-up: added a pass-level regression in
 `worker/deno/tests/review_fleet_prs_upkeep_failure_2891_test.ts` with an

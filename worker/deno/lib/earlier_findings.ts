@@ -48,6 +48,13 @@ export interface EarlierFinding {
 /** Opens the original finding inside a gap's text, so a gap quoted as text can be unwrapped. */
 const ORIGINAL_MARKER = "Original finding: ";
 const GAP_FILE = "(earlier review)";
+
+/** Whether a finding is a structured gap carrying its original finding. */
+export function isEarlierGap(
+  finding: Pick<EarlierFinding, "file" | "earlier">,
+): boolean {
+  return finding.file === GAP_FILE && finding.earlier !== undefined;
+}
 const TEXT_GAP_FIX =
   "Resolve every ask in the original finding, including its Fix, in this change.";
 const TEXT_GAP_FIX_TAIL = `\n\n**Fix:** ${TEXT_GAP_FIX}`;

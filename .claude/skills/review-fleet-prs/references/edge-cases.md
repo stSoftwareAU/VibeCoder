@@ -117,10 +117,12 @@ rather than `ahead`. The skip applies only when all of these hold: the gate
 entry's kind is `dependabot`; the compare status is `diverged`; every commit in
 `compare/{base}...{head}` (the complete list) has author login
 `dependabot[bot]`; the logged findings for the exact sent-back head are known,
-number at least one, and each names a file in the sent-back own diff (a
+number at least one, and each original finding names a file in the sent-back
+own diff, including originals carried by structured earlier-review gaps (a
 commit-message, history or metadata finding, or unknown or missing findings,
-gets a fresh review); and the two own diffs match on the strict path for every
-file, with `normalisePatch` equality including context lines, no version
+or a text-only gap gets a fresh review); and the two own diffs match on the
+strict path for every file, with `normalisePatch` equality including context
+lines, no version
 exception, no file dropped or added, and a sent-back listing under the 300-file
 cap. A re-cut that changes the own diff (for example a newer version), a head
 with any non-Dependabot commit (a fleet fix pushed on top), and any other

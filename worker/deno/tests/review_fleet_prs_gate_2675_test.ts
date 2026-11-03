@@ -4,6 +4,7 @@
  * the skill's job.
  */
 import { assertEquals, assertRejects } from "@std/assert";
+import { earlierFindingGaps } from "../lib/earlier_findings.ts";
 import {
   authorKind,
   existingTestChanges,
@@ -2232,6 +2233,34 @@ Deno.test("runWithTimeout kills a command that hangs, so one stuck gh call canno
 // "diverged". Every fixture below is accepted by the re-cut path; each test
 // changes one thing from it.
 const RECUT_PATCH = "@@ -1 +1 @@\n-old\n+unfixed";
+
+Deno.test("Dependabot re-cut handles logged earlier gaps (Issue #4723)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  const gh = sentBackGh(files, files);
+  const finding = { file: "a.ts", line: 1, problem: "Still broken" };
+  const gaps = earlierFindingGaps([finding], []);
+  assertEquals(await sentBackSkip(gh, gaps, "dependabot"), "awaiting-fix");
+  assertEquals(
+    await sentBackSkip(gh, [finding, ...gaps], "dependabot"),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      earlierFindingGaps([{ ...finding, file: "COMMIT_MSG" }], []),
+      "dependabot",
+    ),
+    null,
+  );
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      earlierFindingGaps(["a.ts: Still broken"], []),
+      "dependabot",
+    ),
+    null,
+  );
+});
 
 // base...head with the commit authors the re-cut check reads (null is a commit
 // with no author).
