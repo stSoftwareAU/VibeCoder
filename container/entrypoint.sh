@@ -223,13 +223,14 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
           if [[ "$(id -u)" != "0" ]] && [[ -e "${entry}.git" ]] &&
             [[ -n "$(find "${entry%/}" -prune -user "$(id -u)" -print 2>/dev/null)" ]] &&
             [[ -n "$(find "${entry}.git" -maxdepth 2 ! -user "$(id -u)" -print -quit 2>/dev/null)" ]]; then
-            quarantine="${VIBE_WORK_ROOT}/.untrusted-${entry_name}-$(date +%s)"
-            echo "Warning: ${entry}.git holds files not owned by uid $(id -u) — the git directory may have been replaced by the untrusted account (Issue #4737). Moving the clone to ${quarantine} with group and other access removed; the worker will re-clone it." >&2
-            if mv "${entry%/}" "${quarantine}" 2>/dev/null; then
-              chmod g-rwxs,o-rwx,-t "${quarantine}" 2>/dev/null || true
+            quarantine="$(mktemp -d "${VIBE_WORK_ROOT}/.untrusted-${entry_name}-XXXXXX")" || quarantine=""
+            echo "Warning: ${entry}.git holds files not owned by uid $(id -u) (Issue #4737); quarantining the clone." >&2
+            if [[ -n "${quarantine}" ]] && mv "${entry%/}" "${quarantine}/clone" 2>/dev/null; then
+              : # The private quarantine directory prevents access to the clone.
             else
-              chmod g-rwx,o-rwx "${entry%/}" 2>/dev/null ||
-                echo "Warning: could not quarantine ${entry} — its git directory is still trusted via safe.directory" >&2
+              echo "Warning: could not quarantine ${entry}; its git directory is still trusted via safe.directory. Disabling access to the clone." >&2
+              chmod 000 "${entry%/}" 2>/dev/null ||
+                echo "Warning: could not disable access to ${entry}; manual intervention is required." >&2
             fi
           fi
           ;;

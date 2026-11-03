@@ -105,3 +105,46 @@ function parentDirectory(path: string): string {
   const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   return cut > 0 ? trimmed.slice(0, cut) : "/";
 }
+
+/** Refuse to run git in a clone supplied by another account (Issue #4737). */
+export async function checkCloneOwnership(
+  path: string,
+  uidProbe: () => Promise<number> = async () => {
+    const result = await new Deno.Command("id", { args: ["-u"] }).output();
+    const output = new TextDecoder().decode(result.stdout).trim();
+    const uid = Number(output);
+    if (
+      !result.success || !/^\d+$/.test(output) || !Number.isSafeInteger(uid)
+    ) {
+      throw new Error("could not determine worker uid");
+    }
+    return uid;
+  },
+): Promise<string | null> {
+  try {
+    let root: Deno.FileInfo;
+    try {
+      root = await Deno.lstat(path);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return null;
+      throw error;
+    }
+    const uid = await uidProbe();
+    if (!root.isDirectory || root.uid === null || root.uid !== uid) {
+      return `Refusing untrusted clone path ${path}: root is not owned by worker uid ${uid}`;
+    }
+    let git: Deno.FileInfo;
+    try {
+      git = await Deno.lstat(`${path}/.git`);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return null;
+      throw error;
+    }
+    if (git.isSymlink || git.uid === null || git.uid !== uid) {
+      return `Refusing untrusted clone path ${path}: .git is not owned by worker uid ${uid} or is a symlink`;
+    }
+    return null;
+  } catch (error) {
+    return `Could not check clone ownership at ${path}: ${error}`;
+  }
+}

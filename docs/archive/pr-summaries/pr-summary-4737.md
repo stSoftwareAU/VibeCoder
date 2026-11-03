@@ -25,8 +25,9 @@ the final version.
   persistent volume before this fix). So the entrypoint also looks for any path
   within two levels of `.git` (so `.git` itself, `config`, `hooks` and its
   entries) not owned by the worker's uid. For a worker-owned clone it warns and
-  moves the clone to `.untrusted-<name>-<epoch>` in the work root with group and
-  other access removed. The worker re-clones it. Skipped when run as root.
+  moves the clone into a private random `.untrusted-<name>-*` directory. A
+  failed move warns and disables clone access. Skipped when run as root.
+  Both clone reuse paths refuse a foreign-owned root or `.git` before running git.
 
 ### Essential Design Decisions
 
@@ -62,13 +63,20 @@ flowchart LR
 
 ## Test Plan
 
+- Review fix: test failed quarantine and access removal, foreign `.git` with a
+  worker-owned root, and both clone reuse paths rejecting a foreign root.
+  Both reuse paths call the shared ownership check before their git probes.
+  Targeted tests: 125 passed; two existing setgid tests fail on macOS.
+  Base Linux CI run 41555343824 passed all four shards and integration tests.
+  Deno formatting, lint and repository-wide type checking passed.
+
 - Review fix: quarantine only worker-owned clone roots, retaining agent-owned
   tier-2 data siblings. The new regression test simulates a foreign worker uid
   and verifies both directory and linked-worktree siblings remain in place; it
   failed before the fix. The quarantine test simulates foreign git metadata
   within worker-owned roots and still checks both forms. No twin was found for
   this ownership decision.
-- Integration CI repair for PR #4754: derive the quarantine fixture's foreign
+- Integration CI repair for PR #4754: derive the quarantine fixture's worker
   uid from `Deno.stat(dir).uid` instead of `Deno.uid()`. The integration runner
   grants file read access but no sys access to uid; no permission grants or
   assertions changed. The same test failed locally with `NotCapable` before
@@ -116,10 +124,11 @@ flowchart LR
 - New test
   `a clone whose git directory the worker does not own is
   quarantined`: stubs
-  `id` to report a uid that owns nothing in the fixture, and asserts both the
-  `.git`-directory clone and the linked-worktree clone leave their place in the
-  work root as mode-0 `.untrusted-*` entries, while a clone with no `.git` is
-  untouched. Run after the fix: 51 passed, 0 failed on this file plus
+  `id` to report the fixture owner as the worker uid and uses a `find` stub
+  to simulate foreign `.git` ownership. The real two-level ownership predicate
+  is not exercised in the positive case. Both directory and linked-worktree
+  clones leave their place inside private quarantine directories; a clone with
+  no `.git` is untouched. Run after the fix: 51 passed, 0 failed on this file plus
   `container_entrypoint_test.ts`.
 - `./quality.sh`: FAILED on the parallel deno-test pass with 4 failures
   unrelated to this diff: two Rust-formatter tests

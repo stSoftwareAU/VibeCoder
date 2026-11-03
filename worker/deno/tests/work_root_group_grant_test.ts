@@ -71,6 +71,7 @@ async function runOverWorkRoot(
   dir: string,
   workerUid?: number,
   foreignGit = false,
+  failMove = false,
 ): Promise<string> {
   const binDir = await stubBin(dir);
   if (workerUid !== undefined) {
@@ -85,9 +86,13 @@ async function runOverWorkRoot(
     // Simulate foreign git metadata while retaining real root ownership checks.
     await Deno.writeTextFile(
       `${binDir}/find`,
-      '#!/bin/bash\nif [[ "$2" == "-maxdepth" ]]; then printf "%s\\n" "$1"; else exec /usr/bin/find "$@"; fi\n',
+      '#!/bin/bash\nif [[ "$1" == */.git && ( "$2" == "-maxdepth" || "$2" == "-prune" ) ]]; then if [[ "$*" != *"-user "* || "$*" == *"! -user "* ]]; then printf "%s\\n" "$1"; fi; else exec /usr/bin/find "$@"; fi\n',
     );
     await Deno.chmod(`${binDir}/find`, 0o755);
+  }
+  if (failMove) {
+    await Deno.writeTextFile(`${binDir}/mv`, "#!/bin/bash\nexit 1\n");
+    await Deno.chmod(`${binDir}/mv`, 0o755);
   }
   await fakeRepo(dir);
   const home = `${dir}/home`;
@@ -128,6 +133,7 @@ async function runOverWorkRoot(
     stdout: "null",
     stderr: "piped",
   }).output();
+  await Deno.writeTextFile(`${dir}/stderr`, new TextDecoder().decode(stderr));
   assert(success, new TextDecoder().decode(stderr));
   return workRoot;
 }
@@ -383,6 +389,26 @@ Deno.test("entrypoint - a clone whose git directory the worker does not own is q
     }
     // A clone with no git directory of its own is not touched.
     await Deno.stat(`${workRoot}/NEAT-AI-Discovery`);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - a failed quarantine warns and disables the clone", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const uid = (await Deno.stat(dir)).uid;
+    assert(uid !== null && uid !== 0);
+    const workRoot = await runOverWorkRoot(dir, uid, true, true);
+    assert(
+      (await Deno.readTextFile(`${dir}/stderr`)).includes(
+        "could not quarantine",
+      ),
+    );
+    for (const clone of ["NEAT-AI", "LINKED"]) {
+      assertEquals((await modeOf(workRoot, clone)) & 0o777, 0);
+      await Deno.chmod(`${workRoot}/${clone}`, 0o700);
+    }
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

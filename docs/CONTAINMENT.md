@@ -157,9 +157,11 @@ root filesystem cannot be dropped by a later edit either.
 - The strip cannot reach files `agent` already owns. The entrypoint therefore
   checks the ownership of `.git` and its first two levels (including `config`
   and `hooks`) in worker-owned clone roots. A clone with any file not owned by
-  the worker is warned about and moved to `.untrusted-<name>-<epoch>` with group
-  and other access removed, and the worker re-clones it. Tier-2 data siblings
-  created and owned by `agent` are left in place.
+  the worker is warned about and moved into a private, randomly named
+  `.untrusted-<name>-*` directory. If the move fails, access to the clone is
+  disabled and a warning is emitted. Before reusing a clone, the worker checks
+  ownership of its root and `.git` and refuses foreign-owned paths. Tier-2 data
+  siblings created and owned by `agent` are left in place.
 - `safe.directory '*'` is kept deliberately: the worker's git needs that trust
   for the mounted clones. These protections prevent `agent` replacing or
   writing git metadata in worker-owned clones; tier-2 sibling trust is tracked

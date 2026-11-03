@@ -26,7 +26,11 @@
 
 import { setupRepo as defaultSetupRepo } from "../commands/git_operations.ts";
 import type { CommandResult } from "../types.ts";
-import { discardBrokenClone, probeCorruptClone } from "./broken_clone.ts";
+import {
+  checkCloneOwnership,
+  discardBrokenClone,
+  probeCorruptClone,
+} from "./broken_clone.ts";
 
 /** Outcome of {@link ensureRepoClone}. */
 export interface EnsureRepoCloneResult {
@@ -46,6 +50,7 @@ export interface EnsureRepoCloneDeps {
   setupRepoFn?: (repo: string, workDir: string) => Promise<CommandResult>;
   /** Directory probe. Defaults to a `Deno.stat` check. */
   isDirectoryFn?: (path: string) => Promise<boolean>;
+  ownershipCheckFn?: (path: string) => Promise<string | null>;
 }
 
 /** Default directory probe — a missing path is simply "not a directory". */
@@ -118,6 +123,12 @@ async function ensureRepoCloneLocked(
     repoName === ".." || repoName.includes("/") || repoName.includes("\\");
 
   if (!unsafeSegment && await isDirectory(repoPath)) {
+    const ownershipError = await (deps.ownershipCheckFn ?? checkCloneOwnership)(
+      repoPath,
+    );
+    if (ownershipError) {
+      return { ok: false, repoPath, cloned: false, message: ownershipError };
+    }
     const discarded = await discardBrokenClone(repoPath);
     if (!discarded.ok) {
       return {

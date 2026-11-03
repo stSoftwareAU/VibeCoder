@@ -56,7 +56,11 @@ import {
   updatePrBranch,
 } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
-import { discardBrokenClone, probeCorruptClone } from "../lib/broken_clone.ts";
+import {
+  checkCloneOwnership,
+  discardBrokenClone,
+  probeCorruptClone,
+} from "../lib/broken_clone.ts";
 import {
   isCloneCorruption,
   recoverCorruptClone,
@@ -623,6 +627,8 @@ function classifyGitCorruption(
 export async function setupRepo(
   repo: string,
   workDir: string,
+  ownershipCheck: (path: string) => Promise<string | null> =
+    checkCloneOwnership,
 ): Promise<CommandResult> {
   const repoName = repo.split("/").pop() ?? repo;
   const repoPath = `${workDir}/${repoName}`;
@@ -643,6 +649,9 @@ export async function setupRepo(
         `"${repoName}" derived from slug "${repo}".`,
     };
   }
+
+  const ownershipError = await ownershipCheck(repoPath);
+  if (ownershipError) return { success: false, message: ownershipError };
 
   // A directory left by an interrupted clone holds no repository: every git
   // call in it dies at the filesystem boundary, wedging each run at setup.
