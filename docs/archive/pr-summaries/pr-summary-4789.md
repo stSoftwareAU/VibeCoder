@@ -83,14 +83,14 @@ branch the failed run needed. `primaryCloneHoldingBranch` relies on the first
 
 ## Test Plan
 
-- Added `worker/deno/tests/git_branch_primary_clone_held_test.ts` (11 tests, real
-  git in temporary directories plus mocked git runners): release of a primary-held branch from a lane
-  worktree; a developer's linked worktree is still not detached; and direct
-  cases for `primaryCloneHoldingBranch` (primary, non-primary, stderr with no
-  held path, not a git repository, a listing that cannot run, a listing that
-  exits non-zero, and the first listed worktree being the primary), and a
-  repair of a broken ref named only by a refused `checkout` (a `git` shim on
-  `PATH` fails `checkout` until the ref is removed).
+- Added `worker/deno/tests/git_branch_primary_clone_held_test.ts` (11 tests,
+  real git in temporary directories plus mocked git runners): release of a
+  primary-held branch from a lane worktree; a developer's linked worktree is
+  still not detached; and direct cases for `primaryCloneHoldingBranch` (primary,
+  non-primary, stderr with no held path, not a git repository, a listing that
+  cannot run, a listing that exits non-zero, and the first listed worktree being
+  the primary), and a repair of a broken ref named only by a refused `checkout`
+  (a `git` shim on `PATH` fails `checkout` until the ref is removed).
 - Red checks: disabling the `primaryCloneHoldingBranch` call in
   `attemptCreateFeatureBranch` turned the release test red (1 failed, 6 passed).
   Making `primaryCloneHoldingBranch` return the held path unconditionally turned
