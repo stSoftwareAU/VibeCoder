@@ -125,7 +125,9 @@ async function fakeGh(args: string[]): Promise<string> {
   const h = current();
   h.ghCalls.push(args);
   if (args[0] === "pr" && args[1] === "view") {
-    return args.includes("--jq") ? "" : JSON.stringify(h.pr);
+    return args.includes("--jq")
+      ? ""
+      : JSON.stringify({ ...h.pr, body: "", closingIssuesReferences: [] });
   }
   if (args[0] === "config") return "https\n";
   if (args.includes("PATCH")) {

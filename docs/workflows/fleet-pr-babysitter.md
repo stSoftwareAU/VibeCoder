@@ -15,13 +15,30 @@ branch would run the whole CI again and roughly double the Actions cost of the
 repair. After Codex reports a completed fix, the babysitter commits the fix and
 the merge together as one merge commit, checks the fix (not the base's own
 changes) for whitespace errors and conflict markers, runs the repository's own
-gate on that committed head before anything is pushed (Issue #4625), and
-rechecks the PR. It pushes only if that gate passed and the PR still matches the
-original head. A base merge on its own is also pushed when the agent made no
-change, so the branch is never left behind. Once a review fix is pushed, the
-babysitter dismisses the addressed review if it is still the current review and
-the PR head has not changed. GitHub CI then runs the repository's quality and
-regression checks on the updated branch.
+gate on the committed head (Issue #4625), and rechecks the PR. It pushes only
+if the gate passed and the PR still matches the original head. A base merge on its own
+is also pushed when the agent made no change, so the branch is never left
+behind. After a push, the babysitter synchronises the PR description from the
+summary committed at the pushed head, then publishes any description the agent
+proposed (see below), and dismisses an addressed review only if it is still the
+current review and the PR head has not changed. A retry with no working-tree
+changes also synchronises the body before dismissal, so a prior failed
+publication can be repaired. A failed body publication or a stale repair
+checkout leaves the review open. Harmless skips, such as an unrelated
+marker-less PR or an already-current description, do not block dismissal. GitHub
+CI then runs the repository's quality and regression checks on the updated
+branch.
+
+```mermaid
+sequenceDiagram
+    participant B as Babysitter
+    participant G as GitHub
+    B->>B: Validate and commit repair
+    B->>G: Push updated branch
+    B->>G: Rebuild and publish PR description
+    B->>G: Confirm current head and review
+    B->>G: Dismiss addressed review
+```
 
 The babysitter also arms auto-merge on every repair candidate that does not have
 it yet, through the fleet's shared auto-merge helper, before any repair or
@@ -150,24 +167,110 @@ defaults `~/.vibe-coder/credentials` and `~/.config/gh`. The configured spelling
 is resolved with filesystem traversal semantics, so `..` after a directory
 symlink follows the target's parent. Normalised locations and their canonical
 targets are also denied; missing tails are resolved through the longest existing
-parent. These entries are denied because the agent shares the runner's
-OS user and file modes alone do not protect them; it is also told not to ask
-questions. When a fix
-needs a human decision, it should report the blocker and stop without a commit.
-The sandbox still applies; an unavailable permission or credential can stop a
-run and must be corrected by the operator. Codex gets its own installation
-token, minted per repair for the target repository only, with read-only
-permissions (contents, pull requests, issues, checks, actions). Every GitHub
-write (lock, push, branch update, review dismissal, PR description) is made by
-the runner with its own token. The agent's read-only token expiry is retained,
-and each Codex session ends two minutes before it. If a session reaches that
-boundary, the runner starts a new session with a freshly minted, repository-
-scoped read token in the same repair clone; the runner's write token and App
-key remain outside the agent boundary. When a review asks for a
-description change, the agent writes the full new description to
-`.babysitter-pr-body` in the clone; the runner removes it before committing and
-applies it after the push (or when there is no code change), re-adding any
-closing reference such as `Closes #N` the proposal dropped.
+parent. These entries are denied because the agent shares the runner's OS user
+and file modes alone do not protect them; it is also told not to ask questions.
+When a fix needs a human decision, it should report the blocker and stop without
+a commit. The sandbox still applies; an unavailable permission or credential can
+stop a run and must be corrected by the operator. Codex gets its own
+installation token, minted per repair for the target repository only, with
+read-only permissions (contents, pull requests, issues, checks, actions). Every
+GitHub write (lock, push, branch update, review dismissal, PR description) is
+made by the runner with its own token. The runner restarts a session with a fresh repository-scoped read token
+when its token approaches expiry, preserving the repair clone. When a review asks
+for a description change, the agent writes the complete new description
+(Markdown) to `.babysitter-pr-body` in the clone. The proposal is data, not
+authority. The runner takes the file out of the clone before the change check,
+so it is never committed. After the push, or on a no-change retry at the
+unchanged head, the description steps run in order:
+
+1. It synchronises the description from the summary committed at the pushed
+   head. The sync is pinned to that commit: just before the edit, the checkout
+   must still be at it and `git ls-remote` must still report the PR branch at
+   it. The pinned-head skips (`checkout moved off the committed head`,
+   `pushed head moved`, `pushed head could not be verified`) keep the review
+   open. So does any skip outside the harmless set: `no worker marker`,
+   `summary unchanged`, `summary file deleted`, `body already current` and
+   `summary not committed at the pushed head`.
+2. After a push, it waits for GitHub's PR view to report the pushed head before
+   the sync in step 1 runs. It reads the view up to ten times, one second apart
+   (`waitForPushedHead`). If the view never shows that head, the step fails and
+   the review stays open. Publishing then reads the live description and
+   requires its head to equal the pushed head. The proposal is published on top
+   of the sync, except on a repair that pushed nothing where a summary committed
+   at the head governs the body: the sync already rebuilt the body from that
+   summary, so the proposal is not published. The finish throws
+   `ProposalOverGoverningSummaryError` and the reviews stay open. A description
+   change on such a PR belongs in the committed summary, which a repair that
+   pushes publishes. With no proposal, the body is edited only to
+   withhold a close that GitHub still honours.
+3. It strips every complete hidden `<!-- vibe-… -->` marker from the proposal in
+   one linear scan. A marker quoted in a Markdown code span in the live body is
+   not copied. A stray unclosed `<!--` in the proposal is neutralised, so it
+   cannot hide the appended reference or markers. It then appends the live
+   body's markers (worker issue, summary digest, sub-agent tier and assignment
+   id), so the digest reconcile keeps working.
+4. It decides closing or non-closing for the governing issue: the worker marker
+   in the live body, else the issue the worker branch (`issue-N-...`) names, so
+   a body that lost its marker is still governed. A PR with neither is unrelated
+   and only gets its dropped closing references restored. Closing (`Closes #N`)
+   is kept only when the summary committed at the pushed head has no `partial`
+   or `missing` criterion and the proposal, if any, has no `partial` or
+   `missing` criterion of its own. The summary's own wording does not decide it:
+   a fully met summary whose text names no closing keyword for the issue and no
+   explicit `Part of #N` gets `Closes #N` appended, as the canonical assembler
+   does. A bare mention such as "addresses the review on #N" is not a closing
+   claim and does not stop the append. The summary is read with the shared
+   committed loader (`loadCommittedPrSummary`) at the verified pushed head sha,
+   using `git ls-tree` and `git show`. The working tree is never read. The
+   loader tries the same candidate paths as the sync, in order: the canonical
+   `docs/archive/pr-summaries/pr-summary-<N>.md`, the legacy
+   `docs/pr-summary-<N>.md`, then `.pr_summary`. A failed read leaves the review
+   open. An unmet criterion, a missing committed summary or unknown evidence
+   gives `Part of #N`. So does a negated sentence such as "does not close #N",
+   which GitHub still honours as a closing reference, so that sentence is
+   reworded. An association the proposal dropped entirely is restored in the
+   form the evidence supports, and closing references to other issues that the
+   proposal dropped are restored.
+5. It verifies before dismissal. The live head is checked before the edit and
+   again after it. When an edit was made, the description read back must match
+   what was published. When the close is withheld, GitHub's
+   `closingIssuesReferences` must not list the issue as closed by the PR; this
+   check runs only in that case. The body reads must include
+   `closingIssuesReferences` as an array: a missing key is rejected, not read as
+   "no references". Dismissal then waits up to ten reads, one second apart, for
+   the PR head to show the pushed head, and dismisses only the reviews that are
+   still requested.
+
+A proposal over GitHub's 65,536-character limit is rejected at intake, once
+surrounding whitespace is trimmed, and the review stays open. The composed
+description is checked against the same limit again when it is published, after
+the push and the sync. The limit applies to the whole description, including the
+appended references and markers, so a proposal under the limit can still be
+refused. A refusal leaves the review open.
+
+Any failure leaves the review open, and a later eligible scan retries on the pushed
+head, except a proposal refused over a governing summary (step 2), which a
+retry would refuse again: its pending record is cleared and the review stays
+open until the committed summary changes. A repair that addresses reviews writes a
+pending-publication record, `<attempt key>--publication.json` in the same state
+directory, before the sync. It holds the proposal and whether the repair pushed
+the head. The next eligible scan finds the record before it merges the base or starts the
+agent, and runs the publication again from a clean clone at the PR head; the
+record is removed once the reviews are dismissed, or when the proposal is
+refused over a governing summary. It is found only while the
+scan still sees the same requested review at that head. The retry is idempotent:
+a body that is already current is not edited again. A legacy body that has the
+worker marker but no summary digest is synchronised through the before-push
+diff. On a no-change retry there is no earlier head, so the diff runs against
+git's empty tree: the committed summary counts as changed, and the sync still
+edits only when the rebuilt body differs from the live one. The recoverable next
+action is the thrown error, the open review and the pending-publication record;
+when the proposal was refused over a governing summary the record is cleared, so
+it is the error and the open review, and the fix is to change the committed
+summary and push.
+The guard is `worker/deno/lib/babysitter_pr_body_guard.ts`, and the close
+decision uses the close guard (#3177/#4644) in
+`worker/deno/lib/missing_criterion_close_guard.ts`.
 
 The runner and the agent exchange files through a runner-owned exchange
 directory that the agent cannot write, outside its clone and scratch grants. The

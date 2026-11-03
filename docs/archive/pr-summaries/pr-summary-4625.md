@@ -196,6 +196,13 @@ and restartable agent flow: an unavailable repository gate is recorded as a
 capability failure with a cooldown, rather than deleting the obsolete attempt
 marker; failed gates remain substantive failures.
 
+The subsequent merge retains main's shared repair-finishing path for body
+publication and review dismissal. The committed-head gate now runs in that
+path before the push, with a second lock check after validation; the old inline
+push implementation was replaced by main's shared path.
+The validation scenario's fake GitHub response supplies the body and closing
+issue fields that this shared path reads after a push.
+
 ## Test Plan
 
 Commands run from `worker/deno` on the final head (stdin from `/dev/null`):
