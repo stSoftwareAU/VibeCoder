@@ -112,7 +112,6 @@ listed the post-push sync callers were updated. Issues cited as provenance:
 - **violation** — workflow doc steps 4 and 5 and the guard diagram did not match the code — evidence: `docs/workflows/fleet-pr-babysitter.md:193` — reason: fixed in this diff
 - **violation** — harmless-skip, head-moved-after-publish and description-mismatch outcomes had no test — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:825` — reason: fixed in this diff
 - **violation** — the edited oversized-proposal test no longer guarded anything — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts:2518` — reason: fixed in this diff (intake rejection restored and asserted)
-- **violation** — `fix()` threads `proposal`, `gh`, `checkBaseline` and `mergedBase` into `finishBabysitterRepair` with no test through `fix()` — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:1514` — reason: exempt (untestable): `fix()` spawns the Codex agent; the test files that call it, `worker/deno/tests/fleet_pr_babysitter_test.ts` and `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`, stop before the post-agent step, and `finishBabysitterRepair` is tested directly
 - **clean** — Australian English, no hidden paths staged, tests call real code, named test files exist, no workflow changes, `issueNumberFromMarker` / `summaryDigestFromBody` read the last occurrence
 
 ## Test Plan
@@ -156,6 +155,12 @@ listed the post-push sync callers were updated. Issues cited as provenance:
 
 ## Not done
 
+- `fix()` passes `proposal`, `gh`, `checkBaseline` and `mergedBase` into
+  `finishBabysitterRepair` (`worker/deno/commands/fleet_pr_babysitter.ts:1514`)
+  with no test through `fix()` itself: it spawns the Codex agent, and the two
+  test files that call it (`worker/deno/tests/fleet_pr_babysitter_test.ts`,
+  `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`) stop before the
+  post-agent step. `finishBabysitterRepair` is tested directly.
 - A legacy worker-marker body with no summary digest is not refreshed on a
   no-change retry; it needs a repair that changes the summary.
 - Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working
