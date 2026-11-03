@@ -9,9 +9,11 @@ round had nothing to change, and the identical resolution was rebuilt and
 refused every cycle (the wedge reported on `stSoftwareAU/GRQ-AutoTrader`,
 `milestone/3595-…`).
 
-Part of #4786. A tree whose only check is cargo is still refused when that check
-times out (see Acceptance Criteria); the GRQ-AutoTrader tree also holds a Deno
-project (`web/deno.json`), so it lands.
+For #4786 (the criterion is partial, see Acceptance Criteria), `checkMergedTree`
+first runs a timed-out cargo check once more, which resumes from the crates the
+first run compiled, so a tree whose only check is cargo can now be verified.
+Only a second timeout is left to CI; the GRQ-AutoTrader tree also holds a Deno
+project (`web/deno.json`), so it lands even then.
 
 ## Spec
 
@@ -77,22 +79,26 @@ Files: `worker/deno/lib/milestone_merge_gate.ts`,
 
 ## Acceptance Criteria
 
-The issue states no acceptance-criteria heading. Its "What to fix" asks to teach
-the gate to verify this repository's merged tree. One part is left undone:
+<!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **missing** — "work out why `milestone_resolution_gate.ts` cannot verify this
-  repository's merged tree, and teach it to" for a tree whose only check is
-  cargo — reason: such a tree still returns `skipped` and is refused outside a
-  merge-only cycle, by the Issue #1559 fail-closed rule. Landing it unverified
-  is an owner policy change; GRQ-AutoTrader itself is mixed and is fixed.
+- **partial** — "work out why `milestone_resolution_gate.ts` cannot verify this
+  repository's merged tree, and teach it to" — evidence:
+  `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - a cargo-only tree whose cargo check finishes on the retry is passed, not skipped (Issue #4786)`,
+  `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - a mixed tree whose cargo check times out passes its Deno half and names the timeout (Issue #4786)`
+  — reviewer: partial — reason: a cargo-only tree that times out twice is still
+  `skipped` and refused outside a merge-only cycle (Issue #1559 fail-closed
+  rule), and `verifyResolvedTree`'s own cargo steps (`cargo test`) are not
+  retried; landing such a tree unverified is an owner policy change.
 
 ## Test Plan
 
-- Added to `worker/deno/tests/milestone_merge_gate_test.ts` (six tests): cargo
-  timeout is `skipped` with `cargoSkipped`; mixed tree with a cargo timeout is
-  `passed` and names the timeout; negative controls: exit 124 without the flag,
-  cargo exit 101, a Deno timeout, and a failing Deno check beside a cargo
-  timeout all stay `failed`.
+- Added to `worker/deno/tests/milestone_merge_gate_test.ts` (ten tests): a
+  cargo-only tree whose check finishes on the retry is `passed`; a retry that
+  fails to compile is `failed`; two timeouts are retried once then `skipped`; a
+  Deno timeout is not retried. Earlier six tests: cargo timeout is `skipped`
+  with `cargoSkipped`; mixed tree with a cargo timeout is `passed` and names the
+  timeout; negative controls: exit 124 without the flag, cargo exit 101, a Deno
+  timeout, and a failing Deno check beside a cargo timeout all stay `failed`.
 - Added to `worker/deno/tests/milestone_resolution_gate_test.ts` (three tests):
   a typed `cargoSkipped` starts no cargo step even when the disk budget is fine;
   a `cargo test` timeout is `passed` with `cargoSkipped`; a Deno task timeout is

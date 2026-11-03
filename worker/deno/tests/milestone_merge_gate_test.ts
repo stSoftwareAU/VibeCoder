@@ -749,3 +749,86 @@ Deno.test("checkMergedTree - the repository's own check is refused when its mani
     );
   });
 });
+
+// A timed-out cargo check leaves its compiled crates in the target, so the one
+// retry resumes and can verify a tree whose only check is cargo (Issue #4786).
+const CARGO_ONLY_MANIFEST = '[package]\nname = "demo"\nversion = "0.1.0"\n';
+
+Deno.test("checkMergedTree - a cargo-only tree whose cargo check finishes on the retry is passed, not skipped (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve(
+          runs === 1
+            ? { code: 124, timedOut: true, output: "timed out" }
+            : { code: 0, output: "" },
+        );
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 2);
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, undefined);
+    assertEquals(outcome.detail.includes("left to CI"), false);
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check that fails to compile on the retry is failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve(
+          runs === 1
+            ? { code: 124, timedOut: true, output: "timed out" }
+            : { code: 101, output: "error[E0425]: cannot find value `x`" },
+        );
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 2);
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.detail, "failed (exit 101)");
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check that times out twice is retried once, then left to CI (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve({ code: 124, timedOut: true, output: "" });
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 2);
+    assertEquals(outcome.status, "skipped", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+  });
+});
+
+Deno.test("checkMergedTree - a Deno check that times out is not retried (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    let runs = 0;
+    await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve({ code: 124, timedOut: true, output: "" });
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 1);
+  });
+});

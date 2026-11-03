@@ -559,6 +559,13 @@ export async function checkMergedTree(
     };
     try {
       result = await runner(project);
+      // A cargo check that ran out of time has still compiled part of the
+      // workspace into the target, so one more run resumes from that and can
+      // finish and verify a tree whose only check is cargo (Issue #4786). A
+      // second timeout is left to CI below.
+      if (project.kind === "cargo" && result.code !== 0 && result.timedOut) {
+        result = await runner(project);
+      }
     } catch (err) {
       // Unrunnable is not clean: refuse the push rather than assume it
       // compiles.
