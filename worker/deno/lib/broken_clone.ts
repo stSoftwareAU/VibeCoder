@@ -123,11 +123,12 @@ export async function checkCloneOwnership(
     }
     return uid;
   },
+  lstat: (path: string) => Promise<Deno.FileInfo> = Deno.lstat,
 ): Promise<string | null> {
   try {
     let root: Deno.FileInfo;
     try {
-      root = await Deno.lstat(path);
+      root = await lstat(path);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) return null;
       throw error;
@@ -138,7 +139,7 @@ export async function checkCloneOwnership(
     }
     let git: Deno.FileInfo;
     try {
-      git = await Deno.lstat(`${path}/.git`);
+      git = await lstat(`${path}/.git`);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) return null;
       throw error;
@@ -149,5 +150,25 @@ export async function checkCloneOwnership(
     return null;
   } catch (error) {
     return `Could not check clone ownership at ${path}: ${error}`;
+  }
+}
+
+/** Skip missing or untrusted clones before milestone maintenance runs git. */
+export async function trustedLocalCloneExists(
+  path: string,
+  warn: (message: string) => void,
+): Promise<boolean> {
+  const refusal = await checkCloneOwnership(path);
+  if (refusal) {
+    warn(refusal);
+    return false;
+  }
+  try {
+    const info = await Deno.lstat(`${path}/.git`);
+    return info.isDirectory || info.isFile;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    warn(`Could not inspect clone at ${path}: ${error}`);
+    return false;
   }
 }

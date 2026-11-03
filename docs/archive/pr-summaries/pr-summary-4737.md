@@ -63,6 +63,15 @@ flowchart LR
 
 ## Test Plan
 
+- Review fix: both milestone maintenance entry points use the shared clone
+  ownership check before running git, logging and skipping a refused clone.
+  The obsolete behaviour reused any path with a `.git` entry; trusted clones
+  remain eligible for sync and self-healing. Coverage:
+  `worker/deno/tests/clone_ownership_test.ts::clone ownership refuses foreign and symlinked git metadata`.
+  This exercises a foreign `.git` owner via injected `lstat`, a real symlink,
+  and the logged refusal. Both former copies of the existence check now call
+  the same helper.
+
 - CI repair: bounded the default ownership check's `id -u` subprocess with a
   five-second timeout. A hung uid probe now reaches the existing error path
   instead of waiting indefinitely. The spawn-timeout source check flagged the

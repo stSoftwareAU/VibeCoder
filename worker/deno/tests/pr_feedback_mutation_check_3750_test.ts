@@ -426,6 +426,31 @@ Deno.test("runReviewFixMutationCheck - an unwired runner is not applicable", asy
   });
 });
 
+Deno.test("runReviewFixMutationCheck passes CI package scope to the runner", async () => {
+  await withRepo(async (dir) => {
+    const beforeSha = await editedRepo(dir);
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/.github/workflows/ci.yml`,
+      "on: pull_request\njobs:\n  mutants:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo mutants --package core\n",
+    );
+    const { logger } = recordingLogger();
+    let args: readonly string[] | undefined;
+    await runReviewFixMutationCheck(
+      { repo: REPO, repoPath: dir, beforeSha, repoConfigs: undefined },
+      {
+        runGit: countingRunGit(dir).runGit,
+        logger,
+        runner: (input) => {
+          args = input.cargoMutantsArgs;
+          return Promise.resolve({ kind: "not_applicable", reason: "probe" });
+        },
+      },
+    );
+    assertEquals(args, ["--package", "core"]);
+  });
+});
+
 Deno.test("runReviewFixMutationCheck - the budget comes from mutation_check_budget_seconds, default when unset", async () => {
   await withRepo(async (dir) => {
     const beforeSha = await editedRepo(dir);

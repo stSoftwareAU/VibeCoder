@@ -6869,18 +6869,17 @@ async function syncMilestoneBranchesFn(
   );
   const { ensureMilestoneBranchExists } = await import("./git_branch.ts");
   const { ensureDefaultBranchCurrent } = await import("./git_push.ts");
+  const { trustedLocalCloneExists } = await import("./broken_clone.ts");
 
   const workDir = config.workDir || env("HOME") || ".";
 
   // Issue #1519: skip repos that have not been cloned locally.
   const localCloneExistsFn = async (repo: string): Promise<boolean> => {
-    const path = `${workDir}/${repo.split("/")[1]}/.git`;
-    try {
-      const info = await Deno.stat(path);
-      return info.isDirectory || info.isFile;
-    } catch {
-      return false;
-    }
+    const path = `${workDir}/${repo.split("/")[1]}`;
+    return await trustedLocalCloneExists(
+      path,
+      (message) => logger.warn(message),
+    );
   };
 
   // Issue #3912: repair before syncing — an open milestone that gained
