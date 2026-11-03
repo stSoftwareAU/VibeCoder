@@ -624,8 +624,6 @@ export async function shouldSkipEphemeralCargoBuild(
 /** What {@link releaseCheckoutTargetDirs} removed. */
 export interface ReleasedTargetDirs {
   bytes: number;
-  /** How many directories were removed. */
-  dirs: number;
   errors: string[];
 }
 
@@ -649,30 +647,25 @@ export async function releaseCheckoutTargetDirs(
     // No root yet means nothing was built there. Any other failure — a `du`
     // that timed out among them — left this checkout's dirs in place, and
     // saying so is what keeps a leak on the disk floor visible.
-    if (err instanceof Deno.errors.NotFound) {
-      return { bytes: 0, dirs: 0, errors: [] };
-    }
+    if (err instanceof Deno.errors.NotFound) return { bytes: 0, errors: [] };
     return {
       bytes: 0,
-      dirs: 0,
       errors: [`${root}: ${err instanceof Error ? err.message : String(err)}`],
     };
   }
   let bytes = 0;
-  let removed = 0;
   const errors: string[] = [];
   for (const dir of dirs.filter((d) => belongsTo(d.path, key))) {
     try {
       await deps.removeDir(dir.path);
       bytes += dir.bytes;
-      removed++;
     } catch (err) {
       errors.push(
         `${dir.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
-  return { bytes, dirs: removed, errors };
+  return { bytes, errors };
 }
 
 /** `du` of one cargo target. Long enough for a large tree, still bounded. */

@@ -38,7 +38,7 @@ const REPLY_CLEAN = JSON.stringify({
   testChanges: "none",
 });
 
-const NOTHING_RELEASED: ReleasedTargetDirs = { bytes: 0, dirs: 0, errors: [] };
+const NOTHING_RELEASED: ReleasedTargetDirs = { bytes: 0, errors: [] };
 
 const exists = (p: string) => Deno.stat(p).then(() => true, () => false);
 
@@ -256,7 +256,6 @@ Deno.test("runPrePrVerifier keeps the result when the release reports errors, an
         () =>
           Promise.resolve({
             bytes: 0,
-            dirs: 0,
             errors: ["release-cause-4743-reported"],
           }),
       ),

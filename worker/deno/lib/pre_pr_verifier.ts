@@ -757,7 +757,6 @@ export async function runPrePrVerifier(
       logger.info("Pre-PR verifier released its disposable checkout", {
         path: tmp,
         durationMs: Date.now() - releaseStarted,
-        targetDirsRemoved: released.dirs,
       });
     } catch (error) {
       logger.warn(
