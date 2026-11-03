@@ -66,6 +66,7 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import {
   isReservedWorkRootEntry,
   pushUnpushedBranches,
+  type UnpushedRescueResult,
 } from "./stale_workdir.ts";
 import { duBytes, formatGb } from "./work_volume_prune.ts";
 import {
@@ -173,7 +174,7 @@ export interface WorkVolumeTierResult {
   /** Directories removed, in removal order. */
   removed: WorkRootDir[];
   bytesReclaimed: number;
-  /** Names kept because their unpushed commits could not be pushed. */
+  /** Names kept because rescue failed or ownership was untrusted. */
   keptRescueFailed: string[];
   /**
    * Names removed because their `.git` was over the cap rather than because
@@ -210,7 +211,7 @@ export interface WorkVolumeTierOptions {
   /** Push-before-delete rescue, injectable. */
   rescue?: (
     repoDir: string,
-  ) => Promise<{ ok: boolean; pushedBranches: string[]; detail: string }>;
+  ) => Promise<UnpushedRescueResult>;
   /** Remove a directory, injectable. */
   removeDir?: (path: string) => Promise<void>;
   log?: (message: string) => void;
@@ -480,6 +481,13 @@ export async function reclaimWorkVolumeTiers(
       const pushed = await rescue(dir.path);
       if (!pushed.ok) {
         result.keptRescueFailed.push(dir.name);
+        if (pushed.untrusted) {
+          const message =
+            `Kept untrusted clone ${dir.path} for inspection (${pushed.detail})`;
+          result.errors.push(message);
+          console.warn(`SELF-HEALING: ${message}`);
+          continue;
+        }
         result.errors.push(
           `kept ${dir.path}: unpushed commits could not be pushed (${pushed.detail})`,
         );

@@ -24,6 +24,7 @@ import {
 import { CARGO_BUILD_SKIPPED_FOR_MERGE } from "../lib/heavy_build_gate.ts";
 import {
   assertOnlyAllowlistedNames,
+  makeAgentReachableTempDir,
   NAMES_PROBE,
   runGateInChild,
 } from "./support/gate_child_env.ts";
@@ -37,7 +38,8 @@ async function writeFile(path: string, contents: string): Promise<void> {
 }
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await Deno.makeTempDir({ prefix: "issue-974-" });
+  // A checkout the dropped `agent` account can use (Issue #4733).
+  const dir = await makeAgentReachableTempDir("issue-974-");
   try {
     await fn(dir);
   } finally {

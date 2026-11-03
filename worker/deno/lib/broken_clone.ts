@@ -139,6 +139,7 @@ export async function checkCloneOwnership(
   },
   lstat: (path: string) => Promise<Deno.FileInfo> = Deno.lstat,
   requireRoot = false,
+  requireGit = false,
 ): Promise<string | null> {
   try {
     let root: Deno.FileInfo;
@@ -158,7 +159,9 @@ export async function checkCloneOwnership(
     try {
       git = await lstat(`${path}/.git`);
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) return null;
+      if (error instanceof Deno.errors.NotFound) {
+        return requireGit ? `Refusing missing .git at ${path}` : null;
+      }
       throw error;
     }
     if (git.isSymlink || git.uid === null || git.uid !== uid) {

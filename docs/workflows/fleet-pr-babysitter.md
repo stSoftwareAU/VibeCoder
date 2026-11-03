@@ -149,17 +149,21 @@ defaults `~/.vibe-coder/credentials` and `~/.config/gh`. The configured spelling
 is resolved with filesystem traversal semantics, so `..` after a directory
 symlink follows the target's parent. Normalised locations and their canonical
 targets are also denied; missing tails are resolved through the longest existing
-parent. These entries are denied because the agent shares the runner's OS user
-and file modes alone do not protect them; it is also told not to ask questions.
-When a fix needs a human decision, it should report the blocker and stop without
-a commit. The sandbox still applies; an unavailable permission or credential can
-stop a run and must be corrected by the operator. Codex gets its own
-installation token, minted per repair for the target repository only, with
-read-only permissions (contents, pull requests, issues, checks, actions). Every
-GitHub write (lock, push, branch update, review dismissal, PR description) is
-made by the runner with its own token. The agent token lasts about an hour and
-is not refreshed, so reads late in a longer repair can fail. When a review asks
-for a description change, the agent writes the full new description to
+parent. These entries are denied because the agent shares the runner's
+OS user and file modes alone do not protect them; it is also told not to ask
+questions. When a fix
+needs a human decision, it should report the blocker and stop without a commit.
+The sandbox still applies; an unavailable permission or credential can stop a
+run and must be corrected by the operator. Codex gets its own installation
+token, minted per repair for the target repository only, with read-only
+permissions (contents, pull requests, issues, checks, actions). Every GitHub
+write (lock, push, branch update, review dismissal, PR description) is made by
+the runner with its own token. The agent's read-only token expiry is retained,
+and each Codex session ends two minutes before it. If a session reaches that
+boundary, the runner starts a new session with a freshly minted, repository-
+scoped read token in the same repair clone; the runner's write token and App
+key remain outside the agent boundary. When a review asks for a
+description change, the agent writes the full new description to
 `.babysitter-pr-body` in the clone; the runner removes it before committing and
 applies it after the push (or when there is no code change), re-adding any
 closing reference such as `Closes #N` the proposal dropped.
@@ -220,14 +224,100 @@ with `actions: read` the re-run is refused and logged as a WARNING naming the
 permission. A PR that a fleet worker holds a live PR-feedback lease claim on
 (`PR_COMMENT_CLAIM` with an unexpired `PR_COMMENT_CLAIM_LEASE`) is skipped for
 that pass, so the babysitter never repairs beside a worker that is about to
-push. A failed or unproductive agent attempt is recorded under
-`${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and is
-not retried on that host for the same PR head. A review repair is keyed on the
-head and the newest change-request review, so a new review on an attempted head
-gets its own attempt. Removing the matching state file permits a retry. The
-shared lock prevents simultaneous work; this local attempt record does not
-prevent a different host from retrying later. Repository mirrors live in the
-same state directory, under `mirrors/`, as described above.
+push.
+
+Retry records live under
+`${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` as
+versioned, atomically replaced JSON. Each record binds the repository, PR,
+stable failure identity, observed and pushed heads, blocker class, last outcome,
+infrastructure and substantive attempt counts, next eligible time, next action,
+and reconciliation state. The identity survives repair pushes; a new change
+request review gets a separate identity. A legacy create-only attempt file is
+migrated to a five-minute cooldown and then becomes eligible again. No manual
+state-file deletion is part of normal recovery.
+
+Completed repair attempts carry a separate
+`vibe-babysitter-attempt` marker in a fleet-authored PR comment. Hosts count only
+markers written by configured fleet authors, so the configured repair limit
+is shared across hosts and survives a restart. Only consecutive no-change or
+failed outcomes count; a successful push resets the no-progress budget.
+Infrastructure and capability failures do not add an attempt marker. These
+markers cannot be mistaken for a CI escalation that lifts a human hold.
+
+A failure is classified from where it is raised: a structured cause (agent
+killed by a signal or exit 137/143, a lock that could not be renewed, a head
+that moved) first, and the error text only as a fallback. Infrastructure, host
+capability (missing tool, full disk) and head or lock races receive bounded
+cooldowns without spending the substantive repair budget and post no attempt
+marker. Codex diagnostics classify provider, authentication, quota, rate-limit,
+network and memory failures as infrastructure; an unreadable or empty
+diagnostic on a non-zero exit is also infrastructure. A reported quota reset
+or retry-after time delays the next attempt. Code failures, runner
+session-budget exhaustion and no-progress
+outcomes spend that budget. A changed head bypasses the old cooldown while
+keeping the attempt history. The retry
+record is saved before any best-effort marker write, and a failed marker write
+never replaces the repair's real error.
+
+When substantive attempts reach the configured `maxAutoFixAttempts` limit, the
+record keeps the newest five redacted evidence lines, and the babysitter posts
+an auto-fix cap marker for failed CI or a separate babysitter handoff marker
+for other incidents. Further sessions for that incident stop until
+the head or requested review changes, including green review-feedback and
+merge-conflict incidents. A failed handoff is retried without another agent
+session. The shared tally also bounds sessions on a different host. A moved
+head retains the attempt history and receives a changed-diagnosis prompt with
+fenced, redacted prior evidence.
+
+A fleet-authored marker deduplicates the handoff across hosts and restarts.
+The stall self-repair ladder consumes the CI cap for eligible blocking red-CI stalls and
+skips its first trip. Green review-feedback and conflict lanes do not consume
+that cap, and non-blocking red-CI incidents do not enter the ladder; their safety bound is the paused babysitter incident. No separate
+escalation issue is created. The comment identifies the babysitter handoff, so
+it does not claim ownership of a human `needs-human` label. Explicit human
+holds stay paused until cleared. Waiting paths release the branch lock; the
+next scan logs the cause, next action, and eligible time.
+
+Local git validation, staging, commit and merge failures are code failures even
+when the diagnostic contains transport words in file paths or source text.
+Clone, fetch and push failures default to infrastructure after capability
+checks. A push `[rejected]` is a race; `[remote rejected]`, a declined
+pre-receive hook and GH0xx rule violations are code failures. Git disk-full
+and spawn failures count as capability failures for
+every operation. A pending-CI observation preserves an escalated incident's
+handoff head until repair consumes the head change. Handoff markers use that
+incident head, independent of any older successful push on a host.
+
+After a successful push the state records the pushed head and waits for CI and
+independent review. Each later scan observes the PR without taking a lock:
+pending CI, a pending or dismissed review, a draft, a cross-repository PR, a
+repository with `skip_auto_merge` and a `needs-human` hold are each recorded as
+what the PR waits on. A green, approved, clean PR is recorded as
+`handed-to-auto-merge-owner`: the shared auto-merge policy and worker sweep
+handle landing it. The babysitter arms candidates through that shared policy
+before repair, subject to its existing gates.
+Failed checks and new requested changes return to the repair scan. A later scan
+reads tracked PRs even when they are no longer in the first page of open
+candidates, and clears retry state after GitHub reports `MERGED` or `CLOSED`.
+A push, a hand-off or a dismissed review is never a merged outcome. Closed
+records are not re-read on later scans; a reopened PR appears in the open list.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Eligible
+    Eligible --> Repairing: acquire branch lock and recheck head
+    Repairing --> CoolingDown: infrastructure, capability, race, or failure
+    CoolingDown --> Eligible: next eligible time reached
+    Repairing --> WaitingForChecks: repair pushed
+    WaitingForChecks --> Repairing: failed check or new review finding
+    WaitingForChecks --> WaitingForChecks: pending CI or independent review
+    WaitingForChecks --> Merged: GitHub reports MERGED
+    WaitingForChecks --> ClosedUnmerged: GitHub reports closed without merge
+    Repairing --> OwnerHold: explicit needs-human hold
+```
+
+Repository mirrors live in the same state directory, under `mirrors/`, as
+described above.
 
 ## Shift-left detection
 
