@@ -13,12 +13,12 @@
  *
  * Every case runs the real script with a stub PATH and asserts on the mode
  * bits the volume actually ends up with, so the grant is verified rather
- * than described.
+ * than described. The image grants search on the worker home (Issue #4761).
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertMatch } from "@std/assert";
 import { RESERVED_WORKDIR_NAMES } from "../lib/stale_workdir.ts";
 
 const ENTRYPOINT = new URL("../../../container/entrypoint.sh", import.meta.url)
@@ -32,6 +32,17 @@ const STICKY = 0o1000;
 const OTHER_WRITE = 0o002;
 /** Group and other read: what the untrusted account needs to read `.git`. */
 const GROUP_OTHER_READ = 0o044;
+
+Deno.test("Containerfile - worker home is searchable by vibework on a read-only root (Issue #4761)", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../../../container/Containerfile", import.meta.url),
+  );
+  // The recursive chown resets the group, so the grant must follow it.
+  assertMatch(
+    source,
+    /chown -R 1000:1000 \/workspace \/home\/vibe;\s*\\\s*\n\s*chgrp vibework \/home\/vibe;\s*\\\s*\n\s*chmod 0710 \/home\/vibe/,
+  );
+});
 
 /**
  * A stub PATH the entrypoint's work-root block can actually run through.
@@ -107,6 +118,8 @@ async function runOverWorkRoot(
     await Deno.mkdir(`${workRoot}/${name}`, { recursive: true });
     await Deno.chmod(`${workRoot}/${name}`, 0o755);
   }
+  // Match the image-level home grant.
+  await Deno.chmod(home, 0o710);
   // A clone's git metadata at the group- and other-writable modes a careless
   // clone would leave it at, so the hardening has something to strip
   // (Issue #4737).
