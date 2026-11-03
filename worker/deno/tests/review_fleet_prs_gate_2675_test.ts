@@ -4,6 +4,7 @@
  * the skill's job.
  */
 import { assertEquals, assertRejects } from "@std/assert";
+import { earlierFindingGaps } from "../lib/earlier_findings.ts";
 import {
   authorKind,
   existingTestChanges,
@@ -11,6 +12,7 @@ import {
   isTestPath,
   noTestAdded,
   ownDiffUnchanged,
+  type ReadyPr,
   REVIEW_MARKER,
   reviewedAtHead,
   type RollupContextNode,
@@ -20,6 +22,7 @@ import {
   skipReason,
 } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 import {
+  type Finding,
   HOLD_POLICY_VERSION,
   holdPolicyMarker,
 } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
@@ -2262,4 +2265,294 @@ Deno.test("runWithTimeout kills a command that hangs, so one stuck gh call canno
   );
   assertEquals(Date.now() - started < 5000, true);
   assertEquals(await runWithTimeout("echo", ["ok"], 5000), "ok\n");
+});
+
+// Issue #4723: a Dependabot re-cut. Dependabot force-pushes a rebased PR, so
+// the sent-back commit X is no longer an ancestor of head and the compare is
+// "diverged". Every fixture below is accepted by the re-cut path; each test
+// changes one thing from it.
+const RECUT_PATCH = "@@ -1 +1 @@\n-old\n+unfixed";
+
+Deno.test("Dependabot re-cut handles logged earlier gaps (Issue #4723)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  const gh = sentBackGh(files, files);
+  const finding = { file: "a.ts", line: 1, problem: "Still broken" };
+  const gaps = earlierFindingGaps([finding], []);
+  assertEquals(await sentBackSkip(gh, gaps, "dependabot"), "awaiting-fix");
+  assertEquals(
+    await sentBackSkip(gh, [finding, ...gaps], "dependabot"),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      earlierFindingGaps([{ ...finding, file: "COMMIT_MSG" }], []),
+      "dependabot",
+    ),
+    null,
+  );
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      earlierFindingGaps(["a.ts: Still broken"], []),
+      "dependabot",
+    ),
+    null,
+  );
+});
+
+// base...head with the commit authors the re-cut check reads (null is a commit
+// with no author).
+const baseHeadResponse = (
+  files: Parameters<typeof compareFiles>[0],
+  authors: (string | null)[],
+) =>
+  JSON.stringify({
+    ...JSON.parse(compareFiles(files)),
+    status: "ahead",
+    total_commits: authors.length,
+    commits: authors.map((login) => ({
+      sha: "c",
+      author: login === null ? null : { login },
+    })),
+  });
+
+// A PR sent back at X, whose head compares to X as `status` (a re-cut is
+// "diverged"), with the base...head commit authors given by `authors`.
+const sentBackGh = (
+  sinceFiles: Parameters<typeof compareFiles>[0],
+  headFiles: Parameters<typeof compareFiles>[0],
+  authors: (string | null)[] = ["dependabot[bot]"],
+  status = "diverged",
+) =>
+  fakeGh({
+    "repos/o/r/compare/X...head": compareResponse(status, [{
+      sha: "new",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles(sinceFiles),
+    "repos/o/r/compare/main...head": baseHeadResponse(headFiles, authors),
+  }).gh;
+
+// The skipReason verdict for that PR, through ownDiffUnchanged.
+const sentBackSkip = (
+  gh: (args: string[]) => Promise<string>,
+  findings: Finding[] | undefined,
+  kind?: ReadyPr["kind"],
+) =>
+  skipReason(
+    searchPr({
+      headRefOid: "head",
+      baseRefName: "main",
+      reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+    }),
+    "nleck",
+    (since) =>
+      ownDiffUnchanged(gh, "o/r", "main", since, "head", findings, kind),
+  );
+
+Deno.test("Dependabot re-cut: a diverged head with a bot-only identical own diff and a content finding is awaiting-fix (Issue #4723)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(files, files),
+      [{ file: "a.ts", line: 1, problem: "x" }],
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+});
+
+Deno.test("Dependabot re-cut is refused unless every commit is by dependabot[bot] (Issue #4723)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  const findings: Finding[] = [{ file: "a.ts", line: 1, problem: "x" }];
+  // Control: every commit by Dependabot is accepted.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(files, files, ["dependabot[bot]", "dependabot[bot]"]),
+      findings,
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  // One commit by another author.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(files, files, ["dependabot[bot]", "someone"]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+  // One commit with no author cannot be confirmed as Dependabot's.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(files, files, ["dependabot[bot]", null]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+});
+
+Deno.test("A fleet PR with a diverged head keeps the ancestry check, even with an identical own diff (Issue #4723, VibeCoder#3772)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  const findings: Finding[] = [{ file: "a.ts", line: 1, problem: "x" }];
+  const gh = sentBackGh(files, files);
+  // Control: the same fixture is accepted for Dependabot.
+  assertEquals(
+    await sentBackSkip(gh, findings, "dependabot"),
+    "awaiting-fix",
+  );
+  // A fleet PR, or one with no kind, is not re-cut.
+  assertEquals(await sentBackSkip(gh, findings, "fleet"), null);
+  assertEquals(await sentBackSkip(gh, findings), null);
+});
+
+Deno.test("Dependabot re-cut takes the strict path: a changed patch, a version bump or a dropped file is a fresh review (Issue #4723)", async () => {
+  const findings: Finding[] = [{ file: "a.ts", line: 1, problem: "x" }];
+  const aFile = { filename: "a.ts", patch: RECUT_PATCH };
+  // Control: identical patches are accepted.
+  assertEquals(
+    await sentBackSkip(sentBackGh([aFile], [aFile]), findings, "dependabot"),
+    "awaiting-fix",
+  );
+  // A changed patch in the named file.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile], [{
+        filename: "a.ts",
+        patch: "@@ -1 +1 @@\n-old\n+other",
+      }]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+  // A strict version bump in an unnamed file: the normal path accepts it
+  // (control, ahead), the re-cut does not.
+  const versionSince = [
+    aFile,
+    { filename: "VERSION", patch: versionPatch("1.32.4", "1.32.5") },
+  ];
+  const versionHead = [
+    aFile,
+    { filename: "VERSION", patch: versionPatch("1.32.5", "1.32.6") },
+  ];
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(versionSince, versionHead, undefined, "ahead"),
+      findings,
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(versionSince, versionHead),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+  // A file the sent-back own diff lists but the head drops: the normal path
+  // allows it when no finding names it (control, ahead), the re-cut does not.
+  const bFile = { filename: "b.ts", patch: RECUT_PATCH };
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile, bFile], [aFile], undefined, "ahead"),
+      findings,
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile, bFile], [aFile]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+});
+
+Deno.test("Dependabot re-cut needs content findings: unknown, empty, non-file or earlier non-file findings are a fresh review (Issue #4723)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  const gh = sentBackGh(files, files);
+  // Positive control: a finding naming a.ts is accepted.
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      [{ file: "a.ts", line: 1, problem: "x" }],
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  // Unknown findings.
+  assertEquals(await sentBackSkip(gh, undefined, "dependabot"), null);
+  // No findings.
+  assertEquals(await sentBackSkip(gh, [], "dependabot"), null);
+  // A finding on a non-file, such as the commit message.
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      [{ file: "commit message", line: 1, problem: "x" }],
+      "dependabot",
+    ),
+    null,
+  );
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      [{ file: "COMMIT_MSG", line: 1, problem: "x" }],
+      "dependabot",
+    ),
+    null,
+  );
+  // A named file whose earlier finding is on a non-file.
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      [{
+        file: "a.ts",
+        line: 1,
+        problem: "x",
+        earlier: { file: "COMMIT_MSG", line: 1, problem: "y" },
+      }],
+      "dependabot",
+    ),
+    null,
+  );
+});
+
+Deno.test("Dependabot re-cut compares the whole patch of a file no finding names (Issue #4723)", async () => {
+  const aFile = { filename: "a.ts", patch: RECUT_PATCH };
+  // The same changed lines with moved context.
+  const sinceB = {
+    filename: "b.ts",
+    patch: "@@ -1,3 +1,3 @@\n keep\n-old\n+new\n tail",
+  };
+  const headB = {
+    filename: "b.ts",
+    patch: "@@ -4,3 +4,3 @@\n moved\n-old\n+new\n tail",
+  };
+  const findings: Finding[] = [{ file: "a.ts", line: 1, problem: "x" }];
+  // Control: the normal path accepts a context-only change in an unnamed file.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile, sinceB], [aFile, headB], undefined, "ahead"),
+      findings,
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  // The re-cut compares the whole patch, so the same change is a fresh review.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile, sinceB], [aFile, headB]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
 });
