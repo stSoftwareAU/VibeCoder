@@ -62,10 +62,19 @@ const DEFAULT_ISSUES: Record<string, Record<string, unknown> | Error> = {
 // A file's text; a directory; or a gh error for that path.
 type Entry = string | "dir" | Error;
 
+// At the head.
 const DEFAULT_CONTENTS: Record<string, Entry> = {
   "tests/retry_test.ts": "test('retries three times', () => {});\n",
   "tests/convert_fixed_test.ts": "test('converts at fixed rate', () => {});\n",
   "src/export.ts": "export function exportJson() {}\n",
+};
+
+// At the base branch: the removed CSV export and its symbol existed here.
+const DEFAULT_BASE: Record<string, Entry> = {
+  ...DEFAULT_CONTENTS,
+  "tests/legacy_export_test.ts": "test('csv export', () => {});\n",
+  "src/export.ts":
+    "export function exportJson() {}\nexport function exportCsv() {}\n",
 };
 
 const PR_VIEW = {
@@ -87,7 +96,10 @@ interface Fx {
   pr?: Record<string, unknown>;
   prError?: Error;
   issues?: Record<string, Record<string, unknown> | Error>;
+  // Head contents, read at the head sha.
   contents?: Record<string, Entry>;
+  // Base contents, read at the base branch name (`baseRef`).
+  base?: Record<string, Entry>;
 }
 
 function answer(args: string[], fx: Fx): string {
@@ -104,14 +116,18 @@ function answer(args: string[], fx: Fx): string {
     if (v instanceof Error) throw v;
     return JSON.stringify(v);
   }
-  const file = /^repos\/([^/]+\/[^/]+)\/contents\/(.+)\?ref=([0-9a-f]+)$/.exec(
+  const file = /^repos\/([^/]+\/[^/]+)\/contents\/(.+)\?ref=(.+)$/.exec(
     endpoint,
   );
   if (file) {
     const path = file[2]!.split("/").map((s) => decodeURIComponent(s)).join(
       "/",
     );
-    const contents = { ...DEFAULT_CONTENTS, ...fx.contents };
+    const ref = decodeURIComponent(file[3]!);
+    // A sha reads the head; anything else is a base branch name.
+    const contents = /^[0-9a-f]{40}$/.test(ref)
+      ? { ...DEFAULT_CONTENTS, ...fx.contents }
+      : { ...DEFAULT_BASE, ...fx.base };
     const v = contents[path];
     if (v === undefined) throw new Error("gh: Not Found (HTTP 404)");
     if (v instanceof Error) throw v;
@@ -152,6 +168,7 @@ const PR: AssessedPr = {
   headSha: SHA,
   kind: "fleet",
   testChanges: { removed: [], edited: [] },
+  baseRef: "main",
 };
 
 const note = (over: Partial<TestChangeNote> = {}): TestChangeNote => ({
@@ -630,8 +647,8 @@ Deno.test("approval: a deliberate behaviour reversal with a verbatim requirement
   assertEquals(result.ownerReasons, []);
 });
 
-Deno.test("approval: genuinely removed functionality with a gone entry (file absent at head)", async () => {
-  const { result } = await assess([note({
+Deno.test("approval: genuinely removed functionality with a gone entry (file absent at head, present at base)", async () => {
+  const { result, calls } = await assess([note({
     file: "tests/legacy_export_test.ts",
     kind: "removed-file",
     obsolete: "Checks the CSV export that issue 3416 removed.",
@@ -649,10 +666,17 @@ Deno.test("approval: genuinely removed functionality with a gone entry (file abs
   assertEquals(result.approved[0]!.coverage, [
     "gone: tests/legacy_export_test.ts",
   ]);
+  // The base ref is what shows the file existed before it was removed.
+  assert(
+    contentsCalls(calls).some((c) =>
+      c[1] ===
+        "repos/acme/widgets/contents/tests/legacy_export_test.ts?ref=main"
+    ),
+  );
 });
 
-Deno.test("approval: genuinely removed symbol with a gone entry (file present, symbol absent)", async () => {
-  const { result } = await assess([note({
+Deno.test("approval: genuinely removed symbol with a gone entry (file present at head without it, base has it)", async () => {
+  const { result, calls } = await assess([note({
     file: "src/export_test.ts",
     kind: "removed-case",
     obsolete: "Checked exportCsv, which issue 3416 removed.",
@@ -663,6 +687,103 @@ Deno.test("approval: genuinely removed symbol with a gone entry (file present, s
     verification: undefined,
   })]);
   assertApproved(result);
+  assert(
+    contentsCalls(calls).some((c) =>
+      c[1] === "repos/acme/widgets/contents/src/export.ts?ref=main"
+    ),
+  );
+});
+
+// A gone entry for a file or symbol that never existed at the base ref shows
+// nothing was removed, so it is refused; the same entry with only the base
+// fact made true is accepted.
+const goneNote = (coverage: TestChangeNote["coverage"]) =>
+  note({
+    file: "src/export_test.ts",
+    kind: "removed-case",
+    obsolete: "Checked the removed export, which issue 3416 deleted.",
+    remaining: undefined,
+    coverage,
+    requirementQuote: undefined,
+    failsWithoutChange: undefined,
+    verification: undefined,
+  });
+
+Deno.test("negative: a gone entry for an invented path that is absent at head and base", async () => {
+  const { result } = await assess([goneNote([{
+    role: "gone",
+    path: "tests/invented_test.ts",
+  }])]);
+  assertFinding(
+    result,
+    "gone coverage tests/invented_test.ts never existed at the base ref, so it does not show anything was removed",
+  );
+  assertEquals(result.approved, []);
+  assertApproved(
+    (await assess(
+      [goneNote([{ role: "gone", path: "tests/invented_test.ts" }])],
+      {
+        fx: {
+          base: { "tests/invented_test.ts": "test('invented', () => {});" },
+        },
+      },
+    )).result,
+  );
+});
+
+Deno.test("negative: a gone symbol absent at head and base is refused", async () => {
+  const entry = {
+    role: "gone" as const,
+    path: "src/export.ts",
+    name: "exportNothing",
+  };
+  const { result } = await assess([goneNote([entry])]);
+  assertFinding(
+    result,
+    "gone coverage src/export.ts::exportNothing never existed at the base ref, so it does not show anything was removed",
+  );
+  // Legal: the symbol is present at the base ref (and still absent at head).
+  assertApproved(
+    (await assess([goneNote([entry])], {
+      fx: { base: { "src/export.ts": "export function exportNothing() {}\n" } },
+    })).result,
+  );
+});
+
+Deno.test("negative: a gone entry with no valid base ref is refused without a base read", async () => {
+  const entry = { role: "gone" as const, path: "tests/legacy_export_test.ts" };
+  for (const bad of [undefined, "", "a..b", "bad ref!", "x".repeat(201)]) {
+    const { result, calls } = await assess([goneNote([entry])], {
+      pr: { baseRef: bad },
+    });
+    assertFinding(
+      result,
+      "gone coverage tests/legacy_export_test.ts never existed at the base ref",
+    );
+    assertEquals(
+      contentsCalls(calls).filter((c) => (c[1] ?? "").includes("?ref=")).length,
+      1,
+      String(bad),
+    );
+    assertApproved(
+      (await assess([goneNote([entry])], { pr: { baseRef: "main" } })).result,
+    );
+  }
+});
+
+Deno.test("retry: a non-404 base read for a gone entry stops the assessment", async () => {
+  const entry = { role: "gone" as const, path: "tests/legacy_export_test.ts" };
+  const { result } = await assess([goneNote([entry])], {
+    fx: {
+      base: {
+        "tests/legacy_export_test.ts": new Error("HTTP 500: Server Error"),
+      },
+    },
+  });
+  assertEquals(result.findings, []);
+  assertEquals(result.approved, []);
+  assert(result.retry?.includes("HTTP 500"));
+  assertApproved((await assess([goneNote([entry])])).result);
 });
 
 Deno.test("approval: a Part of PR whose governing issue comes only from the Part of line", async () => {

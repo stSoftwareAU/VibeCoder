@@ -89,6 +89,9 @@ export interface AssessedPr {
   headSha: string;
   kind: "fleet" | "dependabot";
   testChanges: { removed: string[]; edited: string[] };
+  // The PR's base branch name. A `gone` coverage entry is checked against it;
+  // missing or invalid, a `gone` entry cannot pass (it shows nothing was removed).
+  baseRef?: string;
 }
 
 const isRepo = (v: unknown): v is string =>
@@ -438,18 +441,21 @@ type Probe =
   | { state: "unreadable" }
   | { state: "error"; message: string };
 
-// One contents read at the head. 404 is absent; any other gh error is an
-// error, which the caller turns into a retry.
+// One contents read at a ref (the head sha, or the base branch name). 404 is
+// absent; any other gh error is an error, which the caller turns into a retry.
 async function probeContents(
   repo: string,
   path: string,
-  sha: string,
+  ref: string,
   runGh: RunGh,
 ): Promise<Probe> {
   const encoded = path.split("/").map((s) => encodeURIComponent(s)).join("/");
   let raw: string;
   try {
-    raw = await runGh(["api", `repos/${repo}/contents/${encoded}?ref=${sha}`]);
+    raw = await runGh([
+      "api",
+      `repos/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
+    ]);
   } catch (e) {
     if (isNotFound(e)) return { state: "absent" };
     return { state: "error", message: firstLine(e) };
@@ -514,17 +520,37 @@ function notFileOrUnreadable(
   where: string,
   state: "not-file" | "unreadable" | "absent" | "present",
   label: string,
+  at = "the head",
 ): Problem {
   return state === "not-file"
     ? {
       problem:
-        `${label} ${where} is not a file at the head (a directory or other non-file)`,
-      fix: "Cite a file, not a directory, that exists at the head",
+        `${label} ${where} is not a file at ${at} (a directory or other non-file)`,
+      fix: `Cite a file, not a directory, that exists at ${at}`,
     }
     : {
-      problem: `${label} ${where} could not be read as text at the head`,
-      fix: "Cite a UTF-8 text file that exists at the head",
+      problem: `${label} ${where} could not be read as text at ${at}`,
+      fix: `Cite a UTF-8 text file that exists at ${at}`,
     };
+}
+
+// A base branch name that can be put in a contents query, or undefined.
+const BASE_REF_PATTERN = /^[A-Za-z0-9_.\/-]{1,200}$/;
+function validBaseRef(v: unknown): string | undefined {
+  return typeof v === "string" && BASE_REF_PATTERN.test(v) && !v.includes("..")
+    ? v
+    : undefined;
+}
+
+// A `gone` entry must name something that existed at the base ref: an
+// invented path or symbol shows nothing was removed.
+function neverExisted(where: string, fix?: string): Problem {
+  return {
+    problem:
+      `gone coverage ${where} never existed at the base ref, so it does not show anything was removed`,
+    fix: fix ??
+      "Cite functionality that existed at the base ref and is gone at the head",
+  };
 }
 
 // Coverage: each entry is checked at the head; at least one must pass.
@@ -585,27 +611,69 @@ async function checkCoverage(
     );
     if (probe.state === "error") return { passed, retry: plain(probe.message) };
     if (ref.role === "gone") {
-      if (probe.state === "absent") {
-        passed.push(ref);
-      } else if (probe.state === "present") {
-        if (name === "") {
-          problems.push({
-            problem:
-              `gone coverage ${where} still exists at the head, so it does not show the behaviour is removed`,
-            fix:
-              "Name the removed test or symbol in coverage, or drop the gone entry",
-          });
-        } else if (probe.text.includes(name)) {
-          problems.push({
-            problem:
-              `gone coverage ${where} still names a symbol present at the head`,
-            fix: "Remove the symbol, or cite coverage that exists at the head",
-          });
+      // Gone at the head: absent, or (with a name) the name is missing.
+      const goneAtHead = probe.state === "absent" ||
+        (probe.state === "present" && name !== "" &&
+          !probe.text.includes(name));
+      if (!goneAtHead) {
+        if (probe.state === "present") {
+          problems.push(
+            name === ""
+              ? {
+                problem:
+                  `gone coverage ${where} still exists at the head, so it does not show the behaviour is removed`,
+                fix:
+                  "Name the removed test or symbol in coverage, or drop the gone entry",
+              }
+              : {
+                problem:
+                  `gone coverage ${where} still names a symbol present at the head`,
+                fix:
+                  "Remove the symbol, or cite coverage that exists at the head",
+              },
+          );
         } else {
-          passed.push(ref);
+          problems.push(
+            notFileOrUnreadable(where, probe.state, "gone coverage"),
+          );
         }
+        continue;
+      }
+      // It must have existed at the base ref, or nothing was removed.
+      const base = validBaseRef(ctx.pr.baseRef);
+      if (base === undefined) {
+        problems.push(neverExisted(
+          where,
+          "The review has no valid base branch name for this PR, so the removal cannot be checked",
+        ));
+        continue;
+      }
+      const baseProbe = await probeContents(
+        ctx.pr.repo,
+        ref.path,
+        base,
+        ctx.runGh,
+      );
+      if (baseProbe.state === "error") {
+        return { passed, retry: plain(baseProbe.message) };
+      }
+      if (baseProbe.state === "absent") {
+        problems.push(neverExisted(where));
+      } else if (
+        baseProbe.state === "not-file" || baseProbe.state === "unreadable"
+      ) {
+        problems.push(
+          notFileOrUnreadable(
+            where,
+            baseProbe.state,
+            "gone coverage",
+            "the base ref",
+          ),
+        );
+      } else if (name !== "" && !baseProbe.text.includes(name)) {
+        problems.push(neverExisted(where));
       } else {
-        problems.push(notFileOrUnreadable(where, probe.state, "gone coverage"));
+        passed.push(ref);
       }
       continue;
     }

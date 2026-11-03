@@ -567,7 +567,10 @@ export function renderSummary(
     `Updated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC. ` +
     `Last 24 h: ${count("approved")} approved, ` +
     `${count("changes_requested")} sent back, ${count("held")} held for you.`,
-    ...(policyLine ? [`Test-change policy: ${policyLine}`] : []),
+    // The policy line as describeTestPolicy words it, capitalised (Issue #4655).
+    ...(policyLine
+      ? [policyLine.charAt(0).toUpperCase() + policyLine.slice(1)]
+      : []),
     "",
     `## Waiting for you (${held.length})`,
     "",

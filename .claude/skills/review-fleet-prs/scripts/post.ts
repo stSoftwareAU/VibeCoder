@@ -24,7 +24,9 @@ import {
 // Every review ends with a run footer naming the model run that wrote it
 // (review_cost.ts): a round's input file sits in the round's directory beside
 // its attempt log, an input elsewhere is an interactive session's, and
-// --no-model marks a review posted with no model run (an audit send-back).
+// --no-model marks a review posted with no model run (an audit send-back). An
+// audit send-back skips the test-change assessment: it has no test-change notes,
+// so its own findings alone decide it (Issue #4655).
 // --state-dir names the review state directory outright. A round inside the
 // worker container passes it (Issue #3293): there the host's log directory is
 // mounted at another path, so the resolution stateDir() makes on the host
@@ -355,7 +357,7 @@ export function postedResult(
 /** The gate entry fields the test-change decision needs (Issue #4655). */
 export type TestGatePr = Pick<
   Input["pr"],
-  "repo" | "number" | "headSha" | "kind" | "testChanges"
+  "repo" | "number" | "headSha" | "kind" | "testChanges" | "baseRef"
 >;
 
 /**
@@ -384,6 +386,9 @@ export async function decidePostOutcome(
   removedTests: readonly string[],
   policy: EffectiveTestPolicy,
   runGh: RunGh,
+  // `assess: false`: an audit send-back, which has no model test-change notes
+  // to check, so its own findings alone decide it (Issue #4655).
+  opts: { assess?: boolean } = {},
 ): Promise<PostDecision> {
   if (
     testModeFor(policy, pr.repo) === "hold-all" &&
@@ -395,12 +400,16 @@ export async function decidePostOutcome(
       hold: { reasons: [], override: true },
     };
   }
+  if (opts.assess === false) {
+    return { outcome: decideOutcome(review, removedTests), review };
+  }
   const assessed: AssessedPr = {
     repo: pr.repo,
     number: pr.number,
     headSha: pr.headSha,
     kind: pr.kind,
     testChanges: pr.testChanges,
+    baseRef: pr.baseRef,
   };
   const assessment = await assessTestChanges(assessed, review, policy, runGh);
   if (assessment.retry !== undefined) return { retry: assessment.retry };
@@ -538,6 +547,8 @@ export async function main() {
     removed,
     policy,
     (args) => run("gh", args),
+    // An audit send-back (--no-model) has no test-change notes to assess.
+    { assess: !Deno.args.includes("--no-model") },
   );
   if ("retry" in decision) {
     // A check could not run: nothing is posted, and the PR comes back next pass.

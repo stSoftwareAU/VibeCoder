@@ -94,8 +94,13 @@ interface Fx {
   headOids?: string[];
   pr?: Record<string, unknown>;
   prError?: Error;
+  // Extra files at the head commit.
   contents?: Record<string, Entry>;
+  // Files at the base branch (the PR's base ref); empty by default.
+  base?: Record<string, Entry>;
 }
+
+const BASE_BRANCH = "main";
 
 // The head read is `gh pr view --json headRefOid,...`: the fields are one arg.
 const isHeadRead = (args: string[]) =>
@@ -125,15 +130,23 @@ function answer(args: string[], fx: Fx, headReads: number): string {
     }
     throw new Error("gh: Not Found (HTTP 404)");
   }
-  const file = /^repos\/([^/]+\/[^/]+)\/contents\/(.+)\?ref=([0-9a-f]+)$/.exec(
+  const file = /^repos\/([^/]+\/[^/]+)\/contents\/(.+)\?ref=([^?&]+)$/.exec(
     endpoint,
   );
   if (file) {
     const path = file[2]!.split("/").map((s) => decodeURIComponent(s)).join(
       "/",
     );
-    const contents = { ...CONTENTS, ...fx.contents };
-    const v = contents[path];
+    // The head is read at the commit; the base is read at its branch name.
+    // Each ref sees only its own table (Issue #4655: gone coverage is checked
+    // at the base as well as the head).
+    const ref = decodeURIComponent(file[3]!);
+    const table = ref === SHA
+      ? { ...CONTENTS, ...fx.contents }
+      : ref === BASE_BRANCH
+      ? { ...fx.base }
+      : {};
+    const v = table[path];
     if (v === undefined) throw new Error("gh: Not Found (HTTP 404)");
     if (v instanceof Error) throw v;
     if (v === "dir") {
@@ -180,6 +193,7 @@ const gatePr = (over: Partial<TestGatePr> = {}): TestGatePr => ({
   repo: "acme/widgets",
   number: 42,
   headSha: SHA,
+  baseRef: BASE_BRANCH,
   kind: "fleet",
   testChanges: { removed: [], edited: [] },
   ...over,
@@ -370,9 +384,84 @@ Deno.test("approval: genuinely removed functionality, a gone entry with the file
       pr: {
         testChanges: { removed: ["tests/legacy_export_test.ts"], edited: [] },
       },
+      fx: { base: { "tests/legacy_export_test.ts": GONE_FILE } },
     },
   );
   assertEquals(settled(d).outcome, "approved");
+});
+
+const GONE_FILE = "test('exports csv', () => {});\n";
+const GONE_NOTE = note({
+  file: "tests/legacy_export_test.ts",
+  kind: "removed-file",
+  obsolete: "Checks the CSV export that issue 3416 removed.",
+  remaining: undefined,
+  coverage: [{ role: "gone", path: "tests/legacy_export_test.ts" }],
+  requirementQuote: undefined,
+  failsWithoutChange: undefined,
+  verification: undefined,
+});
+const GONE_PR = {
+  testChanges: { removed: ["tests/legacy_export_test.ts"], edited: [] },
+};
+
+Deno.test("approval: a gone path that exists at the base ref and not at head is approved; base read by branch, head by commit", async () => {
+  const { d, calls } = await decide(review({ testChangeNotes: [GONE_NOTE] }), {
+    pr: GONE_PR,
+    fx: { base: { "tests/legacy_export_test.ts": GONE_FILE } },
+  });
+  assertEquals(settled(d).outcome, "approved");
+  assert(calls.some((c) => c.some((a) => a.endsWith(`?ref=${BASE_BRANCH}`))));
+  assert(calls.some((c) => c.some((a) => a.endsWith(`?ref=${SHA}`))));
+});
+
+Deno.test("never approved: a gone path absent at both the base ref and the head is changes_requested", async () => {
+  const { d } = await decide(review({ testChangeNotes: [GONE_NOTE] }), {
+    pr: GONE_PR,
+    fx: { base: {} },
+  });
+  const s = settled(d);
+  assertEquals(s.outcome, "changes_requested");
+  assertStringIncludes(problems(s), "never existed at the base ref");
+});
+
+Deno.test("audit send-back (assess false): the review's own findings alone decide; gh is never called; no retry", async () => {
+  const own = [{ file: "a.ts", line: 1, problem: "workflow bug" }];
+  const input = review({ findings: own, testChanges: "none" });
+  const removed = ["tests/x_test.ts"];
+  const g = fakeGh({ prError: new Error("boom") });
+  const d = settled(
+    await decidePostOutcome(
+      gatePr({ testChanges: { removed, edited: [] } }),
+      input,
+      removed,
+      POLICY,
+      g.runGh,
+      { assess: false },
+    ),
+  );
+  assertEquals(d.outcome, "changes_requested");
+  assertEquals(d.review.findings, own);
+  assertEquals(g.calls, []);
+});
+
+Deno.test("audit send-back default: the assessment runs, appends the no-note finding, and calls gh", async () => {
+  const own = [{ file: "a.ts", line: 1, problem: "workflow bug" }];
+  const removed = ["tests/x_test.ts"];
+  const g = fakeGh();
+  const d = settled(
+    await decidePostOutcome(
+      gatePr({ testChanges: { removed, edited: [] } }),
+      review({ findings: own, testChanges: "none" }),
+      removed,
+      POLICY,
+      g.runGh,
+    ),
+  );
+  assertEquals(d.outcome, "changes_requested");
+  assertEquals(d.review.findings.length, 2);
+  assertStringIncludes(problems(d), "has no review note");
+  assert(g.calls.length > 0);
 });
 
 Deno.test("approval: a Part of PR, whose governing issue comes only from the Part of line", async () => {
@@ -579,6 +668,35 @@ Deno.test("never approved: an unjustified verdict", async () => {
   const s = settled(d);
   assertEquals(s.outcome, "changes_requested");
   assertStringIncludes(problems(s), "unjustified");
+});
+
+Deno.test("never approved: an expected-value change with no requirement quote (carried over from #3397: a hold kept for a missing quote)", async () => {
+  const { d } = await decide(
+    review({
+      testChangeNotes: [
+        note(),
+        note({ file: "tests/other_test.ts", requirementQuote: undefined }),
+      ],
+    }),
+  );
+  const s = settled(d);
+  assertEquals(s.outcome, "changes_requested");
+  assertStringIncludes(
+    problems(s),
+    "expected-value change needs a requirement quote",
+  );
+});
+
+Deno.test("needs-human: an approval with no earlier record adds and removes nothing (carried over from #3397)", async () => {
+  const run = recorder();
+  const label = await syncNeedsHumanLabel(
+    "approved",
+    undefined,
+    { repo: "acme/widgets", number: 42 },
+    run.run,
+  );
+  assertEquals(label.addedNeedsHuman, false);
+  assertEquals(run.calls, []);
 });
 
 // --- decidePostOutcome: owner holds, the override and retry --------------
@@ -1139,23 +1257,29 @@ Deno.test("renderSummary marks reviewed approvals; old auto-released records sti
   assertEquals(md.split(historical).length - 1, 1);
 });
 
-Deno.test("renderSummary: the policy line appears after the Updated line when given", () => {
+// describeTestPolicy words the line "test-change policy v2: …"; the summary
+// shows it capitalised, on its own line, after the Updated line (Issue #4655).
+const shownPolicyLine = (line: string) =>
+  line.charAt(0).toUpperCase() + line.slice(1);
+
+Deno.test("renderSummary: the policy line appears, capitalised, after the Updated line when given", () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
   const line = describeTestPolicy(POLICY);
   const md = renderSummary([], new Set(), now, line);
-  assertStringIncludes(md, `Test-change policy: ${line}`);
   const lines = md.split("\n");
-  assert(
-    lines[lines.findIndex((l) => l.startsWith("Updated"))! + 1]!.startsWith(
-      "Test-change policy:",
-    ),
+  const updated = lines.findIndex((l) => l.startsWith("Updated"));
+  assertEquals(lines[updated + 1], shownPolicyLine(line));
+  assert(line.startsWith("test-change policy v"));
+  assertFalse(md.includes("Test-change policy:"));
+  assertFalse(
+    renderSummary([], new Set(), now).includes("test-change policy v"),
   );
   assertFalse(
-    renderSummary([], new Set(), now).includes("Test-change policy:"),
+    renderSummary([], new Set(), now).includes("Test-change policy v"),
   );
 });
 
-Deno.test("writeSummary writes the policy line into summary.md", async () => {
+Deno.test("writeSummary writes the capitalised policy line into summary.md", async () => {
   const dir = await Deno.makeTempDir();
   try {
     await writeSummary(
@@ -1165,9 +1289,8 @@ Deno.test("writeSummary writes the policy line into summary.md", async () => {
       describeTestPolicy(POLICY),
     );
     const md = await Deno.readTextFile(`${dir}/summary.md`);
-    assertStringIncludes(
-      md,
-      `Test-change policy: ${describeTestPolicy(POLICY)}`,
+    assert(
+      md.split("\n").includes(shownPolicyLine(describeTestPolicy(POLICY))),
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
