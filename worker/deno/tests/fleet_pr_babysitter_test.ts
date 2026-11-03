@@ -1143,14 +1143,14 @@ Deno.test("an empty or oversized PR description proposal is not applied", async 
 });
 
 // Issue #4625: a missing local gate is a capability failure, not a CI pass.
-Deno.test("a check the host cannot run withholds readiness", () => {
+Deno.test("a check the host cannot run does not withhold readiness", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
     assertStringIncludes(
       prompt,
-      "A missing gate, failed required check or unavailable check host blocks the repair push",
+      "A check this host cannot run does not by itself withhold BABYSITTER_READY",
     );
   }
 });
@@ -1236,14 +1236,14 @@ Deno.test("the PR description update passes the write allowlist for its repo onl
 });
 
 // Issue #4625: an unavailable required local check never becomes a pass.
-Deno.test("an unavailable local check blocks babysitter readiness", () => {
+Deno.test("a commit-history check does not withhold readiness", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
     assertStringIncludes(
       prompt,
-      "unavailable check host blocks the repair push",
+      "A check that reads commit history cannot see uncommitted work and does not withhold BABYSITTER_READY",
     );
   }
 });
@@ -1838,6 +1838,51 @@ Deno.test("babysitter failed checkpoint copies retain one original outside tempo
       state,
     );
     await assertRejects(() => Deno.stat(retained), Deno.errors.NotFound);
+  } finally {
+    await Deno.remove(state, { recursive: true });
+  }
+});
+
+Deno.test("checkpoint pruning continues past malformed and inaccessible records", async () => {
+  const state = await Deno.makeTempDir();
+  try {
+    for (const name of ["malformed", "unavailable", "closed", "outside"]) {
+      const dir = `${state}/deferred/${name}`;
+      await Deno.mkdir(dir, { recursive: true });
+      await Deno.writeTextFile(
+        `${dir}/.babysitter-checkpoint.json`,
+        name === "malformed" ? "{" : JSON.stringify({
+          repo: name === "outside" ? "other/repo" : "owner/repo",
+          number: name === "unavailable" ? 1 : 2,
+          head: "head",
+        }),
+      );
+    }
+    await pruneDeferredCheckpoints(
+      state,
+      (args) => {
+        assert(!args.includes("other/repo"));
+        if (args.includes("1")) throw new Error("fixture unavailable");
+        return Promise.resolve(
+          JSON.stringify({
+            state: "CLOSED",
+            headRefOid: "head",
+            statusCheckRollup: [],
+          }),
+        );
+      },
+      state,
+      ["owner/repo"],
+    );
+    for (const name of ["malformed", "closed"]) {
+      await assertRejects(
+        () => Deno.stat(`${state}/deferred/${name}`),
+        Deno.errors.NotFound,
+      );
+    }
+    for (const name of ["unavailable", "outside"]) {
+      assert((await Deno.stat(`${state}/deferred/${name}`)).isDirectory);
+    }
   } finally {
     await Deno.remove(state, { recursive: true });
   }

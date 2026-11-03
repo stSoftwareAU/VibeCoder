@@ -361,6 +361,12 @@ export async function pushUnpushedCommits(
   }
   const unpushedCount = stateResult.value.count;
 
+  // Verify even an already-published head: review verification also applies
+  // to self-pushed fixes and rebuttals. Recovery verifies again after rebase.
+  if (beforePush) {
+    const verified = await beforePush();
+    if (!verified.ok) return verified;
+  }
   // Short-circuit only when the branch exists on the remote and holds every
   // local commit. When it does not exist yet we still push, so `-u` creates
   // the upstream ref.
@@ -384,12 +390,6 @@ export async function pushUnpushedCommits(
       ok: false,
       error: err instanceof Error ? err : new Error(String(err)),
     };
-  }
-  // Recheck the caller's publication guard after remote lookups and directly
-  // before the push. Recovery invokes the same guard again after its rebase.
-  if (beforePush) {
-    const verified = await beforePush();
-    if (!verified.ok) return verified;
   }
   const pushResult = await runGitCommand(pushArgs, options);
 

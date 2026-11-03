@@ -54,6 +54,7 @@ async function digest(value: string): Promise<string> {
 export async function publicationTreeIdentity(
   cwd: string,
   command = DEFAULT_COMMAND,
+  environment = Deno.env.toObject(),
 ): Promise<string | null> {
   let root: string;
   try {
@@ -78,7 +79,11 @@ export async function publicationTreeIdentity(
   const denoVersion = deno.ok && deno.value.code === 0 && !deno.value.timedOut
     ? deno.value.stdout
     : "deno-unavailable";
-  const commandEnvironment = Object.entries(Deno.env.toObject())
+  const commandEnvironment = Object.entries(environment)
+    .filter(([key]) =>
+      !/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY|API_KEY|AUTH|COOKIE)/i
+        .test(key)
+    )
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}=${value}`);
   return await digest([

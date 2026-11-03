@@ -847,3 +847,31 @@ Deno.test("commitAndPushPending invokes the verifier once for an unrejected push
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+Deno.test("commitAndPushPending invokes the verifier once and refuses an already published head", async () => {
+  const branch = "issue-single-verdict";
+  const { tmp, downstream } = await makeRepo("review_once_", branch);
+  try {
+    let calls = 0;
+    const result = await commitAndPushPending(
+      branch,
+      "repair",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        calls++;
+        return Promise.resolve({
+          ok: false as const,
+          error: new Error("refused"),
+        });
+      },
+    );
+    assert(!result.ok);
+    assertEquals(calls, 1);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});

@@ -23,7 +23,7 @@ Version bump: no version file changed.
 ### Essential Design Decisions
 
 - Success binds the commit, working-tree digest, resolved commands and working
-  directories, environment, and Bash/Deno versions. Every publisher checks
+  directories, non-credential environment, and Bash/Deno versions. Every publisher checks
   freshness immediately before pushing and after recovery changes the tree.
 - The agent hook applies the same validator. Validation refusals retain their
   typed gate/infrastructure outcome through internal and outer recovery;
@@ -303,3 +303,19 @@ Validation of the current review corrections:
   whose four unit shards and required gate passed. Config integration lacks a
   local `.config.json`; Semgrep and pinned Checkov are not installed. These
   unavailable checks were not represented as passing.
+
+Review follow-up: verify already-published heads exactly once, isolate malformed or
+inaccessible checkpoints and skip repositories outside the pass scope. Credential
+rotation does not invalidate validation. Agent readiness retains host-unavailable,
+unrelated host-only and commit-history waivers; the runner still gates publication.
+
+Review regression validation: 139 focused tests passed (one existing host-only
+cross-filesystem test ignored); the revised identity and parallel-safety suites
+passed 28 tests. The once-per-unrejected-push test is retained. No twinned rule
+was found for these changes. Prompt expectations now preserve the existing
+host and commit-history readiness contracts alongside runner enforcement.
+
+Final local gate: formatting, lint, type check, completeness (847 passed),
+Markdown and Mermaid checks passed. The full parallel test run stopped on an
+internal Deno 2.9.5 macOS panic: pledge test permissions called before restoring
+previous pledge. Semgrep and Checkov were unavailable on this host.

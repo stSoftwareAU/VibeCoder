@@ -592,3 +592,31 @@ Deno.test("publication uses complete gate permissions instead of a narrower mani
     await Deno.remove(cwd, { recursive: true });
   }
 });
+
+Deno.test("credential rotation preserves publication identity", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  const environment = {
+    PATH: Deno.env.get("PATH")!,
+    GH_TOKEN: "fixture-original",
+  };
+  const path = environment.PATH;
+  const identity = (dir: string, command?: string) =>
+    publicationTreeIdentity(dir, command, environment);
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: shellRunner(),
+      identity,
+    });
+    assertEquals(result.status, "passed");
+    environment.GH_TOKEN = "fixture-rotation";
+    assert(await publicationValidationIsCurrent(result, cwd, identity));
+    environment.PATH = path + ":/fixture-toolchain";
+    assert(!await publicationValidationIsCurrent(result, cwd, identity));
+    environment.PATH = path;
+    await Deno.writeTextFile(`${cwd}/change.txt`, "change");
+    assert(!await publicationValidationIsCurrent(result, cwd, identity));
+  } finally {
+    environment.PATH = path;
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
