@@ -66,7 +66,7 @@ flowchart TD
   — 88 passed together after the review fix.
 - `worker/deno/tests/pre_pr_verifier_3395_test.ts` and
   `worker/deno/tests/heavy_build_gate_3178_test.ts` — passed with the new test
-  file (118 passed, 0 failed).
+  file after the review fix (119 passed, 0 failed).
 - Premise checked against base: `git grep -n releaseCheckoutTargetDirs` finds
   one production caller, `worker/deno/lib/run_core_production_deps.ts` (the
   maintenance pass). The verifier never called it. `claude_runner.ts`
