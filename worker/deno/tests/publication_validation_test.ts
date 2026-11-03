@@ -1,0 +1,563 @@
+/**
+ * Tests for runner-owned publication validation (Issue #4625).
+ *
+ * Each test builds its own temporary git checkout, so nothing depends on a
+ * fixed path or on the state of the developer's machine. Gate outcomes are
+ * injected through `runGate`, except the tests that run the real
+ * `runQualityGateCheck` against a committed `quality.sh`.
+ */
+
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertStringIncludes,
+} from "@std/assert";
+import type { RepoConfig, Result } from "../types.ts";
+import {
+  createPublicationGuard,
+  type PublicationValidation,
+  PublicationValidationFailedError,
+  PublicationValidationUnavailableError,
+  publicationVerdict,
+  validateRepositoryForPublication,
+} from "../lib/publication_validation.ts";
+import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
+import {
+  type QualityGateDeps,
+  type QualityGateParams,
+  type QualityGateRunResult,
+  runQualityGateCheck,
+} from "../lib/quality_gate_phase.ts";
+
+const REPO = "acme/widget";
+const decoder = new TextDecoder();
+
+type GateCall = { params: QualityGateParams; deps: QualityGateDeps };
+
+const PASS: QualityGateRunResult = { action: "passed", qualityOutput: "" };
+
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  const result = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (!result.success) {
+    throw new Error(
+      `git ${args.join(" ")} failed: ${decoder.decode(result.stderr)}`,
+    );
+  }
+  return decoder.decode(result.stdout).trim();
+}
+
+/**
+ * Runs `fn` in a fresh git checkout holding one commit of `files`. Files whose
+ * name ends in `.sh` are committed executable. The checkout is removed after.
+ */
+async function withRepo(
+  files: Record<string, string>,
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "publication-validation-" });
+  try {
+    // The gate runs the repository's own commands as the untrusted `agent`
+    // account where the host has one, and that account must be able to reach
+    // the checkout, as it can in production. A makeTempDir directory is 0700.
+    await Deno.chmod(dir, 0o755);
+    await git(dir, "init", "--quiet", "--initial-branch=main");
+    await git(dir, "config", "user.email", "test@example.invalid");
+    await git(dir, "config", "user.name", "Test");
+    await git(dir, "config", "commit.gpgsign", "false");
+    for (const [path, body] of Object.entries(files)) {
+      await Deno.writeTextFile(`${dir}/${path}`, body);
+      if (path.endsWith(".sh")) await Deno.chmod(`${dir}/${path}`, 0o755);
+    }
+    await git(dir, "add", "-A");
+    await git(dir, "commit", "--quiet", "-m", "initial");
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+/** A `runGate` seam that records its calls and returns `result`. */
+function stubGate(result: QualityGateRunResult, calls: GateCall[] = []) {
+  return (
+    params: QualityGateParams,
+    deps: QualityGateDeps,
+  ): Promise<QualityGateRunResult> => {
+    calls.push({ params, deps });
+    return Promise.resolve(result);
+  };
+}
+
+/**
+ * The real `runQualityGateCheck`, with the port and process sweeps replaced by
+ * no-ops: the production sweeps kill whatever listens on the dev-server ports,
+ * which a test must never do on a developer's machine.
+ */
+function realGate(
+  params: QualityGateParams,
+  deps: QualityGateDeps,
+): Promise<QualityGateRunResult> {
+  return runQualityGateCheck(params, {
+    ...deps,
+    cleanupPorts: () => Promise.resolve(),
+    cleanupSubprocesses: () => Promise.resolve(),
+  });
+}
+
+/** Narrows a validation to the status the test expects, or fails the test. */
+function expectStatus<S extends PublicationValidation["status"]>(
+  validation: PublicationValidation,
+  status: S,
+): Extract<PublicationValidation, { status: S }> {
+  if (validation.status !== status) {
+    throw new Error(
+      `expected ${status}, got ${JSON.stringify(validation)}`,
+    );
+  }
+  return validation as Extract<PublicationValidation, { status: S }>;
+}
+
+function firstCall(calls: GateCall[]): GateCall {
+  const call = calls[0];
+  if (!call) throw new Error("the gate was not called");
+  return call;
+}
+
+function errorOf(result: Result<void>): Error {
+  if (result.ok) throw new Error("expected an error result");
+  return result.error;
+}
+
+Deno.test("each gate action maps to its publication verdict", async (t) => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const head = await git(dir, "rev-parse", "HEAD");
+    const run = (result: QualityGateRunResult) =>
+      validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        { runGate: stubGate(result) },
+      );
+
+    await t.step("passed publishes as ran", async () => {
+      const v = expectStatus(
+        await run({ action: "passed", qualityOutput: "all green" }),
+        "passed",
+      );
+      assertEquals(v.gate, "ran");
+      assertEquals(v.head, head);
+    });
+
+    await t.step("skipped publishes as absent", async () => {
+      const v = expectStatus(
+        await run({ action: "skipped", qualityOutput: "" }),
+        "passed",
+      );
+      assertEquals(v.gate, "absent");
+    });
+
+    await t.step("failed_fixable is failed with its output", async () => {
+      const v = expectStatus(
+        await run({
+          action: "failed_fixable",
+          qualityOutput: "SENTINEL-FIXABLE",
+        }),
+        "failed",
+      );
+      assertStringIncludes(v.output, "SENTINEL-FIXABLE");
+      assertEquals(v.head, head);
+    });
+
+    await t.step("failed is failed with its output", async () => {
+      const v = expectStatus(
+        await run({ action: "failed", qualityOutput: "SENTINEL-FAILED" }),
+        "failed",
+      );
+      assertStringIncludes(v.output, "SENTINEL-FAILED");
+    });
+
+    const infrastructure = [
+      "failed_missing_tools",
+      "failed_missing_command",
+      "failed_docker_infra",
+      "failed_credential_delivery",
+    ] as const;
+    for (const action of infrastructure) {
+      await t.step(`${action} is unavailable, not a verdict`, async () => {
+        const v = expectStatus(
+          await run({ action, qualityOutput: `SENTINEL ${action}` }),
+          "unavailable",
+        );
+        assertStringIncludes(v.reason, `SENTINEL ${action}`);
+        assertEquals(v.head, head);
+      });
+    }
+  });
+});
+
+Deno.test("a Deno run that executed no tests is not a pass", async (t) => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const run = (qualityOutput: string) =>
+      validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        { runGate: stubGate({ action: "passed", qualityOutput }) },
+      );
+
+    await t.step("0 passed, 0 failed is failed", async () => {
+      const v = expectStatus(await run("ok | 0 passed | 0 failed"), "failed");
+      assertStringIncludes(v.output, "executed no tests");
+    });
+
+    await t.step("12 tests across 3 steps passes", async () => {
+      const v = expectStatus(
+        await run("ok | 12 passed (3 steps) | 0 failed"),
+        "passed",
+      );
+      assertEquals(v.gate, "ran");
+    });
+  });
+});
+
+Deno.test("uncommitted changes fail the check, except worker state files", async (t) => {
+  await t.step("a modified tracked file is named", async () => {
+    await withRepo({ "README.md": "hello\n" }, async (dir) => {
+      await Deno.writeTextFile(`${dir}/README.md`, "edited\n");
+      const calls: GateCall[] = [];
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: stubGate(PASS, calls) },
+        ),
+        "failed",
+      );
+      assertStringIncludes(v.output, "README.md");
+      assertEquals(calls.length, 0);
+    });
+  });
+
+  await t.step("an untracked file is named", async () => {
+    await withRepo({ "README.md": "hello\n" }, async (dir) => {
+      await Deno.writeTextFile(`${dir}/notes.txt`, "scratch\n");
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: stubGate(PASS) },
+        ),
+        "failed",
+      );
+      assertStringIncludes(v.output, "notes.txt");
+    });
+  });
+
+  await t.step("an untracked .pr_response_message is ignored", async () => {
+    await withRepo({ "README.md": "hello\n" }, async (dir) => {
+      await Deno.writeTextFile(`${dir}/.pr_response_message`, "reply\n");
+      const calls: GateCall[] = [];
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: stubGate(PASS, calls) },
+        ),
+        "passed",
+      );
+      assertEquals(v.gate, "ran");
+      assertEquals(calls.length, 1);
+    });
+  });
+});
+
+Deno.test("a gate that moves HEAD makes the result unavailable", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const v = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        {
+          runGate: async () => {
+            await git(dir, "commit", "--allow-empty", "--quiet", "-m", "moved");
+            return PASS;
+          },
+        },
+      ),
+      "unavailable",
+    );
+    assertStringIncludes(v.reason, "HEAD moved");
+  });
+});
+
+Deno.test("an opted-out repository passes without running the gate", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const calls: GateCall[] = [];
+    const repoConfigs: Record<string, RepoConfig> = {
+      [REPO]: { skipQualityCheck: true },
+    };
+    const v = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, repoConfigs },
+        { runGate: stubGate(PASS, calls) },
+      ),
+      "passed",
+    );
+    assertEquals(v.gate, "opted-out");
+    assertEquals(calls.length, 0);
+  });
+});
+
+Deno.test("the repository's qualityCommand is the gate script", async (t) => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    await t.step("a configured command is passed through", async () => {
+      const calls: GateCall[] = [];
+      const repoConfigs: Record<string, RepoConfig> = {
+        [REPO]: { qualityCommand: "./scripts/check.sh" },
+      };
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, repoConfigs },
+        { runGate: stubGate(PASS, calls) },
+      );
+      assertEquals(firstCall(calls).params.qualityScript, "./scripts/check.sh");
+      assertEquals(firstCall(calls).params.repo, REPO);
+    });
+
+    await t.step("the default is ./quality.sh", async () => {
+      const calls: GateCall[] = [];
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        { runGate: stubGate(PASS, calls) },
+      );
+      assertEquals(firstCall(calls).params.qualityScript, "./quality.sh");
+    });
+  });
+});
+
+Deno.test("the gate's deps are bound to the checkout", async (t) => {
+  await t.step("a committed quality.sh is found in the checkout", async () => {
+    await withRepo({ "quality.sh": "#!/bin/sh\nexit 0\n" }, async (dir) => {
+      const calls: GateCall[] = [];
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        { runGate: stubGate(PASS, calls) },
+      );
+      const deps = firstCall(calls).deps;
+      assertEquals(deps.getCwd(), dir);
+      assertEquals(await deps.fileExists("./quality.sh"), true);
+    });
+  });
+
+  await t.step("a checkout without quality.sh does not find one", async () => {
+    await withRepo({ "README.md": "hello\n" }, async (dir) => {
+      const calls: GateCall[] = [];
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        { runGate: stubGate(PASS, calls) },
+      );
+      assertEquals(
+        await firstCall(calls).deps.fileExists("./quality.sh"),
+        false,
+      );
+    });
+  });
+});
+
+Deno.test("a directory that is not a git checkout is unavailable", async () => {
+  const dir = await Deno.makeTempDir({
+    prefix: "publication-validation-nogit-",
+  });
+  try {
+    const calls: GateCall[] = [];
+    const v = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        { runGate: stubGate(PASS, calls) },
+      ),
+      "unavailable",
+    );
+    assertEquals(v.head, null);
+    assertEquals(calls.length, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("publicationVerdict turns each status into the matching Result", () => {
+  const failed = publicationVerdict({
+    status: "failed",
+    head: "abc",
+    output: "SENTINEL-VERDICT",
+  });
+  assertEquals(failed.ok, false);
+  const failure = errorOf(failed);
+  assertInstanceOf(failure, PublicationValidationFailedError);
+  assertStringIncludes(failure.message, "SENTINEL-VERDICT");
+
+  const unavailable = publicationVerdict({
+    status: "unavailable",
+    head: "abc",
+    reason: "SENTINEL-REASON",
+  });
+  assertEquals(unavailable.ok, false);
+  const outage = errorOf(unavailable);
+  assertInstanceOf(outage, PublicationValidationUnavailableError);
+  assertInstanceOf(outage, PrePushGateInfrastructureError);
+  assertStringIncludes(outage.message, "SENTINEL-REASON");
+
+  assertEquals(
+    publicationVerdict({ status: "passed", head: "abc", gate: "ran" }),
+    { ok: true, value: undefined },
+  );
+});
+
+Deno.test("the real quality gate: a failing quality.sh is a failed verdict", async () => {
+  await withRepo(
+    { "quality.sh": "#!/bin/sh\necho boom\nexit 1\n" },
+    async (dir) => {
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: realGate },
+        ),
+        "failed",
+      );
+      assertStringIncludes(v.output, "boom");
+    },
+  );
+});
+
+Deno.test("the real quality gate: a passing quality.sh publishes as ran", async () => {
+  await withRepo(
+    { "quality.sh": "#!/bin/sh\necho all clear\nexit 0\n" },
+    async (dir) => {
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: realGate },
+        ),
+        "passed",
+      );
+      assertEquals(v.gate, "ran");
+    },
+  );
+});
+
+Deno.test("the guard validates a new head once and reuses a clean pass", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const head = await git(dir, "rev-parse", "HEAD");
+    const passedVerdict: PublicationValidation = {
+      status: "passed",
+      head,
+      gate: "ran",
+    };
+    let validations = 0;
+    const guard = createPublicationGuard({
+      cwd: dir,
+      repo: REPO,
+      branchName: "main",
+      validate: () => {
+        validations++;
+        return Promise.resolve(passedVerdict);
+      },
+    });
+    assertEquals((await guard()).ok, true);
+    assertEquals((await guard()).ok, true);
+    assertEquals(validations, 1);
+  });
+});
+
+Deno.test("the guard validates a new commit afresh", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    let validations = 0;
+    const guard = createPublicationGuard({
+      cwd: dir,
+      repo: REPO,
+      branchName: "main",
+      validate: async () => {
+        validations++;
+        const head = await git(dir, "rev-parse", "HEAD");
+        return { status: "passed", head, gate: "ran" };
+      },
+    });
+    assertEquals((await guard()).ok, true);
+    await git(dir, "commit", "--allow-empty", "--quiet", "-m", "second");
+    assertEquals((await guard()).ok, true);
+    assertEquals(validations, 2);
+  });
+});
+
+Deno.test("the guard re-validates after an uncommitted edit and fails it", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const calls: GateCall[] = [];
+    const guard = createPublicationGuard({
+      cwd: dir,
+      repo: REPO,
+      branchName: "main",
+      validate: (options) =>
+        validateRepositoryForPublication(options, {
+          runGate: stubGate(PASS, calls),
+        }),
+    });
+    assertEquals((await guard()).ok, true);
+    assertEquals(calls.length, 1);
+
+    await Deno.writeTextFile(`${dir}/README.md`, "edited\n");
+    const verdict = await guard();
+    assertEquals(verdict.ok, false);
+    const error = errorOf(verdict);
+    assertInstanceOf(error, PublicationValidationFailedError);
+    assertStringIncludes(error.message, "README.md");
+    assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("the guard returns the failed output as an error", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const guard = createPublicationGuard({
+      cwd: dir,
+      repo: REPO,
+      branchName: "main",
+      validate: () =>
+        Promise.resolve({
+          status: "failed",
+          head: null,
+          output: "SENTINEL-GUARD-OUTPUT",
+        }),
+    });
+    const verdict = await guard();
+    assertEquals(verdict.ok, false);
+    const error = errorOf(verdict);
+    assertInstanceOf(error, PublicationValidationFailedError);
+    assertStringIncludes(error.message, "SENTINEL-GUARD-OUTPUT");
+  });
+});
+
+Deno.test("the guard does not validate a branch in sync with its remote", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const origin = await Deno.makeTempDir({
+      prefix: "publication-validation-origin-",
+    });
+    try {
+      await git(origin, "init", "--quiet", "--bare");
+      await git(dir, "remote", "add", "origin", origin);
+      await git(dir, "push", "--quiet", "-u", "origin", "main");
+
+      let validations = 0;
+      const guard = createPublicationGuard({
+        cwd: dir,
+        repo: REPO,
+        branchName: "main",
+        validate: () => {
+          validations++;
+          return Promise.resolve({
+            status: "passed",
+            head: "unused",
+            gate: "ran",
+          });
+        },
+      });
+      assertEquals((await guard()).ok, true);
+      assertEquals(validations, 0);
+    } finally {
+      await Deno.remove(origin, { recursive: true });
+    }
+  });
+});
