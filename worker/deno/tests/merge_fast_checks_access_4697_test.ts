@@ -1,0 +1,321 @@
+/**
+ * Tests for the access probe of the merge fast checks (Issue #4697).
+ *
+ * A merge check runs through runRepositoryCommand, which probes whether the
+ * `agent` account can reach the checkout before the command runs. A probe that
+ * fails leaves the merge unverified, so the push is deferred with no repair
+ * round spent on it. A manifest the worker can see is genuinely absent is a
+ * failing check, which a repair round can answer.
+ *
+ * The toolchain is an injected fake, except in the last test, which runs the
+ * real `sudo` path where this host has it. Every checkout is a temporary
+ * directory made by Deno.makeTempDir. No test mutates the process environment.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import type { Logger } from "../types.ts";
+import {
+  type FastCheck,
+  type FastCheckGit,
+  runMergeFastChecks,
+  spawnFastCheck,
+  type VerifyBeforePushOptions,
+  verifyMergeBeforePush,
+} from "../lib/merge_fast_checks.ts";
+import { GateAccountUnavailable } from "../lib/untrusted_gate_spawn.ts";
+import { runWithTimeout } from "../lib/subprocess_timeout.ts";
+import {
+  asUntrustedUser,
+  canRunAsUntrustedUser,
+} from "../lib/untrusted_command_env.ts";
+
+const CARGO_MANIFEST = '[package]\nname = "crate"\nversion = "0.1.0"\n';
+
+/** What a fake spawn answers: an exit code and the output it prints. */
+interface Answer {
+  code: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+/** One spawn call, as the production spawn would have been given it. */
+interface SpawnCall {
+  executable: string;
+  args: string[];
+  options: Parameters<typeof runWithTimeout>[2];
+}
+
+/**
+ * Whether a spawn call is the access probe runRepositoryCommand runs before a
+ * command (Issue #4697): `sh -c <probe> sh <cwd>` behind the sudo drop. The
+ * credential wrapper names its `$0` vibe-credential-channel instead.
+ */
+function isProbeCall(args: string[]): boolean {
+  return args[5] === "-c" && args[7] === "sh";
+}
+
+/** The drop the production path takes: the account is `agent` via sudo. */
+function sudoAgent(cmd: readonly string[]): Promise<string[]> {
+  return Promise.resolve(["sudo", "-n", "-u", "agent", "--", ...cmd]);
+}
+
+/**
+ * A fake spawn. The probe answers `probe`; every other call, the command,
+ * answers `command`. `calls` records every call and `commands` only commands.
+ */
+function fakeSpawn(probe: Answer, command: Answer = { code: 0 }) {
+  const calls: SpawnCall[] = [];
+  const commands: SpawnCall[] = [];
+  const spawn: typeof runWithTimeout = (executable, args, options) => {
+    const call = { executable, args: [...args], options };
+    calls.push(call);
+    const probing = isProbeCall(args);
+    if (!probing) commands.push(call);
+    const answer = probing ? probe : command;
+    return Promise.resolve({
+      ok: true,
+      value: {
+        code: answer.code,
+        stdout: answer.stdout ?? "",
+        stderr: answer.stderr ?? "",
+        success: answer.code === 0,
+        timedOut: false,
+      },
+    });
+  };
+  return { spawn, calls, commands };
+}
+
+/** Run `body` in a fresh temporary checkout holding `files`, removed after. */
+async function withCheckout<T>(
+  files: Record<string, string>,
+  body: (dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4697-" });
+  try {
+    for (const [name, contents] of Object.entries(files)) {
+      await Deno.writeTextFile(`${dir}/${name}`, contents);
+    }
+    return await body(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+/** A Deno lint check in `dir`, with the budget a real run gets. */
+function lintCheck(dir: string): FastCheck {
+  return {
+    dir,
+    kind: "deno",
+    label: `deno lint in ${dir}`,
+    args: ["lint"],
+    timeoutMs: 1000,
+  };
+}
+
+/** A cargo fmt check in `dir`, with the budget a real run gets. */
+function cargoCheck(dir: string): FastCheck {
+  return {
+    dir,
+    kind: "cargo",
+    label: `cargo fmt in ${dir}`,
+    args: ["fmt", "--all", "--", "--check"],
+    timeoutMs: 1000,
+  };
+}
+
+/** A fake git that lists one touched path and has no staged merge or log. */
+const gitListing: FastCheckGit = (args) =>
+  Promise.resolve(
+    args[0] === "diff"
+      ? { code: 0, stdout: "src/main.rs\0", stderr: "" }
+      : { code: 1, stdout: "", stderr: "" },
+  );
+
+/** A logger that drops everything. */
+function silentLogger(): Logger {
+  const drop = () => {};
+  return {
+    info: drop,
+    warn: drop,
+    error: drop,
+    debug: drop,
+    security: drop,
+    skipReason: drop,
+    timing: drop,
+    scanSummary: drop,
+    workerSummary: drop,
+  };
+}
+
+Deno.test("spawnFastCheck: an account that cannot traverse to the checkout is refused, naming the blocked directory, and the command never runs (Issue #4697)", async () => {
+  await withCheckout({}, async (dir) => {
+    const { spawn, commands } = fakeSpawn({ code: 1, stdout: "/home/vibe\n" });
+    const error = await assertRejects(
+      () => spawnFastCheck(lintCheck(dir), {}, spawn, sudoAgent),
+      GateAccountUnavailable,
+      "cannot traverse '/home/vibe'",
+    );
+    assertStringIncludes(error.message, "/home/vibe");
+    assertEquals(commands.length, 0);
+  });
+});
+
+Deno.test("merge checks: an unreachable checkout leaves the merge unverified, and the push is deferred with no repair round (Issue #4697)", async () => {
+  await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    const { spawn, commands } = fakeSpawn({ code: 1, stdout: "/home/vibe\n" });
+    const runner = (check: FastCheck) =>
+      spawnFastCheck(check, {}, spawn, sudoAgent);
+
+    const outcome = await runMergeFastChecks(dir, ["src/main.rs"], runner);
+    assert(outcome.status === "unverified");
+    assertStringIncludes(outcome.detail, "could not be run");
+    assertStringIncludes(outcome.output, "/home/vibe");
+    assertEquals(commands.length, 0);
+
+    let repairs = 0;
+    const options: VerifyBeforePushOptions = {
+      repoDir: dir,
+      headBeforeMerge: "abc123",
+      baseBranch: "main",
+      git: gitListing,
+      park: () => Promise.resolve(null),
+      runChecks: (repoDir, touched) =>
+        runMergeFastChecks(repoDir, touched, runner),
+      runRepairAgent: () => {
+        repairs++;
+        return Promise.resolve({ ok: true, value: { terminated: false } });
+      },
+      logger: silentLogger(),
+    };
+    const verdict = await verifyMergeBeforePush(options);
+    assert(verdict.kind === "deferred");
+    assertStringIncludes(verdict.detail, "/home/vibe");
+    assertEquals(repairs, 0);
+    assertEquals(commands.length, 0);
+  });
+});
+
+Deno.test("merge checks: a manifest the worker sees is absent is a failing check, not an unverified one (Issue #4697)", async () => {
+  await withCheckout({}, async (dir) => {
+    const { spawn, commands } = fakeSpawn({ code: 1 });
+    const result = await spawnFastCheck(cargoCheck(dir), {}, spawn, sudoAgent);
+    assertEquals(result, {
+      code: 1,
+      output: `Cargo.toml is missing from ${dir} in the merged tree`,
+    });
+    assertEquals(commands.length, 0);
+  });
+});
+
+Deno.test("merge checks: a manifest that is present, with the probe failing, is an access fault that refuses the check (Issue #4697)", async () => {
+  await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    const { spawn, commands } = fakeSpawn({ code: 1 });
+    await assertRejects(
+      () => spawnFastCheck(cargoCheck(dir), {}, spawn, sudoAgent),
+      GateAccountUnavailable,
+      "untrusted account cannot use",
+    );
+    assertEquals(commands.length, 0);
+  });
+});
+
+Deno.test("merge checks: a probe that passes, then a command that cannot find Cargo.toml, is a failed check (Issue #4697)", async () => {
+  await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    const message =
+      "error: could not find `Cargo.toml` in `/x` or any parent directory";
+    const { spawn, commands } = fakeSpawn({ code: 0 }, {
+      code: 101,
+      stderr: message,
+    });
+    const outcome = await runMergeFastChecks(
+      dir,
+      ["src/main.rs"],
+      (check) => spawnFastCheck(check, {}, spawn, sudoAgent),
+    );
+    assert(outcome.status === "failed");
+    assertStringIncludes(outcome.output, message);
+    assertEquals(commands.length, 1);
+  });
+});
+
+Deno.test("merge checks: a cargo target the account cannot write is built in a private target (Issue #4697)", async () => {
+  await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    const { spawn, commands } = fakeSpawn({ code: 2 }, { code: 0 });
+    const result = await spawnFastCheck(cargoCheck(dir), {}, spawn, sudoAgent);
+    assertEquals(result.code, 0);
+    assertEquals(commands.length, 1);
+    const target = commands[0]!.options?.env?.["CARGO_TARGET_DIR"];
+    assert(target !== undefined, "the command runs with a CARGO_TARGET_DIR");
+    assertStringIncludes(target, ".vibe-cargo-target");
+  });
+});
+
+Deno.test("real sudo: a checkout the agent can reach runs its command, and one it cannot traverse is refused before any command runs (Issue #4697)", async () => {
+  // Skipped where this host cannot drop to the agent account.
+  if (!await canRunAsUntrustedUser()) return;
+  const readable = await Deno.makeTempDir({ prefix: "issue-4697-readable-" });
+  const blocked = await Deno.makeTempDir({ prefix: "issue-4697-blocked-" });
+  try {
+    // The account must be able to write the checkout and read its manifest.
+    await Deno.chmod(readable, 0o777);
+    await Deno.writeTextFile(`${readable}/deno.json`, "{}");
+    // Nothing but the worker can traverse this directory.
+    await Deno.chmod(blocked, 0o700);
+    const drop = (cmd: readonly string[]) =>
+      Promise.resolve(asUntrustedUser(cmd, { enabled: true }));
+    const evalArgs = ["eval", "--no-config", "console.log('ok')"];
+
+    const reachable = await spawnFastCheck(
+      {
+        dir: readable,
+        kind: "deno",
+        label: "deno eval",
+        args: evalArgs,
+        timeoutMs: 20_000,
+      },
+      {},
+      runWithTimeout,
+      drop,
+    );
+    assertEquals(reachable.code, 0);
+    assertEquals(reachable.output, "ok");
+
+    const seen: string[][] = [];
+    const spy: typeof runWithTimeout = (executable, args, options) => {
+      seen.push([executable, ...args]);
+      return runWithTimeout(executable, args, options);
+    };
+    const error = await assertRejects(
+      () =>
+        spawnFastCheck(
+          {
+            dir: blocked,
+            kind: "deno",
+            label: "deno eval",
+            args: evalArgs,
+            timeoutMs: 20_000,
+          },
+          {},
+          spy,
+          drop,
+        ),
+      GateAccountUnavailable,
+      "cannot traverse",
+    );
+    assertStringIncludes(error.message, blocked.split("/").pop()!);
+    // Only the probe ran; the command never reached the spawn.
+    assertEquals(seen.length, 1);
+    assertEquals(seen[0]!.includes("eval"), false);
+  } finally {
+    await Deno.remove(readable, { recursive: true });
+    await Deno.remove(blocked, { recursive: true });
+  }
+});

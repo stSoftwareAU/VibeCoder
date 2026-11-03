@@ -8,6 +8,11 @@
  * unrunnable is not clean. A Deno remote module the host cannot reach (Issue
  * #4422) or a `rustc` older than the workspace requires (Issue #3255) is an
  * environment fault: verification is deferred and the attempt is withdrawn.
+ * So is an `agent` account that cannot reach the checkout, which the access
+ * probe of {@link runRepositoryCommand} finds before each check runs (Issue
+ * #4697): the check is unverified, not failed, so no repair round is spent on
+ * it. A manifest the worker can see is absent from the merged tree is a
+ * failing check, and a repair round can answer it.
  *
  * The checks reuse the helpers the resolution gate already uses, so both gates
  * judge the same commands.
@@ -16,10 +21,6 @@
  */
 
 import type { Logger, Result } from "../types.ts";
-import {
-  carryCredentialsThroughSudo,
-  credentialChannelFault,
-} from "./credential_channel.ts";
 import type { MergeConflictAgentOutcome } from "./merge_conflict_agent.ts";
 import type { MergeConflictRepairContext } from "./prompt_builder.ts";
 import {
@@ -40,12 +41,12 @@ import {
   type ProjectKind,
 } from "./project_manifests.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
+import { untrustedAccountOf, untrustedSpawn } from "./quality_gate_phase.ts";
 import {
-  carryEnvThroughSudo,
-  untrustedAccountOf,
-  untrustedQualityCommandEnv,
-  untrustedSpawn,
-} from "./quality_gate_phase.ts";
+  GateAccountUnavailable,
+  manifestsFor,
+  runRepositoryCommand,
+} from "./untrusted_gate_spawn.ts";
 import { parkInFlightBuild } from "./heavy_build_gate.ts";
 import { parse } from "@std/yaml/parse";
 
@@ -365,16 +366,22 @@ export async function planFastChecks(
 }
 
 /**
- * Spawn one check within its remaining budget.
+ * Spawn one check within its remaining budget (Issues #4616, #4697).
  *
- * The check is dropped to the `agent` account and refuses to run when that
- * account is unavailable (there is no fallback to the worker). The declared
- * `repoCredentialEnv` rides the stdin channel of the `sudo` wrapper
- * (Issue #4705): the values are never in argv, because `sudo`'s `env_reset`
- * would strip them from the environment. A spawn failure (the toolchain is not
- * installed) throws, and so does a channel fault, naming the wrapper's fault
- * line but never a value, so the caller reports the check as unverified rather
- * than as a failure or a pass.
+ * The check runs through {@link runRepositoryCommand}, so it is dropped to the
+ * `agent` account only where that account can reach the checkout, and the
+ * access probe runs first. There is no fallback to the worker: an account that
+ * is unavailable refuses to run the check. An account that cannot reach the
+ * checkout, and a probe that fails, throw, so the caller reports the check
+ * unverified rather than failed, and no repair round is spent on it. The one
+ * exception is a manifest the worker itself can see is absent from the merged
+ * tree: that is a failing check, and it returns exit 1 for a repair round to
+ * answer. The declared `repoCredentialEnv` rides the stdin channel of the `sudo`
+ * wrapper (Issue #4705): the values are never in argv, because `sudo`'s
+ * `env_reset` would strip them from the environment. A spawn failure (the
+ * toolchain is not installed) throws, and so does a channel fault, naming the
+ * wrapper's fault line but never a value, so the caller reports the check as
+ * unverified rather than as a failure or a pass.
  */
 export async function spawnFastCheck(
   check: FastCheck,
@@ -391,45 +398,36 @@ export async function spawnFastCheck(
       "Cannot run merge checks: untrusted account is unavailable",
     );
   }
-  const env = untrustedQualityCommandEnv({
-    spawnable: dropped,
-    cwd: check.dir,
-    repoCredentialEnv,
-  });
-  const target = env["CARGO_TARGET_DIR"];
-  const command = carryEnvThroughSudo(
-    dropped,
-    target === undefined ? {} : { CARGO_TARGET_DIR: target },
+  const manifests = await manifestsFor(
+    check.kind === "cargo" ? "cargo" : "deno",
+    check.dir,
   );
-  const channelled = carryCredentialsThroughSudo(command, repoCredentialEnv);
-  const result = await spawn(
-    channelled.argv[0]!,
-    channelled.argv.slice(1),
+  const result = await runRepositoryCommand(
+    check.kind === "cargo" ? "cargo" : Deno.execPath(),
+    check.args,
+    { cwd: check.dir, timeoutMs: check.timeoutMs, manifests },
     {
-      cwd: check.dir,
-      timeoutMs: check.timeoutMs,
-      // Build artefacts off the persistent volume where the runtime refuses
-      // to trim it (Issue #2247); empty on every other runtime.
-      env,
-      clearEnv: true,
-      // The declared credentials, base64 encoded, for the wrapper to read
-      // (Issue #4705). Undefined when nothing is declared.
-      stdin: channelled.stdin,
+      spawn,
+      drop,
+      credentials: () => Promise.resolve(repoCredentialEnv),
     },
   );
-  if (!result.ok) throw result.error;
-  const { code, stdout, stderr, timedOut } = result.value;
-  // Only a spawn that went through the channel has a wrapper that can fault;
-  // otherwise a check's own marker + exit 78 is an ordinary failure.
-  const fault = channelled.stdin === undefined
-    ? undefined
-    : credentialChannelFault({ code, stderr });
-  if (fault !== undefined) {
-    throw new Error(
-      "the declared quality_credentials could not be delivered to the " +
-        `isolated account (Issue #4705): ${fault}`,
-    );
+  if (!result.ok) {
+    // An account that cannot reach the checkout is unverified, unless the
+    // worker can see the planned manifest is genuinely absent (Issue #4697).
+    if (result.error instanceof GateAccountUnavailable) {
+      for (const name of manifests) {
+        if (!await isFile(`${check.dir}/${name}`)) {
+          return {
+            code: 1,
+            output: `${name} is missing from ${check.dir} in the merged tree`,
+          };
+        }
+      }
+    }
+    throw result.error;
   }
+  const { code, stdout, stderr, timedOut } = result.value;
   const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean)
     .join("\n");
   if (timedOut) {
@@ -448,10 +446,12 @@ export async function spawnFastCheck(
  *
  * One deadline covers every check, and each check gets what is left of it. A
  * check failing for an environment reason (an unreachable remote module, a
- * `rustc` older than the workspace requires) leaves the merge unverified. Any other failure stops the run, so the repair round names the first
- * thing that is wrong. A check that cannot run, a check that times out (exit
- * code 124, which a repair round cannot fix), or a budget spent before a check
- * starts, is `unverified`.
+ * `rustc` older than the workspace requires) leaves the merge unverified. Any
+ * other failure stops the run, so the repair round names the first thing that
+ * is wrong. A check that cannot run, a check whose `agent` account cannot reach
+ * the checkout or whose access probe fails (Issue #4697), a check that times out
+ * (exit code 124, which a repair round cannot fix), or a budget spent before a
+ * check starts, is `unverified`.
  *
  * @param repoDir - Root of the checkout
  * @param touchedPaths - The paths the merge touched

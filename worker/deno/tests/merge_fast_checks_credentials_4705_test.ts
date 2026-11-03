@@ -38,12 +38,36 @@ interface SpawnCall {
   options: Parameters<typeof runWithTimeout>[2];
 }
 
-/** A spawn that records its call and answers with `answer`. */
+/**
+ * Whether a spawn call is the access probe runRepositoryCommand runs before a
+ * command (Issue #4697): `sh -c <probe> sh <cwd>` behind the sudo drop. The
+ * credential wrapper names its `$0` vibe-credential-channel instead.
+ */
+function isProbeCall(args: string[]): boolean {
+  return args[5] === "-c" && args[7] === "sh";
+}
+
+/**
+ * A spawn that records its call and answers with `answer`. The access probe
+ * that runs first passes and is not recorded: `calls` holds the command calls.
+ */
 function recordingSpawn(
   calls: SpawnCall[],
   answer: { code: number; stderr: string },
 ): typeof runWithTimeout {
   return (executable, args, options) => {
+    if (isProbeCall(args)) {
+      return Promise.resolve({
+        ok: true,
+        value: {
+          code: 0,
+          stdout: "",
+          stderr: "",
+          success: true,
+          timedOut: false,
+        },
+      });
+    }
     calls.push({ executable, args, options });
     return Promise.resolve({
       ok: true,
@@ -129,20 +153,29 @@ Deno.test("spawnFastCheck: declared credentials ride the stdin channel, never ar
 
 Deno.test("spawnFastCheck: a channel fault throws the fault line and never a value, so the check is unverified (Issue #4705)", async () => {
   const faultLine = "[vibe-credential-channel] credential stream ended early";
-  const error = await assertRejects(
-    () =>
-      spawnFastCheck(
-        cargoFmtCheck(),
-        { NPM_TOKEN: DECLARED },
-        recordingSpawn([], { code: 78, stderr: faultLine }),
-        sudoAgent,
-      ),
-    Error,
-    faultLine,
-  );
-  assertStringIncludes(error.message, "could not be delivered");
-  assertStringIncludes(error.message, "Issue #4705");
-  assertEquals(error.message.includes(DECLARED), false);
+  // The probe passed, so the worker can see the manifest; a checkout without a
+  // Cargo.toml would be a missing manifest and return exit 1 instead (Issue
+  // #4697), so this fixture has one.
+  const dir = await Deno.makeTempDir({ prefix: "vibe_4705_fault_" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, "[package]\n");
+    const error = await assertRejects(
+      () =>
+        spawnFastCheck(
+          { ...cargoFmtCheck(), dir },
+          { NPM_TOKEN: DECLARED },
+          recordingSpawn([], { code: 78, stderr: faultLine }),
+          sudoAgent,
+        ),
+      Error,
+      faultLine,
+    );
+    assertStringIncludes(error.message, "could not be delivered");
+    assertStringIncludes(error.message, "Issue #4705");
+    assertEquals(error.message.includes(DECLARED), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("spawnFastCheck: exit 78 without the marker is an ordinary failing check, not a fault (Issue #4705)", async () => {

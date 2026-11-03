@@ -235,8 +235,12 @@ progress and stopped on conflicts. Its contract is absolute:
   push is refused and the attempt fails, with nothing pushed. Infrastructure
   faults — missing tools, unreachable remote modules, an old host toolchain,
   disk pressure, or an exhausted check or run deadline — defer verification.
-  The worker discards the local merge and withdraws the attempt without charge
-  or a push. Disk admission runs before the first check and each re-check.
+  So does a checkout the untrusted account cannot read: the worker probes it
+  before each check, and a failed probe leaves the check unverified, not failed
+  (Issue #4697). A manifest the worker can see is genuinely absent, such as no
+  `Cargo.toml`, is still a failing check that a repair round can answer. The
+  worker discards the local merge and withdraws the attempt without charge or a
+  push. Disk admission runs before the first check and each re-check.
   Repository commands run with the quality gate's allowlisted environment,
   declared repository credentials and untrusted account drop. Resolution and
   repair replies are retained together in the final comment. The resolved comment

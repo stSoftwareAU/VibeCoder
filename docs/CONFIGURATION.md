@@ -134,6 +134,12 @@ a read-only root filesystem. A checkout the account still cannot read, write
 (cargo target aside) or traverse leaves the command to CI rather than running as
 the worker (Issue #4659). A milestone resolution whose every check is left to CI
 this way verified nothing and is refused as unverified (Issue #1559, #4761).
+The merge fast checks use the same probe, through the same `runRepositoryCommand`
+path (Issue #4697). Before each check the account is probed for the checkout, and
+a probe that fails, or an account that cannot reach the checkout, leaves the merge
+`unverified` and its push deferred, with no repair round spent. A manifest the
+worker can see is genuinely absent, such as no `Cargo.toml`, is a failing check
+instead.
 
 A declared name must be a plain identifier. `IFS` and names starting with
 `_vibe_cc_` are the wrapper's own and are refused, so a declaration can never
