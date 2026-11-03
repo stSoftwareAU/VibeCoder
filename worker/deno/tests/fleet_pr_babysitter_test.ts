@@ -799,6 +799,32 @@ Deno.test("long repairs do not prevent new PR discovery", async () => {
   assertEquals(scans, 1);
 });
 
+Deno.test("runRepairs allows an unchanged task version to retry after cooldown", async () => {
+  let releaseBlocker!: () => void;
+  const blockerWait = new Promise<void>((resolve) => releaseBlocker = resolve);
+  let repairAttempts = 0;
+  let scans = 0;
+  const repair = {
+    key: "owner/repo#7",
+    version: "same-head:failed CI",
+    run: async () => {
+      repairAttempts++;
+    },
+  };
+  const blocker = {
+    key: "owner/repo#8",
+    version: "other",
+    run: async () => await blockerWait,
+  };
+  await runRepairs([repair, blocker], 2, () => {
+    scans++;
+    if (scans === 1) return Promise.resolve([repair]);
+    releaseBlocker();
+    return Promise.resolve([]);
+  }, 1);
+  assertEquals(repairAttempts, 2);
+});
+
 Deno.test("review dismissal waits for GitHub to report the pushed head", async () => {
   let reads = 0;
   assertEquals(

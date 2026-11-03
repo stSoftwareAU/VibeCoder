@@ -140,8 +140,11 @@ run and must be corrected by the operator. Codex gets its own installation
 token, minted per repair for the target repository only, with read-only
 permissions (contents, pull requests, issues, checks, actions). Every GitHub
 write (lock, push, branch update, review dismissal, PR description) is made by
-the runner with its own token. The agent token lasts about an hour and is not
-refreshed, so reads late in a longer repair can fail. When a review asks for a
+the runner with its own token. The agent's read-only token expiry is retained,
+and each Codex session ends two minutes before it. If a session reaches that
+boundary, the runner starts a new session with a freshly minted, repository-
+scoped read token in the same repair clone; the runner's write token and App
+key remain outside the agent boundary. When a review asks for a
 description change, the agent writes the full new description to
 `.babysitter-pr-body` in the clone; the runner removes it before committing and
 applies it after the push (or when there is no code change), re-adding any
@@ -179,13 +182,48 @@ and logged as a WARNING naming the permission. A
 PR that a fleet worker holds a live PR-feedback lease claim on
 (`PR_COMMENT_CLAIM` with an unexpired `PR_COMMENT_CLAIM_LEASE`) is skipped for
 that pass, so the babysitter never repairs beside a worker that is about to
-push. A failed or unproductive agent attempt is recorded under
-`${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and is
-not retried on that host for the same PR head. A review repair is keyed on the
-head and the newest change-request review, so a new review on an attempted head
-gets its own attempt. Removing the matching state file permits a retry. The shared lock prevents simultaneous work; this local attempt
-record does not prevent a different host from retrying later. Repository
-mirrors live in the same state directory, under `mirrors/`, as described above.
+push.
+
+Retry records live under
+`${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` as
+versioned, atomically replaced JSON. Each record binds the repository, PR,
+stable failure identity, observed and pushed heads, blocker class, last outcome,
+infrastructure and substantive attempt counts, next eligible time, next action,
+and reconciliation state. The identity survives repair pushes; a new change
+request review gets a separate identity. A legacy create-only attempt file is
+migrated to a five-minute cooldown and then becomes eligible again. No manual
+state-file deletion is part of normal recovery.
+
+Infrastructure, host capability, and head or lock races receive bounded
+cooldowns without spending the substantive repair budget. Code failures and
+no-progress outcomes spend that budget and change the diagnosis after the
+configured `maxAutoFixAttempts` limit. An explicit `needs-human` label remains
+an owner hold. Waiting paths release the branch lock; the next scan logs the
+cause, next action, and eligible time.
+
+After a successful push the state records the pushed head and waits for CI,
+review, and the existing auto-merge owner. Failed checks and new requested
+changes return to the repair scan. A later scan reads tracked PRs even when
+they are no longer in the first page of open candidates, and clears retry state
+only after GitHub reports `MERGED`; a closed unmerged PR is recorded separately.
+The babysitter does not merge a PR itself.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Eligible
+    Eligible --> Repairing: acquire branch lock and recheck head
+    Repairing --> CoolingDown: infrastructure, capability, race, or failure
+    CoolingDown --> Eligible: next eligible time reached
+    Repairing --> WaitingForChecks: repair pushed
+    WaitingForChecks --> Repairing: failed check or new review finding
+    WaitingForChecks --> WaitingForChecks: pending CI or independent review
+    WaitingForChecks --> Merged: GitHub reports MERGED
+    WaitingForChecks --> ClosedUnmerged: GitHub reports closed without merge
+    Repairing --> OwnerHold: explicit needs-human hold
+```
+
+Repository mirrors live in the same state directory, under `mirrors/`, as
+described above.
 
 ## Shift-left detection
 

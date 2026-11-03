@@ -306,6 +306,44 @@ Deno.test("agent launch does not record an attempt when token minting fails", as
   });
 });
 
+Deno.test("agent session ends before the read token expires and reports its expiry", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const home = await Deno.makeTempDir();
+    try {
+      const expiry = new Date(Date.now() + 10 * 60_000);
+      let sessionMs = 0;
+      let observedExpiry: Date | undefined;
+      await startBabysitterAgent(
+        { appId: "123", installationId: "456", privateKeyPath },
+        "owner/repo",
+        {
+          dir: "/clone",
+          scratch: "/scratch",
+          prompt: "repair",
+          home,
+          configPath: `${home}/missing-config.json`,
+          maxSessionMs: 9 * 60_000,
+          onTokenExpiry: (value) => observedExpiry = value,
+        },
+        () => Promise.resolve(true),
+        fakeTokenExchange({
+          permissions: BABYSITTER_AGENT_PERMISSIONS,
+          expires_at: expiry.toISOString(),
+        }, []),
+        (_executable, options) => {
+          sessionMs = options.timeoutMs as number;
+          return {} as Deno.ChildProcess;
+        },
+        () => Promise.resolve("codex"),
+      );
+      assertEquals(observedExpiry?.toISOString(), expiry.toISOString());
+      assert(sessionMs > 7 * 60_000 && sessionMs < 8 * 60_000);
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
+  });
+});
+
 Deno.test("agent launch refuses a relative HOME before minting a token or spawning", async () => {
   await withTestKey(async (privateKeyPath) => {
     let fetched = false;
@@ -603,7 +641,7 @@ function fakeTokenExchange(
       new Response(
         JSON.stringify({
           token: "ghs_agent_token",
-          expires_at: "2026-04-07T12:00:00Z",
+          expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
           ...response,
         }),
         { status: 201, headers: { "Content-Type": "application/json" } },
@@ -636,7 +674,8 @@ Deno.test("babysitter agent token - mint requests one bare repository and the re
       ),
     );
 
-    assertEquals(token, "ghs_agent_token");
+    assertEquals(token.token, "ghs_agent_token");
+    assert(token.expiresAt.getTime() > Date.now());
     assertEquals(requests.length, 1);
     assertStringIncludes(
       requests[0]!.url,
