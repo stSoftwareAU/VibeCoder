@@ -621,6 +621,52 @@ Deno.test("readTextFileNoFollow - refuses a FIFO at the path without opening it"
   });
 });
 
+Deno.test("readTextFileNoFollow - exits when a FIFO is raced into the open", async () => {
+  if (Deno.build.os === "windows") return;
+  await withTempDir(async (dir) => {
+    const target = `${dir}/target`;
+    const fifo = `${dir}/fifo`;
+    const script = `${dir}/child.ts`;
+    await Deno.writeTextFile(target, "proposal");
+    const made = await new Deno.Command("mkfifo", { args: [fifo] }).output();
+    assert(made.success, "mkfifo created the FIFO");
+    await Deno.writeTextFile(
+      script,
+      `
+      import { readTextFileNoFollow } from ${
+        JSON.stringify(import.meta.resolve("../lib/file_utils.ts"))
+      };
+      const [target, fifo] = Deno.args;
+      const result = await readTextFileNoFollow(target, {
+        openTimeoutMs: 100,
+        open: async (path, options) => {
+          await Deno.rename(fifo, target);
+          return Deno.open(path, options);
+        },
+      });
+      if (result.ok || !result.error.message.includes("not a regular file")) Deno.exitCode = 1;
+    `,
+    );
+    const child = new Deno.Command(Deno.execPath(), {
+      args: ["run", "--allow-read", "--allow-write", script, target, fifo],
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+    const timer = setTimeout(() => child.kill(), 5000);
+    try {
+      const output = await child.output();
+      assert(
+        output.success,
+        `child must refuse the FIFO and exit: ${
+          new TextDecoder().decode(output.stderr)
+        }`,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+});
+
 Deno.test("readTextFileNoFollow - refuses a symlink with the options set, without opening it", async () => {
   await withTempDir(async (dir) => {
     const victim = `${dir}/victim`;

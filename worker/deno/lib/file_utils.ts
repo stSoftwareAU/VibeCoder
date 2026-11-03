@@ -428,8 +428,8 @@ export interface ReadTextFileNoFollowOptions {
    */
   maxBytes?: number;
   /**
-   * Give up on the open after this many ms. A FIFO swapped in after the lstat
-   * would block open(2) (there is no O_NONBLOCK in Deno). Unset = wait.
+   * Give up on the open after this many ms. Opens read-write so a FIFO raced
+   * in after lstat cannot block on Unix. Unset = read-only and wait.
    */
   openTimeoutMs?: number;
   /** Test seam; defaults to Deno.open. */
@@ -452,12 +452,12 @@ export interface ReadTextFileNoFollowOptions {
  * Because the file may be AGENT-WRITABLE, two further bounds apply when set:
  *  - `maxBytes` refuses a file over the cap (by its stat, and by a read that
  *    stops at maxBytes+1 so growth after the stat is caught too); and
- *  - `openTimeoutMs` stops waiting on the open, so a FIFO swapped in after the
- *    lstat cannot wedge the caller.
+ *  - `openTimeoutMs` opens read-write to prevent a raced FIFO from blocking on
+ *    Unix, and stops waiting if the open itself stalls.
  *
- * Residual: Deno has no O_NONBLOCK, so an open that times out is only
- * abandoned. Its thread cannot be cancelled and it still finishes when the
- * FIFO gets a writer; the descriptor it eventually yields is closed, not used.
+ * Residual: an open that times out is abandoned, not cancelled. If it later
+ * completes, its descriptor is closed, not used. Read-write opens also require
+ * write permission on the file.
  *
  * An absent file is reported as a `null` value, not an error — callers that
  * treat "missing" as "empty" ask for that case explicitly.
@@ -488,7 +488,10 @@ export async function readTextFileNoFollow(
 
   let file: Deno.FsFile;
   try {
-    const opening = open(targetFile, { read: true });
+    const opening = open(targetFile, {
+      read: true,
+      ...(openTimeoutMs === undefined ? {} : { write: true }),
+    });
     if (openTimeoutMs === undefined) {
       file = await opening;
     } else {

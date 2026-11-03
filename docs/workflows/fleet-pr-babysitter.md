@@ -155,8 +155,11 @@ there for the final message that ends with the completion marker. The agent can
 write `.babysitter-pr-body` in the clone, so the runner reads that file, and the
 final message, through a no-follow, regular-file, size-bounded reader. A
 symlink, FIFO, hard link or oversized file fails the repair before anything is
-published. A repair that fails this way publishes no PR description and
-dismisses no review. It is recorded as a failed attempt for that head, so it is
+published. The bounded reader opens read-write, so a FIFO raced in before the
+open does not block on Unix; it then refuses the non-regular descriptor. This
+also requires write permission on the output file. A repair that fails this way
+publishes no PR description and dismisses no review. It is recorded as a failed
+attempt for that head, so it is
 not retried on this host until its state file is removed, as described above; a
 new head or a new review gets its own attempt. The design relies on Codex
 writing `--output-last-message` from outside the agent's permissions profile.

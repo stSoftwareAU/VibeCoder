@@ -49,9 +49,10 @@ flowchart LR
 - That Codex writes `--output-last-message` from outside the agent's permissions
   profile is taken from the issue comments and was not checked against an
   installed Codex; the docs say to confirm it per host.
-- A FIFO swapped in between the lstat and the open blocks `open(2)`; the reader
-  gives up after `openTimeoutMs` (5 s) and closes the abandoned descriptor, but
-  the blocked thread cannot be cancelled.
+- With `openTimeoutMs` set, the reader opens read-write, preventing a FIFO
+  raced in before the open from blocking on Unix; the descriptor check refuses
+  it. This requires write permission. Other stalled opens are abandoned after
+  the timeout and their descriptors are closed if they later complete.
 
 ## Evidence
 
@@ -122,6 +123,15 @@ writes a PR body proposal and records the actual `gh pr edit --body-file`
 path and contents. It asserts that staging is outside both write grants
 (clone and scratch). Changing `fix()` back to scratch staging makes this
 end-to-end test fail. Existing assertions remain intact; no tests were removed.
+
+The subsequent review repair tests a real FIFO swapped into the open in a child
+Deno process and requires the child to refuse it and exit. The test failed with
+the prior read-only open; the bounded reader now opens read-write on Unix.
+The file-utils and exchange suites pass (47 tests); formatter, lint, whole-tree
+type check and Markdown checks pass. The full gate's parallel tests hit the
+host Deno 2.9.5 permission-pledge panic described below; the serial pass did not
+run. Base CI run 41550561600 passed all four test shards. Semgrep is absent and
+the installed Checkov does not match the CI pin, so those local scans skipped.
 
 Review-repair validation: the four targeted babysitter and file-utils suites
 pass (134 tests), as do the shared reader's gh-wrapper and gitignore-enforcer
