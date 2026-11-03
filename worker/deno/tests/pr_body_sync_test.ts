@@ -947,6 +947,35 @@ Deno.test("syncPrBodyFromSummary - Issue #4712: an adopted body is built from th
   }
 });
 
+Deno.test("syncPrBodyFromSummary - committed adoption leaves an uncommitted evidence image path unchanged", async () => {
+  const { repoPath } = await committedSummaryRepo();
+  try {
+    const imagePath = "evidence/screenshot.png";
+    await Deno.writeTextFile(
+      `${repoPath}/${SUMMARY_REL}`,
+      `## Summary\n\n${COMMITTED_TEXT}\n\n![Evidence](${imagePath})\n`,
+    );
+    await gitIn(repoPath, "add", SUMMARY_REL);
+    await gitIn(repoPath, "commit", "-q", "-m", "summary with image");
+    const headSha = await gitIn(repoPath, "rev-parse", "HEAD");
+    await Deno.mkdir(`${repoPath}/evidence`);
+    await Deno.writeFile(`${repoPath}/${imagePath}`, new Uint8Array([1]));
+    const ghCalls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      adoptionDeps(ghCalls, headSha, remoteAt(headSha)),
+    );
+    assert(result.ok);
+    assertEquals(ghCalls.length, 1);
+    assertStringIncludes(
+      ghCalls[0]?.bodyFileContent ?? "",
+      `![Evidence](${imagePath})`,
+    );
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
 Deno.test("syncPrBodyFromSummary - Issue #4712: without committedHeadSha the working-tree summary is still read", async () => {
   const { repoPath, headSha } = await committedSummaryRepo();
   try {

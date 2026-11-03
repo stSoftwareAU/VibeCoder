@@ -29,6 +29,10 @@ delivered. Version bump: `VERSION` is not changed by this PR. Closes #4712.
   with a reason, or `ok: false`), which `runPrBodySync` logs.
 - The head recheck is a fresh `git ls-remote` immediately before `gh pr edit`,
   not GitHub's `headRefOid` (which lags after a push).
+- Committed-summary adoption leaves evidence image paths unchanged: image path
+  resolution and raw URL conversion inspect the working tree, which may have
+  images absent from the pushed commit. Other sync callers retain that
+  rewriting.
 
 ### Undiscoverable Facts
 
@@ -51,12 +55,12 @@ flowchart LR
     D --> E[gh pr edit]
 ```
 
-Doc comment on `commitRecoveredSummary`
-(`worker/deno/lib/summary_rule_gate_retry.ts`) corrected: it claimed an
-uncommitted summary was "still enough for the PR body, which is read from disk".
-Docs updated: `docs/USAGE.md` (adoption paragraph), `docs/INTERNALS.md`
-(`pr_body_sync.ts` and `agent_pr_adoption.ts` rows). Grepped `README.md`,
-`docs/` (excluding archive) for `Issue #3804` and `agent-raised`; the other hit,
+The `commitRecoveredSummary` comment distinguishes exit-time adoption from a
+completion re-run, which can still publish a working-tree summary after a failed
+recovery commit; #4764 tracks that separate path. Docs updated: `docs/USAGE.md`
+(adoption paragraph), `docs/INTERNALS.md` (`pr_body_sync.ts` and
+`agent_pr_adoption.ts` rows). Grepped `README.md`, `docs/` (excluding archive)
+for `Issue #3804` and `agent-raised`; the other hit,
 `docs/workflows/milestones.md:193`, is about titles and stays true.
 
 ## Test Plan
@@ -93,6 +97,12 @@ Docs updated: `docs/USAGE.md` (adoption paragraph), `docs/INTERNALS.md`
 - Existing callers checked for compatibility: `tests/pr_body_reconcile_test.ts`
   and the rest of `pr_body_sync_test.ts` pass unchanged, since they omit the
   field.
+- Review fix:
+  `worker/deno/tests/pr_body_sync_test.ts::syncPrBodyFromSummary - committed adoption leaves an uncommitted evidence image path unchanged`
+  covers the removed working-tree image rewriting on committed adoption. The
+  remaining behaviour leaves the committed summary's relative image path as-is;
+  the test failed before the fix when it became a raw URL to an absent image.
+  Other sync paths retain image rewriting.
 - Ran
   `deno task test:unit tests/pr_body_sync_test.ts tests/agent_pr_adoption_test.ts tests/pr_body_reconcile_test.ts tests/pr_summary_loader_test.ts`
   from `worker/deno`: passed.
@@ -109,4 +119,5 @@ Docs updated: `docs/USAGE.md` (adoption paragraph), `docs/INTERNALS.md`
 
 - Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working
   tree; an uncommitted summary there is not addressed and is left to #4637.
+- Completion re-runs can publish an uncommitted summary; #4764 tracks that path.
 - Not run on a real fleet PR.

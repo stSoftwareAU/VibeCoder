@@ -801,11 +801,15 @@ export async function syncPrBodyFromSummary(
     );
   }
 
-  body = await finalisePrBodyImages(
-    body,
-    { repoPath: input.repoPath, githubRepo: input.repo, headSha },
-    logger,
-  );
+  // Image resolution reads the working tree, so do not use it when the
+  // summary is pinned to a commit. Leave its image paths unchanged.
+  if (input.committedHeadSha === undefined) {
+    body = await finalisePrBodyImages(
+      body,
+      { repoPath: input.repoPath, githubRepo: input.repo, headSha },
+      logger,
+    );
+  }
 
   // Issue #4359: `gh pr edit` rejects a body over the same limit as create.
   // The summarise turn runs in completion, which commits the rewritten
