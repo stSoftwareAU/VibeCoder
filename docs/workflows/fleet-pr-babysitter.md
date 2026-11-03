@@ -195,24 +195,33 @@ unchanged head, the description steps run in order:
    (`waitForPushedHead`). If the view never shows that head, the step fails and
    the review stays open. Publishing then reads the live description and
    requires its head to equal the pushed head. The proposal is published on top
-   of the sync. With no proposal, the body is edited only to withhold a close
-   that GitHub still honours.
+   of the sync, except on a repair that pushed nothing where a summary committed
+   at the head governs the body: the sync already rebuilt the body from that
+   summary, so the proposal is not published and a warning says so. A
+   description change on such a PR belongs in the committed summary, which a
+   repair that pushes publishes. With no proposal, the body is edited only to
+   withhold a close that GitHub still honours.
 3. It strips every complete hidden `<!-- vibe-… -->` marker from the proposal in
    one linear scan. A marker quoted in a Markdown code span in the live body is
    not copied. A stray unclosed `<!--` in the proposal is neutralised, so it
    cannot hide the appended reference or markers. It then appends the live
    body's markers (worker issue, summary digest, sub-agent tier and assignment
    id), so the digest reconcile keeps working.
-4. It decides closing or non-closing for the worker's issue. Closing
-   (`Closes #N`) is kept only when the summary committed at the pushed head has
-   no `partial` or `missing` criterion and the proposal, if any, has no
-   `partial` or `missing` criterion of its own. The summary's own wording does
-   not decide it: a fully met summary with no closing keyword gets `Closes #N`
-   appended, as the canonical assembler does. The summary is read with the
-   shared committed loader (`loadCommittedPrSummary`) at the verified pushed
-   head sha, using `git ls-tree` and `git show`. The working tree is never read.
-   The loader tries the same candidate paths as the sync, in order: the
-   canonical `docs/archive/pr-summaries/pr-summary-<N>.md`, the legacy
+4. It decides closing or non-closing for the governing issue: the worker marker
+   in the live body, else the issue the worker branch (`issue-N-...`) names, so
+   a body that lost its marker is still governed. A PR with neither is unrelated
+   and only gets its dropped closing references restored. Closing (`Closes #N`)
+   is kept only when the summary committed at the pushed head has no `partial`
+   or `missing` criterion and the proposal, if any, has no `partial` or
+   `missing` criterion of its own. The summary's own wording does not decide it:
+   a fully met summary whose text names no closing keyword for the issue and no
+   explicit `Part of #N` gets `Closes #N` appended, as the canonical assembler
+   does. A bare mention such as "addresses the review on #N" is not a closing
+   claim and does not stop the append. The summary is read with the shared
+   committed loader (`loadCommittedPrSummary`) at the verified pushed head sha,
+   using `git ls-tree` and `git show`. The working tree is never read. The
+   loader tries the same candidate paths as the sync, in order: the canonical
+   `docs/archive/pr-summaries/pr-summary-<N>.md`, the legacy
    `docs/pr-summary-<N>.md`, then `.pr_summary`. A failed read leaves the review
    open. An unmet criterion, a missing committed summary or unknown evidence
    gives `Part of #N`. So does a negated sentence such as "does not close #N",
@@ -238,19 +247,27 @@ appended references and markers, so a proposal under the limit can still be
 refused. A refusal leaves the review open.
 
 Any failure leaves the review open, and the next scan retries on the pushed
-head. The retry is idempotent: a body that is already current is not edited
-again. A legacy body that has the worker marker but no summary digest is
-synchronised through the before-push diff. On a no-change retry there is no
-earlier head, so the diff runs against git's empty tree: the committed summary
-counts as changed, and the sync still edits only when the rebuilt body differs
-from the live one. Nothing is persisted between scans: the recoverable next
-action is the thrown error and the open review. The guard is
-`worker/deno/lib/babysitter_pr_body_guard.ts`, and the close decision uses the
-close guard (#3177/#4644) in `worker/deno/lib/missing_criterion_close_guard.ts`.
+head. The per-host attempt marker (below) would stop the agent from running
+again at that head and review, so a repair that addresses reviews writes a
+pending-publication record, `<attempt key>--publication.json` in the same state
+directory, before the sync. It holds the proposal and whether the repair pushed
+the head. The next scan finds the record before it merges the base or starts the
+agent, and runs the publication again from a clean clone at the PR head; the
+record is removed once the reviews are dismissed. It is found only while the
+scan still sees the same requested review at that head. The retry is idempotent:
+a body that is already current is not edited again. A legacy body that has the
+worker marker but no summary digest is synchronised through the before-push
+diff. On a no-change retry there is no earlier head, so the diff runs against
+git's empty tree: the committed summary counts as changed, and the sync still
+edits only when the rebuilt body differs from the live one. The recoverable next
+action is the thrown error, the open review and the pending-publication record.
+The guard is `worker/deno/lib/babysitter_pr_body_guard.ts`, and the close
+decision uses the close guard (#3177/#4644) in
+`worker/deno/lib/missing_criterion_close_guard.ts`.
 
 The runner and the agent exchange files through a runner-owned exchange
-directory that the agent cannot write, outside its clone and scratch grants.
-The runner stages the PR description it applies there before
+directory that the agent cannot write, outside its clone and scratch grants. The
+runner stages the PR description it applies there before
 `gh pr edit --body-file`, and it passes Codex a `--output-last-message` file
 there for the final message that ends with the completion marker. The agent can
 write `.babysitter-pr-body` in the clone, so the runner reads that file, and the
@@ -262,15 +279,14 @@ also requires write permission on the output file. Another special file can
 still leave an open pending after the timeout; it cannot be cancelled and can
 keep a process alive. The non-watch pass explicitly exits after cleanup so it
 cannot hold the supervisor. Watch mode continues running with the pending open;
-if it eventually completes, its descriptor is closed. A repair that fails this way
-publishes no PR description and dismisses no review. It is recorded as a failed
-attempt for that head, so it is
-not retried on this host until its state file is removed, as described above; a
-new head or a new review gets its own attempt. The design relies on Codex
-writing `--output-last-message` from outside the agent's permissions profile.
-That behaviour is taken from the issue and has not been checked against an
-installed Codex, so confirm it on each host, as for the key check in
-"Verifying the credential boundary" below.
+if it eventually completes, its descriptor is closed. A repair that fails this
+way publishes no PR description and dismisses no review. It is recorded as a
+failed attempt for that head, so it is not retried on this host until its state
+file is removed, as described above; a new head or a new review gets its own
+attempt. The design relies on Codex writing `--output-last-message` from outside
+the agent's permissions profile. That behaviour is taken from the issue and has
+not been checked against an installed Codex, so confirm it on each host, as for
+the key check in "Verifying the credential boundary" below.
 
 The profile explicitly enables network access so the agent can fetch GitHub
 feedback and check details. Host `[sandbox_workspace_write]` settings do not

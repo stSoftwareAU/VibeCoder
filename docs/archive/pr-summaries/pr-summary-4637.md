@@ -10,6 +10,14 @@ restore a close that an unmet (`partial` / `missing`) criterion withholds (the
 #4716 regression). A no-change retry now also refreshes a legacy worker body
 that has no summary digest.
 
+Review round (PR #4779): a body that lost its worker marker is governed by the
+issue its worker branch names; a fully met issue gets `Closes` back unless the
+text already has a closing keyword or an explicit `Part of`, so a bare mention
+no longer drops it; a repair that pushed nothing does not publish a proposal
+where a committed summary governs the body; and a failed publication is resumed
+by the next scan without the agent, which the per-host attempt marker would
+otherwise block.
+
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
 
@@ -34,9 +42,30 @@ the final version.
   the review stays open and the next scan retries.
 - Unknown evidence never closes: no committed summary, or an unmet criterion in
   the summary or in the proposal, gives `Part of #N`. The summary's own wording
-  does not decide it: a fully met summary with no closing keyword keeps the
-  close (`Closes #N` is appended), exactly as `assemblePrBody` does, so the
-  guard and the assembler agree.
+  does not decide it: with a fully met summary, `Closes #N` is appended unless
+  the text already has a closing keyword for the issue (plain, colon or
+  full-URL) or an explicit `Part of #N`. A bare mention, or another repository's
+  `owner/repo#N`, does not count. `assemblePrBody` appends `Closes` whenever no
+  closing keyword is present, so the two differ only for an explicit
+  `Part of #N` the proposal chose, which the guard respects.
+- The governing issue is the worker marker in the live body, else the issue the
+  worker branch (`issue-N-...`) names (`governingIssueNumber`), the identity the
+  sync's adoption also validates. A marker-less worker-branch PR with no
+  committed summary therefore has its close withheld, with or without a
+  proposal.
+- With nothing pushed, a proposal is not published where a committed summary
+  governs the body: the sync already rebuilt the body from that summary, which
+  is the text the pushed head supports, and the agent prompt tells it to change
+  the summary instead. The proposal is still published (through the guard) when
+  no committed summary governs the body, and when the repair pushed. This limits
+  what the proposal can assert; it does not check a proposal's prose against the
+  diff.
+- A repair that addresses reviews writes `<attempt key>--publication.json` (the
+  proposal and whether the repair pushed) before the sync, and removes it once
+  the reviews are dismissed. `fix()` looks for it before it merges the base or
+  starts the agent (`resumePendingPublication`), so a publication that failed is
+  retried on the next scan although the attempt marker blocks a second agent run
+  at that head and review.
 - A no-change retry diffs the committed summary against git's empty tree, so a
   legacy worker body with no summary digest is rebuilt. The sync still edits
   only when the rebuilt body differs, so a second retry makes no edit.
@@ -114,17 +143,25 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a proposal that omits a withheld issue gets Part of #N, not Closes #N`
   and
   `a fully met summary with no closing keyword keeps the close after a repair, with or without a proposal (Issue #4637)`
+  and
+  `worker/deno/tests/babysitter_pr_body_guard_test.ts::a proposal that only mentions a fully met issue still gets Closes #N (PR #4779 review)`
   — reviewer: met
 - **met** — Treat publication as part of a description repair: recheck head,
   body and closing references; retry idempotently; keep the finding outstanding
   and record a recoverable next action until verified — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a failed description edit keeps reviews open, and a retry at the same head publishes and dismisses`
   and
-  `a legacy worker body with no summary digest is rebuilt on a no-change retry, and a second retry makes no edit (Issue #4637)`
+  `a legacy worker body with no summary digest is rebuilt on a no-change retry, and a second retry makes no edit (Issue #4637)`,
+  `a failed publication is resumed by the next scan without the agent, and the record is cleared (PR #4779 review)`
+  and
+  `a resumed publication for a pushed head still publishes the proposal that the push backs (PR #4779 review)`
   — reviewer: met
 - **met** — On a no-code-change repair, publish only an independently
   supportable correction; a proposal is data, not authority — evidence:
-  `worker/deno/tests/fleet_pr_babysitter_test.ts::a repair with no code change publishes its proposal after the sync and dismisses last`
+  `worker/deno/tests/fleet_pr_babysitter_test.ts::with nothing pushed, a proposal over a governing committed summary is not published, and the same proposal is once a push backs it (PR #4779 review)`,
+  `with nothing pushed and no committed summary, a proposal is published through the guard and never closes the issue (PR #4779 review)`
+  and
+  `a repair with no code change withholds the close after the sync and dismisses last`
   — reviewer: met
 - **met** — Marker-less #4611-style body, marker-bearing stale digest and
   summary-only repair are updated before the repair is reported complete —
@@ -133,9 +170,9 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   and
   `a marker-bearing body with a stale summary digest is rebuilt before dismissal, and a retry at the same head makes no second edit (Issue #4637)`
   — reviewer: met
-- **met** — #4716 regression: old body `Closes #4674`, result `Part of #4674`
-  plus a `partial` criterion; final body and GitHub closing references do not
-  close #4674 — evidence:
+- **met** — #4716 regression: the old body's closing keyword for #4674 becomes
+  `Part of #4674` beside a `partial` criterion, so the final body and GitHub's
+  closing references leave #4674 open — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::Issue #4716: a proposal that re-closes a partial issue is withheld, and reviews stay open while GitHub still links it`
   — reviewer: met
 - **met** — Cover `missing` as well as `partial`, accidentally omitted
@@ -172,31 +209,31 @@ listed the post-push sync callers were updated. Issues cited as provenance:
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — a pushed repair read the PR view once and lost the wait for
-  GitHub's lag — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:1129` —
+  GitHub's lag — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:1199` —
   reason: fixed in this diff (`waitForPushedHead` before the sync; tests for a
   late head and a never-reached head)
 - **violation** — a missing `closingIssuesReferences` key was read as the empty
-  state — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:956` — reason:
+  state — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:998` — reason:
   fixed in this diff (`readPrBodyState` rejects it by field name;
   `a PR view that omits closingIssuesReferences is refused by name`)
 - **violation** — marker regexes were quadratic and the proposal had no intake
-  size cap — evidence: `worker/deno/lib/babysitter_pr_body_guard.ts:44` —
+  size cap — evidence: `worker/deno/lib/babysitter_pr_body_guard.ts:328` —
   reason: fixed in this diff (linear scan, intake cap, hostile tests per
   pattern)
 - **violation** — live markers were read without masking code spans, and
   unclosed comments were not neutralised — evidence:
-  `worker/deno/lib/babysitter_pr_body_guard.ts:220` — reason: fixed in this diff
+  `worker/deno/lib/babysitter_pr_body_guard.ts:302` — reason: fixed in this diff
   (masked scan; `neutraliseAgentMarkers`)
 - **violation** — colon and full-URL closing forms were not covered — evidence:
-  `worker/deno/lib/babysitter_pr_body_guard.ts:152` — reason: fixed in this diff
+  `worker/deno/lib/babysitter_pr_body_guard.ts:447` — reason: fixed in this diff
 - **violation** — workflow doc steps 4 and 5 and the guard diagram did not match
-  the code — evidence: `docs/workflows/fleet-pr-babysitter.md:193` — reason:
+  the code — evidence: `docs/workflows/fleet-pr-babysitter.md:210` — reason:
   fixed in this diff
 - **violation** — harmless-skip, head-moved-after-publish and
   description-mismatch outcomes had no test — evidence:
-  `worker/deno/commands/fleet_pr_babysitter.ts:825` — reason: fixed in this diff
+  `worker/deno/commands/fleet_pr_babysitter.ts:839` — reason: fixed in this diff
 - **violation** — the edited oversized-proposal test no longer guarded anything
-  — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts:2518` — reason:
+  — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts:3088` — reason:
   fixed in this diff (intake rejection restored and asserted)
 - **clean** — Australian English, no hidden paths staged, tests call real code,
   named test files exist, no workflow changes, `issueNumberFromMarker` /
@@ -225,6 +262,45 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   marker-bearing stale-digest body rebuilt before dismissal with a
   no-second-edit retry; a legacy digest-less body rebuilt on a no-change retry
   (red when the empty-tree base is reverted).
+- PR #4779 review round. Guard
+  (`worker/deno/tests/babysitter_pr_body_guard_test.ts`, 41 tests at head): a
+  proposal that only mentions a fully met issue (three forms, one an
+  `owner/other#N` qualified mention) still gets `Closes`; a closing keyword, a
+  colon form, a full-URL form or an explicit `Part of` settles the close without
+  a second `Closes`; a marker-less `issue-N-...` branch is governed (with and
+  without a proposal, with a no-issue branch as the positive control); and a
+  marker-less branch with a fully met committed summary keeps the close. Finish
+  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 111 tests at head):
+  nothing pushed over a governing summary does not publish the proposal, and the
+  same proposal is published once a push backs it; nothing pushed with no
+  committed summary publishes through the guard; a marker-less worker branch
+  never closes, with and without a proposal; a failed publication is resumed
+  through `resumePendingPublication` and its record cleared; a resumed pushed
+  head still publishes its proposal; the store keeps one record per head and
+  review and ignores a damaged one. Red-checks, each by breaking only that
+  branch and running the `PR #4779 review` tests: `mentionsIssue` in place of
+  `namesClosingOrPartOf` (2 red); no branch fallback in `governingIssueNumber`
+  (3 red); no-change suppression removed (1 red); `pushedByEarlierRepair` not
+  passed on resume (1 red); `save` writing another head's key (2 red); `clear`
+  removed (1 red). `fix()` itself is not driven (see Not done).
+- Test changes in this round (TDD rule 3). Obsolete: with nothing pushed, a
+  proposal over a governing committed summary was published; it is not now.
+  Remaining: a proposal is still published through the guard when the repair
+  pushed (`a proposal that omits a fully met issue gets Closes #N` and
+  `a summary committed only at the legacy docs/pr-summary-N.md path at the head is found and governs the close`
+  now run as pushed repairs and assert the proposal text and `Closes #N`) and
+  when no summary governs.
+  `a repair with no code change publishes its proposal after the sync and dismisses last`
+  is renamed
+  `a repair with no code change withholds the close after the sync and dismisses last`
+  and still asserts the order and that no closing keyword is left.
+  `the proposal is returned as written, and the guard restores closing references`
+  (was `a proposed PR description keeps the closing references it dropped`):
+  `takePrBodyProposal` returns the proposal as written, and restoring the
+  dropped references moved to `guardPrBodyProposal`, covered by
+  `worker/deno/tests/babysitter_pr_body_guard_test.ts::Moved to babysitter_pr_body_guard: a proposed PR description keeps the closing references it dropped`.
+  Every `guardPrBodyProposal` call in the guard tests gained the now required
+  `headRefName`. Existing assertions removed: none.
 - Existing test edits: `fakePrBodyService` answers `git ls-remote` with the fake
   PR head; the oversized-proposal test now asserts rejection at intake (the
   original assertion); `tests/fixtures/fleet_babysitter_repair_preload.ts` gains
@@ -257,17 +333,25 @@ listed the post-push sync callers were updated. Issues cited as provenance:
 
 ## Not done
 
-- `fix()` passes `proposal`, `gh`, `checkBaseline` and `mergedBase` into
-  `finishBabysitterRepair` (`worker/deno/commands/fleet_pr_babysitter.ts:1514`)
-  with no test through `fix()` itself: it spawns the Codex agent, and the two
-  test files that call it (`worker/deno/tests/fleet_pr_babysitter_test.ts`,
-  `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`) stop before the
-  post-agent step. `finishBabysitterRepair` is tested directly.
+- `fix()` passes `proposal`, `gh`, `checkBaseline`, `mergedBase` and the
+  pending-publication store into `finishBabysitterRepair`
+  (`worker/deno/commands/fleet_pr_babysitter.ts:1752`), and calls
+  `resumePendingPublication` before the base merge and the attempt marker
+  (`worker/deno/commands/fleet_pr_babysitter.ts:1665`), with no test through
+  `fix()` itself. `fix()` clones the repository, reads the PR's reviews through
+  the real `gh` and spawns the Codex agent, and the two test files that call it
+  (`worker/deno/tests/fleet_pr_babysitter_test.ts`,
+  `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`) stop before that
+  step. `finishBabysitterRepair`, `resumePendingPublication` and the store are
+  tested directly; that `fix()` calls the resume before the marker rests on the
+  code order.
 - Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working
   tree, as noted in #4712.
-- Nothing is persisted between scans: the recoverable next action for a failed
-  publication is the thrown error and the review that stays open, and the next
-  scan retries idempotently on the pushed head.
+- The pending-publication record is written only for a repair that addresses
+  reviews, and cleared only when its reviews are dismissed. If the review is
+  withdrawn first, the small file stays until the same head and review recur.
+  The next scan finds it only while it still sees that requested review at that
+  head (a head with failing CI is repaired for the CI first, with no reviews).
 - The mutation and coverage carry-over checks could not run: their baseline
   includes `babysitter default heartbeat resolves its checkout revision`, which
   fails at the merge base too because the sandbox cannot download JSR metadata

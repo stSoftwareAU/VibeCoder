@@ -45,7 +45,8 @@ const MAX_QUOTED_LENGTH = 300;
 export const CLOSING_KEYWORD_RE =
   /(^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
 
-const PART_OF_RE =
+/** `Part of #N` (or `owner/repo#N`): the explicit non-closing reference. */
+export const PART_OF_RE =
   /(^|[^\w/])part\s+of\s+(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
 
 /** A caller can defer publication and retry once the governing repository is known. */

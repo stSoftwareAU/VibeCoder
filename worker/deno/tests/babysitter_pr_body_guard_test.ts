@@ -101,6 +101,7 @@ Deno.test("Moved to babysitter_pr_body_guard: a proposed PR description keeps th
     liveBody: "Closes #5031\nfixes #12\nResolves other/repo#7\nSee #99",
     summary: undefined,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(
     output,
@@ -114,6 +115,7 @@ Deno.test("a dropped closing reference is compared by parsed number, not as a su
     liveBody: "Closes #5",
     summary: undefined,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output, "Done. close #5");
   const qualified = guardPrBodyProposal({
@@ -121,6 +123,7 @@ Deno.test("a dropped closing reference is compared by parsed number, not as a su
     liveBody: "Closes other/repo#5",
     summary: undefined,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(qualified, "Done. Closes #5\n\nCloses other/repo#5");
 });
@@ -131,6 +134,7 @@ Deno.test("a proposal that re-closes a partial issue is withheld, with no closin
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(closingKeywordLine(output, 4674), null);
   assertStringIncludes(output, "Part of #4674");
@@ -144,6 +148,7 @@ Deno.test("a proposal that re-closes a missing issue is withheld, with no closin
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("missing"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(closingKeywordLine(output, 4674), null);
   assertStringIncludes(output, "Part of #4674");
@@ -155,6 +160,7 @@ Deno.test("a proposal that never names a withheld issue gets Part of #N, not Clo
     liveBody: liveBodyFor(4674, "Part of #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertStringIncludes(output, "Part of #4674");
   assertEquals(closingKeywordLine(output, 4674), null);
@@ -166,6 +172,7 @@ Deno.test("a proposal that never names a fully met issue gets Closes #N", () => 
     liveBody: liveBodyFor(4637, "Closes #4637"),
     summary: FULLY_MET_SUMMARY,
     repo: REPO,
+    headRefName: "feature",
   });
   assertStringIncludes(output, "\n\nCloses #4637");
 });
@@ -177,6 +184,7 @@ Deno.test("a fully met issue keeps its legitimate Closes, with no duplicate", ()
     liveBody: liveBodyFor(4637, "Closes #4637"),
     summary: FULLY_MET_SUMMARY,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output, proposal + `\n\n${buildIdempotencyMarker(4637)}`);
 });
@@ -188,6 +196,7 @@ Deno.test("a proposal that only says Part of a fully met issue is left as writte
     liveBody: liveBodyFor(4637, "Closes #4637"),
     summary: FULLY_MET_SUMMARY,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(closingKeywordLine(output, 4637), null);
   assertStringIncludes(output, "Part of #4637");
@@ -199,6 +208,7 @@ Deno.test("an unrelated closing reference to another issue is restored beside a 
     liveBody: liveBodyFor(4674, "Closes #4674\nCloses #99"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(closingKeywordLine(output, 4674), null);
   assertStringIncludes(output, "Part of #4674");
@@ -211,6 +221,7 @@ Deno.test("several references to a withheld issue are all withheld, and another 
     liveBody: liveBodyFor(4674, "Closes #4674\nFixes #9"),
     summary: partSummary("missing"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(closingKeywordLine(output, 4674), null);
   assertStringIncludes(output, "resolves #9");
@@ -223,6 +234,7 @@ Deno.test("with no committed summary the close is unknown evidence and is withhe
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: undefined,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(closingKeywordLine(output, 4674), null);
   assertStringIncludes(output, "Part of #4674");
@@ -241,6 +253,7 @@ Deno.test("negated closing phrases for the withheld issue are neutralised, anoth
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertStringIncludes(output, "does not complete #4674");
   assertStringIncludes(output, "doesn't complete #4674");
@@ -265,6 +278,7 @@ Deno.test("forged worker and digest markers in the proposal are stripped and the
     liveBody,
     summary,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output.includes('sha256="forged"'), false);
   assertEquals(output.includes("<!-- vibe-worker-issue-1 -->"), false);
@@ -278,6 +292,7 @@ Deno.test("an unterminated forged marker in the proposal cannot hide the live ma
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output.includes("<!-- vibe-worker-issue-1"), false);
   assertEquals(issueNumberFromMarker(output), 4674);
@@ -297,6 +312,7 @@ Deno.test("a proposal's own unmet criterion withholds the close even when the su
     liveBody: liveBodyFor(4637, "Closes #4637"),
     summary: FULLY_MET_SUMMARY,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(closingKeywordLine(output, 4637), null);
   assertStringIncludes(output, "Part of #4637");
@@ -308,6 +324,7 @@ Deno.test("an unrelated PR with no worker marker keeps its closing references an
     liveBody: "Closes #5031",
     summary: undefined,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output, "Human rewrite.\n\nCloses #5031");
   assertEquals(issueNumberFromMarker(output), undefined);
@@ -319,6 +336,7 @@ Deno.test("with no proposal, a withheld issue's live close is rewritten in place
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output, liveBodyFor(4674, "Part of #4674"));
 });
@@ -331,6 +349,7 @@ Deno.test("a body one character over the GitHub limit is refused, not published"
         liveBody: liveBodyFor(4674, "Closes #4674"),
         summary: partSummary("partial"),
         repo: REPO,
+        headRefName: "feature",
       }),
     Error,
     "65536",
@@ -343,6 +362,7 @@ Deno.test("a body of exactly the GitHub limit is still published", () => {
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output.length, PR_BODY_LIMIT);
   assertStringIncludes(output, "Part of #4674");
@@ -355,6 +375,7 @@ Deno.test("a 50,000-character run of spaces and close fragments returns with the
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertStringIncludes(output, "Part of #4674");
   assertEquals(closingKeywordLine(output, 4674), null);
@@ -416,6 +437,7 @@ Deno.test("a fully met summary with no closing keyword keeps the close, as the a
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary,
     repo: REPO,
+    headRefName: "feature",
   });
   assertStringIncludes(dropped, "Closes #4674");
   assertEquals(dropped.includes("Part of #4674"), false);
@@ -424,6 +446,7 @@ Deno.test("a fully met summary with no closing keyword keeps the close, as the a
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary,
     repo: REPO,
+    headRefName: "feature",
   });
   assertStringIncludes(kept, "Closes #4674");
   assertEquals(kept.includes("Part of #4674"), false);
@@ -473,6 +496,7 @@ Deno.test("the digest of the committed summary is the one the live body carries"
     ].join("\n"),
     summary,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(summaryDigestFromBody(output), digest);
 });
@@ -497,6 +521,7 @@ Deno.test("an unmet criterion withholds the close even when the summary's own cl
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(closingKeywordLine(output, 4674), null);
   assertStringIncludes(output, "Part of #4674");
@@ -519,6 +544,7 @@ Deno.test("a long run of `not` and spaces with no keyword is guarded without a c
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertSameText(output, `${spaced}${partialSuffix()}`, "not and spaces");
   const words = "not ".repeat(15_000);
@@ -527,6 +553,7 @@ Deno.test("a long run of `not` and spaces with no keyword is guarded without a c
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertSameText(
     wordsOutput,
@@ -542,6 +569,7 @@ Deno.test("a long run of `#1` references is guarded without a closing reference 
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertSameText(output, `${refs}${partialSuffix()}`, "#1 run");
 });
@@ -561,6 +589,7 @@ Deno.test("a marker quoted in a code span of the live body is not carried into t
     liveBody,
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(
     output,
@@ -574,6 +603,7 @@ Deno.test("an unclosed plain comment opener at the end of a proposal cannot hide
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(closingKeywordLine(output, 4674), null);
   assertStringIncludes(output, "\n\nPart of #4674\n\n");
@@ -587,6 +617,7 @@ Deno.test("a complete benign HTML comment in a proposal is made inert, not left 
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertStringIncludes(output, "Note <!- - benign - -> here.");
   assertNoHiddenComment(output);
@@ -603,6 +634,7 @@ Deno.test("a colon or full-URL closing form for the withheld issue becomes Part 
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(
     output,
@@ -628,6 +660,7 @@ Deno.test("a colon or full-URL form naming another issue or repository is left a
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output, `${proposal}${partialSuffix()}`);
   const otherRepo = guardPrBodyProposal({
@@ -635,6 +668,7 @@ Deno.test("a colon or full-URL form naming another issue or repository is left a
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertStringIncludes(otherRepo, "Resolved: other/repo#4674");
 });
@@ -652,6 +686,7 @@ Deno.test("a colon or full-URL closing form inside code is left as written (Issu
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output, `${proposal}${partialSuffix()}`);
 });
@@ -664,6 +699,7 @@ Deno.test("with the close allowed, a colon or full-URL closing form is left as w
     liveBody: liveBodyFor(4637, "Closes #4637"),
     summary: FULLY_MET_SUMMARY,
     repo: REPO,
+    headRefName: "feature",
   });
   assertEquals(output, `${proposal}\n\n${buildIdempotencyMarker(4637)}`);
 });
@@ -675,6 +711,7 @@ Deno.test("a run of 30,000 spaces and colons after Closes with no issue number i
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertSameText(output, `${hostile}${partialSuffix()}`, "colon run");
 });
@@ -686,6 +723,99 @@ Deno.test("a run of 30,000 owner characters after a full-URL Closes with no issu
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
+    headRefName: "feature",
   });
   assertSameText(output, `${hostile}${partialSuffix()}`, "URL owner run");
+});
+
+Deno.test("a proposal that only mentions a fully met issue still gets Closes #N (PR #4779 review)", () => {
+  for (
+    const mention of [
+      "This addresses the review on Issue #4637.",
+      "Related: owner/other#4637.",
+      "See #4637 for the background.",
+    ]
+  ) {
+    const output = guardPrBodyProposal({
+      proposal: `Rewritten. ${mention}`,
+      liveBody: liveBodyFor(4637, "Closes #4637"),
+      summary: FULLY_MET_SUMMARY,
+      repo: REPO,
+      headRefName: "issue-4637-fix",
+    });
+    assertStringIncludes(output, "\n\nCloses #4637");
+    assertEquals(closingKeywordLine(output, 4637), "Closes #4637");
+    assertEquals(output.includes("Part of #4637"), false);
+  }
+});
+
+Deno.test("a closing keyword, a colon or URL closing form or an explicit Part of settles the close without a second Closes (PR #4779 review)", () => {
+  for (
+    const settled of [
+      "Fixes #4637",
+      "Closes: #4637",
+      "Resolves https://github.com/owner/repo/issues/4637",
+      "Part of #4637",
+    ]
+  ) {
+    const output = guardPrBodyProposal({
+      proposal: `Rewritten. ${settled}`,
+      liveBody: liveBodyFor(4637, "Closes #4637"),
+      summary: FULLY_MET_SUMMARY,
+      repo: REPO,
+      headRefName: "issue-4637-fix",
+    });
+    assertEquals(output.includes("\n\nCloses #4637"), false, settled);
+    assert(output.startsWith(`Rewritten. ${settled}`), settled);
+  }
+});
+
+Deno.test("a body that lost its worker marker is governed by its worker branch (PR #4779 review)", () => {
+  const live = "Closes #4674";
+  const partOf = guardPrBodyProposal({
+    proposal: "Rewritten. Part of #4674 and more.",
+    liveBody: live,
+    summary: undefined,
+    repo: REPO,
+    headRefName: "issue-4674-babysitter",
+  });
+  assertEquals(closingKeywordLine(partOf, 4674), null);
+  assertStringIncludes(partOf, "Part of #4674");
+  const closes = guardPrBodyProposal({
+    proposal: "Rewritten. Closes #4674",
+    liveBody: live,
+    summary: undefined,
+    repo: REPO,
+    headRefName: "issue-4674-babysitter",
+  });
+  assertEquals(closingKeywordLine(closes, 4674), null);
+  assertStringIncludes(closes, "Part of #4674");
+  const noProposal = guardPrBodyProposal({
+    proposal: undefined,
+    liveBody: live,
+    summary: undefined,
+    repo: REPO,
+    headRefName: "issue-4674-babysitter",
+  });
+  assertEquals(closingKeywordLine(noProposal, 4674), null);
+  // Positive control: the same body on a branch that names no issue is unrelated.
+  const unrelated = guardPrBodyProposal({
+    proposal: "Rewritten. Part of #4674 and more.",
+    liveBody: live,
+    summary: undefined,
+    repo: REPO,
+    headRefName: "feature",
+  });
+  assertEquals(closingKeywordLine(unrelated, 4674), "Closes #4674");
+});
+
+Deno.test("a marker-less worker branch with a fully met committed summary keeps the close (PR #4779 review)", () => {
+  const output = guardPrBodyProposal({
+    proposal: "Rewritten description.",
+    liveBody: "Some body.",
+    summary: FULLY_MET_SUMMARY,
+    repo: REPO,
+    headRefName: "issue-4637-fix",
+  });
+  assertEquals(closingKeywordLine(output, 4637), "Closes #4637");
 });

@@ -16,7 +16,7 @@
  *     S["Summary committed at the pushed head"] --> M{"Unmet criterion or<br/>no committed summary?"}
  *     P["Proposal's own closure block<br/>(a missing or partial entry)"] --> M
  *     M -- yes --> W["Withhold: negated phrases become complete,<br/>closing keywords become Part of"]
- *     M -- no --> C["Keep the closing keyword, or add Closes #N<br/>when the proposal dropped the issue"]
+ *     M -- no --> C["Keep the closing keyword, or add Closes #N<br/>unless the text has one or an explicit Part of #N"]
  * ```
  *
  * The proposal is agent text. Its complete hidden `<!-- vibe-... -->` markers
@@ -35,12 +35,14 @@ import {
   CLOSING_KEYWORD_RE,
   findMissingCriteria,
   type IssueIdentity,
+  PART_OF_RE,
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
 import { maskMarkdownCode } from "./markdown_code_spans.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { closingKeywordLine } from "./pr_body.ts";
 import { issueNumberFromMarker } from "./pr_body_sync.ts";
+import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 
 /** GitHub's pull request body limit, in characters (Issue #4359). */
 export const PR_BODY_LIMIT = 65_536;
@@ -108,6 +110,24 @@ export interface PrBodyGuardInput {
   summary: string | undefined;
   /** The pull request's repository, `owner/name`. */
   repo: string;
+  /**
+   * The pull request's head branch. A worker branch (`issue-N-...`) names the
+   * governing issue when the live body has lost its worker marker.
+   */
+  headRefName: string;
+}
+
+/**
+ * The issue a repair's description is governed by: the worker marker in the
+ * live body, else the issue a worker branch (`issue-N-...`) names (Issue #4637).
+ * A body with neither is an unrelated pull request.
+ */
+export function governingIssueNumber(
+  liveBody: string,
+  headRefName: string,
+): number | undefined {
+  return issueNumberFromMarker(liveBody) ??
+    issueNumberFromBranch(headRefName) ?? undefined;
 }
 
 /** A closing reference as `gh pr view --json closingIssuesReferences` reports it. */
@@ -133,8 +153,9 @@ interface ClosingRef {
  * is also withheld when the proposal carries its own unmet criterion: a
  * `missing` or `partial` entry in its closure block, even when the committed
  * summary is fully met. The summary's own wording does not decide it: a fully
- * met summary with no closing keyword gets `Closes #N` appended, as
- * `assemblePrBody` does, so the guard and the assembler agree.
+ * met summary whose text names no closing keyword for the issue and no explicit
+ * `Part of #N` gets `Closes #N` appended, as `assemblePrBody` does. A bare
+ * mention of the issue is not a closing claim.
  *
  * @param input.summary - The summary committed at the pushed head.
  * @param input.proposal - The agent's proposed description, if any.
@@ -182,16 +203,17 @@ export function githubClosesIssue(
  * kept (its close is allowed) or withheld (its close is not). Without a
  * proposal, the live body is the base and only the withholding applies.
  *
- * An unrelated PR, with no worker marker in its live body, gets only the
- * restored closing references.
+ * The governing issue is the worker marker in the live body, else the issue the
+ * worker branch names ({@link governingIssueNumber}). An unrelated PR, with
+ * neither, gets only the restored closing references.
  *
  * @throws When the governing issue would still close, or the body is over the
  *   GitHub limit. The caller then leaves the reviews open.
  */
 export function guardPrBodyProposal(input: PrBodyGuardInput): string {
-  const { proposal, liveBody, summary, repo } = input;
+  const { proposal, liveBody, summary, repo, headRefName } = input;
   const identity: IssueIdentity = { prRepo: repo, issueRepo: repo };
-  const issueNumber = issueNumberFromMarker(liveBody);
+  const issueNumber = governingIssueNumber(liveBody, headRefName);
   let text = proposal === undefined ? liveBody : stripVibeMarkers(proposal);
   const appended: string[] = [];
 
@@ -211,7 +233,9 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
   if (issueNumber !== undefined) {
     closeAllowed = isIssueCloseAllowed({ summary, proposal });
     if (closeAllowed) {
-      if (!mentionsIssue(maskMarkdownCode(text), issueNumber)) {
+      // A bare mention is not a closing claim: only a closing keyword, or an
+      // explicit `Part of #N` the proposal chose, stops the close being added.
+      if (!namesClosingOrPartOf(text, issueNumber, repo)) {
         appended.unshift(`Closes #${issueNumber}`);
       }
     } else {
@@ -351,6 +375,28 @@ function closingRefs(masked: string, repo: string): ClosingRef[] {
     });
   }
   return refs;
+}
+
+/**
+ * Whether the text already settles the governing issue's close: a closing
+ * keyword for it (plain, colon or full-URL form), or an explicit `Part of #N`.
+ * A bare `#N`, or another repository's `owner/repo#N`, settles nothing.
+ */
+function namesClosingOrPartOf(
+  text: string,
+  issueNumber: number,
+  repo: string,
+): boolean {
+  const masked = maskMarkdownCode(text);
+  const repoKey = repo.toLowerCase();
+  return closingRefs(masked, repo).some((ref) =>
+    ref.sameRepo && ref.issueNumber === issueNumber
+  ) || governingColonAndUrlCloses(text, issueNumber, repo).length > 0 ||
+    [...masked.matchAll(PART_OF_RE)].some((match) => {
+      const qualifier = match[2]?.toLowerCase();
+      return Number(match[3]) === issueNumber &&
+        (qualifier === undefined || qualifier === repoKey);
+    });
 }
 
 /** Whether a masked body mentions `#N` in any form. */
