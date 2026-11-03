@@ -14,7 +14,27 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { ALLOWED_ENV_NAMES } from "../../lib/untrusted_command_env.ts";
+import {
+  ALLOWED_ENV_NAMES,
+  UNTRUSTED_USER,
+} from "../../lib/untrusted_command_env.ts";
+
+/**
+ * Make a checkout directory the dropped `agent` account can use (Issue #4733).
+ *
+ * A gate runs its repository command as that account when the host has it, and
+ * the account cannot enter a `0700` ancestor. `Deno.makeTempDir` follows
+ * `TMPDIR`, which the mutation runner points at a `0700` directory of its own,
+ * so the directory is made under `/tmp` — world-traversable — and opened
+ * to `0777`. The directory is unique and the caller removes it.
+ */
+export async function makeAgentReachableTempDir(
+  prefix: string,
+): Promise<string> {
+  const dir = await Deno.makeTempDir({ prefix, dir: "/tmp" });
+  await Deno.chmod(dir, 0o777);
+  return dir;
+}
 
 /** A credential the worker holds, which a repository's own command must not inherit. */
 export const PARENT_CREDENTIAL = "VIBE_4659_PARENT_SECRET";
@@ -36,9 +56,9 @@ const DENO_TASK_SET_NAMES = ["INIT_CWD", "npm_config_user_agent"];
 const BUILD_CACHE_NAMES = ["CARGO_TARGET_DIR"];
 
 /**
- * Names `sudo` places in a dropped child's environment. When the host has the
- * `agent` account the gate's real drop goes through sudo, which adds these
- * after the allowlist is applied. None carries a parent credential (Issue #4733).
+ * Names `sudo` adds to a dropped child's environment after the allowlist is
+ * applied. They are permitted only when the child shows it ran through the
+ * sudo drop to the untrusted account (Issue #4733).
  */
 const SUDO_SET_NAMES = [
   "MAIL",
@@ -51,12 +71,13 @@ const SUDO_SET_NAMES = [
 
 /**
  * The task body a repository would declare: it lists the child's variable
- * names on one line that starts `ENV `, then fails so the gate reports it. One
- * line keeps the names clear of the gate's output tail, and the echoed task
+ * names on one line that starts `ENV `, then reports the invoking uid `sudo`
+ * recorded and the account the task ran as on a line that starts `SUDO `, then fails so the gate reports it. One
+ * line each keeps them clear of the gate's output tail, and the echoed task
  * line starts `Task`, so it is never read as a name.
  */
 export const NAMES_PROBE =
-  `sh -c 'printf "ENV %s\\n" "$(printenv | cut -d= -f1 | tr "\\n" " ")"; exit 1'`;
+  `sh -c 'printf "ENV %s\\n" "$(printenv | cut -d= -f1 | tr "\\n" " ")"; printf "SUDO %s %s %s\\n" "\${SUDO_UID-}" "$(id -u)" "$(id -un)"; exit 1'`;
 
 /** What a gate returned, as the child reported it. */
 export interface ChildGateOutcome {
@@ -124,9 +145,40 @@ function probedNames(output: string): string[] {
   return line.slice("ENV ".length).split(" ").filter((name) => name.length > 0);
 }
 
+/** The uid `id -u` reports for an account (or this process), if it has one. */
+function uidOf(...account: string[]): string | undefined {
+  try {
+    const result = new Deno.Command("id", {
+      args: ["-u", ...account],
+      stdout: "piped",
+      stderr: "null",
+    }).outputSync();
+    const uid = new TextDecoder().decode(result.stdout).trim();
+    return result.code === 0 && /^\d+$/.test(uid) ? uid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Did the child run through the sudo drop to the untrusted account? Its own
+ * report must show it ran as that account, with that account's uid, and that
+ * `sudo` recorded this worker's uid as the invoker.
+ */
+function ranThroughSudoDrop(output: string): boolean {
+  const line = output.split("\n").find((l) => l.startsWith("SUDO "));
+  if (line === undefined) return false;
+  const [, invoker, uid, user] = line.split(" ");
+  const expected = uidOf(UNTRUSTED_USER);
+  return expected !== undefined && user === UNTRUSTED_USER &&
+    uid === expected && invoker === uidOf();
+}
+
 /**
  * Assert the child saw only names the allowlist, the shell, the task runner or
- * the build cache put there. The parent credential is not among them.
+ * the build cache put there. The parent credential is not among them. The
+ * names `sudo` adds are permitted only when the child ran through the drop to
+ * the untrusted account.
  */
 export function assertOnlyAllowlistedNames(output: string): void {
   const permitted = new Set([
@@ -134,7 +186,7 @@ export function assertOnlyAllowlistedNames(output: string): void {
     ...SHELL_SET_NAMES,
     ...DENO_TASK_SET_NAMES,
     ...BUILD_CACHE_NAMES,
-    ...SUDO_SET_NAMES,
+    ...(ranThroughSudoDrop(output) ? SUDO_SET_NAMES : []),
   ]);
   const names = probedNames(output);
   const leaked = names.filter((name) => !permitted.has(name));
