@@ -1,160 +1,160 @@
 {
-  "version": 1,
   "branchOutcomes": {
-    "noneAdded": false,
     "entries": [
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "removing the _refusedCodexModels.size operand: this test failed",
         "line": 189,
         "outcome": "nothing refused: resolving never reads the ChatGPT login (size operand)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - resolving with nothing refused never reads CODEX_HOME (Issue #4221)",
-        "flipWentRed": "removing the _refusedCodexModels.size operand: this test failed"
+        "testName": "Codex refused built-in default - resolving with nothing refused never reads CODEX_HOME (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "removing the isCodexChatgptLogin operand: this test failed",
         "line": 190,
         "outcome": "an api-key or absent login never drops a built-in default (ChatGPT-login operand)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - an api-key login never adapts (Issue #4221)",
-        "flipWentRed": "removing the isCodexChatgptLogin operand: this test failed"
+        "testName": "Codex refused built-in default - an api-key login never adapts (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "removing the codexBuiltInDefaultModel equality: this test failed",
         "line": 192,
         "outcome": "an explicit pin is still sent when its id is refused (built-in default operand)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - explicit pins still send a refused id (Issue #4221)",
-        "flipWentRed": "removing the codexBuiltInDefaultModel equality: this test failed"
+        "testName": "Codex refused built-in default - explicit pins still send a refused id (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "returning the model from the refused branch: this test failed, with the factory, health-gate and retry tests",
         "line": 194,
         "outcome": "a refused built-in default resolves to no --model (refused branch returns undefined)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - a refused id drops --model only for its own phase (Issue #4221)",
-        "flipWentRed": "returning the model from the refused branch: this test failed, with the factory, health-gate and retry tests"
+        "testName": "Codex refused built-in default - a refused id drops --model only for its own phase (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "removing the home guard: this test failed once the read spy was added; before the spy the mutation stayed green",
         "line": 225,
         "outcome": "no CODEX_HOME: no ChatGPT-login check and no auth.json read (home guard)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - an absent CODEX_HOME reads no auth.json (Issue #4221)",
-        "flipWentRed": "removing the home guard: this test failed once the read spy was added; before the spy the mutation stayed green"
+        "testName": "Codex refused built-in default - an absent CODEX_HOME reads no auth.json (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "isCodexChatgptLogin returning false: this test failed, with six other tests",
         "line": 226,
         "outcome": "a ChatGPT login in auth.json is reported as one (mode comparison)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - the ChatGPT-login check agrees with the billing probe (Issue #4221)",
-        "flipWentRed": "isCodexChatgptLogin returning false: this test failed, with six other tests"
+        "testName": "Codex refused built-in default - the ChatGPT-login check agrees with the billing probe (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "removing the guard: plain deno test fails type-check; with --no-check this test threw a TypeError",
         "line": 251,
         "outcome": "a phase-less built-in default lookup is undefined (phase guard)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - a phase-less call is never adapted (Issue #4221)",
-        "flipWentRed": "removing the guard: plain deno test fails type-check; with --no-check this test threw a TypeError"
+        "testName": "Codex refused built-in default - a phase-less call is never adapted (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "removing the dedup return: this test failed with three warnings for one id",
         "line": 272,
         "outcome": "a refused id warns once per run (dedup)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - the refusal warning is printed once per model (Issue #4221)",
-        "flipWentRed": "removing the dedup return: this test failed with three warnings for one id"
+        "testName": "Codex refused built-in default - the refusal warning is printed once per model (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "removing the login check: this test failed, with the runner api-key test",
         "line": 298,
         "outcome": "an api-key login is offered no alternative model (login check)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - an api-key login never adapts (Issue #4221)",
-        "flipWentRed": "removing the login check: this test failed, with the runner api-key test"
+        "testName": "Codex refused built-in default - an api-key login never adapts (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "comparing only against undefined: this test failed once the gpt-6.1-sol assertion was added",
         "line": 300,
         "outcome": "a different id from the phase built-in default is offered no alternative (built-in comparison)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - an api-key login never adapts (Issue #4221)",
-        "flipWentRed": "comparing only against undefined: this test failed once the gpt-6.1-sol assertion was added"
+        "testName": "Codex refused built-in default - an api-key login never adapts (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "removing the empty-alternatives guard: this test failed, with the phase-less test",
         "line": 334,
         "outcome": "no alternatives means no retry (empty-alternatives guard)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - an api-key login never adapts (Issue #4221)",
-        "flipWentRed": "removing the empty-alternatives guard: this test failed, with the phase-less test"
+        "testName": "Codex refused built-in default - an api-key login never adapts (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/codex_executor.ts",
+        "flipWentRed": "dropping the sentinel operand: this test failed",
         "line": 566,
         "outcome": "the CLI-default sentinel sends no --model (sentinel operand)",
+        "path": "worker/deno/lib/codex_executor.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "buildCodexArgs - the CLI default sentinel emits no --model (Issue #4221)",
-        "flipWentRed": "dropping the sentinel operand: this test failed"
+        "testName": "buildCodexArgs - the CLI default sentinel emits no --model (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/claude_runner.ts",
+        "flipWentRed": "removing the model operand: this test failed",
         "line": 3427,
         "outcome": "an explicit request model is never dropped by the in-run retry (model operand)",
+        "path": "worker/deno/lib/claude_runner.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "runClaudeWithRetry - an explicit request model is never dropped by the in-run retry (Issue #4221)",
-        "flipWentRed": "removing the model operand: this test failed"
+        "testName": "runClaudeWithRetry - an explicit request model is never dropped by the in-run retry (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/claude_runner.ts",
+        "flipWentRed": "forcing the adaptation off: this test failed",
         "line": 3428,
         "outcome": "a refused built-in default is retried once without --model",
+        "path": "worker/deno/lib/claude_runner.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "runClaudeWithRetry - a refused built-in default is retried once without --model (Issue #4221)",
-        "flipWentRed": "forcing the adaptation off: this test failed"
+        "testName": "runClaudeWithRetry - a refused built-in default is retried once without --model (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/claude_runner.ts",
+        "flipWentRed": "forcing the adaptation off: this test also failed, three calls expected",
         "line": 3428,
         "outcome": "a second refusal falls through to the provider switch",
+        "path": "worker/deno/lib/claude_runner.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "runClaudeWithRetry - a second refusal falls through to the provider switch (Issue #4221)",
-        "flipWentRed": "forcing the adaptation off: this test also failed, three calls expected"
+        "testName": "runClaudeWithRetry - a second refusal falls through to the provider switch (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/claude_runner.ts",
+        "flipWentRed": "logging the adaptation at warn: this test failed",
         "line": 3434,
         "outcome": "the adaptation is logged at info, not warn",
+        "path": "worker/deno/lib/claude_runner.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "runClaudeWithRetry - a refused built-in default is retried once without --model (Issue #4221)",
-        "flipWentRed": "logging the adaptation at warn: this test failed"
+        "testName": "runClaudeWithRetry - a refused built-in default is retried once without --model (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "flipWentRed": "removing the clearRefusedCodexModels call: this test failed",
         "line": 813,
         "outcome": "a fresh run starts with no refused models (factory clear)",
+        "path": "worker/deno/lib/run_core_production_deps.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - a fresh worker run forgets the refused models (Issue #4221)",
-        "flipWentRed": "removing the clearRefusedCodexModels call: this test failed"
+        "testName": "Codex refused built-in default - a fresh worker run forgets the refused models (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "flipWentRed": "dropping the health phase argument: this test failed, and no probe was made",
         "line": 2192,
         "outcome": "the health gate looks up alternatives for the health phase",
+        "path": "worker/deno/lib/run_core_production_deps.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - the health gate adapts only on a healthy probe (Issue #4221)",
-        "flipWentRed": "dropping the health phase argument: this test failed, and no probe was made"
+        "testName": "Codex refused built-in default - the health gate adapts only on a healthy probe (Issue #4221)"
       },
       {
-        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "flipWentRed": "removing the applyModelAdaptation call: this test failed at the post-adaptation check",
         "line": 2203,
         "outcome": "a healthy probe applies the alternative for the run",
+        "path": "worker/deno/lib/run_core_production_deps.ts",
         "test": "worker/deno/tests/codex_model_adaptation_test.ts",
-        "testName": "Codex refused built-in default - the health gate adapts only on a healthy probe (Issue #4221)",
-        "flipWentRed": "removing the applyModelAdaptation call: this test failed at the post-adaptation check"
+        "testName": "Codex refused built-in default - the health gate adapts only on a healthy probe (Issue #4221)"
       }
-    ]
-  }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
 }

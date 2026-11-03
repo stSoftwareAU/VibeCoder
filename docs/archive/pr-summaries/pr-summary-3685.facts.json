@@ -1,32 +1,32 @@
 {
-  "version": 1,
   "branchOutcomes": {
-    "noneAdded": false,
     "entries": [
       {
-        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "flipWentRed": "forcing the guard to false turned it red: arms 1, expected 0",
         "line": 2163,
         "outcome": "labelled PR: hold logged, enableAutoMerge skipped",
+        "path": "worker/deno/lib/pr_ci_processor.ts",
         "test": "worker/deno/tests/pr_ci_processor_standing_violation_test.ts",
-        "testName": "processCiFailure - a PR labelled standing-violation is not re-armed after a CI-fix push (Issue #3685)",
-        "flipWentRed": "forcing the guard to false turned it red: arms 1, expected 0"
+        "testName": "processCiFailure - a PR labelled standing-violation is not re-armed after a CI-fix push (Issue #3685)"
       },
       {
-        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "flipWentRed": "forcing the guard to true turned it red: no arm recorded, expected one",
         "line": 2163,
         "outcome": "unlabelled PR: auto-merge re-armed as before",
+        "path": "worker/deno/lib/pr_ci_processor.ts",
         "test": "worker/deno/tests/pr_ci_processor_standing_violation_test.ts",
-        "testName": "processCiFailure - an unlabelled PR is still re-armed after a CI-fix push (Issue #3685)",
-        "flipWentRed": "forcing the guard to true turned it red: no arm recorded, expected one"
+        "testName": "processCiFailure - an unlabelled PR is still re-armed after a CI-fix push (Issue #3685)"
       },
       {
-        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "flipWentRed": "passing false at the locked call site turned it red: arms 1, expected 0",
         "line": 693,
         "outcome": "label present in the claim-point read sets the hold (locked path call site)",
+        "path": "worker/deno/lib/pr_ci_processor.ts",
         "test": "worker/deno/tests/pr_ci_processor_standing_violation_test.ts",
-        "testName": "processCiFailure - a labelled PR is not re-armed on the locked path (Issue #3685)",
-        "flipWentRed": "passing false at the locked call site turned it red: arms 1, expected 0"
+        "testName": "processCiFailure - a labelled PR is not re-armed on the locked path (Issue #3685)"
       }
-    ]
-  }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
 }

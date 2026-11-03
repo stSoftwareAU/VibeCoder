@@ -1,328 +1,328 @@
 {
-  "version": 1,
   "branchOutcomes": {
-    "noneAdded": false,
     "entries": [
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "deleting the em-dash operand turned it red (and two other tests)",
         "line": 44,
         "outcome": "operand ch === \"—\": a trailing em dash is stripped",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "metClosureItems strips each trailing separator kind from the criterion",
-        "flipWentRed": "deleting the em-dash operand turned it red (and two other tests)"
+        "testName": "metClosureItems strips each trailing separator kind from the criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "deleting the en-dash operand turned it red",
         "line": 44,
         "outcome": "operand ch === \"–\": a trailing en dash is stripped",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "metClosureItems strips each trailing separator kind from the criterion",
-        "flipWentRed": "deleting the en-dash operand turned it red"
+        "testName": "metClosureItems strips each trailing separator kind from the criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "deleting the hyphen operand turned it red",
         "line": 44,
         "outcome": "operand ch === \"-\": a trailing hyphen is stripped",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "metClosureItems strips each trailing separator kind from the criterion",
-        "flipWentRed": "deleting the hyphen operand turned it red"
+        "testName": "metClosureItems strips each trailing separator kind from the criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "deleting the colon operand turned it red",
         "line": 44,
         "outcome": "operand ch === \":\": a trailing colon is stripped",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "metClosureItems strips each trailing separator kind from the criterion",
-        "flipWentRed": "deleting the colon operand turned it red"
+        "testName": "metClosureItems strips each trailing separator kind from the criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "deleting the whitespace operand turned it red",
         "line": 45,
         "outcome": "operand ch.trim() === \"\": trailing whitespace is stripped",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "metClosureItems strips each trailing separator kind from the criterion",
-        "flipWentRed": "deleting the whitespace operand turned it red"
+        "testName": "metClosureItems strips each trailing separator kind from the criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "removing the bound made the test spin (charAt(-1) counts as a separator); timeout 60 killed it with exit 124, so the test fails",
         "line": 51,
         "outcome": "operand end > 0: an all-separator subject stops at the start of the string",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "metClosureItems strips each trailing separator kind from the criterion",
-        "flipWentRed": "removing the bound made the test spin (charAt(-1) counts as a separator); timeout 60 killed it with exit 124, so the test fails"
+        "testName": "metClosureItems strips each trailing separator kind from the criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "deleting the skip turned it red: partial, missing and unrequested entries became items",
         "line": 60,
         "outcome": "entries not marked met are skipped",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "metClosureItems keeps only met entries, with the subject as the criterion",
-        "flipWentRed": "deleting the skip turned it red: partial, missing and unrequested entries became items"
+        "testName": "metClosureItems keeps only met entries, with the subject as the criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "always using the subject turned it red: the criterion was empty",
         "line": 63,
         "outcome": "an empty subject falls back to the entry text",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "metClosureItems keeps only met entries, with the subject as the criterion",
-        "flipWentRed": "always using the subject turned it red: the criterion was empty"
+        "testName": "metClosureItems keeps only met entries, with the subject as the criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "disabling the dedupe turned it red: two items",
         "line": 67,
         "outcome": "a repeated met entry is listed once",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "metClosureItems de-duplicates repeated met entries",
-        "flipWentRed": "disabling the dedupe turned it red: two items"
+        "testName": "metClosureItems de-duplicates repeated met entries"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "deleting the empty return turned it red: the prompt carried a closure section",
         "line": 84,
         "outcome": "no met entries renders no closure section",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "runPrePrVerifier: a clean reply is checked and not blocked",
-        "flipWentRed": "deleting the empty return turned it red: the prompt carried a closure section"
+        "testName": "runPrePrVerifier: a clean reply is checked and not blocked"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "always overwriting turned it red, along with closureGapFindings: missing outranks partial for the same criterion",
         "line": 155,
         "outcome": "repeated verdicts for one criterion are all kept",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: when verdicts repeat for one criterion, none is overwritten",
-        "flipWentRed": "always overwriting turned it red, along with closureGapFindings: missing outranks partial for the same criterion"
+        "testName": "closureGapFindings: when verdicts repeat for one criterion, none is overwritten"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "disabling the unreported branch turned it red, along with a clean reply with no closure array blocks: no verdict on a met entry is never a pass",
         "line": 162,
         "outcome": "a listed entry with no verdict is collected as unreported",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: an entry with no verdict is one finding naming it",
-        "flipWentRed": "disabling the unreported branch turned it red, along with a clean reply with no closure array blocks: no verdict on a met entry is never a pass"
+        "testName": "closureGapFindings: an entry with no verdict is one finding naming it"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "finding partial before missing turned it red",
         "line": 166,
         "outcome": "missing outranks partial for the same criterion",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: missing outranks partial for the same criterion",
-        "flipWentRed": "finding partial before missing turned it red"
+        "testName": "closureGapFindings: missing outranks partial for the same criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "deleting the continue turned it red",
         "line": 168,
         "outcome": "an entry rated met adds no finding",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "a clean reply with a met closure verdict is not blocked",
-        "flipWentRed": "deleting the continue turned it red"
+        "testName": "a clean reply with a met closure verdict is not blocked"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "never appending the note turned it red",
         "line": 175,
         "outcome": "a note is appended to the finding when present",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "a met closure entry the verifier rates partial blocks, with a finding on the summary",
-        "flipWentRed": "never appending the note turned it red"
+        "testName": "a met closure entry the verifier rates partial blocks, with a finding on the summary"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "always appending the separator turned it red",
         "line": 175,
         "outcome": "no note leaves no dangling separator",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: a verdict with no note leaves no dangling separator",
-        "flipWentRed": "always appending the separator turned it red"
+        "testName": "closureGapFindings: a verdict with no note leaves no dangling separator"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "forcing the condition true turned it red, along with seven other tests",
         "line": 181,
         "outcome": "unreported entries add one finding; none adds none",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "a clean reply with a met closure verdict is not blocked",
-        "flipWentRed": "forcing the condition true turned it red, along with seven other tests"
+        "testName": "a clean reply with a met closure verdict is not blocked"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "forcing the suffix empty turned it red",
         "line": 184,
         "outcome": "more than five unreported entries are counted, not all named",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: unreported entries are named at most five, then counted",
-        "flipWentRed": "forcing the suffix empty turned it red"
+        "testName": "closureGapFindings: unreported entries are named at most five, then counted"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "forcing 'entries' turned it red",
         "line": 192,
         "outcome": "a single unreported entry reads in the singular",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: a single unreported entry reads in the singular",
-        "flipWentRed": "forcing 'entries' turned it red"
+        "testName": "closureGapFindings: a single unreported entry reads in the singular"
       },
       {
-        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "flipWentRed": "removing the append turned it red, along with a clean reply with no closure array blocks: no verdict on a met entry is never a pass",
         "line": 783,
         "outcome": "the verifier appends closure gap findings to its review",
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "a met closure entry the verifier rates partial blocks, with a finding on the summary",
-        "flipWentRed": "removing the append turned it red, along with a clean reply with no closure array blocks: no verdict on a met entry is never a pass"
+        "testName": "a met closure entry the verifier rates partial blocks, with a finding on the summary"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "throwing instead turned it red",
         "line": 107,
         "outcome": "a non-array closure value reads as [] and is never thrown on",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing",
-        "flipWentRed": "throwing instead turned it red"
+        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "never dropping it turned it red",
         "line": 110,
         "outcome": "a non-object closure element is dropped",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing",
-        "flipWentRed": "never dropping it turned it red"
+        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "dropping only the missing-criterion case turned it red",
         "line": 112,
         "outcome": "an entry with an empty or missing criterion is dropped",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing",
-        "flipWentRed": "dropping only the missing-criterion case turned it red"
+        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "never dropping it turned it red",
         "line": 113,
         "outcome": "an entry whose verdict is not a string is dropped",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing",
-        "flipWentRed": "never dropping it turned it red"
+        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "using the raw verdict turned it red",
         "line": 114,
         "outcome": "a verdict is trimmed and lower-cased before the vocabulary check",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing",
-        "flipWentRed": "using the raw verdict turned it red"
+        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "throwing instead of dropping turned it red, along with the parse tests",
         "line": 115,
         "outcome": "an out-of-vocabulary verdict is dropped, not thrown on, and its listed item falls into the no-verdict finding",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "a reply with a real finding and an out-of-vocabulary closure verdict is still checked and blocked",
-        "flipWentRed": "throwing instead of dropping turned it red, along with the parse tests"
+        "testName": "a reply with a real finding and an out-of-vocabulary closure verdict is still checked and blocked"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "passing the raw note through turned it red",
         "line": 119,
         "outcome": "a missing or non-string note defaults to an empty string",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing",
-        "flipWentRed": "passing the raw note through turned it red"
+        "testName": "parseClosureEntryVerdicts keeps usable entries and drops malformed ones without throwing"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "removing the strip turned it red",
         "line": 134,
         "outcome": "zero-width characters are stripped before gapText so a copied '@' criterion keys the same",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: an '@' criterion matches a verdict copied with or without the zero-width space",
-        "flipWentRed": "removing the strip turned it red"
+        "testName": "closureGapFindings: an '@' criterion matches a verdict copied with or without the zero-width space"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "unfencing the list turned it red, along with the prompt-level fence test",
         "line": 90,
         "outcome": "the criteria are rendered inside the untrusted fence, the instruction outside",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "renderClosureEntriesSection puts the criteria inside the untrusted fence and the instruction outside",
-        "flipWentRed": "unfencing the list turned it red, along with the prompt-level fence test"
+        "testName": "renderClosureEntriesSection puts the criteria inside the untrusted fence and the instruction outside"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "restoring the 'mark the entry partial' wording turned it red",
         "line": 178,
         "outcome": "the rated-short finding's fix offers delivery or a dispute, never a partial downgrade",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "the closure gap finding's fix agrees with the gate comment's procedure",
-        "flipWentRed": "restoring the 'mark the entry partial' wording turned it red"
+        "testName": "the closure gap finding's fix agrees with the gate comment's procedure"
       },
       {
-        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "flipWentRed": "deleting the push turned it red",
         "line": 338,
         "outcome": "closure entries are named in the boundary-integrity instruction only when listed",
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "buildPrePrVerifierPrompt renders closure criteria inside the untrusted fence and names the block",
-        "flipWentRed": "deleting the push turned it red"
+        "testName": "buildPrePrVerifierPrompt renders closure criteria inside the untrusted fence and names the block"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "the new test against the unchanged target head d37fb603 failed with No verdict was reported; stripping the list number made it pass",
         "line": 135,
         "outcome": "a copied leading list number is stripped before criterion clipping",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: numbered verdict copies match without truncating the criterion",
-        "flipWentRed": "the new test against the unchanged target head d37fb603 failed with No verdict was reported; stripping the list number made it pass"
+        "testName": "closureGapFindings: numbered verdict copies match without truncating the criterion"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "the old single-prefix pattern made the new regression fail with No verdict was reported for 3 of 3; repeating the prefix match made it pass",
         "line": 135,
         "outcome": "all leading list numbers are stripped so the rendered copy of an already-numbered criterion matches",
+        "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: rendered copies of already-numbered criteria match",
-        "flipWentRed": "the old single-prefix pattern made the new regression fail with No verdict was reported for 3 of 3; repeating the prefix match made it pass"
+        "testName": "closureGapFindings: rendered copies of already-numbered criteria match"
       },
       {
-        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "flipWentRed": "replacing the rendered section with raw criteria made the boundary assertion fail",
         "line": 955,
         "outcome": "fleet closure criteria use the shared fenced renderer instead of raw PR text",
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
         "test": "worker/deno/tests/review_fleet_prs_checklists_3594_test.ts",
-        "testName": "gate: closure criteria are fenced data in the fleet reviewer brief",
-        "flipWentRed": "replacing the rendered section with raw criteria made the boundary assertion fail"
+        "testName": "gate: closure criteria are fenced data in the fleet reviewer brief"
       },
       {
-        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "flipWentRed": "removing body from the PR selection made the outbound-query assertion fail",
         "line": 607,
         "outcome": "the fleet search requests the PR body for closure extraction",
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
         "test": "worker/deno/tests/review_fleet_prs_checklists_3594_test.ts",
-        "testName": "gate: closure criteria are fenced data in the fleet reviewer brief",
-        "flipWentRed": "removing body from the PR selection made the outbound-query assertion fail"
+        "testName": "gate: closure criteria are fenced data in the fleet reviewer brief"
       },
       {
-        "path": "worker/deno/lib/closure_met_check.ts",
+        "flipWentRed": "the unchanged joined-block renderer failed both new regressions: the later content changed to CONTENT and the private-key case produced only one of two entries; per-criterion scrubbing passed both",
         "line": 97,
         "outcome": "criteria are scrubbed independently before fencing so cross-entry patterns cannot rewrite or consume later entries",
-        "test": "worker/deno/tests/closure_met_check_3766_test.ts",
-        "testName": "closureGapFindings: scrubbing Rejects a forged ---BEGIN FAKE marker cannot consume a later criterion; closureGapFindings: scrubbing Rejects the -----BEGIN RSA PRIVATE KEY----- header cannot consume a later criterion",
-        "flipWentRed": "the unchanged joined-block renderer failed both new regressions: the later content changed to CONTENT and the private-key case produced only one of two entries; per-criterion scrubbing passed both"
-      },
-      {
         "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
+        "testName": "closureGapFindings: scrubbing Rejects a forged ---BEGIN FAKE marker cannot consume a later criterion; closureGapFindings: scrubbing Rejects the -----BEGIN RSA PRIVATE KEY----- header cannot consume a later criterion"
+      },
+      {
+        "flipWentRed": "removing the raw key failed the raw-copy assertion with No verdict was reported for 5 of 5",
         "line": 171,
         "outcome": "raw criteria remain accepted alongside their rendered form",
-        "testName": "closureGapFindings: raw and rendered copies match without assuming an idempotent scrub",
-        "flipWentRed": "removing the raw key failed the raw-copy assertion with No verdict was reported for 5 of 5"
-      },
-      {
         "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
+        "testName": "closureGapFindings: raw and rendered copies match without assuming an idempotent scrub"
+      },
+      {
+        "flipWentRed": "removing the rendered key failed the rendered-copy assertion with No verdict was reported for 5 of 5; the old double-scrub implementation failed the same regression",
         "line": 172,
         "outcome": "exact rendered criteria are accepted without scrubbing the verifier copy again",
-        "testName": "closureGapFindings: raw and rendered copies match without assuming an idempotent scrub",
-        "flipWentRed": "removing the rendered key failed the rendered-copy assertion with No verdict was reported for 5 of 5; the old double-scrub implementation failed the same regression"
-      },
-      {
         "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
+        "testName": "closureGapFindings: raw and rendered copies match without assuming an idempotent scrub"
+      },
+      {
+        "flipWentRed": "replacing flatMap with the first matching form failed the mixed-verdict assertion: zero findings instead of five",
         "line": 174,
         "outcome": "verdicts from both matching forms are retained so a met verdict cannot hide partial or missing",
-        "testName": "closureGapFindings: raw and rendered copies match without assuming an idempotent scrub",
-        "flipWentRed": "replacing flatMap with the first matching form failed the mixed-verdict assertion: zero findings instead of five"
-      },
-      {
         "path": "worker/deno/lib/closure_met_check.ts",
         "test": "worker/deno/tests/closure_met_check_3766_test.ts",
+        "testName": "closureGapFindings: raw and rendered copies match without assuming an idempotent scrub"
+      },
+      {
+        "flipWentRed": "forcing the empty-match condition false failed the existing no-verdict assertion: zero findings instead of one",
         "line": 175,
         "outcome": "when neither raw nor rendered key has a verdict the criterion remains unreported and blocks",
-        "testName": "closureGapFindings: an entry with no verdict is one finding naming it",
-        "flipWentRed": "forcing the empty-match condition false failed the existing no-verdict assertion: zero findings instead of one"
+        "path": "worker/deno/lib/closure_met_check.ts",
+        "test": "worker/deno/tests/closure_met_check_3766_test.ts",
+        "testName": "closureGapFindings: an entry with no verdict is one finding naming it"
       }
-    ]
-  }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
 }

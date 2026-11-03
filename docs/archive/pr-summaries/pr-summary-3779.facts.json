@@ -1,344 +1,344 @@
 {
-  "version": 1,
   "branchOutcomes": {
-    "noneAdded": false,
     "entries": [
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "removing the length check made a two-letter name read as a definition",
         "line": 118,
         "outcome": "a definition name shorter than three characters is rejected",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "definitionName rejects control words, short names and ordinary calls",
-        "flipWentRed": "removing the length check made a two-letter name read as a definition"
+        "testName": "definitionName rejects control words, short names and ordinary calls"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "removing the control-word check made `for (;;)` read as a definition",
         "line": 118,
         "outcome": "a control word that the patterns match is not a definition",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "definitionName rejects control words, short names and ordinary calls",
-        "flipWentRed": "removing the control-word check made `for (;;)` read as a definition"
+        "testName": "definitionName rejects control words, short names and ordinary calls"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "capping on the blank line's own indentation instead of Infinity missed the enclosing functions",
         "line": 162,
         "outcome": "a blank or absent line has no indentation, so every shallower definition is a candidate",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "enclosingDefinitions yields a closure and the function around it",
-        "flipWentRed": "capping on the blank line's own indentation instead of Infinity missed the enclosing functions"
+        "testName": "enclosingDefinitions yields a closure and the function around it"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "skipping the definition on the line itself left the changed function unlisted",
         "line": 169,
         "outcome": "a definition on the changed line itself counts as enclosing",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "enclosingDefinitions yields the function whose signature line changed",
-        "flipWentRed": "skipping the definition on the line itself left the changed function unlisted"
+        "testName": "enclosingDefinitions yields the function whose signature line changed"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "dropping the cap bound made a finished closure read as still enclosing",
         "line": 174,
         "outcome": "once the search narrows past the file start it stops",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "enclosingDefinitions yields only the outer function after a deeper closure has ended",
-        "flipWentRed": "dropping the cap bound made a finished closure read as still enclosing"
+        "testName": "enclosingDefinitions yields only the outer function after a deeper closure has ended"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "recording every definition instead of the shallower ones listed a closure that had already ended",
         "line": 175,
         "outcome": "a shallower definition than the current cap is recorded and narrows the cap",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "enclosingDefinitions yields only the outer function after a deeper closure has ended",
-        "flipWentRed": "recording every definition instead of the shallower ones listed a closure that had already ended"
+        "testName": "enclosingDefinitions yields only the outer function after a deeper closure has ended"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "not consuming the body made an added line that begins with `++ ` read as a file header",
         "line": 202,
         "outcome": "a hunk body line is consumed by its count, so an added `++ ` line is not a header",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names",
-        "flipWentRed": "not consuming the body made an added line that begins with `++ ` read as a file header"
+        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "treating /dev/null as a real path made a deleted file read as having changed lines",
         "line": 213,
         "outcome": "a file deleted in the diff contributes no changed lines",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names",
-        "flipWentRed": "treating /dev/null as a real path made a deleted file read as having changed lines"
+        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "parsing a quoted path made its unquoted tail read as a real path",
         "line": 215,
         "outcome": "a quoted path is counted as unparsed and its hunks are skipped",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names",
-        "flipWentRed": "parsing a quoted path made its unquoted tail read as a real path"
+        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "recording the deleted range itself put the anchor on a line that no longer exists",
         "line": 236,
         "outcome": "a pure deletion anchors on the line before the hunk's start",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names",
-        "flipWentRed": "recording the deleted range itself put the anchor on a line that no longer exists"
+        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "keeping the comma made `name,` read as a call and list the import line",
         "line": 255,
         "outcome": "a trailing comma on a bare import-list line is stripped",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks skips a bare name in a multi-line import or export list, but not a real call",
-        "flipWentRed": "keeping the comma made `name,` read as a call and list the import line"
+        "testName": "collectCallerChecks skips a bare name in a multi-line import or export list, but not a real call"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "not stripping `type` made the import-list line read as a call",
         "line": 256,
         "outcome": "a `type name` import-list entry is stripped to the bare name",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks skips a bare name in a multi-line import or export list, but not a real call",
-        "flipWentRed": "not stripping `type` made the import-list line read as a call"
+        "testName": "collectCallerChecks skips a bare name in a multi-line import or export list, but not a real call"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "not skipping tests and docs listed those lines as callers",
         "line": 276,
         "outcome": "a hit in a test file or doc is skipped",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks lists exactly the existing caller line, not imports, tests, docs, comments or in-diff lines",
-        "flipWentRed": "not skipping tests and docs listed those lines as callers"
+        "testName": "collectCallerChecks lists exactly the existing caller line, not imports, tests, docs, comments or in-diff lines"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "not skipping in-diff lines listed the changed function's own body as a caller",
         "line": 277,
         "outcome": "a hit on a line the diff changed is skipped",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks lists exactly the existing caller line, not imports, tests, docs, comments or in-diff lines",
-        "flipWentRed": "not skipping in-diff lines listed the changed function's own body as a caller"
+        "testName": "collectCallerChecks lists exactly the existing caller line, not imports, tests, docs, comments or in-diff lines"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "not skipping the definition line listed the function's own signature as a caller",
         "line": 278,
         "outcome": "the definition's own line is not a caller",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks lists exactly the existing caller line, not imports, tests, docs, comments or in-diff lines",
-        "flipWentRed": "not skipping the definition line listed the function's own signature as a caller"
+        "testName": "collectCallerChecks lists exactly the existing caller line, not imports, tests, docs, comments or in-diff lines"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "not skipping comment lines listed them as callers",
         "line": 286,
         "outcome": "a comment line is not a caller",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks lists exactly the existing caller line, not imports, tests, docs, comments or in-diff lines",
-        "flipWentRed": "not skipping comment lines listed them as callers"
+        "testName": "collectCallerChecks lists exactly the existing caller line, not imports, tests, docs, comments or in-diff lines"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "reading r.code when r is null threw instead of reporting the spawn failure",
         "line": 295,
         "outcome": "git that cannot be spawned is reported as such, not as a clean list",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks reports a git that cannot be spawned as not checked",
-        "flipWentRed": "reading r.code when r is null threw instead of reporting the spawn failure"
+        "testName": "collectCallerChecks reports a git that cannot be spawned as not checked"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "taking only the last stderr line lost `fatal: bad revision`, the actual cause",
         "line": 296,
         "outcome": "the first non-empty stderr line is the cause, falling back to the exit code",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve",
-        "flipWentRed": "taking only the last stderr line lost `fatal: bad revision`, the actual cause"
+        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "treating a non-zero diff as no changes produced a clean, empty caller list",
         "line": 319,
         "outcome": "a failed git diff makes the pass not checked, not silently clean",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve",
-        "flipWentRed": "treating a non-zero diff as no changes produced a clean, empty caller list"
+        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "dropping the unparsed note silently skipped the quoted file with no record",
         "line": 324,
         "outcome": "a quoted changed path is noted to the verifier",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names",
-        "flipWentRed": "dropping the unparsed note silently skipped the quoted file with no record"
+        "testName": "parseDiffChangedLines reads ranges, deletion anchors, deleted files and tab-ended names"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "treating a failed show as no definitions missed every function in that file",
         "line": 337,
         "outcome": "a failed git show of a changed file makes the pass not checked",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve",
-        "flipWentRed": "treating a failed show as no definitions missed every function in that file"
+        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "removing the cap searched every changed function, losing the bound the issue requires",
         "line": 358,
         "outcome": "searching stops at the function cap, and the rest are counted in a note",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks notes the changed functions it stopped searching at the cap",
-        "flipWentRed": "removing the cap searched every changed function, losing the bound the issue requires"
+        "testName": "collectCallerChecks notes the changed functions it stopped searching at the cap"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "treating any non-zero grep as no-match read a failed search as no callers",
         "line": 365,
         "outcome": "a git grep failure that is not a no-match makes the pass not checked",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve",
-        "flipWentRed": "treating any non-zero grep as no-match read a failed search as no callers"
+        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "treating exit 1 as a failure made a function with no callers not-checked",
         "line": 374,
         "outcome": "a no-match grep (exit 1) means no callers for that name",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks lists nothing when the change touches only tests and docs",
-        "flipWentRed": "treating exit 1 as a failure made a function with no callers not-checked"
+        "testName": "collectCallerChecks lists nothing when the change touches only tests and docs"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "skipping an unparseable record read it as no caller instead of failing loud",
         "line": 381,
         "outcome": "grep output that does not parse is a loud failure, not a silent skip",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve",
-        "flipWentRed": "skipping an unparseable record read it as no caller instead of failing loud"
+        "testName": "collectCallerChecks fails with git's own cause when a sha does not resolve"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "listing a function with zero kept hits added a bogus caller entry",
         "line": 394,
         "outcome": "a function with no caller after filtering lists nothing",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks lists nothing when the change touches only tests and docs",
-        "flipWentRed": "listing a function with zero kept hits added a bogus caller entry"
+        "testName": "collectCallerChecks lists nothing when the change touches only tests and docs"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "removing the slice listed more than ten callers for one function",
         "line": 400,
         "outcome": "callers beyond ten are counted in a note, not listed",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks lists at most ten callers and notes the rest",
-        "flipWentRed": "removing the slice listed more than ten callers for one function"
+        "testName": "collectCallerChecks lists at most ten callers and notes the rest"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "dropping the note hid that functions were not searched",
         "line": 409,
         "outcome": "functions not searched for callers are counted in a note",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "collectCallerChecks notes the changed functions it stopped searching at the cap",
-        "flipWentRed": "dropping the note hid that functions were not searched"
+        "testName": "collectCallerChecks notes the changed functions it stopped searching at the cap"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "rendering a section for an empty state added a caller section to a constant-only diff",
         "line": 425,
         "outcome": "no expected callers and no notes render no section",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "renderCallerCheckSection is empty when there is nothing to check",
-        "flipWentRed": "rendering a section for an empty state added a caller section to a constant-only diff"
+        "testName": "renderCallerCheckSection is empty when there is nothing to check"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "throwing on absent made a reply that omits callers unusable",
         "line": 456,
         "outcome": "an absent callers value reads as [] and is never thrown on",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseCallerVerdicts accepts an absent list and each valid verdict",
-        "flipWentRed": "throwing on absent made a reply that omits callers unusable"
+        "testName": "parseCallerVerdicts accepts an absent list and each valid verdict"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "coercing a non-array made a malformed reply read as clean",
         "line": 457,
         "outcome": "a non-array callers value is rejected, naming the problem",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseCallerVerdicts rejects a non-array, a non-object, a missing field or a bad verdict, naming the index",
-        "flipWentRed": "coercing a non-array made a malformed reply read as clean"
+        "testName": "parseCallerVerdicts rejects a non-array, a non-object, a missing field or a bad verdict, naming the index"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "reading fields off a non-object made a malformed element read as a verdict",
         "line": 461,
         "outcome": "a non-object callers element is rejected",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseCallerVerdicts rejects a non-array, a non-object, a missing field or a bad verdict, naming the index",
-        "flipWentRed": "reading fields off a non-object made a malformed element read as a verdict"
+        "testName": "parseCallerVerdicts rejects a non-array, a non-object, a missing field or a bad verdict, naming the index"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "defaulting a missing field made an incomplete entry read as a verdict",
         "line": 466,
         "outcome": "a caller entry with a missing or empty symbol, caller or note is rejected",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseCallerVerdicts rejects a non-array, a non-object, a missing field or a bad verdict, naming the index",
-        "flipWentRed": "defaulting a missing field made an incomplete entry read as a verdict"
+        "testName": "parseCallerVerdicts rejects a non-array, a non-object, a missing field or a bad verdict, naming the index"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "accepting any string let a `regressed` misspelling read as clean",
         "line": 474,
         "outcome": "an out-of-vocabulary verdict is rejected, naming the allowed list",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "parseCallerVerdicts rejects a non-array, a non-object, a missing field or a bad verdict, naming the index",
-        "flipWentRed": "accepting any string let a `regressed` misspelling read as clean"
+        "testName": "parseCallerVerdicts rejects a non-array, a non-object, a missing field or a bad verdict, naming the index"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "parsing a missing line number as NaN put a non-integer line on the finding",
         "line": 501,
         "outcome": "a caller string without a usable line number reports line 0",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "callerGapFindings: a regressed verdict is a finding on the caller's file and line, with the note",
-        "flipWentRed": "parsing a missing line number as NaN put a non-integer line on the finding"
+        "testName": "callerGapFindings: a regressed verdict is a finding on the caller's file and line, with the note"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "forcing the branch false read a missing verdict as a pass",
         "line": 526,
         "outcome": "one or more callers left without a verdict is one blocking finding naming them",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "callerGapFindings: a missing verdict is one finding naming the caller",
-        "flipWentRed": "forcing the branch false read a missing verdict as a pass"
+        "testName": "callerGapFindings: a missing verdict is one finding naming the caller"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "naming every unreported caller instead of counting the rest changed the finding text",
         "line": 531,
         "outcome": "more than five unreported callers are counted, not all named",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "callerGapFindings: a missing verdict is one finding naming the caller",
-        "flipWentRed": "naming every unreported caller instead of counting the rest changed the finding text"
+        "testName": "callerGapFindings: a missing verdict is one finding naming the caller"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "skipping the regressed loop let a regressed verdict pass without a finding",
         "line": 544,
         "outcome": "a regressed verdict is a blocking finding on the caller's file and line, with the note",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "callerGapFindings: a regressed verdict is a finding on the caller's file and line, with the note",
-        "flipWentRed": "skipping the regressed loop let a regressed verdict pass without a finding"
+        "testName": "callerGapFindings: a regressed verdict is a finding on the caller's file and line, with the note"
       },
       {
-        "path": "worker/deno/lib/caller_checks.ts",
+        "flipWentRed": "treating every verdict as regressed added findings for clean verdicts",
         "line": 544,
         "outcome": "an unchanged or changed-and-tested verdict is never a finding",
+        "path": "worker/deno/lib/caller_checks.ts",
         "test": "worker/deno/tests/caller_checks_3779_test.ts",
-        "testName": "callerGapFindings: unchanged and changed-and-tested verdicts are never findings",
-        "flipWentRed": "treating every verdict as regressed added findings for clean verdicts"
+        "testName": "callerGapFindings: unchanged and changed-and-tested verdicts are never findings"
       },
       {
-        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "flipWentRed": "deleting the push dropped `caller list` from the boundary names",
         "line": 415,
         "outcome": "the boundary-integrity instruction names the caller list only when it is rendered",
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "the verifier lists an existing caller inside the fence, and a reply with no callers is blocked",
-        "flipWentRed": "deleting the push dropped `caller list` from the boundary names"
+        "testName": "the verifier lists an existing caller inside the fence, and a reply with no callers is blocked"
       },
       {
-        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "flipWentRed": "replacing `!callers.ok` with false made the whole suite fail type-checking (callers.state no longer narrowed), and the new test asserts the not_checked reason",
         "line": 769,
         "outcome": "a caller listing that cannot be produced makes the pass not checked, not silently clean",
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "a git failure listing callers makes the verifier not checked, never asked of the model",
-        "flipWentRed": "replacing `!callers.ok` with false made the whole suite fail type-checking (callers.state no longer narrowed), and the new test asserts the not_checked reason"
+        "testName": "a git failure listing callers makes the verifier not checked, never asked of the model"
       },
       {
-        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "flipWentRed": "removing the append made a missing-verdict reply read as clean and not blocked",
         "line": 831,
         "outcome": "caller gap findings are appended to the review's blocking findings",
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
-        "testName": "a caller marked regressed is a blocking finding on the caller's file and line",
-        "flipWentRed": "removing the append made a missing-verdict reply read as clean and not blocked"
+        "testName": "a caller marked regressed is a blocking finding on the caller's file and line"
       }
-    ]
-  }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
 }

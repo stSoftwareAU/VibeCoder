@@ -1,24 +1,24 @@
 {
-  "version": 1,
   "branchOutcomes": {
-    "noneAdded": false,
     "entries": [
       {
-        "path": "worker/deno/lib/pre_push_gate.ts",
+        "flipWentRed": "changing changedRs.length === 0 to !== 0 made it run cargo fmt on a README-only change, which the test asserts must not happen",
         "line": 530,
         "outcome": "no changed .rs file under the cargo root -> skip the cargo fmt fix",
+        "path": "worker/deno/lib/pre_push_gate.ts",
         "test": "worker/deno/tests/repo_formatters_test.ts",
-        "testName": "repo formatters - cargo fmt runs only when a Rust file under its root changed",
-        "flipWentRed": "changing changedRs.length === 0 to !== 0 made it run cargo fmt on a README-only change, which the test asserts must not happen"
+        "testName": "repo formatters - cargo fmt runs only when a Rust file under its root changed"
       },
       {
-        "path": "worker/deno/lib/pre_push_gate.ts",
+        "flipWentRed": "reverting paths: changedRs to paths: [root] staged :(literal). so the uncommitted README edit was folded into the commit and the src/lib.rs-only assertion failed",
         "line": 535,
         "outcome": "at least one changed .rs file -> stage only those .rs files, not the whole tree",
+        "path": "worker/deno/lib/pre_push_gate.ts",
         "test": "worker/deno/tests/completion_phase_repo_formatters_test.ts",
-        "testName": "completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit",
-        "flipWentRed": "reverting paths: changedRs to paths: [root] staged :(literal). so the uncommitted README edit was folded into the commit and the src/lib.rs-only assertion failed"
+        "testName": "completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit"
       }
-    ]
-  }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
 }

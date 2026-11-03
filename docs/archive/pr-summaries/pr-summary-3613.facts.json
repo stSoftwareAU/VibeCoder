@@ -1,96 +1,96 @@
 {
-  "version": 1,
   "branchOutcomes": {
-    "noneAdded": false,
     "entries": [
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "forcing the condition to false turned 2 tests red: the path shrank to telemetry.ts",
         "line": 92,
         "outcome": "citation inside an open backtick span is considered for a spaced-path prefix",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "citedLocations - a backticked path with spaces is reported whole (Issue #3613)",
-        "flipWentRed": "forcing the condition to false turned 2 tests red: the path shrank to telemetry.ts"
+        "testName": "citedLocations - a backticked path with spaces is reported whole (Issue #3613)"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "disabling the join turned the spaced-path tests red; the a/foo.ts:1, b/bar.ts:2 case pins the non-join outcome",
         "line": 94,
         "outcome": "prefix with characters other than path chars and spaces is not joined",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "citedLocations - separate backticked paths are not joined (Issue #3613)",
-        "flipWentRed": "disabling the join turned the spaced-path tests red; the a/foo.ts:1, b/bar.ts:2 case pins the non-join outcome"
+        "testName": "citedLocations - separate backticked paths are not joined (Issue #3613)"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "deleting the exact-match operand turned 3 tests red",
         "line": 107,
         "outcome": "operand file === cited: exact path match",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "ownLineStandingViolations - placement rules",
-        "flipWentRed": "deleting the exact-match operand turned 3 tests red"
+        "testName": "ownLineStandingViolations - placement rules"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "deleting the suffix operand turned placement rules red: lib/other.ts:12 became unplaceable",
         "line": 107,
         "outcome": "operand endsWith('/' + cited): suffix path match",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "ownLineStandingViolations - placement rules",
-        "flipWentRed": "deleting the suffix operand turned placement rules red: lib/other.ts:12 became unplaceable"
+        "testName": "ownLineStandingViolations - placement rules"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "returning false there turned 3 tests red: foo.ts:99 counted as own-line",
         "line": 130,
         "outcome": "cited path matches a diff file, so it is placeable",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "findOwnLineStandingViolations - routing against a diff",
-        "flipWentRed": "returning false there turned 3 tests red: foo.ts:99 counted as own-line"
+        "testName": "findOwnLineStandingViolations - routing against a diff"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "returning false there turned 2 tests red: other.ts:12 and bar.ts:5 counted as own-line",
         "line": 133,
         "outcome": "cited path matches a file at HEAD, so it is placeable",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "ownLineStandingViolations - placement rules",
-        "flipWentRed": "returning false there turned 2 tests red: other.ts:12 and bar.ts:5 counted as own-line"
+        "testName": "ownLineStandingViolations - placement rules"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "replacing the operand with false turned 3 tests red",
         "line": 152,
         "outcome": "operand !placeable: no cited path matches a diff file or a HEAD file, so the violation fails closed",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "ownLineStandingViolations - a path rewritten with spaces fails closed (Issue #3613)",
-        "flipWentRed": "replacing the operand with false turned 3 tests red"
+        "testName": "ownLineStandingViolations - a path rewritten with spaces fails closed (Issue #3613)"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "forcing it true turned the test red: ls-tree ran for the uncited violation",
         "line": 223,
         "outcome": "operand cited.length > 0: a violation citing nothing needs no HEAD listing",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "findOwnLineStandingViolations - unplaceable path checks the HEAD listing (Issue #3613)",
-        "flipWentRed": "forcing it true turned the test red: ls-tree ran for the uncited violation"
+        "testName": "findOwnLineStandingViolations - unplaceable path checks the HEAD listing (Issue #3613)"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "forcing it true turned 2 tests red: ls-tree ran when every citation named a diff file",
         "line": 224,
         "outcome": "operand no citation names a diff file: only then is the HEAD listing read",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "findOwnLineStandingViolations - unplaceable path checks the HEAD listing (Issue #3613)",
-        "flipWentRed": "forcing it true turned 2 tests red: ls-tree ran when every citation named a diff file"
+        "testName": "findOwnLineStandingViolations - unplaceable path checks the HEAD listing (Issue #3613)"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "the rejected case asserts notChecked carries boom-ls; without the catch the call throws and the test goes red",
         "line": 239,
         "outcome": "git ls-tree rejects: fail closed with the error message",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "findOwnLineStandingViolations - unplaceable path checks the HEAD listing (Issue #3613)",
-        "flipWentRed": "the rejected case asserts notChecked carries boom-ls; without the catch the call throws and the test goes red"
+        "testName": "findOwnLineStandingViolations - unplaceable path checks the HEAD listing (Issue #3613)"
       },
       {
-        "path": "worker/deno/lib/standing_violation_routing.ts",
+        "flipWentRed": "forcing the condition false turned the test red: notChecked was null",
         "line": 242,
         "outcome": "git ls-tree exits non-zero: fail closed quoting stderr",
+        "path": "worker/deno/lib/standing_violation_routing.ts",
         "test": "worker/deno/tests/standing_violation_routing_test.ts",
-        "testName": "findOwnLineStandingViolations - unplaceable path checks the HEAD listing (Issue #3613)",
-        "flipWentRed": "forcing the condition false turned the test red: notChecked was null"
+        "testName": "findOwnLineStandingViolations - unplaceable path checks the HEAD listing (Issue #3613)"
       }
-    ]
-  }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
 }

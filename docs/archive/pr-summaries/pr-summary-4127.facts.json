@@ -1,152 +1,152 @@
 {
-  "version": 1,
   "branchOutcomes": {
-    "noneAdded": false,
     "entries": [
       {
-        "path": "worker/deno/lib/mutation_gate.ts",
+        "flipWentRed": "dropping the branch turned it and the completion worker-fault test red",
         "line": 917,
         "outcome": "an error reason opening with MUTATION_TEMP_DIR_UNWRITABLE is a blocking worker-fault verdict with no skip remedy",
+        "path": "worker/deno/lib/mutation_gate.ts",
         "test": "worker/deno/tests/mutation_gate_test.ts",
-        "testName": "evaluateMutationGate - an unwritable temp dir is a worker fault, not a verdict on the code",
-        "flipWentRed": "dropping the branch turned it and the completion worker-fault test red"
+        "testName": "evaluateMutationGate - an unwritable temp dir is a worker fault, not a verdict on the code"
       },
       {
-        "path": "worker/deno/lib/mutation_gate.ts",
+        "flipWentRed": "forcing the condition true turned it red: the remedy vanished and workerFault was set",
         "line": 917,
         "outcome": "any other error reason keeps the existing fix-the-error-or-skip remedy",
+        "path": "worker/deno/lib/mutation_gate.ts",
         "test": "worker/deno/tests/mutation_gate_test.ts",
-        "testName": "evaluateMutationGate - error fails closed with a remedy",
-        "flipWentRed": "forcing the condition true turned it red: the remedy vanished and workerFault was set"
+        "testName": "evaluateMutationGate - error fails closed with a remedy"
       },
       {
-        "path": "worker/deno/lib/mutation_gate.ts",
+        "flipWentRed": "always using the old heading turned it and the completion worker-fault test red",
         "line": 987,
         "outcome": "a worker-fault verdict's comment is headed could not run (worker fault)",
+        "path": "worker/deno/lib/mutation_gate.ts",
         "test": "worker/deno/tests/mutation_gate_test.ts",
-        "testName": "evaluateMutationGate - an unwritable temp dir is a worker fault, not a verdict on the code",
-        "flipWentRed": "always using the old heading turned it and the completion worker-fault test red"
+        "testName": "evaluateMutationGate - an unwritable temp dir is a worker fault, not a verdict on the code"
       },
       {
-        "path": "worker/deno/lib/mutation_gate.ts",
+        "flipWentRed": "always using the worker-fault heading turned it red",
         "line": 987,
         "outcome": "an ordinary verdict's comment keeps the changed lines are not pinned heading",
+        "path": "worker/deno/lib/mutation_gate.ts",
         "test": "worker/deno/tests/mutation_gate_test.ts",
-        "testName": "buildMutationGateComment - names each survivor and the remedy",
-        "flipWentRed": "always using the worker-fault heading turned it red"
+        "testName": "buildMutationGateComment - names each survivor and the remedy"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "rethrowing instead turned it, the rust uncreatable test and the real-seams rust test red",
         "line": 311,
         "outcome": "a rejected makeTempDir becomes an error result opening with MUTATION_TEMP_DIR_UNWRITABLE and quoting the cause",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "runMutationCheck deno - an uncreatable temp dir is a worker-fault error and no child runs",
-        "flipWentRed": "rethrowing instead turned it, the rust uncreatable test and the real-seams rust test red"
+        "testName": "runMutationCheck deno - an uncreatable temp dir is a worker-fault error and no child runs"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "removing TMPDIR from the child env turned it, the caller-declared TMPDIR test and the credentials test red",
         "line": 438,
         "outcome": "runnable Deno mutants get a per-run temp dir passed as TMPDIR to every deno child",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "runMutationCheck deno - every deno child gets TMPDIR set to the run's own temp dir, removed afterwards",
-        "flipWentRed": "removing TMPDIR from the child env turned it, the caller-declared TMPDIR test and the credentials test red"
+        "testName": "runMutationCheck deno - every deno child gets TMPDIR set to the run's own temp dir, removed afterwards"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "forcing the condition true turned it red",
         "line": 438,
         "outcome": "no runnable mutant creates no temp dir",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "runMutationCheck deno - no runnable mutant creates no temp dir and removes none",
-        "flipWentRed": "forcing the condition true turned it red"
+        "testName": "runMutationCheck deno - no runnable mutant creates no temp dir and removes none"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "rethrowing from makeRunTempDir turned it red",
         "line": 440,
         "outcome": "an uncreatable Deno temp dir returns the worker-fault error before any child runs",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "runMutationCheck deno - an uncreatable temp dir is a worker-fault error and no child runs",
-        "flipWentRed": "rethrowing from makeRunTempDir turned it red"
+        "testName": "runMutationCheck deno - an uncreatable temp dir is a worker-fault error and no child runs"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "dropping the removeDir turned it red",
         "line": 507,
         "outcome": "the Deno run's temp dir is removed afterwards",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "runMutationCheck deno - every deno child gets TMPDIR set to the run's own temp dir, removed afterwards",
-        "flipWentRed": "dropping the removeDir turned it red"
+        "testName": "runMutationCheck deno - every deno child gets TMPDIR set to the run's own temp dir, removed afterwards"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "dropping the tmpDir guard turned it red",
         "line": 507,
         "outcome": "with no temp dir made nothing is removed",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "runMutationCheck deno - no runnable mutant creates no temp dir and removes none",
-        "flipWentRed": "dropping the tmpDir guard turned it red"
+        "testName": "runMutationCheck deno - no runnable mutant creates no temp dir and removes none"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "rethrowing from makeRunTempDir turned it red",
         "line": 696,
         "outcome": "an uncreatable Rust output dir returns the worker-fault error before cargo runs",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "runMutationCheck rust - an uncreatable temp dir is a worker-fault error and no cargo runs",
-        "flipWentRed": "rethrowing from makeRunTempDir turned it red"
+        "testName": "runMutationCheck rust - an uncreatable temp dir is a worker-fault error and no cargo runs"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "blanking the HOME candidate turned it red",
         "line": 862,
         "outcome": "HOME supplies the auto-issue-work fallback when WORK_DIR is unset",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "resolveMutationScratchRoot - WORK_DIR wins, HOME is the fallback, relative and empty values are skipped",
-        "flipWentRed": "blanking the HOME candidate turned it red"
+        "testName": "resolveMutationScratchRoot - WORK_DIR wins, HOME is the fallback, relative and empty values are skipped"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "accepting any non-empty candidate turned it red",
         "line": 864,
         "outcome": "only an absolute candidate counts and none gives null",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "resolveMutationScratchRoot - WORK_DIR wins, HOME is the fallback, relative and empty values are skipped",
-        "flipWentRed": "accepting any non-empty candidate turned it red"
+        "testName": "resolveMutationScratchRoot - WORK_DIR wins, HOME is the fallback, relative and empty values are skipped"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "ignoring TMPDIR turned it and six other temp-dir tests red",
         "line": 889,
         "outcome": "a set TMPDIR is where the temp dir is made first",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "makeMutationTempDir - uses TMPDIR when it is writable",
-        "flipWentRed": "ignoring TMPDIR turned it and six other temp-dir tests red"
+        "testName": "makeMutationTempDir - uses TMPDIR when it is writable"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "rethrowing the system error turned it and the both-causes test red",
         "line": 891,
         "outcome": "a refused system temp dir falls back to a private work-volume root",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "makeMutationTempDir - falls back to a private work-volume root when TMPDIR refuses",
-        "flipWentRed": "rethrowing the system error turned it and the both-causes test red"
+        "testName": "makeMutationTempDir - falls back to a private work-volume root when TMPDIR refuses"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "falling through to a fixed root turned it red",
         "line": 894,
         "outcome": "no WORK_DIR or HOME rejects naming the missing fallback",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "makeMutationTempDir - with neither WORK_DIR nor HOME, a refused TMPDIR rejects naming the missing fallback",
-        "flipWentRed": "falling through to a fixed root turned it red"
+        "testName": "makeMutationTempDir - with neither WORK_DIR nor HOME, a refused TMPDIR rejects naming the missing fallback"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "ignoring trust.trusted turned it red",
         "line": 900,
         "outcome": "a group/other-writable or unreadable scratch root is refused",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "makeMutationTempDir - a pre-existing group/other-writable scratch root is refused and nothing is created in it",
-        "flipWentRed": "ignoring trust.trusted turned it red"
+        "testName": "makeMutationTempDir - a pre-existing group/other-writable scratch root is refused and nothing is created in it"
       },
       {
-        "path": "worker/deno/lib/mutation_runner.ts",
+        "flipWentRed": "returning a fixed string from the catch turned it red",
         "line": 909,
         "outcome": "a fallback root whose temp dir is refused rejects naming both causes",
+        "path": "worker/deno/lib/mutation_runner.ts",
         "test": "worker/deno/tests/mutation_runner_test.ts",
-        "testName": "makeMutationTempDir - a fallback root whose temp dir is refused rejects naming the root and the cause",
-        "flipWentRed": "returning a fixed string from the catch turned it red"
+        "testName": "makeMutationTempDir - a fallback root whose temp dir is refused rejects naming the root and the cause"
       }
-    ]
-  }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
 }
