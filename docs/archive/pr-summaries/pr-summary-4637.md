@@ -45,9 +45,11 @@ the final version.
   does not decide it: with a fully met summary, `Closes #N` is appended unless
   the text already has a closing keyword for the issue (plain, colon or
   full-URL) or an explicit `Part of #N`. A bare mention, or another repository's
-  `owner/repo#N`, does not count. `assemblePrBody` appends `Closes` whenever no
-  closing keyword is present, so the two differ only for an explicit
-  `Part of #N` the proposal chose, which the guard respects.
+  `owner/repo#N`, does not count. The assembler path
+  (`ensurePrReferencesIssue`) counts only the plain `Closes #N` form and does
+  not mask code, so it can append a `Closes` in cases where the guard does not
+  (a colon form, a full-URL form, an explicit `Part of #N`, or a keyword inside
+  code).
 - The governing issue is the worker marker in the live body, else the issue the
   worker branch (`issue-N-...`) names (`governingIssueNumber`), the identity the
   sync's adoption also validates. A marker-less worker-branch PR with no
@@ -156,13 +158,17 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   and
   `a resumed publication for a pushed head still publishes the proposal that the push backs (PR #4779 review)`
   — reviewer: met
-- **met** — On a no-code-change repair, publish only an independently
-  supportable correction; a proposal is data, not authority — evidence:
+- **partial** — On a no-code-change repair, publish only an independently
+  supportable correction; a proposal is data, not authority. A proposal over a
+  governing committed summary is dropped when nothing was pushed, but with no
+  committed summary it is published through the guard, which checks only the
+  closing references and markers, not the proposal's prose against the diff —
+  evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::with nothing pushed, a proposal over a governing committed summary is not published, and the same proposal is once a push backs it (PR #4779 review)`,
   `with nothing pushed and no committed summary, a proposal is published through the guard and never closes the issue (PR #4779 review)`
   and
   `a repair with no code change withholds the close after the sync and dismisses last`
-  — reviewer: met
+  — reviewer: met on the tests; the proposal-prose gap is stated above
 - **met** — Marker-less #4611-style body, marker-bearing stale digest and
   summary-only repair are updated before the repair is reported complete —
   evidence:
@@ -270,7 +276,9 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   a second `Closes`; a marker-less `issue-N-...` branch is governed (with and
   without a proposal, with a no-issue branch as the positive control); and a
   marker-less branch with a fully met committed summary keeps the close. Finish
-  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 112 tests at head): a
+  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 112 tests at head; one unrelated environment-dependent test,
+  `babysitter default heartbeat resolves its checkout revision`, fails in this
+  checkout): a
   pushed repair whose proposal only mentions a fully met issue still closes it;
   nothing pushed over a governing summary does not publish the proposal, and the
   same proposal is published once a push backs it; nothing pushed with no
@@ -280,10 +288,10 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   head still publishes its proposal; the store keeps one record per head and
   review and ignores a damaged one. Red-checks, each by breaking only that
   branch and running the `PR #4779 review` tests: `mentionsIssue` in place of
-  `namesClosingOrPartOf` (3 red); no branch fallback in `governingIssueNumber`
-  (3 red); no-change suppression removed (1 red); `pushedByEarlierRepair` not
-  passed on resume (1 red); `save` writing another head's key (2 red); `clear`
-  removed (1 red). `fix()` itself is not driven (see Not done).
+  `namesClosingOrPartOf`; no branch fallback in `governingIssueNumber`;
+  no-change suppression removed; `pushedByEarlierRepair` not passed on resume;
+  `save` writing another head's key; `clear` removed — each went red in the
+  matching tests (per-break counts not restated; not re-run in this fix). `fix()` itself is not driven (see Not done).
 - Test changes in this round (TDD rule 3). Obsolete: with nothing pushed, a
   proposal over a governing committed summary was published; it is not now.
   Remaining: a proposal is still published through the guard when the repair
