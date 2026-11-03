@@ -52,7 +52,9 @@
  *   are the only space the worker can hand back.
  * - **A pass cleans up after itself.** {@link releaseCheckoutTargetDirs}
  *   removes a checkout's target directories when the maintenance pass that
- *   built in it finishes, rather than leaving them to the relaunch.
+ *   built in it finishes, rather than leaving them to the relaunch. The
+ *   pre-PR verifier's disposable checkout is released the same way when the
+ *   verifier finishes (Issue #4743).
  *
  * Pruning counts what it removes as room for the next build. That holds even
  * where the runtime refuses the trim: the blocks a guest deletes stay
@@ -723,4 +725,27 @@ export const productionEphemeralRootDeps: EphemeralRootDeps = {
   },
   removeDir: (path: string) => Deno.remove(path, { recursive: true }),
   nowMs: () => Date.now(),
+};
+
+/**
+ * The real filesystem, without the measurement (Issue #4743).
+ *
+ * Target directories are listed by name only: no `du` and no stat, so every
+ * entry reports 0 bytes and a last write of 0. That suits a release after one
+ * verifier pass, where {@link productionEphemeralRootDeps} would `du` every
+ * directory under the shared root. Because nothing is measured, the bytes a
+ * release reports are 0. A missing root still rejects with
+ * `Deno.errors.NotFound`.
+ */
+export const unmeasuredEphemeralRootDeps: EphemeralRootDeps = {
+  listTargetDirs: async (root: string) => {
+    const dirs: EphemeralTargetDir[] = [];
+    for await (const entry of Deno.readDir(root)) {
+      if (!entry.isDirectory) continue;
+      dirs.push({ path: `${root}/${entry.name}`, bytes: 0, lastWriteMs: 0 });
+    }
+    return dirs;
+  },
+  removeDir: productionEphemeralRootDeps.removeDir,
+  nowMs: productionEphemeralRootDeps.nowMs,
 };
