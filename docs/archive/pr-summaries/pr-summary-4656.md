@@ -13,6 +13,10 @@ drafts, cross-repository PRs, `skip_auto_merge` and `needs-human` holds are
 recorded, and a green approved PR is recorded as handed to the worker's
 auto-merge sweep. Closes #4656.
 
+The evidence-redaction test assembles its synthetic token at runtime. The
+Gitleaks configuration permits only its two exact historical fixture lines,
+so the PR commit-range scan still checks other credentials.
+
 Version bump: none in this change; no release version was changed.
 
 ## Spec
@@ -109,6 +113,8 @@ anything; the worker's auto-merge sweep owns the merge.
 
 ## Test Plan
 
+- Gitleaks 8.24.3 PR commit-range scan with the licensed action's flags —
+  passed after reproducing the two synthetic fixture findings.
 - `worker/deno/tests/babysitter_fix_orchestration_test.ts` — 16 tests passed
   (scenarios above, plus the hand-off matrix, closed/merged observation, the
   shared-tally parser and the legacy attempt name).
