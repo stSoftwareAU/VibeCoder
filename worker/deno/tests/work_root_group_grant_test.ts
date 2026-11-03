@@ -348,7 +348,8 @@ Deno.test("entrypoint - reserved work-root names gain no sticky bit (Issue #4737
 Deno.test("entrypoint - a clone whose git directory the worker does not own is quarantined (Issue #4737)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
   try {
-    const foreignUid = (Deno.uid() ?? 1000) + 4242;
+    // File ownership uses the read permission already granted by the runner.
+    const foreignUid = ((await Deno.stat(dir)).uid ?? 1000) + 4242;
     const workRoot = await runOverWorkRoot(dir, foreignUid);
     for (const clone of ["NEAT-AI", "LINKED"]) {
       let stillThere = true;

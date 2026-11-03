@@ -61,6 +61,25 @@ flowchart LR
 
 ## Test Plan
 
+- Integration CI repair for PR #4754: derive the quarantine fixture's foreign
+  uid from `Deno.stat(dir).uid` instead of `Deno.uid()`. The integration runner
+  grants file read access but no sys access to uid; no permission grants or
+  assertions changed. The same test failed locally with `NotCapable` before
+  the fix and passes afterwards with `deno task test
+  tests/work_root_group_grant_test.ts --filter 'does not own'`.
+  The exact workflow command, `setsid --wait deno task test:integration`, was
+  attempted before and after the fix but cannot start on this macOS host
+  because `setsid` is missing. The full file now has six passes and two
+  host-specific setgid failures; both cases passed in this PR's Linux CI
+  run 41584237838. Base-producing PR #4715 also passed all unit shards and
+  integration tests in run 41555343824 (confirmed with `gh`).
+  Local gate: type checking, lint, formatting, Markdown lint, Mermaid and
+  completeness checks passed; `deno task check:manifests` also passed
+  (847 tests). The full gate's parallel test pass panicked in Deno with
+  `pledge test permissions called before restoring previous pledge`, so its
+  serial pass did not run. Semgrep and Checkov were unavailable, and config
+  integration was skipped because no local configuration was present.
+  No twin of the fixture's `Deno.uid()` call needs changing.
 - CI repair for PR #4754: kept the egress-proxy footprint phrase
   `opens no files and keeps no cache` on one line in `docs/CONTAINMENT.md`.
   Rewrapping had split the phrase and broken the existing documentation
