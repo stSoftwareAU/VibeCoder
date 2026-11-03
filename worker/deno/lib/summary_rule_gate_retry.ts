@@ -484,8 +484,10 @@ export async function recoverFromSummaryRuleBlock(
  * a **detached** checkout, where a commit would not reach the branch at all.
  *
  * A commit that cannot be made leaves the file on disk exactly as the recovery
- * wrote it — the pre-existing behaviour, and still enough for the PR body,
- * which is read from disk. So it does not fail the run; it is logged at
+ * wrote it — the pre-existing behaviour. The PR body is NOT built from an
+ * uncommitted summary (Issue #4712): adoption reads the summary committed at
+ * the pushed head, so the body keeps describing what the branch holds until the
+ * summary is committed and pushed. So it does not fail the run; it is logged at
  * **error** with the consequence named, because a silent warning is how this
  * exact loss went unnoticed in the first place.
  *

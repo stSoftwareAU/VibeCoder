@@ -15,6 +15,7 @@ import {
   summaryDigestFromBody,
   type SyncPrBodyDeps,
   syncPrBodyFromSummary,
+  type SyncPrBodyInput,
 } from "../lib/pr_body_sync.ts";
 import {
   assignmentIdFromBody,
@@ -26,9 +27,10 @@ import {
   APPLIED_BUMP_NOTE_PREFIX,
   MILESTONE_CHILD_BUMP_NOTE,
 } from "../lib/bump_deps.ts";
-import type {
-  GitCommandOptions,
-  GitCommandOutput,
+import {
+  type GitCommandOptions,
+  type GitCommandOutput,
+  runGitCommand,
 } from "../lib/git_timeout.ts";
 import type { Logger, Result } from "../types.ts";
 import { GITHUB_ISSUE_BODY_MAX_CHARS } from "../lib/idle_task_body_limit.ts";
@@ -809,6 +811,244 @@ Deno.test("syncPrBodyFromSummary - Issue #3804: adoptOnly leaves a body that alr
       });
     }
     assertEquals(ghCalls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+// --- Issue #4712: adoption reads the summary committed at the pushed head ---
+
+/** The uncommitted recovery edit that must never reach an adopted body. */
+const UNCOMMITTED_MARKER = "UNCOMMITTED-FIX";
+const COMMITTED_TEXT = "Committed summary text. Closes #42.";
+const SUMMARY_REL = `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`;
+
+/** Runs `git` in `cwd`; throws on a failed call or a non-zero exit. */
+async function gitIn(cwd: string, ...args: string[]): Promise<string> {
+  const run = await runGitCommand(args, { cwd });
+  if (!run.ok) throw run.error;
+  if (run.value.code !== 0) {
+    throw new Error(`git ${args.join(" ")}: ${run.value.stderr}`);
+  }
+  return run.value.stdout.trim();
+}
+
+/**
+ * A real checkout on `BRANCH`. By default the summary is committed at HEAD;
+ * the working tree then holds an uncommitted rewrite carrying
+ * `UNCOMMITTED_MARKER`. With `commitSummary: false` HEAD has no summary at all.
+ */
+async function committedSummaryRepo(
+  opts: { commitSummary?: boolean } = {},
+): Promise<{ repoPath: string; headSha: string }> {
+  const repoPath = await Deno.makeTempDir({ prefix: "pr-body-sync-4712-" });
+  await gitIn(repoPath, "init", "-q", "-b", BRANCH);
+  // CI runners have no global git identity.
+  await gitIn(repoPath, "config", "user.name", "Test");
+  await gitIn(repoPath, "config", "user.email", "test@example.com");
+  await Deno.writeTextFile(`${repoPath}/README.md`, "base\n");
+  await gitIn(repoPath, "add", "-A");
+  await gitIn(repoPath, "commit", "-q", "-m", "base");
+  await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
+    recursive: true,
+  });
+  if (opts.commitSummary ?? true) {
+    await Deno.writeTextFile(
+      `${repoPath}/${SUMMARY_REL}`,
+      `## Summary\n\n${COMMITTED_TEXT}\n`,
+    );
+    await gitIn(repoPath, "add", "-A");
+    await gitIn(repoPath, "commit", "-q", "-m", "summary");
+  }
+  await Deno.writeTextFile(
+    `${repoPath}/${SUMMARY_REL}`,
+    `## Summary\n\n${UNCOMMITTED_MARKER} rewritten text. Closes #42.\n`,
+  );
+  const headSha = await gitIn(repoPath, "rev-parse", "HEAD");
+  return { repoPath, headSha };
+}
+
+/** A `git` that runs for real, except `ls-remote`, which reports `remote`. */
+function realGitWithRemote(
+  remote: Result<GitCommandOutput>,
+): typeof runGitCommand {
+  return (args, options) =>
+    args[0] === "ls-remote"
+      ? Promise.resolve(remote)
+      : runGitCommand(args, options);
+}
+
+/** `ls-remote` output naming `sha` as the pushed head of `BRANCH`. */
+function remoteAt(sha: string): Result<GitCommandOutput> {
+  return {
+    ok: true,
+    value: { code: 0, stdout: `${sha}\trefs/heads/${BRANCH}\n`, stderr: "" },
+  };
+}
+
+/** Deps for an adoption: the PR view is marker-less at `headSha`. */
+function adoptionDeps(
+  ghCalls: GhCall[],
+  headSha: string,
+  remote: Result<GitCommandOutput>,
+): SyncPrBodyDeps {
+  return {
+    runGhCommand: (args) => {
+      if (args[0] === "pr" && args[1] === "view") {
+        return Promise.resolve(viewJson(AGENT_DRAFT, [], headSha));
+      }
+      return stubGh(ghCalls)(args);
+    },
+    runGitCommand: realGitWithRemote(remote),
+    logger,
+  };
+}
+
+/** Input for adopting `BRANCH`, pinned to `committedHeadSha` when given. */
+function adoptionInput(
+  repoPath: string,
+  committedHeadSha?: string,
+): SyncPrBodyInput {
+  return {
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    repoPath,
+    beforeSha: undefined,
+    workerName: "worker-a",
+    githubUser: "ghuser",
+    branchName: BRANCH,
+    adoptOnly: true,
+    ...(committedHeadSha === undefined ? {} : { committedHeadSha }),
+  };
+}
+
+Deno.test("syncPrBodyFromSummary - Issue #4712: an adopted body is built from the summary committed at the pushed head", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      adoptionDeps(ghCalls, headSha, remoteAt(headSha)),
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+    assertEquals(ghCalls.length, 1);
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertStringIncludes(newBody, COMMITTED_TEXT);
+    assertEquals(newBody.includes(UNCOMMITTED_MARKER), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #4712: without committedHeadSha the working-tree summary is still read", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath),
+      adoptionDeps(ghCalls, headSha, remoteAt(headSha)),
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    assertEquals(ghCalls.length, 1);
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertStringIncludes(newBody, UNCOMMITTED_MARKER);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #4712: skips when the pushed head moved, leaving the body untouched", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      adoptionDeps(ghCalls, headSha, remoteAt("1".repeat(40))),
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "pushed head moved",
+      });
+    }
+    assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #4712: skips when the pushed head cannot be verified, leaving the body untouched", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      adoptionDeps(ghCalls, headSha, {
+        ok: false,
+        error: new Error("fatal: unable to access 'origin'"),
+      }),
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "pushed head could not be verified",
+      });
+    }
+    assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #4712: skips when the committed head has no summary, leaving the body untouched", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo({
+    commitSummary: false,
+  });
+  try {
+    const ghCalls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      adoptionDeps(ghCalls, headSha, remoteAt(headSha)),
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "summary not committed at the pushed head",
+      });
+    }
+    assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #4712: a failed read of the committed object is an error and leaves the body untouched", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    // Well-formed, but not an object in this repository.
+    const absentSha = "f".repeat(40);
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, absentSha),
+      adoptionDeps(ghCalls, headSha, remoteAt(headSha)),
+    );
+
+    assertEquals(result.ok, false);
+    assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
