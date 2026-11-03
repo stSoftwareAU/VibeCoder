@@ -6,8 +6,14 @@ instead of leaving them as "Notes for the reviewer". The survivors are put to
 the implementing run in the existing one recovery turn, with the CI job named.
 If any remain after that turn, the pull request is raised as a draft
 `Part of #4617` that states the validation is incomplete, is not marked ready
-and is not auto-merged. The issue stays open, and the next run continues the
-branch. Repositories without such a job behave exactly as before. Part of #4617.
+and is not auto-merged. A check that cannot finish (runner error, missing tool,
+baseline failure, worker fault, budget or mutant cap short of the diff) holds
+the pull request the same way and names the next action. A pull request parked
+by the secondary-rate-limit deferral is recorded with `draft: true` and opened
+as a draft by the drain. The worker's `cargo mutants` run uses the CI job's
+scope flags (package, features, exclude patterns). The issue stays open, and the
+next run continues the branch. Repositories without such a job behave exactly as
+before. Part of #4617.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -17,7 +23,7 @@ flowchart TD
     R[mutation check result] --> C{CI runs a blocking mutants job?}
     C -- no --> N[notes only, PR ready and armed, as before]
     C -- yes --> S{genuine survivors?}
-    S -- no, error or budget --> W[note says unvalidated, not passed; PR raised as before]
+    S -- no, error or budget --> W[draft: validation incomplete, next action named, not armed]
     S -- yes --> T[one recovery turn, summary exemptions ignored]
     T --> K{survivors left?}
     K -- no --> N
@@ -41,10 +47,18 @@ flowchart TD
   `if:`/path filters are not evaluated and reusable-workflow callers are not
   followed (the module and `docs/mutation-check.md` say so). An unreadable
   workflow is logged and read as unknown, never as a pass.
-- Only genuine survivors hold the PR. A runner error, tool failure, baseline
-  failure or exhausted budget with no survivor stays a note (its wording says
-  unvalidated, not passed), because holding on a host fault would stall every PR
-  on that host.
+- On a blocking-CI repository a survivor, or a check that cannot finish (runner
+  error, missing tool, baseline failure, worker fault, exhausted budget or
+  mutant cap), holds the PR as a draft. The incomplete case carries an
+  `incomplete.nextAction` into the draft body and comment. No recovery turn runs
+  for the budget case, since a turn cannot add mutants. A repository whose cap
+  is always short of its diff stays a draft until the change is narrower or the
+  budget is raised; that is the cost of not reporting unvalidated work ready.
+- The contract is read before the check so the CI job's `cargo mutants` scope
+  flags (`--package`, `--workspace`, `--features`, `--exclude`, `--exclude-re`,
+  `--examine-re` and similar, values passed as argv words, never through a
+  shell) reach the worker's run. A job another job lists under `needs` is
+  reported with that aggregator.
 - On a blocking-CI repository a summary `exempt (untestable)` line no longer
   clears a survivor, since CI never reads the summary; the comment points at the
   tool's own skip mechanism. No new exemption and no lowered threshold was
@@ -56,16 +70,16 @@ flowchart TD
 ### Undiscoverable Facts
 
 - A PR opened later by the secondary-rate-limit deferral drain
-  (`worker/deno/lib/deferred_pr_drain.ts`) is created over REST without a draft
-  option, so it is raised ready for review. The normal path, the existing-PR
-  path and the REST fallback all end as drafts.
+  (`worker/deno/lib/deferred_pr_drain.ts`) is created over REST. The parked
+  record now carries `draft: true` for a held PR and the REST create sends
+  `-F draft=true` (a boolean; `-f` would send the string).
 
 ## Evidence
 
 Backend-only change; no UI file is touched. The decision above is exercised
 through the real `workOnIssueCompletion`.
 
-- `worker/deno/tests/ci_mutation_contract_test.ts` (23 tests): detector forms,
+- `worker/deno/tests/ci_mutation_contract_test.ts` (34 tests): detector forms,
   look-alikes (`|| true`, `||true`, `|| :`, `|| exit 0`, `# || true`,
   `echo "|| true"; cargo mutants`), `+toolchain`, `\` continuations, step and
   job `continue-on-error`, trigger shapes, missing directory, malformed file
@@ -87,6 +101,19 @@ through the real `workOnIssueCompletion`.
 - `worker/deno/tests/pr_feedback_drift_check_3750_test.ts` (one new test): the
   review-fix path, the second production caller of `evaluateMutationGate`, now
   passes the contract, so an exemption no longer clears a survivor there either.
+- Follow-up for the verifier and the unmet criteria:
+  `tests/deferred_pr_drain_test.ts` (draft record reaches the create; ordinary
+  record is not a draft), `tests/pr_create_rest_test.ts` (`-F draft=true`),
+  `completion - a held PR parked by the secondary limit is recorded as a draft for the drain`,
+  `completion - a runner error with a blocking CI job holds the PR as an incomplete-validation draft`,
+  `completion - an exhausted mutation budget with a blocking CI job holds the PR as a draft`,
+  `completion - the CI job's cargo mutants flags reach the worker's runner`,
+  `tests/mutation_runner_test.ts` (flags in the cargo argv), and in
+  `tests/ci_mutation_contract_test.ts` the aggregator, `extractCargoMutantsArgs`
+  and the cases that kill the surviving mutants of `isMapping`, `isTrueFlag`,
+  `listWorkflowFiles` and the trigger fallthrough (directory named `x.yml`,
+  non-workflow extensions, non-mapping documents, `"true"` string flags, a
+  trigger that is a number).
 - Docs: `docs/mutation-check.md` (new section and the sentences it made false),
   `docs/workflows/issue-processing.md`, `CODING-STANDARDS.md` and its declared
   twin `prompts/coding_guidelines/prompt.md`, and `prompts/issue/prompt.md`.
@@ -94,21 +121,36 @@ through the real `workOnIssueCompletion`.
 
 ## Acceptance Criteria
 
-- **missing** — Use the repository's actual required CI contract (including jobs
-  feeding an aggregator) — reason: only workflow files are read, not branch
-  protection or required-check names; any PR-triggered mutants job that can fail
-  counts
-- **missing** — Run the applicable changed-code mutation command with
-  CI-equivalent flags after the final relevant edit — reason: the worker's
-  runner flags are not aligned with the CI job's; it does re-run after the
-  recovery turn
-- **missing** — retain an explicit resumable state if validation cannot finish —
-  reason: only genuine survivors hold the PR; an error, unavailable tool or
-  exhausted budget is a note and the PR is raised as before
-- **missing** — a PR is not reported ready … while the worker's mutation check
-  reports genuine unresolved survivors, on the deferred-creation path — reason:
-  a PR parked by a secondary rate limit and opened later by the drain is ready
-  for review, not a draft
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Use the repository's actual required CI contract (including jobs
+  feeding an aggregator) — evidence:
+  `worker/deno/tests/ci_mutation_contract_test.ts::a job another job needs is reported with its aggregator`
+  — reviewer: met (branch protection and required-check names are still not
+  read; the workflow files and `needs` are)
+- **met** — Run the applicable changed-code mutation command with CI-equivalent
+  flags after the final relevant edit — evidence:
+  `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - the CI job's cargo mutants flags reach the worker's runner`
+  — reviewer: met (the worker still adds its own `--package` and `--in-diff`)
+- **partial** — retain an explicit resumable state if validation cannot finish —
+  evidence: `worker/deno/lib/mutation_gate.ts` (`incomplete`),
+  `completion - a runner error with a blocking CI job holds the PR as an incomplete-validation draft`
+  — reviewer: partial — reason: unresolvable `quality_credentials` and an
+  unreadable or throwing workflow lookup still raise the PR ready, by design
+  (the contract or the check is then unknown)
+- **met** — a PR is not reported ready … while the worker's mutation check
+  reports genuine unresolved survivors, on the deferred-creation path —
+  evidence:
+  `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a held PR parked by the secondary limit is recorded as a draft for the drain`,
+  `worker/deno/tests/deferred_pr_drain_test.ts` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Australian English, KISS/DRY, tests added with each behaviour
+  change, no secret or shell interpolation of workflow-file values (flags are
+  argv words, length-capped, metacharacters refused)
 
 ## Test Plan
 
@@ -116,8 +158,10 @@ through the real `workOnIssueCompletion`.
   `tests/mutation_gate_test.ts`, `tests/completion_phase_mutation_gate_test.ts`,
   `tests/draft_continuation_mutation_hold_test.ts` and
   `tests/pr_feedback_drift_check_3750_test.ts` from `worker/deno`: passed on the
-  head; `deno check` on the edited modules, `deno fmt` and `deno lint`: passed.
-  `deno task check:manifests`: 847 passed, 0 failed.
+  head (with `tests/mutation_runner_test.ts`, `tests/deferred_pr_drain_test.ts`
+  and `tests/pr_create_rest_test.ts`); `deno check` on the edited modules,
+  `deno fmt` and `deno lint`: passed. `deno task check:manifests`: 847 passed, 0
+  failed.
 - Red checks (break applied, test run, restored): hold never set → the
   held-draft, exemption-ignored and existing-PR tests red; `--draft` not pushed
   → held tests red; hold intro not used → the advisory test red; recovery arming
@@ -153,6 +197,8 @@ through the real `workOnIssueCompletion`.
 
 ## Known gaps
 
-- Detection approximates the required-check contract from workflow files.
-- The deferral-drain path raises a held PR ready for review.
-- A runner failure or exhausted budget does not hold the PR.
+- Detection approximates the required-check contract from workflow files and
+  `needs`; branch protection is not read.
+- A repository whose workflows cannot be read, or whose `quality_credentials`
+  cannot be resolved, is not held: the contract or check is unknown.
+- The review-fix path reports but never holds a push.
