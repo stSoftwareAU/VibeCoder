@@ -44,21 +44,21 @@ Backend/CLI change. The retry record is atomically written and validates its
 version and fields. An old attempt marker creates a five-minute cooldown. The
 shared attempt tally accepts markers only from configured fleet authors.
 
-The related deliverables are kept separate: the babysitter continues to use
-the existing branch updater and branch lock, and does not run a merge itself.
+The related deliverables are kept separate: the babysitter continues to use the
+existing branch updater and branch lock, and does not run a merge itself.
 
 ## Acceptance Criteria
 
 - **missing** — Tests drive transient failure -> unchanged-head cooldown ->
   retry -> checked repair -> CI -> independent review -> merge observed. —
-  reason: Unit tests cover retry state, credential expiry and the repair
-  marker, but no production-orchestration test drives the complete sequence.
+  reason: Unit tests cover retry state, credential expiry and the repair marker,
+  but no production-orchestration test drives the complete sequence.
 - **missing** — Include process restart and migration of an old attempt file,
   two hosts contending, head movement, missing tools/disk recovery, credential
   expiry and repeated no-progress. — reason: Legacy migration, state reload,
-  retry classification and token expiry have targeted tests; contention,
-  head movement, tool/disk recovery and repeated no-progress are not verified
-  through the production orchestration.
+  retry classification and token expiry have targeted tests; contention, head
+  movement, tool/disk recovery and repeated no-progress are not verified through
+  the production orchestration.
 - **missing** — Show that waits hold no repair lock, one incident produces one
   deduplicated escalation and real human gates remain paused. — reason: The
   existing lock is released in the repair `finally` path and shared attempt
@@ -78,9 +78,9 @@ the existing branch updater and branch lock, and does not run a merge itself.
 - `worker/deno/tests/fleet_pr_babysitter_test.ts` — passed: 59 tests. Removing
   `queued.delete(version)` made the unchanged-version retry test fail; the line
   was restored.
-- `worker/deno/tests/fleet_babysitter_app_test.ts` — passed in the targeted
-  run. Removing the two-minute token safety margin made the expiry-bound test
-  fail; the margin was restored. Disabling shared-marker publication made the
+- `worker/deno/tests/fleet_babysitter_app_test.ts` — passed in the targeted run.
+  Removing the two-minute token safety margin made the expiry-bound test fail;
+  the margin was restored. Disabling shared-marker publication made the
   production repair fixture fail because no attempt marker was recorded.
 - Changing the legacy cooldown to zero made the migration test fail; the
   five-minute cooldown was restored.
@@ -89,10 +89,10 @@ the existing branch updater and branch lock, and does not run a merge itself.
 - `./quality.sh < /dev/null` — failed twice on the full Deno suite. The latest
   run reported 31,979 passed, 7 failed and 5 ignored. The failures were in
   unchanged tests: `merge_fallback_issue_test.ts`,
-  `milestone_resolution_gate_test.ts` and `pr_maintenance_command_test.ts`.
-  The merge-fallback test also failed when run alone; the PR-maintenance file
-  passed when run alone. These failures were not reproduced against the base
-  branch. Config integration and Checkov were skipped by the gate.
+  `milestone_resolution_gate_test.ts` and `pr_maintenance_command_test.ts`. The
+  merge-fallback test also failed when run alone; the PR-maintenance file passed
+  when run alone. These failures were not reproduced against the base branch.
+  Config integration and Checkov were skipped by the gate.
 - `deno.lock` was unchanged.
 - The test, manifest and full-quality commands were run with stdin redirected
   from `/dev/null`.
