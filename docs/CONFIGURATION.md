@@ -110,6 +110,35 @@ A failed `mint` fails the phase loudly rather than running the checks without
 the credential they declared — a check that runs unauthenticated fails later
 and further from the cause. Values are never logged; only names are.
 
+Where the credentials go depends on the account the command runs as:
+
+- **The `agent` account** runs the quality gate, the merge fast checks and the
+  milestone merge and resolution gates whenever the image has one. The declared
+  values travel on the stdin of that command, not in its argv and not in the
+  environment that `sudo` would strip. Each value is base64 encoded, and a fixed
+  `sh` wrapper inside `sudo` exports them and runs the command with stdin from
+  `/dev/null`. Only this repository's declared credentials are carried; the
+  worker's own GitHub and App credentials are not. The allowlist (Issue #572)
+  and `clearEnv` are unchanged, and the `sudo` rule is not widened.
+- **The worker account** (`vibe`) runs the gate commands above only where the
+  image has no `agent` account at all, with the same restricted environment,
+  and the declared values are placed in that environment. It also runs the
+  repository formatters, the mutation check and the coverage carry-over, which
+  never drop to `agent` and keep the environment route. A declared credential
+  never changes the account a gate command runs as.
+
+A declared name must be a plain identifier. `IFS` and names starting with
+`_vibe_cc_` are the wrapper's own and are refused, so a declaration can never
+silently shorten what is delivered.
+
+If the channel itself faults, the wrapper exits 78 and writes a
+`[vibe-credential-channel]` line to stderr (a short or malformed stream). That is
+recoverable infrastructure, never a pass: the quality gate reports a failed run
+(`failed_credential_delivery`, never sent to the agent as a code fault) with
+that line, the merge fast check reports the merge as `unverified`, and the
+milestone gates report `GateAccountUnavailable` and leave the check to CI. A
+credential that cannot be minted is never a pass either: the quality gate fails the phase with the mint error, and the merge conflict gate parks the merge with it.
+
 The same credentials reach the diff-scoped mutation check, which reruns the
 repository's tests; there a failed `mint` makes the check not applicable, with
 a warning, instead of failing the phase. The check also runs on review-fix
