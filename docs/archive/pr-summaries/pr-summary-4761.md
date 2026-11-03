@@ -44,11 +44,12 @@ flowchart LR
   credential directories under it are `0700` and the files `0600`, so they stay
   unreachable. This does expose by known path any home entry whose own mode is
   already permissive (for example `.vibe-coder/` and the agent-state volume are
-  `0755`); that is the same exposure the work root's group grant already accepts.
+  `0755`); that is the same exposure the work root's group grant already
+  accepts.
 - The grant is silent on failure, like the rest of that block: a home the
   entrypoint does not own (a tmpfs home) is left alone.
-- The change takes effect when a container is launched from an image carrying the
-  new entrypoint; an already-running container keeps its `0700` home.
+- The change takes effect when a container is launched from an image carrying
+  the new entrypoint; an already-running container keeps its `0700` home.
 
 ### Undiscoverable Facts
 
@@ -61,12 +62,13 @@ flowchart LR
 
 Backend/shell change; no UI file is touched.
 
-Command run on the host, quoted: `sudo -n -u agent -- sh -c 'test -r "$1" -a -x "$1"; echo "$1 -> $?"' sh <path>`
+Command run on the host, quoted:
+`sudo -n -u agent -- sh -c 'test -r "$1" -a -x "$1"; echo "$1 -> $?"' sh <path>`
 printed `-> 1` for `/home/vibe`, `/home/vibe/auto-issue-work`,
 `/home/vibe/auto-issue-work/GRQ-AutoTrader` and its `Cargo.toml`. That is the
 same `test -r "$1" -a -x "$1"` probe `probeScript` builds in
-`worker/deno/lib/untrusted_gate_spawn.ts`, whose exit 1 is the `(probe 1)` in the
-issue's gate message.
+`worker/deno/lib/untrusted_gate_spawn.ts`, whose exit 1 is the `(probe 1)` in
+the issue's gate message.
 
 ## Reproduction
 
@@ -77,33 +79,38 @@ issue's gate message.
   `0700`) were reproduced on the host and the new test was observed failing
   against the unfixed entrypoint, but the full GRQ-AutoTrader milestone sync was
   not run.
-- **regression test** — `worker/deno/tests/work_root_group_grant_test.ts::entrypoint - the untrusted account can search the worker home but not read or write it (Issue #4761)`
+- **regression test** —
+  `worker/deno/tests/work_root_group_grant_test.ts::entrypoint - the untrusted account can search the worker home but not read or write it (Issue #4761)`
 
 ## Test Plan
 
-- Added `entrypoint - the untrusted account can search the worker home but not read or write it (Issue #4761)`
+- Added
+  `entrypoint - the untrusted account can search the worker home but not read or write it (Issue #4761)`
   in `worker/deno/tests/work_root_group_grant_test.ts`. It runs the real
   entrypoint over a `0700` home and asserts the home's group bits are exactly
   search and the other bits are zero. Red check: with the new entrypoint lines
-  commented out the test failed (`the home must be group-searchable and nothing
-  more`, actual 0, expected 8); restored, the file passes (5 passed, 0 failed).
-  The `chgrp` stub succeeds, so the test checks mode bits, not group ownership.
+  commented out the test failed
+  (`the home must be group-searchable and nothing
+  more`, actual 0, expected
+  8); restored, the file passes (5 passed, 0 failed). The `chgrp` stub succeeds,
+  so the test checks mode bits, not group ownership.
 - Edited `runOverWorkRoot` in the same file to `chmod` the home to `0700` before
   the entrypoint runs, so all cases use the image's real home mode. No assertion
   was removed or changed in the existing tests; they still pass.
 - `deno fmt --check`, `deno lint`, `bash -n` and `shellcheck` on the changed
   files: clean.
-- `./quality.sh < /dev/null`: every stage passed except `deno tests` (4 failed of
-  32,218). The four are environmental and also fail without this change on this
-  host: `tests/completion_phase_repo_formatters_test.ts` (two Rust-fix cases),
-  `tests/fleet_pr_babysitter_test.ts` (a JSR download with no network), and
+- `./quality.sh < /dev/null`: every stage passed except `deno tests` (4 failed
+  of 32,218). The four are environmental and also fail without this change on
+  this host: `tests/completion_phase_repo_formatters_test.ts` (two Rust-fix
+  cases), `tests/fleet_pr_babysitter_test.ts` (a JSR download with no network),
+  and
   `tests/milestone_resolution_gate_test.ts::verifyResolvedTree - the repository's own task sees only the allowlisted environment (Issue #4659)`
   (its `0700` temp checkout is unreadable to `agent`, so the task is left to CI
   and the test sees `passed`, not `failed`). The serial pass did not run because
   the parallel pass failed.
 - Twinned rules: searched for other copies of the work-root grant; the
-  reserved-name list is already pinned by the existing test in the same file, and
-  no other script grants `vibework` access to the home.
+  reserved-name list is already pinned by the existing test in the same file,
+  and no other script grants `vibework` access to the home.
 
 ## Not done
 
