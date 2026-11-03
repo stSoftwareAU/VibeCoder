@@ -9,6 +9,12 @@ wait policy by default and that an explicit fallback can use metered providers.
 The CI repair also isolates fabricated process IDs in the launcher integration
 test from real host process IDs. Closes #4772.
 
+Part of #4738
+
+The trusted parent issue requires the design principle and a passing quality
+gate. The PID fixture repair addresses an integration failure found while
+validating that work; it does not change the launcher contract.
+
 Version bump: `VERSION` is not touched by this documentation and test-fixture change.
 
 ## Spec
@@ -117,7 +123,22 @@ fixed.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
+### Review provenance follow-up
+
+- Linked trusted parent #4738, which requires this design principle and quality
+  validation. The PID fixture repair resolves a failure found during that validation.
+- Deno formatting, lint, type check and all 18 focused documentation and launcher
+  tests passed. The full `quality.sh --sequential` test stage hit the host Deno
+  2.9.0 permission-pledge panic; Semgrep and Checkov were skipped on this host.
+  The base PR #4747 checks passed in CI.
+
 ### CI repair
+
+The obsolete fixture assumption was that low fabricated PIDs could not match
+real host processes. The required behaviour remains: only the verified client
+is signalled, and an unrelated VM is left alone. Coverage remains in
+`worker/deno/tests/loop_force_stop_container_test.ts::loop.sh verifies client identity before TERM and KILL`
+across all seven identity scenarios.
 
 - The integration fixture uses fabricated PIDs above host PID ranges, preventing
   real subprocess probes from being mistaken for signals to the fake processes.
