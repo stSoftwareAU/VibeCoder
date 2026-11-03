@@ -119,6 +119,6 @@ line: they require the touched test files to pass on a clean baseline, and
 checkout revision" fails there and at the merge base `0a4d803a`, because
 `lib/stream_identity.ts` imports `jsr.io/@std/crypto`, which the sandbox cannot
 fetch. Re-run on the final head: 87 passed, 1 failed (that test only). No
-mutation was listed as unpinned, so no test was added for these items; they
-need a runner with `jsr.io` access, or `skip_mutation_check` and
+mutation was listed as unpinned, so no test was added for these items; they need
+a runner with `jsr.io` access, or `skip_mutation_check` and
 `skip_coverage_carryover_check` for this repo.
