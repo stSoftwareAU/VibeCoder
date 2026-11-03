@@ -190,7 +190,7 @@ function harness(
     state.prompts.push(agentOptions.prompt);
     if ((script.code ?? 0) === 0) {
       await Deno.writeTextFile(
-        `${agentOptions.dir}/.babysitter-response`,
+        agentOptions.responseFile,
         script.response ?? "done\nBABYSITTER_READY\n",
       );
     }

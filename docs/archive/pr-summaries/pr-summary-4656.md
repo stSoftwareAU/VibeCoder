@@ -300,3 +300,12 @@ lint, type checking, completeness and static checks; its parallel test pass
 again hits the Deno permission-pledge panic, before the serial pass. Base
 Quality run 41555343824 passed all test shards. Semgrep and pinned Checkov
 are unavailable locally; summary freshness requires the babysitter's commit.
+
+## CI orchestration fixture repair
+
+The simulated agent now writes its completion response to the runner-provided
+exchange path, matching the isolated response contract introduced for #4731.
+The obsolete fixture wrote into the clone, where the runner no longer reads it.
+The existing orchestration tests still cover successful repairs, retry and
+escalation, including
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::transient failure, cooldown, retry, checked repair, CI, review and merge observed`.
