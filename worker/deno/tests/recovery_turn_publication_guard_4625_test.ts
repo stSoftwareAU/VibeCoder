@@ -62,6 +62,8 @@ async function runRecovery(
     await gitIn(seed, ["commit", "-q", "-m", "seed"]);
     await gitIn(seed, ["push", "-q", "origin", "main"]);
     await gitIn(root, ["clone", "-q", upstream, work]);
+    await gitIn(work, ["config", "user.name", "test"]);
+    await gitIn(work, ["config", "user.email", "test@example.com"]);
     await gitIn(work, ["checkout", "-q", "-b", branch]);
     await gitIn(work, ["push", "-q", "-u", "origin", branch]);
     const remoteHead = async () =>

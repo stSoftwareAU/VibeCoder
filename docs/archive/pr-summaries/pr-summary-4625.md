@@ -113,7 +113,16 @@ git repositories and bare origins:
   `refundCiCheckRetry` (one back, floor at zero, other checks untouched).
 - `worker/deno/tests/recovery_turn_publication_guard_4625_test.ts` drives each
   of the three recovery turns against a real bare origin: a failed or an
-  unavailable gate leaves origin unmoved, a passed gate publishes.
+  unavailable gate leaves origin unmoved, a passed gate publishes. The work
+  clone has its own Git identity, so the commit does not depend on the host's
+  global Git configuration.
+- Documentation assertions tolerate Markdown line wrapping and table padding;
+  the obsolete requirement was literal whitespace, while the required proxy
+  footprint, update-mode default and Haiku pricing row remain covered by
+  `tests/containment_docs_test.ts::CONTAINMENT.md's egress proxy section states the proxy opens no files, keeps no cache and needs --allow-read --allow-env --allow-net`,
+  `tests/update_mode_docs_test.ts::SETUP.md - the update-mode section states both accepted modes and the default setup offers`,
+  and
+  `tests/config_docs_consistency_test.ts::config docs - Haiku 5.5 price rows match token_usage (Issue #3407)`.
 - `worker/deno/tests/publication_validation_test.ts` runs the real
   `runQualityGateCheck` over a `quality.sh` that runs `deno test`: a test module
   that does not compile (TS2322) is `failed` with the compiler output; a failing
