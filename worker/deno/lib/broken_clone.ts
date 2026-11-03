@@ -110,7 +110,10 @@ function parentDirectory(path: string): string {
 export async function checkCloneOwnership(
   path: string,
   uidProbe: () => Promise<number> = async () => {
-    const result = await new Deno.Command("id", { args: ["-u"] }).output();
+    const result = await new Deno.Command("id", {
+      args: ["-u"],
+      signal: AbortSignal.timeout(5_000),
+    }).output();
     const output = new TextDecoder().decode(result.stdout).trim();
     const uid = Number(output);
     if (
