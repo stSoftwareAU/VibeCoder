@@ -8,8 +8,9 @@ Cargo workspace needs longer than that. This change gives a Cargo project's type
 check its own 900 s limit (`CARGO_MERGE_GATE_TIMEOUT_MS`, chosen by
 `typeCheckTimeoutMs`) and keeps 300 s for a Deno project. `verifyResolvedTree`
 now starts its 15-minute task budget after the type check has passed, so a long
-cargo check no longer spends the budget that `cargo test` needs. `docs/INTERNALS.md`
-and `docs/workflows/milestones.md` state the new limits. Closes #4787.
+cargo check no longer spends the budget that `cargo test` needs.
+`docs/INTERNALS.md` and `docs/workflows/milestones.md` state the new limits.
+Closes #4787.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -34,15 +35,15 @@ Version bump: `VERSION` is not touched by this change.
 
 ### Undiscoverable Facts
 
-- I did not find a caller-level watchdog around the milestone sync that would cut
-  a 30-minute cargo resolution short; this was not checked exhaustively.
+- I did not find a caller-level watchdog around the milestone sync that would
+  cut a 30-minute cargo resolution short; this was not checked exhaustively.
 
 ## Evidence
 
 Backend only; no UI. Cited code was read at the head:
-`worker/deno/lib/milestone_merge_gate.ts` (`spawnTypeCheck`, `typeCheckTimeoutMs`,
-`checkMergedTree`) and `worker/deno/lib/milestone_resolution_gate.ts`
-(`verifyResolvedTree`).
+`worker/deno/lib/milestone_merge_gate.ts` (`spawnTypeCheck`,
+`typeCheckTimeoutMs`, `checkMergedTree`) and
+`worker/deno/lib/milestone_resolution_gate.ts` (`verifyResolvedTree`).
 
 Docs sections read and updated: `docs/INTERNALS.md` (the resolution-gate
 paragraph and the "Nothing unverified is published" property) and
@@ -52,21 +53,24 @@ outside `docs/archive/` found no other hit.
 
 ## Reproduction
 
-- **symptom** — the gate refused the resolution with `cargo check --workspace
-  --all-targets --locked ... failed (exit 124)` and `Type check timed out after
+- **symptom** — the gate refused the resolution with
+  `cargo check --workspace
+  --all-targets --locked ... failed (exit 124)` and
+  `Type check timed out after
   300000ms`, twice for the same Develop tip.
 - **status** — `partial`
-- **reason:** the real cargo timeout was not reproduced; the workspace is another
-  repository and a cold build is not runnable here. The tests drive the limit
-  passed to the command runner and the budget ordering.
-- **regression test** — `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - each toolchain's check gets its own limit, and a timeout names that limit (Issue #4787)`
+- **reason:** the real cargo timeout was not reproduced; the workspace is
+  another repository and a cold build is not runnable here. The tests drive the
+  limit passed to the command runner and the budget ordering.
+- **regression test** —
+  `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - each toolchain's check gets its own limit, and a timeout names that limit (Issue #4787)`
 
 ## Test Plan
 
 - Added to `worker/deno/tests/milestone_merge_gate_test.ts`: the
-  `typeCheckTimeoutMs` test and the `spawnTypeCheck` per-toolchain limit, timeout
-  message and non-timeout positive-control test, both through an injected command
-  runner.
+  `typeCheckTimeoutMs` test and the `spawnTypeCheck` per-toolchain limit,
+  timeout message and non-timeout positive-control test, both through an
+  injected command runner.
 - Added to `worker/deno/tests/milestone_resolution_gate_test.ts`: a type check
   that advances the clock by 800 000 ms still leaves the first task the full
   `RESOLUTION_GATE_BUDGET_MS`.
@@ -78,6 +82,7 @@ outside `docs/archive/` found no other hit.
   `milestone_resolution_gate_test.ts`, `milestone_sync_merge_gate_test.ts` and
   `merge_gate_fail_closed_test.ts`: 58 passed, 0 failed.
 - `deno task check:manifests`: passed.
-- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`; config integration and checkov were skipped by the gate itself.
+- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`; config
+  integration and checkov were skipped by the gate itself.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
