@@ -11,6 +11,7 @@
  */
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
+import { checkCloneOwnership } from "../lib/broken_clone.ts";
 import {
   childIssueBranchNumber,
   milestoneCloseStatePath,
@@ -525,6 +526,34 @@ Deno.test("sweepClosedMilestones - a gh listing failure is reported, not thrown"
     assertEquals(await exists(fx.worktreePath), true);
   } finally {
     await fx.cleanup();
+  }
+});
+
+Deno.test("sweepClosedMilestones - refuses a foreign-owned clone before git", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "milestone-close-" });
+  try {
+    const repoPath = `${workDir}/demo`;
+    await Deno.mkdir(repoPath);
+    const owner = (await Deno.lstat(repoPath)).uid;
+    assert(owner !== null);
+    let gitCalls = 0;
+    const logs: string[] = [];
+    const result = await sweepClosedMilestones({ repo: REPO, workDir }, {
+      checkOwnership: (path) =>
+        checkCloneOwnership(path, () => Promise.resolve(owner + 1)),
+      git: () => {
+        gitCalls++;
+        return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+      },
+      gh: makeGh(),
+      log: (message) => logs.push(message),
+    });
+    assertEquals(gitCalls, 0);
+    assertEquals(result.errors.length, 1);
+    assert(result.errors[0]?.includes("Refusing untrusted clone path"));
+    assert(logs.some((line) => line.includes("Refusing untrusted clone path")));
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
   }
 });
 

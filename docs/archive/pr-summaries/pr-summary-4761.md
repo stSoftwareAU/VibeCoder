@@ -84,6 +84,9 @@ the issue's gate message.
 
 ## Test Plan
 
+- The merge retains the image-mode home fixture alongside main's clone and
+  linked-worktree Git metadata fixtures in `work_root_group_grant_test.ts`.
+
 - The obsolete entrypoint grant could not change a read-only image layer, so
   its writable temporary-home test was replaced. The required group search-only
   access remains: `worker/deno/tests/work_root_group_grant_test.ts::Containerfile - worker home is searchable by vibework on a read-only root (Issue #4761)`

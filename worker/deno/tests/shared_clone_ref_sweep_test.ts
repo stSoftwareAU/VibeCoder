@@ -5,6 +5,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { checkCloneOwnership } from "../lib/broken_clone.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import type { RepoLease } from "../lib/maintenance_lane.ts";
 import type { SelfHealEvent } from "../lib/self_heal_events.ts";
@@ -464,6 +465,30 @@ Deno.test("#2889 - no clone directory is skipped as no-clone", async () => {
     assertEquals(outcome.skipped, "no-clone");
     assertEquals(outcome.repaired, []);
     assertEquals(events, []);
+  } finally {
+    await cleanup(root);
+  }
+});
+
+Deno.test("#4737 - foreign-owned clone is refused before git", async () => {
+  const { root, workDir, clone } = await fixture();
+  try {
+    const owner = (await Deno.lstat(clone)).uid;
+    assert(owner !== null);
+    let gitCalls = 0;
+    const { deps, errors } = makeDeps({
+      checkOwnership: (path) =>
+        checkCloneOwnership(path, () => Promise.resolve(owner + 1)),
+      runGit: () => {
+        gitCalls++;
+        throw new Error("git must not run");
+      },
+    });
+    const outcome = await sweepSharedClone("acme/widget", workDir, deps);
+    assertEquals(gitCalls, 0);
+    assertEquals(outcome.failures.length, 1);
+    assertStringIncludes(outcome.failures[0]!, "Refusing untrusted clone path");
+    assertEquals(errors, outcome.failures);
   } finally {
     await cleanup(root);
   }

@@ -56,7 +56,11 @@ import {
   updatePrBranch,
 } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
-import { discardBrokenClone, probeCorruptClone } from "../lib/broken_clone.ts";
+import {
+  checkCloneOwnership,
+  discardBrokenClone,
+  probeCorruptClone,
+} from "../lib/broken_clone.ts";
 import {
   isCloneCorruption,
   recoverCorruptClone,
@@ -623,6 +627,9 @@ function classifyGitCorruption(
 export async function setupRepo(
   repo: string,
   workDir: string,
+  ownershipCheck: (path: string) => Promise<string | null> =
+    checkCloneOwnership,
+  git: typeof runGitCommand = runGitCommand,
 ): Promise<CommandResult> {
   const repoName = repo.split("/").pop() ?? repo;
   const repoPath = `${workDir}/${repoName}`;
@@ -644,6 +651,9 @@ export async function setupRepo(
     };
   }
 
+  const ownershipError = await ownershipCheck(repoPath);
+  if (ownershipError) return { success: false, message: ownershipError };
+
   // A directory left by an interrupted clone holds no repository: every git
   // call in it dies at the filesystem boundary, wedging each run at setup.
   // Discard it so the clone below starts afresh (Issue #2848).
@@ -657,7 +667,12 @@ export async function setupRepo(
   // reuse logic below. Move it aside and re-clone, at most once per repo per
   // 24 h per host (Issue #2957) — a healthy clone is never touched.
   let recoveryAside: string | null = null;
-  const preProbe = await probeCorruptClone(repoPath);
+  let preProbe: string | null;
+  try {
+    preProbe = await probeCorruptClone(repoPath);
+  } catch (error) {
+    return { success: false, message: String(error) };
+  }
   if (preProbe !== null) {
     const recovered = await recoverCorruptClone(
       repo,
@@ -675,8 +690,12 @@ export async function setupRepo(
   try {
     const stat = await Deno.stat(repoPath);
     if (stat.isDirectory) {
+      const reuseError = ownershipCheck === checkCloneOwnership
+        ? await checkCloneOwnership(repoPath, undefined, undefined, true)
+        : await ownershipCheck(repoPath);
+      if (reuseError) return { success: false, message: reuseError };
       // Update existing repo
-      const defaultBranchResult = await runGitCommand(
+      const defaultBranchResult = await git(
         ["symbolic-ref", "refs/remotes/origin/HEAD"],
         { cwd: repoPath },
       );
@@ -713,7 +732,7 @@ export async function setupRepo(
       // Recover from broken git states (Issue #467)
       await recoverGitState(defaultBranch, { cwd: repoPath });
 
-      const resetHeadResult = await runGitCommand(["reset", "--hard", "HEAD"], {
+      const resetHeadResult = await git(["reset", "--hard", "HEAD"], {
         cwd: repoPath,
       });
       // Issue #1443: the clean also erases the ignored directories that carry
@@ -744,7 +763,7 @@ export async function setupRepo(
       // Restore per-repo Claude session state (Issue #1321, replaces Issue #384 blanket deletion)
       await restoreSession(repoPath, workDir, repo);
 
-      const checkoutResult = await runGitCommand(
+      const checkoutResult = await git(
         buildCheckoutArgs(defaultBranch),
         { cwd: repoPath },
       );
@@ -806,14 +825,14 @@ export async function setupRepo(
           return { success: false, message: fetchSpaceCheck.error.message };
         }
 
-        fetchResult = await runGitCommand(["fetch", "origin"], {
+        fetchResult = await git(["fetch", "origin"], {
           cwd: repoPath,
         });
       }
 
       // Always reset hard to origin/<defaultBranch> — purely local cleanup
       // that discards any uncommitted state from the previous iteration.
-      const resetOriginResult = await runGitCommand(
+      const resetOriginResult = await git(
         ["reset", "--hard", `origin/${defaultBranch}`],
         { cwd: repoPath },
       );
@@ -885,10 +904,32 @@ export async function setupRepo(
     return { success: false, message };
   }
 
+  // A different account can create the destination while gh resolves the
+  // repository. Never run git in the resulting clone until ownership is checked.
+  const cloneOwnershipError = await ownershipCheck(repoPath);
+  if (cloneOwnershipError) {
+    try {
+      const quarantine = await Deno.makeTempDir({
+        dir: workDir,
+        prefix: `.untrusted-${repoName}-`,
+      });
+      await Deno.rename(repoPath, `${quarantine}/${repoName}`);
+      return {
+        success: false,
+        message: `${cloneOwnershipError}; moved clone to ${quarantine}`,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `${cloneOwnershipError}; could not quarantine clone: ${error}`,
+      };
+    }
+  }
+
   // Sanity check: confirm remote refs are reachable after the shallow clone.
   // Non-fatal — a network glitch should not abort the setup since we already
   // have a working clone. Failure is logged for observability.
-  const lsRemoteResult = await runGitCommand(["ls-remote", "origin"], {
+  const lsRemoteResult = await git(["ls-remote", "origin"], {
     cwd: repoPath,
   });
   if (!lsRemoteResult.ok || lsRemoteResult.value.code !== 0) {
@@ -909,7 +950,7 @@ export async function setupRepo(
   }
 
   // Determine default branch
-  const defaultBranchResult = await runGitCommand(
+  const defaultBranchResult = await git(
     ["symbolic-ref", "refs/remotes/origin/HEAD"],
     { cwd: repoPath },
   );
