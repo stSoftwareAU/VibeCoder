@@ -9,6 +9,7 @@ import { assertEquals } from "@std/assert";
 import {
   agentPreFlightCommands,
   agentPublicationCommand,
+  agentPublicationDockerImage,
   registerAgentPreFlightConfigs,
   resetAgentPreFlightConfigsForTest,
 } from "../lib/agent_pre_flight.ts";
@@ -55,12 +56,18 @@ Deno.test({
 Deno.test("agent publication command preserves trusted quality configuration and defaults", () => {
   try {
     registerAgentPreFlightConfigs({
-      "o/r": { qualityCommand: "cd package && deno task verify --ci" },
+      "o/r": {
+        qualityCommand: "cd package && deno task verify --ci",
+        dockerImage: "toolchain:1",
+      },
     });
     assertEquals(
       agentPublicationCommand("o/r"),
       "cd package && deno task verify --ci",
     );
+    assertEquals(agentPublicationDockerImage("o/r"), "toolchain:1");
+    assertEquals(agentPublicationDockerImage("o/other"), "");
+    assertEquals(agentPublicationDockerImage(undefined), "");
     assertEquals(agentPublicationCommand("o/other"), "./quality.sh");
     assertEquals(agentPublicationCommand(undefined), "./quality.sh");
   } finally {

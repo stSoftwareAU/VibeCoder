@@ -25,6 +25,7 @@ import {
 import {
   agentPreFlightCommands,
   agentPublicationCommand,
+  agentPublicationDockerImage,
 } from "./agent_pre_flight.ts";
 import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
@@ -1471,6 +1472,7 @@ async function runClaudeWithTimeoutBody(
     const hookOutcome = await installPrePushHook({
       baseEnv: ghGuard?.env ?? baseEnv,
       publicationCommand: agentPublicationCommand(repo),
+      publicationDockerImage: agentPublicationDockerImage(repo),
       preFlightCommands: options.preFlightCommands ??
         agentPreFlightCommands(repo),
     });

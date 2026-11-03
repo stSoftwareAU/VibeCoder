@@ -2161,8 +2161,16 @@ async function _processCiWithHeartbeat(
   let publicationValidation:
     | Awaited<ReturnType<typeof validateRepositoryForPublication>>
     | undefined;
-  const validateBeforePush = async () => {
+  const validateBeforePush = async (publishing = true) => {
     const cwd = processorDeps.workDir ?? Deno.cwd();
+    if (!publishing && beforeSha !== undefined) {
+      const moved = await deps.git.branchHeadChanged(beforeSha, pushBranch, {
+        cwd: processorDeps.workDir,
+      });
+      if (moved.ok && !moved.value) {
+        return { ok: true as const, value: undefined };
+      }
+    }
     const current = deps.quality.publicationValidationIsCurrent ??
       publicationValidationIsCurrent;
     if (
@@ -2175,6 +2183,11 @@ async function _processCiWithHeartbeat(
       deps.quality.validatePublication ?? validateRepositoryForPublication;
     publicationValidation = await validate(cwd, {
       command: getRepoConfig(processorDeps.repoConfigs, repo, "qualityCommand"),
+      dockerImage: getRepoConfig(
+        processorDeps.repoConfigs,
+        repo,
+        "dockerImage",
+      ),
     });
     const validation = publicationValidation;
     if (validation.status !== "passed") {

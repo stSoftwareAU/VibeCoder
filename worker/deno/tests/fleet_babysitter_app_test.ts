@@ -23,7 +23,14 @@ import { startBabysitterAgent } from "../commands/fleet_pr_babysitter.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 
 for (
-  const scenario of ["unchanged", "failed", "unavailable", "passed", "stale"]
+  const scenario of [
+    "unchanged",
+    "failed",
+    "unavailable",
+    "passed",
+    "stale",
+    "no-gate",
+  ]
 ) {
   Deno.test(`production repair forwards CONFIG_PATH and validates ${scenario} repairs`, async () => {
     const info = await runWithTimeout(Deno.execPath(), ["info", "--json"], {
@@ -120,7 +127,9 @@ esac
           repos: ["owner/repo"],
           repo_config: {
             "owner/repo": {
-              quality_command: "./configured-gate.sh --required",
+              ...(scenario === "no-gate"
+                ? {}
+                : { quality_command: "./configured-gate.sh --required" }),
             },
           },
           fleet_pr_authors: ["babysitter[bot]"],
@@ -198,26 +207,37 @@ esac
           assertStringIncludes(result.value.stdout, "agent made no changes");
         } else {
           const calls = await Deno.readTextFile(`${home}/git-calls.log`);
-          assert(
-            await Deno.stat(`${home}/gate-runs`).then(() => true).catch(() =>
-              false
-            ),
-            result.value.stderr + result.value.stdout,
-          );
-          assertStringIncludes(
-            await Deno.readTextFile(`${home}/gate-runs`),
-            "gate",
-          );
+          if (scenario !== "no-gate") {
+            assert(
+              await Deno.stat(`${home}/gate-runs`).then(() => true).catch(() =>
+                false
+              ),
+              result.value.stderr + result.value.stdout,
+            );
+            assertStringIncludes(
+              await Deno.readTextFile(`${home}/gate-runs`),
+              "gate",
+            );
+          } else {
+            await assertRejects(
+              () => Deno.stat(`${home}/gate-runs`),
+              Deno.errors.NotFound,
+            );
+          }
           const pushed = calls.split("\n").some((line) =>
             line.startsWith("push ")
           );
-          assertEquals(pushed, scenario === "passed", result.value.stderr);
+          assertEquals(
+            pushed,
+            scenario === "passed" || scenario === "no-gate",
+            result.value.stderr,
+          );
           const initialHead = await Deno.readTextFile(`${home}/head`);
           assertEquals(
             (await remoteHead()) !== initialHead.trim(),
-            scenario === "passed",
+            scenario === "passed" || scenario === "no-gate",
           );
-          if (scenario === "passed") {
+          if ((scenario === "passed" || scenario === "no-gate")) {
             assertEquals(result.value.success, true, result.value.stderr);
             assertStringIncludes(result.value.stdout, "pushed fix");
           }

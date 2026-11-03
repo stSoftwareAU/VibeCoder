@@ -4948,9 +4948,16 @@ and pre-flight checks. It resolves the trusted repository `quality_command`
 (`./quality.sh` by default), requires executed Deno tests, and supplements an
 empty or explicitly filtered run with the repository's full Deno unit task where
 present. A complete gate owns its permissions and selection; a manifest task is
-not assumed to match CI. A missing, failed or unavailable required check blocks the agent's push. Worker pushes use the same validator
+not assumed to match CI. The configured `docker_image` runs both the gate and
+any supplemented task in that container through the existing Docker runner.
+Without a configured alternative or a present default `quality.sh`, there is
+explicitly no local gate to run. A configured but missing, failed or unavailable
+required check blocks the agent's push. Worker pushes use the same validator
 at their final publication boundary and again after rejection recovery; an
-unavailable check defers repairs without consuming their failure allowance.
+unavailable check before publication defers repairs without consuming their
+failure allowance. A refused optional history rebuild after a successful content
+push retains its retry charge. Unchanged reply-only feedback and CI rounds do
+not run publication validation; review verification still applies in sync.
 
 The commit chokepoint above only sees the worker's own push. An agent that runs
 `git push` itself during its run would otherwise skip it (Issue #3394). For

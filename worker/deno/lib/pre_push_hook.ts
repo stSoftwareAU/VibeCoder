@@ -82,6 +82,7 @@ export async function installPrePushHook(opts: {
   baseEnv: Record<string, string>;
   preFlightCommands: readonly string[];
   publicationCommand?: string;
+  publicationDockerImage?: string;
   timeoutSeconds?: number;
   denoPath?: string;
   modulePath?: string;
@@ -113,6 +114,7 @@ export async function installPrePushHook(opts: {
       specPath,
       JSON.stringify({
         preFlightCommands: [...opts.preFlightCommands],
+        publicationDockerImage: opts.publicationDockerImage,
         ...(opts.publicationCommand
           ? { publicationCommand: opts.publicationCommand }
           : {}),

@@ -1838,6 +1838,7 @@ async function completionBody(
       }
       publicationValidation = await validate(state.repoPath, {
         command: getRepoConfig(config.repoConfig, repo, "qualityCommand"),
+        dockerImage: getRepoConfig(config.repoConfig, repo, "dockerImage"),
       });
       if (publicationValidation.status === "unavailable") {
         return {
@@ -1979,6 +1980,7 @@ async function completionBody(
       validateRepositoryForPublication;
     const refreshed = await validate(state.repoPath, {
       command: getRepoConfig(config.repoConfig, repo, "qualityCommand"),
+      dockerImage: getRepoConfig(config.repoConfig, repo, "dockerImage"),
     });
     if (refreshed.status !== "passed") {
       return {

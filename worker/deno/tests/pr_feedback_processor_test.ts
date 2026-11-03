@@ -2,7 +2,10 @@ import {
   runPublicationFixtureChecks,
   writePublicationFixture,
 } from "./support/publication_fixture.ts";
-import { publicationValidationIsCurrent } from "../lib/publication_validation.ts";
+import {
+  publicationValidationIsCurrent,
+  validateRepositoryForPublication,
+} from "../lib/publication_validation.ts";
 /**
  * Tests for pr_feedback_processor.ts — PR feedback processing.
  *
@@ -2219,5 +2222,142 @@ Deno.test("feedback repair executes full, sharded and impacted Deno validation a
         await Deno.remove(dir, { recursive: true });
       }
     }
+  }
+});
+
+Deno.test("feedback unchanged issue reply survives unavailable validation and keeps its processed mark", async () => {
+  const dir = await Deno.makeTempDir();
+  let checks = 0, marks = 0;
+  const calls: string[][] = [];
+  const reply = "The documented option already handles this case.";
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: openPrGh(async (args) => {
+        calls.push(args);
+        return "";
+      }),
+    },
+    claude: {
+      runClaudeWithRetry: async () => {
+        await Deno.writeTextFile(`${dir}/.pr_response_message`, reply);
+        return {
+          ok: true,
+          value: { output: "Answered", exitCode: 0, timedOut: false },
+        };
+      },
+    },
+    quality: {
+      validatePublication: async () => {
+        checks++;
+        return {
+          status: "unavailable",
+          identity: null,
+          reason: "missing tool",
+        };
+      },
+    },
+    pr: {
+      markCommentProcessed: async () => {
+        marks++;
+        return { ok: true, value: undefined };
+      },
+    },
+    git: {
+      commitAndPushPending: async (...args) => {
+        const checked = await args[7]!(false);
+        if (!checked.ok) return checked;
+        return {
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 0,
+            finalUnpushedCount: 0,
+            finalUnpushedSource: "remote-head",
+          },
+        };
+      },
+    },
+  });
+  try {
+    const result = await processPrFeedback(
+      makeInput({ commentType: "issue" }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        workDir: dir,
+        workRoot: dir,
+      },
+    );
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, true);
+      assertEquals(result.value.changesPushed, false);
+    }
+    assertEquals(checks, 0);
+    assertEquals(marks, 1);
+    assertEquals(
+      calls.some((args) => args.some((arg) => arg.includes(reply))),
+      true,
+    );
+    assertEquals(
+      calls.some((args) => args[0] === "api" && args.includes("DELETE")),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("feedback publishes a repair when the repository has no local gate", async () => {
+  const dir = await Deno.makeTempDir();
+  let pushes = 0;
+  const deps = createMockDeps({
+    github: { runGhCommand: openPrGh() },
+    claude: {
+      runClaudeWithRetry: async () => ({
+        ok: true,
+        value: { output: "Fixed", exitCode: 0, timedOut: false },
+      }),
+    },
+    quality: {
+      validatePublication: (cwd, options) =>
+        validateRepositoryForPublication(cwd, {
+          ...options,
+          identity: async () => "fixture",
+        }),
+      publicationValidationIsCurrent: async () => true,
+    },
+    git: {
+      commitAndPushPending: async (...args) => {
+        const checked = await args[7]!(true);
+        if (!checked.ok) return checked;
+        pushes++;
+        return {
+          ok: true,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+            finalUnpushedSource: "remote-head",
+          },
+        };
+      },
+    },
+  });
+  try {
+    const result = await processPrFeedback(makeInput(), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      workDir: dir,
+      workRoot: dir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.changesPushed, true);
+    assertEquals(pushes, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });

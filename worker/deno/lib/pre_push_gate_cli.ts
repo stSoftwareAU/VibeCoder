@@ -32,6 +32,7 @@ export interface PrePushCliDeps {
 interface PrePushSpec {
   preFlightCommands: string[];
   publicationCommand?: string;
+  publicationDockerImage?: string;
   timeoutSeconds?: number;
 }
 
@@ -63,6 +64,12 @@ async function readSpec(path: string): Promise<Result<PrePushSpec, string>> {
       error: "publicationCommand must be a non-empty string",
     };
   }
+  if (
+    record.publicationDockerImage !== undefined &&
+    typeof record.publicationDockerImage !== "string"
+  ) {
+    return { ok: false, error: "publicationDockerImage must be a string" };
+  }
   const timeout = record.timeoutSeconds;
   if (
     timeout !== undefined &&
@@ -79,6 +86,9 @@ async function readSpec(path: string): Promise<Result<PrePushSpec, string>> {
       preFlightCommands: commands.value,
       timeoutSeconds: timeout,
       publicationCommand: record.publicationCommand as string | undefined,
+      publicationDockerImage: record.publicationDockerImage as
+        | string
+        | undefined,
     },
   };
 }
@@ -139,6 +149,7 @@ export async function runPrePushGateCli(
         (deps.cwd ?? Deno.cwd)(),
         {
           command: spec.value.publicationCommand,
+          dockerImage: spec.value.publicationDockerImage,
         },
       );
       if (validated.status !== "passed") {

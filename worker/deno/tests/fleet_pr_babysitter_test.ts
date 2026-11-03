@@ -1142,7 +1142,7 @@ Deno.test("an empty or oversized PR description proposal is not applied", async 
   }
 });
 
-// Issue #4625: a missing local gate is a capability failure, not a CI pass.
+// Issue #4677: name host capability failures while leaving enforcement to the runner.
 Deno.test("a check the host cannot run does not withhold readiness", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
@@ -1152,6 +1152,7 @@ Deno.test("a check the host cannot run does not withhold readiness", () => {
       prompt,
       "A check this host cannot run does not by itself withhold BABYSITTER_READY",
     );
+    assertStringIncludes(prompt, "name it in your final response");
   }
 });
 
@@ -1885,5 +1886,17 @@ Deno.test("checkpoint pruning continues past malformed and inaccessible records"
     }
   } finally {
     await Deno.remove(state, { recursive: true });
+  }
+});
+
+Deno.test("a host-only failure in an unrelated check is named, not a blocker", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(
+      prompt,
+      "An unrelated host-only failure confirmed passing on the base in CI also does not withhold BABYSITTER_READY; name it in your final response",
+    );
   }
 });

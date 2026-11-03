@@ -311,3 +311,28 @@ Deno.test("integration: agent self-push requires executed passing Deno tests", a
     await Deno.remove(fx.root, { recursive: true });
   }
 });
+
+Deno.test("integration: agent self-push permits a repository without a local gate", async () => {
+  const fx = await makeFixture();
+  const hook = await installPrePushHook({
+    baseEnv: Deno.env.toObject(),
+    preFlightCommands: [],
+    publicationCommand: "./quality.sh",
+  });
+  assert(hook.ok);
+  try {
+    await Deno.writeTextFile(`${fx.clone}/README.md`, "# Repository\n");
+    await commitAll(fx.clone, "document repository");
+    const pushed = await run(
+      "git",
+      ["push", "-q", "origin", "HEAD:main"],
+      fx.clone,
+      hook.value.env,
+    );
+    assertEquals(pushed.code, 0, pushed.stderr);
+    assert((await remoteHead(fx.remote)) !== "");
+  } finally {
+    await hook.value.cleanup();
+    await Deno.remove(fx.root, { recursive: true });
+  }
+});

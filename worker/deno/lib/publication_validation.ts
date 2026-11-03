@@ -1,5 +1,10 @@
 /** Runner-owned repository checks required before completed work is published. */
 
+import {
+  createDefaultDeps,
+  isDockerInfraFailure,
+  runDockerQualityCheck,
+} from "./quality_gate_phase.ts";
 import { stripAnsi } from "./github_actions_log_fetcher.ts";
 import { PrePushGateInfrastructureError } from "./pre_push_gate.ts";
 import {
@@ -19,12 +24,15 @@ export type PublicationValidationResult =
     status: "passed";
     identity: string;
     command?: string;
+    dockerImage?: string;
+    localGate?: "absent";
     deno?: { command: string; cwd: string; executedTests: number }[];
   }
   | { status: "failed"; identity: string | null; output: string }
   | { status: "unavailable"; identity: string | null; reason: string };
 
 export interface PublicationValidationDeps {
+  dockerImage?: string;
   /** Operator-configured quality_command, preserving its flags and working directory. */
   command?: string;
   run?: typeof runRepositoryCommand;
@@ -55,6 +63,7 @@ export async function publicationTreeIdentity(
   cwd: string,
   command = DEFAULT_COMMAND,
   environment = Deno.env.toObject(),
+  dockerImage = "",
 ): Promise<string | null> {
   let root: string;
   try {
@@ -91,6 +100,7 @@ export async function publicationTreeIdentity(
     root,
     tree,
     command,
+    dockerImage,
     JSON.stringify(await requiredDenoTasks(cwd)),
     bash.ok ? bash.value.stdout : "",
     denoVersion,
@@ -106,7 +116,8 @@ export async function validateRepositoryForPublication(
 ): Promise<PublicationValidationResult> {
   const command = deps.command || DEFAULT_COMMAND;
   const identify = deps.identity ??
-    ((dir: string) => publicationTreeIdentity(dir, command));
+    ((dir: string) =>
+      publicationTreeIdentity(dir, command, undefined, deps.dockerImage));
   const before = await identify(cwd);
   if (before === null) {
     return {
@@ -115,9 +126,67 @@ export async function validateRepositoryForPublication(
       reason: "could not identify the checkout before quality validation",
     };
   }
+  if (!deps.command || deps.command === DEFAULT_COMMAND) {
+    try {
+      await Deno.stat(`${cwd}/quality.sh`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      return {
+        status: "passed",
+        identity: before,
+        command,
+        dockerImage: deps.dockerImage,
+        localGate: "absent",
+      };
+    }
+  }
+  const run: typeof runRepositoryCommand = deps.dockerImage
+    ? async (executable, args, options) => {
+      const native = deps.run ?? runRepositoryCommand;
+      const runCommand = async ([exe, ...argv]: string[]) => {
+        const checked = await native(exe!, argv, { ...options, cwd });
+        if (!checked.ok) throw checked.error;
+        if (checked.value.timedOut) {
+          throw new Error("repository Docker gate timed out");
+        }
+        return {
+          exitCode: checked.value.code,
+          output: `${checked.value.stdout}\n${checked.value.stderr}`,
+        };
+      };
+      const docker = {
+        ...createDefaultDeps(),
+        runCommand,
+        getCwd: () => cwd,
+      };
+      const quote = (arg: string) => "'" + arg.replaceAll("'", "'\\''") + "'";
+      const relative = options.cwd.slice(cwd.length).replace(/^\//, "");
+      const invocation = executable === "bash"
+        ? args[1]!
+        : [executable, ...args].map(quote).join(" ");
+      const shell = relative
+        ? `cd ${quote(`/workspace/${relative}`)} && ${invocation}`
+        : invocation;
+      const checked = await runDockerQualityCheck(
+        deps.dockerImage!,
+        shell,
+        docker,
+      );
+      return {
+        ok: true,
+        value: {
+          code: checked.exitCode,
+          success: checked.exitCode === 0,
+          stdout: checked.output,
+          stderr: "",
+          timedOut: false,
+        },
+      };
+    }
+    : deps.run ?? runRepositoryCommand;
   let result: Awaited<ReturnType<typeof runRepositoryCommand>>;
   try {
-    result = await (deps.run ?? runRepositoryCommand)("bash", ["-c", command], {
+    result = await run("bash", ["-c", command], {
       cwd,
       timeoutMs: CHECK_TIMEOUT_MS,
       manifests: command === DEFAULT_COMMAND ? ["quality.sh"] : [],
@@ -193,7 +262,7 @@ export async function validateRepositoryForPublication(
   for (const plan of plans) {
     let checked: Awaited<ReturnType<typeof runRepositoryCommand>>;
     try {
-      checked = await (deps.run ?? runRepositoryCommand)(
+      checked = await run(
         "deno",
         plan.args,
         {
@@ -281,6 +350,7 @@ export async function validateRepositoryForPublication(
     status: "passed",
     identity: before,
     command,
+    dockerImage: deps.dockerImage,
     ...(deno.length ? { deno } : {}),
   };
 }
@@ -337,6 +407,7 @@ function isUnavailableOutput(stderr: string, output: string): boolean {
         .test(line)
     ) substantive = true;
     if (
+      isDockerInfraFailure(line) ||
       line.startsWith("untrusted account cannot use ") ||
       line === "Result: FAILED (strict mode — skipped checks are not allowed)"
     ) unavailable = true;
@@ -367,8 +438,9 @@ export async function publicationValidationIsCurrent(
   identify = publicationTreeIdentity,
 ): Promise<boolean> {
   return result.status === "passed" &&
-    (result.deno === undefined ||
+    (result.localGate === "absent" || result.deno === undefined ||
       (result.deno.length > 0 &&
         result.deno.every((selection) => selection.executedTests > 0))) &&
-    await identify(cwd, result.command) === result.identity;
+    await identify(cwd, result.command, undefined, result.dockerImage) ===
+      result.identity;
 }

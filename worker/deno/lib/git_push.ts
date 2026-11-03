@@ -319,7 +319,7 @@ export async function pushUnpushedCommits(
   branchName: string,
   options: PushLineageOptions = {},
   allowDefaultBranch = false,
-  beforePush?: () => Promise<Result<void>>,
+  beforePush?: (publishing?: boolean) => Promise<Result<void>>,
 ): Promise<Result<number>> {
   // Read-only default-branch guard (Issue #2584) — refuse before doing any
   // work when the target is the repo's default branch.
@@ -364,7 +364,9 @@ export async function pushUnpushedCommits(
   // Verify even an already-published head: review verification also applies
   // to self-pushed fixes and rebuttals. Recovery verifies again after rebase.
   if (beforePush) {
-    const verified = await beforePush();
+    const verified = await beforePush(
+      stateResult.value.sha === null || unpushedCount > 0,
+    );
     if (!verified.ok) return verified;
   }
   // Short-circuit only when the branch exists on the remote and holds every
@@ -816,7 +818,7 @@ export async function commitAndPushPending(
   preFlight?: PreFlightGateSpec,
   runId?: string,
   formatBeforeGate?: () => Promise<void>,
-  beforePush?: () => Promise<Result<void>>,
+  beforePush?: (publishing?: boolean) => Promise<Result<void>>,
 ): Promise<Result<CommitAndPushPendingResult>> {
   // Read-only default-branch guard (Issue #2584) — refuse up front, before
   // staging or committing anything, when the target is the default branch.

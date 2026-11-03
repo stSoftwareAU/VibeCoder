@@ -1721,10 +1721,18 @@ async function _processFeedbackWithHeartbeat(
       return checked;
     }
     : undefined;
-  const verifyBeforePush = async () => {
+  const verifyBeforePush = async (publishing = true) => {
     if (verifyFeedbackBeforePush) {
       const verified = await verifyFeedbackBeforePush();
       if (!verified.ok) return verified;
+    }
+    if (!publishing && beforeSha !== undefined) {
+      const moved = await deps.git.branchHeadChanged(beforeSha, pushBranch, {
+        cwd: processorDeps.workDir,
+      });
+      if (moved.ok && !moved.value) {
+        return { ok: true as const, value: undefined };
+      }
     }
     const current = deps.quality.publicationValidationIsCurrent ??
       publicationValidationIsCurrent;
@@ -1738,6 +1746,11 @@ async function _processFeedbackWithHeartbeat(
       deps.quality.validatePublication ?? validateRepositoryForPublication;
     publicationValidation = await validate(processorDeps.workDir, {
       command: getRepoConfig(processorDeps.repoConfigs, repo, "qualityCommand"),
+      dockerImage: getRepoConfig(
+        processorDeps.repoConfigs,
+        repo,
+        "dockerImage",
+      ),
     });
     const validation = publicationValidation;
     if (validation.status === "unavailable") {

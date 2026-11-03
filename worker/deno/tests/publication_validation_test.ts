@@ -6,6 +6,84 @@ import {
 } from "../lib/publication_validation.ts";
 import type { runRepositoryCommand } from "../lib/untrusted_gate_spawn.ts";
 
+Deno.test("publication without a local gate needs no execution", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    await Deno.remove(`${cwd}/quality.sh`);
+    const result = await validateRepositoryForPublication(cwd, {
+      run: () => {
+        throw new Error("no process should run");
+      },
+    });
+    assertEquals(result.status, "passed");
+    if (result.status === "passed") assertEquals(result.localGate, "absent");
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication runs the gate and supplemented task inside its Docker toolchain", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    await Deno.mkdir(`${cwd}/nested`);
+    await Deno.writeTextFile(
+      `${cwd}/nested/deno.json`,
+      JSON.stringify({ tasks: { test: "deno test" } }),
+    );
+    const calls: string[][] = [];
+    const result = await validateRepositoryForPublication(cwd, {
+      dockerImage: "example/toolchain:1",
+      run: async (exe, args) => {
+        calls.push([exe, ...args]);
+        const task = args.some((arg) => arg.includes("'deno' 'task' 'test'"));
+        return {
+          ok: true,
+          value: {
+            code: 0,
+            success: true,
+            timedOut: false,
+            stdout: exe === "id"
+              ? "123"
+              : task
+              ? "ok | 1 passed | 0 failed"
+              : "",
+            stderr: "",
+          },
+        };
+      },
+    });
+    assertEquals(result.status, "passed");
+    const runs = calls.filter((call) =>
+      call[0] === "docker" && call[1] === "run"
+    );
+    assertEquals(runs.length, 2);
+    assert(
+      runs.every((call) =>
+        call.includes("example/toolchain:1") &&
+        call.includes(`${cwd}:/workspace`)
+      ),
+    );
+    assert(runs.some((call) => call.includes("./quality.sh")));
+    assert(
+      runs.some((call) =>
+        call.some((arg) => arg.includes("cd '/workspace/nested'"))
+      ),
+    );
+    assertEquals(await publicationValidationIsCurrent(result, cwd), true);
+    assertEquals(
+      await publicationTreeIdentity(
+        cwd,
+        "./quality.sh",
+        undefined,
+        "other:1",
+      ) === result.identity,
+      false,
+    );
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
 async function checkout(script: string): Promise<string> {
   const cwd = await Deno.makeTempDir({ prefix: "publication-validation-" });
   const git = async (...args: string[]) => {
@@ -554,7 +632,10 @@ Deno.test("publication missing executable defers and then recovers", async () =>
     );
     await Deno.remove(`${cwd}/quality.sh`);
     assertEquals(
-      (await validateRepositoryForPublication(cwd, { run: shellRunner() }))
+      (await validateRepositoryForPublication(cwd, {
+        command: "./missing-required-gate.sh",
+        run: shellRunner(),
+      }))
         .status,
       "unavailable",
     );

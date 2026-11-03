@@ -3,7 +3,10 @@ import {
   runPublicationFixtureChecks,
   writePublicationFixture,
 } from "./support/publication_fixture.ts";
-import { publicationValidationIsCurrent } from "../lib/publication_validation.ts";
+import {
+  publicationValidationIsCurrent,
+  validateRepositoryForPublication,
+} from "../lib/publication_validation.ts";
 /**
  * Issue #3689: the issue worker's final-mile push runs the pre-push gate.
  *
@@ -123,6 +126,7 @@ interface Scenario {
   warner?: MissingScopeWarner;
   failAfterRejection?: boolean;
   failRefresh?: boolean;
+  noLocalGate?: boolean;
   publicationStatus?: "passed" | "failed" | "unavailable";
   invokePushRecoveryGuard?: boolean;
   staleOnPushRecovery?: boolean;
@@ -268,6 +272,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     quality: {
       validatePublication: async () => {
         publicationChecks++;
+        if (scenario.noLocalGate) {
+          return await validateRepositoryForPublication(repoPath, {
+            identity: async () => "fixture",
+          });
+        }
         if (scenario.execution) {
           return await runPublicationFixtureChecks(repoPath);
         }
@@ -1522,4 +1531,16 @@ Deno.test("completion executes full, sharded and impacted Deno validation and re
       assertEquals(o.prCreates, passed ? 1 : 0, `${mode}/${regression}`);
     }
   }
+});
+
+Deno.test("completion publishes without a local quality gate", async () => {
+  const outcome = await runCompletion({
+    ...base,
+    pushRefused: false,
+    gateAnswers: ["pass"],
+    noLocalGate: true,
+  });
+  assert(outcome.publicationChecks > 0);
+  assertEquals(outcome.pushes, 1);
+  assertEquals(outcome.prCreates, 1);
 });

@@ -41,3 +41,8 @@ export function agentPublicationCommand(repo: string | undefined): string {
       "./quality.sh"
     : "./quality.sh";
 }
+
+/** Trusted container toolchain used by the agent publication hook. */
+export function agentPublicationDockerImage(repo: string | undefined): string {
+  return repo ? getRepoConfig(registered, repo, "dockerImage") : "";
+}

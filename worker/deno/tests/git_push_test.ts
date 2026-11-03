@@ -257,7 +257,8 @@ Deno.test(
         branchName,
         { cwd: downstream },
         false,
-        async () => {
+        async (publishing) => {
+          assertEquals(publishing, true);
           beforePushCalls++;
           return { ok: true, value: undefined };
         },
@@ -345,11 +346,21 @@ Deno.test(
       await runGit(["push", "-u", "origin", branchName], downstream);
 
       // Local feature branch is already at origin/<branch> — nothing to push.
-      const result = await pushUnpushedCommits(branchName, {
-        cwd: downstream,
-      });
+      const publicationStates: (boolean | undefined)[] = [];
+      const result = await pushUnpushedCommits(
+        branchName,
+        {
+          cwd: downstream,
+        },
+        false,
+        async (publishing) => {
+          publicationStates.push(publishing);
+          return { ok: true, value: undefined };
+        },
+      );
       assert(result.ok);
       if (result.ok) assertEquals(result.value, 0);
+      assertEquals(publicationStates, [false]);
     } finally {
       await Deno.remove(tmp, { recursive: true });
     }

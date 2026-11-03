@@ -134,7 +134,12 @@ gate; see "Agent pre-push hook and the changed-files check" in
 Before issue completion, PR-feedback pushes, CI-repair pushes and babysitter
 repair pushes, `publication_validation.ts` runs the target repository's trusted
 `quality_command`, or `./quality.sh` by default, through
-`untrusted_gate_spawn.ts`. The agent's pre-push hook uses the same validator,
+`untrusted_gate_spawn.ts`. A configured `docker_image` uses the existing Docker
+quality runner for the gate and any supplemented task. Without a configured
+alternative or a present `quality.sh`, the result explicitly records no local
+gate and permits publication. Unchanged CI and feedback rounds skip publication
+validation when there is no unpushed work and HEAD did not move; review
+verification still runs on the in-sync path. The agent's pre-push hook uses the same validator,
 so agent self-pushes also require the checks. A zero exit with no executed Deno
 tests cannot pass. The runner discovers Deno projects through the existing
 project-manifest helper and supplements empty or explicitly filtered gate runs
@@ -147,7 +152,9 @@ The result binds success to checkout contents, the resolved commands and
 working directories, environment, and installed Bash and Deno versions. Every
 publisher rechecks the identity at its push boundary, including rejection
 recovery and retry pushes. Failed checks remain content failures; unavailable
-execution defers the repair without consuming CI or review allowances. The
+execution before publication defers the repair without consuming CI or review
+allowances. A refused optional history rebuild after a successful content push
+retains the retry charge. The
 babysitter releases its per-head attempt and retains the committed checkout in
 its state directory for unavailable validation. There is at most one checkpoint
 per PR, replaced on the next deferral and removed after a successful push.

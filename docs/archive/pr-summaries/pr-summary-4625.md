@@ -3,8 +3,9 @@
 Added runner-owned repository validation before issue completion, PR-feedback,
 CI-repair and babysitter publication, including agent self-pushes and push
 rejection recovery. Required checks must execute and pass for the tree being
-published. Unavailable execution defers repairs without spending their failure
-allowances. Closes #4625.
+published. Unavailable validation before publication defers repairs without
+spending their failure allowances; a refused optional history rebuild after
+a successful content push retains its retry charge. Closes #4625.
 
 Version bump: no version file changed.
 
@@ -156,12 +157,14 @@ Removed/changed assertions in `worker/deno/tests/fleet_pr_babysitter_test.ts`:
 
 - The old direct `validateAndCommit` success expectation is replaced by a
   required-check rejection: agent readiness alone is not validation.
-- The prompt's “confirm they pass before”, host-unavailable waiver,
-  unrelated-failure waiver, commit-history waiver, and “reads commit history”
-  expectations are replaced by runner-owned validation after committing,
-  immediately before pushing, with unavailable checks blocking publication.
-  Those waivers contradict #4625's requirement to pass checks before repair
-  publication.
+- The prompt’s “confirm they pass before” expectation now names the runner’s
+  required repository gate, which runs after committing and immediately before
+  pushing. The host-unavailable, unrelated host-only failure and commit-history
+  waivers are retained alongside this enforcement: they permit agent readiness,
+  while the runner still rejects failed checks and defers unavailable execution.
+- A prior revision removed the #4677 unrelated host-only failure test and
+  narrowed the cannot-run test by dropping “name it in your final response”.
+  This repair restores that test and naming assertion for all repair types.
 - “required quality.sh before it can push” now reads “required repository gate
   before it can push”, because the trusted configured alternative is supported.
   Actual alternative-command execution and identity tests cover that contract.
@@ -228,12 +231,13 @@ preserving existing callers and branch-update coordination.
 - The earlier verifier's history-rewrite finding is also fixed: CI passes the
   shared guard to the history rebuilder, which checks the replacement commit
   after committing and immediately before force-with-lease. A refusal preserves
-  its typed error and prevents that push; unavailable validation refunds the
-  retry.
+  its typed error and prevents that push. A refused history rebuild keeps its
+  retry charge and the already successful content-push outcome.
 
 Twinned copies updated: the agent hook default, publication validator,
 babysitter prompt, issue/CI/feedback prompts and configuration/internals guides.
-No tests were removed or weakened. New tests exercise real Deno steps,
+The prompt assertion changes and restored coverage are recorded above.
+New tests exercise real Deno steps,
 taskless read permissions, excluded performance fixtures, non-Deno JavaScript,
 default command flags, repeated checkpoints, ignored products, budget failure,
 missing tools and history-rewrite validation ordering/refusal.
@@ -319,3 +323,55 @@ Final local gate: formatting, lint, type check, completeness (847 passed),
 Markdown and Mermaid checks passed. The full parallel test run stopped on an
 internal Deno 2.9.5 macOS panic: pledge test permissions called before restoring
 previous pledge. Semgrep and Checkov were unavailable on this host.
+
+
+## Current review corrections
+
+- Reused the existing Docker quality execution path for configured
+  `docker_image` repositories, including supplemented Deno tasks. The existing
+  Docker runner and its host uid/gid probes are reused without changing their
+  owner in `quality_gate_phase.ts`. Completion, CI, feedback, babysitter and agent hooks pass the
+  trusted image through, and validation identity includes it.
+- An absent default `quality.sh`, with no alternative configured, records an
+  explicit absent local gate and permits publication. An explicitly configured
+  alternative that cannot execute still defers as unavailable.
+- The push boundary supplies whether it has unpushed work. Unchanged feedback
+  and CI rounds skip publication checks when HEAD also stayed unchanged, so
+  reply-only rounds keep their processed mark and post their response, and CI
+  records its normal no-change outcome. Review verification still runs on an
+  in-sync branch; self-pushed heads changed during the round still validate.
+- Restored the host-only waiver regression and the cannot-run naming assertion.
+  All three readiness waivers coexist with runner enforcement.
+- A refused optional history rebuild retains its retry charge, rather than
+  refunding it. Earlier text claiming a refund has been corrected.
+
+Twinned policy copies updated: publication callers, agent-hook spec and reader,
+configuration and internals guides, issue/CI/feedback prompts, and babysitter
+prompt tests. The existing Docker execution owner is reused. No test was
+removed or weakened in this repair. The explicit
+missing-entry-point case now configures a missing alternative, keeping that
+unavailable/recovery assertion while adding separate absent-default coverage.
+
+
+## Validation of this review repair
+
+- Focused publication, completion, CI, feedback, babysitter, production App,
+  Git push, hook, configuration and Docker gate suites: 360 passed, zero
+  failures, one existing Linux-only fixture ignored on macOS.
+- Final validator, agent-hook, Git-push and agent-configuration rerun after
+  reusing the Docker runner’s existing host uid/gid probes: 65 passed, zero
+  failures. The actual agent self-push without a local gate reaches its bare
+  remote. The in-sync callback receives false; a first push receives true.
+- Issue and CI prompt suites: 45 passed, zero failures.
+- Formatting, lint and frozen type checking passed for every changed
+  TypeScript source and test. Manifest checks: 847 passed, one ignored.
+- The full foreground `./quality.sh < /dev/null` passed static policies,
+  completeness, formatting, lint, type checking, Markdown and Mermaid. Its
+  parallel unit runner stopped on the host Deno 2.9.5 internal panic,
+  `pledge test permissions called before restoring previous pledge`.
+  `.deno-version` pins 2.9.8. The current base commit is
+  `0a4d803ab862753bd35fcf39f5df4b3c91545504`; GitHub confirms merged PR #4715
+  passed all four unit shards and the required gate.
+- Config integration lacks a local `.config.json`. Semgrep and the pinned
+  Checkov binary/image are unavailable. These checks were not claimed as
+  passing, and no test or gate was disabled.
