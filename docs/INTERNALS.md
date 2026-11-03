@@ -133,7 +133,7 @@ gate; see "Agent pre-push hook and the changed-files check" in
 
 Before issue completion, PR-feedback pushes, CI-repair pushes and babysitter
 repair pushes, `publication_validation.ts` runs the target repository's trusted
-`quality_command`, or `./quality.sh --strict` by default, through
+`quality_command`, or `./quality.sh` by default, through
 `untrusted_gate_spawn.ts`. The agent's pre-push hook uses the same validator,
 so agent self-pushes also require the checks. A zero exit with no executed Deno
 tests cannot pass. The runner discovers Deno projects through the existing
@@ -148,7 +148,12 @@ publisher rechecks the identity at its push boundary, including rejection
 recovery and retry pushes. Failed checks remain content failures; unavailable
 execution defers the repair without consuming CI or review allowances. The
 babysitter releases its per-head attempt and retains the committed checkout in
-its state directory for unavailable validation. Actionable output is redacted,
+its state directory for unavailable validation. There is at most one checkpoint
+per PR, replaced on the next deferral and removed after a successful push.
+Checkpoints exclude ignored build products, accept only regular files inside
+the checkout, and are limited to 10,000 entries and 128 MiB. Copying checks disk
+space and enforces the byte budget while streaming; a failed copy releases the
+attempt and retains the source. Actionable output is redacted,
 and substantive failures take precedence over simultaneous infrastructure
 messages. Test names and assertion data cannot classify an outage. This shared
 implementation addresses Issue #4625.

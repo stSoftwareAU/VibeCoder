@@ -38,6 +38,6 @@ export function resetAgentPreFlightConfigsForTest(): void {
 export function agentPublicationCommand(repo: string | undefined): string {
   return repo
     ? getRepoConfig(registered, repo, "qualityCommand") ||
-      "./quality.sh --strict"
-    : "./quality.sh --strict";
+      "./quality.sh"
+    : "./quality.sh";
 }

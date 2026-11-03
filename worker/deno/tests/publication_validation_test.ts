@@ -456,3 +456,109 @@ for (const task of ["test:unit", "test"]) {
     }
   });
 }
+
+Deno.test("publication counts real Deno test steps", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    await Deno.writeTextFile(
+      `${cwd}/deno.json`,
+      JSON.stringify({ tasks: { test: "deno test --no-lock" } }),
+    );
+    await Deno.writeTextFile(
+      `${cwd}/test.ts`,
+      'Deno.test("steps", async (t) => { await t.step("one", () => {}); });',
+    );
+    const result = await validateRepositoryForPublication(cwd, {
+      run: shellRunner(),
+    });
+    assertEquals(result.status, "passed");
+    if (result.status === "passed") {
+      assertEquals(result.deno?.[0]?.executedTests, 1);
+    }
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication preserves taskless repository test permissions and selection", async () => {
+  const cwd = await checkout(
+    "#!/bin/sh\nexec deno test --allow-read --no-lock selected_test.ts\n",
+  );
+  try {
+    await Deno.writeTextFile(`${cwd}/deno.json`, "{}");
+    await Deno.writeTextFile(
+      `${cwd}/selected_test.ts`,
+      'Deno.test("read", () => { Deno.readTextFileSync("deno.json"); });',
+    );
+    await Deno.writeTextFile(
+      `${cwd}/excluded_test.ts`,
+      'Deno.test("excluded performance fixture", () => { throw new Error("not a required test"); });',
+    );
+    const result = await validateRepositoryForPublication(cwd, {
+      run: shellRunner(),
+    });
+    assertEquals(result.status, "passed");
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication leaves non-Deno JavaScript tests on their own gate", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    await Deno.writeTextFile(
+      `${cwd}/example.test.js`,
+      'test("framework owned", () => {});',
+    );
+    let calls = 0;
+    const run = shellRunner();
+    const result = await validateRepositoryForPublication(cwd, {
+      run: (...args) => {
+        calls++;
+        return run(...args);
+      },
+    });
+    assertEquals(result.status, "passed");
+    assertEquals(calls, 1);
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication default preserves the repository gate flags", async () => {
+  const cwd = await checkout('#!/bin/sh\n[ "$#" -eq 0 ]\n');
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: shellRunner(),
+    });
+    assertEquals(result.status, "passed");
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication missing executable defers and then recovers", async () => {
+  const cwd = await checkout(
+    "#!/bin/sh\nexec publication-check-tool-that-does-not-exist\n",
+  );
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: shellRunner(),
+    });
+    assertEquals(result.status, "unavailable");
+    await Deno.writeTextFile(`${cwd}/quality.sh`, "#!/bin/sh\nexit 0\n");
+    assertEquals(
+      (await validateRepositoryForPublication(cwd, { run: shellRunner() }))
+        .status,
+      "passed",
+    );
+    await Deno.remove(`${cwd}/quality.sh`);
+    assertEquals(
+      (await validateRepositoryForPublication(cwd, { run: shellRunner() }))
+        .status,
+      "unavailable",
+    );
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});

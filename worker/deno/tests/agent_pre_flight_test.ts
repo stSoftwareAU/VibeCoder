@@ -61,8 +61,8 @@ Deno.test("agent publication command preserves trusted quality configuration and
       agentPublicationCommand("o/r"),
       "cd package && deno task verify --ci",
     );
-    assertEquals(agentPublicationCommand("o/other"), "./quality.sh --strict");
-    assertEquals(agentPublicationCommand(undefined), "./quality.sh --strict");
+    assertEquals(agentPublicationCommand("o/other"), "./quality.sh");
+    assertEquals(agentPublicationCommand(undefined), "./quality.sh");
   } finally {
     resetAgentPreFlightConfigsForTest();
   }

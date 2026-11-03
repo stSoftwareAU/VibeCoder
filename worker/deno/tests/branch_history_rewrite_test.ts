@@ -328,3 +328,33 @@ Deno.test("buildRewriteCommitMessage - explains the squash and names no secret",
   // A reader finding a squashed branch with no explanation assumes a mistake.
   assertStringIncludes(message, "scans every commit");
 });
+
+Deno.test("rebuild validates the replacement commit before pushing and preserves a refusal", async () => {
+  for (
+    const error of [
+      new Error("required check failed"),
+      new Error("check unavailable"),
+    ]
+  ) {
+    const git = fakeGit(happyAnswers());
+    let validated = false;
+    const result = await rebuildBranchHistory({
+      branchName: "fix/secret-scan",
+      baseBranch: "main",
+      commitMessage: "rebuilt",
+      ownedAuthorEmails: ["worker@example.com"],
+    }, {
+      runGitCommand: git.run,
+      beforePush: async () => {
+        assert(git.calls.some((call) => call[0] === "commit"));
+        assert(!git.calls.some((call) => call[0] === "push"));
+        validated = true;
+        return { ok: false, error };
+      },
+    });
+    assert(validated);
+    assert(!result.ok);
+    assertEquals(result.error, error);
+    assert(!git.calls.some((call) => call[0] === "push"));
+  }
+});

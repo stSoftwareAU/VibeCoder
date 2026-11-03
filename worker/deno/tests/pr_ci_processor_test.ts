@@ -12,7 +12,7 @@ import { publicationValidationIsCurrent } from "../lib/publication_validation.ts
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -3147,6 +3147,7 @@ async function runHistoryRewriteCase(
     authorError?: Error;
     authors?: string;
     authorReadCode?: number;
+    validationStatus?: "passed" | "failed" | "unavailable";
   },
 ) {
   const calls: string[][] = [];
@@ -3233,6 +3234,23 @@ async function runHistoryRewriteCase(
       workDir: dir,
       workRoot: dir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      publicationValidationFn: async () => {
+        calls.push(["validate"]);
+        const status = options.validationStatus ?? "passed";
+        return status === "passed"
+          ? { status, identity: "fixture" }
+          : status === "failed"
+          ? {
+            status,
+            identity: "fixture",
+            output: "rewritten commit check failed",
+          }
+          : {
+            status,
+            identity: "fixture",
+            reason: "rewritten commit tool unavailable",
+          };
+      },
       qualityGateFn: () =>
         Promise.resolve({ action: "passed", qualityOutput: "ok" }),
     },
@@ -3354,6 +3372,9 @@ Deno.test("processCiFailure - rebuilds a worker-only branch (Issue #4554)", asyn
       ),
       true,
     );
+    const validationIndex = calls.findIndex((args) => args[0] === "validate");
+    assert(validationIndex > calls.findIndex((args) => args[0] === "commit"));
+    assert(validationIndex < calls.findIndex((args) => args[0] === "push"));
     const commit = calls.find((args) => args[0] === "commit");
     const message = commit?.[commit.indexOf("-m") + 1] ?? "";
     assertStringIncludes(message, "gitleaks / scan");
@@ -3620,6 +3641,20 @@ Deno.test("CI repair executes full, sharded and impacted Deno validation and ref
       } finally {
         await Deno.remove(dir, { recursive: true });
       }
+    }
+  }
+});
+
+Deno.test("CI history rewrite refuses failed and unavailable replacement commit validation", async () => {
+  for (const validationStatus of ["failed", "unavailable"] as const) {
+    const dir = await Deno.makeTempDir();
+    try {
+      const { calls } = await runHistoryRewriteCase(dir, { validationStatus });
+      assert(calls.some((args) => args[0] === "commit"));
+      assert(calls.some((args) => args[0] === "validate"));
+      assert(!calls.some((args) => args[0] === "push"));
+    } finally {
+      await Deno.remove(dir, { recursive: true });
     }
   }
 });

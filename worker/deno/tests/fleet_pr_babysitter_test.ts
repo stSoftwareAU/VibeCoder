@@ -1659,6 +1659,7 @@ Deno.test({
       prefix: "babysitter-checkpoint-",
     });
     try {
+      await fixtureGit(["init", "-q"], dir);
       await Deno.writeTextFile(`${dir}/fixed.txt`, "repair\n");
       const attempt = `${state}/attempt`;
       await Deno.writeTextFile(attempt, "attempted");
@@ -1675,4 +1676,66 @@ Deno.test({
       });
     }
   },
+});
+
+Deno.test("babysitter repeated deferrals retain one bounded checkpoint and omit ignored products", async () => {
+  const state = await Deno.makeTempDir();
+  const attempt = `${state}/attempt`;
+  try {
+    let checkpoint = "";
+    for (let round = 0; round < 2; round++) {
+      const dir = `${state}/repair-${round}`;
+      await Deno.mkdir(dir);
+      await fixtureGit(["init", "-q"], dir);
+      await commitFile(dir, "fixed.txt", `repair ${round}`);
+      await Deno.writeTextFile(`${dir}/.gitignore`, "build/\n");
+      await Deno.mkdir(`${dir}/build`);
+      await Deno.writeTextFile(`${dir}/build/ignored`, "disposable");
+      await Deno.writeTextFile(attempt, "attempt");
+      checkpoint = await deferBabysitterValidation(
+        dir,
+        attempt,
+        state,
+        "repo#1",
+      );
+      await assertRejects(
+        () => Deno.stat(`${checkpoint}/build`),
+        Deno.errors.NotFound,
+      );
+    }
+    assertEquals(Array.from(Deno.readDirSync(`${state}/deferred`)).length, 1);
+    assertEquals(
+      await Deno.readTextFile(`${checkpoint}/fixed.txt`),
+      "repair 1\n",
+    );
+    const dir = `${state}/over-budget`;
+    await Deno.mkdir(dir);
+    await fixtureGit(["init", "-q"], dir);
+    await commitFile(dir, "large.txt", "preserve source");
+    await Deno.writeTextFile(attempt, "attempt");
+    assertEquals(
+      await deferBabysitterValidation(dir, attempt, state, "repo#1", 1),
+      dir,
+    );
+    assertEquals(
+      await Deno.readTextFile(`${dir}/large.txt`),
+      "preserve source\n",
+    );
+    await assertRejects(() => Deno.stat(attempt), Deno.errors.NotFound);
+    const invalidState = `${state}/not-a-directory`;
+    await Deno.writeTextFile(invalidState, "occupied");
+    await Deno.writeTextFile(attempt, "attempt");
+    assertEquals(
+      await deferBabysitterValidation(dir, attempt, invalidState, "repo#1"),
+      dir,
+    );
+    await assertRejects(() => Deno.stat(attempt), Deno.errors.NotFound);
+    assertEquals(
+      await Deno.readTextFile(`${dir}/large.txt`),
+      "preserve source\n",
+    );
+    assertEquals(Array.from(Deno.readDirSync(`${state}/deferred`)).length, 1);
+  } finally {
+    await Deno.remove(state, { recursive: true });
+  }
 });

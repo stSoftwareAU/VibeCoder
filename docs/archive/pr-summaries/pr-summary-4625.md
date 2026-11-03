@@ -15,7 +15,7 @@ Version bump: no version file changed.
 - Agent readiness and targeted checks did not prove that a completed repair
   passed its repository's required checks before publication.
 - The shared runner uses the trusted configured `quality_command`, preserving
-  its flags and working directory, or `./quality.sh --strict` by default.
+  its flags and working directory, or `./quality.sh` by default.
 - Repository Deno unit tasks own test policy, permissions and manifests. The
   runner executes the full task even when the quality entry point uses an
   impacted filter; an empty execution cannot pass.
@@ -52,7 +52,7 @@ Version bump: no version file changed.
 
 Backend/worker changes; no screenshot applies. No dependency, workflow or
 cross-repository check policy was added. Deno projects use their own
-`test:unit`, then `test` task, or normal Deno discovery where no task exists.
+`test:unit`, then `test` task, or their configured quality entry point where no task exists.
 The runner requires a positive executed-test count. This repository's unit task
 uses the same parallel/serial manifests that CI divides across four shards.
 
@@ -96,7 +96,7 @@ flowchart LR
 - Eight deliberate mutations in a disposable checkout made their focused tests
   fail: removing completion recovery validation, internal recovery validation,
   the agent publication gate, CI/feedback unavailable result types, configured
-  command resolution, full Deno selection, or babysitter attempt release.
+  command resolution, full repository-defined Deno task selection, or babysitter attempt release.
   Restored implementations passed the focused suite.
 - Unavailable-then-recovered regressions cover CI retry accounting, review
   failure allowances, and a retained babysitter commit validated through an
@@ -143,7 +143,7 @@ no coverage-check skip was configured.
   substantive failures survive mixed output. Repeated-prefix scanning is linear
   rather than an unbounded repeated search.
 - Configured alternative gates preserve their command/flags and participate in
-  identity checks; default `quality.sh` remains strict.
+  identity checks; default `quality.sh` matches the non-strict local gate.
 - Full repository-owned Deno task selection and positive execution evidence
   reject empty or incomplete impacted runs. Real execution covers initial
   completion and subsequent CI/feedback repair.
@@ -199,3 +199,51 @@ Retained the base branch’s injectable GitHub and sleep functions in the
 babysitter repair entry point alongside the PR’s configured quality command.
 Updated the production caller to pass that command after the base parameters,
 preserving existing callers and branch-update coordination.
+
+
+## Requested review corrections
+
+- The default publication command is `./quality.sh`, matching the worker's
+  non-strict local gate. Clone-inapplicable config integration and optional
+  security-tool skips no longer make publication impossible. An explicitly
+  configured strict command still retains its flags and fails on skips.
+- Deno summaries accept optional test-step counts for both executed-test
+  evidence and substantive-failure precedence.
+- Only repository-defined `test:unit` or `test` tasks receive an additional
+  full run. Taskless Deno projects retain the quality entry point's selection,
+  permissions and flags and must show executed tests there. Non-Deno
+  JavaScript projects stay on their own gate.
+- Deferred repairs keep one checkpoint per PR, replacing the previous head's
+  checkpoint and deleting it after publication. Copying excludes ignored build
+  products, checks available space and file sizes before copying, and enforces
+  10,000 entries and 128 MiB while streaming. Failed copies clean partial output,
+  retain the source and release the repair attempt. The source remains owned
+  by the caller until checkpoint handling finishes.
+- The earlier verifier's missing-executable finding is covered by actual POSIX
+  missing-tool and Bash missing-entry-point execution, followed by recovery.
+  Missing-tool shell diagnostics on either stream are unavailable; assertion
+  failures retain precedence.
+- The earlier verifier's history-rewrite finding is also fixed: CI passes the
+  shared guard to the history rebuilder, which checks the replacement commit
+  after committing and immediately before force-with-lease. A refusal preserves
+  its typed error and prevents that push; unavailable validation refunds the
+  retry.
+
+Twinned copies updated: the agent hook default, publication validator,
+babysitter prompt, issue/CI/feedback prompts and configuration/internals guides.
+No tests were removed or weakened. New tests exercise real Deno steps,
+taskless read permissions, excluded performance fixtures, non-Deno JavaScript,
+default command flags, repeated checkpoints, ignored products, budget failure,
+missing tools and history-rewrite validation ordering/refusal.
+
+
+Review-repair validation: 177 focused tests passed (103 publication/hook/
+babysitter tests, 69 CI/history tests and five production Claude-push tests).
+Manifest checks passed: 847 tests, one ignored. Formatting, lint and frozen
+type checks passed for every changed TypeScript source and test. The full gate
+passed its static policies, completeness, Markdown, Mermaid, formatting, lint
+and type checks, but its full parallel test pass hit the host Deno 2.9.5 panic
+`pledge test permissions called before restoring previous pledge`; the
+repository pins 2.9.8. Config integration, Semgrep and Checkov were unavailable.
+GitHub confirms the base's merged PR #4740 passed all four unit-test shards.
+The Linux-only cross-filesystem fixture is inapplicable on this macOS host.

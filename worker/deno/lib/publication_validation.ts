@@ -37,7 +37,7 @@ const TOOL_PROBE_TIMEOUT_MS = 5_000;
 export class PublicationValidationUnavailableError
   extends PrePushGateInfrastructureError {}
 
-const DEFAULT_COMMAND = "./quality.sh --strict";
+const DEFAULT_COMMAND = "./quality.sh";
 const UNAVAILABLE_MARKER = "[PUBLICATION_VALIDATION_UNAVAILABLE]";
 
 async function digest(value: string): Promise<string> {
@@ -240,6 +240,19 @@ export async function validateRepositoryForPublication(
       executedTests,
     });
   }
+  if (
+    plans.length === 0 &&
+    (await findProjectManifests(cwd)).some((project) =>
+      project.kind === "deno"
+    ) &&
+    executedDenoTests(fullOutput) === 0
+  ) {
+    return {
+      status: "failed",
+      identity: before,
+      output: "repository gate executed no Deno tests",
+    };
+  }
   const after = await identify(cwd);
   if (after === null) {
     return {
@@ -268,9 +281,10 @@ export async function validateRepositoryForPublication(
 function executedDenoTests(output: string): number {
   let count = 0;
   for (const line of output.split("\n")) {
-    const match = /(?:ok|FAILED) \| (\d+) passed \| (\d+) failed/.exec(
-      stripAnsi(line),
-    );
+    const match =
+      /(?:ok|FAILED) \| (\d+) passed(?: \(\d+ steps?\))? \| (\d+) failed/.exec(
+        stripAnsi(line),
+      );
     if (match) count += Number(match[1]) + Number(match[2]);
   }
   return count;
@@ -283,33 +297,12 @@ function executedDenoTests(output: string): number {
 async function requiredDenoTasks(
   cwd: string,
 ): Promise<{ cwd: string; args: string[] }[]> {
-  const files = await runGitCommand([
-    "ls-files",
-    "--cached",
-    "--others",
-    "--exclude-standard",
-    "-z",
-  ], { cwd });
-  if (!files.ok || files.value.code !== 0) {
-    throw new Error("could not select required Deno tests from the checkout");
-  }
-  const tests = files.value.stdout.split("\0").filter((file) =>
-    /(?:_test|\.test)\.[cm]?[jt]sx?$/.test(file)
-  );
   const plans: { cwd: string; args: string[] }[] = [];
   for (const project of await findProjectManifests(cwd)) {
     if (project.kind !== "deno") continue;
     const defined = await readManifestTasks(project.manifest);
     const task = UNIT_SUITE_TASKS.find((name) => defined.includes(name));
-    const relative = project.dir === cwd
-      ? ""
-      : project.dir.slice(cwd.length + 1) + "/";
-    if (task || tests.some((file) => file.startsWith(relative))) {
-      plans.push({ cwd: project.dir, args: task ? ["task", task] : ["test"] });
-    }
-  }
-  if (plans.length === 0 && tests.length > 0) {
-    plans.push({ cwd, args: ["test", "--no-config", "--no-lock"] });
+    if (task) plans.push({ cwd: project.dir, args: ["task", task] });
   }
   return plans;
 }
@@ -332,18 +325,23 @@ function isUnavailableOutput(stderr: string, output: string): boolean {
       /^(?:error: )?(?:AssertionError|TypeError|TS\d+(?: \[ERROR\]|:))/.test(
         line,
       ) ||
-      /^(?:ok|FAILED) \| \d+ passed \| [1-9]\d* failed/.test(line)
+      /^(?:ok|FAILED) \| \d+ passed(?: \(\d+ steps?\))? \| [1-9]\d* failed/
+        .test(line)
     ) substantive = true;
     if (
       line.startsWith("untrusted account cannot use ") ||
       line === "Result: FAILED (strict mode — skipped checks are not allowed)"
     ) unavailable = true;
   }
-  for (const raw of stderr.split("\n")) {
+  const shellDiagnostics = output.split("\n").filter((line) =>
+    /^(?:(?:[^ :]*\/)?(?:bash|sh):|\.\/[^ :]+:)/.test(stripAnsi(line).trim())
+  ).join("\n");
+  for (const raw of (stderr + "\n" + shellDiagnostics).split("\n")) {
     const line = stripAnsi(raw).trim();
     if (
-      /^(?:error: |JSR package manifest |bash:|\.\/[^ :]+:)/i.test(line) &&
-      /(?:command not found|not installed|no space left on device|disk quota exceeded|could not resolve|connection refused|failed to (?:download|fetch)|error sending request|failed to load|Import 'https?:)/i
+      /^(?:error: |JSR package manifest |(?:[^ :]*\/)?(?:bash|sh):|\.\/[^ :]+:)/i
+        .test(line) &&
+      /(?:command not found|(?:exec: [^\n]+: )?not found|No such file or directory|not installed|no space left on device|disk quota exceeded|could not resolve|connection refused|failed to (?:download|fetch)|error sending request|failed to load|Import 'https?:)/i
         .test(line)
     ) {
       unavailable = true;

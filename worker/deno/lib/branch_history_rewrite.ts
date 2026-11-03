@@ -28,6 +28,9 @@ import { assertSafeGitRef, buildPushArgs } from "./git_ref_args.ts";
 
 /** Git access — injected so the guards can be tested without a repository. */
 export interface HistoryRewriteDeps {
+  /** Validate the replacement commit immediately before its publication. */
+  beforePush?: () => Promise<Result<void>>;
+
   runGitCommand: (
     args: string[],
     options?: { cwd?: string },
@@ -299,6 +302,11 @@ export async function rebuildBranchHistory(
           `rebuilt tree: ${detail}`,
       ),
     };
+  }
+
+  if (deps.beforePush) {
+    const validation = await deps.beforePush();
+    if (!validation.ok) return validation;
   }
 
   // Issue #12: the argv goes through the builder, which adds

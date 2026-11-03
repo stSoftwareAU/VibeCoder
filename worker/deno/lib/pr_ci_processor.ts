@@ -2474,6 +2474,7 @@ async function _processCiWithHeartbeat(
             runGitCommand: (args, options) =>
               deps.git.runGitCommand(args, options ?? {}),
             logger,
+            beforePush: validateBeforePush,
           });
           if (rebuild.ok) {
             historyRewritten = true;
@@ -2507,6 +2508,10 @@ async function _processCiWithHeartbeat(
               );
             }
           } else {
+            const deferred = await deferUnavailableValidation(rebuild.error);
+            if (deferred) return deferred;
+            pushSucceeded = false;
+            pushFailureDetail = rebuild.error.message;
             // The corrected content is already pushed, so the PR is no worse
             // than before — it will simply fail the same check again. Say why
             // rather than letting the next cycle rediscover it.

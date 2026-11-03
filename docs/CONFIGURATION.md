@@ -4945,7 +4945,7 @@ flowchart TD
 
 The hook also runs the shared publication validator after these changed-file
 and pre-flight checks. It resolves the trusted repository `quality_command`
-(`./quality.sh --strict` by default), runs the repository's full Deno unit task
+(`./quality.sh` by default), runs the repository's full Deno unit task
 where present, and requires executed tests. A missing, failed or unavailable
 required check blocks the agent's push. Worker pushes use the same validator
 at their final publication boundary and again after rejection recovery; an
@@ -5089,7 +5089,7 @@ The hook runs three stages:
    the changed-files check and the default publication command.
 
 3. **Shared required publication checks.** The trusted `quality_command`, or
-   `./quality.sh --strict`, and the repository's required Deno unit-task
+   `./quality.sh`, and the repository's required Deno unit-task
    selection. Successful execution must include tests; an empty selection
    does not pass. Validation runs after the earlier stages and immediately
    before Git publishes the tree.
