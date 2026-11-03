@@ -207,6 +207,8 @@ function harness(
     stateDir,
     run,
     clone: () => Promise.resolve(),
+    mergeBase: () => Promise.resolve({ kind: "current" }),
+    armAutoMerge: () => Promise.resolve(),
     startAgent,
     commit: () => {
       state.committed = true;

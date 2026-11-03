@@ -27,7 +27,7 @@ Version bump: none; no release version or external extension contract changed.
 
 - Recover naturally through the existing scan and branch-lock workflow.
 - Bound repeated no-progress while preserving explicit human decisions.
-- Keep merge authority in the worker's existing auto-merge sweep.
+- Reuse the shared auto-merge policy when arming repair candidates.
 
 ### Essential Design Decisions
 
@@ -202,6 +202,12 @@ The Gitleaks configuration retains both the PR’s synthetic redaction fixture
 exception and the base branch’s credential-channel fixture exceptions. The
 combined TOML configuration parses successfully; its exceptions remain scoped
 to the exact historical fixture lines.
+
+The later merge retains the base's single-push flow: every repair merges the
+base before the agent runs, carries its whitespace baseline into validation,
+and arms auto-merge. Retry tracking, refreshed read tokens and the full head
+identity remain in place. The offline fixture and injected boundaries cover
+both flows together.
 
 ## Current review follow-up
 

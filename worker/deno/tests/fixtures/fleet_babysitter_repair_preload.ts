@@ -18,6 +18,9 @@ const pr = {
   mergeStateStatus: "CLEAN",
   reviewDecision: null,
   statusCheckRollup: [{ conclusion: "FAILURE" }],
+  // Already armed, so the repair does not arm auto-merge; arming has its own
+  // tests in fleet_pr_babysitter_single_push_test.ts.
+  autoMergeRequest: { enabledAt: null, mergeMethod: "MERGE" },
 };
 let lock: Record<string, unknown> | undefined;
 const attempts: Record<string, unknown>[] = [];
@@ -98,6 +101,10 @@ function commandOutput(
       return "";
     }
     if (args.includes("fetch") || args.includes("checkout")) return "";
+    // Exit 0: the base is already in the head, so the repair merges nothing.
+    if (args.includes("merge-base") && args.includes("--is-ancestor")) {
+      return "";
+    }
     if (args.includes("rev-parse") && args.includes("HEAD")) {
       return "a".repeat(40);
     }

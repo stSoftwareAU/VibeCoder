@@ -616,6 +616,9 @@ for (const decision of ["REVIEW_REQUIRED", "APPROVED"]) {
       { appId: "1", installationId: "1", privateKeyPath: "/unused" },
       "/unused",
       gh,
+      undefined,
+      3,
+      { armAutoMerge: async () => {} },
     );
     assertEquals(updated, decision === "APPROVED");
     assertEquals(
