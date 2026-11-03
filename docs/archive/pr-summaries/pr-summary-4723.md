@@ -53,6 +53,24 @@ other sentence became false.
 
 ## Test Plan
 
+Review follow-up: added a pass-level regression in
+`worker/deno/tests/review_fleet_prs_upkeep_failure_2891_test.ts` with an
+`app/dependabot` PR, a changes-requested record at X naming `a.ts`, a
+diverged X-to-head comparison, only Dependabot-authored base-to-head commits,
+and identical patches. It asserts one `awaiting-fix` skip and no ready PRs;
+the same fixture with a fleet author is ready for review. Removing `kind`
+from the production `pass` call makes this test fail (0 skips instead of 1);
+restoring it passes. No production behaviour changed in this follow-up.
+
+Follow-up validation: both relevant suites pass (66 tests), as do
+`check:manifests` (847 tests), formatting, lint, type checking, Markdown lint
+and the summary checks available without issue metadata. The full local gate
+reaches a Deno 2.9.5 macOS runtime panic in its parallel unit pass:
+`pledge test permissions called before restoring previous pledge`.
+All other runnable gate stages pass. Semgrep and Checkov lack their local
+binaries/images; config integration lacks its configuration. The PR's CI and
+the required checks on PR #4715, which produced the current base, are green.
+
 Covered: Dependabot diverged + identical patch → `awaiting-fix`; one
 non-Dependabot or null-author commit → review; fleet/omitted kind with diverged
 head → review (VibeCoder#3772 case); differing patch, version-only difference,
