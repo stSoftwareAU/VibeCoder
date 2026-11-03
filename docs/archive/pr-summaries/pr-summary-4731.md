@@ -36,7 +36,11 @@ flowchart LR
   `open` seam, a descriptor regular-file check, and a `dev` check beside `ino`.
   The descriptor must have at most one hard link and match both the pre-open
   and post-open path identities (inode and device).
-  One-argument callers behave as before, apart from the extra descriptor checks.
+  With `openTimeoutMs`, it opens read-write and requires write permission; a
+  raced FIFO does not block on Unix. One-argument callers behave as before,
+  apart from the extra descriptor checks.
+- A non-watch CLI pass calls `Deno.exit(Deno.exitCode)` after cleanup so a
+  different stalled open cannot keep the process alive.
 - `spawnBabysitterAgent` and `startBabysitterAgent` take a required
   `responseFile`; spawn refuses a relative path or one inside the clone or
   scratch directory.
@@ -97,11 +101,13 @@ does not run. All four CI test shards passed on the latest merged main PR
 
 New: `worker/deno/tests/fleet_babysitter_exchange_test.ts` (13 tests: symlink,
 FIFO, hard link, oversize, exactly-at-cap, replaced parent directory, bad names,
-open timeout, O_EXCL write over a planted link), 8 cases in
+open timeout, O_EXCL write over a planted link), 12 cases in
 `worker/deno/tests/file_utils_test.ts`, and in
 `worker/deno/tests/fleet_pr_babysitter_test.ts` the `takePrBodyProposal`
 symlink/FIFO/oversize cases, `readAgentResponse` ok/absent/symlink/oversize,
 `spawnBabysitterAgent` response-file refusals and three `applyPrBody` tests.
+Child-process tests cover a raced FIFO and a non-watch CLI pass with a real
+blocking open that remains pending after the timeout.
 
 Edited expectations: the spawn-args test now expects `--output-last-message` at
 the exchange `responseFile` (was `${dir}/.babysitter-response`); the other spawn
