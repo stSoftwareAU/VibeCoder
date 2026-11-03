@@ -1246,6 +1246,9 @@ export async function fix(
     );
     // The gate can run for minutes: a renewal that failed meanwhile means the
     // lock is no longer held, so nothing is pushed (Issue #4625).
+    if (renewalFailed) {
+      throw new Error("PR lock renewal failed; refusing to push");
+    }
     const current = await readPr(repo, pr.number, gh);
     if (
       current.headRefOid !== pr.headRefOid ||

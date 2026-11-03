@@ -5819,6 +5819,63 @@ the existing runner fields on the outcome/callback, including unknown/absent
 watchdog information. See the source-declared failure section of the issue
 workflow for the contract.
 
+#### Publication validation: the repository's own gate before every push (Issue #4625)
+
+Before a lane publishes agent-authored work, the runner runs the target
+repository's own gate on the committed head: `./quality.sh`, or its
+`quality_command`, in its `docker_image`, with its declared
+`quality_credentials`, exactly as the quality-gate phase runs it.
+`skip_quality_check` opts a repository out. The check is
+`validateRepositoryForPublication`, and its once-per-head `beforePush` guard is
+`createPublicationGuard`, both in `worker/deno/lib/publication_validation.ts`.
+It returns one of three outcomes, and only `passed` publishes:
+
+- `passed`: the gate ran and succeeded on a clean checkout (`gate: "ran"`), the
+  repository has no `quality.sh` (`gate: "absent"`), or the operator opted out
+  (`gate: "opted-out"`).
+- `failed`: the gate rejected the head, the working tree has uncommitted changes
+  the push would leave out, or a Deno test run executed no tests. The output
+  goes back to the lane for repair.
+- `unavailable`: the gate could not run (a missing tool, a Docker or credential
+  fault, an unreadable checkout). This is not a verdict on the change: the lane
+  defers the head and a later cycle retries it.
+
+The four lanes apply it as follows:
+
+- Issue completion runs it after the changed-file pre-push gate, and once more
+  on a head that the last-currency step merged. A `failed` verdict gets the one
+  in-run recovery turn; `unavailable` is retried as a push failure.
+- CI repair and PR feedback run it in the `beforePush` guard of
+  `commitAndPushPending` and `recoverFromPushRejection`. Feedback runs it before
+  the AI review-fix verifier and gives a `failed` verdict one correction round.
+- Babysitter repair runs it after the commit and before the push. A `failed`
+  verdict keeps the attempt record; `unavailable` removes it so a later pass
+  resumes.
+
+A `passed` verdict is reused only while the checkout is clean and the head is
+unchanged. Any new commit or uncommitted edit is validated afresh.
+
+Known limits: commits an agent pushes itself in the CI and feedback lanes go
+through the agent's pre-push hook, which checks changed files only, not this
+full gate. Non-review PR-feedback comments are marked processed before
+publication, so a gate failure there does not unmark them. The CI lane keeps its
+retry charge when the gate is unavailable and reports the push as deferred.
+Parity with the mutation, clippy, cargo-deny and ShellCheck checks (issues
+4617, 4630, 4626 and 4631), durable retry (issue 4656) and review dismissal
+(issue 4657) are not part of this change.
+
+```mermaid
+flowchart LR
+    I["Issue completion<br/>after the pre-push gate"] --> V
+    C["CI repair<br/>beforePush guard"] --> V
+    F["PR feedback<br/>beforePush guard, before the verifier"] --> V
+    B["Babysitter repair<br/>after commit, before push"] --> V
+    V["Repository gate on the committed head<br/>quality.sh or quality_command"] --> R{"Outcome"}
+    R -->|"passed"| P["Publish"]
+    R -->|"failed"| X["Not pushed; output returned to the lane"]
+    R -->|"unavailable"| U["Not pushed; deferred, not a verdict"]
+```
+
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a

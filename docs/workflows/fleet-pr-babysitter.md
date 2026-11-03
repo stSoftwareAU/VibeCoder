@@ -14,8 +14,10 @@ branch update reach GitHub in **one push**. A second push just to update the
 branch would run the whole CI again and roughly double the Actions cost of the
 repair. After Codex reports a completed fix, the babysitter commits the fix and
 the merge together as one merge commit, checks the fix (not the base's own
-changes) for whitespace errors and conflict markers, and rechecks the PR. It
-pushes only if the PR still matches the original head. A base merge on its own
+changes) for whitespace errors and conflict markers, runs the repository's own
+gate on that committed head before anything is pushed (Issue #4625), and
+rechecks the PR. It pushes only if that gate passed and the PR still matches the
+original head. A base merge on its own
 is also pushed when the agent made no change, so the branch is never left
 behind. Once a review fix is pushed, the babysitter dismisses the addressed
 review if it is still the current review and the PR head has not changed. GitHub
@@ -197,7 +199,10 @@ permission. A PR that a fleet worker holds a live PR-feedback lease claim on
 that pass, so the babysitter never repairs beside a worker that is about to
 push. A failed or unproductive agent attempt is recorded under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and is
-not retried on that host for the same PR head. A review repair is keyed on the
+not retried on that host for the same PR head. A head the repository's gate
+rejected keeps its record, so it is not retried either. A head whose gate could
+not run is not judged: the runner removes its record, so a later pass retries
+it. A review repair is keyed on the
 head and the newest change-request review, so a new review on an attempted head
 gets its own attempt. Removing the matching state file permits a retry. The
 shared lock prevents simultaneous work; this local attempt record does not
