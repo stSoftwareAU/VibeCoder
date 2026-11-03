@@ -1096,3 +1096,88 @@ Deno.test("mirror fetch timeout is infrastructure", () => {
     "infrastructure",
   );
 });
+
+Deno.test("git transport outages and maintenance timeout do not spend repair attempts", async () => {
+  const messages = [
+    "fatal: unable to access 'https://github.com/o/r': The requested URL returned error: 502",
+    "fatal: unable to access 'https://github.com/o/r': The requested URL returned error: 503",
+    "fatal: unable to access 'https://github.com/o/r': The requested URL returned error: 429",
+    "Connection closed by 192.0.2.1 port 22\nfatal: Could not read from remote repository.",
+    "kex_exchange_identification: Connection closed by remote host",
+  ];
+  for (const operation of ["clone", "fetch", "push"]) {
+    for (const message of messages) {
+      assertEquals(
+        classifyBabysitterGitFailure([operation], new Error(message))
+          .blockerClass,
+        "infrastructure",
+      );
+    }
+  }
+  const timeout =
+    "TIMEOUT: git -c maintenance.autoDetach=false -c gc.autoDetach=false maintenance run --auto timed out after 1800s (Issue #619)";
+  assertEquals(
+    classifyBabysitterGitFailure([
+      "-c",
+      "maintenance.autoDetach=false",
+      "maintenance",
+      "run",
+      "--auto",
+    ], new Error(timeout)).blockerClass,
+    "infrastructure",
+  );
+  for (const message of [...messages, timeout]) {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      const mirrorRoot = `${stateDir}/mirrors`;
+      await Deno.mkdir(`${mirrorRoot}/owner--repo.git`, { recursive: true });
+      h.deps.clone = (repo, dir) =>
+        cloneForRepair(repo, dir, {
+          mirrorRoot,
+          remoteUrl: () => Promise.resolve("/tmp/upstream"),
+          runGit: (args) =>
+            Promise.resolve(
+              args.includes("maintenance") || !message.startsWith("TIMEOUT:")
+                ? { success: false, stdout: "", stderr: message }
+                : { success: true, stdout: "", stderr: "" },
+            ),
+        });
+      await assertRejects(() => h.attempt());
+      const [record] = await records(stateDir);
+      assertEquals(record!.blockerClass, "infrastructure");
+      assertEquals(record!.attempts.substantive, 0);
+      assertEquals(h.state.markers.length, 0);
+    });
+  }
+  for (const operation of ["fetch", "push"]) {
+    for (const message of messages) {
+      await withState(async (stateDir) => {
+        const h = harness(stateDir);
+        h.state.changes = true;
+        h.state.runFailures.push({ match: `git ${operation}`, message });
+        await assertRejects(() => h.attempt());
+        const [record] = await records(stateDir);
+        assertEquals(record!.blockerClass, "infrastructure");
+        assertEquals(record!.attempts.substantive, 0);
+        assertEquals(h.state.markers.length, 0);
+      });
+    }
+  }
+});
+
+Deno.test("stale conflict defers until GitHub recomputes mergeability", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({ mergeable: "CONFLICTING" });
+    await h.attempt();
+    const [record] = await records(stateDir);
+    assertEquals(
+      record!.nextAction,
+      "recheck mergeability after GitHub recomputes",
+    );
+    assert(Date.parse(record!.nextEligibleAt!) > Date.now());
+    assert(Date.parse(record!.nextEligibleAt!) <= Date.now() + 5 * 60_000);
+    await h.attempt();
+    assertEquals(h.state.sessions, 0);
+  });
+});

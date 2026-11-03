@@ -24,7 +24,7 @@ import {
 import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { resolvePreFlightSpec } from "./git_push.ts";
+import { prBaseForSync, resolvePreFlightSpec } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   commentCarriesOpenPreprReview,
@@ -1710,11 +1710,28 @@ async function _processFeedbackWithHeartbeat(
       return checked;
     }
     : undefined;
+  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
+  // pushed, so the fix and the branch update reach GitHub in one push and CI
+  // runs once. Not for a gated head's fix branch, whose PR targets the head.
+  const syncBaseBranch = fixBranch === undefined
+    ? await prBaseForSync(
+      undefined,
+      repo,
+      prNumber,
+      (args) => deps.github.runGhCommand(args),
+      (message) => logger.warn(message),
+    )
+    : undefined;
+  const pushOptions = {
+    cwd: processorDeps.workDir,
+    expectedAncestor: beforeSha,
+    ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
+  };
   const finalise = () =>
     deps.git.commitAndPushPending(
       pushBranch,
       `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
-      { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+      pushOptions,
       false,
       preFlight,
       undefined,
@@ -1849,7 +1866,7 @@ async function _processFeedbackWithHeartbeat(
         const retryFinalise = await deps.git.commitAndPushPending(
           pushBranch,
           `Address PR #${prNumber} feedback\n\nRetry after push recovery (Issue #1643).`,
-          { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+          pushOptions,
           false,
           preFlight,
           undefined,

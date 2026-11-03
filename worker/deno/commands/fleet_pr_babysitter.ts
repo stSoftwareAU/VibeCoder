@@ -134,6 +134,7 @@ export function classifyBabysitterGitFailure(
       "clone",
       "fetch",
       "push",
+      "maintenance",
       "diff",
       "add",
       "commit",
@@ -152,11 +153,17 @@ export function classifyBabysitterGitFailure(
     return new BabysitterFailure(message, "capability");
   }
   const transportFailure =
-    /could not resolve host|connection (?:timed out|reset|refused)|failed to connect|remote end hung up|rpc failed|remote: internal server error|http\s+(?:401|403|408|429|5\d\d)\b|authentication failed|bad credentials|token expired|^(?:git(?: [a-z-]+)? failed: )?TIMEOUT: git (?:clone|fetch|push)\b|^git failed: (?:clone|fetch|push) timed out/i
+    /could not resolve host|connection (?:timed out|reset|refused)|connection closed by [^\n]* port \d+\b|kex_exchange_identification|failed to connect|remote end hung up|rpc failed|remote: internal server error|http\s+(?:401|403|408|429|5\d\d)\b|the requested URL returned error: (?:408|429|5\d\d)\b|authentication failed|bad credentials|token expired|^(?:git(?: [a-z-]+)? failed: )?TIMEOUT: git (?:clone|fetch|push)\b|^git failed: (?:clone|fetch|push) timed out/i
       .test(message);
   return new BabysitterFailure(
     message,
-    transport && transportFailure ? "infrastructure" : "code",
+    (transport && transportFailure) ||
+      (operation === "maintenance" &&
+        /^(?:git(?: [a-z-]+)? failed: )?TIMEOUT: git\b/i.test(
+          message,
+        ))
+      ? "infrastructure"
+      : "code",
   );
 }
 
@@ -1729,8 +1736,14 @@ export async function fix(
       pr.baseRefName,
     );
     if (pr.mergeable === "CONFLICTING" && sync.kind === "current") {
+      retryRecord.blockerClass = "infrastructure";
+      retryRecord.lastOutcome = "GitHub reports a stale conflict";
+      retryRecord.nextAction = "recheck mergeability after GitHub recomputes";
+      retryRecord.nextEligibleAt = new Date(Date.now() + 5 * 60_000)
+        .toISOString();
+      await saveBabysitterRetryState(stateDir, retryRecord);
       console.log(
-        `${repo}#${pr.number}: GitHub reports a stale conflict; recheck mergeability`,
+        `${repo}#${pr.number}: deferred (${retryRecord.blockerClass}: ${retryRecord.lastOutcome}); next action: ${retryRecord.nextAction}; next eligible at ${retryRecord.nextEligibleAt}`,
       );
       return;
     }

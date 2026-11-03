@@ -3,7 +3,7 @@
 Replace the babysitter's permanent attempted bit with durable retry state,
 bounded cooldowns, legacy migration and post-push reconciliation. Temporary
 provider, authentication, capability and lock failures can recover without
-manual state deletion. Closes #4656.
+manual state deletion. Part of #4656; automated recovery remains partial.
 
 Babysitter comments use `vibe-babysitter-attempt`, separate from CI escalation
 markers, so a repair never authorises other lanes to lift a person's hold.
@@ -224,3 +224,20 @@ quality gate hit the host Deno permission-pledge panic in the parallel test
 pass; base Quality run 41555343824 passed all test shards. Semgrep and the
 pinned Checkov were unavailable locally; CI runs them. Summary freshness
 requires the babysitter commit before it can be checked.
+
+## Latest review repair
+
+Git HTTP ref-discovery errors and SSH connection drops remain infrastructure
+failures through clone, fetch and push; mirror maintenance timeouts do too. A
+stale conflict now records and logs a five-minute mergeability recheck.
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::git transport outages and maintenance timeout do not spend repair attempts`
+and `worker/deno/tests/babysitter_fix_orchestration_test.ts::stale conflict defers until GitHub recomputes mergeability`
+cover these paths. This PR no longer claims to close #4656: automated recovery
+for review, conflict and non-blocking CI handoffs remains outstanding.
+
+Validation: the 28 orchestration tests and seven merged push-flow tests pass.
+The local gate passed formatting, lint, type checking and completeness. Its
+parallel test pass hit the host Deno permission-pledge panic; serial tests did
+not run. Base Quality run 41555343824 passed. Semgrep and the pinned Checkov
+were unavailable; config integration lacked configuration. Summary freshness
+requires the babysitter commit. No twinned transport classifier was found.
