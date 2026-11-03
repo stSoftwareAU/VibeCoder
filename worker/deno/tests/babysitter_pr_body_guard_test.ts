@@ -1,11 +1,16 @@
-import { assert, assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   githubClosesIssue,
   guardPrBodyProposal,
   isIssueCloseAllowed,
   PR_BODY_LIMIT,
 } from "../lib/babysitter_pr_body_guard.ts";
-import { closingKeywordLine, buildIdempotencyMarker } from "../lib/pr_body.ts";
+import { buildIdempotencyMarker, closingKeywordLine } from "../lib/pr_body.ts";
 import {
   buildSummaryDigestMarker,
   issueNumberFromMarker,
@@ -328,7 +333,7 @@ Deno.test("a close is allowed only with committed evidence, no unmet criterion a
     isIssueCloseAllowed({
       summary: FULLY_MET_SUMMARY,
       issueNumber: 4637,
-      proposal: "- **missing** — x — reason: y",
+      proposal: "## Acceptance Criteria\n\n- **missing** — x — reason: y",
     }),
     false,
   );
@@ -349,7 +354,10 @@ Deno.test("GitHub's closing references name this issue only in this repository",
   );
   assertEquals(
     githubClosesIssue(
-      [{ number: 4674, repository: { name: "repo", owner: { login: "owner" } } }],
+      [{
+        number: 4674,
+        repository: { name: "repo", owner: { login: "owner" } },
+      }],
       4674,
       REPO,
     ),
@@ -357,7 +365,10 @@ Deno.test("GitHub's closing references name this issue only in this repository",
   );
   assertEquals(
     githubClosesIssue(
-      [{ number: 4674, repository: { name: "repo", owner: { login: "other" } } }],
+      [{
+        number: 4674,
+        repository: { name: "repo", owner: { login: "other" } },
+      }],
       4674,
       REPO,
     ),
@@ -382,4 +393,29 @@ Deno.test("the digest of the committed summary is the one the live body carries"
     repo: REPO,
   });
   assertEquals(summaryDigestFromBody(output), digest);
+});
+
+Deno.test("an unmet criterion withholds the close even when the summary's own closing phrase says Closes", () => {
+  const summary = [
+    "## Summary",
+    "",
+    "Closes #4674.",
+    "",
+    "## Acceptance Criteria",
+    "",
+    "- **partial** — the closing criterion — reason: not finished",
+    "",
+  ].join("\n");
+  assertEquals(
+    isIssueCloseAllowed({ summary, issueNumber: 4674, proposal: undefined }),
+    false,
+  );
+  const output = guardPrBodyProposal({
+    proposal: "Rewritten description.",
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary,
+    repo: REPO,
+  });
+  assertEquals(closingKeywordLine(output, 4674), null);
+  assertStringIncludes(output, "Part of #4674");
 });

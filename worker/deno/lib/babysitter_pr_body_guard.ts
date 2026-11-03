@@ -208,7 +208,8 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
 function stripVibeMarkers(text: string): string {
   return text
     .replace(VIBE_MARKER_RE, "")
-    .replace(VIBE_MARKER_OPENER_RE, "<!- - vibe-");
+    .replace(VIBE_MARKER_OPENER_RE, "<!- - vibe-")
+    .trimEnd();
 }
 
 /**
@@ -272,7 +273,8 @@ function withholdNegatedClose(
     ) => {
       if (Number(num) !== issueNumber) return match;
       if (
-        qualifier !== undefined && qualifier.toLowerCase() !== repo.toLowerCase()
+        qualifier !== undefined &&
+        qualifier.toLowerCase() !== repo.toLowerCase()
       ) {
         return match;
       }
