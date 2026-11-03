@@ -23,9 +23,9 @@ flowchart LR
   then "the Issue #974 type check did not run", then the resolution is refused
   (the two 2026-11-02/03 comments on #4733).
 - **status** — `verified` — the regression test was observed failing against the
-  unfixed code and passing after the fix: with the `chmod g+x "${HOME}"` line
-  neutralised in `container/entrypoint.sh` (the base-branch behaviour) the test
-  is red, and with the line restored all 6 tests in the file pass. The access
+  unfixed code and passing after the fix: against the base-branch
+  `container/entrypoint.sh` (no HOME grant, no closing of the state roots) the
+  HOME-traverse test is red, and on the head all 10 tests in the file pass. The access
   fault itself was also checked on this host: with `/home/vibe` at
   `700 vibe:vibe`, `sudo -n -u agent -- test -x /home/vibe` exits 1 and
   `sudo -n -u agent -- test -r …/GRQ-AutoTrader/Cargo.toml` exits 1. In a
@@ -38,8 +38,9 @@ flowchart LR
   have moved, so it cannot be diagnosed from this repository.
 - **regression test** —
   `worker/deno/tests/work_root_group_grant_test.ts::entrypoint - the untrusted account can traverse HOME to reach the work root (Issue #4733)`;
-  it is red with the `chmod g+x "${HOME}"` line removed (the base-branch
-  entrypoint).
+  it is red against the base-branch entrypoint, which makes no HOME grant (on
+  the head the grant is made in the image, with the entrypoint as a fallback;
+  see the Test Plan for the red checks on the final entrypoint).
 
 ## Spec
 
@@ -47,7 +48,7 @@ flowchart LR
 
 - The refusals are a host-layout fault, not a bad resolution: the probe asks the
   real `agent` account, and it cannot enter `/home/vibe`. Granting the group
-  traverse-only on HOME at launch fixes the cause for every repository, the
+  traverse-only on HOME (in the image, with an entrypoint fallback) fixes the cause for every repository, the
   merge fast checks of #4697 included, without moving the clones.
 - Traverse-only (`g+x`, `0710`) keeps HOME unlistable. Credentials under
   `~/.vibe-coder/credentials` keep their own `0700`/`0600` modes (checked on
@@ -98,7 +99,7 @@ flowchart LR
 - The 2026-11-02 and 2026-11-03 refusals in the issue are `probe 1`; the first
   one in the issue body (cargo exit 101) is a different, test-level failure.
 - #4697 (open) tracks the same access cause for the merge fast checks. The
-  entrypoint grant fixes that cause for it too; its own classification and
+  HOME grant (image, with the entrypoint fallback) fixes that cause for it too; its own classification and
   budget work is not in this change. #4705 and #4680 are not touched.
 - The image grant takes effect once the new image is built and launched; the
   state-root closing and the fallback take effect at the next launch. Neither
@@ -152,11 +153,12 @@ describing it.
   allowlist failure were reproduced on the base commit (a detached worktree of
   `HEAD` before these edits): the real drop hit a `0700` temp directory.
 
-Results on the final head: `deno task test:unit` for
-`untrusted_gate_spawn_test.ts` (26 passed), `milestone_resolution_gate_test.ts`
-(34 passed, parallel pass) and `milestone_merge_gate_test.ts` (41 passed, serial
-pass); `work_root_group_grant_test.ts` is an integration suite and was run with
-`deno test` (10 passed). `deno fmt`, `deno lint`, `deno check` pass on the
+Results on the final head, `deno task test:unit`:
+`worker/deno/tests/untrusted_gate_spawn_test.ts` (34 tests at head),
+`worker/deno/tests/milestone_resolution_gate_test.ts` (34 tests at head) and
+`worker/deno/tests/milestone_merge_gate_test.ts` (41 tests at head), all passing;
+`worker/deno/tests/work_root_group_grant_test.ts` (10 tests at head) is an
+integration suite and was run with `deno test -A`, all passing. `deno fmt`, `deno lint`, `deno check` pass on the
 touched files.
 
 After the completion-check fixes: the two milestone gate files pass under
