@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   checkCloneOwnership,
   trustedLocalCloneExists,
@@ -9,19 +9,10 @@ import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 
 Deno.test("fresh clone refuses and quarantines a foreign root before git", async () => {
   const dir = await Deno.makeTempDir();
-  const originalPath = Deno.env.get("PATH");
   try {
     const path = `${dir}/repo`;
-    const bin = `${dir}/bin`;
-    const gitCalled = `${dir}/git-called`;
-    await Deno.mkdir(bin);
-    await Deno.writeTextFile(
-      `${bin}/git`,
-      `#!/bin/sh\n/usr/bin/touch '${gitCalled}'\nexit 1\n`,
-    );
-    await Deno.chmod(`${bin}/git`, 0o755);
-    Deno.env.set("PATH", `${bin}:${originalPath ?? ""}`);
     let checks = 0;
+    let gitCalls = 0;
     _setGhSpawnRunner(async () => {
       await Deno.mkdir(`${path}/.git`, { recursive: true });
       return { code: 0, success: true, stdout: "", stderr: "" };
@@ -31,14 +22,15 @@ Deno.test("fresh clone refuses and quarantines a foreign root before git", async
       const uid = (await Deno.stat(dir)).uid;
       assert(uid !== null);
       return await checkCloneOwnership(p, () => Promise.resolve(uid + 1));
+    }, () => {
+      gitCalls++;
+      throw new Error("git must not run on an untrusted clone");
     });
     assertEquals(checks, 2);
     assertEquals(result.success, false);
     assert(result.message.includes("root is not owned"));
-    await assertRejects(() => Deno.stat(gitCalled), Deno.errors.NotFound);
-    const entries = Array.from(Deno.readDirSync(dir)).filter((e) =>
-      e.name !== "bin"
-    );
+    assertEquals(gitCalls, 0);
+    const entries = Array.from(Deno.readDirSync(dir));
     assertEquals(entries.length, 1);
     assert(entries[0]);
     assert(entries[0].name.startsWith(".untrusted-repo-"));
@@ -46,8 +38,6 @@ Deno.test("fresh clone refuses and quarantines a foreign root before git", async
       (await Deno.stat(`${dir}/${entries[0].name}/repo/.git`)).isDirectory,
     );
   } finally {
-    if (originalPath === undefined) Deno.env.delete("PATH");
-    else Deno.env.set("PATH", originalPath);
     _resetGhSpawnRunner();
     await Deno.remove(dir, { recursive: true });
   }

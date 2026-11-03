@@ -63,6 +63,21 @@ flowchart LR
 
 ## Test Plan
 
+- CI repair: inject the Git runner into `setupRepo` so the fresh-clone
+  ownership test can assert that no Git call follows a refusal without changing
+  process-wide `PATH`. The safety cap test reproduced the CI failure before
+  this change; it and the clone ownership tests pass afterwards (5 tests).
+  The exact shard command `.github/scripts/deno-test-shard.sh 2 4` was
+  attempted before and after the fix, but macOS `mktemp -t` writes outside
+  this sandbox's writable directory and is denied. Linux CI runs the shard.
+  No twin of the test's PATH mutation was found in this file.
+  The local gate passed formatting, lint, type checking, Markdown lint,
+  Mermaid and completeness checks; `deno task check:manifests` passed 847
+  tests. Its parallel test pass hit the macOS Deno permission-pledge panic,
+  so the serial pass did not run. Semgrep and the pinned Checkov were
+  unavailable; config integration lacked configuration. All four unit
+  shards passed on the base-producing PR's CI run 41555343824.
+
 - Review fix: fresh clones are checked again before any subsequent git call;
   a foreign-owned clone is moved into a private quarantine and setup fails.
   The obsolete behaviour trusted the destination after cloning; trusted clones

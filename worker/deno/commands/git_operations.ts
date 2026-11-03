@@ -629,6 +629,7 @@ export async function setupRepo(
   workDir: string,
   ownershipCheck: (path: string) => Promise<string | null> =
     checkCloneOwnership,
+  git: typeof runGitCommand = runGitCommand,
 ): Promise<CommandResult> {
   const repoName = repo.split("/").pop() ?? repo;
   const repoPath = `${workDir}/${repoName}`;
@@ -685,7 +686,7 @@ export async function setupRepo(
     const stat = await Deno.stat(repoPath);
     if (stat.isDirectory) {
       // Update existing repo
-      const defaultBranchResult = await runGitCommand(
+      const defaultBranchResult = await git(
         ["symbolic-ref", "refs/remotes/origin/HEAD"],
         { cwd: repoPath },
       );
@@ -722,7 +723,7 @@ export async function setupRepo(
       // Recover from broken git states (Issue #467)
       await recoverGitState(defaultBranch, { cwd: repoPath });
 
-      const resetHeadResult = await runGitCommand(["reset", "--hard", "HEAD"], {
+      const resetHeadResult = await git(["reset", "--hard", "HEAD"], {
         cwd: repoPath,
       });
       // Issue #1443: the clean also erases the ignored directories that carry
@@ -753,7 +754,7 @@ export async function setupRepo(
       // Restore per-repo Claude session state (Issue #1321, replaces Issue #384 blanket deletion)
       await restoreSession(repoPath, workDir, repo);
 
-      const checkoutResult = await runGitCommand(
+      const checkoutResult = await git(
         buildCheckoutArgs(defaultBranch),
         { cwd: repoPath },
       );
@@ -815,14 +816,14 @@ export async function setupRepo(
           return { success: false, message: fetchSpaceCheck.error.message };
         }
 
-        fetchResult = await runGitCommand(["fetch", "origin"], {
+        fetchResult = await git(["fetch", "origin"], {
           cwd: repoPath,
         });
       }
 
       // Always reset hard to origin/<defaultBranch> — purely local cleanup
       // that discards any uncommitted state from the previous iteration.
-      const resetOriginResult = await runGitCommand(
+      const resetOriginResult = await git(
         ["reset", "--hard", `origin/${defaultBranch}`],
         { cwd: repoPath },
       );
@@ -919,7 +920,7 @@ export async function setupRepo(
   // Sanity check: confirm remote refs are reachable after the shallow clone.
   // Non-fatal — a network glitch should not abort the setup since we already
   // have a working clone. Failure is logged for observability.
-  const lsRemoteResult = await runGitCommand(["ls-remote", "origin"], {
+  const lsRemoteResult = await git(["ls-remote", "origin"], {
     cwd: repoPath,
   });
   if (!lsRemoteResult.ok || lsRemoteResult.value.code !== 0) {
@@ -940,7 +941,7 @@ export async function setupRepo(
   }
 
   // Determine default branch
-  const defaultBranchResult = await runGitCommand(
+  const defaultBranchResult = await git(
     ["symbolic-ref", "refs/remotes/origin/HEAD"],
     { cwd: repoPath },
   );
