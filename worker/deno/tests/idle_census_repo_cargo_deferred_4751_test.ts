@@ -187,6 +187,34 @@ Deno.test("census - a scanned sibling with the same backlog is still escalated (
   assertEquals(census.inversionRepos, [SUBJECT, SIBLING]);
 });
 
+Deno.test("census - the cargo bucket needs both an unscanned repo and the cargo reason (Issue #4751)", () => {
+  const work = [401, 402].map((n) => issue(n, ["work-on"]));
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      // Scanned: the reason alone must not move it out of the escalation.
+      repoInput({
+        repo: SUBJECT,
+        scannedThisCycle: true,
+        skipReason: "repo_cargo_deferred",
+        issues: work,
+      }),
+      // Unscanned for another cause: it is merely deferred, not cargo-held.
+      repoInput({
+        repo: SIBLING,
+        scannedThisCycle: false,
+        skipReason: "cycle_deadline",
+        issues: work,
+      }),
+    ],
+  });
+
+  assertEquals(census.cargoDeferredInversionRepos, []);
+  assertEquals(census.escalationRepos, [SUBJECT]);
+  assertEquals(census.deferredInversionRepos, [SIBLING]);
+});
+
 Deno.test("census - a cargo-deferred repo with nothing claimable appears in no bucket (Issue #4751)", () => {
   const census = buildIdleDecisionCensus({
     decisionPoint: "filing",

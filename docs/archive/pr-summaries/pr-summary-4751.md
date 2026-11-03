@@ -70,6 +70,12 @@ Backend-only change; no UI file touched. Verified by tests below.
   `scanCargoDeferredRepos` argument → the wiring `scanned=false` test red;
   removed the audit `...scanCargoDeferred.keys()` union → the
   `mis_classification` test red.
+- Mutation check on `idle_decision_census.ts:1628` (the
+  `cargoDeferredInversionRepos` filter): added `census - the cargo bucket needs
+  both an unscanned repo and the cargo reason`. Dropping `!r.scannedThisCycle`
+  (a scanned repo carrying the cargo reason) and dropping
+  `isRepoCargoDeferredSkipReason(...)` (an unscanned repo with
+  `cycle_deadline`) each turn that test red.
 - Callers of `resolveRepoScanState` checked: `run_core_production_deps.ts` (now
   passes the new set; the only production caller) and the 2085, 898 and 1091
   tests, which omit the optional set and keep their behaviour.
