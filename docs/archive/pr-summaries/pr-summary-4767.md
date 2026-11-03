@@ -16,7 +16,8 @@ claims the new module, as `lib_sweep_coverage_test.ts` requires. Closes #4767.
 
 The ledger records the default-branch merge base so its ancestry survives a
 squash merge. The redaction test assembles its synthetic token at run time;
-Gitleaks excludes only its exact historical fixture declaration from range scans.
+Gitleaks excludes only its exact historical fixture declaration from range
+scans.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -104,8 +105,8 @@ emits `--volume <source>:<target>` for every dialect),
 - **met** — Test: a timeout kills the container by name and throws. — evidence:
   `worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair kills the container by name on timeout, and reports a failed kill`
   — reviewer: met
-- **met** — './quality.sh' passes. — evidence: `./quality.sh < /dev/null` on
-  the final head, see Test Plan — reviewer: met
+- **met** — './quality.sh' passes. — evidence: `./quality.sh < /dev/null` on the
+  final head, see Test Plan — reviewer: met
 - **unrequested** — key guard also refuses relative sources, other flag
   spellings and symlink/`..` forms; input validation of clone, scratch, key and
   token; stderr redaction; `babysitterRuntimeOnPath`, `babysitterSpawn`,
@@ -169,13 +170,17 @@ existing test edited, no assertion removed.
 - Mutation survivors (13) from the completion check, each now killed by a new
   test and re-checked by applying the mutation alone: each allowlisted variable
   deleted (`HOME`, `USER`, `LOGNAME`, `TMPDIR`, `DOCKER_HOST`,
-  `XDG_RUNTIME_DIR`, `CONTAINER_HOST`) → `repair passes exactly the allowlisted
-  host variables to the image check, repair and kill` red; `processEnv`
-  returning undefined → `repair reads the process environment by default` red;
-  `env` deleted from `babysitterSpawn` / `babysitterImageExists` →
-  `babysitterSpawn passes the given env to the child` and `babysitterImageExists
-  passes the given env, and only that, to the inspect` red; `clearEnv` deleted
-  or set false in `babysitterImageExists` → the latter red.
+  `XDG_RUNTIME_DIR`, `CONTAINER_HOST`) →
+  `repair passes exactly the allowlisted
+  host variables to the image check, repair and kill`
+  red; `processEnv` returning undefined →
+  `repair reads the process environment by default` red; `env` deleted from
+  `babysitterSpawn` / `babysitterImageExists` →
+  `babysitterSpawn passes the given env to the child` and
+  `babysitterImageExists
+  passes the given env, and only that, to the inspect`
+  red; `clearEnv` deleted or set false in `babysitterImageExists` → the latter
+  red.
 - `worker/deno/lib/fleet_babysitter_container.ts:147` exempt (untestable): the
   `Deno.build.os === "windows"` operand is replaced by `false`, which is
   identical on a non-Windows host; the tests cannot run as Windows.
