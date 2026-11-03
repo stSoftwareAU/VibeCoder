@@ -211,6 +211,11 @@ die holding its append lock. Every provider agent child built through
 itself stays. The agent cannot use that variable to hide its own commands: the
 `gh`/`git` guard shim journals from a directory, worker id and run id the
 **worker** bakes into the wrapper as arguments, and reads no environment.
+The babysitter's Codex child is also spawned with `VIBE_AUDIT_DISABLED=1`:
+`spawnBabysitterAgent` in
+[`worker/deno/commands/fleet_pr_babysitter.ts`](../worker/deno/commands/fleet_pr_babysitter.ts)
+adds it to the env from `babysitterAgentEnv`, so that child cannot journal
+into the `VIBE_AUDIT_DIR` the babysitter exports.
 
 **Per-entry fields.** Each entry records the ISO 8601 timestamp, the
 run-correlation id (`VIBE_RUN_ID`, joining to), repo, target
