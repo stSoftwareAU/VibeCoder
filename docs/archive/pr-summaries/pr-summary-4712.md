@@ -78,6 +78,11 @@ Docs updated: `docs/USAGE.md` (adoption paragraph), `docs/INTERNALS.md`
 - `worker/deno/tests/agent_pr_adoption_test.ts`: one new call-site test that the
   sync input carries `committedHeadSha === SHA`. Dropping
   `committedHeadSha: pushed` from `agent_pr_adoption.ts` turned it red.
+- `worker/deno/tests/completion_phase_unassign_test.ts`: the adoption fixture
+  supplies the committed summary through the Git stub and checks that its text
+  reaches the edited body. The working-tree fixture contains different text.
+  Before the fixture was updated, this test reproduced the CI failure: no body
+  edit occurred because the stub reported no committed summary.
 - Mutation follow-up: four more `loadCommittedPrSummary` tests (failed `ls-tree`
   run, non-zero `ls-tree` exit, failed `git show` run, non-zero `git show` exit
   with content on stdout) pin the error result and its message. Three more
