@@ -5,8 +5,7 @@
 [#1700](https://github.com/stSoftwareAU/VibeCoder/issues/1700),
 [#1703](https://github.com/stSoftwareAU/VibeCoder/issues/1703),
 [#1926](https://github.com/stSoftwareAU/VibeCoder/issues/1926),
-[#1923](https://github.com/stSoftwareAU/VibeCoder/issues/1923) · **Parent:**
-#1694
+[#1923](https://github.com/stSoftwareAU/VibeCoder/issues/1923) · **Parent:** #1694
 
 Claude remains the default. This page is the operator runbook for a Codex-only
 host and for an **opt-in** mixed Claude/Codex host. Nothing here automatically
@@ -190,8 +189,7 @@ only on `subscription-exhausted`, `transient-rate-limit` or `model-unavailable`,
 and only when the alternative is already enabled. For a Claude preferred
 provider it fires only once **every** Claude credential in the pool is exhausted
 on its five-hour window or its weekly limit — one spent subscription rotates to
-the next — and the run switches back as soon as one has budget again (Issue
-#2637). The weekly pace projection never switches provider: it drops the backlog
+the next — and the run switches back as soon as one has budget again (Issue #2637). The weekly pace projection never switches provider: it drops the backlog
 tiers only. A `model-unavailable` refusal is also handled inside the run: when
 the provider has no cheaper model, the invocation that was refused is retried on
 the next alternative, so a phase whose model the provider will not serve does

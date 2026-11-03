@@ -42,8 +42,7 @@ the next pickup in its own repo through pickup ordering, not by applying
 [Conflict redo first in its repo](issue-processing.md#-issue-selection-priority)
 (Issue #3034). Every fallback leaves one `merge-fallback` issue behind recording
 what happened, linked from the closed PR (Issues #2304, #2310 — the scan's
-fallback; the resolution processor's own copy of this rung now follows it, Issue
-#3032). A PR whose originating issue **cannot** be found is closed as well, and
+fallback; the resolution processor's own copy of this rung now follows it, Issue #3032). A PR whose originating issue **cannot** be found is closed as well, and
 its flag issue carries `idle-task` and the PR's diff summary, so the flag is the
 re-do item. **There is no cap on restarts per originating issue** (Issue #3033):
 every exhaustion of the attempt budget closes the PR and re-queues the issue
@@ -303,8 +302,7 @@ agent is asked anything:
 
 ### 🧭 Issue intent is the second carve-out, and it must be evidenced
 
-The second qualification on "both sides survive" is the work's own intent (Issue
-#1114), and it is built to the same shape as the dependency carve-out above:
+The second qualification on "both sides survive" is the work's own intent (Issue #1114), and it is built to the same shape as the dependency carve-out above:
 bounded, applied only where an external order exists to appeal to, and reported.
 
 - **The evidence bar is both sides' issues, not one.** An override may be
@@ -465,8 +463,7 @@ private budget of two. It is gone: the single source of truth is now
 and it is spent by **every** pass that resolves a conflict on a PR — the
 stale-verdict ladder (`pass="ladder"`), the milestone sync (`pass="sync"`) and
 the takeover rung (`pass="takeover"`). All three now write attempt markers: the
-ladder, the takeover pass (`conflict_takeover.ts`, Issue #2999) and, since Issue
-#2998, the sync. The sync writes a marker only when its branch heads an open PR
+ladder, the takeover pass (`conflict_takeover.ts`, Issue #2999) and, since Issue #2998, the sync. The sync writes a marker only when its branch heads an open PR
 — a milestone branch with no open PR still spends the host-local ledger in
 `milestone_sync_failures.json` instead (see
 [MERGE.md](../MERGE.md#the-merge-conflict-attempt-budget)). A legacy marker with
@@ -1045,8 +1042,7 @@ single owner check's responsibility, whatever caused the silence (Issue #3001).
 `worker/deno/lib/merge_conflict_stall_watchdog.ts` is now the one owner for
 every conflicted PR, not a backstop keyed on label age alone: its clock starts
 at the **latest** of four events — the `merge-conflict` label's own `labeled`
-timeline event; the latest trusted stand-down (`readLatestStandDownAtMs`, Issue
-#2997 — gated-head, legacy milestone-head or park markers, read back by their
+timeline event; the latest trusted stand-down (`readLatestStandDownAtMs`, Issue #2997 — gated-head, legacy milestone-head or park markers, read back by their
 own `at="…"`); the last trusted resolution attempt (`readResolutionAttempts`,
 Issue #2996); and the head's own last move (the head commit's committer date,
 read per PR — a future-dated or unreadable time is ignored, so the watchdog
@@ -1251,8 +1247,7 @@ gap, and reading the queue means reading both:
 ## ⏱️ Every attempt says where its minutes went
 
 An attempt routinely runs for twenty to thirty minutes, and the only record of
-where that time went used to be the wall-clock gap between two log lines. Issue
-#2308 closed that: every attempt records the wall-clock seconds of each stage it
+where that time went used to be the wall-clock gap between two log lines. Issue #2308 closed that: every attempt records the wall-clock seconds of each stage it
 ran — on this path `deepen`, `rules`, `issue-context`, `agent`, `gate` and
 `push`, in that order — plus the host it ran on. `gate` is the pre-push fast
 checks on the merged tree under [The contract](#-the-contract) and their repair
@@ -1349,8 +1344,7 @@ Three boundaries are worth knowing before reading a cycle's records as gospel:
 
 ## 🚰 One cycle empties the queue
 
-The pass takes **every** conflicting PR that is due, not one per cycle (Issue
-#561). A conflicting PR is a PR CI will not run on, and the open-PR gate holds
+The pass takes **every** conflicting PR that is due, not one per cycle (Issue #561). A conflicting PR is a PR CI will not run on, and the open-PR gate holds
 new issue claims behind open PRs, so draining conflicts one per cycle — most of
 an hour once issue work is running — throttled issue throughput too.
 
@@ -1377,8 +1371,7 @@ because that was all the cycle had left, a 3600-second agent timeout granted out
 of it, and at 11m13s and 83 tool calls the watchdog SIGTERMed an agent that was
 still editing. The pass then read the half-merged tree as _the agent's_ verdict
 — `attempt 1 of 2`, "the agent left 6 path(s) unmerged" — and spent one of the
-PR's attempts on a budget it never had. (The budget went to three for Issue
-#1766 and back to two for Issue #2305.)
+PR's attempts on a budget it never had. (The budget went to three for Issue #1766 and back to two for Issue #2305.)
 
 Two halves now hold, both in `worker/deno/lib/merge_conflict_drain.ts`:
 

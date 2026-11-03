@@ -329,8 +329,7 @@ flowchart TD
 **Identity.** Every write it makes needs repository **admin**, so it runs as
 **your own `gh` login** — the one `gh auth status` shows with no `GH_CONFIG_DIR`
 set, the same `operator` identity the milestone-ruleset aligner uses — and never
-as the fleet account in `gh_config_dir`, which holds `write` by design (Issue
-#2685). Its first line names the login. Before touching a repository it checks
+as the fleet account in `gh_config_dir`, which holds `write` by design (Issue #2685). Its first line names the login. Before touching a repository it checks
 that login holds admin there (`repos/{repo}` `.permissions.admin`). A repository
 without it is left alone, and one line lists them all:
 
@@ -523,8 +522,7 @@ the first:
    no network, or the release-age quarantine has nothing eligible yet — the
    reason is printed and the version is typed by hand.
 
-The conversation prints in the same house style as the rest of setup (Issue
-#870): `ℹ` in blue explains, `✓` in green confirms an answer, `⚠` in yellow
+The conversation prints in the same house style as the rest of setup (Issue #870): `ℹ` in blue explains, `✓` in green confirms an answer, `⚠` in yellow
 reports a rejected answer or a fallback taken, and a question that has a default
 shows it in brackets. A question with no default to offer renders bare — never a
 stray `[]`. Colour is emitted only to a terminal, and never when `NO_COLOR` is

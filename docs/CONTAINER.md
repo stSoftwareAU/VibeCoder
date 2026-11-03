@@ -52,8 +52,7 @@ because the digest-pinned base already ships the system tools.
 
 The base is the official Ruby image, which is itself built on
 `buildpack-deps:trixie`, so one digest supplies the system tools _and_ the
-`ruby` the manifest still lists — a leftover of the GitHub Pages pipeline Issue
-#1344 removed, tracked for removal in Issue #1376. Two floors are load-bearing
+`ruby` the manifest still lists — a leftover of the GitHub Pages pipeline Issue #1344 removed, tracked for removal in Issue #1376. Two floors are load-bearing
 and are recorded as `minVersions` in `container/tools.json`: `git` ≥ 2.41, below
 which a literal `--end-of-options` survives into `argv` and is taken as a
 revision , and `ruby` ≥ 3.1 for `Psych.safe_load_file`. `container-build.yml`
@@ -396,8 +395,7 @@ restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
 `cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml`,
-`codegraph`, `rtk`, `floci` and `rust` are fragments (Issues #1594, #1595,
-#1596, #1628, #2153, #2381 and #3367) — they are the fetch-verify-extract
+`codegraph`, `rtk`, `floci` and `rust` are fragments (Issues #1594, #1595, #1596, #1628, #2153, #2381 and #3367) — they are the fetch-verify-extract
 toolchains, whose `ARG` blocks and `RUN` bodies were the bulk of the
 Containerfile's size. `node`, `npm`, `markdownlint-cli2`, `graft` and `semgrep`
 keep `versionArg`: Node's layer must precede the provider layer, and the npm-
@@ -608,8 +606,7 @@ flowchart LR
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-**A declared start script runs before the worker, or the run fails** (Issue
-#981). An extension's services — a database server, a CI server — have to be
+**A declared start script runs before the worker, or the run fails** (Issue #981). An extension's services — a database server, a CI server — have to be
 running before the agent starts work, so the framework supervises exactly one
 thing and makes its failure loud. The operator's Containerfile copies the
 extension into the image at the fixed path `/opt/vibe-extension/` (the posture
@@ -1346,12 +1343,10 @@ note (Issue #4388). A `Read-only file system` /`os error 30` failure is
 classified the same way. While an agent, `cargo` or `deno` is running, polling
 stops the child only when the host crosses the floor. The 25 GB is admission
 headroom that the running work may consume; requiring it afresh on every poll
-killed admitted agents at 66.4 GB free on a host with a 46 GB floor (Issue
-#4390). The next build step still needs the admission budget, less what the
+killed admitted agents at 66.4 GB free on a host with a 46 GB floor (Issue #4390). The next build step still needs the admission budget, less what the
 checkout's own target directories already hold (capped at the 25 GB, so the
 floor is never relaxed): its build is incremental, and a run that was admitted
-and built is not refused a later step for the space its own build used (Issue
-#4423). Active polling does not prune other checkouts.
+and built is not refused a later step for the space its own build used (Issue #4423). Active polling does not prune other checkouts.
 
 A recognised host-disk failure is released with its original cause and is not
 retried in-process: repeating the agent invocation cannot replenish the budget.

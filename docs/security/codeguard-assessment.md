@@ -100,8 +100,7 @@ Existing work was checked before filing. Path confinement (#2885), sibling
 trust-boundary guards (#3679), prompt fencing (#3896), independent security-fix
 verification (#3657), security-test discrimination (#3659), the shared brief
 (#3395) and repo checklists (#3594) are dependencies or existing mechanisms, not
-new discoveries. The broad fleet experiment issue #3645 is closed not-planned;
-#4368 does not reopen its wider allocation programme.
+new discoveries. The broad fleet experiment issue #3645 is closed not-planned; #4368 does not reopen its wider allocation programme.
 
 ## Specific lessons to adapt
 

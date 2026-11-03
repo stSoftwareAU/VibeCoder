@@ -211,8 +211,7 @@ mergedAt,closedAt,body`) needed no new cache: it is already a
 _settled listing_ (Issue #2409), served for up to 3,600 s while every open PR
 seen since it was cached is still open. It learns that open set from
 `prs_<login>`, so it is kept warm by the prefetch — including a reused one. The
-listing is also sorted by update recency (`--search sort:updated-desc`, Issue
-#2901), so a recently closed or merged PR is never pushed out of the 100-PR
+listing is also sorted by update recency (`--search sort:updated-desc`, Issue #2901), so a recently closed or merged PR is never pushed out of the 100-PR
 window by newer-created ones.
 
 Measured on the three-repo, two-author fixture in
@@ -441,8 +440,7 @@ counters so its `cache: N hits, M misses` log matches.
 
 A companion line, `graphql-calls: N total, <source>=n, …`, counts the subset of
 those invocations that are GraphQL-backed and attributes them to the scan that
-issued them — by the four-step resolution described below, which since Issue
-#1586 names the ordinary scan traffic too. Every `gh` sub-command (`issue list`,
+issued them — by the four-step resolution described below, which since Issue #1586 names the ordinary scan traffic too. Every `gh` sub-command (`issue list`,
 `pr view`, `search`, …) is GraphQL-backed, as is an explicit `gh api graphql`;
 only a plain REST `gh api <path>` is not. The line uses the same predicate as
 the primary-quota latch (`isQuotaExemptGhCall`), so the two can never disagree
@@ -603,8 +601,7 @@ as calls, not points: a `gh issue list --limit 500` is one call and about five
 points, a 25-issue timeline batch is one call and about twenty-five. The line
 that follows them is different in kind — it is GitHub's own accounting of the
 account's GraphQL primary quota, read from the response headers of a free
-`{ rateLimit { … } }` probe (`worker/deno/lib/graphql_quota_probe.ts`, Issue
-#1456):
+`{ rateLimit { … } }` probe (`worker/deno/lib/graphql_quota_probe.ts`, Issue #1456):
 
 ```
 graphql-quota: used=1579/5000 remaining=3421 window-reopens at 2026-09-07 11:57:27 AEST (in 13m 2s) spent-since-last-cycle=363 (every consumer of this GitHub account, not just this host)

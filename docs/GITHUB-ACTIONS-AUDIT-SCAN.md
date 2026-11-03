@@ -754,8 +754,7 @@ The checkout-persist-credentials scanner
 flags every **`actions/checkout` step lacking `persist-credentials:
 false`** in
 a job that gives no static signal of needing the persisted token (gap from). It
-is the deterministic native counterpart to the long-documented v3-slot check
-#23, which was recorded as covered but never actually implemented in any prompt
+is the deterministic native counterpart to the long-documented v3-slot check #23, which was recorded as covered but never actually implemented in any prompt
 version or scanner. By default checkout writes the workflow's `GITHUB_TOKEN`
 into `.git/config`, where any later step in the job — a compromised dependency,
 an injected script — can read it; a build/test/lint job rarely needs that
@@ -1097,8 +1096,7 @@ retries, never handing the issue to a human (Issue #4298). Setup has no harden
 step and no write path for `SECURITY.md`, and the audit closer has no mapping
 for this id: the pull request that adds the file resolves the finding.
 
-**Private vulnerability reporting is checked on a public repository only (Issue
-#3268).** GitHub offers it on public repositories only, so the scanner reads
+**Private vulnerability reporting is checked on a public repository only (Issue #3268).** GitHub offers it on public repositories only, so the scanner reads
 `private-vulnerability-reporting` only when the `repos/{owner}/{repo}`
 visibility is not `private` or `internal` (an unreadable visibility is not
 treated as exempt, as for secret scanning); `"enabled": false` files
@@ -1208,8 +1206,7 @@ planned at all and the plan carries one line,
 protection: skipped — private repository needs paid GitHub Secret
 Protection`,
 so `--apply` sends no `security_and_analysis` write (Issue #2225). Private
-vulnerability reporting is turned on for a **public** repository only (Issue
-#3267): the command reads `private-vulnerability-reporting` and plans a bare
+vulnerability reporting is turned on for a **public** repository only (Issue #3267): the command reads `private-vulnerability-reporting` and plans a bare
 `PUT` only when it reads `"enabled": false`; on a private or internal repository
 it is not read, and the plan carries one line,
 `private vulnerability reporting: skipped — available on public

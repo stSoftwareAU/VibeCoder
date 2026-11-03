@@ -354,12 +354,10 @@ the gate that keeps them in step. Alongside it, `--launch-log <path>` gives the
 report the failing run's own output: `loop.sh` and `loop.ps1` pass that cycle's
 launch log (Issue #1402), and `run.sh` / `run.ps1` pass the failed build's log
 or the container capture (below) — an escalation that cannot say _why_ the step
-failed is a report nobody can act on, which is what Issues #709, #710, #711,
-#720 and #1029 were. A launch that succeeded is never quoted, and the launcher
+failed is a report nobody can act on, which is what Issues #709, #710, #711, #720 and #1029 were. A launch that succeeded is never quoted, and the launcher
 deletes its build log only **after** the outcome has been recorded.
 
-**A launch that failed quotes what the container said (Issues #711, #720,
-#1029).** Both launchers stream the `run` client's stderr to the console _and_
+**A launch that failed quotes what the container said (Issues #711, #720, #1029).** Both launchers stream the `run` client's stderr to the console _and_
 keep a copy, and any launch that started a container and did not exit 0 hands
 that copy over as `--launch-log`. For a start the runtime refused — exit
 **125**, **126** or **127**, the statuses that become a `container_start`

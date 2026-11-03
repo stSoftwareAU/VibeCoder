@@ -91,8 +91,7 @@ and each drop is recorded below. Phase 3's **independent verification** ran as a
 second detection pass over the same hunks in a fresh context that never saw the
 first pass's reasoning; both survivors below came from it, and its refutations
 are folded into the lists that follow. The four open `security` issues at this
-record are #2216, #2231, #2236 and #2237; neither survivor duplicates one, and
-#2236 is noted where its site adjoins this slice.
+record are #2216, #2231, #2236 and #2237; neither survivor duplicates one, and #2236 is noted where its site adjoins this slice.
 
 ## Findings
 

@@ -1,7 +1,6 @@
 # Coverage carry-over check
 
-The coverage carry-over check is an advisory PR-raise gate (Issue #3795, Issue
-#4234). It checks that the production lines a removed or rewritten test used to
+The coverage carry-over check is an advisory PR-raise gate (Issue #3795, Issue #4234). It checks that the production lines a removed or rewritten test used to
 execute are still executed by some test on the branch. A carried line that
 remains uncovered is one in-session note, then one comment on the pull request,
 which is still raised.

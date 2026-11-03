@@ -205,8 +205,7 @@ Claude at all.
 A comment thread is open to **any** GitHub account, and the author is the only
 authenticated part of a comment. Matching on the URL alone let one outsider
 comment carrying any `…/issues/N` link close the parent citing that issue as its
-plan, with the planner never running — and a benign cross-reference ("related to
-#500") did the same by accident. The recovery therefore re-reads the thread with
+plan, with the planner never running — and a benign cross-reference ("related to #500") did the same by accident. The recovery therefore re-reads the thread with
 `getIssueComments` (the flattened prompt blob carries no per-comment author),
 attributes **each comment** through `selectFleetAuthoredComments()` against the
 fleet identity (`resolveFleetMaintenanceAuthorSet` — this host's login ∪
@@ -399,8 +398,7 @@ flowchart TD
 The repair is **best-effort and idempotent**: an offender whose body cannot be
 read, whose Claude call fails/times out/empties, that the batched output omits,
 whose draft still fails the gate, or whose `gh issue edit` throws stays in
-`stillOffending` and is recorded on the parent as an outstanding repair (Issue
-#59; before that it drove `handlePlanningFailure`). Only a positively confirmed
+`stillOffending` and is recorded on the parent as an outstanding repair (Issue #59; before that it drove `handlePlanningFailure`). Only a positively confirmed
 repair is reported as repaired. The re-gate is performed on the constructed body
 _before_ the patch, so a still-failing draft never overwrites the sub-issue.
 

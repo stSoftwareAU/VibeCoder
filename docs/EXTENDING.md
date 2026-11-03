@@ -636,8 +636,7 @@ true for** in
 ### Per-model coding-guidelines overlays
 
 The shared `coding_guidelines` template is model-agnostic, so genuinely
-model-specific working-style guidance lives in an **overlay** prompt type (Issue
-#374). An overlay is an ordinary prompt directory named after the agent identity
+model-specific working-style guidance lives in an **overlay** prompt type (Issue #374). An overlay is an ordinary prompt directory named after the agent identity
 it applies to:
 
 | Directory                                       | Applies to                                                |

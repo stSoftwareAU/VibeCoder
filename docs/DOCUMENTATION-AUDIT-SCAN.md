@@ -335,8 +335,7 @@ The template sets `skipMilestone: true`, mirroring the other scan templates. A
 documentation-audit run **never raises a pull request**: each finding is filed
 as its own GitHub issue, the wrapper is closed with either `no findings` or
 `Documentation audit complete. Filed N issues: …`, and nothing else. A failed
-before/after snapshot lookup renders the unknown-count string instead (Issue
-#1105) — see
+before/after snapshot lookup renders the unknown-count string instead (Issue #1105) — see
 [IDLE-TASK-FRAMEWORK.md → The newly-filed diff](IDLE-TASK-FRAMEWORK.md#the-newly-filed-diff--unknown-is-not-empty).
 The actual doc changes ride the normal `work-on` flow on the filed issues.
 

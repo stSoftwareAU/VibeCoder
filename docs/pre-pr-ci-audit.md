@@ -174,8 +174,7 @@ Over the 77 PRs this gives 187 `review_dismissed` events, all
 `changes_requested`, so every dismissed review counted here was a request for
 changes. As a cross-check, all 187 bodies open with a `file:line` finding, as
 the model reviews in the table do. Nothing in this audit reads the dismissed set
-as a blocking-review rate. A reader of the table, including the metrics in
-#3644, must not read private-repo-C's 0 as "no blocking findings": it had no
+as a blocking-review rate. A reader of the table, including the metrics in #3644, must not read private-repo-C's 0 as "no blocking findings": it had no
 standing review, and 22 dismissed ones.
 
 One private-repo-A PR was closed without merging and has one standing review; it

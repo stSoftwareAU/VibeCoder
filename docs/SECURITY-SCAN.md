@@ -465,8 +465,7 @@ already present in an issue body. Dedup now relies solely on
 from open issues the **fleet account authored**. Phase 4 no longer runs a live
 `gh issue list --search "SEC- in:body"` re-check: an issue body is
 attacker-writable, but its author is not, so a finding-id marker planted in an
-issue someone else filed must not be able to suppress a real finding (Issue
-#3045). `run-security-scan` builds that same list when
+issue someone else filed must not be able to suppress a real finding (Issue #3045). `run-security-scan` builds that same list when
 `--known-open-finding-ids` is omitted, and unions the flag with the list when
 the flag is set. Findings whose id matches an entry in that fleet-filtered list
 are skipped — there is no in-place update path any more. The expectation is that
@@ -967,8 +966,7 @@ added a module used to append to that one array, so any two open PRs conflicted
 there, whereas two PRs adding two files never do. `readCoverageLedger` reads the
 ledger file plus every file in that directory; a file not named after its own
 issue fails, so does anything in that directory that is not a regular file (a
-subdirectory or a symlink), and the parser refuses any slice for an issue after
-#3200 in the ledger file itself, whatever its chunk id, naming the directory.
+subdirectory or a symlink), and the parser refuses any slice for an issue after #3200 in the ledger file itself, whatever its chunk id, naming the directory.
 Its `chunk` id is **`top-up-<issue>`** (`topUpChunkId` in
 `worker/deno/lib/lib_sweep_coverage.ts`), never the next letter after the
 ledger's tail: two runs working in parallel read the same tail and so choose the

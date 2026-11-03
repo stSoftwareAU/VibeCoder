@@ -150,8 +150,7 @@ Fable-preferring: when an operator pins them back to Fable and the pre-flight
 probe says Fable is unavailable, a **Claude** invocation runs on **Opus @
 `max`** instead. A draft or judgement running under Codex or Gemini has no Fable
 tier to leave: it keeps its own provider routing, is never rerouted onto an
-Anthropic tier alias it cannot resolve, and is not reported degraded (Issue
-#398).
+Anthropic tier alias it cannot resolve, and is not reported degraded (Issue #398).
 
 The Opus substitution is reported the same way the six single-call
 planning-shaped phases report theirs: the `degraded-model` label on the issue,

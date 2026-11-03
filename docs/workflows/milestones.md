@@ -46,8 +46,7 @@ PRs do (Issue #1136). If the milestone branch fell behind the default branch
 during the run, the worker syncs it inline and arms in the same cycle when the
 merge is clean (Issue #2005); a conflicting sync posts its reason and arms the
 child anyway — the milestone ruleset holds the merge until its required checks
-pass (Issue #2460; the ruleset does not require an up-to-date branch, Issue
-#2623) — with the Priority 1.65 / post-scan sweeps plus the 1.72 milestone sync
+pass (Issue #2460; the ruleset does not require an up-to-date branch, Issue #2623) — with the Priority 1.65 / post-scan sweeps plus the 1.72 milestone sync
 as the backstop — see [Label Flows](label-flows.md) and
 [PR feedback](pr-feedback.md). When **all** milestone issues are done, the
 worker creates a **tracking issue**, then opens **one final PR** from the
@@ -317,8 +316,7 @@ issues are fixed automatically; auto-merge is enabled once the PR is mergeable.
 
 ## 🔒 Issue closure for milestone issues
 
-GitHub auto-closes issues only when a PR containing a closing keyword ("Closes
-#N", "Fixes #N", "Resolves #N") is merged into the **default branch**. Merging
+GitHub auto-closes issues only when a PR containing a closing keyword ("Closes #N", "Fixes #N", "Resolves #N") is merged into the **default branch**. Merging
 into any other branch — including a milestone branch — does **not** auto-close
 the referenced issue, regardless of keywords used.
 
@@ -609,8 +607,7 @@ plus `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS`), and a refused branch concludes
 `agent deferred: cycle budget` rather than a charged failure. A gate refusal of
 the resolution is counted, though: a branch the gate has refused
 `MILESTONE_REFUSAL_CEILING` (3) cycles in a row is charged on the next refusal,
-as a failure that spends the whole budget and climbs to the hand-off (Issue
-#4328). A cycle-budget deferral is not counted as a refusal and never climbs
+as a failure that spends the whole budget and climbs to the hand-off (Issue #4328). A cycle-budget deferral is not counted as a refusal and never climbs
 (Issue #4517), and it advances neither the ledger's `count` nor its
 `resolverDeclines`, which the resolver recovery ladder reads. Other non-climbing
 failures — an outage, a non-conflict git failure, a ruleset push rejection or a
@@ -1050,8 +1047,7 @@ loads normally and reports it once as an unknown key.
   keeping milestone branches current between issues.
 
 The ladder after the agent rung is bounded, so a failing branch, or a branch
-whose resolution the gate keeps refusing, is not retried for ever (Issues #4328,
-#4517). A gate refusal that repeats reaches the same hand-off as a charged
+whose resolution the gate keeps refusing, is not retried for ever (Issues #4328, #4517). A gate refusal that repeats reaches the same hand-off as a charged
 failure once it hits the ceiling, a cycle-budget deferral waits for a cycle with
 the runway instead, a spent budget is rebuilt first when a roll-back was already
 spent on the branch, and a roll-back that could not merge is re-armed when the

@@ -867,8 +867,7 @@ below needs doing by hand:
 ```
 
 Both this prompt and the unregister offer that follows a decline default to
-**no** — a bare Enter leaves the host as it is, matching `setup.sh` (Issue
-#1369).
+**no** — a bare Enter leaves the host as it is, matching `setup.sh` (Issue #1369).
 
 The registered definition runs `run.ps1` from the checkout every five minutes
 under a logon trigger, with `IgnoreNew` so a second launch never stacks on a

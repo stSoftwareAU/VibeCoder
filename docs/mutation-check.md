@@ -232,8 +232,7 @@ directory is removed afterwards, so nothing of cargo-mutants' output reaches the
 working tree (a recovery commit stages it with `git add -A`). That temporary
 directory is created in the system temp directory (`TMPDIR`, else Deno's
 default) or, when that refuses, in a private (`0700`) `.mutation-scratch`
-directory on the work volume (`WORK_DIR`, else `$HOME/auto-issue-work`) (Issue
-#4127). The worker image ships `cargo-mutants` 27.1.0 (amd64 from the release
+directory on the work volume (`WORK_DIR`, else `$HOME/auto-issue-work`) (Issue #4127). The worker image ships `cargo-mutants` 27.1.0 (amd64 from the release
 tarball, checksum-verified; arm64 built with `cargo install --locked`).
 
 Absent CI package or workspace selection, the run is limited to the packages the
@@ -348,8 +347,7 @@ allowlisted environment built by `buildUntrustedCommandEnv` with `clearEnv`,
 never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
 credentials are not inherited by it (Issue #572, the same control as the quality
 gate). The only additions are the declared credentials described below and
-`TMPDIR`, which every child gets set to the run's own temporary directory (Issue
-#4127): for `cargo mutants` the `--output` directory, for `deno test` a per-run
+`TMPDIR`, which every child gets set to the run's own temporary directory (Issue #4127): for `cargo mutants` the `--output` directory, for `deno test` a per-run
 directory created before the first child runs and removed afterwards. A declared
 `TMPDIR` cannot override it.
 

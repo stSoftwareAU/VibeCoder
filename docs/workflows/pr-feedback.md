@@ -207,17 +207,14 @@ of two ways: **fixed** in a commit pushed to the PR branch, or **rebutted** as a
 false positive with the reason recorded in `.pr_response_message`. Recording a
 finding in the PR summary as a "known limitation", "follow-up" or "open
 violation" is not a resolution — the next review raises it again. There is no
-other exit: no finding is handed to a person or to a follow-up issue (Issue
-#4304). When a finding is fixed, the PR summary text that recorded it as a
+other exit: no finding is handed to a person or to a follow-up issue (Issue #4304). When a finding is fixed, the PR summary text that recorded it as a
 limitation is deleted in the same push, so the summary stays true to the head
 (per the existing "keep the PR summary true to the head" rule). After a verified
 push to the PR's own head, the worker re-syncs the description from
 `pr-summary-<N>.md` when the summary at the head differs from the SHA-256 digest
-recorded in the body's hidden marker (the digest is of the summary alone, Issue
-#4234) — whichever push changed it, this run's or an earlier one. A pr_feedback
+recorded in the body's hidden marker (the digest is of the summary alone, Issue #4234) — whichever push changed it, this run's or an earlier one. A pr_feedback
 run also re-syncs when it pushed nothing and has no commits left unpushed, so a
-run that answers a finding without a push still refreshes a stale body (Issue
-#3315). A body raised before the digest marker existed keeps the older rule:
+run that answers a finding without a push still refreshes a stale body (Issue #3315). A body raised before the digest marker existed keeps the older rule:
 rebuilt only when this run's own push changed the summary file. Fix branches for
 a gated milestone head are skipped, and only a worker-authored PR is edited. A
 failed sync is logged once at warning and does not fail the run (Issue #3089). A
@@ -353,8 +350,7 @@ flowchart TD
 
 #### A review is dismissed only once the run retires it (Issue #3383)
 
-Claiming a `CHANGES_REQUESTED` review used to dismiss it immediately (Issue
-#2697), which made the claim irreversible before any work happened — a run that
+Claiming a `CHANGES_REQUESTED` review used to dismiss it immediately (Issue #2697), which made the claim irreversible before any work happened — a run that
 died mid-flight left the review dismissed with nobody having answered it. The
 claim comment (`PR_COMMENT_CLAIM`) on a review now carries a lease line
 (`PR_COMMENT_CLAIM_LEASE:<time>`) instead: the processor renews it from its own
@@ -489,8 +485,7 @@ passed, 3 failed" after the file grew to five tests (VibeCoder#3066).
 
 The prose rules above (Issues #3114, #3117, #3120) ask the agent to keep the
 summary, docs and Test Plan honest, but a fix push still landed with the
-summary, a manual or a prompt describing the **old** behaviour (VibeCoder#3134,
-#3095, #3132). After the agent's turn — and after the existing
+summary, a manual or a prompt describing the **old** behaviour (VibeCoder#3134, #3095, #3132). After the agent's turn — and after the existing
 result-placeholder reply retry (Issue #3124) — and before the comment is marked
 processed and the worker's own final-mile commit-and-push, the worker runs a
 **drift check** on the push itself: the working-tree diff against the branch

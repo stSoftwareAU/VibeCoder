@@ -11,8 +11,7 @@ after the chunk-12 slices (12a–12af) recorded their coverage:
 ## `worker/deno/lib/milestone_fix_pr.ts`
 
 The module raises (or reuses) a side-branch PR that lands a fix into a
-ruleset-gated `milestone/**` branch, mirroring `raiseMilestoneSyncPr` (Issue
-#589). The caller has already pushed the fix branch; this module only calls `gh`
+ruleset-gated `milestone/**` branch, mirroring `raiseMilestoneSyncPr` (Issue #589). The caller has already pushed the fix branch; this module only calls `gh`
 to list, create, arm and comment on PRs and to clear stale review requests.
 
 Shapes checked:

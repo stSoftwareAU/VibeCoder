@@ -419,8 +419,7 @@ worker wants on both the old and the new CLI, and the start-up refusal is
 recognised as a session-flag failure so the Issue #204 remedy — drop the flags,
 retry once, say so — fires if it ever recurs. Nothing to configure.
 
-The security-fix verification gate's `test-identifier-in-diff` check (Issue
-#1581) now treats a string literal on the line after a bare `Deno.test(` — the
+The security-fix verification gate's `test-identifier-in-diff` check (Issue #1581) now treats a string literal on the line after a bare `Deno.test(` — the
 shape `deno fmt` produces for a long test name — as part of the declaration, as
 it already did for a Java `@Test` annotation; the wrapped `it(` / `test(` forms
 and the object form's `name:` on its own line are covered the same way. Before
@@ -440,8 +439,7 @@ latches, and writes the shared signal; the quota probe is exempt, REST
 `gh api <path>` calls are unaffected, and a process that never loads `github.ts`
 spawns exactly as before. Nothing to configure.
 
-The host-disk estimate no longer stands on a figure taken once at launch (Issue
-#1550). `run.sh` runs every few minutes whether or not a worker is up; on the
+The host-disk estimate no longer stands on a figure taken once at launch (Issue #1550). `run.sh` runs every few minutes whether or not a worker is up; on the
 ticks where it does not launch it now writes the host's `df` reading to
 `host-disk.json` in the worker log directory — the one host path the container
 mounts read-write — and the worker adopts a reading that is newer than the one
@@ -449,8 +447,7 @@ it holds and less than fifteen minutes old, re-basing its volume-growth term at
 that moment. Because the launcher stays attached to its container for the whole
 run, a scheduler that never overlaps a running job (launchd's `StartInterval`)
 delivers no such tick until the worker exits, so the attached launcher also
-rewrites the file itself every five minutes while the container runs (Issue
-#1691). A host that frees space mid-run resumes claiming within one tick rather
+rewrites the file itself every five minutes while the container runs (Issue #1691). A host that frees space mid-run resumes claiming within one tick rather
 than at the next launch; a host where another account consumes space stops
 claiming within one tick rather than claiming into a shortage. With no file (an
 older launcher, native mode) the launch baseline stands exactly as before. The

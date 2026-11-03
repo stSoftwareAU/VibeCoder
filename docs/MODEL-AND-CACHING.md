@@ -239,8 +239,7 @@ guiding rule: **wherever the Vibe Coder interprets the user's words into an
 implementable state, use the highest model available.** That names eight
 _planning-shaped_ phases — `planning`, `grill_me`, `refinement`, `revision`,
 `question`, `clarification`, and the two Quorum phases `quorum` and
-`quorum_judge` — each of which defaults to the top tier (**Opus** since Issue
-#2560) at `high` effort. They remain _Fable-preferring_: a phase an operator
+`quorum_judge` — each of which defaults to the top tier (**Opus** since Issue #2560) at `high` effort. They remain _Fable-preferring_: a phase an operator
 pins back to Fable still reroutes to **Opus at `max` effort** when Fable is
 unavailable, and the run is recorded degraded (see
 [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)).
@@ -781,8 +780,7 @@ Before the PR_ section of
 With no definition, both inherit the advisor's model and effort: Opus at `high`
 for two extra contexts on nearly every run.
 
-The `issue_reviewer_agents` key ([CONFIGURATION.md](CONFIGURATION.md), Issue
-#2575) defines them instead, in
+The `issue_reviewer_agents` key ([CONFIGURATION.md](CONFIGURATION.md), Issue #2575) defines them instead, in
 [`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts):
 
 | Agent                | Model               | Effort   | Tools                                  | Inputs                                  |
@@ -985,8 +983,7 @@ counters. An attempt that already failed for another reason (a timeout or a
 kill) keeps its own failure path. A run with no refusal is unchanged. The
 standalone `execute-claude-phase` command does not apply this policy.
 
-**The default since Issue #3473.** `"haiku"` began as an opt-in trial (Issue
-#3385) a deployer opted part of their fleet into. On 2026-10-16 the owner made
+**The default since Issue #3473.** `"haiku"` began as an opt-in trial (Issue #3385) a deployer opted part of their fleet into. On 2026-10-16 the owner made
 it the default, with the `issue` manager on Sonnet, before the
 [trial below](#haiku-sub-agent-tier-trial) reached its minimums (see the
 [decision log](#per-phase-decision-log)). `"sonnet"` remains an opt-out,
@@ -2443,8 +2440,7 @@ continuation form (Issue #1580).
 Codex names its own thread. The first phase of an issue is a plain `codex exec`;
 later phases send `codex exec resume <SESSION_ID>` with the id captured from the
 previous run of **this** issue. `--last` is never used: concurrent slots share a
-working directory and would otherwise resume each other's sessions (Issue
-#1699). A stored Claude UUID is never fed to Codex, and a Codex thread is never
+working directory and would otherwise resume each other's sessions (Issue #1699). A stored Claude UUID is never fed to Codex, and a Codex thread is never
 passed as Claude's `--resume`.
 
 #### Session ID — a UUID (Issue #204)
@@ -3300,8 +3296,7 @@ never dropped from cost tracking.
 
 **Opus 5.5** (model id `claude-opus-5-5`, and what the alias `opus` now resolves
 to) is cheaper again on every rate — $4 / $20 per MTok, cache $5.00 / $0.20 —
-with cache hits at 0.05× the base input rate rather than the usual 0.1× (Issue
-#2543). Its row precedes the broader `claude-opus-5` key, per `MODEL_PRICING`'s
+with cache hits at 0.05× the base input rate rather than the usual 0.1× (Issue #2543). Its row precedes the broader `claude-opus-5` key, per `MODEL_PRICING`'s
 more-specific-first rule, and `lookupModelPricing` — which
 `estimateBatchSavings` in `batch_api.ts` also calls (Issue #3436) — prices any
 5.5-or-later id at this rate while 5.0–5.4 keep the row above. These rows mirror
@@ -3429,8 +3424,7 @@ the run (Issues #4146, #4234).
 
 **Moved a third time for Haiku 5.5 (PR #3432 review, Issue #3400).** #3400 set
 `MODEL_CONTEXT_WINDOWS.haiku` to 1M on the premise that the `haiku` alias is
-served by Haiku 5.5, but the premise did not hold at the time: 2.1.281 (the pin
-#2560 left in place) still carried `haiku:"claude-haiku-4-5"` in its bundled
+served by Haiku 5.5, but the premise did not hold at the time: 2.1.281 (the pin #2560 left in place) still carried `haiku:"claude-haiku-4-5"` in its bundled
 alias table, with no `claude-haiku-5-5` string anywhere in the binary —
 confirmed by downloading the pinned release and running `strings` on it. Served
 Haiku 4.5 at its real 200k window against an alias budgeted at 1M is exactly the
@@ -3458,11 +3452,9 @@ Same leniency as the tier-level rule: one invocation served by the current model
 keeps the run healthy. An operator who pins `best_planning_model` to an older
 generation is never flagged — they were served the model they asked for.
 
-`CURRENT_TIER_MODELS` also gained a `haiku` row (`claude-haiku-5-5`, Issue
-#3400), so `previousGenerationOf()` now reports a served Haiku 4.x id (e.g.
+`CURRENT_TIER_MODELS` also gained a `haiku` row (`claude-haiku-5-5`, Issue #3400), so `previousGenerationOf()` now reports a served Haiku 4.x id (e.g.
 `claude-haiku-4-5`) as a previous generation too. A haiku-tier `issue` run
-served such an id with no current Haiku labels the issue `degraded-model` (Issue
-#3405) — see [Haiku sub-agent tier](#haiku-sub-agent-tier-issue-phase).
+served such an id with no current Haiku labels the issue `degraded-model` (Issue #3405) — see [Haiku sub-agent tier](#haiku-sub-agent-tier-issue-phase).
 
 Fable 5.1's three breaking Messages-API changes — forced `tool_choice` rejected,
 thinking blocks bound to the model and to an unedited conversation prefix — do
@@ -3599,8 +3591,7 @@ JSON):
 
 The four top-level token fields are the invocation's total across every model
 that served it. On a split run the CLI's top-level `usage` covers only the main
-session, so they are the sum of `usageByModel` when that field is present (Issue
-#3616).
+session, so they are the sum of `usageByModel` when that field is present (Issue #3616).
 
 **Log location:** `creditLogDir` (configurable) — files named
 `.credit_log_YYYY-MM-DD.json`, defaulting to the worker-private

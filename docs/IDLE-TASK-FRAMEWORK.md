@@ -400,8 +400,7 @@ flowchart LR
     style S fill:#adb5bd,stroke:#6c757d,color:#000
 ```
 
-`{{OPEN_ISSUE_TITLES}}` is the **semantic second line** (Issue #537, parent
-#523). It catches the duplicate the marker cannot: the same problem filed under
+`{{OPEN_ISSUE_TITLES}}` is the **semantic second line** (Issue #537, parent #523). It catches the duplicate the marker cannot: the same problem filed under
 a different id, or typed by a human. Every scan template that files
 judgement-bearing findings calls
 [`listAllOpenIssueTitles`](../worker/deno/lib/idle_task_snapshot.ts) in
@@ -862,8 +861,7 @@ then refuses its **lower-tier** siblings in it (`isMilestoneOccupied` → the
 excluded siblings as `stream_occupied=<n>`, alongside `pr_blocked=<n>`, so both
 deferrals stay observable without inflating the inversion signal.
 
-`stream_occupied` counts `low-priority` and `idle-task` issues only (Issues
-#2530, #2532). A `top-priority` or `work-on` sibling shares the busy stream in
+`stream_occupied` counts `low-priority` and `idle-task` issues only (Issues #2530, #2532). A `top-priority` or `work-on` sibling shares the busy stream in
 its own fresh conversation, so the scan no longer refuses it and the census
 counts it under `top_priority=<n>` / `work_on=<n>`. Counting it here instead
 would put the census back in disagreement with the scan — and `classifyIssues`
@@ -1008,8 +1006,7 @@ single GitHub-visible blocker — and filed VibeCoder#655 against a scan that wa
 right. `run_core_production_deps.ts` now resolves the hold set **once** and
 hands the same set to all three readers, and excluded issues are reported as
 `run_local_hold=<n>`. Issue #3464 adds a third source: the issues whose
-milestone the persisted pacing ledger (`milestone_sync_failures.json`, Issue
-#1780) holds, which the scan skips as `milestone-behind`. The census reads that
+milestone the persisted pacing ledger (`milestone_sync_failures.json`, Issue #1780) holds, which the scan skips as `milestone-behind`. The census reads that
 ledger through the scan's own `milestonePacedUntil`, so a persistently paced
 milestone no longer raises a false `inversion_signal`. Issue #3587 applies the
 same read to the idle-detect audit (`idle_detect_diagnostics.ts`) and to the
@@ -1386,8 +1383,7 @@ repository's own fast-failure diagnostic, not this backlog
 The idle-detect audit unions the same set into its `heldRepos`, for the reason
 the lease already uses it: the scan and the audit cannot disagree about a
 repository the scan was not shown. The claimable counts are untouched on both
-sides, so the idle-task filer stays suppressed while the backlog waits (Issue
-#2813) — and the one issue that should be worked is the repository's
+sides, so the idle-task filer stays suppressed while the backlog waits (Issue #2813) — and the one issue that should be worked is the repository's
 fast-failure diagnostic, which the tracker has already filed.
 
 #### A repo the host cannot build yet (Issue #4751)
@@ -1425,8 +1421,7 @@ than as scanned.
 
 #### The escalation is filed in VibeCoder
 
-The issue lands in `stSoftwareAU/VibeCoder`, never in the subject repo (Issue
-#459). The census, the claim scan and the filer are all worker code, so no
+The issue lands in `stSoftwareAU/VibeCoder`, never in the subject repo (Issue #459). The census, the claim scan and the filer are all worker code, so no
 change in the subject repo can fix what the issue reports. GRQ#4465 was filed
 into GRQ, whose body then asked a human to apply `work-on` — scheduling an agent
 against a checkout containing none of the deciding code, with a write allowlist
@@ -1479,8 +1474,7 @@ credential pool the question is asked of the whole pool (Issue #2647), counting
 windows that reopen soon; the filer reads the same one verdict either way.
 
 Draining is the default (Issue #2474): the guard stays off while the held token
-has any budget, so the pool's token selection, the pool-exhaustion switch (Issue
-#2475) and the run-level outage fallback own the switch-over at exhaustion. A
+has any budget, so the pool's token selection, the pool-exhaustion switch (Issue #2475) and the run-level outage fallback own the switch-over at exhaustion. A
 host that wants the projection guard back sets `claude_week_pace_drain: false`
 in its config — a single-token host with no fallback provider is the shape the
 guard was written for.
@@ -1617,8 +1611,7 @@ continuing episode does not file again, and a later episode does. The body
 carries the evidence — the `slot-utilisation:` line, the last `[idle-hooks]`
 refusal reason with its `claimable_total`, the per-repo census, and how long the
 fleet has gone without an idle task — so the alert arrives diagnosable rather
-than asking a human to reproduce what the machine already saw (Issues #1019 and
-#1020).
+than asking a human to reproduce what the machine already saw (Issues #1019 and #1020).
 
 Every observation emits one line, so "the detector ran and decided nothing"
 stays distinguishable from "the detector never ran":
@@ -1834,8 +1827,7 @@ failure is recorded in the summary and the sweep continues to the next repo; the
 command reports `N filed, M already open, K failed`. Run it from the repository
 root for the same prompt-path reason as above.
 
-`--force` files past the gate exactly as for `raise-boy-scout-idle-tasks` (Issue
-#2753): `action=forced` is logged per bypassed repo, exact-title dedup still
+`--force` files past the gate exactly as for `raise-boy-scout-idle-tasks` (Issue #2753): `action=forced` is logged per bypassed repo, exact-title dedup still
 applies, and an unknown flag is refused:
 
 ```bash

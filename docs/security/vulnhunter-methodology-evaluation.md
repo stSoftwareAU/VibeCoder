@@ -103,8 +103,7 @@ are deterministic code (module header, `security_tree_sweep.ts:28-31`). Its one
 model-driven source, the worker scan, runs before any of them. A model pass that
 could mark a cluster eliminated would put a model's judgement inside that
 classification. The part worth taking is "an elimination must cite evidence".
-Row 3 adopts it where VibeCoder records a finding as a false positive. **Closes
-#3512:** no. **Closes #3615:** no.
+Row 3 adopts it where VibeCoder records a finding as a false positive. **Closes #3512:** no. **Closes #3615:** no.
 
 ## 2. Independent verifier — Adopt (#3657)
 
@@ -170,16 +169,14 @@ severity alone (`code_scanning_alerts.ts:176`).
 
 **Gap.** A run blocked by a sweep finding in its own changed file could add a
 10-character `falsePositives` entry in the same PR and turn the gate green. No
-evidence was needed, and a line-less entry suppressed the whole file. That was
-#3512's "loosen the check" route.
+evidence was needed, and a line-less entry suppressed the whole file. That was #3512's "loosen the check" route.
 
 **Verdict: Adopt — #3658.** Require each `falsePositives` entry to cite the
 eliminating defence as a `path:line` that resolves in the tree, and reject
 line-less, snippet-less entries. **Closes #3512:** no, but it closes that
 issue's sweep-baseline route. **Closes #3615:** no. #3658 makes a citation that
 resolves to nothing a baseline error. That applies the #3613 lesson (a cited
-path that matches no file must fail closed) so the new rule is not itself a
-#3615 instance. That check landed via #3658 (parse-time `evidence` and
+path that matches no file must fail closed) so the new rule is not itself a #3615 instance. That check landed via #3658 (parse-time `evidence` and
 line/snippet validation in `worker/deno/lib/security_tree_sweep.ts`).
 
 ## 4. Evidence-backed remediation mapping — Skip
@@ -211,8 +208,7 @@ otherwise builds deterministically. The sweep treats scanner text as untrusted
 data (module header, `security_tree_sweep.ts:43-44`), and a proposed fix in the
 issue body would steer the fixing agent with text nobody verified. What
 VulnHunter gets from the map is a fix that is proven and a root cause that is
-swept. Rows 2 and 5 adopt that at PR time, where it can be checked. **Closes
-#3512:** no. **Closes #3615:** no.
+swept. Rows 2 and 5 adopt that at PR time, where it can be checked. **Closes #3512:** no. **Closes #3615:** no.
 
 ## 5. Test-first RED→GREEN — Adopt (#3659)
 

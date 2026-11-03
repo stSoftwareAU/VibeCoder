@@ -239,8 +239,7 @@ fallback (filed).
 
 `severity:high` · `confidence:high` · **fixed**
 
-`SECURITY.md` has required redact-before-truncate since Issue #207, and Issue
-#3636 applied it to the no-changes comment:
+`SECURITY.md` has required redact-before-truncate since Issue #207, and Issue #3636 applied it to the no-changes comment:
 
 ```ts
 // worker/deno/lib/phases/handle_no_changes_phase.ts — the correct ordering

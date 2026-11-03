@@ -423,8 +423,7 @@ fails, falls through to the object-store re-clone above — the same
 categorised `clone_corrupt`, named per repository: no `failed-once`/`failed`
 label is applied and the issue's retry budget is never charged, because the
 fault is the host's shared clone, not the issue. It is never handed to a human —
-the next run takes the repair claim afresh and runs the ladder again (Issue
-#4298).
+the next run takes the repair claim afresh and runs the ladder again (Issue #4298).
 
 ```mermaid
 flowchart TD

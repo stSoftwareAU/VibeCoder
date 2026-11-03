@@ -1,7 +1,6 @@
 # 🏷️ Release tagging
 
-Every merge to `main` is tagged with the next patch semver, automatically (Issue
-#627). A host running in frozen mode pins to a released version, so without tags
+Every merge to `main` is tagged with the next patch semver, automatically (Issue #627). A host running in frozen mode pins to a released version, so without tags
 the only thing it could pin to is a raw commit SHA. A release that moves the
 series — a minor or a major — is minted from
 [the release floor](#the-release-floor) instead, and is written up in
@@ -135,8 +134,7 @@ The schema is one object, every field required:
 --release <tag>` prints the manifest on
 stdout, resolving each version through `resolveQuarantineClearedVersions()` —
 the same release-age gate an unpinned update goes through, asked for the
-**newest release that has already cleared the 24h quarantine window** (Issue
-#726). What a release records is therefore a version a host may install today,
+**newest release that has already cleared the 24h quarantine window** (Issue #726). What a release records is therefore a version a host may install today,
 not merely upstream's newest.
 
 Reading the newest release alone made the step fail on nearly every merge: the
@@ -190,8 +188,7 @@ with.
 
 ## Reading the series back — the release check library
 
-`worker/deno/lib/release_check.ts` is the reader side of everything above (Issue
-#689): the one place a caller asks what the newest release is, whether this
+`worker/deno/lib/release_check.ts` is the reader side of everything above (Issue #689): the one place a caller asks what the newest release is, whether this
 host's `pinned_ref` is behind it, and what tool versions that release recorded.
 
 ```mermaid

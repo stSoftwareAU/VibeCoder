@@ -418,8 +418,7 @@ the refusal is logged, the issue stays open, and a human `work-on` schedules it
 exactly as before.
 
 A run-failure issue is also self-scheduled only once its body's **Source** line
-or a fleet-authored follow-up occurrence line names a (public) source (Issue
-#4462). A run on a private repository withholds its source (Issue #4318), so an
+or a fleet-authored follow-up occurrence line names a (public) source (Issue #4462). A run on a private repository withholds its source (Issue #4318), so an
 issue whose every occurrence was withheld waits for a human `work-on`; the
 refusal is logged, and the worker does not guess the cause.
 
@@ -502,8 +501,7 @@ winner-per-combination table lives with the setting itself, in
 **`idle-task` is still the fleet-global floor.** `idle-task` sits below every
 real-work tier in _every_ repo, not just within its own `nice` tier — a
 low-`nice` repo's tier-4 idle-task scan is never selected ahead of a
-higher-`nice` repo's tier-2 `work-on` issue (the inversion fixed by Issue
-#2812). With the label tier now outermost this falls out of the ladder directly:
+higher-`nice` repo's tier-2 `work-on` issue (the inversion fixed by Issue #2812). With the label tier now outermost this falls out of the ladder directly:
 `idle-task` is the last tier walked, so it is reached only when no repo has
 selectable real work. The per-repo idle suppression is unchanged.
 
@@ -662,8 +660,7 @@ global gate. The idle-decision census models this gate too (Issue #2922) and
 reports the suppressed candidates as `work_on_suppressed=<n>` rather than
 counting them towards an inversion signal.
 
-A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue
-#2563). The wait belongs to that one issue — it says nothing about its stream —
+A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue #2563). The wait belongs to that one issue — it says nothing about its stream —
 so the `work-on` issues beside it stay eligible: top priority starves nothing,
 and a tier that is truly blocked means working elsewhere. Until #2563 the
 dependency wait parked the stream whenever the repo had any open fleet PR, even
@@ -1809,8 +1806,7 @@ other operands decide — with a test that goes red for each, and a
 outcomes:` line that names its operand. The issue prompt's Test Plan
 step and the pr_feedback re-enumeration rule carry the same requirement.
 
-**A fake mirrors the production implementation it stands in for (Issues #3224,
-#3900).** The stub-contract and observe-real-tool rules cover external callees —
+**A fake mirrors the production implementation it stands in for (Issues #3224, #3900).** The stub-contract and observe-real-tool rules cover external callees —
 another repository's binary, git, `gh`, the GitHub API. Fleet PRs instead relied
 on a property of the repository's own port that only the in-repo fake had:
 GRQ-AutoTrader#2546 assumed `broker.open_orders()` lists hand-placed orders, as
@@ -1881,8 +1877,7 @@ branch finalises as `summary_incomplete`. The remaining findings are one comment
 on the pull request (Issue #4234). The shortfall is on the pull request rather
 than only in one host's log.
 
-A degraded run, or a healthy run with its own `partial`/`missing` gaps (Issue
-#3506), on an existing-PR branch is the exception to `summary_incomplete`. When
+A degraded run, or a healthy run with its own `partial`/`missing` gaps (Issue #3506), on an existing-PR branch is the exception to `summary_incomplete`. When
 its follow-up cannot be filed, the run fails and the PR is left unfinalised. The
 outcome is `pr` + `blocked` naming that PR, so the release comment does not
 report the run as having delivered nothing.
@@ -1914,8 +1909,7 @@ open PR:
 | Outcome    | `no_pr`                | `pr` with `prNumber`, plus the block's phase and category |
 
 The outcome kind is what downstream health reporting counts, so "delivered, one
-finding outstanding" is now countable apart from "delivered nothing" (Issue
-#1947). `deriveRunOutcome` attaches the block to **any** PR-then-later-step
+finding outstanding" is now countable apart from "delivered nothing" (Issue #1947). `deriveRunOutcome` attaches the block to **any** PR-then-later-step
 failure, not only this gate's.
 
 **Implementation.** `lookupBlockedGatePr` and the gate block in
@@ -1946,8 +1940,7 @@ list), not only in the example block.
 `summaryIncompleteOutcome` in
 [`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts), and the
 release-comment rendering in
-[`heartbeat_storage.ts`](../../worker/deno/lib/heartbeat_storage.ts) (Issue
-#1140).
+[`heartbeat_storage.ts`](../../worker/deno/lib/heartbeat_storage.ts) (Issue #1140).
 
 ```mermaid
 flowchart TD
@@ -2018,8 +2011,7 @@ invocation the worker could not launch at all — a rate limit, a failed spawn �
 changed nothing on the branch: with no PR the original block stands unaltered;
 with an existing PR, completion re-runs and that block finalises the PR as
 `summary_incomplete` rather than failing the run over a live PR and returning
-the issue to the claimable pool for a sibling host to redo finished work (Issue
-#1140).
+the issue to the claimable pool for a sibling host to redo finished work (Issue #1140).
 
 **Issue #3163.** Before this, a block on a branch that already carried a PR —
 raised by the agent itself from inside the execute phase — skipped the recovery
@@ -2029,8 +2021,7 @@ comment landed on the issue seconds after the agent's own PR, with no chance to
 fix the summary, and #3159 went out still describing the old no-changes deferral
 in this manual. The run's first block now always takes the one recovery turn,
 whichever kind of branch it is on; a block that survives that turn is noted on
-the pull request, which is raised or finalised and armed either way (Issue
-#4234).
+the pull request, which is raised or finalised and armed either way (Issue #4234).
 
 **Issue #3382.** The recovery turn used to be told the code had already passed
 the quality gate and must not change, while the Issue #3196 gate demands
@@ -2214,8 +2205,7 @@ the run it _parks_ the PR instead of failing:
 `deferPrCreation` in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
 and `drainDeferredPrs` in
-[`deferred_pr_drain.ts`](../../worker/deno/lib/deferred_pr_drain.ts) (Issue
-#1951).
+[`deferred_pr_drain.ts`](../../worker/deno/lib/deferred_pr_drain.ts) (Issue #1951).
 
 ```mermaid
 flowchart TD

@@ -27,8 +27,7 @@ whose shape this record follows.
 The issue lists **ten** `container/toolchains/*.sh` fragments and calls the
 scope twelve files. On the branch this sweep reads there are **nine**: the tenth
 fragment, `codegraph.sh`, landed on the unmerged milestone branch
-`milestone/2145-trial-codegraph-as-a-second-repo-context-cand` (`3328d9f5`, PR
-#2171) and is not reachable from the default branch. So the committed scope is
+`milestone/2145-trial-codegraph-as-a-second-repo-context-cand` (`3328d9f5`, PR #2171) and is not reachable from the default branch. So the committed scope is
 **eleven** files, not twelve, and `codegraph.sh` was read at that branch's tip
 as an eleventh-and-a-half — recorded below as an observation rather than swept,
 because it is not the code this PR's base carries.

@@ -130,8 +130,7 @@ how the branch is fed:
   read failure in `detail`). The worker never locks on uncertainty, the same
   stance as the check-name discovery below.
 
-**Removing protection needs stronger evidence than suppressing it** (Issue
-#1289). A stale ruleset the worker created earlier is **deleted** only on
+**Removing protection needs stronger evidence than suppressing it** (Issue #1289). A stale ruleset the worker created earlier is **deleted** only on
 evidence the worker trusts: demonstrable direct pushes (commit history it read
 itself) or the `direct-push` topic, which is repository _settings_ and takes
 admin permission to write. The marker file is repository _content_ — anybody
@@ -220,8 +219,7 @@ So before it rewrites the document the configurator **reads the live ruleset**
 (`GET /repos/{repo}/rulesets/{id}`), rewrites only the `required_status_checks`
 rule, and carries every other rule and the `bypass_actors` list through
 unchanged. That rule is the **union** of the worker's contexts and the contexts
-already live in the ruleset, each live check keeping its `integration_id` (Issue
-#4487), so an owner-added check such as a secret scan or static-analysis gate
+already live in the ruleset, each live check keeping its `integration_id` (Issue #4487), so an owner-added check such as a secret scan or static-analysis gate
 survives a reconcile. The update never removes a check; pruning one is a
 deliberate human action (above). The types it kept are reported as
 `preservedRules` and named in the setup output, so a run over a hardened ruleset
@@ -420,8 +418,7 @@ The gate therefore reports the head SHA it read (`headSha` on both
 `CiStatusResult` and `PreMergeGateOutcome`), and `directMergePr()` merges with
 `gh pr merge --squash --match-head-commit <sha>` — or `--merge` when the head is
 a `sync/milestone-*` branch, which must land as a merge commit (Issue #1048), or
-a same-repository `milestone-fix/**` head that merges the default branch (Issue
-#3596). GitHub refuses the merge if the head has moved, so the merge is only
+a same-repository `milestone-fix/**` head that merges the default branch (Issue #3596). GitHub refuses the merge if the head has moved, so the merge is only
 ever performed on the exact commit the verdict was formed against.
 
 - **Head moved** — a deferral (`blocked: "head_moved"`), not a fault. The PR is
@@ -561,8 +558,7 @@ it `failed` instead, because a suite can exist with no check run
 one that bypasses branch protection, so it must fail closed here exactly as its
 neighbouring guards do.
 
-The automated path never merges such a PR and never hands it to a human (Issue
-#4304): `classifyMergeAttempt({ kind: "no_checks" })` returns `retry`, which
+The automated path never merges such a PR and never hands it to a human (Issue #4304): `classifyMergeAttempt({ kind: "no_checks" })` returns `retry`, which
 requests a branch update — a fresh head the repository's checks can run on —
 logs a warning, and tries again next cycle.
 
@@ -630,8 +626,7 @@ the merge if the head moved after the gate read it (Issue #2809).
 
 #### The milestone base is behind the default branch
 
-The same defer-and-retry shape covers the _base_ as well as the head (Issue
-#1779). A child PR whose base is a `milestone/*` branch that is behind the
+The same defer-and-retry shape covers the _base_ as well as the head (Issue #1779). A child PR whose base is a `milestone/*` branch that is behind the
 default branch is **armed anyway** (Issue #2460): the milestone ruleset's strict
 up-to-date policy holds the _merge_ until the branch is level, so arming early
 is safe and the child lands the moment the sync catches up. That safety comes
@@ -1220,8 +1215,7 @@ bounded by **two concluded attempts, with no wait between them** —
 ([`pr_merge_conflict_scan.ts`](../worker/deno/lib/pr_merge_conflict_scan.ts)) —
 the first attempt and one retry against whatever the base has become since
 (Issue #2305). The second judged failure runs the abandon-and-restart rung, and
-no outcome of the _scan's_ spent-budget route asks a person at all (Issue
-#2310); the resolution processor's own spent budget asks no person either — it
+no outcome of the _scan's_ spent-budget route asks a person at all (Issue #2310); the resolution processor's own spent budget asks no person either — it
 goes to abandon-and-redo in its turn (Issue #3032). A PR one concluded failure
 in is due again on the very next pass: the four-hour cooldown that used to sit
 between the attempts bought nothing a moved base does not, and two hosts are
@@ -1234,8 +1228,7 @@ the one pickup label the worker may apply, and no route through the rung parks
 the issue at `needs-human` (Issue #2277). Every fallback files one
 `merge-fallback` issue recording what happened, linked from the closed PR; a PR
 whose originating issue cannot be found is closed too, and its flag carries
-`idle-task` and the PR's diff summary so the flag _is_ the re-do item (Issue
-#2310). There is no cap on restarts per issue (Issue #3033): every redo starts
+`idle-task` and the PR's diff summary so the flag _is_ the re-do item (Issue #2310). There is no cap on restarts per issue (Issue #3033): every redo starts
 on a fresh branch cut from the base branch's current tip, never the abandoned
 one. Its preconditions and its exits are in
 [the merge-conflict workflow](workflows/merge-conflicts.md#%EF%B8%8F-abandon-and-restart-before-a-human-is-asked).
