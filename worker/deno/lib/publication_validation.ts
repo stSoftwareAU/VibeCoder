@@ -16,8 +16,9 @@
  *   uncommitted changes the push would leave out, or a Deno test run executed
  *   no tests. The output goes back to the lane for repair;
  * - `unavailable`: the gate could not run here (missing tool, Docker or
- *   credential fault, unreadable checkout). Not a verdict on the change: the
- *   lane releases or defers and the next cycle retries.
+ *   credential fault, unreadable checkout, a gate killed by its timeout, a
+ *   host out of disk). Not a verdict on the change: the lane releases or
+ *   defers and the next cycle retries.
  *
  * The result is tied to the head it validated. An agent that commits again
  * produces a new head, which is validated afresh.
@@ -57,10 +58,29 @@ export interface PublicationValidationDeps {
     params: QualityGateParams,
     deps: QualityGateDeps,
   ) => Promise<QualityGateRunResult>;
+  /**
+   * Builds the base gate deps for a checkout from its declared credentials.
+   * Production: {@link createDefaultDeps}.
+   */
+  createDeps?: (env: Record<string, string>) => QualityGateDeps;
 }
 
 const OUTPUT_HEAD_CHARS = 4_000;
 const OUTPUT_TAIL_CHARS = 8_000;
+
+/**
+ * Exit codes that mean the gate was killed by its timeout: 124 from `timeout`
+ * itself, and 137 (SIGKILL) or 143 (SIGTERM) when `--kill-after` or the
+ * runner ends the process. A gate that exits with one of these was stopped by
+ * time, not by a failing check.
+ */
+const GATE_TIMEOUT_EXIT_CODES: ReadonlySet<number> = new Set([124, 137, 143]);
+
+/**
+ * Output that means the host ran out of disk while the gate ran. Plain literal
+ * alternation, so matching is linear; case-insensitive.
+ */
+const DISK_FULL_PATTERN = /No space left on device|ENOSPC|Disk quota exceeded/i;
 
 /**
  * The gate's timeout when the repository sets no `quality_check_timeout`. The
@@ -129,6 +149,7 @@ function gateDepsFor(
   cwd: string,
   base: QualityGateDeps,
   customCommand: boolean,
+  observed: { exitCode?: number },
 ): QualityGateDeps {
   const resolve = (path: string) =>
     path.startsWith("/") ? path : `${cwd}/${path.replace(/^\.\//, "")}`;
@@ -138,7 +159,13 @@ function gateDepsFor(
     fileExists: (path) =>
       customCommand ? Promise.resolve(true) : base.fileExists(resolve(path)),
     detectMissingTools: (script) => base.detectMissingTools(resolve(script)),
-    runCommand: (cmd, options) => base.runCommand(cmd, { ...options, cwd }),
+    runCommand: async (cmd, options) => {
+      const result = await base.runCommand(cmd, { ...options, cwd });
+      // The gate result carries no exit code, so the most recent one is kept
+      // for classify. The result itself is passed back unchanged.
+      observed.exitCode = result.exitCode;
+      return result;
+    },
     getCwd: () => cwd,
   };
 }
@@ -183,10 +210,12 @@ export async function validateRepositoryForPublication(
           `declared quality credentials could not be resolved: ${credentials.error.message}`,
       };
     }
+    const observed: { exitCode?: number } = {};
     const gateDeps = gateDepsFor(
       cwd,
-      createDefaultDeps(credentials.value.env),
+      (deps.createDeps ?? createDefaultDeps)(credentials.value.env),
       command !== "./quality.sh",
+      observed,
     );
     const result = await (deps.runGate ?? runQualityGateCheck)(
       {
@@ -198,14 +227,21 @@ export async function validateRepositoryForPublication(
       gateDeps,
     );
     const after = await inspectCheckout(cwd);
-    if (typeof after === "string" || after.head !== before.head) {
+    if (typeof after === "string") {
+      return {
+        status: "unavailable",
+        head: before.head,
+        reason: `could not re-read the checkout after the checks ran: ${after}`,
+      };
+    }
+    if (after.head !== before.head) {
       return {
         status: "unavailable",
         head: before.head,
         reason: "HEAD moved while the checks ran; the result is discarded",
       };
     }
-    return classify(result, before.head);
+    return classify(result, before.head, observed.exitCode);
   } catch (error) {
     return {
       status: "unavailable",
@@ -217,9 +253,33 @@ export async function validateRepositoryForPublication(
   }
 }
 
+/**
+ * Why a gate that exited non-zero was stopped by its timeout or starved of
+ * disk, rather than rejecting the change. `undefined` when neither applies.
+ */
+function gateInfrastructureFault(
+  output: string,
+  exitCode: number | undefined,
+): string | undefined {
+  if (exitCode !== undefined && GATE_TIMEOUT_EXIT_CODES.has(exitCode)) {
+    return `the repository gate timed out (exit ${exitCode}) and was killed ` +
+      `at its time limit`;
+  }
+  const line = output.split("\n").find((candidate) =>
+    DISK_FULL_PATTERN.test(candidate)
+  );
+  if (line !== undefined) {
+    return `the host ran out of disk: ${
+      redactedHeadTail(line.trim(), OUTPUT_HEAD_CHARS, OUTPUT_TAIL_CHARS)
+    }`;
+  }
+  return undefined;
+}
+
 function classify(
   result: QualityGateRunResult,
   head: string,
+  exitCode: number | undefined,
 ): PublicationValidation {
   const text = redactedHeadTail(
     result.failureMessage ?? result.qualityOutput,
@@ -242,8 +302,13 @@ function classify(
       return { status: "passed", head, gate: "ran" };
     }
     case "failed_fixable":
-    case "failed":
+    case "failed": {
+      const fault = gateInfrastructureFault(result.qualityOutput, exitCode);
+      if (fault !== undefined) {
+        return { status: "unavailable", head, reason: fault };
+      }
       return { status: "failed", head, output: text };
+    }
     case "failed_missing_tools":
     case "failed_missing_command":
     case "failed_docker_infra":

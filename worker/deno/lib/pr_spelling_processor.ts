@@ -33,6 +33,11 @@ import {
   type PushVerification,
   verifyPushLanded,
 } from "./push_claim_verification.ts";
+import {
+  createPublicationGuard,
+  PublicationValidationUnavailableError,
+  validateRepositoryForPublication,
+} from "./publication_validation.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -132,6 +137,12 @@ export interface SpellingProcessorDeps {
     branchName: string,
     options?: { cwd?: string },
   ) => Promise<PushVerification>;
+  /**
+   * Repository-checks validator run before every push of a spelling fix
+   * (Issue #4625). Test seam: production leaves it unset and gets
+   * {@link validateRepositoryForPublication}.
+   */
+  validatePublication?: typeof validateRepositoryForPublication;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +194,17 @@ export function formatAnnotations(annotations: CheckAnnotation[]): string {
       `- **${annotation.path}:${annotation.start_line}**: ${annotation.message}\n`;
   }
   return details;
+}
+
+/**
+ * The push-failure detail for a `beforePush` refusal (Issue #4625). A gate
+ * that could not run is deferred, not a content failure, so its detail says
+ * so; a rejected head carries the gate's own output.
+ */
+function publicationFailureDetail(error: Error): string {
+  return error instanceof PublicationValidationUnavailableError
+    ? `deferred: ${error.message}`
+    : error.message;
 }
 
 // ---------------------------------------------------------------------------
@@ -447,12 +469,25 @@ async function _processSpellingWithHeartbeat(
     expectedAncestor: beforeSha,
     ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
   };
+  // Issue #4625: the target repository's own gate must pass on the committed
+  // head before any of it is published. One guard per round, shared by the
+  // final push, the recovery and the retry finalise below.
+  const beforePush = createPublicationGuard({
+    cwd: processorDeps.workDir ?? Deno.cwd(),
+    repo,
+    repoConfigs: processorDeps.repoConfigs,
+    branchName: input.branchName,
+    validate: processorDeps.validatePublication,
+  });
   const finaliseResult = await deps.git.commitAndPushPending(
     input.branchName,
     `Fix spelling check failures: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
     pushOptions,
     false,
     preFlight,
+    undefined,
+    undefined,
+    beforePush,
   );
 
   let pushSucceeded = false;
@@ -483,12 +518,14 @@ async function _processSpellingWithHeartbeat(
       const recoveryResult = await deps.git.recoverFromPushRejection(
         input.branchName,
         { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+        undefined,
+        beforePush,
       );
       // Issue #211: keep the reason the recovery failed — it names the step
       // that failed and carries git's stderr.
       let failureDetail = recoveryResult.ok
         ? undefined
-        : recoveryResult.error.message;
+        : publicationFailureDetail(recoveryResult.error);
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
@@ -496,6 +533,9 @@ async function _processSpellingWithHeartbeat(
           pushOptions,
           false,
           preFlight,
+          undefined,
+          undefined,
+          beforePush,
         );
         if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
           hasChanges = true;
@@ -504,7 +544,7 @@ async function _processSpellingWithHeartbeat(
         } else {
           failureDetail = retryFinalise.ok
             ? `retry after push recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
-            : retryFinalise.error.message;
+            : publicationFailureDetail(retryFinalise.error);
         }
       }
       if (!pushSucceeded) {
@@ -519,7 +559,7 @@ async function _processSpellingWithHeartbeat(
   } else {
     pushAttemptFailed = true;
     logger.error("commitAndPushPending failed", {
-      error: finaliseResult.error.message,
+      error: publicationFailureDetail(finaliseResult.error),
     });
   }
 

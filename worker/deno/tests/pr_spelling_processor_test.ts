@@ -19,7 +19,18 @@ import {
 import { prSpellingProcessorCommand } from "../commands/pr_spelling_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { Logger } from "../types.ts";
+import { commitAndPushPending } from "../lib/git_push.ts";
+import { recoverFromPushRejection } from "../lib/git_push_recovery.ts";
+import {
+  branchHeadChanged,
+  captureBranchHead,
+} from "../lib/branch_head_tracker.ts";
+import {
+  PublicationValidationFailedError,
+  PublicationValidationUnavailableError,
+  type validateRepositoryForPublication,
+} from "../lib/publication_validation.ts";
+import type { Logger, Result } from "../types.ts";
 import type {
   ClaudeDeps,
   GitDeps,
@@ -1256,4 +1267,410 @@ Deno.test("processSpellingFailure - warns when the checkout directory is missing
     true,
     `expected a missing-directory warning, got: ${warnings.join(" | ")}`,
   );
+});
+
+// ============================================================================
+// Issue #4625: the repository's own gate runs before every spelling push
+// ============================================================================
+
+type PublicationVerdict =
+  | { status: "passed"; head: string; gate: "absent" }
+  | { status: "failed"; head: null; output: string }
+  | { status: "unavailable"; head: null; reason: string };
+
+/** The validator stub a test hands the processor's `validatePublication` seam. */
+function verdictStub(
+  verdict: PublicationVerdict,
+): typeof validateRepositoryForPublication {
+  return (() =>
+    Promise.resolve(
+      verdict,
+    )) as unknown as typeof validateRepositoryForPublication;
+}
+
+/** The refusal a `beforePush` guard returned, or `undefined` for a pass. */
+function refusalOf(verdict: Result<void>): Error | undefined {
+  return verdict.ok ? undefined : verdict.error;
+}
+
+/** A logger that keeps every error line, with its context, for assertions. */
+function makeRecordingLogger(): { logger: Logger; errors: string[] } {
+  const errors: string[] = [];
+  const logger = {
+    ...makeSilentLogger(),
+    error: (message: string, context?: unknown) => {
+      errors.push(`${message} ${JSON.stringify(context ?? {})}`);
+    },
+  } as Logger;
+  return { logger, errors };
+}
+
+/**
+ * One spelling round whose first push leaves a commit unpushed, so the
+ * recovery and the retry push too. Returns the `beforePush` each of the three
+ * publication sites was handed, in call order.
+ */
+async function runRoundCapturingGuards(
+  verdict: PublicationVerdict,
+  dir: string,
+): Promise<Array<{ site: string; guard: unknown }>> {
+  const sites: Array<{ site: string; guard: unknown }> = [];
+  let pushCalls = 0;
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Fixed spelling", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    },
+    github: { runGhCommand: () => Promise.resolve("") },
+    git: {
+      commitAndPushPending: ((
+        _branch: unknown,
+        _message: unknown,
+        _opts: unknown,
+        _allowDefault: unknown,
+        _preFlight: unknown,
+        _runId: unknown,
+        _format: unknown,
+        beforePush: unknown,
+      ) => {
+        pushCalls++;
+        sites.push({
+          site: pushCalls === 1 ? "final push" : "retry",
+          guard: beforePush,
+        });
+        return Promise.resolve(
+          pushCalls === 1
+            ? {
+              ok: true,
+              value: {
+                committedNewChanges: true,
+                commitsPushed: 0,
+                finalUnpushedCount: 1,
+              },
+            }
+            : {
+              ok: true,
+              value: {
+                committedNewChanges: false,
+                commitsPushed: 1,
+                finalUnpushedCount: 0,
+              },
+            },
+        );
+      }) as unknown as GitDeps["commitAndPushPending"],
+      recoverFromPushRejection: ((
+        _branch: unknown,
+        _opts: unknown,
+        _detail: unknown,
+        beforePush: unknown,
+      ) => {
+        sites.push({ site: "recovery", guard: beforePush });
+        return Promise.resolve({ ok: true, value: "recovered" });
+      }) as unknown as GitDeps["recoverFromPushRejection"],
+    },
+  });
+
+  await processSpellingFailure(makeInput(), {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: dir,
+    workRoot: dir,
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    validatePublication: verdictStub(verdict),
+  });
+  // The final push, the recovery and the retry, in the order the lane runs them.
+  return [sites[0]!, sites[1]!, sites[2]!];
+}
+
+Deno.test("processSpellingFailure - the final push, the recovery and the retry each carry the publication guard (Issue #4625)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "spelling-guard-" });
+  try {
+    const failed = await runRoundCapturingGuards(
+      { status: "failed", head: null, output: "GATE OUTPUT" },
+      dir,
+    );
+    assertEquals(
+      failed.map((s) => s.site),
+      ["final push", "recovery", "retry"],
+      "every publication site must be reached",
+    );
+    for (const { site, guard } of failed) {
+      assertEquals(
+        typeof guard,
+        "function",
+        `${site} must be handed a beforePush guard`,
+      );
+      const error = refusalOf(await (guard as () => Promise<Result<void>>)());
+      assertEquals(
+        error instanceof PublicationValidationFailedError,
+        true,
+        `${site}: a failed gate must refuse the push`,
+      );
+      assertStringIncludes(error!.message, "GATE OUTPUT");
+    }
+
+    const unavailable = await runRoundCapturingGuards(
+      { status: "unavailable", head: null, reason: "docker is not running" },
+      dir,
+    );
+    for (const { site, guard } of unavailable) {
+      const error = refusalOf(await (guard as () => Promise<Result<void>>)());
+      assertEquals(
+        error instanceof PublicationValidationUnavailableError,
+        true,
+        `${site}: an unavailable gate must refuse the push as deferred`,
+      );
+    }
+
+    const passed = await runRoundCapturingGuards(
+      { status: "passed", head: "0".repeat(40), gate: "absent" },
+      dir,
+    );
+    for (const { site, guard } of passed) {
+      assertEquals(
+        refusalOf(await (guard as () => Promise<Result<void>>)()),
+        undefined,
+        `${site}: a passed gate must let the push through`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("processSpellingFailure - a refused publication is reported as a failed push, or as deferred when the checks could not run (Issue #4625)", async () => {
+  const cases: Array<{
+    verdict: PublicationVerdict;
+    detailIncludes: string;
+    detailStartsWith: string;
+  }> = [
+    {
+      verdict: { status: "failed", head: null, output: "GATE OUTPUT: lint" },
+      detailIncludes: "GATE OUTPUT: lint",
+      detailStartsWith: "Repository checks failed before publication",
+    },
+    {
+      verdict: {
+        status: "unavailable",
+        head: null,
+        reason: "docker is not running",
+      },
+      detailIncludes: "docker is not running",
+      detailStartsWith: "deferred: Repository checks could not run",
+    },
+  ];
+  for (const testCase of cases) {
+    const dir = await Deno.makeTempDir({ prefix: "spelling-refused-" });
+    try {
+      const comments: string[] = [];
+      const { logger, errors } = makeRecordingLogger();
+      const deps = createMockDeps({
+        github: {
+          runGhCommand: (args: string[]) => {
+            if (args[0] === "pr" && args[1] === "comment") {
+              comments.push(args[args.indexOf("--body") + 1] ?? "");
+            }
+            return Promise.resolve("");
+          },
+        },
+        claude: {
+          runClaudeWithRetry: (() =>
+            Promise.resolve({
+              ok: true,
+              value: { output: "Fixed", exitCode: 0, timedOut: false },
+            })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+        },
+        git: {
+          // The real push calls the guard before it pushes; a refusal is
+          // returned as the push's error, as commitAndPushPending does.
+          commitAndPushPending: (async (
+            _branch: unknown,
+            _message: unknown,
+            _opts: unknown,
+            _allowDefault: unknown,
+            _preFlight: unknown,
+            _runId: unknown,
+            _format: unknown,
+            beforePush: unknown,
+          ) => {
+            const verdict = await (beforePush as () => Promise<Result<void>>)();
+            if (!verdict.ok) return verdict;
+            return {
+              ok: true,
+              value: {
+                committedNewChanges: true,
+                commitsPushed: 0,
+                finalUnpushedCount: 0,
+              },
+            };
+          }) as unknown as GitDeps["commitAndPushPending"],
+        },
+      });
+
+      const result = await processSpellingFailure(makeInput(), {
+        promptsDir: PROMPTS_DIR,
+        logger,
+        deps,
+        workDir: dir,
+        workRoot: dir,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        validatePublication: verdictStub(testCase.verdict),
+      });
+
+      assertEquals(result.ok, true);
+      if (result.ok) {
+        assertEquals(
+          result.value.changesPushed,
+          false,
+          "a refused publication is never a success",
+        );
+      }
+      assertEquals(
+        comments.some((c) => c.includes("I've pushed fixes")),
+        false,
+        "no success claim may reach the PR",
+      );
+      const refusal = errors.find((e) =>
+        e.startsWith("commitAndPushPending failed")
+      );
+      assertEquals(
+        refusal !== undefined,
+        true,
+        `the refusal must be logged; got: ${errors.join(" | ")}`,
+      );
+      assertStringIncludes(refusal!, testCase.detailStartsWith);
+      assertStringIncludes(refusal!, testCase.detailIncludes);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+/** Run `git` in `cwd` with the worker's test identity. */
+async function gitIn(cwd: string, args: string[]): Promise<string> {
+  const out = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+    env: {
+      GIT_CONFIG_COUNT: "0",
+      GIT_AUTHOR_NAME: "test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+    },
+  }).output();
+  if (!out.success) {
+    throw new Error(
+      `git ${args.join(" ")} failed: ${new TextDecoder().decode(out.stderr)}`,
+    );
+  }
+  return new TextDecoder().decode(out.stdout);
+}
+
+Deno.test("processSpellingFailure - a spelling fix that fails the repository checks leaves origin unmoved and is reported as a failed push (Issue #4625)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "spelling-publication-" });
+  try {
+    const branch = "issue-4625-spelling-fix";
+    const upstream = `${tmp}/upstream.git`;
+    const seed = `${tmp}/seed`;
+    const downstream = `${tmp}/downstream`;
+    await gitIn(tmp, ["init", "--bare", "-q", "-b", "main", upstream]);
+    await gitIn(tmp, ["clone", "-q", upstream, seed]);
+    await Deno.writeTextFile(`${seed}/README.md`, "seed\n");
+    await gitIn(seed, ["add", "README.md"]);
+    await gitIn(seed, ["commit", "-q", "-m", "seed"]);
+    await gitIn(seed, ["push", "-q", "origin", "main"]);
+    await gitIn(tmp, ["clone", "-q", upstream, downstream]);
+    await gitIn(downstream, ["checkout", "-q", "-b", branch]);
+    await gitIn(downstream, ["push", "-q", "-u", "origin", branch]);
+    const remoteHead = async () =>
+      (await gitIn(downstream, ["ls-remote", "origin", `refs/heads/${branch}`]))
+        .trim();
+    const beforeRemote = await remoteHead();
+
+    const comments: string[] = [];
+    const { logger, errors } = makeRecordingLogger();
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: (args: string[]) => {
+          if (args[0] === "pr" && args[1] === "comment") {
+            comments.push(args[args.indexOf("--body") + 1] ?? "");
+          }
+          return Promise.resolve("");
+        },
+      },
+      claude: {
+        runClaudeWithRetry: (async () => {
+          // The agent commits its fix locally; the push must never leave.
+          await Deno.writeTextFile(`${downstream}/fix.txt`, "fixed\n");
+          await gitIn(downstream, ["add", "fix.txt"]);
+          await gitIn(downstream, ["commit", "-q", "-m", "spelling fix"]);
+          return {
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          };
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      git: {
+        captureBranchHead,
+        branchHeadChanged,
+        commitAndPushPending,
+        recoverFromPushRejection,
+      } as unknown as Partial<GitDeps>,
+    });
+
+    const result = await processSpellingFailure(
+      makeInput({ branchName: branch }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger,
+        deps,
+        workDir: downstream,
+        workRoot: tmp,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        validatePublication: verdictStub({
+          status: "failed",
+          head: null,
+          output: "GATE OUTPUT: lint failed in src/x.ts",
+        }),
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.changesPushed, false);
+    }
+    assertEquals(
+      await remoteHead(),
+      beforeRemote,
+      "origin's branch must not move when the repository checks reject the head",
+    );
+    assertEquals(
+      comments.some((c) => c.includes("failed to push")),
+      true,
+      `the PR must be told the push failed; got: ${comments.join(" | ")}`,
+    );
+    assertEquals(
+      comments.some((c) => c.includes("I've pushed")),
+      false,
+      "no success claim may reach the PR",
+    );
+    assertEquals(
+      errors.some((e) =>
+        e.includes("Repository checks failed before publication") &&
+        e.includes("GATE OUTPUT: lint failed in src/x.ts")
+      ),
+      true,
+      `the gate output must reach the log; got: ${errors.join(" | ")}`,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
 });

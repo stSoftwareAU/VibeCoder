@@ -24,6 +24,7 @@ import {
 } from "../lib/publication_validation.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
+  createDefaultDeps,
   type QualityGateDeps,
   type QualityGateParams,
   type QualityGateRunResult,
@@ -108,6 +109,32 @@ function realGate(
     cleanupPorts: () => Promise.resolve(),
     cleanupSubprocesses: () => Promise.resolve(),
   });
+}
+
+/**
+ * A `createDeps` seam whose base `runCommand` returns `result` without
+ * spawning anything, so a test can choose the exit code the gate reports.
+ */
+function baseReturning(
+  result: { exitCode: number; output: string },
+): (env: Record<string, string>) => QualityGateDeps {
+  return () => ({
+    ...createDefaultDeps(),
+    runCommand: () => Promise.resolve(result),
+  });
+}
+
+/** A `runGate` seam that runs one command through its deps, then returns `result`. */
+function gateRunning(
+  result: QualityGateRunResult,
+): (
+  params: QualityGateParams,
+  deps: QualityGateDeps,
+) => Promise<QualityGateRunResult> {
+  return async (_params, deps) => {
+    await deps.runCommand(["true"], { stdin: "null" });
+    return result;
+  };
 }
 
 /** Narrows a validation to the status the test expects, or fails the test. */
@@ -457,6 +484,192 @@ Deno.test("the real quality gate: a passing quality.sh publishes as ran", async 
       assertEquals(v.gate, "ran");
     },
   );
+});
+
+Deno.test("the real quality gate: exit 124 is unavailable, naming the timeout", async () => {
+  await withRepo(
+    { "quality.sh": "#!/bin/sh\necho slow\nexit 124\n" },
+    async (dir) => {
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: realGate },
+        ),
+        "unavailable",
+      );
+      assertStringIncludes(v.reason, "timed out (exit 124)");
+    },
+  );
+});
+
+Deno.test("the real quality gate: a full disk is unavailable, naming the disk", async () => {
+  await withRepo(
+    {
+      "quality.sh":
+        "#!/bin/sh\necho 'write failed: No space left on device' >&2\nexit 1\n",
+    },
+    async (dir) => {
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: realGate },
+        ),
+        "unavailable",
+      );
+      assertStringIncludes(v.reason, "ran out of disk");
+      assertStringIncludes(v.reason, "No space left on device");
+    },
+  );
+});
+
+Deno.test("the real quality gate: ordinary failures stay failed", async (t) => {
+  await t.step("a test failure with exit 1 is failed", async () => {
+    await withRepo(
+      { "quality.sh": "#!/bin/sh\necho '1 test failed'\nexit 1\n" },
+      async (dir) => {
+        const v = expectStatus(
+          await validateRepositoryForPublication(
+            { cwd: dir, repo: REPO },
+            { runGate: realGate },
+          ),
+          "failed",
+        );
+        assertStringIncludes(v.output, "1 test failed");
+      },
+    );
+  });
+
+  await t.step(
+    "a failure that merely mentions a timeout is failed",
+    async () => {
+      await withRepo(
+        {
+          "quality.sh":
+            "#!/bin/sh\necho 'timeout waiting for the fixture server'\nexit 1\n",
+        },
+        async (dir) => {
+          const v = expectStatus(
+            await validateRepositoryForPublication(
+              { cwd: dir, repo: REPO },
+              { runGate: realGate },
+            ),
+            "failed",
+          );
+          assertStringIncludes(v.output, "timeout waiting");
+        },
+      );
+    },
+  );
+});
+
+Deno.test("a gate killed by its timeout is unavailable, whatever its output", async (t) => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    for (const exitCode of [124, 137, 143]) {
+      await t.step(`exit ${exitCode} is unavailable`, async () => {
+        const v = expectStatus(
+          await validateRepositoryForPublication(
+            { cwd: dir, repo: REPO },
+            {
+              createDeps: baseReturning({ exitCode, output: "partial" }),
+              runGate: gateRunning({
+                action: "failed_fixable",
+                qualityOutput: "partial",
+              }),
+            },
+          ),
+          "unavailable",
+        );
+        assertStringIncludes(v.reason, `timed out (exit ${exitCode})`);
+      });
+    }
+
+    await t.step("a passed gate stays passed despite the code", async () => {
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          {
+            createDeps: baseReturning({ exitCode: 124, output: "" }),
+            runGate: gateRunning(PASS),
+          },
+        ),
+        "passed",
+      );
+      assertEquals(v.gate, "ran");
+    });
+  });
+});
+
+Deno.test("a failed gate whose output reports a full disk is unavailable", async (t) => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    for (
+      const line of [
+        "No space left on device",
+        "open failed: ENOSPC",
+        "write: disk quota exceeded",
+      ]
+    ) {
+      await t.step(`"${line}" is unavailable`, async () => {
+        const v = expectStatus(
+          await validateRepositoryForPublication(
+            { cwd: dir, repo: REPO },
+            {
+              runGate: stubGate({
+                action: "failed",
+                qualityOutput: `build step\n${line}\n`,
+              }),
+            },
+          ),
+          "unavailable",
+        );
+        assertStringIncludes(v.reason, "ran out of disk");
+        assertStringIncludes(v.reason, line);
+      });
+    }
+  });
+});
+
+Deno.test("the gate's runCommand returns its result unchanged in the checkout", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const seenCwd: string[] = [];
+    let returned: { exitCode: number; output: string } | undefined;
+    await validateRepositoryForPublication(
+      { cwd: dir, repo: REPO },
+      {
+        createDeps: () => ({
+          ...createDefaultDeps(),
+          runCommand: (_cmd, options) => {
+            seenCwd.push(options?.cwd ?? "");
+            return Promise.resolve({ exitCode: 0, output: "all clear" });
+          },
+        }),
+        runGate: async (_params, deps) => {
+          returned = await deps.runCommand(["true"], { stdin: "null" });
+          return PASS;
+        },
+      },
+    );
+    assertEquals(returned, { exitCode: 0, output: "all clear" });
+    assertEquals(seenCwd, [dir]);
+  });
+});
+
+Deno.test("a checkout that cannot be re-read after the checks is unavailable", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const v = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        {
+          runGate: async () => {
+            await Deno.remove(`${dir}/.git`, { recursive: true });
+            return PASS;
+          },
+        },
+      ),
+      "unavailable",
+    );
+    assertStringIncludes(v.reason, "could not re-read");
+    assertEquals(v.reason.includes("HEAD moved"), false);
+  });
 });
 
 Deno.test("the guard validates a new head once and reuses a clean pass", async () => {
