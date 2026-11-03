@@ -386,9 +386,9 @@ listed the post-push sync callers were updated. Issues cited as provenance:
 - Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working
   tree, as noted in #4712.
 - The pending-publication record is written only for a repair that addresses
-  reviews, and cleared when its reviews are dismissed, or when the proposal is refused
-  over a governing summary (the reviews then stay open). If the review is
-  withdrawn first, the small file stays until the same head and review recur.
+  reviews, and cleared when its reviews are dismissed, or when the proposal is
+  refused over a governing summary (the reviews then stay open). If the review
+  is withdrawn first, the small file stays until the same head and review recur.
   The next scan finds it only while it still sees that requested review at that
   head (a head with failing CI is repaired for the CI first, with no reviews).
 - The mutation and coverage carry-over checks could not run: their baseline
