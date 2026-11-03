@@ -1,9 +1,14 @@
 ## Summary
 
-The fleet PR babysitter now rebuilds the PR description from the archived
-summary after a repair push, and also retries that sync when a later run finds
-no working-tree changes. It dismisses addressed reviews only after the body is
-current or the sync reports a harmless skip. Closes #4637.
+After a successful push (or a no-change retry), the fleet PR babysitter now
+synchronises the live PR description from the summary committed at the verified
+pushed head, publishes any description the agent proposed through a guard, and
+dismisses an addressed review only after the head, the published text and
+GitHub's closing references are checked. The guard keeps the worker's hidden
+markers, keeps an association the proposal dropped, and never lets a proposal
+restore a close that an unmet (`partial` / `missing`) criterion withholds (the
+#4716 regression). One acceptance item is only partly delivered (see
+Acceptance Criteria), so this is Part of #4637.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
@@ -12,101 +17,148 @@ the final version.
 
 ### Intent and Rationale
 
-- A repair could update the summary while leaving GitHub's PR description stale,
-  so the babysitter now uses the existing summary-to-body synchroniser before
-  dismissing the review.
-- Syncing the clean-tree retry lets a later run repair a description whose
-  earlier publication failed.
+- A repair could update the archived summary while the live description stayed
+  stale until a later sweep, and the proposal path replaced the whole body,
+  dropping the worker markers and re-adding `Closes #N` from the old body.
+- The existing canonical assembler (`syncPrBodyFromSummary`) and the #4712
+  committed-summary loader are reused; the new module only decides what a
+  proposal may publish.
 
 ### Essential Design Decisions
 
-- The sync uses the original PR head as `beforeSha`, the remote PR branch name,
-  and the repair checkout, preserving marker-less adoption rules owned by
-  `syncPrBodyFromSummary`.
-- A sync error or stale-checkout skip leaves reviews open. Explicit harmless
-  skips for unrelated marker-less bodies, unchanged or deleted summaries, and
-  already-current bodies allow dismissal.
-- The babysitter calls `syncPrBodyFromSummary` directly because `runPrBodySync`
-  logs failures without failing its caller.
+- The sync is pinned to the pushed head (`committedHeadSha`, #4712). A commit with
+  no summary is a harmless skip; `pushed head moved`, `could not be verified` and
+  `checkout moved off the committed head` throw, so the review stays open and the
+  next scan retries.
+- Unknown evidence never closes: no committed summary, an unmet criterion in the
+  summary or in the proposal, or no closing keyword in the committed summary all
+  give `Part of #N`. This is stricter than `assemblePrBody`, which appends
+  `Closes #N` for an all-met summary that omits it; the babysitter then rewrites a
+  close GitHub still shows to `Part of`, and the final state is the conservative
+  one. Kept on purpose: the issue says an old closing keyword is not evidence.
+- Negated sentences ("does not close #N"), `Closes: #N` and full-URL closing
+  forms for the governing issue are rewritten, because GitHub honours them.
+- The proposal is rejected at intake over 65,536 characters (agent files are
+  unbounded input to the marker scan); the composed body is checked again at
+  publication.
 
 ### Undiscoverable Facts
 
-- The issue's historical PR #4611 state was not present during this run: the
-  live PR had since moved to an unrelated Discovery #2422 repair. The regression
-  was reproduced locally with the production sync function and a fake GitHub
-  service.
-- No live PR body was edited during verification.
+- The historical PR #4611 no longer shows the reported state, so the regression
+  was reproduced with the production sync function and a fake GitHub service.
+- In this sandbox `babysitter default heartbeat resolves its checkout revision`,
+  `verifyResolvedTree - the repository's own task sees only the allowlisted
+  environment` fail for network and `/tmp` account reasons unrelated to this
+  change.
 
 ## Evidence
 
-This is a backend workflow change. Tests use a temporary Git repository and a
-fake GitHub service to exercise the production body synchroniser and the
-babysitter completion path. The GitHub CLI documents `gh pr edit --body-file` as
-reading the replacement description from the given file:
-[gh pr edit manual](https://cli.github.com/manual/gh_pr_edit).
-
-The live read
-`gh pr view 4611 --repo stSoftwareAU/VibeCoder --json body,files,headRefOid,headRefName,closingIssuesReferences,author`
-showed that #4611 no longer represented the issue's reported state, so it was
-not used as a live reproduction.
+Backend workflow change; no UI. Tests use temporary git repositories and a fake
+GitHub service that drives the production body synchroniser and
+`finishBabysitterRepair`. `gh pr edit --body-file` reads the replacement body
+from the file ([gh pr edit manual](https://cli.github.com/manual/gh_pr_edit)).
 
 ```mermaid
 sequenceDiagram
     participant B as Babysitter
     participant G as GitHub
-    B->>B: Validate and commit repair
-    B->>G: Push updated branch
-    B->>G: Rebuild and publish PR description
-    B->>G: Confirm current head and review
-    B->>G: Dismiss addressed review
+    B->>B: Validate, commit, push repair
+    B->>G: Wait for the PR view to show the pushed head
+    B->>G: Sync body from the summary committed at that head
+    B->>G: Publish the guarded proposal, if any
+    B->>G: Re-read head, text and closing references
+    B->>G: Dismiss the addressed review
 ```
 
 ### Deno regression avoided
 
-- Validation used Deno's formatter, linter, checker, targeted test task, and
-  repository quality script; no Node tooling or manifests were added.
+- Only Deno tooling was used; no Node manifests were added.
+
+Related existing rules checked: `docs/workflows/fleet-pr-babysitter.md` (updated
+steps), `missing_criterion_close_guard.ts` (reused, `CLOSING_KEYWORD_RE`
+exported), `pr_body_sync.ts` / `pr_summary_loader.ts` (#4712, reused). Doc
+comments in `pr_body_sync.ts`, `pr_body_reconcile.ts` and `run_core.ts` that
+listed the post-push sync callers were updated. Issues cited as provenance:
+#4712 (committed-summary adoption), #4716 (proposal re-closed a partial issue),
+#4644 (close guard), #4668 (agent proposal).
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Immediately after a successful babysitter push, synchronise the live description through the canonical assembly path, including marker-less worker issue PRs and summary-only repairs — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts::a clean-tree babysitter retry repairs a marker-less stale body before dismissal` — reviewer: met
+- **met** — Read the canonical summary from the verified pushed commit, reusing #4712; never publish uncommitted or unpushed claims — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts::an uncommitted working-tree summary never reaches the adopted body` — reviewer: partial — reason: the reviewer saw a hand-written HEAD reader; it now calls `loadCommittedPrSummary` at the pushed sha (`a summary committed only at the legacy docs/pr-summary-N.md path at the head is found and governs the close`)
+- **met** — Apply the #4644 `partial`/`missing` close guard consistently to assembled bodies and agent proposals; `Part of` must not restore `Closes` — evidence: `worker/deno/tests/babysitter_pr_body_guard_test.ts::a proposal that re-closes a partial issue is withheld, with no closing keyword left (Issue #4716)` — reviewer: partial — reason: the reviewer noted the guard also needs a closing keyword in the summary, which `assemblePrBody` does not; the final state is the conservative one (see Essential Design Decisions)
+- **met** — When a proposal drops an issue association, preserve it and choose closing versus non-closing from the acceptance result, keeping unrelated content and links — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts::a proposal that omits a withheld issue gets Part of #N, not Closes #N` — reviewer: partial — reason: a bare "See #N" mention counts as the association and is left non-closing, which is the safe direction
+- **partial** — Treat publication as part of a description repair: recheck head, body and closing references; retry idempotently; keep the finding outstanding and record a recoverable next action until verified — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts::a failed description edit keeps reviews open, and a retry at the same head publishes and dismisses` — reviewer: partial — reason: a legacy body with the worker marker but no summary digest is re-synchronised only through the before-push diff, so a no-change retry does not refresh it; the recoverable next action is the thrown error and the open review, not a persisted record
+- **met** — On a no-code-change repair, publish only an independently supportable correction; a proposal is data, not authority — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts::a repair with no code change publishes its proposal after the sync and dismisses last` — reviewer: met
+- **met** — Marker-less #4611-style body, marker-bearing stale digest and summary-only repair are updated before the repair is reported complete — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts::a clean-tree babysitter retry repairs a marker-less stale body before dismissal` and `the production clean-tree completion path syncs before review dismissal` — reviewer: partial — reason: the reviewer found no babysitter test with a stale-digest marker body; the digest path is the shared `syncPrBodyFromSummary` path covered by `worker/deno/tests/pr_body_sync_test.ts`
+- **met** — #4716 regression: old body `Closes #4674`, result `Part of #4674` plus a `partial` criterion; final body and GitHub closing references do not close #4674 — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts::Issue #4716: a proposal that re-closes a partial issue is withheld, and reviews stay open while GitHub still links it` — reviewer: met
+- **met** — Cover `missing` as well as `partial`, accidentally omitted association, multiple issue references, and a fully met issue whose closing reference remains — evidence: `worker/deno/tests/babysitter_pr_body_guard_test.ts::a proposal that re-closes a missing issue is withheld, with no closing keyword left (Issue #4716)`, `an unrelated closing reference to another issue is restored beside a withheld issue`, `a fully met issue keeps its legitimate Closes, with no duplicate` — reviewer: met
+- **met** — Cover dirty/unpushed summaries, missing committed summary, failed publication, head movement, retry at the same head, no-code-change publication; unknown evidence never closes — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts::an uncommitted working-tree summary never reaches the adopted body`, `a head that moved before publication publishes nothing and keeps reviews open`, `a retry at the same head with the description already current makes no second edit` — reviewer: partial — reason: the reviewer's gap was the legacy digest-less retry named above; every other listed case has a named test
+- **met** — Preserve existing security checks and normal CI/review requirements; no new prose-format gate — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts::a stale repair checkout cannot dismiss reviews after body sync skips` — reviewer: met
+- **unrequested** — `PR_BODY_LIMIT` now lives in the guard module and `takePrBodyProposal` still enforces it at intake — reviewer: unrequested — reason: a move of the existing constant so the guard and intake share one limit; behaviour is unchanged
+- **unrequested** — wording-only comment edits in `worker/deno/lib/pr_body_reconcile.ts`, `worker/deno/lib/run_core.ts`, `worker/deno/lib/pr_body_sync.ts` — reviewer: unrequested — reason: they list the babysitter as a post-push sync caller, which the code now does
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — a pushed repair read the PR view once and lost the wait for GitHub's lag — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:1129` — reason: fixed in this diff (`waitForPushedHead` before the sync; tests for a late head and a never-reached head)
+- **violation** — a missing `closingIssuesReferences` key was read as the empty state — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:956` — reason: fixed in this diff (`readPrBodyState` rejects it by field name; `a PR view that omits closingIssuesReferences is refused by name`)
+- **violation** — marker regexes were quadratic and the proposal had no intake size cap — evidence: `worker/deno/lib/babysitter_pr_body_guard.ts:44` — reason: fixed in this diff (linear scan, intake cap, hostile tests per pattern)
+- **violation** — live markers were read without masking code spans, and unclosed comments were not neutralised — evidence: `worker/deno/lib/babysitter_pr_body_guard.ts:220` — reason: fixed in this diff (masked scan; `neutraliseAgentMarkers`)
+- **violation** — colon and full-URL closing forms were not covered — evidence: `worker/deno/lib/babysitter_pr_body_guard.ts:152` — reason: fixed in this diff
+- **violation** — workflow doc steps 4 and 5 and the guard diagram did not match the code — evidence: `docs/workflows/fleet-pr-babysitter.md:193` — reason: fixed in this diff
+- **violation** — harmless-skip, head-moved-after-publish and description-mismatch outcomes had no test — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:825` — reason: fixed in this diff
+- **violation** — the edited oversized-proposal test no longer guarded anything — evidence: `worker/deno/tests/fleet_pr_babysitter_test.ts:2518` — reason: fixed in this diff (intake rejection restored and asserted)
+- **violation** — `fix()` threads `proposal`, `gh`, `checkBaseline` and `mergedBase` into `finishBabysitterRepair` with no test through `fix()` — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:1514` — reason: exempt (untestable): `fix()` spawns the Codex agent; the test files that call it, `worker/deno/tests/fleet_pr_babysitter_test.ts` and `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`, stop before the post-agent step, and `finishBabysitterRepair` is tested directly
+- **clean** — Australian English, no hidden paths staged, tests call real code, named test files exist, no workflow changes, `issueNumberFromMarker` / `summaryDigestFromBody` read the last occurrence
 
 ## Test Plan
 
-- Added `worker/deno/tests/fleet_pr_babysitter_test.ts` coverage in
-  `a clean-tree babysitter retry repairs a marker-less stale body before dismissal`,
-  `the production clean-tree completion path syncs before review dismissal`,
-  `a pushed fix syncs the legacy body from its original head before dismissal`,
-  `a failed body publication keeps reviews open and a retry publishes before dismissal`,
-  `an already-current PR body is harmless and does not need a second edit`,
-  `an unrelated marker-less PR is not adopted and can still dismiss its review`,
-  and `a stale repair checkout cannot dismiss reviews after body sync skips`.
-- `deno task test:unit tests/fleet_pr_babysitter_test.ts < /dev/null` from
-  `worker/deno`: passed, 25 passed and 0 failed.
-- Mutation check: reverting the sync call in `finishBabysitterRepair` made the
-  production clean-tree and push completion tests fail; restoring it returned
-  the targeted suite to green.
-- Mutation check: replacing the sync result with an already-current result made
-  the sync ordering, publication failure, legacy body, and stale checkout tests
-  fail; restored afterward.
-- `deno lint commands/fleet_pr_babysitter.ts tests/fleet_pr_babysitter_test.ts lib/pr_body_sync.ts lib/pr_body_reconcile.ts lib/run_core.ts`:
+- `worker/deno/tests/babysitter_pr_body_guard_test.ts` (new): the #4716 cases
+  for `partial` and `missing`, an omitted association, a fully met close kept,
+  other issues' references kept, negated sentences, colon and URL closing forms,
+  forged and unterminated markers, code-span markers, unclosed comment openers,
+  the size limit at and one over the limit, and one hostile input per new
+  pattern. Red-checks: defusing, masking, neutralisation and the colon/URL
+  rewrite were each removed and a test went red.
+- `worker/deno/tests/fleet_pr_babysitter_test.ts` (extended): marker-less and
+  clean-tree retries, sync pinned to the pushed head (push and no-change), the
+  harmless and unknown skip reasons, a dirty working tree never published, a
+  failed edit then a retry, head moved before and after publication, a
+  description that does not read back, a lagging and a never-reached PR view, a
+  missing `closingIssuesReferences`, an unreadable committed summary, a summary
+  only at the legacy path, and intake rejection of an oversized proposal. Each
+  production branch was broken once and the matching test went red.
+- Existing test edits: `fakePrBodyService` answers `git ls-remote` with the fake
+  PR head; the oversized-proposal test now asserts rejection at intake (the
+  original assertion); `tests/fixtures/fleet_babysitter_repair_preload.ts` gains
+  `body` and `closingIssuesReferences`. Existing assertions removed: none.
+- `docs/audits/lib-sweep-coverage/top-up-4637.json` registers the new module.
+- `deno task test:unit` over `babysitter_pr_body_guard_test.ts`,
+  `fleet_pr_babysitter_test.ts`, `pr_body_sync_test.ts`,
+  `missing_criterion_close_guard_3177_test.ts`,
+  `fleet_pr_babysitter_single_push_test.ts`, `vibe_env_registry_test.ts`,
+  `lib_sweep_coverage_test.ts`, `fleet_babysitter_app_test.ts`; and
+  `deno task check:manifests`: passed, apart from the sandbox-only heartbeat
+  test named above.
+- `deno fmt --check`, `deno lint` and `deno check` on the changed TypeScript:
   passed.
-- `deno check --frozen --lock=deno.lock commands/fleet_pr_babysitter.ts tests/fleet_pr_babysitter_test.ts`:
-  passed.
-- `deno task check:manifests < /dev/null` from `worker/deno`: passed, 846
-  passed, 0 failed, 1 ignored.
-- `deno fmt` on the changed TypeScript files and `git diff --check`: passed.
-- `timeout 900 ./quality.sh < /dev/null`: failed at the unit-test time-budget
-  gate. The untouched `worker/deno/tests/launcher_harness_reclaim_stub_test.ts`
-  exceeded the 1.00s per-test limit (2 tests, 5.48s total; each about 2.7s).
-  Running that file alone reproduced the same gate failure (2 tests, 5.05s; each
-  about 2.5s). The test, unit-test runner and manifest are unchanged from
-  `origin/main`. Other completed quality stages reported by the gate passed,
-  including formatting, lint, type checks, semgrep, markdownlint, Mermaid
-  validation and completeness. The full gate therefore remains red for this
-  existing timing issue.
+- `./quality.sh < /dev/null`: the first run failed on `completeness checks`
+  (the new module and a `VIBE_`-prefixed constant name), the fixture used by
+  `fleet_babysitter_app_test.ts`, and two sandbox-only tests; those were fixed
+  and the affected tests re-run as listed. The gate was not re-run end to end
+  after the fixes because it takes about nine minutes here.
 
-- Existing test assertions removed: none.
-- Changed completion entry points checked: pushed repair and
-  no-working-tree-change retry, both through `finishBabysitterRepair`; the sync
-  call mutation made both tests fail.
-- Harmless sync outcomes checked here: unrelated marker-less PR and
-  already-current body. The shared sync suite already covers `summary unchanged`
-  and `summary file deleted`; the babysitter rejects the other skip, including
-  `checkout is not the PR head`, which the stale-checkout test verifies leaves
-  the review open.
+<!-- vibe-quality-gate-skipped reason="full gate re-run after the last fixes did not fit the run budget; CI runs the same checks" -->
+
+## Not done
+
+- A legacy worker-marker body with no summary digest is not refreshed on a
+  no-change retry; it needs a repair that changes the summary.
+- Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working
+  tree, as noted in #4712.
+- The recoverable next action is the thrown error and the open review; nothing
+  is persisted.
