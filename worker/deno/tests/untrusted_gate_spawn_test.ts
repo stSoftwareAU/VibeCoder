@@ -697,6 +697,23 @@ Deno.test("exit 78 without the channel marker is an ordinary result (Issue #4705
   });
 });
 
+Deno.test("the channel marker with no declared credentials is the command's own result, not a fault (Issue #4705)", async () => {
+  await withCheckout(async (cwd) => {
+    const { spawn } = spawnAnsweringCommand({
+      ok: true,
+      value: {
+        ...OK,
+        success: false,
+        code: 78,
+        stderr: "[vibe-credential-channel] printed by the command itself\n",
+      },
+    });
+    const result = await runChannelCommand(cwd, spawn, {});
+    assert(result.ok);
+    assertEquals(result.value.code, 78);
+  });
+});
+
 Deno.test("an invalid declared name is a configuration fault that names it and stops the command (Issue #4705)", async () => {
   await withCheckout(async (cwd) => {
     const { calls, spawn } = recordingSpawn();

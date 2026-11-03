@@ -419,7 +419,11 @@ export async function spawnFastCheck(
   );
   if (!result.ok) throw result.error;
   const { code, stdout, stderr, timedOut } = result.value;
-  const fault = credentialChannelFault({ code, stderr });
+  // Only a spawn that went through the channel has a wrapper that can fault;
+  // otherwise a check's own marker + exit 78 is an ordinary failure.
+  const fault = channelled.stdin === undefined
+    ? undefined
+    : credentialChannelFault({ code, stderr });
   if (fault !== undefined) {
     throw new Error(
       "the declared quality_credentials could not be delivered to the " +

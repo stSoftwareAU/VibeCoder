@@ -351,7 +351,9 @@ export async function runRepositoryCommand(
       clearEnv: true,
       stdin: channelled.stdin,
     });
-    const fault = result.ok ? credentialChannelFault(result.value) : undefined;
+    const fault = result.ok && channelled.stdin !== undefined
+      ? credentialChannelFault(result.value)
+      : undefined;
     if (fault !== undefined) {
       return {
         ok: false,

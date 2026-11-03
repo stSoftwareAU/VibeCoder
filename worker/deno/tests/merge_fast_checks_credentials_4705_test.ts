@@ -155,6 +155,17 @@ Deno.test("spawnFastCheck: exit 78 without the marker is an ordinary failing che
   assertEquals(result, { code: 78, output: "credential stream ended early" });
 });
 
+Deno.test("spawnFastCheck: the channel marker with nothing declared is the check's own failure, not a fault (Issue #4705)", async () => {
+  const markerLine = "[vibe-credential-channel] printed by the check itself";
+  const result = await spawnFastCheck(
+    cargoFmtCheck(),
+    {},
+    recordingSpawn([], { code: 78, stderr: markerLine }),
+    sudoAgent,
+  );
+  assertEquals(result, { code: 78, output: markerLine });
+});
+
 Deno.test("spawnFastCheck: with nothing declared there is no wrapper and no stdin (Issue #4705)", async () => {
   const calls: SpawnCall[] = [];
   await spawnFastCheck(
