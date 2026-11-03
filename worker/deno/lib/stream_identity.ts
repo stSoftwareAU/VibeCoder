@@ -33,7 +33,7 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
-import { crypto as stdCrypto } from "@std/crypto";
+import { createHash } from "node:crypto";
 
 /**
  * The stream that owns an issue's conversation.
@@ -70,8 +70,6 @@ const MAX_SLUG_LENGTH = 48;
 /** Stem used when slugging leaves nothing at all (a title of pure punctuation). */
 const EMPTY_SLUG_STEM = "x";
 
-const encoder = new TextEncoder();
-
 /**
  * Reduce text to `[a-z0-9-]`: lowercased, every other character replaced by
  * `-`, runs collapsed, ends trimmed, and capped at `MAX_SLUG_LENGTH`.
@@ -88,11 +86,7 @@ function slugify(raw: string): string {
 
 /** First `HASH_LENGTH` hex characters of the SHA-256 of `raw`. */
 function shortHash(raw: string): string {
-  const digest = stdCrypto.subtle.digestSync("SHA-256", encoder.encode(raw));
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, HASH_LENGTH);
+  return createHash("sha256").update(raw).digest("hex").slice(0, HASH_LENGTH);
 }
 
 /**

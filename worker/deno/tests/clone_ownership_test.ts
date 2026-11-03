@@ -170,3 +170,49 @@ Deno.test("clone ownership refuses foreign and symlinked git metadata", async ()
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("clone ownership can require git metadata before rescue", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    assert(
+      (await checkCloneOwnership(dir, undefined, undefined, true, true))
+        ?.includes("missing .git"),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("clone reuse refuses foreign git metadata before invoking git", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = `${dir}/repo`;
+    await Deno.mkdir(`${path}/.git`, { recursive: true });
+    const uid = (await Deno.lstat(path)).uid;
+    assert(uid !== null);
+    const foreignGit = async (p: string): Promise<Deno.FileInfo> => {
+      const info = await Deno.lstat(p);
+      return p.endsWith("/.git") ? { ...info, uid: uid + 1 } : info;
+    };
+    const check = (p: string) =>
+      checkCloneOwnership(p, () => Promise.resolve(uid), foreignGit);
+    const ensured = await ensureRepoClone("owner/repo", dir, {
+      ownershipCheckFn: check,
+      setupRepoFn: () => {
+        throw new Error("setup must not run");
+      },
+    });
+    assertEquals(ensured.ok, false);
+    assert(ensured.message?.includes(".git is not owned"));
+    let gitCalls = 0;
+    const setup = await setupRepo("owner/repo", dir, check, () => {
+      gitCalls++;
+      throw new Error("git must not run");
+    });
+    assertEquals(setup.success, false);
+    assert(setup.message.includes(".git is not owned"));
+    assertEquals(gitCalls, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

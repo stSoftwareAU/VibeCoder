@@ -3,6 +3,14 @@ import { classifyPrBaseChange } from "../lib/pr_base_change_guard.ts";
 Deno.test("babysitter default heartbeat resolves its checkout revision", async () => {
   const dir = await Deno.makeTempDir();
   try {
+    const info = await new Deno.Command(Deno.execPath(), {
+      args: ["info", "--json"],
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(info.code, 0, new TextDecoder().decode(info.stderr));
+    const denoDir = JSON.parse(new TextDecoder().decode(info.stdout)).denoDir;
     const command = new Deno.Command(Deno.execPath(), {
       args: [
         "eval",
@@ -22,7 +30,7 @@ Deno.test("babysitter default heartbeat resolves its checkout revision", async (
         dir,
       ],
       clearEnv: true,
-      env: { PATH: Deno.env.get("PATH") ?? "", TMPDIR: dir },
+      env: { DENO_DIR: denoDir, PATH: Deno.env.get("PATH") ?? "", TMPDIR: dir },
       stdout: "piped",
       stderr: "piped",
     });
@@ -2739,7 +2747,8 @@ for (const decision of ["REVIEW_REQUIRED", "APPROVED"]) {
       "/unused",
       gh,
       undefined,
-      async () => {},
+      3,
+      { armAutoMerge: async () => {} },
     );
     assertEquals(updated, decision === "APPROVED");
     assertEquals(
@@ -2931,6 +2940,32 @@ Deno.test("long repairs do not prevent new PR discovery", async () => {
   assertEquals(scans, 1);
 });
 
+Deno.test("runRepairs allows an unchanged task version to retry after cooldown", async () => {
+  let releaseBlocker!: () => void;
+  const blockerWait = new Promise<void>((resolve) => releaseBlocker = resolve);
+  let repairAttempts = 0;
+  let scans = 0;
+  const repair = {
+    key: "owner/repo#7",
+    version: "same-head:failed CI",
+    run: async () => {
+      repairAttempts++;
+    },
+  };
+  const blocker = {
+    key: "owner/repo#8",
+    version: "other",
+    run: async () => await blockerWait,
+  };
+  await runRepairs([repair, blocker], 2, () => {
+    scans++;
+    if (scans === 1) return Promise.resolve([repair]);
+    releaseBlocker();
+    return Promise.resolve([]);
+  }, 1);
+  assertEquals(repairAttempts, 2);
+});
+
 Deno.test("review dismissal waits for GitHub to report the pushed head", async () => {
   let reads = 0;
   assertEquals(
@@ -3037,7 +3072,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
   ]);
   assertEquals(call.options.stdin, "null");
   assertEquals(call.options.stdout, "inherit");
-  assertEquals(call.options.stderr, "inherit");
+  assertEquals(call.options.stderr, "piped");
 });
 
 Deno.test("codex agent is not given the workspace-write sandbox and cannot read the credential paths", () => {
@@ -3910,5 +3945,32 @@ Deno.test("a base already merged into the head is detected, a newer base is not"
     assertEquals(await baseAlreadyMerged(dir, "main"), false);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("default git classifies mirror fetch timeout and clone disk exhaustion", async () => {
+  for (const existing of [false, true]) {
+    await withTempRoot(async (root) => {
+      const mirrorRoot = `${root}/mirrors`;
+      if (existing) {
+        await Deno.mkdir(`${mirrorRoot}/owner--repo.git`, { recursive: true });
+      }
+      const stderr = existing
+        ? "TIMEOUT: git fetch --no-auto-maintenance --prune /tmp/upstream timed out after 1800s (Issue #619)"
+        : "Cloning into bare repository /tmp/mirror...\nfatal: write error: No space left on device";
+      try {
+        await cloneForRepair("owner/repo", `${root}/clone`, {
+          mirrorRoot,
+          remoteUrl: () => Promise.resolve("/tmp/upstream"),
+          runGit: () => Promise.resolve({ success: false, stdout: "", stderr }),
+        });
+        throw new Error("expected failure");
+      } catch (error) {
+        assertEquals(
+          (error as { blockerClass: string }).blockerClass,
+          existing ? "infrastructure" : "capability",
+        );
+      }
+    });
   }
 });

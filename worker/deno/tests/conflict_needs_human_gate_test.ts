@@ -1,3 +1,7 @@
+import {
+  BABYSITTER_HANDOFF_MARKER,
+  buildBabysitterAttemptMarker,
+} from "../lib/babysitter_retry_state.ts";
 /**
  * Tests for conflict_needs_human_gate.ts (Issue #2728).
  *
@@ -65,6 +69,26 @@ Deno.test("isCiFixEscalationOnly - empty, malformed and forged entries count for
     isCiFixEscalationOnly([{
       body:
         '<!-- vibe-ci-fix-attempt signature="zz" check="q" head="x" attempt="1" outcome="pushed" -->',
+    }]),
+    false,
+  );
+});
+
+Deno.test("babysitter attempts and handoffs leave the conflict human gate closed", () => {
+  const { marker } = buildBabysitterAttemptMarker(
+    "owner/repo",
+    1,
+    "merge conflict",
+    "a".repeat(40),
+    1,
+    "pushed",
+  );
+  assertEquals(isCiFixEscalationOnly([{ body: marker }]), false);
+  assertEquals(
+    isCiFixEscalationOnly([{
+      body: `${
+        buildDedupMarker("auto-fix-cap:abcdef0123456789")
+      }\n${BABYSITTER_HANDOFF_MARKER}`,
     }]),
     false,
   );

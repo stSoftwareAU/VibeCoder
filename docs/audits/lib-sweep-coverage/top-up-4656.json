@@ -1,0 +1,12 @@
+{
+  "issue": 4656,
+  "chunk": "top-up-4656",
+  "title": "Babysitter durable retry state",
+  "ledger": "docs/audits/security-sweep-4656-top-up.md",
+  "definition": "manual review of the durable PR babysitter retry-state boundary",
+  "status": "swept",
+  "sweptAt": "bffbc3bbc606e143defc38499747c412bd5b214e",
+  "paths": [
+    "worker/deno/lib/babysitter_retry_state.ts"
+  ]
+}

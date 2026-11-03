@@ -23,6 +23,7 @@ import type {
 } from "../lib/milestone_merge_gate.ts";
 import {
   assertOnlyAllowlistedNames,
+  makeAgentReachableTempDir,
   NAMES_PROBE,
   runGateInChild,
 } from "./support/gate_child_env.ts";
@@ -35,7 +36,8 @@ const passingTypeCheck: MergeGateFn = () =>
   });
 
 async function tree(tasks: Record<string, string>): Promise<string> {
-  const dir = await Deno.makeTempDir({ prefix: "issue-1559-gate-" });
+  // A checkout the dropped `agent` account can use (Issue #4733).
+  const dir = await makeAgentReachableTempDir("issue-1559-gate-");
   await Deno.writeTextFile(
     `${dir}/deno.json`,
     JSON.stringify({ tasks }, null, 2),

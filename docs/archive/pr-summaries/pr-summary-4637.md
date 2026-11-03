@@ -16,8 +16,7 @@ text already has a closing keyword or an explicit `Part of`, so a bare mention
 no longer drops it; a repair that pushed nothing cannot publish a proposal where
 a committed summary governs the body, so it keeps the reviews open and names the
 next action (change the committed summary); and a failed publication is resumed
-by the next scan without the agent, which the per-host attempt marker would
-otherwise block.
+by a later eligible scan without starting the agent again.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
@@ -62,19 +61,16 @@ the final version.
   not made, so `ProposalOverGoverningSummaryError` is thrown before any
   dismissal: the reviews stay open, the message names the next action (change
   the committed summary), and the pending-publication record is cleared, since a
-  resumed scan would drop the same proposal again. The per-host attempt marker
-  stops a second agent run at that head and review, so the next action is a push
-  that changes the head. The proposal is still published (through the guard)
+  resumed scan would drop the same proposal again. The next action is to change the committed summary and push it. The proposal is still published (through the guard)
   when no committed summary governs the body, and when the repair pushed. This
   limits what the proposal can assert; it does not check a proposal's prose
   against the diff.
 - A repair that addresses reviews writes `<attempt key>--publication.json` (the
   proposal and whether the repair pushed) before the sync, and removes it once
   the reviews are dismissed or the proposal is refused over a governing summary.
-  `fix()` runs `repairInClone`, which looks for it before it merges the base or
-  starts the agent (`resumePendingPublication`), so a publication that failed is
-  retried on the next scan although the attempt marker blocks a second agent run
-  at that head and review.
+  `fix()` looks for it before it merges the base or starts the agent
+  (`resumePendingPublication`), so an eligible retry resumes publication without
+  another agent run. Main's durable retry state and token renewal remain in use.
 - A no-change retry diffs the committed summary against git's empty tree, so a
   legacy worker body with no summary digest is rebuilt. The sync still edits
   only when the rebuilt body differs, so a second retry makes no edit.
@@ -304,8 +300,8 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   `governingIssueNumber`; no-change suppression removed; `pushedByEarlierRepair`
   not passed on resume; `save` writing another head's key; `clear` removed —
   each went red in the matching tests (per-break counts not restated; not re-run
-  in the second-review fix). The order inside `fix()` is driven through
-  `repairInClone`, which `fix()` calls after the clone: with an attempt marker
+  in the second-review fix). Before the merge from main, `repairInClone`
+  exercised the publication order: with an attempt marker
   already on disk, a failed publication is recorded (the store reaches the
   finish), a second scan finishes it with the agent not started again, and a
   third scan with nothing pending is stopped by the marker

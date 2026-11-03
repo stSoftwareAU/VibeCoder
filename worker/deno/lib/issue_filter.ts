@@ -77,8 +77,7 @@ export interface FilterDiagnostics {
  * Used as the primary detection mechanism to prevent the worker from
  * processing tracking issues as regular work items (Issue #1134).
  */
-export const MILESTONE_TRACKING_MARKER =
-  "<!-- milestone-tracking-issue — do not process as regular work -->";
+export { MILESTONE_TRACKING_MARKER } from "./milestone_tracking_marker.ts";
 
 /**
  * Fallback title pattern for pre-existing milestone tracking issues

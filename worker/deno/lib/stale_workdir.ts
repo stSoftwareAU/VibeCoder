@@ -23,6 +23,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { checkCloneOwnership } from "./broken_clone.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { isProtectedBranch } from "./git_branch.ts";
 import { runGitCommand } from "./git_timeout.ts";
@@ -103,6 +104,8 @@ export interface StaleWorkDirOptions {
   maxAgeDays?: number;
   /** Override the "now" clock for testing. Returns epoch seconds. */
   nowFn?: () => number;
+  /** Override rescue for tests. */
+  rescue?: typeof pushUnpushedBranches;
 }
 
 /** Outcome of a single work-directory scan. */
@@ -253,8 +256,15 @@ export async function scanAndCleanupStaleWorkDirs(
     // ahead of its remote before removal; if any push fails, keep the
     // directory (loud warning) so the work survives for another cycle.
     if (classification.kind === "stale") {
-      const rescue = await pushUnpushedBranches(repoDir);
+      const rescue = await (options.rescue ?? pushUnpushedBranches)(repoDir);
       if (!rescue.ok) {
+        if (rescue.untrusted) {
+          const message =
+            `Kept untrusted clone ${repoDir} for inspection (${rescue.detail})`;
+          result.errors.push(message);
+          console.warn(`SELF-HEALING: ${message}`);
+          continue;
+        }
         result.errors.push(
           `Kept ${repoDir}: unpushed commits could not be pushed (${rescue.detail})`,
         );
@@ -373,6 +383,8 @@ export interface UnpushedRescueResult {
   pushedBranches: string[];
   /** Failure detail when `ok` is false. */
   detail: string;
+  /** Ownership could not be trusted; do not run git in this clone. */
+  untrusted?: boolean;
 }
 
 /**
@@ -387,12 +399,31 @@ export interface UnpushedRescueResult {
  */
 export async function pushUnpushedBranches(
   repoDir: string,
+  deps: {
+    checkOwnership?: typeof checkCloneOwnership;
+    runGit?: typeof runGitCommand;
+  } = {},
 ): Promise<UnpushedRescueResult> {
+  const refusal = await (deps.checkOwnership ?? checkCloneOwnership)(
+    repoDir,
+    undefined,
+    undefined,
+    true,
+    true,
+  );
+  if (refusal) {
+    return { ok: false, pushedBranches: [], detail: refusal, untrusted: true };
+  }
+
   // Routed through the shared chokepoint (Issue #1214): the rescue pushes to
   // a remote, so an untimed spawn here hangs the worker outright, and the
   // push must reach the audit journal like every other git mutation.
   const run = async (args: string[]) => {
-    const result = await runGitCommand(["-C", repoDir, ...args]);
+    const result = await (deps.runGit ?? runGitCommand)([
+      "-C",
+      repoDir,
+      ...args,
+    ]);
     if (!result.ok) {
       return { code: -1, stdout: "", stderr: result.error.message };
     }

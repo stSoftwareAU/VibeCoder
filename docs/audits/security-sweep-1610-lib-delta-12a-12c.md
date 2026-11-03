@@ -159,6 +159,7 @@ re-read; the original #1216 record still covers them.
 | `worker/deno/lib/milestone_resolution_gate.ts` | repo `deno task` names from manifest constants |
 | `worker/deno/lib/milestone_sync_conflict.ts` | commit subjects are display-only; branches are worker-managed |
 | `worker/deno/lib/milestone_tracker_identity.ts` | title is a pre-filter; tracker acts require body marker + fleet author |
+| `worker/deno/lib/milestone_tracking_marker.ts` | constant marker only; no input or side effects |
 | `worker/deno/lib/orphan_deps_severity_gate.ts` | strips fenced untrusted regions; posts a fixed template |
 | `worker/deno/lib/orphan_deps_untrusted.ts` | fences / scrubs third-party metadata before issue filing |
 | `worker/deno/lib/repo_slug.ts` | `REPO_SLUG_PATTERN` rejects `..`; inert rendering for errors |
