@@ -302,3 +302,35 @@ Deno.test("#335 - without the streak deps the pass behaves exactly as before", a
     );
   });
 });
+
+Deno.test("#4613 - a refresh through the shared readiness policy clears an escalated streak", async () => {
+  await withWorkDir(async (dir) => {
+    const h = makeHarness(
+      dir,
+      () =>
+        ({ ok: false, error: new Error(PERMANENT_FAILURE) }) as Result<string>,
+    );
+    for (let cycle = 0; cycle < PR_BRANCH_UPDATE_FAILURE_THRESHOLD; cycle++) {
+      await executePrBranchUpdates([makeAction()], h.deps(`cycle-${cycle}`));
+    }
+    const key = prBranchFailureKey(REPO, BRANCH);
+    assertEquals(
+      (await loadPrBranchFailureStreaks(h.statePath))[key]?.issueNumber,
+      4321,
+    );
+
+    const deps = h.deps("cycle-probe");
+    deps.failureStreak!.retryAfterSkips = 0;
+    const readyCalls: number[] = [];
+    deps.requestReadyRefresh = (_repo, prNumber) => {
+      readyCalls.push(prNumber);
+      return Promise.resolve({ ok: true, value: undefined });
+    };
+    const result = await executePrBranchUpdates([makeAction()], deps);
+
+    if (!result.ok) throw new Error("expected an execution result");
+    assertEquals(readyCalls, [3847]);
+    assertEquals(result.value.updatedCount, 1);
+    assertEquals(await loadPrBranchFailureStreaks(h.statePath), {});
+  });
+});

@@ -22,11 +22,12 @@ import {
 import {
   needsBranchUpdate,
   updateBranch,
+  updateBranchOnce,
 } from "../../../.claude/skills/review-fleet-prs/scripts/branch_update.ts";
 
 const REVIEWER = "nleck";
 const APP = "stsoftware-pr-reviewer";
-const FLEET = new Set(["VibeCoderST"]);
+const FLEET = new Set(["VibeCoderST", REVIEWER]);
 const REPOS = new Set(["acme/app"]);
 
 const review = (
@@ -320,37 +321,58 @@ Deno.test("needsBranchUpdate: only an approved, behind, non-draft fleet PR not a
   );
 });
 
-Deno.test("updateBranch: asks GitHub to merge the base into the PR at the expected head; a refusal is reported, not thrown (Issue #3225)", async () => {
+Deno.test("updateBranch refuses an unreadable ready state before requesting an update (Issue #4613)", async () => {
   const calls: string[][] = [];
-  const ok = await updateBranch(
-    { repo: "acme/app", number: 20, headSha: "head-20" },
+  const result = await updateBranch(
+    {
+      repo: "acme/app",
+      number: 20,
+      headSha: "a".repeat(40),
+      baseRefName: "main",
+    },
     (args) => {
       calls.push(args);
       return Promise.resolve("{}");
     },
   );
-  assertEquals(ok, { updated: true });
-  assertEquals(calls, [[
-    "api",
-    "--method",
-    "PUT",
-    "repos/acme/app/pulls/20/update-branch",
-    "-f",
-    "expected_head_sha=head-20",
-  ]]);
-
-  const refused = await updateBranch(
-    { repo: "acme/app", number: 20, headSha: "head-20" },
-    () =>
-      Promise.reject(new Error("gh api: HTTP 422: expected head sha\nmore")),
+  assertEquals(result.updated, false);
+  assertEquals(
+    calls.some((args) => args.some((arg) => arg.endsWith("/update-branch"))),
+    false,
   );
-  assertEquals(refused, {
-    updated: false,
-    error: "gh api: HTTP 422: expected head sha",
-  });
 });
 
-Deno.test("pass: a fleet PR approved at its head but behind is brought up to date once per head, including an approved Dependabot one (Issue #3225)", async () => {
+Deno.test("updateBranchOnce refuses an unreadable ready state before the update request", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "review-4613-" });
+  const calls: string[][] = [];
+  try {
+    const result = await updateBranchOnce(
+      {
+        repo: "acme/app",
+        number: 20,
+        headSha: "a".repeat(40),
+        baseRefName: "main",
+      },
+      dir,
+      async (args) => {
+        calls.push(args);
+        if (args[0] === "pr" && args[1] === "view") {
+          return JSON.stringify({ state: "OPEN" });
+        }
+        return "{}";
+      },
+    );
+    assertEquals(result, undefined);
+    assertEquals(
+      calls.some((args) => args.some((arg) => arg.endsWith("/update-branch"))),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("pass: approved behind PRs reach the shared readiness policy, while an unreviewed PR is not refreshed (Issue #4613)", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const approvedBehind = fleetPr(30, {
@@ -379,72 +401,112 @@ Deno.test("pass: a fleet PR approved at its head but behind is brought up to dat
       unreviewedBehind,
       dependabot,
     ];
-    const { gh, calls } = makeGh(prs);
-    const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
-    const updates = calls.filter((c) => c[3]?.endsWith("/update-branch"));
-    assertEquals(updates.map((c) => c[3]), [
-      "repos/acme/app/pulls/30/update-branch",
-      "repos/acme/app/pulls/31/update-branch",
-      "repos/acme/app/pulls/34/update-branch",
-    ]);
-    assertEquals(
-      result.upkeep.filter((u) => u.includes("branch")),
-      [
-        "acme/app#30 branch update requested",
-        "acme/app#31 branch update requested",
-        "acme/app#34 branch update requested",
-      ],
+    const f = strictRefreshFixture("acme/app");
+    const heads = new Map(
+      prs.map((pr) => [pr.number, pr.number.toString(16).padStart(40, "0")]),
     );
-    // Review first, update second: the unreviewed PR is reviewed as it is
-    // and is only brought up to date once approved (post.ts does that).
+    for (const pr of prs) {
+      pr.headRefOid = heads.get(pr.number)!;
+      for (const review of pr.reviews.nodes) review.commit!.oid = pr.headRefOid;
+    }
+    const search = makeGh(prs);
+    let currentHead = f.head;
+    const calls: string[][] = [];
+    const gh = async (args: string[]) => {
+      calls.push(args);
+      if (
+        args[1] === "graphql" || args[1] === "--header" ||
+        args[1]?.endsWith("/files") || args[1]?.endsWith("/comments") ||
+        args[1]?.includes("/contents/")
+      ) return await search.gh(args);
+      const number = args[0] === "pr" && args[1] === "view"
+        ? Number(args[2])
+        : Number(args[1]?.match(/\/pulls\/(\d+)$/)?.[1]);
+      if (heads.has(number)) currentHead = heads.get(number)!;
+      const translated = args.map((arg) => arg.replaceAll(currentHead, f.head));
+      return (await f.gh(translated)).replaceAll(f.head, currentHead);
+    };
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.join(" "));
+    };
+    let result;
+    try {
+      result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+    } finally {
+      console.warn = originalWarn;
+    }
+    for (const number of [31, 34]) {
+      assertEquals(
+        warnings.some((line) =>
+          line.includes(`acme/app#${number}`) &&
+          line.includes("base refresh owned by acme/app#30")
+        ),
+        true,
+      );
+    }
+    const updates = calls.filter((c) => c[3]?.endsWith("/update-branch"));
+    assertEquals(updates.length, 1);
+    assertEquals(updates[0]?.[3], "repos/acme/app/pulls/30/update-branch");
+    assertEquals(result.upkeep, ["acme/app#30 branch update requested"]);
+    for (const number of [31, 34]) {
+      assertEquals(
+        calls.some((c) =>
+          c[0] === "pr" && c[1] === "view" && c[2] === String(number)
+        ),
+        true,
+      );
+    }
+    assertEquals(
+      calls.some((c) => c[0] === "pr" && c[1] === "view" && c[2] === "33"),
+      false,
+    );
     assertEquals(result.ready.map((p) => p.number), [33]);
-    // Dependabot shares the leased branch update and gets no comment.
     assertEquals(
       calls.some((c) => c[0] === "pr" && c[1] === "comment" && c[2] === "34"),
       false,
     );
-
-    // Same heads next pass: nothing is asked twice.
-    const { gh: gh2, calls: calls2 } = makeGh(prs);
-    await pass(REPOS, FLEET, REVIEWER, { gh: gh2, dir });
-    assertEquals(calls2.some((c) => c[3]?.endsWith("/update-branch")), false);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("pass: a refused branch update is reported in upkeep and not retried at the same head (Issue #3225)", async () => {
+Deno.test("pass: unreadable refresh policy is logged as a retryable skip (Issue #4613)", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const pr = fleetPr(40, {
       mergeStateStatus: "BEHIND",
-      reviews: { nodes: [review("owner", "APPROVED", "head-40")] },
+      reviews: { nodes: [review(REVIEWER, "APPROVED", "head-40")] },
     });
-    const refusing = () => {
+    const unreadable = () => {
       const calls: string[][] = [];
       const inner = makeGh([pr]).gh;
       const gh = (args: string[]) => {
         calls.push(args);
-        if (args[3]?.endsWith("/update-branch")) {
-          return Promise.reject(new Error("gh api: HTTP 403: locked\nstack"));
-        }
         return inner(args);
       };
       return { gh, calls };
     };
-    const first = refusing();
+    const first = unreadable();
     const result = await pass(REPOS, FLEET, REVIEWER, { gh: first.gh, dir });
-    assertEquals(result.upkeep, [
-      "acme/app#40 branch update failed: gh api: HTTP 403: locked",
-    ]);
+    assertEquals(result.upkeep, []);
     assertEquals(result.ready, []);
-    const second = refusing();
+    assertEquals(
+      first.calls.some((c) => c[3]?.endsWith("/update-branch")),
+      false,
+    );
+    const second = unreadable();
     const again = await pass(REPOS, FLEET, REVIEWER, { gh: second.gh, dir });
     assertEquals(
       second.calls.some((c) => c[3]?.endsWith("/update-branch")),
       false,
     );
     assertEquals(again.upkeep, []);
+    assertEquals(
+      second.calls.some((c) => c[0] === "pr" && c[1] === "view"),
+      true,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -490,4 +552,105 @@ Deno.test("shouldUpdateBranch: only an approval of a PR that is behind its base 
     outcome: "approved",
     filedIssues: [],
   });
+});
+
+import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
+import {
+  FAILED_FILE,
+  readMemory,
+} from "../../../.claude/skills/review-fleet-prs/scripts/upkeep_memory.ts";
+
+for (const refusal of ["", "gh api: HTTP 422: expected head sha\nmore"]) {
+  Deno.test(`updateBranch reaches GitHub with strict readiness: ${refusal || "success"}`, async () => {
+    const f = strictRefreshFixture("acme/app");
+    f.state.refusal = refusal;
+    const result = await updateBranch(
+      { repo: "acme/app", number: 20, headSha: f.head, baseRefName: "main" },
+      f.gh,
+      { fleetAuthors: [...FLEET] },
+    );
+    assertEquals(
+      result,
+      refusal
+        ? {
+          updated: false,
+          error: `Failed to update branch for PR #20 in acme/app: ${
+            refusal.split("\n")[0]
+          }`,
+        }
+        : { updated: true },
+    );
+    assertEquals(f.calls.filter((args) => args.includes("PUT")), [[
+      "api",
+      "--method",
+      "PUT",
+      "repos/acme/app/pulls/20/update-branch",
+      "-f",
+      `expected_head_sha=${f.head}`,
+    ]]);
+  });
+}
+
+for (const refusal of ["", "gh api: HTTP 403: locked\nstack"]) {
+  Deno.test(`pass retains successful refresh and actual API refusal bookkeeping: ${refusal || "success"}`, async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const f = strictRefreshFixture("acme/app");
+      f.state.refusal = refusal;
+      const pr = fleetPr(40, {
+        headRefOid: f.head,
+        mergeStateStatus: "BEHIND",
+        reviews: { nodes: [review(REVIEWER, "APPROVED", f.head)] },
+      });
+      const search = makeGh([pr]);
+      const gh = (args: string[]) =>
+        args[1] === "graphql" || args[1]?.endsWith("/files") ||
+          args[1]?.endsWith("/comments")
+          ? search.gh(args)
+          : f.gh(args);
+      const first = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+      assertEquals(first.upkeep, [
+        refusal
+          ? "acme/app#40 branch update failed: Failed to update branch for PR #40 in acme/app: gh api: HTTP 403: locked"
+          : "acme/app#40 branch update requested",
+      ]);
+      assertEquals(first.ready, []);
+      const before = f.calls.length;
+      const second = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+      assertEquals(second.upkeep, []);
+      assertEquals(
+        f.calls.slice(before).some((args) => args.includes("PUT")),
+        false,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
+
+Deno.test("moving test merge leaves the reviewed head retryable", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const f = strictRefreshFixture("acme/app");
+    f.state.changeAtMerge = 2;
+    const pr = {
+      repo: "acme/app",
+      number: 20,
+      headSha: f.head,
+      baseRefName: "main",
+    };
+    const result = await updateBranchOnce(pr, dir, f.gh, {
+      fleetAuthors: [...FLEET],
+    });
+    assertEquals(result, undefined);
+    assertEquals(await readMemory(dir, FAILED_FILE), {});
+    assertEquals(f.calls.some((args) => args.includes("PUT")), false);
+    f.state.changeAtMerge = 0;
+    assertEquals(
+      await updateBranchOnce(pr, dir, f.gh, { fleetAuthors: [...FLEET] }),
+      { updated: true },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

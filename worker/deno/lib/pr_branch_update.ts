@@ -3,9 +3,10 @@
  *
  * Determines which open PRs need their branches updated by checking
  * how far behind the base branch they are and whether they have
- * merge conflicts. A PR behind a GitHub merge queue is not updated for
- * being behind (Issue #4424) — the queue tests it against its future head —
- * but a conflicting one still is.
+ * merge conflicts. Production callers send plain behind updates through the
+ * shared strict-base readiness and ownership policy (Issue #4613). A PR
+ * behind a GitHub merge queue is not updated for being behind (Issue #4424),
+ * but conflict repair remains separate.
  *
  * Issue #1281: Integrates distributed locking to prevent concurrent
  * workers from updating the same PR branch simultaneously.
@@ -358,6 +359,12 @@ export interface PrBranchExecutionDeps {
    * before — every failure is counted and warned about.
    */
   getPrState?: (repo: string, prNumber: number) => Promise<string>;
+  /** Shared ready-refresh path for behind-only updates (Issue #4613). */
+  requestReadyRefresh?: (
+    repo: string,
+    prNumber: number,
+    baseBranch: string,
+  ) => Promise<Result<void>>;
 }
 
 /**
@@ -1108,7 +1115,7 @@ export async function executePrBranchUpdates(
     // Log what we're about to do
     if (action.reason === "behind") {
       deps.logger.info(
-        `PR #${action.prNumber} (${action.branchName}) is ${action.behindBy} commit(s) behind ${action.baseBranch} — updating...`,
+        `PR #${action.prNumber} (${action.branchName}) is ${action.behindBy} commit(s) behind ${action.baseBranch} — checking refresh eligibility...`,
         { repo: action.repo, prNumber: action.prNumber },
       );
     } else {
@@ -1182,6 +1189,63 @@ export async function executePrBranchUpdates(
           repo: action.repo,
           prNumber: action.prNumber,
           lockCommentId,
+        });
+      }
+      continue;
+    }
+
+    // A plain behind update is not conflict repair. Route it through the
+    // shared ready-check and per-base owner; actual conflicts keep the local
+    // repair path below as the explicit exception.
+    if (action.reason === "behind" && deps.requestReadyRefresh) {
+      // The shared policy takes its own per-base lock on the repository's
+      // oldest PR, which can be this very PR. Release this PR's lock first
+      // so the policy never contends with the lane that called it.
+      if (lockCommentId !== undefined) {
+        await doReleaseLock({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          lockCommentId,
+        });
+      }
+      const update = await deps.requestReadyRefresh(
+        action.repo,
+        action.prNumber,
+        action.baseBranch,
+      );
+      if (update.ok) {
+        updatedCount++;
+        // Issue #335: one success ends the streak, as on the local path.
+        if (streak) {
+          await clearPrBranchUpdateFailure(
+            streak.statePath,
+            action.repo,
+            action.branchName,
+            (message: string) => deps.logger.warn(message),
+          );
+        }
+        deps.logger.info(
+          `PR #${action.prNumber} branch refresh requested under the shared ready policy`,
+          { repo: action.repo, prNumber: action.prNumber },
+        );
+        details.push({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          branchName: action.branchName,
+          status: "updated",
+          message: "GitHub branch refresh requested",
+        });
+      } else {
+        deps.logger.info(
+          `PR #${action.prNumber} branch refresh skipped: ${update.error.message}`,
+          { repo: action.repo, prNumber: action.prNumber },
+        );
+        details.push({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          branchName: action.branchName,
+          status: "contended",
+          message: `Refresh skipped: ${update.error.message}`,
         });
       }
       continue;

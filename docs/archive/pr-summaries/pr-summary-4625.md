@@ -192,3 +192,10 @@ unavailable locally. The current base's merged PR #4740 has 22 passing CI checks
 
 Used Deno tasks, the frozen lockfile and repository-owned gates. No Node tool or
 dependency was added; checkpoint copying uses the runtime standard library.
+
+## Merge conflict repair
+
+Retained the base branch’s injectable GitHub and sleep functions in the
+babysitter repair entry point alongside the PR’s configured quality command.
+Updated the production caller to pass that command after the base parameters,
+preserving existing callers and branch-update coordination.

@@ -54,6 +54,7 @@ import {
   saveShiftLeftLedger,
 } from "../lib/shift_left_failures.ts";
 import { RUN_FAILURE_TARGET_REPO } from "../lib/run_failure_issue.ts";
+import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
 import {
   acquireBranchUpdateLock,
   releaseBranchUpdateLock,
@@ -665,13 +666,9 @@ export function reason(pr: Pr): string | null {
   if (pr.reviewDecision === "CHANGES_REQUESTED") {
     return "requested review changes";
   }
-  if (
-    pr.mergeStateStatus === "BEHIND" &&
-    !pr.statusCheckRollup.some((check) =>
-      (check.status !== undefined && check.status !== "COMPLETED") ||
-      check.state === "PENDING"
-    )
-  ) return "branch behind base";
+  // The shared updater evaluates the effective required-check contract.
+  // An optional pending job must not hide a ready PR from that policy.
+  if (pr.mergeStateStatus === "BEHIND") return "branch behind base";
   return null;
 }
 
@@ -684,9 +681,13 @@ export function eligibleAuthor(
   return selected ||
     authors.some((a) => a.toLowerCase() === author.toLowerCase());
 }
-async function readPr(repo: string, number: number): Promise<Pr> {
+async function readPr(
+  repo: string,
+  number: number,
+  gh: (args: string[]) => Promise<string> = (args) => run("gh", args),
+): Promise<Pr> {
   return JSON.parse(
-    await run("gh", [
+    await gh([
       "pr",
       "view",
       String(number),
@@ -877,13 +878,16 @@ export async function deferBabysitterValidation(
   return checkpoint;
 }
 
-async function fix(
+export async function fix(
   repo: string,
   initial: Pr,
   authors: string[],
   login: string,
   app: BabysitterAppConfig,
   configPath: string,
+  gh: (args: string[]) => Promise<string> = (args) => run("gh", args),
+  sleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
   qualityCommand?: string,
 ): Promise<void> {
   const workerId = `babysitter-${crypto.randomUUID()}`;
@@ -892,6 +896,8 @@ async function fix(
     prNumber: initial.number,
     workerId,
     authorOptions: { fleetAuthors: authors },
+    ghCommandFn: gh,
+    sleepFn: sleep,
     note: `Fleet PR babysitter is checking PR #${initial.number}.`,
   });
   if (!lock.ok) throw lock.error;
@@ -900,12 +906,14 @@ async function fix(
     return;
   }
   const id = lock.value.lockCommentId;
+  let lockReleased = false;
   let renewalFailed = false;
   let child: Deno.ChildProcess | undefined;
   const renewal = startBranchUpdateLockRenewal({
     repo,
     lockCommentId: id,
     workerId,
+    ghCommandFn: gh,
     onError: (message) => {
       renewalFailed = true;
       console.error(message);
@@ -918,7 +926,7 @@ async function fix(
   let scratch: string | undefined;
   let attemptFile: string | undefined;
   try {
-    const pr = await readPr(repo, initial.number);
+    const pr = await readPr(repo, initial.number, gh);
     if (pr.headRefOid !== initial.headRefOid || !reason(pr)) {
       console.log(`${repo}#${pr.number}: changed while waiting; skipped`);
       return;
@@ -929,7 +937,7 @@ async function fix(
       await hasLivePrClaim({
         repo,
         prNumber: pr.number,
-        ghCommandFn: (args) => run("gh", args),
+        ghCommandFn: gh,
         trustedAuthors: authors,
         nowMs: Date.now(),
         log: (message) => console.warn(message),
@@ -956,17 +964,32 @@ async function fix(
       }
     }
     if (reason(pr) === "branch behind base") {
-      await run("gh", [
-        "api",
-        "-X",
-        "PUT",
-        `repos/${repo}/pulls/${pr.number}/update-branch`,
-        "-f",
-        `expected_head_sha=${pr.headRefOid}`,
-      ]);
+      renewal.stop();
+      await releaseBranchUpdateLock({
+        repo,
+        prNumber: initial.number,
+        lockCommentId: id,
+        ghCommandFn: gh,
+      });
+      lockReleased = true;
+      const update = await requestReadyBranchUpdate(
+        repo,
+        pr.number,
+        gh,
+        pr.baseRefName,
+        pr.headRefOid,
+        sleep,
+        { fleetAuthors: authors },
+      );
+      if (!update.ok) {
+        console.log(
+          `${repo}#${pr.number}: branch refresh skipped or failed: ${update.error.message}`,
+        );
+        return;
+      }
       for (let attempt = 0; attempt < 20; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
-        const updated = await readPr(repo, pr.number);
+        await sleep(2_000);
+        const updated = await readPr(repo, pr.number, gh);
         if (updated.headRefOid !== pr.headRefOid) {
           console.log(
             `${repo}#${pr.number}: updated branch; CI will run on the new head`,
@@ -1125,7 +1148,7 @@ async function fix(
     if (renewalFailed) {
       throw new Error("PR lock renewal failed; refusing to push");
     }
-    const current = await readPr(repo, pr.number);
+    const current = await readPr(repo, pr.number, gh);
     if (
       current.headRefOid !== pr.headRefOid ||
       current.headRefName !== pr.headRefName ||
@@ -1169,11 +1192,14 @@ async function fix(
   } finally {
     renewal.stop();
     try {
-      await releaseBranchUpdateLock({
-        repo,
-        prNumber: initial.number,
-        lockCommentId: id,
-      });
+      if (!lockReleased) {
+        await releaseBranchUpdateLock({
+          repo,
+          prNumber: initial.number,
+          lockCommentId: id,
+          ghCommandFn: gh,
+        });
+      }
     } finally {
       await removeRepairDirs([dir, scratch]);
     }
@@ -1397,6 +1423,8 @@ async function pass(
                     login,
                     app,
                     configPath,
+                    undefined,
+                    undefined,
                     getRepoConfig(config.repoConfig, repo, "qualityCommand"),
                   ),
               ),

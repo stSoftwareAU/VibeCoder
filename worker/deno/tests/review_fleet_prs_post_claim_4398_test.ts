@@ -146,87 +146,99 @@ case "$*" in
 esac
 `;
 
-Deno.test("post.ts deletes the claim at the reviewed head after posting the review, and reports nothing on stderr", async () => {
-  const home = await Deno.makeTempDir();
-  const bin = `${home}/bin`;
-  await Deno.mkdir(bin);
-  await Deno.writeTextFile(`${bin}/gh`, SHIM);
-  await Deno.chmod(`${bin}/gh`, 0o755);
+for (const lookupFails of [false, true]) {
+  Deno.test(`post.ts retains its review log with reviewer lookup failure: ${lookupFails}`, async () => {
+    const home = await Deno.makeTempDir();
+    const bin = `${home}/bin`;
+    await Deno.mkdir(bin);
+    await Deno.writeTextFile(
+      `${bin}/gh`,
+      lookupFails ? SHIM.replace("CLEAN", "BEHIND") : SHIM,
+    );
+    await Deno.chmod(`${bin}/gh`, 0o755);
 
-  const round = `${home}/round`;
-  await Deno.mkdir(round);
-  const input = `${round}/input.json`;
-  await Deno.writeTextFile(
-    input,
-    JSON.stringify({
-      pr: {
-        repo: REPO,
-        number: NUMBER,
-        title: "t",
-        url: `https://github.com/${REPO}/pull/${NUMBER}`,
-        headSha: HEAD,
-        testChanges: { removed: [], edited: [] },
-        checklistState: { problem: null, expected: [] },
-        previousFindings: [],
+    const round = `${home}/round`;
+    await Deno.mkdir(round);
+    const input = `${round}/input.json`;
+    await Deno.writeTextFile(
+      input,
+      JSON.stringify({
+        pr: {
+          repo: REPO,
+          number: NUMBER,
+          title: "t",
+          url: `https://github.com/${REPO}/pull/${NUMBER}`,
+          headSha: HEAD,
+          testChanges: { removed: [], edited: [] },
+          checklistState: { problem: null, expected: [] },
+          previousFindings: [],
+        },
+        review: { summary: "Looks right.", findings: [], testChanges: "none" },
+      }),
+    );
+    const comments = `${home}/comments.json`;
+    await Deno.writeTextFile(
+      comments,
+      JSON.stringify([
+        claim(11, HEAD, "mac-1"),
+        claim(12, OLD, "mac-1"),
+        human(13),
+      ]),
+    );
+    const shimLog = `${home}/gh.log`;
+    const deleted = `${home}/deleted.txt`;
+
+    const denoDir = Deno.execPath().replace(/\/[^/]*$/, "");
+    const out = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "run",
+        "--no-lock",
+        "--allow-run=gh,osascript",
+        "--allow-read",
+        "--allow-write",
+        "--allow-env=HOME,XDG_STATE_HOME",
+        POST,
+        `--input=${input}`,
+        `--state-dir=${home}/state`,
+      ],
+      env: {
+        HOME: home,
+        TMPDIR: home,
+        PATH: `${bin}:${denoDir}:/usr/bin:/bin`,
+        SHIM_HEAD: HEAD,
+        SHIM_COMMENTS: comments,
+        SHIM_LOG: shimLog,
+        SHIM_DELETED: deleted,
       },
-      review: { summary: "Looks right.", findings: [], testChanges: "none" },
-    }),
-  );
-  const comments = `${home}/comments.json`;
-  await Deno.writeTextFile(
-    comments,
-    JSON.stringify([
-      claim(11, HEAD, "mac-1"),
-      claim(12, OLD, "mac-1"),
-      human(13),
-    ]),
-  );
-  const shimLog = `${home}/gh.log`;
-  const deleted = `${home}/deleted.txt`;
+      clearEnv: true,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const stderr = new TextDecoder().decode(out.stderr);
+    assertEquals(out.code, 0, `post.ts failed: ${stderr}`);
+    // Deno's own note about `osascript` (absent on Linux) is not post.ts's.
+    assertEquals(stderr.includes("could not delete the review claim"), false);
 
-  const denoDir = Deno.execPath().replace(/\/[^/]*$/, "");
-  const out = await new Deno.Command(Deno.execPath(), {
-    args: [
-      "run",
-      "--no-lock",
-      "--allow-run=gh,osascript",
-      "--allow-read",
-      "--allow-write",
-      "--allow-env=HOME,XDG_STATE_HOME",
-      POST,
-      `--input=${input}`,
-      `--state-dir=${home}/state`,
-    ],
-    env: {
-      HOME: home,
-      PATH: `${bin}:${denoDir}:/usr/bin:/bin`,
-      SHIM_HEAD: HEAD,
-      SHIM_COMMENTS: comments,
-      SHIM_LOG: shimLog,
-      SHIM_DELETED: deleted,
-    },
-    clearEnv: true,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  const stderr = new TextDecoder().decode(out.stderr);
-  assertEquals(out.code, 0, `post.ts failed: ${stderr}`);
-  // Deno's own note about `osascript` (absent on Linux) is not post.ts's.
-  assertEquals(stderr.includes("could not delete the review claim"), false);
+    const result = JSON.parse(new TextDecoder().decode(out.stdout).trim());
+    assertEquals(result.posted, true);
+    assertEquals(result.outcome, "approved");
+    const record = JSON.parse(
+      (await Deno.readTextFile(`${home}/state/log.jsonl`)).trim(),
+    );
+    assertEquals(record.outcome, "approved");
+    if (lookupFails) assertStringIncludes(stderr, "branch refresh skipped");
 
-  const result = JSON.parse(new TextDecoder().decode(out.stdout).trim());
-  assertEquals(result.posted, true);
-  assertEquals(result.outcome, "approved");
+    // Only the claim at the reviewed head is deleted: the claim at the old head
+    // and the human comment that quotes the marker stay.
+    const deletedIds = (await Deno.readTextFile(deleted)).trim().split("\n");
+    assertEquals(deletedIds, ["11"]);
 
-  // Only the claim at the reviewed head is deleted: the claim at the old head
-  // and the human comment that quotes the marker stay.
-  const deletedIds = (await Deno.readTextFile(deleted)).trim().split("\n");
-  assertEquals(deletedIds, ["11"]);
-
-  // The review is posted before the claim is deleted.
-  const calls = (await Deno.readTextFile(shimLog)).trim().split("\n");
-  const reviewAt = calls.findIndex((c) => c.startsWith("pr review "));
-  const deleteAt = calls.findIndex((c) => c.includes("-X DELETE"));
-  assertEquals(reviewAt >= 0 && deleteAt > reviewAt, true, calls.join("\n"));
-});
+    // The review is posted before the claim is deleted.
+    const calls = (await Deno.readTextFile(shimLog)).trim().split("\n");
+    if (lookupFails) assertEquals(calls.includes("api user --jq .login"), true);
+    const reviewAt = calls.findIndex((c) => c.startsWith("pr review "));
+    const deleteAt = calls.findIndex((c) => c.includes("-X DELETE"));
+    assertEquals(reviewAt >= 0 && deleteAt > reviewAt, true, calls.join("\n"));
+  });
+}

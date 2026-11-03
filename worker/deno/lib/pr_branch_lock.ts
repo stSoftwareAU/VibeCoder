@@ -61,6 +61,12 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
+function lockPrefix(kind: "branch" | "base-refresh"): string {
+  return kind === "branch"
+    ? BRANCH_UPDATE_LOCK_PREFIX
+    : "<!-- BASE_REFRESH_LOCK_4613:";
+}
+
 /** The lock marker prefix used in PR comments for branch update locking. */
 export const BRANCH_UPDATE_LOCK_PREFIX = "<!-- BRANCH_UPDATE_LOCK:";
 
@@ -121,6 +127,8 @@ export interface BranchUpdateLockOptions {
   workerId: string;
   /** Lock TTL in seconds (default: 300). */
   lockTtlSeconds?: number;
+  /** Separate comment namespace for short base-ownership transactions. */
+  lockKind?: "branch" | "base-refresh";
   /** Injected sleep function (for testing). Defaults to real sleep. */
   sleepFn?: (ms: number) => Promise<void>;
   /** Injected gh command function (for testing). Defaults to runGhCommand. */
@@ -193,6 +201,8 @@ export interface CleanStaleLockOptions {
   prNumber: number;
   /** Lock TTL in seconds (default: 300). */
   lockTtlSeconds?: number;
+  /** Separate comment namespace for short base-ownership transactions. */
+  lockKind?: "branch" | "base-refresh";
   /** Injected gh command function (for testing). Defaults to runGhCommand. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Injected time function (for testing). Returns current Unix timestamp in seconds. */
@@ -229,8 +239,9 @@ interface LockComment extends AlertDedupCommentRow {
 export function buildLockComment(
   workerId: string,
   timestampSeconds: number,
+  lockKind: "branch" | "base-refresh" = "branch",
 ): string {
-  return `${BRANCH_UPDATE_LOCK_PREFIX}${workerId}:${timestampSeconds} -->`;
+  return `${lockPrefix(lockKind)}${workerId}:${timestampSeconds} -->`;
 }
 
 /**
@@ -243,8 +254,9 @@ export function buildLockBody(
   workerId: string,
   timestampSeconds: number,
   note?: string,
+  lockKind: "branch" | "base-refresh" = "branch",
 ): string {
-  const marker = buildLockComment(workerId, timestampSeconds);
+  const marker = buildLockComment(workerId, timestampSeconds, lockKind);
   return note && note.length > 0 ? `${marker}\n${note}` : marker;
 }
 
@@ -255,9 +267,12 @@ export function buildLockBody(
  */
 export function parseLockComment(
   body: string,
+  lockKind: "branch" | "base-refresh" = "branch",
 ): { workerId: string; timestamp: number } | null {
-  const match = body.match(
-    /<!-- BRANCH_UPDATE_LOCK:([^:]+):(\d+) -->/,
+  const marker = body.indexOf(lockPrefix(lockKind));
+  if (marker < 0) return null;
+  const match = /^([^:]+):(\d+) -->/.exec(
+    body.slice(marker + lockPrefix(lockKind).length),
   );
   if (!match) return null;
 
@@ -330,11 +345,12 @@ function fetchLockComments(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
+  lockKind: "branch" | "base-refresh" = "branch",
 ): Promise<LockComment[]> {
   return fetchMarkerComments(
     repo,
     prNumber,
-    BRANCH_UPDATE_LOCK_PREFIX,
+    lockPrefix(lockKind),
     ghCommandFn,
   );
 }
@@ -374,6 +390,7 @@ export async function cleanStaleBranchUpdateLocks(
     repo,
     prNumber,
     lockTtlSeconds = DEFAULT_LOCK_TTL_SECONDS,
+    lockKind = "branch",
     ghCommandFn = runGhCommand,
     nowFn = defaultNow,
     maxDeletions = DEFAULT_MAX_STALE_LOCK_DELETIONS,
@@ -384,7 +401,12 @@ export async function cleanStaleBranchUpdateLocks(
 
   let lockComments: LockComment[];
   try {
-    lockComments = await fetchLockComments(repo, prNumber, ghCommandFn);
+    lockComments = await fetchLockComments(
+      repo,
+      prNumber,
+      ghCommandFn,
+      lockKind,
+    );
   } catch (err) {
     log(
       `${where} could not read the lock comments, so no stale lock was ` +
@@ -397,7 +419,7 @@ export async function cleanStaleBranchUpdateLocks(
 
   const now = nowFn();
   const stale = lockComments.filter((comment) => {
-    const lockData = parseLockComment(comment.body);
+    const lockData = parseLockComment(comment.body, lockKind);
     return lockData !== null && now - lockData.timestamp >= lockTtlSeconds;
   });
 
@@ -462,7 +484,11 @@ export async function activeBranchUpdateLockHolder(options: {
   } = options;
   let lockComments: LockComment[];
   try {
-    lockComments = await fetchLockComments(repo, prNumber, ghCommandFn);
+    lockComments = await fetchLockComments(
+      repo,
+      prNumber,
+      ghCommandFn,
+    );
   } catch (err) {
     log(
       `[pr-branch-lock] ${repo}#${prNumber}: could not read the lock ` +
@@ -521,6 +547,7 @@ export async function acquireBranchUpdateLock(
     prNumber,
     workerId,
     lockTtlSeconds = DEFAULT_LOCK_TTL_SECONDS,
+    lockKind = "branch",
     sleepFn = defaultSleep,
     ghCommandFn = runGhCommand,
     nowFn = defaultNow,
@@ -535,6 +562,7 @@ export async function acquireBranchUpdateLock(
     repo,
     prNumber,
     lockTtlSeconds,
+    lockKind,
     ghCommandFn,
     nowFn,
     log,
@@ -542,7 +570,7 @@ export async function acquireBranchUpdateLock(
 
   // Step 2: Post our lock comment
   const now = nowFn();
-  const lockCommentBody = buildLockBody(workerId, now, options.note);
+  const lockCommentBody = buildLockBody(workerId, now, options.note, lockKind);
 
   // `gh issue comment` prints the new comment's URL, whose
   // `#issuecomment-<id>` fragment identifies the comment we just posted.
@@ -593,7 +621,12 @@ export async function acquireBranchUpdateLock(
   // Step 4: Re-read comments to check for competing locks
   let readLockComments: LockComment[];
   try {
-    readLockComments = await fetchLockComments(repo, prNumber, ghCommandFn);
+    readLockComments = await fetchLockComments(
+      repo,
+      prNumber,
+      ghCommandFn,
+      lockKind,
+    );
   } catch {
     // Cannot verify — back off to avoid conflicts, taking our comment with us
     await dropOwnLockComment();
@@ -642,7 +675,7 @@ export async function acquireBranchUpdateLock(
   // succeeded would otherwise win every race for ever — it always sorts
   // earliest — and no host could update the branch again.
   const competingLocks = fleetLocks.filter((c) => {
-    const lockData = parseLockComment(c.body);
+    const lockData = parseLockComment(c.body, lockKind);
     return lockData !== null && now - lockData.timestamp < lockTtlSeconds;
   });
   const allLockComments = [...ourLocks, ...competingLocks];
@@ -657,7 +690,7 @@ export async function acquireBranchUpdateLock(
   if (allLockComments.length === 1) {
     // No contention — we are the sole lock holder
     const soleComment = allLockComments[0]!;
-    const lockData = parseLockComment(soleComment.body);
+    const lockData = parseLockComment(soleComment.body, lockKind);
     if (lockData?.workerId === workerId) {
       return {
         ok: true,
@@ -681,7 +714,7 @@ export async function acquireBranchUpdateLock(
     a.createdAt.localeCompare(b.createdAt)
   );
   const winnerComment = sorted[0]!;
-  const winnerData = parseLockComment(winnerComment.body);
+  const winnerData = parseLockComment(winnerComment.body, lockKind);
   const winnerId = winnerData?.workerId ?? "";
 
   if (winnerId === workerId) {
