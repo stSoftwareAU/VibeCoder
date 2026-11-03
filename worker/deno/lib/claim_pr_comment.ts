@@ -689,6 +689,30 @@ export async function claimPrComment(
   return { ok: true, value: { claimed: false, winnerId } };
 }
 
+/** Options for {@link hasLivePrClaim}. */
+export interface HasLivePrClaimOptions {
+  repo: string;
+  prNumber: number;
+  ghCommandFn: (args: string[]) => Promise<string>;
+  trustedAuthors: readonly string[];
+  nowMs: number;
+  log: (message: string) => void;
+}
+
+/**
+ * True when any comment on the PR has a live, fleet-authored lease claim
+ * (Issue #4689): a worker is handling the PR's feedback right now, so the
+ * fleet PR babysitter leaves it alone rather than repair beside it.
+ *
+ * Fail direction matches {@link hasLivePrReviewClaim}: a read failure, an
+ * empty trusted-author set or no live lease all return false.
+ */
+export function hasLivePrClaim(
+  options: HasLivePrClaimOptions,
+): Promise<boolean> {
+  return hasLiveLeaseClaim(options, undefined);
+}
+
 /** Options for {@link hasLivePrReviewClaim}. */
 export interface HasLivePrReviewClaimOptions {
   repo: string;
@@ -710,11 +734,18 @@ export interface HasLivePrReviewClaimOptions {
  * matching live lease all return false — the review stays actionable rather
  * than being hidden on evidence that could not be confirmed.
  */
-export async function hasLivePrReviewClaim(
+export function hasLivePrReviewClaim(
   options: HasLivePrReviewClaimOptions,
 ): Promise<boolean> {
-  const { repo, prNumber, reviewId, ghCommandFn, trustedAuthors, nowMs, log } =
-    options;
+  return hasLiveLeaseClaim(options, options.reviewId);
+}
+
+/** Shared lease read; `reviewId` narrows it to claims on one comment. */
+async function hasLiveLeaseClaim(
+  options: HasLivePrClaimOptions,
+  reviewId: string | undefined,
+): Promise<boolean> {
+  const { repo, prNumber, ghCommandFn, trustedAuthors, nowMs, log } = options;
 
   const trusted = new Set(
     trustedAuthors
@@ -729,7 +760,9 @@ export async function hasLivePrReviewClaim(
   } catch (err) {
     log(
       `[claim-pr-comment] ${repo}#${prNumber}: could not read the claim ` +
-        `comments for review ${reviewId}, so it is treated as unclaimed, ` +
+        `comments for ${
+          reviewId === undefined ? "the PR" : `review ${reviewId}`
+        }, so it is treated as unclaimed, ` +
         `so the review stays actionable — ${
           err instanceof Error ? err.message : String(err)
         }`,
@@ -739,7 +772,8 @@ export async function hasLivePrReviewClaim(
 
   return claims.some((c) => {
     const info = extractClaimInfo(c.body);
-    if (info === null || info.commentId !== reviewId) return false;
+    if (info === null) return false;
+    if (reviewId !== undefined && info.commentId !== reviewId) return false;
     if (!isLeaseClaimBody(c.body)) return false;
     const author = (c.author ?? "").trim().toLowerCase();
     if (!trusted.has(author)) return false;

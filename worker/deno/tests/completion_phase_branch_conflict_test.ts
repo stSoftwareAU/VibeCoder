@@ -325,3 +325,100 @@ Deno.test(
     }
   },
 );
+
+// =============================================================================
+// PR-raise sync refusal: the reason names no VibeCoder issue number
+// =============================================================================
+
+Deno.test(
+  "completion - a refused PR-raise sync gives a reason with no issue number (Issue #2809)",
+  async () => {
+    // A milestone branch synced in the shared clone (repo dir = repoPath) whose
+    // feature branch cannot be checked out again: syncBranchesForPrRaise refuses.
+    const workDir = await Deno.makeTempDir();
+    const repoPath = `${workDir}/VibeCoder`;
+    try {
+      await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
+        recursive: true,
+      });
+      await Deno.writeTextFile(
+        `${repoPath}/docs/archive/pr-summaries/pr-summary-2459.md`,
+        "## Summary\n\nBranch conflict resolution. Closes #2459.\n\n**Docs sweep** — grep: `rebase`; section: `docs/EXTENDING.md#merge-conflicts`; no hits; siblings: none — no existing set gained a member\n\n**Branch outcomes:** none added\n",
+      );
+
+      const config = buildDefaultWorkerConfig();
+      config.workDir = workDir;
+      const ctx = makeContext({ config });
+      const state = makeState({
+        repoPath,
+        milestoneBranch: "milestone/2809-pr-raise-sync",
+      });
+      const comments: RecordedComment[] = [];
+
+      const deps = createMockDeps({
+        logger: {
+          info: () => undefined,
+          warn: () => undefined,
+          error: () => undefined,
+          debug: () => undefined,
+        } as never,
+        github: {
+          createClient: () => makeStubClient(comments),
+          runGhCommand: (_args: string[]) =>
+            Promise.resolve(
+              "https://github.com/stSoftwareAU/VibeCoder/pull/2459",
+            ),
+        },
+        git: {
+          reconcileHeadToBranch: () =>
+            Promise.resolve({
+              ok: true as const,
+              value: { action: "already-on-branch" as const, fromRef: BRANCH },
+            }),
+          pushUnpushedCommits: () =>
+            Promise.resolve({ ok: true as const, value: 1 }),
+          syncMilestoneBranchWithDefault: () =>
+            Promise.resolve({ ok: false as const, error: new Error("stub") }),
+          runGitCommand: (args: string[]) => {
+            let code = 0;
+            let stdout = "";
+            if (args[0] === "status" && args.includes("--porcelain")) {
+              stdout = ""; // Clean tree: the milestone sync may run.
+            } else if (
+              args[0] === "checkout" && args.includes("--end-of-options")
+            ) {
+              code = 1; // The feature branch cannot be checked out again.
+            }
+            return Promise.resolve({
+              ok: true as const,
+              value: { code, stdout, stderr: "" },
+            });
+          },
+        },
+        pr: {
+          findExistingPrForIssue: () =>
+            Promise.resolve({ ok: false, error: new Error("No PR found") }),
+          findExistingPrForBranch: () =>
+            Promise.resolve({ ok: false, error: new Error("No PR found") }),
+        },
+      });
+
+      const result = await workOnIssueCompletion(ctx, state, deps);
+
+      assertEquals(
+        result.status,
+        "failure",
+        `a refused PR-raise sync must stop the run; got ${result.status}`,
+      );
+      const reason = result.status === "failure" ? result.reason : "";
+      assertStringIncludes(reason, "Refusing to raise the PR");
+      assertEquals(
+        reason.match(/#\d+/g) ?? [],
+        [],
+        "the PR-raise sync refusal must carry no issue number: GitHub resolves a bare #N against the target repo",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);

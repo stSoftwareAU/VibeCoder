@@ -5,7 +5,11 @@
  * reported in `upkeep` and not retried at the same head commit.
  */
 import { assertEquals } from "@std/assert";
-import { pass } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
+import {
+  pass,
+  REVIEW_MARKER,
+} from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
+import { HOLD_POLICY_VERSION } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 const REVIEWER = "nleck";
 
@@ -86,6 +90,98 @@ function searchResult(depPr: ReturnType<typeof dependabotPr>) {
 
 const FLEET = new Set(["VibeCoderST"]);
 const REPOS = new Set(["acme/app"]);
+
+Deno.test("pass keeps a Dependabot re-cut awaiting-fix but reviews a fleet force-push (Issue #4723)", async () => {
+  for (const login of ["app/dependabot", "VibeCoderST"]) {
+    const dir = await Deno.makeTempDir();
+    try {
+      const pr = {
+        ...fleetPr(),
+        author: { login },
+        headRefOid: "head",
+        reviews: {
+          nodes: [{
+            author: { login: REVIEWER },
+            state: "CHANGES_REQUESTED",
+            body: "",
+            commit: { oid: "X" },
+          }],
+        },
+      };
+      await Deno.writeTextFile(
+        `${dir}/log.jsonl`,
+        JSON.stringify({
+          at: "2026-11-03T00:00:00Z",
+          repo: "acme/app",
+          number: pr.number,
+          title: pr.title,
+          url: pr.url,
+          headSha: "X",
+          outcome: "changes_requested",
+          summary: "Fix a.ts",
+          findings: [{ file: "a.ts", line: 1, problem: "Unfixed" }],
+          testChangeNotes: [],
+          removedTests: [],
+        }) + "\n",
+      );
+      const files = [{
+        filename: "a.ts",
+        status: "modified",
+        patch: "@@ -1 +1 @@\n-old\n+unfixed",
+      }];
+      const gh = (args: string[]): Promise<string> => {
+        const path = args[1] ?? "";
+        if (args[0] === "api" && path === "graphql") {
+          return Promise.resolve(JSON.stringify({
+            data: {
+              search: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [pr],
+              },
+            },
+          }));
+        }
+        if (path.endsWith("compare/X...head")) {
+          return Promise.resolve(JSON.stringify({ status: "diverged" }));
+        }
+        if (path.endsWith("compare/main...X")) {
+          return Promise.resolve(JSON.stringify({ files }));
+        }
+        if (path.endsWith("compare/main...head")) {
+          return Promise.resolve(JSON.stringify({
+            files,
+            total_commits: 1,
+            commits: [{ author: { login: "dependabot[bot]" } }],
+          }));
+        }
+        if (path.includes("/files") || path.endsWith("/comments")) {
+          return Promise.resolve("[]");
+        }
+        if (path.includes("/contents/review-checklists.json")) {
+          throw new Error("gh: Not Found (HTTP 404)");
+        }
+        if (args.includes("Accept: application/vnd.github.diff")) {
+          return Promise.resolve("");
+        }
+        throw new Error(`unexpected gh ${args.join(" ")}`);
+      };
+      const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+      const dependabot = login === "app/dependabot";
+      assertEquals(
+        result.skipped["awaiting-fix"] ?? 0,
+        dependabot ? 1 : 0,
+        login,
+      );
+      assertEquals(
+        result.ready.map((ready) => ready.number),
+        dependabot ? [] : [41],
+        login,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
 
 // Records every call; `pr merge` throws the GitHub error the issue reports.
 function makeGh(depPr: ReturnType<typeof dependabotPr>) {
@@ -338,6 +434,101 @@ Deno.test("pass binds the version exception to findings from this PR's exact sen
         awaiting ? 1 : 0,
         JSON.stringify(records),
       );
+      assertEquals(result.ready.length, awaiting ? 0 : 1);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("pass skips a held PR with an unchanged own diff as awaiting-owner, only on a current-policy hold record (Issue #4643)", async () => {
+  const heldRecord = {
+    at: "2026-10-02T00:00:00Z",
+    repo: "acme/app",
+    number: 41,
+    title: "feat: add widget",
+    url: "https://github.com/acme/app/pull/41",
+    headSha: "X",
+    outcome: "held",
+    summary: "",
+    findings: [],
+    testChangeNotes: [],
+    removedTests: [],
+    holdPolicy: HOLD_POLICY_VERSION,
+  };
+  const ahead = JSON.stringify({
+    status: "ahead",
+    total_commits: 1,
+    commits: [{ sha: "m1", parents: [{ sha: "p0" }, { sha: "p1" }] }],
+  });
+  const files = JSON.stringify({
+    files: [{
+      filename: "a.ts",
+      status: "modified",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+    }],
+  });
+  // A marker-bearing COMMENTED review at the earlier commit X is the hold.
+  const pr = {
+    ...fleetPr(),
+    headRefOid: "head",
+    reviews: {
+      nodes: [{
+        author: { login: REVIEWER },
+        state: "COMMENTED",
+        body: `Held for owner review\n\n_${REVIEW_MARKER}._`,
+        commit: { oid: "X" },
+      }],
+    },
+  };
+  const search = JSON.stringify({
+    data: {
+      search: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [pr],
+      },
+    },
+  });
+  const gh = (args: string[]): Promise<string> => {
+    if (args[0] === "api" && args[1] === "graphql") {
+      return Promise.resolve(search);
+    }
+    const path = args[1] ?? "";
+    if (path.endsWith("compare/X...head")) return Promise.resolve(ahead);
+    if (path.endsWith("compare/main...X")) return Promise.resolve(files);
+    if (path.endsWith("compare/main...head")) return Promise.resolve(files);
+    if (path.includes("/files")) return Promise.resolve("[]");
+    if (path.endsWith("/comments")) return Promise.resolve("[]");
+    if (path.includes("/contents/review-checklists.json")) {
+      throw new Error("gh: Not Found (HTTP 404)");
+    }
+    if (args.includes("Accept: application/vnd.github.diff")) {
+      return Promise.resolve("");
+    }
+    throw new Error(`unexpected gh ${args.join(" ")}`);
+  };
+  for (
+    const [records, awaiting] of [
+      [[heldRecord], true],
+      // No log record: the hold is reviewed afresh.
+      [[], false],
+      // A hold made under another policy version is reviewed afresh.
+      [[{ ...heldRecord, holdPolicy: HOLD_POLICY_VERSION + 1 }], false],
+      // A record for another commit, PR or repo is not this PR's hold.
+      [[{ ...heldRecord, headSha: "other" }], false],
+      [[{ ...heldRecord, number: 42 }], false],
+      [[{ ...heldRecord, repo: "elsewhere/app" }], false],
+    ] as const
+  ) {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.writeTextFile(
+        `${dir}/log.jsonl`,
+        records.map((r) => JSON.stringify(r)).join("\n") +
+          (records.length ? "\n" : ""),
+      );
+      const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+      assertEquals(result.skipped["awaiting-owner"] ?? 0, awaiting ? 1 : 0);
       assertEquals(result.ready.length, awaiting ? 0 : 1);
     } finally {
       await Deno.remove(dir, { recursive: true });

@@ -13,7 +13,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { assertLinearGrowth } from "./support/growth.ts";
-import { MUTATION_TEMP_DIR_UNWRITABLE } from "../lib/mutation_gate.ts";
+import {
+  evaluateMutationGate,
+  MUTATION_TEMP_DIR_UNWRITABLE,
+} from "../lib/mutation_gate.ts";
 import {
   confinePath,
   defaultMutationRunnerSeams,
@@ -997,7 +1000,15 @@ Deno.test("runMutationCheck rust - no package manifest means no --package argume
 });
 
 Deno.test("runMutationCheck rust - unparseable outcomes.json fails closed", async () => {
-  for (const garbage of ["not json {", "{}", '{"outcomes": [42]}']) {
+  for (
+    const garbage of [
+      "not json {",
+      "{}",
+      '{"outcomes": [42]}',
+      outcomesJson([["UnknownOutcome", 2]]),
+      '{"outcomes": [{"scenario": "Unknown", "summary": "Success"}]}',
+    ]
+  ) {
     const r = await runMutationCheck(rsInput, rustFake(garbage, ok(0)).seams);
     assert(r.kind === "error", garbage);
   }
@@ -1677,5 +1688,90 @@ Deno.test("makeMutationTempDir - a fallback root whose temp dir is refused rejec
     assertEquals(fallbackDirs, [root]);
   } finally {
     await Deno.remove(testRoot, { recursive: true });
+  }
+});
+
+Deno.test("runMutationCheck rust - the CI job's flags reach cargo mutants (Issue #4617)", async () => {
+  const f = rustFake(outcomesJson([["CaughtMutant", 2]]), ok(0));
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--exclude-re", "impl Drop", "--features", "a,b"],
+  }, f.seams);
+  assert(r.kind === "completed", JSON.stringify(r));
+  assertEquals(f.calls[0]?.args, [
+    "mutants",
+    "--exclude-re",
+    "impl Drop",
+    "--features",
+    "a,b",
+    "--in-diff",
+    `${REPO}/target/vibe-mutation-check.diff`,
+    "--output",
+    "/tmp/vibe-mutation-1",
+    "--no-shuffle",
+    "--jobs",
+    "2",
+  ]);
+});
+
+Deno.test("CI package scope does not hold changes outside its crates", async () => {
+  const f = fake({
+    [`${REPO}/Cargo.toml`]: '[workspace]\nmembers = ["cli", "core"]\n',
+    [`${REPO}/cli/Cargo.toml`]: '[package]\nname = "cli"\n',
+  }, (_c, args, fs) => {
+    writeOutcomes(
+      fs,
+      args,
+      outcomesJson([["MissedMutant", 1]]).replaceAll(
+        "src/lib.rs",
+        "cli/src/lib.rs",
+      ),
+    );
+    return ok(2);
+  });
+  const diff = "--- a/cli/src/lib.rs\n+++ b/cli/src/lib.rs\n" +
+    "@@ -0,0 +1 @@\n+pub fn f() {}\n";
+  const result = await runMutationCheck({
+    ...rsInput,
+    diff,
+    cargoMutantsArgs: ["-p", "core"],
+  }, f.seams);
+  assertEquals(f.calls[0]?.args.slice(0, 3), ["mutants", "--package", "cli"]);
+  const verdict = evaluateMutationGate(
+    result,
+    "`cli/src/lib.rs:1` exempt (untestable): reason",
+    {
+      workflow: "ci.yml",
+      job: "mutants",
+      tool: "cargo",
+    },
+  );
+  assertEquals(verdict.ciBlock, undefined);
+  assertEquals(verdict.exempted.length, 1);
+  assertEquals(verdict.blocked, false);
+});
+
+Deno.test("CI package and workspace selections do not combine with touched packages", async () => {
+  for (const args of [["--package", "core"], ["--workspace"]]) {
+    const f = fake({
+      [`${REPO}/Cargo.toml`]: '[workspace]\nmembers = ["core"]\n',
+      [`${REPO}/core/Cargo.toml`]: '[package]\nname = "core"\n',
+    }, (_c, argv, fs) => {
+      writeOutcomes(fs, argv, outcomesJson([]));
+      return ok(0);
+    });
+    const diff = "--- a/core/src/lib.rs\n+++ b/core/src/lib.rs\n" +
+      "@@ -0,0 +1 @@\n+pub fn f() {}\n";
+    const result = await runMutationCheck({
+      ...rsInput,
+      diff,
+      cargoMutantsArgs: args,
+    }, f.seams);
+    assertEquals(result.kind, "completed");
+    assertEquals(f.calls[0]?.args.slice(1, 1 + args.length), args);
+    assertEquals(
+      f.calls[0]?.args.filter((a) => a === "--package").length,
+      args.includes("--package") ? 1 : 0,
+    );
   }
 });

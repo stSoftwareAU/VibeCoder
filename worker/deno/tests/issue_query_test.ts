@@ -18,6 +18,7 @@ import {
   fetchClosedIssuesByMilestone,
   fetchClosedIssuesByMilestoneNumber,
   fetchIssuesByLabel,
+  fetchMergedPRsByIssueBranch,
   fetchMergedPRsByUser,
   fetchOpenIssuesByMilestone,
   fetchOpenMilestoneClosedCounts,
@@ -2824,4 +2825,101 @@ Deno.test("issue_query - fetchIssuesByLabel with the default limit still returns
   } finally {
     await cleanup();
   }
+});
+
+Deno.test("fetchMergedPRsByIssueBranch - requests merged issue heads and returns validated delivery metadata", async () => {
+  const calls: string[][] = [];
+  const result = await fetchMergedPRsByIssueBranch("owner/repo", 42, (args) => {
+    calls.push(args);
+    return Promise.resolve(JSON.stringify([{
+      number: 7,
+      title: "Custom title",
+      baseRefName: "milestone/work",
+      headRefName: "issue-42-fix",
+      mergedAt: "2026-10-21T00:00:00Z",
+      closedAt: "2026-10-21T00:00:00Z",
+      author: { login: "agent" },
+      isCrossRepository: false,
+    }]));
+  });
+  assertEquals(calls, [[
+    "pr",
+    "list",
+    "--repo",
+    "owner/repo",
+    "--state",
+    "merged",
+    "--search",
+    "head:issue-42",
+    "--json",
+    "number,title,baseRefName,headRefName,mergedAt,closedAt,author,isCrossRepository",
+    "--limit",
+    "1000",
+  ]]);
+  assertEquals(result, [{
+    number: 7,
+    title: "Custom title",
+    baseRefName: "milestone/work",
+    headRefName: "issue-42-fix",
+    mergedAt: "2026-10-21T00:00:00Z",
+    closedAt: "2026-10-21T00:00:00Z",
+    author: "agent",
+    isCrossRepository: false,
+  }]);
+});
+
+Deno.test("fetchMergedPRsByIssueBranch - distinguishes unreadable searches from empty results", async () => {
+  assertEquals(
+    await fetchMergedPRsByIssueBranch("owner/repo", 42, () => {
+      throw new Error("HTTP 502: Bad Gateway");
+    }),
+    null,
+  );
+  for (const response of ["invalid JSON", "{}", "null", "42"]) {
+    assertEquals(
+      await fetchMergedPRsByIssueBranch(
+        "owner/repo",
+        42,
+        () => Promise.resolve(response),
+      ),
+      null,
+      response,
+    );
+  }
+  assertEquals(
+    await fetchMergedPRsByIssueBranch(
+      "owner/repo",
+      42,
+      () => Promise.resolve("[]"),
+    ),
+    [],
+  );
+});
+
+Deno.test("fetchMergedPRsByIssueBranch - rejects malformed rows without claiming a delivery", async () => {
+  const valid = {
+    number: 7,
+    headRefName: "issue-42-fix",
+    mergedAt: "2026-10-21T00:00:00Z",
+    isCrossRepository: false,
+  };
+  const result = await fetchMergedPRsByIssueBranch(
+    "owner/repo",
+    42,
+    () =>
+      Promise.resolve(JSON.stringify([
+        null,
+        42,
+        {},
+        { ...valid, number: "7" },
+        { ...valid, isCrossRepository: true },
+        { ...valid, isCrossRepository: undefined },
+        { ...valid, headRefName: "issue-420-fix" },
+        { ...valid, headRefName: "sync/milestone/work" },
+        { ...valid, headRefName: null },
+        { ...valid, mergedAt: null },
+        { ...valid, mergedAt: "" },
+      ])),
+  );
+  assertEquals(result, []);
 });

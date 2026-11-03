@@ -208,3 +208,115 @@ Deno.test("an edit to another issue's archived summary is restored (Issue #4155)
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("run-own drift scope excludes merged source prose and retains the run edit (Issue #4647)", async () => {
+  const dir = await initRepo("issue-4647");
+  try {
+    await writeFile(
+      dir,
+      "src/own.ts",
+      "// The own value is one.\nexport const own = 1;\n",
+    );
+    await commitAll(dir, "own file");
+    const beforeSha = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
+    assertEquals((await git(dir, ["checkout", "main"])).code, 0);
+    await writeFile(
+      dir,
+      "src/merged.ts",
+      "// The merged value is one.\nexport const merged = 2;\n",
+    );
+    await commitAll(dir, "base change");
+    assertEquals(
+      (await git(dir, ["update-ref", "refs/remotes/origin/main", "HEAD"])).code,
+      0,
+    );
+    assertEquals((await git(dir, ["checkout", "issue-4647"])).code, 0);
+    assertEquals(
+      (await git(dir, ["merge", "--no-edit", "origin/main"])).code,
+      0,
+    );
+    await writeFile(
+      dir,
+      "src/own.ts",
+      "// The own value is one.\nexport const own = 2;\n",
+    );
+    const calls: { prompt: string; readOnly: boolean }[] = [];
+    const outcome = await runPrFeedbackDriftCheck(
+      { repo: "org/repo", prNumber: 12, repoPath: dir, beforeSha },
+      {
+        runGit: (args) => git(dir, args),
+        runGh: async () => "main",
+        runMutationCheck: notMutationChecked,
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+        runAgent: async (req) => {
+          calls.push(req);
+          return {
+            ok: true,
+            output: req.readOnly
+              ? `<!-- vibe-drift-verdict -->\n\`\`\`json\n${
+                JSON.stringify({
+                  findings: [{
+                    file: "src/own.ts",
+                    sentence: "The own value is one.",
+                    reason: "own changed",
+                  }],
+                })
+              }\n\`\`\`\n<!-- /vibe-drift-verdict -->`
+              : "done",
+          };
+        },
+      },
+    );
+    assertEquals(outcome.status, "reported");
+    assertEquals(calls.length, 2);
+    assert(calls[0]!.prompt.includes("src/own.ts"));
+    assert(!calls[0]!.prompt.includes("src/merged.ts"));
+    assert(!calls[1]!.prompt.includes("src/merged.ts"));
+    assert(calls[1]!.prompt.includes("src/own.ts"));
+    assert(!calls[0]!.prompt.includes(`git diff ${beforeSha}`));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("an unavailable run-own baseline is reported without repair (Issue #4647)", async () => {
+  const dir = await initRepo("issue-4647-error");
+  try {
+    const beforeSha = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
+    await writeFile(dir, "src/app.ts", "export const value = 2;\n");
+    let invoked = false;
+    const outcome = await runPrFeedbackDriftCheck(
+      { repo: "org/repo", prNumber: 12, repoPath: dir, beforeSha },
+      {
+        runGit: (args) =>
+          args[0] === "rev-list"
+            ? Promise.resolve({
+              code: 1,
+              stdout: "",
+              stderr: "baseline unavailable",
+            })
+            : git(dir, args),
+        runGh: async () => "main",
+        runMutationCheck: notMutationChecked,
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+        runAgent: () => {
+          invoked = true;
+          throw new Error("unexpected agent");
+        },
+      },
+    );
+    assertEquals(outcome.status, "reported");
+    if (outcome.status !== "reported") return;
+    assert(
+      outcome.residual.modelPassUnavailable?.includes("baseline unavailable"),
+    );
+    assertEquals(outcome.recoveryRan, false);
+    assertEquals(invoked, false);
+    assertEquals(
+      await Deno.readTextFile(`${dir}/src/app.ts`),
+      "export const value = 2;\n",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

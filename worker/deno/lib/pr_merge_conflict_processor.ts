@@ -24,9 +24,15 @@
  *   written evidence behind it, cited where both sides' issues are known and
  *   one explicitly supersedes the other. The mechanical guards below apply
  *   either way.
- * - Run no quality gate here (Issue #2306). CI on the pushed merge is the
- *   gate: a conflicting PR has had none at all, so that is often the first
- *   time its tests meet current base code.
+ * - Before the push, check the merged tree deterministically (Issue #4616):
+ *   the fast checks for the paths the merge touched run in the clone, a
+ *   failing check gets bounded repair rounds from the agent, and a check that
+ *   still fails, a check that cannot be run, and a budget spent before the
+ *   checks finish all refuse the push so nothing lands. Only checks whose
+ *   remote modules are unreachable, or whose toolchain is older than the
+ *   repository needs, are left to CI and named on the PR. CI on the pushed
+ *   merge stays the full gate (Issue #2306): a conflicting PR has had none at
+ *   all, so that is often the first time its tests meet current base code.
  * - Push without force, so every commit on the PR survives.
  * - Comment on the PR describing what was merged.
  *
@@ -41,6 +47,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { resolveRepoCredentials } from "./repo_credentials.ts";
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import {
@@ -104,6 +111,7 @@ import {
   formatStageTimings,
 } from "./conflict_stage_timer.ts";
 import { BOTH_INSERTED_RULE_NAME } from "./both_inserted_conflict_rule.ts";
+import { verifyMergeBeforePush } from "./merge_fast_checks.ts";
 import {
   applyDependencyConflictRules,
   type DependencyRuleApplier,
@@ -331,6 +339,12 @@ export interface MergeConflictProcessorDeps {
    * agent run declines with no marker (Issue #3031).
    */
   deadlineEpochMs?: number;
+  /**
+   * Injectable pre-push verification (Issue #4616), run on the merged tree
+   * before anything is pushed. Defaults to {@link verifyMergeBeforePush};
+   * tests inject it. The milestone takeover does not use it.
+   */
+  verifyMergeBeforePushFn?: typeof verifyMergeBeforePush;
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +492,50 @@ async function abortMerge(run: GitRunner, cwd: string): Promise<void> {
   await git(run, ["merge", "--abort"], cwd);
 }
 
+/**
+ * Abort any merge in progress, then restore the local branch to the tip this
+ * attempt started from (Issue #4616).
+ *
+ * Used when the pre-push verification refuses or is cut short, so the merge
+ * commit a clean merge left locally, or a repair commit the agent made, is not
+ * kept on the branch. `merge --abort` cannot remove a clean merge's commit,
+ * since no merge is in progress by then.
+ *
+ * What is destroyed is only the commits made after `headBeforeMerge` in this
+ * attempt. That tip is where the attempt began, so nothing before it is
+ * dropped. Those commits were never pushed and nothing outside this attempt
+ * refers to them. origin's copy of the branch is never written, and the next
+ * attempt checks the branch out at origin's tip anyway (preparePrBranch). The
+ * reset is skipped when HEAD already sits at `headBeforeMerge`.
+ *
+ * @param run - The git runner
+ * @param cwd - The clone the attempt runs in
+ * @param headBeforeMerge - The tip the attempt started from
+ * @param logger - Logger for an unreadable HEAD
+ * @param repo - Repository, for the log record
+ * @returns The reason the local branch could not be restored, or `undefined`
+ */
+async function discardLocalMerge(
+  run: GitRunner,
+  cwd: string,
+  headBeforeMerge: string,
+  logger: Logger,
+  repo: string,
+): Promise<string | undefined> {
+  await abortMerge(run, cwd);
+  const head = await readHeadSha(run, cwd, logger, repo);
+  if (head === headBeforeMerge) return undefined;
+  const reset = await git(
+    run,
+    ["reset", "--hard", headBeforeMerge],
+    cwd,
+  );
+  if (reset.code === 0) return undefined;
+  const detail = reset.stderr.trim() || reset.stdout.trim() ||
+    `git exited ${reset.code}`;
+  return `could not restore the local branch to ${headBeforeMerge}: ${detail}`;
+}
+
 // ---------------------------------------------------------------------------
 // Comment helpers
 // ---------------------------------------------------------------------------
@@ -503,8 +561,9 @@ export function buildAttemptComment(
     `This PR conflicts with \`${baseBranch}\`, so no CI can run on it. The ` +
     "worker is merging the base branch in for real — both sides' changes " +
     "survive wherever both can stand, and each judgement call is named file " +
-    "by file in the conclusion comment. CI on the pushed merge is the gate " +
-    "on the result (Issue #2306).",
+    "by file in the conclusion comment. Before it pushes, the worker runs the " +
+    "fast checks on the packages the merge touched (Issue #4616); CI on the " +
+    "pushed merge is the full gate (Issue #2306).",
   ];
 
   if (disruptedCount > 0) {
@@ -634,6 +693,10 @@ export function buildRuleResolutionSection(
  * That flag replaced a refusal: aborting such a merge cost the attempt and
  * left the PR conflicting, which helped nobody.
  *
+ * The local-checks section names what the pre-push verification ran on the
+ * merged tree, what it left to CI, and any repair rounds (Issue #4616). It is
+ * omitted when nothing ran and nothing was left to CI.
+ *
  * The stage timings ride at the bottom (Issue #2308), so the twenty minutes
  * an attempt took are accounted for on the attempt's own conclusion.
  */
@@ -645,6 +708,11 @@ export function buildResolvedComment(
   ruleResolved: readonly ResolvedConflictFile[] = [],
   issueContext?: ConflictIssueContext | null,
   timings?: string,
+  localChecks?: {
+    ran: readonly string[];
+    leftToCi: readonly string[];
+    repairRounds: number;
+  },
 ): string {
   const body = detail && detail.trim().length > 0
     ? detail.trim()
@@ -657,8 +725,55 @@ export function buildResolvedComment(
     body,
     ...buildIntentOverrideSection(parseIntentOverrides(detail), issueContext),
     ...buildRuleResolutionSection(ruleResolved, baseBranch, branchName),
+    ...buildLocalChecksSection(localChecks),
     ...buildStageTimingSection(timings),
   ].join("\n");
+}
+
+/**
+ * The "Local checks before push" section of the resolved comment (Issue
+ * #4616).
+ *
+ * The check labels and the reasons a check was left to CI come from the
+ * repository's own tooling output, so they are rendered inert (Issue #2260).
+ *
+ * @param checks - What the pre-push verification ran, left and repaired
+ * @returns The lines to append, or none when nothing ran and nothing was left
+ */
+function buildLocalChecksSection(
+  checks:
+    | {
+      ran: readonly string[];
+      leftToCi: readonly string[];
+      repairRounds: number;
+    }
+    | undefined,
+): string[] {
+  if (checks === undefined) return [];
+  if (checks.ran.length === 0 && checks.leftToCi.length === 0) return [];
+
+  const inert = (text: string): string => neutraliseAgentMarkers(text).text;
+  const lines = ["", "**Local checks before push:**", ""];
+  if (checks.ran.length > 0) {
+    lines.push(
+      "Ran on the merged tree:",
+      ...checks.ran.map((label) => `- ${inert(label)}`),
+    );
+  }
+  if (checks.leftToCi.length > 0) {
+    if (checks.ran.length > 0) lines.push("");
+    lines.push(
+      "Left to CI:",
+      ...checks.leftToCi.map((reason) => `- ${inert(reason)}`),
+    );
+  }
+  if (checks.repairRounds > 0) {
+    lines.push(
+      "",
+      `Repair rounds the agent spent on failing checks: ${checks.repairRounds}.`,
+    );
+  }
+  return lines;
 }
 
 /**
@@ -944,6 +1059,11 @@ async function recordConflictFollowOn(
 
 /**
  * Resolve one conflicting PR by merging its base branch in for real.
+ *
+ * The merged tree is checked before anything is pushed (Issue #4616): a
+ * refused check posts a failed attempt and pushes nothing. Milestone heads
+ * are routed to {@link takeOverMilestoneConflict} first and are not covered
+ * by that check, which that path does not share.
  *
  * @param input - The conflicting PR, from the merge-conflict scan.
  * @param processorDeps - Processor dependencies.
@@ -1417,6 +1537,20 @@ async function freshAttemptUnderLock(
   return { kind: "proceed", attemptCount: spentConflictAttempts(attempts) };
 }
 
+/**
+ * Merge the base into the PR branch, check the result, and push it (Issues
+ * #84, #4616).
+ *
+ * The order is fixed, and each step guards the next: the merge; the
+ * unmerged-path and conflict-marker guards on a conflicted merge; the
+ * pre-push verification (Issue #4616), which runs for a clean merge too; then
+ * the push. A refusal or a cut-short verification ends the attempt before the
+ * push, so nothing unverified reaches origin.
+ *
+ * The milestone takeover is not part of this flow: a `milestone/**` head is
+ * routed to {@link takeOverMilestoneConflict} before this runs, and that path
+ * has its own gate (Issue #3031) that this pre-push check does not replace.
+ */
 async function resolveConflict(
   input: MergeConflictInput,
   processorDeps: MergeConflictProcessorDeps,
@@ -1808,8 +1942,133 @@ async function resolveConflict(
     }
   }
 
-  // Commit whatever the agent left staged and push. No force: the merge
-  // commit fast-forwards the remote branch, so every PR commit survives.
+  // Issue #4616: check the merged tree before anything is pushed. This runs
+  // for a conflicted merge and for a clean one alike — a merge with no
+  // conflict can still bring in breakage — and after the unmerged-path and
+  // conflict-marker guards above, so it only ever sees a fully resolved tree.
+  // A failing check gets bounded repair rounds from the agent; a refusal
+  // discards the local merge and fails the attempt, so nothing reaches origin.
+  const replies: string[] = [];
+  const resolutionReply = await agentReply();
+  if (resolutionReply) replies.push(resolutionReply);
+  const credentials = await resolveRepoCredentials(
+    repo,
+    processorDeps.repoConfigs?.[repo]?.qualityCredentials,
+  );
+  timer.start("gate");
+  const verification = await (processorDeps.verifyMergeBeforePushFn ??
+    verifyMergeBeforePush)({
+      repoCredentialEnv: credentials.ok ? credentials.value.env : {},
+      ...(credentials.ok
+        ? {}
+        : { park: () => Promise.resolve(credentials.error.message) }),
+      repoDir: workDir,
+      headBeforeMerge,
+      baseBranch,
+      git: (args) => git(run, [...args], workDir),
+      logger,
+      runRepairAgent: async (repair) => {
+        let repairRunStats: readonly (RunStats | undefined)[] | undefined;
+        const repairOutcome = await runMergeConflictAgent({
+          repo,
+          target: { kind: "pr", prNumber },
+          baseBranch,
+          conflictedFiles: [],
+          issueContext,
+          workDir,
+          promptsDir: processorDeps.promptsDir,
+          customInstructions: processorDeps.customInstructions,
+          timeouts: {
+            claudeTimeout: processorDeps.claudeTimeout,
+            claudeNoOutputTimeout: processorDeps.claudeNoOutputTimeout,
+            maxRateLimitRetries: processorDeps.maxRateLimitRetries,
+          },
+          logger,
+          runAgent: deps.claude.runClaudeWithRetry,
+          repair,
+          onRunStats: (stats) => {
+            repairRunStats = stats;
+          },
+        });
+        // Each repair round is its own cost. The first agent run owns the
+        // head key, so a round is keyed on its own number to keep it from
+        // collapsing into that run's ledger event.
+        if (repairRunStats !== undefined) {
+          await recordConflictFollowOn(
+            input,
+            processorDeps,
+            `${headBeforeMerge}:repair-${repair.round}`,
+            attemptNumber,
+            repairRunStats,
+          );
+        }
+        const repairReply = await createMergeConflictReplyReader(
+          workDir,
+          logger,
+        )();
+        if (repairReply) replies.push(repairReply);
+        return repairOutcome;
+      },
+    });
+  timer.stop();
+  if (verification.kind === "refused") {
+    // Nothing here is pushed. The local branch goes back to the tip the
+    // attempt started from, so the merge commit (or repair commit) is not kept
+    // locally either. A failed restore is reported in the failure detail.
+    const localReset = await discardLocalMerge(
+      run,
+      workDir,
+      headBeforeMerge,
+      logger,
+      repo,
+    );
+    return await failAttempt(
+      input,
+      processorDeps,
+      conflictedFiles,
+      [verification.detail, ...replies, localReset].filter(Boolean).join(
+        "\n\n",
+      ),
+      attemptNumber,
+      timer,
+      headBeforeMerge,
+    );
+  }
+  if (verification.kind === "cut-short" || verification.kind === "deferred") {
+    const localReset = await discardLocalMerge(
+      run,
+      workDir,
+      headBeforeMerge,
+      logger,
+      repo,
+    );
+    if (localReset !== undefined) {
+      // A withdrawn attempt posts no conclusion, so the failed restore is
+      // logged here instead. The next attempt still checks the branch out at
+      // origin's tip.
+      logger.error(
+        "Merge-conflict attempt withdrawn, but the local branch could not be restored",
+        { repo, prNumber, detail: localReset },
+      );
+    }
+    return await withdrawCutShortAttempt(
+      input,
+      processorDeps,
+      attemptCommentId,
+      conflictedFiles,
+      attemptNumber,
+      timer,
+      verification.kind === "deferred"
+        ? { markerReason: verification.detail, phrase: verification.detail }
+        : verification.outcome.providerUnavailable === undefined
+        ? CUT_SHORT_BY_RUN_END
+        : cutShortByProvider(verification.outcome.providerUnavailable),
+    );
+  }
+
+  // Commit whatever the merge left staged and push, now that the checks above
+  // have passed (Issue #4616). No force: the merge commit fast-forwards the
+  // remote branch, so every PR commit survives.
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
   timer.start("push");
   const finalise = await deps.git.commitAndPushPending(
@@ -1887,7 +2146,7 @@ async function resolveConflict(
     workDir,
   );
   if (ancestor.code !== 0) {
-    const detail = await agentReply();
+    const detail = replies.join("\n\n");
     return await failAttempt(
       input,
       processorDeps,
@@ -1925,7 +2184,7 @@ async function resolveConflict(
     syncFn,
   );
 
-  const detail = await agentReply();
+  const detail = replies.join("\n\n");
   try {
     await postPrComment(
       deps,
@@ -1939,6 +2198,7 @@ async function resolveConflict(
         ruleResolved,
         issueContext,
         recordStageTimings(input, processorDeps, timer),
+        verification,
       ),
     );
   } catch (err) {

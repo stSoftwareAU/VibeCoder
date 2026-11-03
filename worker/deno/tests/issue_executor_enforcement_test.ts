@@ -28,6 +28,114 @@ import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import { createAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
+Deno.test("split guard - advisor dispatches require explicit foreground execution (Issue #4599)", () => {
+  for (const tool of ["Agent", "Task"]) {
+    for (const background of [true, undefined]) {
+      const decision = decideIssueEditHook({
+        ...payload(tool),
+        tool_input: { run_in_background: background },
+      });
+      assert(decision.deny);
+      assertStringIncludes(decision.reason, "run_in_background: false");
+    }
+    assertEquals(
+      decideIssueEditHook({
+        ...payload(tool),
+        tool_input: { run_in_background: false },
+      }).deny,
+      false,
+    );
+    assertEquals(
+      decideIssueEditHook({
+        ...payload(tool, "executor-1"),
+        tool_input: { run_in_background: true },
+      }).deny,
+      false,
+    );
+  }
+});
+
+Deno.test({
+  name:
+    "split runner - an advisor ending with an active executor is unfinished (Issue #4599)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    for (
+      const mode of [
+        "pending",
+        "completed",
+        "background",
+        "async",
+        "error",
+        "nested",
+        "unrelated",
+      ]
+    ) {
+      const completed = mode === "completed";
+      const lines = [
+        {
+          type: "assistant",
+          parent_tool_use_id: null,
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "executor-call",
+                name: "Agent",
+                input: {
+                  subagent_type: "executor",
+                  run_in_background: mode === "background",
+                },
+              },
+            ],
+          },
+        },
+        ...(mode !== "pending"
+          ? [{
+            type: "user",
+            parent_tool_use_id: mode === "nested" ? "executor-call" : null,
+            tool_use_result: { isAsync: mode === "async" },
+            message: {
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: mode === "unrelated"
+                    ? "another-call"
+                    : "executor-call",
+                  is_error: mode === "error",
+                  content: "Delivered changes and tests",
+                },
+              ],
+            },
+          }]
+          : []),
+        { type: "result", subtype: "success", result: "done" },
+      ];
+      const stream = lines.map((line) => JSON.stringify(line)).join("\n");
+      const stub = await createAgentStub(
+        `cat <<'STREAM'\n${stream}\nSTREAM\nexit 0\n`,
+      );
+      try {
+        const result = await runClaudeWithTimeout({
+          clock: fakeClock(),
+          prompt: "P",
+          model: "m",
+          agentBinaryPath: stub.path,
+          timeoutSeconds: 30,
+          killAfterSeconds: 2,
+          issueExecutorSplit: true,
+        });
+        assertEquals(result.ok, completed);
+        if (!result.ok) {
+          assertStringIncludes(result.error.message, "unfinished executor");
+        }
+      } finally {
+        await stub.dispose();
+      }
+    }
+  },
+});
+
 /** One `PreToolUse` payload, as the CLI writes it to the hook's stdin. */
 function payload(
   tool: string,
@@ -191,7 +299,7 @@ Deno.test("issue executor hook settings - registers a PreToolUse command hook fo
     };
   };
   const entry = settings.hooks.PreToolUse[0]!;
-  assertEquals(entry.matcher, "Edit|Write");
+  assertEquals(entry.matcher, "Edit|Write|Agent|Task");
   assertEquals(entry.hooks[0]!.type, "command");
   assertStringIncludes(entry.hooks[0]!.command, "/usr/bin/deno");
   assertStringIncludes(entry.hooks[0]!.command, "issue_edit_guard_cli.ts");
@@ -236,15 +344,39 @@ function splitRunStream(): string {
     assistant([toolUse("t1", "Edit", { file_path: "/repo/a.ts" })]),
     assistant([toolUse("t2", "Write", { file_path: "/repo/b.ts" })]),
     assistant([
-      toolUse("t3", "Task", { subagent_type: "executor", prompt: "edit c" }),
-      toolUse("t4", "Task", { subagent_type: "executor", prompt: "edit d" }),
+      toolUse("t3", "Task", {
+        subagent_type: "executor",
+        prompt: "edit c",
+        run_in_background: false,
+      }),
+      toolUse("t4", "Task", {
+        subagent_type: "executor",
+        prompt: "edit d",
+        run_in_background: false,
+      }),
     ]),
-    assistant([toolUse("t5", "Task", { subagent_type: "executor" })]),
+    assistant([
+      toolUse("t5", "Task", {
+        subagent_type: "executor",
+        run_in_background: false,
+      }),
+    ]),
     assistant([toolUse("t6", "SendMessage", { to: "executor" })]),
     // An executor's own edits, attributed to the Task that started it.
     assistant([toolUse("t7", "Edit", { file_path: "/repo/c.ts" })], "t3"),
     // A sub-agent that is not an executor, dispatched for review work.
     assistant([toolUse("t8", "Task", { subagent_type: "Explore" })]),
+    JSON.stringify({
+      type: "user",
+      parent_tool_use_id: null,
+      message: {
+        content: ["t3", "t4", "t5"].map((id) => ({
+          type: "tool_result",
+          tool_use_id: id,
+          content: "Delivered changes",
+        })),
+      },
+    }),
     JSON.stringify({ type: "result", subtype: "success", result: "done" }),
   ].join("\n");
 }

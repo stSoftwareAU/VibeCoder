@@ -100,6 +100,8 @@ import {
   renderProseRanges,
 } from "./doc_prose_scope.ts";
 
+import { collectRunOwnBaseline } from "./pr_feedback_mutation_check.ts";
+import { findBlockingMutationJob } from "./ci_mutation_contract.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "./closure_verdict_recovery.ts";
 import {
@@ -116,6 +118,7 @@ import {
 } from "./doc_prose_claims.ts";
 import {
   buildMutationGateComment,
+  type CiMutationBlock,
   evaluateMutationGate,
   type Mutant,
   type MutationCheckResult,
@@ -379,10 +382,9 @@ export function renderDriftVerdictQuestion(opts: {
 /**
  * Build the constrained, read-only drift question.
  *
- * One question, no file edits: the model is asked to run `git diff
- * <beforeSha>` (this push's change — committed and uncommitted) and
- * `git status`, read each listed file at the current working-tree content,
- * and quote every sentence the code change leaves false or incomplete. The
+ * One question, no file edits: the model is asked to diff the run-own
+ * baseline and inspect untracked files, then read each listed file at the
+ * current working-tree content, and quote every sentence the code change leaves false or incomplete. The
  * file list is model-influenced data (paths drawn from the PR diff), so it
  * rides inside a CSPRNG-nonced untrusted fence rather than as bare prompt
  * text, exactly as the closure-verdict question fences the issue's
@@ -402,6 +404,7 @@ export function buildDriftQuestionPrompt(opts: {
   repo: string;
   prNumber: number;
   beforeSha: string;
+  baseline?: string;
   baseRef: string | undefined;
   files: readonly string[];
   changeRequest?: string;
@@ -412,6 +415,9 @@ export function buildDriftQuestionPrompt(opts: {
       `buildDriftQuestionPrompt requires a hex commit sha, got '${opts.beforeSha}'`,
     );
   }
+  if (opts.baseline !== undefined && !SHA_PATTERN.test(opts.baseline)) {
+    throw new Error("buildDriftQuestionPrompt requires a hex baseline");
+  }
   const boundaryId = isBoundaryId(opts.boundaryId)
     ? opts.boundaryId
     : generateBoundaryId();
@@ -419,8 +425,9 @@ export function buildDriftQuestionPrompt(opts: {
   const intro: string[] = [
     `A review-fix push to ${opts.repo}#${opts.prNumber} made the change ` +
     `in this push (code, tests or docs). Run \`git diff ` +
-    `${opts.beforeSha}\` — this push's change, committed and ` +
-    "uncommitted — and `git status`, then read each file listed below " +
+    `${opts.baseline ?? opts.beforeSha}\` — the run-own change, excluding ` +
+    "lines brought in by merges — and `git status` for untracked files, " +
+    "then read each file listed below " +
     "at its current working-tree content.",
   ];
   if (opts.baseRef) {
@@ -1198,6 +1205,7 @@ function mutationSurvivorText(s: Mutant): string {
  */
 async function runMutationGateOnce(
   deps: DriftCheckDeps,
+  repoPath: string,
   beforeSha: string,
   summaries: readonly LoadedSummary[],
   context: { repo: string; prNumber: number },
@@ -1213,9 +1221,27 @@ async function runMutationGateOnce(
       }`,
     };
   }
+  // Issue #4617: a blocking repository CI job reads the survivors, so a
+  // PR-summary exemption cannot clear them. Review-fix pushes cannot hold a
+  // PR, so only this verdict changes. A lookup fault is logged and read as
+  // non-blocking, as the completion phase does.
+  let ciBlock: (CiMutationBlock & { tool: "cargo" | "deno_task" }) | undefined;
+  try {
+    const contract = await findBlockingMutationJob(repoPath);
+    ciBlock = contract.blocking ?? undefined;
+  } catch (err) {
+    deps.logger.warn(
+      "Could not read the repository's CI workflows, so the mutation check is treated as non-blocking (Issue #4617)",
+      {
+        ...context,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+  }
   const verdict = evaluateMutationGate(
     result,
     summaries.map((s) => s.content).join("\n"),
+    ciBlock,
   );
   if (verdict.budgetExhausted) {
     deps.logger.warn(verdict.note, context);
@@ -1289,7 +1315,27 @@ export async function runPrFeedbackDriftCheck(
     return { status: "skipped", reason: "no before-run head to diff against" };
   }
 
-  const diffNames = await runGitLines(deps, ["diff", "--name-only", beforeSha]);
+  const baseline = await collectRunOwnBaseline(deps.runGit, beforeSha);
+  if (!baseline.ok) {
+    const reason =
+      `could not build the run-own diff: ${baseline.error.message}`;
+    logger.warn(`Drift check: ${reason}`, { repo, prNumber });
+    return {
+      status: "reported",
+      recoveryRan: false,
+      residual: {
+        findings: [],
+        mismatches: [],
+        docsSweepProblems: [],
+        modelPassUnavailable: reason,
+      },
+    };
+  }
+  const diffNames = await runGitLines(deps, [
+    "diff",
+    "--name-only",
+    baseline.value,
+  ]);
   const untracked = await runGitLines(deps, [
     "ls-files",
     "--others",
@@ -1446,6 +1492,7 @@ export async function runPrFeedbackDriftCheck(
   // are a hit; an error or a budget or cap shortfall is reported only.
   const initialMutation = await runMutationGateOnce(
     deps,
+    repoPath,
     beforeSha,
     summaries,
     { repo, prNumber },
@@ -1470,7 +1517,7 @@ export async function runPrFeedbackDriftCheck(
       "--no-ext-diff",
       "--no-textconv",
       "--unified=0",
-      beforeSha,
+      baseline.value,
       "--",
     ]);
     const scope = await collectDocProseScope({
@@ -1537,6 +1584,7 @@ export async function runPrFeedbackDriftCheck(
         repo,
         prNumber,
         beforeSha,
+        baseline: baseline.value,
         baseRef,
         files,
         proseRanges: scope.ranges.filter((r) => files.includes(r.file)),
@@ -1710,7 +1758,7 @@ export async function runPrFeedbackDriftCheck(
   // initial survivors (Issue #3750): the fresh summaries then supply any
   // exemption the turn added. Otherwise the initial verdict stands.
   const finalMutation = initialMutation.survivors.length > 0 && recoveryRan
-    ? await runMutationGateOnce(deps, beforeSha, freshSummaries, {
+    ? await runMutationGateOnce(deps, repoPath, beforeSha, freshSummaries, {
       repo,
       prNumber,
     })

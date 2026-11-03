@@ -14,8 +14,8 @@ import {
 // refreshes the summary, files an issue for each problem Fable noticed outside
 // the PR's scope (skipping one an open issue already covers), labels a held
 // PR `needs-human` and removes that label on a later approve/send-back only
-// when its log shows it added it, brings an approved fleet or Dependabot PR that is behind
-// its base up to date (review first, then update: Issue #3225), and raises a
+// when its log shows it added it, routes approved behind PRs through the shared
+// strict-base refresh policy after review (Issue #4613), and raises a
 // desktop notification when a PR is sent back or held for the owner.
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
@@ -24,17 +24,25 @@ import {
 // Every review ends with a run footer naming the model run that wrote it
 // (review_cost.ts): a round's input file sits in the round's directory beside
 // its attempt log, an input elsewhere is an interactive session's, and
-// --no-model marks a review posted with no model run (an audit send-back).
+// --no-model marks a review posted with no model run (an audit send-back). An
+// audit send-back skips the test-change assessment: it has no test-change notes,
+// so its own findings alone decide it (Issue #4655).
 // --state-dir names the review state directory outright. A round inside the
 // worker container passes it (Issue #3293): there the host's log directory is
 // mounted at another path, so the resolution stateDir() makes on the host
 // would point somewhere else.
-// An opted-in repo (`pr_reviewer_auto_release` in .config.json) has an
-// issue-required test-change hold auto-released as an approval (Issue #3397).
-// After the review posts, the claim comments at the reviewed head are deleted,
-// whichever host made them (Issue #4398).
-// Output: one line of JSON, { posted, outcome?, filedIssues?, labelError?,
-// branchUpdated?, branchUpdateError?, autoReleased?, autoReleaseHeld?, reason? }.
+// Every repo gets the test-change evidence review (Issue #4655, replacing the
+// opt-in auto-release of Issue #3397): each removed or meaningfully changed
+// test must be explained and verified at the head (test_change_policy.ts). A
+// repo listed in `pr_reviewer_test_hold_repos` holds every meaningful test
+// change for the owner instead. The head is re-checked just before posting, so
+// an approval never lands on a head that moved during the review. After the
+// review posts, the claim comments at the reviewed head are deleted, whichever
+// host made them (Issue #4398).
+// Output: one line of JSON, { posted, outcome?, testPolicy?, testChangesReviewed?,
+// ownerHold?, filedIssues?, labelError?, branchUpdated?, branchUpdateError?,
+// reason?, retry? }. `retry` is set (exit 3) when a check could not run: nothing
+// is posted and the PR comes back on the next pass.
 // A failed label call leaves the review posted, is not retried, and is
 // reported in `labelError`; a refused branch update likewise in
 // `branchUpdateError`; both paths remember successful requests and GitHub
@@ -46,6 +54,7 @@ import {
   decideOutcome,
   type FableReview,
   type FiledIssue,
+  HOLD_POLICY_VERSION,
   latestByPr,
   LOG_FILE,
   type LogRecord,
@@ -68,7 +77,15 @@ import {
   type RunGh,
   syncNeedsHumanLabel,
 } from "./needs_human.ts";
-import { loadAutoReleaseRepos, resolveAutoRelease } from "./auto_release.ts";
+import {
+  type ApprovedTestChange,
+  type AssessedPr,
+  assessTestChanges,
+  describeTestPolicy,
+  type EffectiveTestPolicy,
+  loadTestPolicy,
+  testModeFor,
+} from "./test_change_policy.ts";
 import { type BranchUpdateResult, updateBranchOnce } from "./branch_update.ts";
 import { postRunInfo, recordPosted } from "./review_cost.ts";
 import { releaseClaims } from "./claim.ts";
@@ -81,7 +98,8 @@ interface Input {
     title: string;
     url: string;
     headSha: string;
-    kind?: "dependabot" | "fleet";
+    baseRef: string;
+    kind: "dependabot" | "fleet";
     testChanges: { removed: string[]; edited: string[] };
     // From the gate entry; required, so a stale entry fails loudly rather
     // than skipping the checklist checks (Issue #3594).
@@ -299,13 +317,23 @@ async function addToExistingIssue(
   }
 }
 
+/** The test-change policy as the log and the output record it (Issue #4655). */
+export interface TestPolicyRecord {
+  version: number;
+  mode: string;
+  holdAllRepos: string[];
+}
+
 export function postedResult(
   outcome: Outcome,
   filedIssues: readonly FiledIssue[],
   labelError?: LabelError,
   branchUpdate?: BranchUpdateResult,
-  autoReleased?: boolean,
-  autoReleaseHeld?: readonly string[],
+  extra: {
+    testPolicy?: TestPolicyRecord;
+    testChangesReviewed?: boolean;
+    ownerHold?: readonly string[];
+  } = {},
 ) {
   return {
     posted: true,
@@ -316,52 +344,130 @@ export function postedResult(
     ...(branchUpdate?.updated === false
       ? { branchUpdateError: branchUpdate.error }
       : {}),
-    ...(autoReleased ? { autoReleased: true } : {}),
-    ...(autoReleaseHeld ? { autoReleaseHeld } : {}),
-  };
-}
-
-const isNotOptedIn = (reasons: readonly string[]) =>
-  reasons.length === 1 && reasons[0] === "repo not opted in";
-
-// The outcome, with an issue-required test-change hold released when the repo
-// opted in and every note checks out; any doubt keeps the hold (Issue #3397).
-export async function decidePostOutcome(
-  pr: { repo: string; number: number },
-  review: FableReview,
-  removedTests: readonly string[],
-  repos: readonly string[],
-  runGh: RunGh,
-): Promise<
-  {
-    outcome: Outcome;
-    autoReleased: boolean;
-    autoReleaseReasons: string[];
-    autoReleaseHeld?: string[];
-  }
-> {
-  const { release, reasons } = await resolveAutoRelease(
-    pr,
-    review,
-    removedTests,
-    repos,
-    runGh,
-  );
-  const outcome = decideOutcome(review, removedTests, { autoRelease: release });
-  return {
-    outcome,
-    autoReleased: release && outcome === "approved",
-    autoReleaseReasons: reasons,
-    ...(outcome === "held" && !isNotOptedIn(reasons)
-      ? { autoReleaseHeld: reasons }
+    ...(extra.testPolicy ? { testPolicy: extra.testPolicy } : {}),
+    ...(extra.testChangesReviewed === true
+      ? { testChangesReviewed: true }
+      : {}),
+    ...(extra.ownerHold && extra.ownerHold.length > 0
+      ? { ownerHold: [...extra.ownerHold] }
       : {}),
   };
 }
 
-// Review first, then up to date (Issue #3225): every fleet PR is armed with
-// auto-merge on CI green, approved and branch up to date, so an approval of
-// a PR that is behind its base would otherwise sit unmerged until something
-// else brought it up to date. Dependabot follows the same leased update.
+/** The gate entry fields the test-change decision needs (Issue #4655). */
+export type TestGatePr = Pick<
+  Input["pr"],
+  "repo" | "number" | "headSha" | "kind" | "testChanges" | "baseRef"
+>;
+
+/**
+ * What to do with a review: `retry` when a check could not run (nothing is
+ * posted), else the outcome and the review with the test-change findings
+ * appended. `testReview` lists the approved changes; `hold` says why the owner
+ * decides (Issue #4655).
+ */
+export type PostDecision =
+  | { retry: string }
+  | {
+    outcome: Outcome;
+    review: FableReview;
+    testReview?: { approved: readonly ApprovedTestChange[] };
+    hold?: { reasons: readonly string[]; override: boolean };
+  };
+
+// The outcome under the test-change policy (Issue #4655). A repo in
+// `pr_reviewer_test_hold_repos` holds every meaningful test change or removed
+// test for the owner, without any evidence check. Any other repo gets the
+// evidence review: a failed check sends the PR back, an owner question holds
+// it, and a check that cannot run is a retry, never an approval.
+export async function decidePostOutcome(
+  pr: TestGatePr,
+  review: FableReview,
+  removedTests: readonly string[],
+  policy: EffectiveTestPolicy,
+  runGh: RunGh,
+  // `assess: false`: an audit send-back, which has no model test-change notes
+  // to check, so its own findings alone decide it (Issue #4655).
+  opts: { assess?: boolean } = {},
+): Promise<PostDecision> {
+  if (
+    testModeFor(policy, pr.repo) === "hold-all" &&
+    (review.testChanges === "meaningful" || removedTests.length > 0)
+  ) {
+    return {
+      outcome: decideOutcome(review, removedTests, { hold: true }),
+      review,
+      hold: { reasons: [], override: true },
+    };
+  }
+  if (opts.assess === false) {
+    return { outcome: decideOutcome(review, removedTests), review };
+  }
+  const assessed: AssessedPr = {
+    repo: pr.repo,
+    number: pr.number,
+    headSha: pr.headSha,
+    kind: pr.kind,
+    testChanges: pr.testChanges,
+    baseRef: pr.baseRef,
+  };
+  const assessment = await assessTestChanges(assessed, review, policy, runGh);
+  if (assessment.retry !== undefined) return { retry: assessment.retry };
+  const withFindings: FableReview = {
+    ...review,
+    findings: [...review.findings, ...assessment.findings],
+  };
+  const held = assessment.ownerReasons.length > 0;
+  return {
+    outcome: decideOutcome(withFindings, removedTests, { hold: held }),
+    review: withFindings,
+    ...(assessment.approved.length > 0
+      ? { testReview: { approved: assessment.approved } }
+      : {}),
+    ...(held
+      ? { hold: { reasons: assessment.ownerReasons, override: false } }
+      : {}),
+  };
+}
+
+/** What the live PR says now, read just before a post (Issue #4655). */
+export interface LivePr {
+  headRefOid: string;
+  state: string;
+  mergeStateStatus?: string;
+  isDraft: boolean;
+  mergeable: string;
+}
+
+// The head and state the PR has now. Used before the review is decided and
+// again just before it posts, so a head that moved during the review is never
+// approved (Issue #4655). A moved head leaves its claim at the old sha: the
+// gate ignores claims at other heads, and it expires (Issue #4398).
+export async function headStillCurrent(
+  pr: { repo: string; number: number; headSha: string },
+  runGh: RunGh,
+): Promise<{ ok: true; live: LivePr } | { ok: false; reason: string }> {
+  const live: LivePr = JSON.parse(
+    await runGh([
+      "pr",
+      "view",
+      String(pr.number),
+      "-R",
+      pr.repo,
+      "--json",
+      "headRefOid,state,mergeStateStatus,isDraft,mergeable",
+    ]),
+  );
+  if (live.headRefOid !== pr.headSha || live.state !== "OPEN") {
+    return { ok: false, reason: `now ${live.headRefOid} ${live.state}` };
+  }
+  return { ok: true, live };
+}
+
+// Review first, then ask the shared refresh policy (Issue #4613). On strict,
+// non-queue bases it refreshes only an armed, approved, mergeable PR whose
+// required checks passed on its current head. Other bases keep their existing
+// path; Dependabot follows the same per-PR lease.
 export function shouldUpdateBranch(
   outcome: Outcome,
   mergeStateStatus: string | undefined,
@@ -409,33 +515,25 @@ export async function main() {
     Deno.exit(2);
   }
 
+  // The owner-hold list is read before anything is filed or posted: a malformed
+  // one fails loud here (Issue #4655).
+  const policy = await loadTestPolicy();
+  if (policy.legacyAutoRelease.length > 0) {
+    console.error(
+      "pr_reviewer_auto_release is no longer read (Issue #4655); the evidence-review policy applies to every repo",
+    );
+  }
+
   // Unrelated issues are pre-existing on the base branch, so they stand
   // whether or not the PR has since moved or merged: file them before the
   // head check, or a PR that merges mid-review loses the bug Fable found.
   const filedIssues = await fileUnrelatedIssues(pr, review);
-  const live: {
-    headRefOid: string;
-    state: string;
-    mergeStateStatus?: string;
-    isDraft: boolean;
-    mergeable: string;
-  } = JSON.parse(
-    await run("gh", [
-      "pr",
-      "view",
-      String(pr.number),
-      "-R",
-      pr.repo,
-      "--json",
-      "headRefOid,state,mergeStateStatus,isDraft,mergeable",
-    ]),
-  );
-  // A moved head leaves its claim at the old sha: the gate ignores claims at other heads, and it expires (Issue #4398).
-  if (live.headRefOid !== pr.headSha || live.state !== "OPEN") {
+  const first = await headStillCurrent(pr, (args) => run("gh", args));
+  if (!first.ok) {
     console.log(
       JSON.stringify({
         posted: false,
-        reason: `now ${live.headRefOid} ${live.state}`,
+        reason: first.reason,
         filedIssues: filedIssues.map((i) => i.url),
       }),
     );
@@ -443,14 +541,31 @@ export async function main() {
   }
 
   const removed = pr.testChanges.removed;
-  const repos = await loadAutoReleaseRepos();
-  const { outcome, autoReleased, autoReleaseHeld } = await decidePostOutcome(
+  const decision = await decidePostOutcome(
     pr,
     review,
     removed,
-    repos,
+    policy,
     (args) => run("gh", args),
+    // An audit send-back (--no-model) has no test-change notes to assess.
+    { assess: !Deno.args.includes("--no-model") },
   );
+  if ("retry" in decision) {
+    // A check could not run: nothing is posted, and the PR comes back next pass.
+    console.log(
+      JSON.stringify({ posted: false, reason: decision.retry, retry: true }),
+    );
+    Deno.exit(3);
+  }
+  const { outcome, testReview, hold } = decision;
+  review = decision.review;
+  const testPolicyRecord: TestPolicyRecord = {
+    version: policy.version,
+    mode: policy.mode,
+    holdAllRepos: policy.holdAllRepos,
+  };
+  const testChangesReviewed = outcome === "approved" &&
+    testReview !== undefined;
   const dir = Deno.args.find((a) => a.startsWith("--state-dir="))?.slice(12) ??
     stateDir();
   const previous = latestByPr(await readLog(dir)).get(
@@ -465,12 +580,28 @@ export async function main() {
   const runInfo = await postRunInfo(roundDir, {
     noModel: Deno.args.includes("--no-model"),
   });
+  // Re-check the head just before posting: a head that moved during the review
+  // is never approved (Issue #4655).
+  const second = await headStillCurrent(pr, (args) => run("gh", args));
+  if (!second.ok) {
+    console.log(
+      JSON.stringify({
+        posted: false,
+        reason: second.reason,
+        filedIssues: filedIssues.map((i) => i.url),
+      }),
+    );
+    return;
+  }
+  const live = second.live;
+
   const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
   await Deno.writeTextFile(
     bodyFile,
     reviewBody(outcome, review, removed, filedIssues, {
-      autoReleased,
       run: runInfo,
+      testReview,
+      hold,
     }),
   );
   const flag = outcome === "approved"
@@ -528,7 +659,28 @@ export async function main() {
       live.mergeable,
     )
   ) {
-    branchUpdate = await updateBranchOnce(pr, dir, (args) => run("gh", args));
+    let reviewer = Deno.args.find((a) => a.startsWith("--reviewer="))?.slice(
+      11,
+    );
+    try {
+      reviewer ??= (await run("gh", ["api", "user", "--jq", ".login"])).trim();
+    } catch (error) {
+      branchUpdate = {
+        updated: false,
+        error: `branch refresh skipped: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    if (reviewer !== undefined) {
+      branchUpdate = await updateBranchOnce(
+        { ...pr, baseRefName: pr.baseRef },
+        dir,
+        (args) => run("gh", args),
+        undefined,
+        reviewer,
+      );
+    }
     if (branchUpdate?.updated === false) {
       console.error(
         `could not bring ${pr.repo}#${pr.number} up to date: ${branchUpdate.error}`,
@@ -550,8 +702,9 @@ export async function main() {
     removedTests: removed,
     filedIssues,
     addedNeedsHuman: label.addedNeedsHuman,
-    ...(autoReleased ? { autoReleased: true as const } : {}),
-    ...(autoReleaseHeld ? { autoReleaseHeld } : {}),
+    testPolicy: testPolicyRecord,
+    ...(testChangesReviewed ? { testChangesReviewed: true as const } : {}),
+    ...(outcome === "held" ? { holdPolicy: HOLD_POLICY_VERSION } : {}),
   };
   await Deno.mkdir(dir, { recursive: true });
   await Deno.writeTextFile(
@@ -561,7 +714,7 @@ export async function main() {
       append: true,
     },
   );
-  await writeSummary(dir);
+  await writeSummary(dir, undefined, undefined, describeTestPolicy(policy));
 
   if (outcome === "changes_requested") {
     await notify(
@@ -571,19 +724,16 @@ export async function main() {
   } else if (outcome === "held") {
     await notify(
       "PR held for you",
-      `${pr.repo}#${pr.number} changes existing tests`,
+      `${pr.repo}#${pr.number}: held for owner review`,
     );
   }
   console.log(
     JSON.stringify(
-      postedResult(
-        outcome,
-        filedIssues,
-        label.labelError,
-        branchUpdate,
-        autoReleased,
-        autoReleaseHeld,
-      ),
+      postedResult(outcome, filedIssues, label.labelError, branchUpdate, {
+        testPolicy: testPolicyRecord,
+        testChangesReviewed,
+        ownerHold: hold?.reasons,
+      }),
     ),
   );
 }

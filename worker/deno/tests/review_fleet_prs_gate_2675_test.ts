@@ -4,12 +4,15 @@
  * the skill's job.
  */
 import { assertEquals, assertRejects } from "@std/assert";
+import { earlierFindingGaps } from "../lib/earlier_findings.ts";
 import {
   authorKind,
   existingTestChanges,
+  heldAt,
   isTestPath,
   noTestAdded,
   ownDiffUnchanged,
+  type ReadyPr,
   REVIEW_MARKER,
   reviewedAtHead,
   type RollupContextNode,
@@ -18,6 +21,11 @@ import {
   sentBackAt,
   skipReason,
 } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
+import {
+  type Finding,
+  HOLD_POLICY_VERSION,
+  holdPolicyMarker,
+} from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 const file = (
   filename: string,
@@ -231,9 +239,23 @@ Deno.test("reviewedAtHead: approvals, change requests and the skill's own commen
     reviewedAtHead([review("CHANGES_REQUESTED", "head")], "nleck", "head"),
     true,
   );
+  // A marker-only hold is a pre-#4655 (policy 1) hold: not reviewed at head now.
+  // Was `true` before #4655; the current-policy hold below replaces it.
   assertEquals(
     reviewedAtHead(
       [review("COMMENTED", "head", `Held. ${REVIEW_MARKER}`)],
+      "nleck",
+      "head",
+    ),
+    false,
+  );
+  assertEquals(
+    reviewedAtHead(
+      [review(
+        "COMMENTED",
+        "head",
+        `Held.\n${holdPolicyMarker()}\n${REVIEW_MARKER}`,
+      )],
       "nleck",
       "head",
     ),
@@ -1827,6 +1849,56 @@ Deno.test("ownDiffUnchanged: a dropped file named by an earlier finding gap is a
   );
 });
 
+Deno.test("ownDiffUnchanged: nested earlier gaps name files for version bumps and context moves (Issue #4619)", async () => {
+  const nestedGap = (file: string) => ({
+    file: "(earlier review)",
+    earlier: {
+      file: "(earlier review)",
+      earlier: { file, line: 1, problem: "Fix the original finding" },
+      line: 0,
+      problem: "Earlier finding remains unresolved",
+    },
+  });
+  const versionGh = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "fix",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([
+      { filename: "VERSION", patch: versionPatch("1.32.4", "1.32.5") },
+    ]),
+    "repos/o/r/compare/main...head": compareFiles([
+      { filename: "VERSION", patch: versionPatch("1.32.5", "1.32.6") },
+    ]),
+  }).gh;
+  assertEquals(
+    await ownDiffUnchanged(versionGh, "o/r", "main", "X", "head", [
+      nestedGap("./VERSION"),
+    ]),
+    false,
+  );
+  assertEquals(
+    await ownDiffUnchanged(versionGh, "o/r", "main", "X", "head", [
+      nestedGap("other.ts"),
+    ]),
+    true,
+  );
+
+  const movedGh = ownDiffGh(entryBelowHeading, entryAboveHeading);
+  assertEquals(
+    await ownDiffUnchanged(movedGh, "o/r", "main", "X", "head", [
+      nestedGap("docs/CHANGELOG.md"),
+    ]),
+    false,
+  );
+  assertEquals(
+    await ownDiffUnchanged(movedGh, "o/r", "main", "X", "head", [
+      nestedGap("other.ts"),
+    ]),
+    true,
+  );
+});
+
 Deno.test("ownDiffUnchanged: a file only the head lists is a fresh review (Issue #4542)", async () => {
   const { gh } = fakeGh({
     "repos/o/r/compare/X...head": compareResponse("ahead", [{
@@ -1924,6 +1996,266 @@ Deno.test("ownDiffUnchanged: a repeated filename in either listing is a fresh re
   }
 });
 
+// --- Issue #4643: a PR held for the owner, with only base merges since -------
+
+// A comment-only skill review that held the PR for the owner: it carries the
+// marker, as every review body the skill posts does.
+const heldReview = (commit_id: string | null, login = "nleck") =>
+  review(
+    "COMMENTED",
+    commit_id,
+    `Held for owner review\n\n_${REVIEW_MARKER}._`,
+    login,
+  );
+
+const heldPr = (commit = "X") =>
+  searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [heldReview(commit)] },
+  });
+
+// The base merged in after the hold at X. a.ts carries the same own change
+// on both sides, shifted to a new hunk header, unless headPatch differs.
+const heldMergeGh = (headPatch: string) =>
+  fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [
+      { sha: "base1", parents: 1 },
+      { sha: "m1", parents: 2 },
+    ]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      patch: headPatch,
+    }]),
+  });
+
+Deno.test("heldAt: the latest counted review is a skill comment-only review at an older commit (Issue #4643)", () => {
+  assertEquals(heldAt([heldReview("X")], "nleck", "head"), "X");
+  // Held at the head itself: already reviewed, nothing to re-judge.
+  assertEquals(heldAt([heldReview("head")], "nleck", "head"), null);
+  // Another host's skill review counts whichever login posted it.
+  assertEquals(heldAt([heldReview("X", "stservice")], "nleck", "head"), "X");
+  // The owner's own comment is not a hold.
+  assertEquals(
+    heldAt([review("COMMENTED", "X", "a note", "owner")], "nleck", "head"),
+    null,
+  );
+  // A comment-only review by the reviewer without the marker is not a hold.
+  assertEquals(
+    heldAt([review("COMMENTED", "X", "a note", "nleck")], "nleck", "head"),
+    null,
+  );
+  // A later change request makes it a send-back, not a hold.
+  assertEquals(
+    heldAt(
+      [heldReview("X"), review("CHANGES_REQUESTED", "Y")],
+      "nleck",
+      "head",
+    ),
+    null,
+  );
+  // A later hold wins over an earlier change request.
+  assertEquals(
+    heldAt(
+      [review("CHANGES_REQUESTED", "Y"), heldReview("X")],
+      "nleck",
+      "head",
+    ),
+    "X",
+  );
+  // An approval is not a hold.
+  assertEquals(heldAt([review("APPROVED", "X")], "nleck", "head"), null);
+  assertEquals(heldAt([], "nleck", "head"), null);
+});
+
+Deno.test("skipReason: a merge-only head after a held review is awaiting-owner under the current hold policy (Issue #4643)", async () => {
+  const { gh, calls } = heldMergeGh("@@ -11,3 +11,4 @@\n+x");
+  assertEquals(
+    await skipReason(
+      heldPr(),
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+      () => false,
+      (oid) => (oid === "X" ? HOLD_POLICY_VERSION : null),
+    ),
+    "awaiting-owner",
+  );
+  // The own diff was compared from the held commit to the head.
+  assertEquals(calls.includes("repos/o/r/compare/X...head"), true);
+});
+
+Deno.test("skipReason: a held PR whose own diff changed is a fresh review (Issue #4643)", async () => {
+  const { gh } = heldMergeGh("@@ -11,3 +11,4 @@\n+y");
+  assertEquals(
+    await skipReason(
+      heldPr(),
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    null,
+  );
+});
+
+Deno.test("skipReason: a held PR with no log record is a fresh review and the checker is never called (Issue #4643)", async () => {
+  const checked: string[] = [];
+  assertEquals(
+    await skipReason(
+      heldPr(),
+      "nleck",
+      (since) => {
+        checked.push(since);
+        return Promise.resolve(true);
+      },
+      () => false,
+      () => null,
+    ),
+    null,
+  );
+  assertEquals(checked, []);
+});
+
+Deno.test("skipReason: a hold made under another hold policy is a fresh review and the checker is never called (Issue #4643)", async () => {
+  for (const policy of [HOLD_POLICY_VERSION - 1, HOLD_POLICY_VERSION + 1]) {
+    const checked: string[] = [];
+    assertEquals(
+      await skipReason(
+        heldPr(),
+        "nleck",
+        (since) => {
+          checked.push(since);
+          return Promise.resolve(true);
+        },
+        () => false,
+        () => policy,
+      ),
+      null,
+    );
+    assertEquals(checked, []);
+  }
+});
+
+Deno.test("skipReason: the owner's own comment on an older commit is not a hold (Issue #4643)", async () => {
+  const checked: string[] = [];
+  assertEquals(
+    await skipReason(
+      searchPr({
+        headRefOid: "head",
+        baseRefName: "main",
+        reviews: { nodes: [review("COMMENTED", "X", "a note", "owner")] },
+      }),
+      "nleck",
+      (since) => {
+        checked.push(since);
+        return Promise.resolve(true);
+      },
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    null,
+  );
+  assertEquals(checked, []);
+});
+
+Deno.test("skipReason: a held PR whose base merge dropped a file is a fresh review, since a hold has no earlier finding to name it (Issue #4643)", async () => {
+  // droppedGh's base merge removes docs.md from the own diff. A send-back may
+  // allow that when a finding is known; a hold has none, so the strict path
+  // refuses it.
+  const gh = droppedGh();
+  assertEquals(
+    await skipReason(
+      heldPr(),
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    null,
+  );
+});
+
+Deno.test("skipReason: a send-back and an approval behave as before and never consult the hold policy (Issue #4643)", async () => {
+  const { gh } = heldMergeGh("@@ -11,3 +11,4 @@\n+x");
+  const consulted: string[] = [];
+  const policy = (oid: string) => {
+    consulted.push(oid);
+    return HOLD_POLICY_VERSION;
+  };
+  const checker = (since: string) =>
+    ownDiffUnchanged(gh, "o/r", "main", since, "head");
+  assertEquals(
+    await skipReason(
+      searchPr({
+        headRefOid: "head",
+        baseRefName: "main",
+        reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+      }),
+      "nleck",
+      checker,
+      () => false,
+      policy,
+    ),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await skipReason(
+      searchPr({
+        headRefOid: "head",
+        baseRefName: "main",
+        reviews: { nodes: [review("APPROVED", "X")] },
+      }),
+      "nleck",
+      checker,
+      () => false,
+      policy,
+    ),
+    null,
+  );
+  assertEquals(consulted, []);
+});
+
+Deno.test("skipReason: a hold at the head commit is already reviewed (Issue #4643)", async () => {
+  // A hold under the current policy carries its version marker (Issue #4655).
+  // Before #4655 this review had no marker and was skipped; now it is not.
+  const current = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: {
+      nodes: [review(
+        "COMMENTED",
+        "head",
+        `Held for owner review\n\n${holdPolicyMarker()}\n\n_${REVIEW_MARKER}._`,
+      )],
+    },
+  });
+  assertEquals(
+    await skipReason(
+      current,
+      "nleck",
+      () => Promise.resolve(true),
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    "already-reviewed",
+  );
+  // The same hold without the marker is a policy-1 hold: reviewed afresh.
+  assertEquals(
+    await skipReason(
+      heldPr("head"),
+      "nleck",
+      () => Promise.resolve(true),
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    null,
+  );
+});
+
 Deno.test("runWithTimeout kills a command that hangs, so one stuck gh call cannot wedge the watch loop", async () => {
   const started = Date.now();
   await assertRejects(
@@ -1933,4 +2265,294 @@ Deno.test("runWithTimeout kills a command that hangs, so one stuck gh call canno
   );
   assertEquals(Date.now() - started < 5000, true);
   assertEquals(await runWithTimeout("echo", ["ok"], 5000), "ok\n");
+});
+
+// Issue #4723: a Dependabot re-cut. Dependabot force-pushes a rebased PR, so
+// the sent-back commit X is no longer an ancestor of head and the compare is
+// "diverged". Every fixture below is accepted by the re-cut path; each test
+// changes one thing from it.
+const RECUT_PATCH = "@@ -1 +1 @@\n-old\n+unfixed";
+
+Deno.test("Dependabot re-cut handles logged earlier gaps (Issue #4723)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  const gh = sentBackGh(files, files);
+  const finding = { file: "a.ts", line: 1, problem: "Still broken" };
+  const gaps = earlierFindingGaps([finding], []);
+  assertEquals(await sentBackSkip(gh, gaps, "dependabot"), "awaiting-fix");
+  assertEquals(
+    await sentBackSkip(gh, [finding, ...gaps], "dependabot"),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      earlierFindingGaps([{ ...finding, file: "COMMIT_MSG" }], []),
+      "dependabot",
+    ),
+    null,
+  );
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      earlierFindingGaps(["a.ts: Still broken"], []),
+      "dependabot",
+    ),
+    null,
+  );
+});
+
+// base...head with the commit authors the re-cut check reads (null is a commit
+// with no author).
+const baseHeadResponse = (
+  files: Parameters<typeof compareFiles>[0],
+  authors: (string | null)[],
+) =>
+  JSON.stringify({
+    ...JSON.parse(compareFiles(files)),
+    status: "ahead",
+    total_commits: authors.length,
+    commits: authors.map((login) => ({
+      sha: "c",
+      author: login === null ? null : { login },
+    })),
+  });
+
+// A PR sent back at X, whose head compares to X as `status` (a re-cut is
+// "diverged"), with the base...head commit authors given by `authors`.
+const sentBackGh = (
+  sinceFiles: Parameters<typeof compareFiles>[0],
+  headFiles: Parameters<typeof compareFiles>[0],
+  authors: (string | null)[] = ["dependabot[bot]"],
+  status = "diverged",
+) =>
+  fakeGh({
+    "repos/o/r/compare/X...head": compareResponse(status, [{
+      sha: "new",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles(sinceFiles),
+    "repos/o/r/compare/main...head": baseHeadResponse(headFiles, authors),
+  }).gh;
+
+// The skipReason verdict for that PR, through ownDiffUnchanged.
+const sentBackSkip = (
+  gh: (args: string[]) => Promise<string>,
+  findings: Finding[] | undefined,
+  kind?: ReadyPr["kind"],
+) =>
+  skipReason(
+    searchPr({
+      headRefOid: "head",
+      baseRefName: "main",
+      reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+    }),
+    "nleck",
+    (since) =>
+      ownDiffUnchanged(gh, "o/r", "main", since, "head", findings, kind),
+  );
+
+Deno.test("Dependabot re-cut: a diverged head with a bot-only identical own diff and a content finding is awaiting-fix (Issue #4723)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(files, files),
+      [{ file: "a.ts", line: 1, problem: "x" }],
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+});
+
+Deno.test("Dependabot re-cut is refused unless every commit is by dependabot[bot] (Issue #4723)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  const findings: Finding[] = [{ file: "a.ts", line: 1, problem: "x" }];
+  // Control: every commit by Dependabot is accepted.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(files, files, ["dependabot[bot]", "dependabot[bot]"]),
+      findings,
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  // One commit by another author.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(files, files, ["dependabot[bot]", "someone"]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+  // One commit with no author cannot be confirmed as Dependabot's.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(files, files, ["dependabot[bot]", null]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+});
+
+Deno.test("A fleet PR with a diverged head keeps the ancestry check, even with an identical own diff (Issue #4723, VibeCoder#3772)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  const findings: Finding[] = [{ file: "a.ts", line: 1, problem: "x" }];
+  const gh = sentBackGh(files, files);
+  // Control: the same fixture is accepted for Dependabot.
+  assertEquals(
+    await sentBackSkip(gh, findings, "dependabot"),
+    "awaiting-fix",
+  );
+  // A fleet PR, or one with no kind, is not re-cut.
+  assertEquals(await sentBackSkip(gh, findings, "fleet"), null);
+  assertEquals(await sentBackSkip(gh, findings), null);
+});
+
+Deno.test("Dependabot re-cut takes the strict path: a changed patch, a version bump or a dropped file is a fresh review (Issue #4723)", async () => {
+  const findings: Finding[] = [{ file: "a.ts", line: 1, problem: "x" }];
+  const aFile = { filename: "a.ts", patch: RECUT_PATCH };
+  // Control: identical patches are accepted.
+  assertEquals(
+    await sentBackSkip(sentBackGh([aFile], [aFile]), findings, "dependabot"),
+    "awaiting-fix",
+  );
+  // A changed patch in the named file.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile], [{
+        filename: "a.ts",
+        patch: "@@ -1 +1 @@\n-old\n+other",
+      }]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+  // A strict version bump in an unnamed file: the normal path accepts it
+  // (control, ahead), the re-cut does not.
+  const versionSince = [
+    aFile,
+    { filename: "VERSION", patch: versionPatch("1.32.4", "1.32.5") },
+  ];
+  const versionHead = [
+    aFile,
+    { filename: "VERSION", patch: versionPatch("1.32.5", "1.32.6") },
+  ];
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(versionSince, versionHead, undefined, "ahead"),
+      findings,
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh(versionSince, versionHead),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+  // A file the sent-back own diff lists but the head drops: the normal path
+  // allows it when no finding names it (control, ahead), the re-cut does not.
+  const bFile = { filename: "b.ts", patch: RECUT_PATCH };
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile, bFile], [aFile], undefined, "ahead"),
+      findings,
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile, bFile], [aFile]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
+});
+
+Deno.test("Dependabot re-cut needs content findings: unknown, empty, non-file or earlier non-file findings are a fresh review (Issue #4723)", async () => {
+  const files = [{ filename: "a.ts", patch: RECUT_PATCH }];
+  const gh = sentBackGh(files, files);
+  // Positive control: a finding naming a.ts is accepted.
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      [{ file: "a.ts", line: 1, problem: "x" }],
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  // Unknown findings.
+  assertEquals(await sentBackSkip(gh, undefined, "dependabot"), null);
+  // No findings.
+  assertEquals(await sentBackSkip(gh, [], "dependabot"), null);
+  // A finding on a non-file, such as the commit message.
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      [{ file: "commit message", line: 1, problem: "x" }],
+      "dependabot",
+    ),
+    null,
+  );
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      [{ file: "COMMIT_MSG", line: 1, problem: "x" }],
+      "dependabot",
+    ),
+    null,
+  );
+  // A named file whose earlier finding is on a non-file.
+  assertEquals(
+    await sentBackSkip(
+      gh,
+      [{
+        file: "a.ts",
+        line: 1,
+        problem: "x",
+        earlier: { file: "COMMIT_MSG", line: 1, problem: "y" },
+      }],
+      "dependabot",
+    ),
+    null,
+  );
+});
+
+Deno.test("Dependabot re-cut compares the whole patch of a file no finding names (Issue #4723)", async () => {
+  const aFile = { filename: "a.ts", patch: RECUT_PATCH };
+  // The same changed lines with moved context.
+  const sinceB = {
+    filename: "b.ts",
+    patch: "@@ -1,3 +1,3 @@\n keep\n-old\n+new\n tail",
+  };
+  const headB = {
+    filename: "b.ts",
+    patch: "@@ -4,3 +4,3 @@\n moved\n-old\n+new\n tail",
+  };
+  const findings: Finding[] = [{ file: "a.ts", line: 1, problem: "x" }];
+  // Control: the normal path accepts a context-only change in an unnamed file.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile, sinceB], [aFile, headB], undefined, "ahead"),
+      findings,
+      "dependabot",
+    ),
+    "awaiting-fix",
+  );
+  // The re-cut compares the whole patch, so the same change is a fresh review.
+  assertEquals(
+    await sentBackSkip(
+      sentBackGh([aFile, sinceB], [aFile, headB]),
+      findings,
+      "dependabot",
+    ),
+    null,
+  );
 });

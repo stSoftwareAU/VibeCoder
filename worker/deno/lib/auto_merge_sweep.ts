@@ -104,11 +104,16 @@ export interface SweepAutoMergeOptions {
     pr: SweepablePr,
   ) => Promise<PrLiveStateReading>;
   /**
-   * Ask GitHub to update an armed PR's branch through the `update-branch`
-   * REST endpoint (Issue #2462). Called once per sweep pass for a PR that
-   * is armed and behind; a failed update is recorded and the sweep moves on.
+   * Apply the shared refresh policy to an armed, behind PR. On a strict base
+   * without a queue, readiness and shared per-base ownership decide whether
+   * the `update-branch` request is issued (Issue #4613); every refusal is
+   * recorded and the sweep moves on.
    */
-  updateBranchFn: (repo: string, prNumber: number) => Promise<Result<void>>;
+  updateBranchFn: (
+    repo: string,
+    prNumber: number,
+    baseRefName?: string,
+  ) => Promise<Result<void>>;
   /**
    * Whether a base branch is behind a GitHub merge queue (Issue #4424). An
    * armed, behind PR on a queued base is not sent to `updateBranchFn`: the
@@ -377,7 +382,11 @@ export async function sweepAutoMerge(
           reading.mergeable !== "CONFLICTING"
         ) {
           try {
-            const update = await updateBranchFn(repo, pr.number);
+            const update = await updateBranchFn(
+              repo,
+              pr.number,
+              pr.baseRefName,
+            );
             recordOutcome(
               repo,
               pr.number,

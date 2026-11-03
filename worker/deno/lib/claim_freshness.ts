@@ -299,7 +299,7 @@ export function formatStaleClaimComment(options: {
   }`;
   return [
     `The Vibe Coder finished this work but did **not** open a PR: ` +
-    `${stale.detail} (Issue #344).`,
+    `${stale.detail}.`,
     "",
     `The work is pushed and safe on [\`${branch}\`](${branchUrl})` +
     (stale.prUrl ? `, and the PR that overtook it is ${stale.prUrl}.` : "."),

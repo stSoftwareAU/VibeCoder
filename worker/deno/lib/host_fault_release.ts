@@ -170,7 +170,7 @@ export function buildHostFaultReleaseComment(
     } caused by ${list}, a fault of the worker host, not of this issue. ` +
     `The host is healthy again — a clone of this repository just ` +
     `succeeded — so the label has been removed and the issue is back in ` +
-    `the queue (Issue #2890).`;
+    `the queue.`;
 }
 
 /**

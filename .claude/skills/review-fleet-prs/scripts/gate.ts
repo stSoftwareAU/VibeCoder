@@ -5,8 +5,11 @@
 // branch, CI green, no conflict, not a draft, and not yet reviewed at their
 // head commit (by this reviewer, by anyone's approval, or by another host's
 // marker-carrying review), not held by another host's live review claim at its
-// head (Issue #4398), and not sent back awaiting a fix whose only new commits
-// leave their own diff unchanged apart from a strict version re-bump.
+// head (Issue #4398), and not sent back awaiting a fix, or held for the owner,
+// whose only new commits leave their own diff unchanged (for a fix, apart from
+// a strict version re-bump; a held PR must also be held under the current hold
+// policy, Issue #4643). A hold made under an older policy (Issue #4655) is not
+// counted as a review at its head, so it is reviewed afresh once.
 // At most --limit (default 5) PRs are
 // reported per pass, counted after every other skip, so a red, approved or
 // claimed PR never takes a slot and the rest come back next pass (Issue #3225).
@@ -33,12 +36,15 @@
 // --sleep-first waits one interval before the first poll, so a PR whose
 // review just failed is retried after the interval instead of at once.
 // Output: one line of JSON, { ready: [...], auditBlocked: [...],
-// skipped: { <reason>: count }, upkeep: [...] }. Unlike the review itself, each pass also does the
+// skipped: { <reason>: count }, upkeep: [...], testPolicy: {...} } (the
+// test-change policy in force, Issue #4655). Unlike the review itself, each pass also does the
 // Dependabot upkeep in dependabot.ts (conflict waits, arming auto-merge) and
-// brings a fleet or Dependabot PR that is approved at its head but behind its base up to
-// date (branch_update.ts), once per head; --dry-run reports that upkeep
+// sends approved behind PRs through the shared strict-base refresh policy
+// (branch_update.ts), once per head; --dry-run reports that upkeep
 // without doing it. A failed upkeep action is reported in `upkeep` too, and
 // is not retried at the same head commit.
+
+import { isEarlierGap } from "../../../../worker/deno/lib/earlier_findings.ts";
 
 // The helpers live at <checkout>/.claude/skills/review-fleet-prs/scripts/,
 // and the checkout's own .config.json is four levels up from there.
@@ -64,6 +70,9 @@ import {
 import {
   type FableReview,
   type Finding,
+  heldPolicyAt,
+  HOLD_POLICY_VERSION,
+  holdPolicyFromBody,
   migrateLegacyStateDir,
   previousFindings,
   prKey,
@@ -75,6 +84,13 @@ import {
   writeSummary,
 } from "./review_log.ts";
 import { dependabotAction } from "./dependabot.ts";
+import {
+  describeTestPolicy,
+  type EffectiveTestPolicy,
+  effectiveTestPolicy,
+  isTestPath,
+  loadTestPolicy,
+} from "./test_change_policy.ts";
 import {
   approvedAtHead,
   needsBranchUpdate,
@@ -142,6 +158,7 @@ type Skip =
   | "already-reviewed" // reviewed at this exact head commit, by this reviewer or by this skill on another host
   | "approved" // someone else approved it at this exact head commit (Issue #3225): nothing left to review
   | "awaiting-fix" // sent back earlier; own diff unchanged or only a strict version re-bump
+  | "awaiting-owner" // held for the owner earlier; own diff unchanged, and the hold is under the current policy (Issue #4643)
   | "checklist-unreadable" // fetching review-checklists.json failed with a gh error other than not-found; retried next pass
   | "in-flight" // already being reviewed in a round on this host (--in-flight, Issue #4395)
   | "claimed-elsewhere" // another host holds a live review claim at this head (Issue #4398)
@@ -157,7 +174,9 @@ export interface ReadyPr {
   headSha: string;
   baseRef: string;
   // Existing test files this PR removes or edits; the model review judges
-  // whether the edits are meaningful. A removed test file always is.
+  // whether the edits are meaningful, and post.ts checks the evidence for each
+  // (Issue #4655). A removed test file is no longer a hold on its own: it must
+  // be explained by a note and verified.
   testChanges: { removed: string[]; edited: string[] };
   // Set when a fleet PR changes code but adds no test; the model review
   // decides whether a test was appropriate.
@@ -271,25 +290,11 @@ interface PrFile {
   previous_filename?: string;
 }
 
-// Test files across the fleet's languages: Deno/TS, JS, Python, Go, Rust
-// integration tests, Java/Kotlin. Inline Rust #[cfg(test)] modules cannot be
-// seen from a path; the model review checks those.
-const TEST_PATH_PATTERNS: RegExp[] = [
-  /(^|\/)(tests?|__tests__|spec|specs)\//,
-  /(^|\/)src\/test\//,
-  /[._-](test|spec)\.[cm]?[jt]sx?$/,
-  /_test\.(go|py|rs|sh|ps1)$/,
-  /(^|\/)test_[^/]+\.py$/,
-  /\.(Tests?)\.ps1$/,
-  /Test\.(java|kt)$/,
-];
-
 const CODE_EXTENSIONS =
   /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|sh|ps1|rb|cs|php|sql)$/;
 
-export function isTestPath(path: string): boolean {
-  return TEST_PATH_PATTERNS.some((re) => re.test(path));
-}
+// Re-exported: the path rule lives in test_change_policy.ts (Issue #4655).
+export { isTestPath };
 
 export function existingTestChanges(
   files: PrFile[],
@@ -335,14 +340,25 @@ function countsAsReview(r: Review, reviewer: string): boolean {
       r.state === "DISMISSED");
 }
 
+// Whether this reviewer has reviewed the head. The latest counted review at the
+// head decides. A comment-only hold counts only under the current hold policy:
+// one made under an older policy is reviewed afresh once, even at an unchanged
+// head (Issue #4655). An approval, change request or dismissal always counts.
 export function reviewedAtHead(
   reviews: Review[],
   reviewer: string,
   headSha: string,
+  currentPolicy: number = HOLD_POLICY_VERSION,
 ): boolean {
-  return reviews.some((r) =>
+  const atHead = reviews.filter((r) =>
     countsAsReview(r, reviewer) && r.commit?.oid === headSha
   );
+  const latest = atHead[atHead.length - 1];
+  if (latest === undefined) return false;
+  if (latest.state === "COMMENTED") {
+    return holdPolicyFromBody(latest.body) >= currentPolicy;
+  }
+  return true;
 }
 
 // The commit this reviewer last sent the PR back at, when its latest counted
@@ -368,6 +384,23 @@ export function sentBackAt(
   return null;
 }
 
+// The commit this reviewer last held the PR at for the owner, when its latest
+// counted review is a comment-only review at a commit other than the head; else
+// null (Issue #4643). Only a skill review counts as one, since countsAsReview
+// ignores the owner's own comments, so a COMMENTED review here is the hold.
+export function heldAt(
+  reviews: Review[],
+  reviewer: string,
+  headSha: string,
+): string | null {
+  const counted = reviews.filter((r) => countsAsReview(r, reviewer));
+  const last = counted[counted.length - 1];
+  if (!last) return null;
+  const oid = last.commit?.oid;
+  if (!oid || oid === headSha) return null;
+  return last.state === "COMMENTED" ? oid : null;
+}
+
 // A single line up to (and excluding) its first newline, so a multi-line gh
 // error does not spill a stack trace into `upkeep` or the summary.
 function firstLine(message: string): string {
@@ -377,7 +410,11 @@ function firstLine(message: string): string {
 interface ComparePr {
   status: string;
   total_commits: number;
-  commits: { sha: string; parents: { sha: string }[] }[];
+  commits: {
+    sha: string;
+    parents: { sha: string }[];
+    author?: { login?: string } | null;
+  }[];
 }
 
 interface CompareFile {
@@ -389,6 +426,9 @@ interface CompareFile {
 }
 
 interface CompareFiles {
+  status?: string;
+  total_commits?: number;
+  commits?: { author?: { login?: string } | null }[];
   files?: CompareFile[];
 }
 
@@ -541,6 +581,23 @@ function findingNamesFile(
     );
 }
 
+// Whether every original finding, including those in structured gaps, names
+// a file of the sent-back own diff (Issue #4723). Unknown or empty findings, and any
+// finding on a non-file such as a commit message, are not content findings.
+function findingsAreContent(
+  findings: readonly Pick<Finding, "file" | "earlier">[] | undefined,
+  filenames: readonly string[],
+): boolean {
+  return findings !== undefined && findings.length > 0 &&
+    findings.every((f) =>
+      (isEarlierGap(f) ||
+        filenames.some((name) =>
+          f.file === name || f.file.endsWith(`/${name}`)
+        )) &&
+      (f.earlier === undefined || findingsAreContent([f.earlier], filenames))
+    );
+}
+
 // Whether commits since `since` leave this PR's own diff (its change against
 // the base) unchanged, apart from a strict version increment in one hunk of a
 // patch while every other hunk matches (Issue #4516), so the review it got at
@@ -560,9 +617,24 @@ function findingNamesFile(
 // GitHub's 300-file cap, since a truncated one could hide a drop. A repeated
 // filename in either listing is not confirmed.
 //
+// A Dependabot re-cut (Issue #4723): Dependabot force-pushes a rebased or
+// re-created PR, so `since` is no longer an ancestor of `head` and the compare
+// is `diverged`. For a Dependabot PR, that diverged compare is accepted when
+// every commit on base...head is by dependabot[bot] and the findings for the
+// exact sent-back head are known and non-empty. Each original finding must
+// name a file of the sent-back own diff, including those carried by structured
+// earlier-review gaps. A text-only gap or a non-file finding gets a fresh review.
+// Every file then takes the strict path: the whole patch must match, with no
+// version exception and no file dropped from the head listing. The ancestry
+// check stays for fleet PRs, since a force-push can itself be the fix, e.g. a
+// squash with an identical tree that fixes a commit-message finding (VibeCoder
+// #3772). This exception cannot approve anything: awaiting-fix applies only
+// while the latest review requests changes.
+//
 // SIMPLE-ON-PURPOSE: the three compare calls below are repeated each pass
-// while the PR awaits its fix, fine for a handful of sent-back PRs — upgrade
-// when awaiting-fix PRs exceed ~50 per pass (cache the verdict per PR, since
+// while the PR awaits its fix or the owner (a held PR too, Issue #4643), fine
+// for a handful of such PRs — upgrade when awaiting-fix or held PRs exceed ~50
+// per pass (cache the verdict per PR, since
 // and head in the state dir).
 export async function ownDiffUnchanged(
   gh: (args: string[]) => Promise<string>,
@@ -571,18 +643,23 @@ export async function ownDiffUnchanged(
   since: string,
   head: string,
   findings?: readonly Pick<Finding, "file" | "earlier">[],
+  kind?: ReadyPr["kind"],
 ): Promise<boolean> {
   try {
     const sinceToHead: ComparePr = JSON.parse(
       await gh(["api", `repos/${repo}/compare/${since}...${head}`]),
     );
     // "ahead" means `since` is an ancestor of `head`, so no force-push moved
-    // the history out from under it.
-    if (sinceToHead.status !== "ahead") return false;
-    if (sinceToHead.commits.length !== sinceToHead.total_commits) {
-      return false;
+    // the history out from under it. A Dependabot re-cut is the one diverged
+    // compare accepted (Issue #4723), see the doc comment above.
+    const recut = kind === "dependabot" && sinceToHead.status === "diverged";
+    if (sinceToHead.status !== "ahead" && !recut) return false;
+    if (!recut) {
+      if (sinceToHead.commits.length !== sinceToHead.total_commits) {
+        return false;
+      }
+      if (sinceToHead.commits.length === 0) return false;
     }
-    if (sinceToHead.commits.length === 0) return false;
 
     const [baseToSince, baseToHead]: [CompareFiles, CompareFiles] = [
       JSON.parse(await gh(["api", `repos/${repo}/compare/${base}...${since}`])),
@@ -601,13 +678,26 @@ export async function ownDiffUnchanged(
     }
     // A file only the head lists is a new change.
     if (b.some((fb) => !sinceByName.has(fb.filename))) return false;
+    if (recut) {
+      // Every commit on base...head must be Dependabot's, and the list must be
+      // complete: a missing or null author fails (Issue #4723).
+      const commits = baseToHead.commits ?? [];
+      if (
+        commits.length === 0 || baseToHead.total_commits !== commits.length ||
+        !commits.every((c) => c.author?.login === "dependabot[bot]")
+      ) {
+        return false;
+      }
+      if (!findingsAreContent(findings, a.map((f) => f.filename))) return false;
+    }
     for (const fa of a) {
       const fb = headByName.get(fa.filename);
       if (fb === undefined) {
         // Dropped from the own diff (Issue #4542): allowed only when the
         // earlier findings are known, there is at least one, and none names it.
+        // A re-cut allows no drop (Issue #4723).
         if (
-          findings === undefined || findings.length === 0 ||
+          recut || findings === undefined || findings.length === 0 ||
           findingNamesFile(findings, fa.filename)
         ) {
           return false;
@@ -622,7 +712,9 @@ export async function ownDiffUnchanged(
         continue;
       }
       if (fa.status !== fb.status) return false;
-      const named = findingNamesFile(findings, fa.filename);
+      // A re-cut treats every file as named: the whole patch must match, with
+      // no version exception (Issue #4723).
+      const named = recut || findingNamesFile(findings, fa.filename);
       if (
         named
           ? normalisePatch(fa.patch!) === normalisePatch(fb.patch!)
@@ -659,6 +751,7 @@ export async function skipReason(
   ownDiffUnchangedSince: (since: string) => Promise<boolean> = () =>
     Promise.resolve(false),
   wasChangeRequestSince: (oid: string) => boolean = () => false,
+  heldPolicyAtOid: (oid: string) => number | null = () => null,
 ): Promise<Skip | null> {
   // Only a merge into the default branch needs an approval; PRs into
   // milestone branches are reviewed when the milestone merges.
@@ -699,7 +792,8 @@ export async function skipReason(
     return "already-reviewed";
   }
   // The owner, or another reviewer, approved this head by hand: a second
-  // approval adds nothing, and the PR merges once it is up to date.
+  // approval adds nothing; the shared refresh policy decides whether a behind
+  // PR can now be updated.
   if (approvedAtHead(pr.reviews.nodes, pr.headRefOid)) return "approved";
   const since = sentBackAt(
     pr.reviews.nodes,
@@ -709,6 +803,16 @@ export async function skipReason(
   );
   if (since !== null && await ownDiffUnchangedSince(since)) {
     return "awaiting-fix";
+  }
+  // Held for the owner at an earlier commit (Issue #4643). Only the base merged
+  // in since and the own diff is unchanged, so the hold stands. A hold with no
+  // log record, or one made under an older policy, is reviewed afresh.
+  const heldOid = heldAt(pr.reviews.nodes, reviewer, pr.headRefOid);
+  if (
+    heldOid !== null && heldPolicyAtOid(heldOid) === HOLD_POLICY_VERSION &&
+    await ownDiffUnchangedSince(heldOid)
+  ) {
+    return "awaiting-owner";
   }
   return null;
 }
@@ -1048,9 +1152,15 @@ export async function pass(
      * prompts directory, whatever the host's environment says.
      */
     loadCapabilityBundle?: () => Promise<CapabilityLoad>;
+    /**
+     * The test-change policy (Issue #4655), loaded once per run by main. Absent
+     * means the defaults, which is what an absent .config.json gives too.
+     */
+    testPolicy?: EffectiveTestPolicy;
   } = {},
 ) {
   const callGh = deps.gh ?? gh;
+  const testPolicy = deps.testPolicy ?? effectiveTestPolicy({});
   const loadCapabilityBundle = deps.loadCapabilityBundle ??
     (() => loadTrustedCapabilityBundle(undefined, CHECKOUT_PROMPTS_DIR));
   const dir = deps.dir ?? stateDir();
@@ -1127,6 +1237,9 @@ export async function pass(
         }
       }
     }
+    // A held PR has no changes_requested record at its held commit, so its
+    // findings are undefined here: ownDiffUnchanged then takes the strict path
+    // (context must match, and a dropped file means a fresh review), Issue #4643.
     const skip = await skipReason(
       pr,
       reviewer,
@@ -1141,13 +1254,14 @@ export async function pass(
             record.repo === repo && record.number === pr.number &&
             record.headSha === since && record.outcome === "changes_requested"
           )?.findings,
+          kind,
         ),
       (oid) => wasChangeRequestAt(log, repo, pr.number, oid),
+      (oid) => heldPolicyAt(log, repo, pr.number, oid),
     );
-    // Review first, then up to date (Issues #3225, #3663): an approved fleet
-    // or Dependabot PR behind its base cannot merge,
-    // so the base is merged in once per head. An unapproved PR is reviewed
-    // as it is; post.ts brings it up to date after the approval.
+    // Review first, then ask the shared policy (Issues #3225, #3663, #4613).
+    // On strict, non-queue bases only an armed, approved PR with passing
+    // current-head required checks is refreshed; post.ts uses the same path.
     const key = prKey(repo, pr.number);
     if (
       needsBranchUpdate(pr, kind, updateAsked[key], reviewer) &&
@@ -1156,9 +1270,16 @@ export async function pass(
       const result = DRY_RUN
         ? { updated: true as const }
         : await updateBranchOnce(
-          { repo, number: pr.number, headSha: pr.headRefOid },
+          {
+            repo,
+            number: pr.number,
+            headSha: pr.headRefOid,
+            baseRefName: pr.baseRefName,
+          },
           dir,
           callGh,
+          { fleetAuthors: [...fleet] },
+          reviewer,
         );
       if (result?.updated) {
         if (!DRY_RUN) updateAsked[key] = pr.headRefOid;
@@ -1357,8 +1478,24 @@ export async function pass(
   }
   // A single --repo run sees only part of the fleet, so it leaves the
   // summary's open set alone.
-  if (repos.size > 1) await writeSummary(dir, open);
+  if (repos.size > 1) {
+    await writeSummary(dir, open, undefined, describeTestPolicy(testPolicy));
+  }
   return { ready, auditBlocked, skipped, upkeep };
+}
+
+/**
+ * The policy as the gate's output reports it: the effective policy without the
+ * trusted logins, plus its one-line description (Issue #4655).
+ */
+export function policyReport(policy: EffectiveTestPolicy) {
+  return {
+    version: policy.version,
+    mode: policy.mode,
+    holdAllRepos: policy.holdAllRepos,
+    legacyAutoRelease: policy.legacyAutoRelease,
+    description: describeTestPolicy(policy),
+  };
 }
 
 /** The pull request diff, for import and sink selection (Issue #4366). */
@@ -1531,6 +1668,15 @@ export async function main() {
   const config = JSON.parse(
     await Deno.readTextFile(arg("config") ?? DEFAULT_CONFIG),
   );
+  // Loaded once per run. A malformed hold list fails loud, as a malformed
+  // pr_reviewer_app does (app_token.ts); an absent config means the defaults.
+  let testPolicy: EffectiveTestPolicy;
+  try {
+    testPolicy = await loadTestPolicy(arg("config") ?? DEFAULT_CONFIG);
+  } catch (e) {
+    console.error(`test-change policy: ${(e as Error).message}`);
+    Deno.exit(1);
+  }
   const fleet = new Set<string>([
     ...(config.fleet_pr_authors ?? []),
     ...(config.service_accounts ?? []),
@@ -1555,13 +1701,16 @@ export async function main() {
         limit,
         inFlight,
         host: arg("host"),
+        testPolicy,
       });
       failures = 0;
       if (
         result.ready.length > 0 || result.auditBlocked.length > 0 ||
         watchSeconds <= 0
       ) {
-        console.log(JSON.stringify(result));
+        console.log(
+          JSON.stringify({ ...result, testPolicy: policyReport(testPolicy) }),
+        );
         return;
       }
     } catch (e) {

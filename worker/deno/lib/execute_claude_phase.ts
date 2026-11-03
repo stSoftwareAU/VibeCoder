@@ -1618,11 +1618,13 @@ async function executeClaudePhaseBody(
         ),
         reason,
       });
+      // Posted to the target repo, so the message names no VibeCoder issue
+      // number (Issue #4641).
       return {
         action: "failure",
         failureType: "context_budget",
         failureMessage: planned
-          ? `${reason} Handed to planning to split it (Issue #4298).`
+          ? `${reason} Handed to planning to split it.`
           : `${reason} Planning could not take it, so the issue is retried.`,
         elapsedSeconds: elapsedSince(startTime),
       };

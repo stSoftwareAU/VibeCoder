@@ -1,6 +1,6 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner (unless the repo opts in to auto-release of issue-required test changes). Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are judged for lost regression protection, and held for the owner only where the intended product contract is unclear or the repo overrides that. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
 ---
 
 # Review fleet PRs
@@ -51,28 +51,43 @@ escalation.
    a test that would fail on the regression, unless existing tests already
    cover it. A refactor, docs, config, workflow or presentation change may not
    need one. Do not reward assertions that pin incidental CSS, DOM or internals.
-4. **A test is never removed or loosened to make the quality gate pass.** A
-   test removed, skipped, weakened or loosened without the linked issue
-   requiring it is a blocking finding: the PR goes back to the fleet to
-   restore it. A deliberate change the issue does require (an expected value
-   or behaviour the issue changes, or deleting a test that only pinned the
-   old implementation) is the owner's call: the PR is held with a
-   comment-only review, neither approved nor sent back, and labelled
-   `needs-human`; the skill removes that label on a later approve or
-   send-back only when it was the one that added it. **Opt-in exception:** a
-   repo listed in `.config.json` `pr_reviewer_auto_release` (an array of
-   `owner/repo`; absent or empty is off) has such a hold approved instead
-   (auto-released) only when there are no findings, no test file was removed,
-   the PR has a linked issue (`closingIssuesReferences`) whose title or body
-   could be read, and every note is kind `expected-value` with a
-   `criterionQuote` of at least 5 words found verbatim in a linked issue's
-   title or body (comments never count) and a positive `failsWithoutChange`.
-   A removed case, added skip, weakened or deleted assertion, removed test
-   file or any fetch failure keeps the hold. Trivial edits
-   (formatting, renames, imports, added cases, fixture paths) are not, and
-   neither are edits that only **tighten** a meaningful behavioural or
-   contractual test (it now asserts more or allows less, as the issue asks):
-   those are approved. An added brittle assertion is a finding, not a benefit.
+4. **Test changes are judged for meaningful protection; the test-change policy
+   applies to every repo, with no opt-in.** The test is never removed,
+   skipped, weakened or loosened just to make the quality gate pass, and the
+   reviewer decides whether meaningful regression protection remains. For each
+   meaningful test change and each removed test file it establishes which old
+   behaviour is obsolete or intentionally changed, which required behaviour
+   remains, and which replacement or existing coverage proves it. The owner has
+   approved replacing or removing an obsolete test, so a test change or a
+   test-file deletion is never by itself a reason to hold a PR. The worker's
+   pre-PR verifier applies the same brief
+   (`prompts/pr_review_brief/prompt.md`, step 5).
+   - An unjustified removal, skip, weakening or lowered threshold, deletion of
+     a failing useful test, or a test changed to make the build pass is a
+     blocking finding: the PR goes back to the fleet with a request for
+     changes. A `weakened-assertion`, `added-skip` or `threshold-reduced` note
+     is always a blocking finding. A removed test file with no matching note
+     is a blocking finding (missing evidence).
+   - A justified change is approved only on evidence the code verifies at the
+     head: each `coverage` entry resolves (`replacement` and `existing` exist
+     and contain the given name; `gone` means absent or without the name); a
+     `requirementQuote` is verbatim in the governing issue (the PR's closing
+     reference, the validated `issue-<N>-…` branch, or an anchored
+     `Part of #N` line; its title or body, never comments, and only when the
+     author is trusted); and `failsWithoutChange` and `verification` are
+     present where the contract requires them. The model's claim alone never
+     approves. Arbitrary PR prose is never owner authorisation.
+   - Only an `owner` verdict (material uncertainty about the intended product
+     contract, with a non-empty `ownerQuestion`), or a repo listed in
+     `.config.json` `pr_reviewer_test_hold_repos` (an array of `owner/repo`),
+     holds the PR for the owner: a comment-only review, neither approved nor
+     sent back, labelled `needs-human`. The skill removes that label on a later
+     approve or send-back only when it was the one that added it. Missing
+     evidence or an unavailable tool is repaired or retried, never a hold.
+   Trivial edits (formatting, renames, imports, added cases, fixture paths) and
+   edits that only **tighten** a meaningful behavioural or contractual test (it
+   now asserts more or allows less, as the issue asks) are approved. An added
+   brittle assertion is a finding, not a benefit.
 5. **Blocking problems go back to the fleet** as a request for changes. The
    worker acts on change requests from the reviewers in `pr_reviewers`.
 6. **Otherwise approve.** Never approve on doubt.
@@ -93,7 +108,21 @@ escalation.
    fixed, and approves once they are. When a PR was sent back and the only
    commits since leave its own diff unchanged apart from the file drop
    described below, the gate skips it as `awaiting-fix` until the fleet
-   pushes its fix. A strict one-line numeric
+   pushes its fix. Any other force-push gets a fresh review, since it can itself
+   be the fix. The one exception is a Dependabot re-cut, where Dependabot
+   force-pushes the same change again: it keeps the skip only when every commit
+   since is by `dependabot[bot]` and the own diff matches strictly (see
+   [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).
+   When a PR was held for the owner (rule 4) and the only
+   commits since leave its own diff unchanged since the hold, the gate skips
+   it as `awaiting-owner` until the own diff changes. The hold policy is now
+   version 2 (`HOLD_POLICY_VERSION`): a hold made under an older policy is
+   reassessed even at the current head, once, and the reviewer removes only
+   its own obsolete `needs-human` label after a successful fresh assessment; an
+   independent human or security hold is preserved (see
+   [Awaiting-owner](references/edge-cases.md#awaiting-owner)). A hold has no
+   findings, so the strict path applies: context lines must match, and a file
+   that leaves the own diff gets a fresh review. A strict one-line numeric
    version increment, bare or on a JSON/TOML `version` key, may differ between
    the old and current own diffs, including a separate workflow bump after a
    base merge. In a file no earlier finding names, context lines a base merge
@@ -122,16 +151,16 @@ escalation.
    to date. While a round reviews a PR, its claim comment at that head (see
    [Several hosts](references/running-unattended.md#several-hosts)) keeps the
    other hosts from starting a second round on it.
-9. **Approve first, then bring the branch up to date.** Every fleet PR is
-   armed with auto-merge on three conditions: CI green, approved, and branch
-   up to date. The review is of the diff as it stands; when the outcome is an
-   approval and the PR is behind its base, `post.ts` then asks GitHub to merge
-   the base in (`update-branch`, at the reviewed head), so CI re-runs on the
-   merge commit and the PR merges with no further round. The gate does the
-   same once per head for a fleet PR already approved at its head but still
-   behind, and for a Dependabot PR approved by the reviewer at its head.
-   Gate and post share successful request and GitHub refusal memory, so neither path
-   repeats the request until that head changes.
+9. **Approve first, then refresh only when ready.** Every fleet PR is armed
+   with auto-merge on three conditions: CI green, approved, and branch up to
+   date. The review is of the diff as it stands; when the outcome is an
+   approval, the gate and post-approval upkeep may request a behind-branch
+   refresh only when the PR is open, non-draft, armed, mergeable, approved,
+   and its required current-head and test-merge checks pass. On a strict base
+   without a merge queue, a shared persisted owner lets one PR refresh at a
+   time across hosts and lanes until it merges, fails required checks, closes,
+   or the bounded owner expires. Other bases retain the existing updater
+   behaviour; merge-queue bases are not refreshed just for being behind.
    A PR is never brought up to date before its review: the approval
    would then be of a head nobody read. Conflicting Dependabot PRs wait with
    no push or comment (see
@@ -196,8 +225,8 @@ The gate script does the polling, not the model. With `--watch=300` it checks
 every 5 minutes and **exits only when a PR is ready for review**, so an idle
 night costs no tokens. It reports at most **5** ready PRs per pass
 (`--limit=<n>` changes that), counted after every other skip, so a PR that is
-red, approved, already reviewed, awaiting a fix or `claimed-elsewhere` never
-takes one of the slots;
+red, approved, already reviewed, awaiting a fix, held for the owner
+(`awaiting-owner`) or `claimed-elsewhere` never takes one of the slots;
 the rest are counted as `over-limit` and come back next pass. The search is
 oldest-updated first, so a PR whose head keeps moving cannot starve the quiet
 ones behind it.
@@ -273,7 +302,7 @@ fields as follows:
 - `{{TEST_CHANGES}}` — the entry's `testChanges` (the removed and edited test
   files).
 - `{{PREVIOUS_FINDINGS}}` — when the entry's `previousFindings` is not empty:
-  "An earlier review asked for these fixes: {previousFindings}, numbered from 1 in array order. Independently check every problem and Fix ask; return exactly one `earlierFindings` verdict per index with evidence. A verdict other than `fixed` already sends that finding back with your note, so leave it out of `findings`."; otherwise
+  "An earlier review asked for these fixes: {previousFindings}, numbered from 1 in array order. Independently check every problem and Fix ask; return exactly one `earlierFindings` verdict per index with evidence. A verdict other than `fixed` already sends that finding back with your note, so leave it out of `findings`, even where step 8 would make a `partial` or `missing` closure entry a finding. Still report that entry's verdict in `closure`."; otherwise
   "No earlier review of this PR asked for fixes."
 - `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
   (the repo's `review-checklists.json` at the base ref, matched against the
@@ -309,9 +338,10 @@ reviewer's reply>}` to a file in the scratchpad and run, from this skill's
 `scripts/` directory:
 
 ```bash
-deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
+deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file> --reviewer=<reviewer-login> --config=<config-path>
 ```
 
+Use the reviewer login and config path from the gate command.
 When the round's prompt names a `--state-dir`, add it to that command: a
 round in the worker container keeps its state under the worker's log mount.
 
@@ -331,14 +361,16 @@ The script does the rest, so do not post anything yourself:
   itself: a `missing` checklist item (even with no matching finding), a
   checklist file that could not be applied (malformed, undecodable, or an
   unknown changed-file list) and an item the reply gave no verdict.
-  Otherwise a meaningful test change or a removed test file means **held for
-  the owner**, as a comment-only review the
-  worker ignores; otherwise **approve**. **Auto-release:** for a repo in
-  `pr_reviewer_auto_release` (read via `auto_release.ts`; a malformed value
-  makes `post.ts` fail loud), a hold is instead an approval when rule 4's
-  conditions all hold. The body opens "Auto-released: ..." and lists each
-  change with its quoted criterion; there is no held comment and no
-  `needs-human` label.
+  Otherwise, when a test change has an `owner` verdict (a product-contract
+  question only the owner can settle), or the repo is listed in `.config.json`
+  `pr_reviewer_test_hold_repos` and the PR has a meaningful test change or a
+  removed test file, the outcome is **held for the owner**: a comment-only
+  review the worker ignores, carrying the hold marker
+  `<!-- vibe-hold-policy v=N -->` (N is the hold policy version, 2) on a line of
+  its own in its body.
+  Otherwise the outcome is **approve**, and the approval body lists each
+  reviewed test change with its verified evidence. Unjustified test changes
+  are findings, so they are sent back, not held (rule 4).
 - After an approval, when a fleet or Dependabot PR is behind its base and is
   neither a draft nor conflicting, it asks GitHub to update the reviewed head
   (rule 9), so the armed auto-merge can complete once CI re-runs. The result
@@ -375,13 +407,19 @@ The script does the rest, so do not post anything yourself:
 - After posting, it deletes the claim comments at the head it reviewed (see
   [Several hosts](references/running-unattended.md#several-hosts)).
 
-It prints `{ posted, outcome?, autoReleased?, autoReleaseHeld?,
-filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason? }`.
-`autoReleased: true` is also in the `log.jsonl` record, and `summary.md`
-prefixes that PR's "Approved, last 7 days" line with
-`(auto-released: issue-required test change)` as an audit trail.
-`autoReleaseHeld` lists the reasons an opted-in repo's hold was kept; it is
-printed and logged only for a held PR in an opted-in repo.
+It prints `{ posted, outcome?, testPolicy?, testChangesReviewed?, ownerHold?,
+filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason?, retry? }`.
+`testPolicy` is the effective test-change policy for the PR's repo:
+`{ version, mode, holdAllRepos }`. `testChangesReviewed: true` is printed only
+on an approval that rested on a reviewed test change, and `ownerHold` (the
+reasons) only on a hold for the owner. The `log.jsonl` record carries the same
+`testPolicy` and `testChangesReviewed`, plus `holdPolicy` on a held record; the
+reviewed test changes are its `testChangeNotes`. `summary.md` has a policy line.
+A head that moved during the review is never approved: the result is
+`posted: false` with `reason: now <sha> <state>`. `retry: true` with
+`posted: false` and exit code 3 means a check could not run (for example,
+coverage could not be fetched); nothing was posted, and the PR is retried on
+the next gate pass, with the cause in `reason`.
 `labelError` names the label action (`add` or `remove`) and the `gh` error
 when the label call failed; the exit code is unchanged either way. Exit
 code 2 means the reviewer's reply was malformed, or the gate entry has no valid

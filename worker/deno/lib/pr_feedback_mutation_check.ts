@@ -23,6 +23,7 @@
 
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import { invokeMutationCheck } from "./mutation_check_invocation.ts";
+import { findBlockingMutationJob } from "./ci_mutation_contract.ts";
 import type { MutationCheckResult } from "./mutation_gate.ts";
 import type { MutationRunInput } from "./mutation_runner.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
@@ -52,12 +53,12 @@ function failure(
 }
 
 /**
- * The unified=0 diff of only the lines this run added since `beforeSha`, with
+ * The baseline for this run’s own changes since `beforeSha`, with
  * lines brought in by a merge excluded (Issue #3750). Each error names its
  * cause; a run that merged two unrelated histories is refused, because its own
  * lines cannot then be told apart from the merged ones.
  */
-export async function collectRunOwnDiff(
+export async function collectRunOwnBaseline(
   runGit: RunGit,
   beforeSha: string,
 ): Promise<Result<string>> {
@@ -153,6 +154,18 @@ export async function collectRunOwnDiff(
     oldSide = treeId;
   }
 
+  return { ok: true, value: oldSide };
+}
+
+/** Collect the run’s own tracked and untracked changes. */
+export async function collectRunOwnDiff(
+  runGit: RunGit,
+  beforeSha: string,
+): Promise<Result<string>> {
+  const baseline = await collectRunOwnBaseline(runGit, beforeSha);
+  if (!baseline.ok) return baseline;
+  const oldSide = baseline.value;
+
   // 2. The tracked lines: the old side against the working tree.
   const tracked = await runGit([
     "diff",
@@ -228,16 +241,26 @@ export interface ReviewFixMutationDeps {
  * The review-fix run's mutation verdict input: the shared invocation (Issue
  * #3393) fed with the lines this run added (Issue #3750).
  */
-export function runReviewFixMutationCheck(
+export async function runReviewFixMutationCheck(
   input: ReviewFixMutationInput,
   deps: ReviewFixMutationDeps,
 ): Promise<MutationCheckResult> {
+  let cargoMutantsArgs: string[] = [];
+  try {
+    cargoMutantsArgs = (await findBlockingMutationJob(input.repoPath)).blocking
+      ?.cargoArgs ?? [];
+  } catch (error) {
+    deps.logger.warn("Could not read CI mutation arguments for review-fix", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   return invokeMutationCheck({
     repo: input.repo,
     repoPath: input.repoPath,
     repoConfigs: input.repoConfigs,
     runner: deps.runner,
     logger: deps.logger,
+    cargoMutantsArgs,
     collectDiff: () => collectRunOwnDiff(deps.runGit, input.beforeSha),
   });
 }

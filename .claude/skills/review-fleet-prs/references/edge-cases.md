@@ -5,11 +5,13 @@
 Each gate pass also looks after open Dependabot PRs into a default branch,
 with no model involved (`scripts/dependabot.ts`):
 
-- **Behind and approved by the reviewer at its head:** asks GitHub's
-  `update-branch` endpoint to merge in the base, once per head, with
-  `expected_head_sha` set to that reviewed head. An unapproved or draft PR
-  gets no update. The post-approval path uses the same leased update and
-  shares its success and refusal memory with the gate.
+- **Behind and approved by the reviewer at its head:** requests GitHub's
+  `update-branch` only after the shared readiness policy confirms an open,
+  non-draft, armed, mergeable PR and passing required checks on its verified
+  head and test merge. On a strict base without a merge queue, shared
+  per-base ownership serialises refreshes across hosts and lanes. An
+  unapproved or draft PR gets no update. The post-approval path uses the same
+  guarded request as the gate.
 - **Conflicting:** posts no comment and makes no push; reports
   `<repo>#<n> conflicting, waiting on Dependabot`. Once another actor updates
   a Dependabot branch, Dependabot stops its own updates. If that branch later
@@ -21,7 +23,8 @@ Dependabot PRs are still reviewed like any other; this upkeep only
 gets an approved one merged. The pass reports what it did in `upkeep`. A
 failed upkeep action is reported there as `<repo>#<n> auto-merge failed:
 <first line of the error>` (or `branch update failed: ...`), logged, and does not
-stop the pass; that action is not retried until the PR's head commit changes.
+stop the pass. A request refusal is remembered for that head; an unreadable
+readiness result remains retryable and is checked again on a later pass.
 Successful updates report `<repo>#<n> branch update requested`. No upkeep
 path posts a Dependabot command, and the old rebase-request cache is unused.
 
@@ -48,7 +51,9 @@ PRs continue. A persistence failure after an API request still fails loud.
 ## Version-only re-bumps
 
 The own-diff comparison skips a sent-back PR as `awaiting-fix` when each
-file still matches, apart from files that left the own diff (see below). In a
+file still matches, apart from files that left the own diff (see below). A
+held PR is compared the same way on its strict path, with the rules in
+[Awaiting-owner](#awaiting-owner). In a
 file no earlier finding names, the added and removed lines must match: the same
 number of hunks, in the same order. Hunk headers
 and unchanged context lines are ignored there, so a base merge that only moves
@@ -103,3 +108,62 @@ that reaches the 300-file cap, since a truncated sent-back listing could hide or
 invent a drop. A new-head listing at the cap needs no rule of its own: it
 necessarily has a file the sent-back listing lacks, which gets a fresh review.
 Files present at both heads are compared as before.
+
+A Dependabot re-cut is the one force-push that can keep a sent-back PR
+`awaiting-fix` (`ownDiffUnchanged` in `scripts/gate.ts`). Dependabot never
+merges the base into its PRs; it force-pushes a fresh commit with the same
+change, so the compare status `compare/{since}...{head}` reports `diverged`
+rather than `ahead`. The skip applies only when all of these hold: the gate
+entry's kind is `dependabot`; the compare status is `diverged`; every commit in
+`compare/{base}...{head}` (the complete list) has author login
+`dependabot[bot]`; the logged findings for the exact sent-back head are known,
+number at least one, and each original finding names a file in the sent-back
+own diff, including originals carried by structured earlier-review gaps (a
+commit-message, history or metadata finding, or unknown or missing findings,
+or a text-only gap gets a fresh review); and the two own diffs match on the
+strict path for every file, with `normalisePatch` equality including context
+lines, no version
+exception, no file dropped or added, and a sent-back listing under the 300-file
+cap. A re-cut that changes the own diff (for example a newer version), a head
+with any non-Dependabot commit (a fleet fix pushed on top), and any other
+force-push get a fresh review. The exception cannot approve anything:
+`awaiting-fix` applies only while the latest review requests changes, and
+GitHub keeps that request in force across a force-push. The held path
+([Awaiting-owner](#awaiting-owner)) is unaffected: a hold has no findings, so
+the re-cut exception never applies there.
+
+## Awaiting-owner
+
+A PR held for the owner (rule 4 of [SKILL.md](../SKILL.md)) gets a
+comment-only review, and the skill counts that hold as its own review. The gate
+skips such a PR as `awaiting-owner`, instead of reviewing it again, only when
+all three hold:
+
+- the skill's latest counted review is that hold, at an earlier commit;
+- this host's `log.jsonl` has a `held` record for that commit made under the
+  current `HOLD_POLICY_VERSION`, which is 2 (in `scripts/review_log.ts`). The
+  version of a hold is read from its hold marker `<!-- vibe-hold-policy v=N -->`
+  on a line of its own in the review body (a marker quoted in prose does not
+  count); a held review whose body lacks the marker counts as version 1. A hold
+  under an older version is not a review at its head, so the PR is reviewed
+  afresh once even when its head is unchanged;
+- `ownDiffUnchanged` confirms the PR's own diff is unchanged since the hold.
+
+A hold has no findings, so the comparison takes its strict path: context lines
+must match, and a file that left the own diff means a fresh review. The version
+exception does not apply, since it needs logged findings.
+
+A fresh review, not a skip, follows when there is no `held` record for the hold
+on this host (for example a hold posted from another host), when the record was
+made under an older policy version, or when the own diff changed at all, such
+as a fix commit or a conflict resolution.
+
+The comparison covers only the PR's own diff. Unchanged own-diff text does not
+prove that a base dependency did not change. The skip is the same own-diff
+comparison used for send-backs. The reassessment triggers are a change to the
+own diff, and the hold policy version: `HOLD_POLICY_VERSION` is 2, so each
+existing hold made under version 1 is reassessed once, even when the head is
+unchanged. A new policy is a reason to reassess, not automatic approval. The
+reviewer removes only its own obsolete `needs-human` label, and only after a
+successful fresh assessment; an independent human or security hold is
+preserved.

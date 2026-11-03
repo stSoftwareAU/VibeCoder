@@ -1,3 +1,41 @@
+import { classifyPrBaseChange } from "../lib/pr_base_change_guard.ts";
+
+Deno.test("babysitter default heartbeat resolves its checkout revision", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const command = new Deno.Command(Deno.execPath(), {
+      args: [
+        "eval",
+        `
+        import { recordBabysitterDeployment } from ${
+          JSON.stringify(
+            new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).href,
+          )
+        };
+        import { buildDefaultWorkerConfig } from ${
+          JSON.stringify(
+            new URL("../lib/config_defaults.ts", import.meta.url).href,
+          )
+        };
+        await recordBabysitterDeployment(Deno.args[0], buildDefaultWorkerConfig());
+      `,
+        dir,
+      ],
+      clearEnv: true,
+      env: { PATH: Deno.env.get("PATH") ?? "", TMPDIR: dir },
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const result = await command.output();
+    assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    const heartbeat = JSON.parse(
+      await Deno.readTextFile(`${dir}/deployment-health.json`),
+    );
+    assert(/^[a-f0-9]{40}(-dirty)?$/.test(heartbeat.codeRevision));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 import {
   assert,
   assertEquals,
@@ -21,21 +59,125 @@ import {
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
+  attemptKey,
   babysitterRtkInstruction,
+  baseAlreadyMerged,
   buildRepairPrompt,
+  cancelledRunsToRerun,
   cloneForRepair,
+  type CloneForRepairDeps,
+  defaultRemoteUrl,
   eligibleAuthor,
+<<<<<<< HEAD
   finishBabysitterRepair,
+=======
+  fix,
+  loadConfigAndPublishDeployment,
+  prBodyEditArgs,
+  publishBabysitterDeployment,
+>>>>>>> origin/main
   reason,
+  recordBabysitterDeployment,
   recoverTemporaryClones,
+  removeRepairDirs,
   requestedReviews,
   runRepairs,
+  serialiseOnMirror,
   spawnBabysitterAgent,
+<<<<<<< HEAD
   syncBabysitterPrBodyBeforeDismissal,
+=======
+  takePrBodyProposal,
+>>>>>>> origin/main
   validateAndCommit,
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
+
+/** Run a real git command for fixtures and for the injected runner in clone tests. */
+async function runGitForTest(
+  args: string[],
+  options: { cwd?: string; timeoutSeconds?: number } = {},
+): Promise<string> {
+  const output = await new Deno.Command("git", {
+    args,
+    cwd: options.cwd,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const stdout = new TextDecoder().decode(output.stdout).trim();
+  const stderr = new TextDecoder().decode(output.stderr).trim();
+  if (!output.success) {
+    throw new Error(`git ${args[0]} failed: ${stderr || stdout}`);
+  }
+  return stdout;
+}
+
+function fixtureGit(args: string[], cwd: string): Promise<string> {
+  return runGitForTest(
+    [
+      "-c",
+      "user.name=Babysitter Test",
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ],
+    { cwd },
+  );
+}
+
+async function commitFile(
+  cwd: string,
+  name: string,
+  message: string,
+): Promise<void> {
+  await Deno.writeTextFile(`${cwd}/${name}`, `${message}\n`);
+  await fixtureGit(["add", "-A"], cwd);
+  await fixtureGit(["commit", "-q", "-m", message], cwd);
+}
+
+/** A local bare "upstream" with main (two commits) and feature (one more). */
+async function makeUpstream(
+  root: string,
+): Promise<{ upstream: string; work: string }> {
+  const work = `${root}/work`;
+  const upstream = `${root}/upstream.git`;
+  await Deno.mkdir(work);
+  await fixtureGit(["init", "-q", "-b", "main"], work);
+  await commitFile(work, "a.txt", "first");
+  await commitFile(work, "b.txt", "second");
+  await fixtureGit(["checkout", "-q", "-b", "feature"], work);
+  await commitFile(work, "c.txt", "third");
+  await fixtureGit(["checkout", "-q", "main"], work);
+  await fixtureGit(["clone", "-q", "--bare", work, upstream], root);
+  return { upstream, work };
+}
+
+async function withTempRoot(
+  run: (root: string) => Promise<void>,
+): Promise<void> {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-mirror-test-" });
+  try {
+    await run(root);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
 
 const syncLogger = createLogger({
   host: "fleet-pr-babysitter-test",
@@ -419,18 +561,363 @@ Deno.test("a stale repair checkout cannot dismiss reviews after body sync skips"
 });
 
 Deno.test("failed clone is attempted once and preserves its original error", async () => {
-  let attempts = 0;
-  const timeout = new Error("clone timed out");
-  await assertRejects(
-    () =>
-      cloneForRepair("owner/repo", "/tmp/clone", () => {
-        attempts++;
-        return Promise.reject(timeout);
+  await withTempRoot(async (root) => {
+    const calls: string[][] = [];
+    const timeout = new Error("clone timed out");
+    await assertRejects(
+      () =>
+        cloneForRepair("owner/repo", `${root}/clone`, {
+          git: (args) => {
+            calls.push(args);
+            return Promise.reject(timeout);
+          },
+          remoteUrl: () => Promise.resolve("/tmp/upstream"),
+          mirrorRoot: `${root}/mirrors`,
+        }),
+      Error,
+      "clone timed out",
+    );
+    assertEquals(calls.filter((args) => args.includes("clone")).length, 1);
+  });
+});
+
+Deno.test("first repair clones full history from a local mirror, with origin reset to GitHub", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const dir = `${root}/clone`;
+    await cloneForRepair("owner/repo", dir, {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    assertEquals(
+      await runGitForTest(["rev-list", "--count", "--all"], { cwd: dir }),
+      await runGitForTest(["rev-list", "--count", "--all"], { cwd: upstream }),
+    );
+    await runGitForTest(["merge-base", "origin/main", "origin/feature"], {
+      cwd: dir,
+    });
+    assertEquals(await exists(`${dir}/.git/objects/info/alternates`), false);
+    assertEquals(
+      await runGitForTest(["config", "remote.origin.url"], { cwd: dir }),
+      upstream,
+    );
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    assertEquals(
+      await runGitForTest(["rev-parse", "--is-bare-repository"], {
+        cwd: mirror,
       }),
-    Error,
-    "clone timed out",
-  );
-  assertEquals(attempts, 1);
+      "true",
+    );
+  });
+});
+
+Deno.test("a later repair fetches into the mirror and clones from it, without a second bare clone", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream, work } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const deps: CloneForRepairDeps = {
+      git: (args, options) => {
+        calls.push({ args, cwd: options?.cwd });
+        return runGitForTest(args, options);
+      },
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    await commitFile(work, "d.txt", "fourth");
+    await fixtureGit(["push", "-q", upstream, "main"], work);
+    const dir2 = `${root}/clone-2`;
+    await cloneForRepair("owner/repo", dir2, deps);
+    assertEquals(
+      await runGitForTest(["log", "-1", "--format=%s", "origin/main"], {
+        cwd: dir2,
+      }),
+      "fourth",
+    );
+    const fetchIndex = calls.findIndex((call) => call.args[0] === "fetch");
+    assertEquals(calls[fetchIndex], {
+      args: [
+        "fetch",
+        "--no-auto-maintenance",
+        "--prune",
+        upstream,
+        "+refs/heads/*:refs/heads/*",
+        "+refs/tags/*:refs/tags/*",
+      ],
+      cwd: mirror,
+    });
+    assertEquals(calls[fetchIndex + 1], {
+      args: [
+        "-c",
+        "maintenance.autoDetach=false",
+        "-c",
+        "gc.autoDetach=false",
+        "maintenance",
+        "run",
+        "--auto",
+      ],
+      cwd: mirror,
+    });
+    assertEquals(calls[fetchIndex + 2]?.args.slice(0, 3), [
+      "clone",
+      "--no-checkout",
+      "--no-hardlinks",
+    ]);
+    assertEquals(
+      calls.filter((call) =>
+        call.args[0] === "clone" && call.args[1] === "--bare"
+      ).length,
+      1,
+    );
+  });
+});
+
+Deno.test("a clone keeps its full history after the mirror is deleted", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const dir = `${root}/clone`;
+    await cloneForRepair("owner/repo", dir, {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    await Deno.remove(`${mirrorRoot}/owner--repo.git`, { recursive: true });
+    await runGitForTest(["fsck"], { cwd: dir });
+    assertEquals(
+      await runGitForTest(["rev-list", "--count", "--all"], { cwd: dir }),
+      "3",
+    );
+  });
+});
+
+/** Every regular file under a directory, found recursively. */
+async function filesUnder(dir: string): Promise<string[]> {
+  const found: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory) found.push(...await filesUnder(path));
+    else if (entry.isFile) found.push(path);
+  }
+  return found;
+}
+
+Deno.test("the clone copies its objects, so no object file is hardlinked to the mirror", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    const dir = `${root}/clone`;
+    await cloneForRepair("owner/repo", dir, {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    const mirrorObjects = await filesUnder(`${mirror}/objects`);
+    assert(
+      mirrorObjects.length > 0,
+      "the mirror holds no object files to compare",
+    );
+    const cloneObjects = await filesUnder(`${dir}/.git/objects`);
+    assert(cloneObjects.length > 0, "the clone holds no object files to check");
+    for (const file of cloneObjects) {
+      assertEquals((await Deno.stat(file)).nlink, 1, `${file} is hardlinked`);
+    }
+  });
+});
+
+Deno.test("a failed fetch keeps git's cause and leaves the mirror in place", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    const deps: CloneForRepairDeps = {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    await Deno.rename(upstream, `${root}/upstream-moved.git`);
+    await assertRejects(
+      () => cloneForRepair("owner/repo", `${root}/clone-2`, deps),
+      Error,
+      "does not appear to be a git repository",
+    );
+    assert(await exists(mirror));
+  });
+});
+
+Deno.test("a repository name that is not owner/name is refused before any git runs", async () => {
+  await withTempRoot(async (root) => {
+    const calls: string[][] = [];
+    await assertRejects(
+      () =>
+        cloneForRepair("../x", `${root}/clone`, {
+          git: (args) => {
+            calls.push(args);
+            return Promise.resolve("");
+          },
+          remoteUrl: () => Promise.resolve("/tmp/upstream"),
+          mirrorRoot: `${root}/mirrors`,
+        }),
+      Error,
+      "Invalid repository",
+    );
+    assertEquals(calls, []);
+  });
+});
+
+Deno.test("concurrent repairs of one repo never mutate its mirror at the same time", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const calls: string[] = [];
+    const deps: CloneForRepairDeps = {
+      git: async (args, options) => {
+        if (
+          args[0] === "fetch" || (args[0] === "clone" && args[1] === "--bare")
+        ) calls.push("mirror");
+        if (args[0] === "remote") calls.push("set-url");
+        return await runGitForTest(args, options);
+      },
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot: `${root}/mirrors`,
+    };
+    await Promise.all([
+      cloneForRepair("owner/repo", `${root}/clone-a`, deps),
+      cloneForRepair("owner/repo", `${root}/clone-b`, deps),
+    ]);
+    assertEquals(calls, ["mirror", "set-url", "mirror", "set-url"]);
+    for (const dir of [`${root}/clone-a`, `${root}/clone-b`]) {
+      assertEquals(
+        await runGitForTest(["rev-list", "--count", "--all"], { cwd: dir }),
+        "3",
+      );
+    }
+  });
+});
+
+Deno.test("babysitter deployment heartbeat stores only revision and policy fingerprint", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const split = buildDefaultWorkerConfig();
+    split.issueExecutorSplit = true;
+    const unsplit = buildDefaultWorkerConfig();
+    unsplit.issueExecutorSplit = false;
+
+    await recordBabysitterDeployment(
+      dir,
+      split,
+      "abcdef0123456789",
+      "2026-11-02T00:00:00.000Z",
+    );
+    const first = JSON.parse(
+      await Deno.readTextFile(`${dir}/deployment-health.json`),
+    );
+    assertEquals(first.component, "babysitter");
+    assertEquals(first.codeRevision, "abcdef0123456789");
+    assertEquals(first.observedAt, "2026-11-02T00:00:00.000Z");
+    assertEquals(
+      first.policyFingerprint,
+      await fingerprintWorkerReviewPolicy(split),
+      "the heartbeat carries the fingerprint of the split config's review policy",
+    );
+
+    await recordBabysitterDeployment(
+      dir,
+      unsplit,
+      "abcdef0123456789",
+      "2026-11-02T00:00:01.000Z",
+    );
+    const second = JSON.parse(
+      await Deno.readTextFile(`${dir}/deployment-health.json`),
+    );
+    assertEquals(
+      second.policyFingerprint,
+      await fingerprintWorkerReviewPolicy(unsplit),
+      "the heartbeat carries the fingerprint of the unsplit config's review policy",
+    );
+    assert(
+      first.policyFingerprint !== second.policyFingerprint,
+      "a change to issueExecutorSplit changes the heartbeat's policy fingerprint",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("babysitter deployment heartbeat publishes, returns true and logs nothing on success", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const logged: string[] = [];
+    const published = await publishBabysitterDeployment(
+      `${dir}/state`,
+      buildDefaultWorkerConfig(),
+      (message) => logged.push(message),
+    );
+    assertEquals(published, true);
+    assertEquals(logged, []);
+    const record = JSON.parse(
+      await Deno.readTextFile(`${dir}/state/deployment-health.json`),
+    );
+    assertEquals(record.component, "babysitter");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("each babysitter pass loads its config from the given path and stamps the heartbeat with it", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const config = buildDefaultWorkerConfig();
+    const paths: string[] = [];
+    const loaded = await loadConfigAndPublishDeployment(
+      "/tmp/some-config.json",
+      `${dir}/state`,
+      (path) => {
+        paths.push(path);
+        return Promise.resolve(config);
+      },
+    );
+    assertEquals(paths, ["/tmp/some-config.json"]);
+    assertEquals(loaded, config);
+    const record = JSON.parse(
+      await Deno.readTextFile(`${dir}/state/deployment-health.json`),
+    );
+    assertEquals(record.component, "babysitter");
+    assertEquals(
+      record.policyFingerprint,
+      await fingerprintWorkerReviewPolicy(config),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("babysitter deployment heartbeat that cannot be written returns false and logs its cause, without throwing", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    // A state directory under a regular file cannot be created, so the
+    // heartbeat write fails and the babysitter must carry on.
+    const blocker = `${dir}/not-a-directory`;
+    await Deno.writeTextFile(blocker, "x\n");
+    const logged: string[] = [];
+    const published = await publishBabysitterDeployment(
+      `${blocker}/state`,
+      buildDefaultWorkerConfig(),
+      (message) => logged.push(message),
+    );
+    assertEquals(published, false);
+    assertEquals(logged.length, 1);
+    const prefix = "[babysitter] deployment heartbeat not recorded: ";
+    const line = logged[0] ?? "";
+    assert(line.startsWith(prefix), line);
+    assert(
+      line.length > prefix.length,
+      "the log names the cause after the prefix",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("babysitter supplies RTK guidance only when its probe succeeds", async () => {
@@ -469,6 +956,61 @@ const pr = {
   reviewDecision: null,
   statusCheckRollup: [{ conclusion: "SUCCESS" }],
 };
+
+import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
+
+for (const decision of ["REVIEW_REQUIRED", "APPROVED"]) {
+  Deno.test(`babysitter behind anchor uses strict readiness: ${decision}`, async () => {
+    const f = strictRefreshFixture();
+    f.state.decision = decision;
+    const initial = { ...pr, headRefOid: f.head, mergeStateStatus: "BEHIND" };
+    let updated = false;
+    const gh = async (args: string[]) => {
+      if (
+        args[0] === "pr" && args[1] === "view" &&
+        args.at(-1)?.includes("statusCheckRollup")
+      ) {
+        return JSON.stringify({
+          ...initial,
+          headRefOid: updated ? "d".repeat(40) : f.head,
+        });
+      }
+      if (args.includes("PUT")) {
+        // The anchor's repair lock must be gone, while shared ownership remains.
+        assertEquals(
+          f.comments.some((row) =>
+            row.body.includes("<!-- BRANCH_UPDATE_LOCK:")
+          ),
+          false,
+        );
+        assertEquals(
+          f.comments.some((row) =>
+            row.body.includes("<!-- BASE_REFRESH_OWNER_4613:")
+          ),
+          true,
+        );
+        updated = true;
+      }
+      return await f.gh(args);
+    };
+    await fix(
+      "owner/repo",
+      initial,
+      ["VibeCoderST"],
+      "VibeCoderST",
+      { appId: "1", installationId: "1", privateKeyPath: "/unused" },
+      "/unused",
+      gh,
+      undefined,
+      async () => {},
+    );
+    assertEquals(updated, decision === "APPROVED");
+    assertEquals(
+      f.calls.filter((args) => args.includes("PUT")).length,
+      decision === "APPROVED" ? 1 : 0,
+    );
+  });
+}
 Deno.test("author filter permits an explicit PR without widening fleet scans", () => {
   assert(eligibleAuthor("VibeCoderST", ["vibecoderst"], false));
   assert(!eligibleAuthor("human", ["VibeCoderST"], false));
@@ -483,7 +1025,7 @@ Deno.test("babysitter selects only conflicts and failed CI", () => {
       mergeStateStatus: "BEHIND",
       statusCheckRollup: [{ status: "IN_PROGRESS" }],
     }),
-    null,
+    "branch behind base",
   );
   assertEquals(
     reason({ ...pr, mergeStateStatus: "BEHIND" }),
@@ -714,7 +1256,14 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     options: Deno.CommandOptions & { timeoutMs: number };
   }[] = [];
   spawnBabysitterAgent(
-    { dir, scratch, prompt, agentToken, protectedPaths },
+    {
+      dir,
+      scratch,
+      prompt,
+      agentToken,
+      protectedPaths,
+      codex: "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
+    },
     (executable, options) => {
       calls.push({ executable, options });
       return {} as unknown as Deno.ChildProcess;
@@ -722,7 +1271,10 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
   );
   const [call] = calls;
   assert(call);
-  assertEquals(call.executable, "codex");
+  assertEquals(
+    call.executable,
+    "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
+  );
   const env = call.options.env as Record<string, string>;
   assertEquals(env.GH_TOKEN, agentToken);
   assert(env.GH_TOKEN !== runnerToken);
@@ -730,6 +1282,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     TMPDIR: scratch,
     XDG_CACHE_HOME: scratch,
     GH_TOKEN: agentToken,
+    GH_CONFIG_DIR: `${scratch}/gh-config`,
   });
   assertEquals(call.options.timeoutMs, 90 * 60_000);
   assertEquals(call.options.args, [
@@ -762,6 +1315,7 @@ Deno.test("codex agent is not given the workspace-write sandbox and cannot read 
       prompt: "Fix conflicts on PR #1",
       agentToken: "agent-read-only-token",
       protectedPaths,
+      codex: "codex",
     },
     (_executable, options) => {
       calls.push(options.args as string[]);
@@ -805,6 +1359,7 @@ Deno.test("codex agent refuses to start without protected credential paths", () 
           prompt: "Fix conflicts on PR #1",
           agentToken: "agent-read-only-token",
           protectedPaths: [],
+          codex: "codex",
         },
         () => {
           spawned = true;
@@ -865,4 +1420,523 @@ Deno.test("a PR labelled needs-human is never a babysitter candidate", () => {
   };
   assertEquals(reason(pr), null);
   assertEquals(reason({ ...pr, labels: [] }), "merge conflict");
+});
+
+// Issue #4671: a new review on an attempted head is new input, not a repeat.
+Deno.test("a new change request on an attempted head gets its own attempt", () => {
+  const review = (id: number) => ({
+    id,
+    state: "CHANGES_REQUESTED",
+    user: { login: "reviewer[bot]" },
+  });
+  const first = attemptKey("owner/repo", 7, "abc", [review(10)]);
+  assertEquals(first, attemptKey("owner/repo", 7, "abc", [review(10)]));
+  assert(
+    first !== attemptKey("owner/repo", 7, "abc", [review(10), review(12)]),
+  );
+  assertEquals(
+    attemptKey("owner/repo", 7, "abc", [review(12), review(10)]),
+    attemptKey("owner/repo", 7, "abc", [review(10), review(12)]),
+  );
+  assertEquals(attemptKey("owner/repo", 7, "abc", []), "owner--repo--7--abc");
+});
+
+// Issue #4668: a review asking for a description change could never be met,
+// because the agent may not edit the PR; the runner applies its proposal.
+Deno.test("a review repair may propose a PR description for the runner to apply", () => {
+  const prompt = buildRepairPrompt(
+    "requested review changes",
+    1,
+    "owner/repo",
+    "",
+  );
+  assertStringIncludes(prompt, ".babysitter-pr-body");
+});
+
+Deno.test("the proposed PR description is taken out of the clone before commit", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "New body\n");
+    assertEquals(
+      await takePrBodyProposal(dir, "Old body"),
+      "New body",
+    );
+    await assertRejects(
+      () => Deno.stat(`${dir}/.babysitter-pr-body`),
+      Deno.errors.NotFound,
+    );
+    assertEquals(await takePrBodyProposal(dir, "Old body"), undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a proposed PR description keeps the closing references it dropped", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      `${dir}/.babysitter-pr-body`,
+      "Rewritten summary. Fixes #12",
+    );
+    assertEquals(
+      await takePrBodyProposal(
+        dir,
+        "Closes #5031\nfixes #12\nResolves other/repo#7\nSee #99",
+      ),
+      "Rewritten summary. Fixes #12\n\nCloses #5031\nResolves other/repo#7",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("an empty or oversized PR description proposal is not applied", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "  \n");
+    assertEquals(await takePrBodyProposal(dir, "Old"), undefined);
+    await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "x".repeat(65_537));
+    await assertRejects(
+      () => takePrBodyProposal(dir, "Old"),
+      Error,
+      "65536",
+    );
+    await assertRejects(
+      () => Deno.stat(`${dir}/.babysitter-pr-body`),
+      Deno.errors.NotFound,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Issue #4677: CI is the gate, so a check this host cannot run is reported,
+// not a reason to discard an otherwise complete repair.
+Deno.test("a check the host cannot run is named but does not withhold readiness", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "name it in your final response");
+    assertStringIncludes(
+      prompt,
+      "does not by itself withhold BABYSITTER_READY",
+    );
+  }
+});
+
+// Issue #4677: a resolved conflict was discarded over unrelated verifier
+// findings (VibeCoder#4675); other feedback is out of a conflict's scope.
+Deno.test("other open feedback does not withhold readiness from a resolved conflict", () => {
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  assertStringIncludes(
+    prompt,
+    "Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY",
+  );
+});
+
+// Issue #4684: cancelled CI is re-run, not handed to an agent to "fix".
+Deno.test("only a head whose runs were cancelled and none failed is re-run", () => {
+  const r = (id: number, status: string, conclusion: string | null) => ({
+    id,
+    status,
+    conclusion,
+  });
+  assertEquals(
+    cancelledRunsToRerun([
+      r(1, "completed", "success"),
+      r(2, "completed", "cancelled"),
+      r(3, "completed", "cancelled"),
+    ]),
+    [2, 3],
+  );
+  assertEquals(
+    cancelledRunsToRerun([
+      r(1, "completed", "failure"),
+      r(2, "completed", "cancelled"),
+    ]),
+    [],
+  );
+  assertEquals(
+    cancelledRunsToRerun([
+      r(1, "in_progress", null),
+      r(2, "completed", "cancelled"),
+    ]),
+    [],
+  );
+  assertEquals(cancelledRunsToRerun([r(1, "completed", "success")]), []);
+  assertEquals(cancelledRunsToRerun([]), []);
+});
+
+// Issue #4704: the description update went out as a raw PATCH with
+// `-F body=@file`, which the base-change guard cannot read and so refuses.
+Deno.test("the PR description update is not mistaken for a base change", () => {
+  const args = prBodyEditArgs("owner/repo", 7, "/tmp/scratch/pr-body.md");
+  assertEquals(classifyPrBaseChange(args, () => "New description"), undefined);
+  // The route it replaces, for contrast: the guard fails closed on it.
+  assertEquals(
+    classifyPrBaseChange(
+      [
+        "api",
+        "-X",
+        "PATCH",
+        "repos/owner/repo/pulls/7",
+        "-F",
+        "body=@/tmp/scratch/pr-body.md",
+      ],
+      () => "New description",
+    )?.newBase,
+    null,
+  );
+});
+
+Deno.test("the PR description update passes the write allowlist for its repo only", async () => {
+  await withBabysitterWriteScope("owner/repo", async () => {
+    await enforceGhWriteAllowlist(
+      prBodyEditArgs("owner/repo", 7, "/tmp/scratch/pr-body.md"),
+    );
+    await assertRejects(
+      () =>
+        enforceGhWriteAllowlist(
+          prBodyEditArgs("other/repo", 7, "/tmp/scratch/pr-body.md"),
+        ),
+      WriteRepoBlockedError,
+    );
+  });
+});
+
+// Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
+// a test the repair never touched; CI on the base is the arbiter.
+Deno.test("a host-only failure in an unrelated check is named, not a blocker", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(
+      prompt,
+      "unrelated to the files you changed and passes in CI on the base branch",
+    );
+  }
+});
+
+// Issue #4694: a check that reads commit history cannot see the uncommitted
+// fix the agent is forbidden to commit (VibeCoder#4675, #4687).
+Deno.test("a check that reads commit history does not withhold readiness", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "reads commit history");
+  }
+});
+
+// Issue #4717: a CI repair fixed the failing checks, then held back over the
+// verifier's unrelated findings; a later review repair handles reviews.
+Deno.test("other open feedback does not withhold readiness from a CI repair", () => {
+  const prompt = buildRepairPrompt("failed CI", 1, "owner/repo", "");
+  assertStringIncludes(
+    prompt,
+    "Other open feedback (reviews, verifier or bot comments) is out of scope for a CI repair",
+  );
+});
+
+// Issue #4713: a code fix left VibeCoder's archived PR summary stale, so CI's
+// freshness gate failed and a second session existed only to refresh it.
+Deno.test("repair prompt applies the shared evidence policy to test replacements", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(
+      prompt,
+      "Never remove, skip or weaken tests just to make a check pass",
+    );
+    assertStringIncludes(prompt, "CODING-STANDARDS.md TDD rule 3");
+    assertStringIncludes(prompt, "obsolete behaviour");
+    assertStringIncludes(prompt, "remaining behaviour");
+    assertStringIncludes(prompt, "path::test in the PR summary");
+  }
+});
+
+Deno.test("a repair updates a CI-checked per-PR summary in the same fix", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "per-PR summary");
+    assertStringIncludes(prompt, "in the same fix");
+  }
+});
+
+// Issue #4720: GRQ-AutoTrader#5066's conflict stopped for an owner because the
+// base had deliberately retired behaviour the PR used; the base already
+// carries that decision, and conflicts are never handed to a human.
+Deno.test("a conflict where the base retired behaviour follows the base, not a human", () => {
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  assertStringIncludes(prompt, "deliberately removed or replaced behaviour");
+  assertStringIncludes(prompt, "follow the base");
+  assertStringIncludes(prompt, "never leave a conflict for a human");
+});
+
+// Issue #4710: a clone still being written by the agent's leftover test
+// processes could not be removed, and the error from `finally` replaced the
+// repair's real outcome. Clean-up warns and leaves it for a later pass.
+Deno.test("repair clean-up warns instead of throwing, and still removes the rest", async () => {
+  const removed: string[] = [];
+  const warnings: string[] = [];
+  await removeRepairDirs(
+    ["/tmp/clone", undefined, "/tmp/scratch"],
+    (path) => {
+      if (path === "/tmp/clone") {
+        return Promise.reject(new Error("Directory not empty (os error 66)"));
+      }
+      removed.push(path);
+      return Promise.resolve();
+    },
+    (message) => warnings.push(message),
+  );
+  assertEquals(removed, ["/tmp/scratch"]);
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0]!, "WARNING");
+  assertStringIncludes(warnings[0]!, "/tmp/clone");
+  assertStringIncludes(warnings[0]!, "Directory not empty");
+});
+
+// Issue #4728: the agent ran `printenv GH_TOKEN`, putting its own token in a
+// tool result. Every repair kind is told never to print credentials.
+Deno.test("a repair never prints environment variables or credentials", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "Never print, echo or log");
+    assertStringIncludes(prompt, "gh auth status");
+  }
+});
+
+Deno.test("defaultRemoteUrl follows gh's git_protocol, falling back to https with a warning", async () => {
+  const asked: string[][] = [];
+  const answer = (protocol: string) => (args: string[]) => {
+    asked.push(args);
+    return Promise.resolve(protocol);
+  };
+  assertEquals(
+    await defaultRemoteUrl("owner/repo", answer("ssh\n")),
+    "git@github.com:owner/repo.git",
+  );
+  assertEquals(asked, [["config", "get", "git_protocol", "-h", "github.com"]]);
+  assertEquals(
+    await defaultRemoteUrl("owner/repo", answer("https\n")),
+    "https://github.com/owner/repo.git",
+  );
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+  try {
+    assertEquals(
+      await defaultRemoteUrl(
+        "owner/repo",
+        () => Promise.reject(new Error("gh is not logged in")),
+      ),
+      "https://github.com/owner/repo.git",
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0]!, "gh is not logged in");
+});
+
+Deno.test("host-specific gh protocol takes precedence over the global protocol", async () => {
+  const gh = (args: string[]) =>
+    Promise.resolve(args.includes("-h") ? "ssh\n" : "https\n");
+  assertEquals(
+    await defaultRemoteUrl("owner/repo", gh),
+    "git@github.com:owner/repo.git",
+  );
+});
+
+Deno.test("an existing mirror fetches from the newly resolved URL", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream, work } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const deps: CloneForRepairDeps = {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    await runGitForTest(["remote", "set-url", "origin", `${root}/stale.git`], {
+      cwd: mirror,
+    });
+    await commitFile(work, "new.txt", "new history");
+    await fixtureGit(["push", "-q", upstream, "main"], work);
+    await cloneForRepair("owner/repo", `${root}/clone-2`, deps);
+    assertEquals(
+      await runGitForTest(["rev-parse", "main"], { cwd: `${root}/clone-2` }),
+      await runGitForTest(["rev-parse", "main"], { cwd: upstream }),
+    );
+    assertEquals(
+      await runGitForTest(["config", "remote.origin.url"], {
+        cwd: `${root}/clone-2`,
+      }),
+      upstream,
+    );
+  });
+});
+
+Deno.test("a later repair prunes deleted branches and fetches new tags into the clone", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream, work } = await makeUpstream(root);
+    const deps: CloneForRepairDeps = {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot: `${root}/mirrors`,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    await fixtureGit(["push", "-q", upstream, "--delete", "feature"], work);
+    // A tag on a commit no branch reaches is only fetched by the tag refspec.
+    await fixtureGit(["checkout", "-q", "--detach", "main"], work);
+    await commitFile(work, "e.txt", "tagged only");
+    await fixtureGit(["tag", "v1"], work);
+    await fixtureGit(["push", "-q", upstream, "v1"], work);
+    const dir2 = `${root}/clone-2`;
+    await cloneForRepair("owner/repo", dir2, deps);
+    const branches = await runGitForTest(
+      ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"],
+      { cwd: dir2 },
+    );
+    assert(!branches.includes("origin/feature"), branches);
+    assertEquals(
+      await runGitForTest(["tag", "--list"], { cwd: dir2 }),
+      "v1",
+    );
+  });
+});
+
+Deno.test("a stale partial download is cleared before the first download", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    await Deno.mkdir(`${mirrorRoot}/owner--repo.git.tmp/objects`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${mirrorRoot}/owner--repo.git.tmp/objects/stale`,
+      "left by an interrupted download",
+    );
+    await cloneForRepair("owner/repo", `${root}/clone`, {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    assertEquals(await exists(`${mirrorRoot}/owner--repo.git.tmp`), false);
+    assertEquals(
+      await runGitForTest(["rev-list", "--count", "--all"], {
+        cwd: `${root}/clone`,
+      }),
+      "3",
+    );
+  });
+});
+
+Deno.test("the mirror root exists before the bare clone starts", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/not/yet/created`;
+    await cloneForRepair("owner/repo", `${root}/clone`, {
+      git: async (args, options) => {
+        if (args[0] === "clone" && args[1] === "--bare") {
+          assert(
+            await exists(mirrorRoot),
+            "the mirror root must exist before the bare clone",
+          );
+        }
+        return runGitForTest(args, options);
+      },
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    assert(await exists(`${mirrorRoot}/owner--repo.git`));
+  });
+});
+
+Deno.test("every network git call is bounded by the 30-minute clone timeout", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const calls: { args: string[]; timeoutSeconds?: number }[] = [];
+    const deps: CloneForRepairDeps = {
+      git: (args, options) => {
+        calls.push({ args, timeoutSeconds: options?.timeoutSeconds });
+        return runGitForTest(args, options);
+      },
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot: `${root}/mirrors`,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    await cloneForRepair("owner/repo", `${root}/clone-2`, deps);
+    const timed = calls.filter((call) =>
+      ["clone", "fetch"].includes(call.args[0]!)
+    );
+    // Bare clone, local clone, fetch, local clone.
+    assertEquals(timed.length, 4);
+    for (const call of timed) {
+      assertEquals(call.timeoutSeconds, 30 * 60, call.args.join(" "));
+    }
+  });
+});
+
+Deno.test("a call that arrives while another is queued still waits for the running work", async () => {
+  const starts: string[] = [];
+  const a = Promise.withResolvers<void>();
+  const b = Promise.withResolvers<void>();
+  const first = serialiseOnMirror("test-mirror", async () => {
+    starts.push("a");
+    await a.promise;
+  });
+  const second = serialiseOnMirror("test-mirror", async () => {
+    starts.push("b");
+    await b.promise;
+  });
+  await Promise.resolve();
+  assertEquals(starts, ["a"]);
+  a.resolve();
+  await first;
+  await Promise.resolve();
+  assertEquals(starts, ["a", "b"]);
+  const third = serialiseOnMirror("test-mirror", () => {
+    starts.push("c");
+    return Promise.resolve();
+  });
+  await Promise.resolve();
+  assertEquals(starts, ["a", "b"]);
+  b.resolve();
+  await Promise.all([second, third]);
+  assertEquals(starts, ["a", "b", "c"]);
+});
+
+// Issue #4739: GitHub flagged GRQ-AutoTrader#5082 as conflicting although its
+// base was already an ancestor of the head; the agent had nothing to resolve.
+Deno.test("a base already merged into the head is detected, a newer base is not", async () => {
+  const dir = await Deno.makeTempDir();
+  const git = async (...args: string[]) => {
+    const out = await new Deno.Command("git", { args, cwd: dir }).output();
+    assert(out.success, new TextDecoder().decode(out.stderr));
+  };
+  try {
+    await git("init", "-q", "-b", "main");
+    await git("config", "user.name", "Test");
+    await git("config", "user.email", "test@example.com");
+    await git("commit", "-q", "--allow-empty", "-m", "base");
+    await git("update-ref", "refs/remotes/origin/main", "HEAD");
+    await git("checkout", "-q", "-b", "feature");
+    await git("commit", "-q", "--allow-empty", "-m", "feature");
+    assertEquals(await baseAlreadyMerged(dir, "main"), true);
+
+    await git("checkout", "-q", "main");
+    await git("commit", "-q", "--allow-empty", "-m", "newer base");
+    await git("update-ref", "refs/remotes/origin/main", "HEAD");
+    await git("checkout", "-q", "feature");
+    assertEquals(await baseAlreadyMerged(dir, "main"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

@@ -371,6 +371,26 @@ export interface PhaseState {
    */
   screenshotAdvisoryComment?: string;
   /**
+   * The repository's CI job blocks on mutation survivors and the mutation
+   * check still reports them after the one in-session recovery turn (Issue
+   * #4617). The pull request is then raised as a draft `Part of #N`, is not
+   * marked ready and does not arm auto-merge. Cleared on any pass where the
+   * condition does not hold, because the state is reused across passes.
+   */
+  mutationHold?: {
+    /** The blocking CI job, sanitised by the mutation gate. */
+    job: string;
+    /** The workflow file that holds the job, sanitised by the mutation gate. */
+    workflow: string;
+    /** The mutation gate's comment, carried into the draft body. */
+    comment: string;
+    /**
+     * The check could not finish (no genuine survivor): the draft says
+     * validation is incomplete and names the next action.
+     */
+    incomplete?: { nextAction: string };
+  };
+  /**
    * Review-style findings from the pre-PR verifier that
    * survived the in-run recovery (Issue #4236). The summary claim check
    * was removed (Issue #4234). The completion phase raises
@@ -429,18 +449,9 @@ export interface PhaseState {
   releaseNotes?: string[];
 }
 
-/**
- * Record an execute-phase Claude invocation on the phase state for the
- * end-of-issue cost/model stats comment (Issue #3756).
- *
- * Copies only the stats-bearing fields so the (potentially large) Claude output
- * is not retained for the lifetime of the run.
- */
-export function recordClaudeRunStats(
-  state: PhaseState,
-  result: PhaseClaudeResult,
-): void {
-  const entry: PhaseClaudeResult = {
+/** The stats-bearing fields of one invocation; the (large) output is never kept. */
+function statsEntryOf(result: PhaseClaudeResult): PhaseClaudeResult {
+  return {
     ...(result.runStats ? { runStats: result.runStats } : {}),
     ...(result.fallbackModel ? { fallbackModel: result.fallbackModel } : {}),
     ...(result.preflightDegraded
@@ -455,7 +466,35 @@ export function recordClaudeRunStats(
     // how often the re-armable deadline fired.
     ...(result.extensions ? { extensions: result.extensions } : {}),
   };
-  state.claudeRunStats = [...(state.claudeRunStats ?? []), entry];
+}
+
+/**
+ * Record an execute-phase Claude invocation on the phase state for the
+ * end-of-issue cost/model stats comment (Issue #3756).
+ *
+ * Copies only the stats-bearing fields so the (potentially large) Claude output
+ * is not retained for the lifetime of the run. An orchestrated run's other
+ * provider calls (Issue #4595) are recorded first, one entry each, so the
+ * comment and the fleet figures cover the plan and executor spend too.
+ */
+export function recordClaudeRunStats(
+  state: PhaseState,
+  result: PhaseClaudeResult,
+): void {
+  state.claudeRunStats = [
+    ...(state.claudeRunStats ?? []),
+    ...(result.orchestrationCalls ?? []).map((call) => {
+      const entry = statsEntryOf(call);
+      // Earlier calls contribute spend only. The returned call continues to
+      // drive executeWithRefusalRetry, as it did before orchestration stats.
+      if (entry.runStats) {
+        entry.runStats = { ...entry.runStats };
+        delete entry.runStats.refusals;
+      }
+      return entry;
+    }),
+    statsEntryOf(result),
+  ];
 }
 
 /** Result code from a phase function. */

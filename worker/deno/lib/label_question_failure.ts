@@ -77,10 +77,13 @@ ${failureMessage}
 - **Retry**: The \`${questionLabel}\` label has been kept — the question will be retried automatically`;
 
   if (isSecondFailure) {
+    // Issue #4158: a repeat failure is never parked. The posted text carries
+    // no VibeCoder issue number (Issue #4641): GitHub resolves a bare `#N`
+    // against the target repo.
     commentBody += `
 
 ### What happened?
-This question has failed more than once. It keeps the \`${questionLabel}\` label and is retried automatically once its cooldown ends — the Vibe Coder never parks it (Issue #4158).`;
+This question has failed more than once. It keeps the \`${questionLabel}\` label and is retried automatically once its cooldown ends — the Vibe Coder never parks it.`;
   }
 
   commentBody += `

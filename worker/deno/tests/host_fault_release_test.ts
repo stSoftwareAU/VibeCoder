@@ -466,7 +466,7 @@ Deno.test("buildHostFaultReleaseComment - names the host fault kind(s) (Issue #2
   const single = buildHostFaultReleaseComment(["clone-corrupt"]);
   assertStringIncludes(single, "clone-corrupt");
   assertStringIncludes(single, "worker host");
-  assertStringIncludes(single, "Issue #2890");
+  assertStringIncludes(single, "back in the queue");
 
   const multi = buildHostFaultReleaseComment(["clone-corrupt", "disk-full"]);
   assertStringIncludes(multi, "clone-corrupt");

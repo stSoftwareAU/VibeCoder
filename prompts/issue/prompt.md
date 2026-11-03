@@ -195,10 +195,15 @@ guessing.
      pre-existing message left unchanged that is false or misleading in
      the new state is a blocking self-review finding; list the messages
      checked in the PR summary's Test Plan (Issue #3259).
-2. Do not skip or weaken existing tests merely to make the gate pass. A
+2. Do not remove, skip or weaken existing tests merely to make the gate pass.
+   The restriction is against a clean build obtained by deleting useful tests,
+   weakening assertions, adding skips or lowering quality thresholds. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
-   the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
+   the behaviour (see the removal entries in the Test Plan). Replacing or
+   removing an obsolete test is approved by the owner, and independent review
+   decides whether meaningful regression protection remains; a test change is
+   never by itself a reason to hold the pull request for a human. For UI/PWA tests prefer user-visible browser behaviour and
    semantic locators; avoid exact DOM-structure assertions unless explicitly
    required. **A style literal is incidental wherever it lives.** An exact
    colour, length, `calc()`/`min()` expression, font, z-index, class name or
@@ -1020,9 +1025,8 @@ merges on green CI with no reviewer:
 
 - **Finish every unmet criterion.** When any criterion is `partial` or
   `missing`, finish it. A criterion still unmet when the run ends is named on
-  the PR, which the worker raises anyway (Issues #4146, #4234): a `missing` one
-  makes it `Part of #{{ISSUE_NUMBER}}`, never `Closes #{{ISSUE_NUMBER}}`, while
-  a `partial` one does not hold the issue open. An approved issue is never
+  the PR, which the worker raises anyway (Issues #4146, #4234): a `partial` or `missing` one
+  makes it `Part of #{{ISSUE_NUMBER}}`, never `Closes #{{ISSUE_NUMBER}}`. An approved issue is never
   handed back (Issue #4227). Never relabel a `missing` criterion `partial` or
   `met` to get past this; the Spec reviewer's verdict records the departure.
   Once a file has changed, the
@@ -1219,7 +1223,7 @@ however small or non-visual the edit seems.
 
 ## Issue Closure in PR Summary
 
-Every PR must say whether it closes its issue. When no criterion is `missing`,
+Every PR must say whether it closes its issue. When no criterion is `partial` or `missing`,
 the worker appends `Closes #{{ISSUE_NUMBER}}` to the PR body if your summary
 leaves it out, so write it in the summary yourself and the committed summary and
 the PR body agree.
@@ -1228,13 +1232,12 @@ In your `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` file, write
 one of:
 
 - `Part of #{{ISSUE_NUMBER}}` when the `## Acceptance Criteria` block marks any
-  criterion `missing`. This includes an issue that states no criteria heading:
+  criterion `partial` or `missing`. This includes an issue that states no criteria heading:
   when you leave any part of what that issue asks undone, record each undone
   part as a `missing` entry in the issue's own words, whatever heading the issue
   used;
 - `Closes #{{ISSUE_NUMBER}}` (or `Fixes #{{ISSUE_NUMBER}}` / `Resolves
-  #{{ISSUE_NUMBER}}`) otherwise: no criterion is `missing`, including when one
-  is `partial`, or the issue states no criteria heading and nothing it asks is
+  #{{ISSUE_NUMBER}}`) otherwise: no criterion is `partial` or `missing`, or the issue states no criteria heading and nothing it asks is
   left undone.
 
 In the `Part of` case, write no closing keyword for the issue anywhere in the
@@ -1411,17 +1414,26 @@ The file MUST contain:
    named-but-absent test is a blocking self-review finding: add the test or
    drop the claim, and never commit a code anchor or comment that references a
    test that does not exist. For every existing test the diff edits, list each
-   assertion it removes with the issue requirement that makes it untrue; an
-   assertion removed with no such requirement is a blocking self-review
-   finding — restore it, or move it to a test that still covers the behaviour
-   and name that test. Give each removal its own list entry: `Removed from
-   <path>: <assertion>`, copying the assertion as it appears in the diff, then
-   an indented `Required by: "<quote>"` or `Moved to: <path>`. The quote must
-   contain at least 5 words verbatim from the linked issue's title or body,
-   not comments; the move must name a file where the same assertion is added
-   with its original guards and coverage preserved. For a replacement, also
-   add `Replaced by:` and name each new assertion in inline code; each must
-   be added in the same test file. The Standards reviewer
+   assertion it removes with the issue requirement that makes it untrue, or with
+   the coverage that still proves the behaviour; an assertion removed with
+   neither is a blocking self-review finding — restore it, or move it to a
+   test that still covers the behaviour and name that test. Give each removal
+   its own list entry: `Removed from <path>: <assertion>`, copying the
+   assertion as it appears in the diff, then one indented justification line:
+   - `Required by: "<verbatim quote from the linked issue's title or body>"`
+     when the issue makes the assertion untrue (never a comment);
+   - `Moved to: <path>` when the same assertion is added to a named file with
+     its original guards and coverage preserved;
+   - `Obsolete: <old behaviour that is gone or intentionally changed>` followed
+     by `Still covered by: <repo-relative path::test name>` when the required
+     behaviour remains; or `Removed functionality: <symbol, and the evidence
+     that its callers are gone>` when the behaviour was removed outright.
+   Independent review checks each entry against the code at the head. Your
+   own assertion that a removal is justified is not proof, and a removal the
+   reviewer cannot verify is sent back; a fabricated replacement test is never
+   required for removed functionality. For a replacement, also add
+   `Replaced by:` and name each new assertion in inline code; each must be
+   added in the same test file. The Standards reviewer
    compares the old and new checks for lost coverage. Include a `## Test Plan`
    heading whenever
    the diff touches a test; it is required. The worker counts as removed a
@@ -1532,7 +1544,10 @@ The file MUST contain:
    the covering tests; a mutation the tests do not catch is reported (to you
    once, then on the pull request) unless the summary names it as
    `` `path:line` `` with
-   `exempt (untestable): <reason>` (a non-empty reason), the same convention.
+   `exempt (untestable): <reason>` (a non-empty reason), the same convention. Where the repository's own CI runs a
+   blocking mutants job, that line does not clear the survivor: CI does not read
+   the summary, so the survivor must be killed by a test or excluded the way that
+   CI job allows.
    A named test that does not exist at the head is the same finding as
    above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct

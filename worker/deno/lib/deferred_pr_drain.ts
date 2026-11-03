@@ -26,6 +26,7 @@ import {
 import {
   createPullRequestViaRest,
   findOpenPrUrlViaRest,
+  type RestPrCreateOptions,
 } from "./pr_create_rest.ts";
 import { isSecondaryRateLimitMessage } from "./secondary_rate_limit.ts";
 import { redactSecrets } from "./secret_redaction.ts";
@@ -87,6 +88,25 @@ export interface DeferredPrDrainResult {
   abandoned: number;
 }
 
+/**
+ * The REST create options for a parked record. A record held for surviving
+ * mutants carries `draft: true`, so the PR opens as a draft and the drain —
+ * which never arms auto-merge — does not report it ready (Issue #4617).
+ */
+export function restCreateOptions(
+  record: DeferredPrRecord,
+): RestPrCreateOptions {
+  return {
+    repo: record.repo,
+    title: record.title,
+    body: record.body,
+    head: record.branch,
+    base: record.base,
+    ...(record.reviewers ? { reviewers: record.reviewers } : {}),
+    ...(record.draft ? { draft: true } : {}),
+  };
+}
+
 /** Raise every parked PR that GitHub will now accept. */
 export async function drainDeferredPrs(
   deps: DeferredPrDrainDeps,
@@ -94,14 +114,7 @@ export async function drainDeferredPrs(
   const {
     workDir,
     createPr = (record: DeferredPrRecord) =>
-      createPullRequestViaRest({
-        repo: record.repo,
-        title: record.title,
-        body: record.body,
-        head: record.branch,
-        base: record.base,
-        ...(record.reviewers ? { reviewers: record.reviewers } : {}),
-      }),
+      createPullRequestViaRest(restCreateOptions(record)),
     findOpenPr = findOpenPrUrlViaRest,
     nowSeconds = () => Math.floor(Date.now() / 1000),
     maxAttempts = MAX_DEFERRED_PR_ATTEMPTS,

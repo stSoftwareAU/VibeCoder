@@ -110,6 +110,35 @@ A failed `mint` fails the phase loudly rather than running the checks without
 the credential they declared — a check that runs unauthenticated fails later
 and further from the cause. Values are never logged; only names are.
 
+Where the credentials go depends on the account the command runs as:
+
+- **The `agent` account** runs the quality gate, the merge fast checks and the
+  milestone merge and resolution gates whenever the image has one. The declared
+  values travel on the stdin of that command, not in its argv and not in the
+  environment that `sudo` would strip. Each value is base64 encoded, and a fixed
+  `sh` wrapper inside `sudo` exports them and runs the command with stdin from
+  `/dev/null`. Only this repository's declared credentials are carried; the
+  worker's own GitHub and App credentials are not. The allowlist (Issue #572)
+  and `clearEnv` are unchanged, and the `sudo` rule is not widened.
+- **The worker account** (`vibe`) runs the gate commands above only where the
+  image has no `agent` account at all, with the same restricted environment,
+  and the declared values are placed in that environment. It also runs the
+  repository formatters, the mutation check and the coverage carry-over, which
+  never drop to `agent` and keep the environment route. A declared credential
+  never changes the account a gate command runs as.
+
+A declared name must be a plain identifier. `IFS` and names starting with
+`_vibe_cc_` are the wrapper's own and are refused, so a declaration can never
+silently shorten what is delivered.
+
+If the channel itself faults, the wrapper exits 78 and writes a
+`[vibe-credential-channel]` line to stderr (a short or malformed stream). That is
+recoverable infrastructure, never a pass: the quality gate reports a failed run
+(`failed_credential_delivery`, never sent to the agent as a code fault) with
+that line, the merge fast check reports the merge as `unverified`, and the
+milestone gates report `GateAccountUnavailable` and leave the check to CI. A
+credential that cannot be minted is never a pass either: the quality gate fails the phase with the mint error, and the merge conflict gate parks the merge with it.
+
 The same credentials reach the diff-scoped mutation check, which reruns the
 repository's tests; there a failed `mint` makes the check not applicable, with
 a warning, instead of failing the phase. The check also runs on review-fix
@@ -404,6 +433,10 @@ The installation is looked up from the App on the owner of `repos`. Keep the
 key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
 mounted into the container. Use a different App from the worker's own
 `github_app_*` identity, since GitHub refuses an approval from a PR's author.
+When the fleet PR babysitter runs under the same host user, its Codex filesystem
+profile denies this configured key along with the worker credential directory,
+the worker App and SSH keys, and the host `gh` store; see the
+[babysitter credential boundary](workflows/fleet-pr-babysitter.md).
 
 The App needs **Pull requests**, **Issues**, **Contents** and **Workflows**
 read and write, plus **Checks** and **Commit statuses** read. Contents write
@@ -415,7 +448,10 @@ Dependabot's GitHub Actions bumps, which change `.github/workflows/*`. See
 for details.
 
 Then add `<app-slug>[bot]` to `authorized_commenters` on every fleet host, so
-the worker acts on its change requests. Keep `github-copilot[bot]` and
+the worker acts on its change requests. Also add that login to `service_accounts`
+or `fleet_pr_authors` on every fleet host: all lanes must trust its strict-base
+refresh ownership comments. The reviewer refuses refreshes until its own
+configuration includes the login. Keep `github-copilot[bot]` and
 `github-actions[bot]` in the list: setting the key replaces those defaults.
 Do **not** add the bot to `pr_reviewers`. That list is requested as reviewers
 on every new worker PR, and GitHub cannot request a review from an App, so PR
@@ -437,36 +473,69 @@ and the default is used. It is read by `run.sh` only, never by the worker.
 }
 ```
 
-## 🔓 Auto-release of issue-required test changes
+## 🧪 Test-change policy for the fleet reviewer
 
-`pr_reviewer_auto_release` lets the `review-fleet-prs` skill approve, rather
-than hold for the owner, a PR whose only meaningful test change is one its
-linked issue requires. It is off by default: absent or empty, and for any repo
-not listed, the outcome is as before. It is read by the skill's `post.ts` (via
-`auto_release.ts`), never by the worker. A value that is not an array of
-`owner/repo` strings makes `post.ts` fail loud.
+The `review-fleet-prs` reviewer decides whether a PR that removes, skips or
+loosens an existing test still keeps meaningful regression protection. The
+policy is on by default for every repository the reviewer host looks at; there
+is no opt-in. It supersedes the opt-in auto-release of Issue #3397 (see the
+migration table below). The full rule is in
+[CODING-STANDARDS.md](../CODING-STANDARDS.md), Test-Driven Development, rule 3.
+
+- Replacing or removing an obsolete test is approved by the owner. A test
+  change, or a test-file deletion, is never by itself a reason to hold a PR for
+  a human.
+- The restriction is against a clean build obtained by deleting useful tests,
+  weakening assertions, adding skips or lowering quality thresholds. An
+  unjustified removal, weakening, skip or lowered threshold is sent back with a
+  request for changes.
+- A PR is held for the owner only where the intended product contract is
+  unclear, or where its repo is listed in `pr_reviewer_test_hold_repos`.
+- The reviewer hold policy is now version 2 (`HOLD_POLICY_VERSION`). Every
+  existing reviewer-owned hold is reassessed once, even on an unchanged head. A
+  new policy is a reason to reassess, not automatic approval. The reviewer
+  removes only its own obsolete `needs-human` label after a successful fresh
+  assessment; an independent human or security hold is preserved.
+
+Outcomes, in order: any blocking finding requests changes; otherwise an `owner`
+verdict, or a hold-repo override with a meaningful test change or a removed test
+file, leaves a comment-only hold with `needs-human` (the hold marker
+`<!-- vibe-hold-policy v=N -->` is on a line of its own in the review body);
+otherwise the PR is approved, and the approval lists each reviewed test change
+with its verified evidence.
+
+### Holding a repo for the owner
 
 ```json
 {
-  "pr_reviewer_auto_release": ["stSoftwareAU/VibeCoder"]
+  "pr_reviewer_test_hold_repos": ["stSoftwareAU/VibeCoder"]
 }
 ```
 
-For a listed repo, a review that would be held is approved ("Auto-released: …")
-only when all of these hold:
+`pr_reviewer_test_hold_repos` is an array of `owner/repo` strings and is the
+explicit owner override. For a listed repo every meaningful test change, and
+every removed test file, keeps the comment-only owner hold, whatever the
+reviewer's assessment. It is read by the reviewer skill, never by the worker.
 
-- there are no findings and no test file was removed;
-- the PR has a linked issue (`closingIssuesReferences`) whose title or body
-  could be read;
-- every test change note is kind `expected-value`, quotes an acceptance
-  criterion of at least 5 words verbatim from a linked issue's title or body
-  (comments never count), and states that the edited test still fails without
-  the code it guards.
+### Migrating from `pr_reviewer_auto_release`
 
-Anything else keeps the hold, including any fetch failure. The `log.jsonl`
-record carries `autoReleased: true`, and `summary.md` prefixes the approval with
-`(auto-released: issue-required test change)`. When the hold is kept, the
-reasons are logged as `autoReleaseHeld`.
+| Setting | Before (Issue #3397, opt-in) | Now (Issue #4655) |
+| --- | --- | --- |
+| `pr_reviewer_auto_release` absent or `[]` | Every test-change hold kept for the owner | Ignored; the policy is on by default for every repo |
+| `pr_reviewer_auto_release: ["owner/repo"]` | That repo auto-approved a qualifying issue-required change | Not read. The value is tolerated and reported as ignored in the effective-policy line; the repo gets the new default |
+| `pr_reviewer_auto_release` set to a malformed value | Failed loud in `post.ts` | Tolerated and reported as ignored |
+| `pr_reviewer_test_hold_repos: ["owner/repo"]` | Not available | The explicit owner override: that repo keeps the owner hold for every meaningful test change |
+
+### Effective policy
+
+The effective policy version and overrides are exposed per reviewer host. The
+`gate.ts` JSON line prints a `testPolicy` object (`version`, `mode`,
+`holdAllRepos`, `legacyAutoRelease` and a one-line `description`). `post.ts`
+prints `testPolicy` (`version`, `mode`, `holdAllRepos`) in its result, and
+`testChangesReviewed: true` only on an approval that rested on a reviewed test
+change; `ownerHold` (the reasons) appears only on a hold for the owner. Its
+`log.jsonl` record carries `testPolicy` and `testChangesReviewed`, plus
+`holdPolicy` on a held record. `summary.md` has a policy line.
 
 ## 📊 Configuration Defaults
 

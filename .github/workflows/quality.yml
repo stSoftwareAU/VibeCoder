@@ -15,8 +15,9 @@ name: Quality
 # collide with its siblings' and cancel them.
 #
 # Not gated, exactly as today's ruleset: dependency-audit (path-filtered),
-# dependency-review (advisory), and inside validate-scripts the integration
-# tests (continue-on-error) and milestone-resurrection (milestone PRs only).
+# dependency-review (advisory), cargo-audit (advisory), and inside
+# validate-scripts the integration tests (continue-on-error) and
+# milestone-resurrection (milestone PRs only).
 
 on:
   pull_request:

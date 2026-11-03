@@ -10,10 +10,15 @@
  *   2. docs/pr-summary-{issueNumber}.md (legacy loose location)
  *   3. .pr_summary (legacy root-level fallback)
  *
+ * Two readers share this precedence. loadPrSummary reads the working tree.
+ * loadCommittedPrSummary reads a commit and never consults the working tree
+ * (Issue #4712), so a PR body built from it matches the pushed head.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { Result } from "../types.ts";
+import type { GitCommandOutput, runGitCommand } from "./git_timeout.ts";
 import { markdownLogicalUnits } from "./markdown_code_spans.ts";
 
 /** Result of loading a PR summary file. */
@@ -23,7 +28,27 @@ export interface PrSummaryResult {
 }
 
 /**
+ * Candidate PR summary paths for an issue, in precedence order.
+ *
+ * Shared by the working-tree reader and the committed reader so the two
+ * cannot drift apart.
+ *
+ * @param issueNumber - The issue number to look up
+ * @returns Repo-relative paths; the first one with content wins
+ */
+export function prSummaryCandidatePaths(issueNumber: number): string[] {
+  return [
+    `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
+    `docs/pr-summary-${issueNumber}.md`,
+    ".pr_summary",
+  ];
+}
+
+/**
  * Load PR summary content from the repo work directory.
+ *
+ * Reads the working tree, so uncommitted edits and untracked files are seen.
+ * Use {@link loadCommittedPrSummary} when the content must match a commit.
  *
  * Checks three file locations in precedence order and returns the
  * content from the first non-empty file found, with standalone project-bump
@@ -37,13 +62,7 @@ export async function loadPrSummary(
   repoPath: string,
   issueNumber: number,
 ): Promise<Result<PrSummaryResult>> {
-  const candidates = [
-    `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
-    `docs/pr-summary-${issueNumber}.md`,
-    ".pr_summary",
-  ];
-
-  for (const relativePath of candidates) {
+  for (const relativePath of prSummaryCandidatePaths(issueNumber)) {
     const fullPath = `${repoPath}/${relativePath}`;
     try {
       const content = await Deno.readTextFile(fullPath);
@@ -71,6 +90,91 @@ export async function loadPrSummary(
   }
 
   return { ok: true, value: { content: "", source: "not_found" } };
+}
+
+/**
+ * Load PR summary content as committed at a commit (Issue #4712).
+ *
+ * The committed-at-a-sha counterpart of {@link loadPrSummary}. It reads
+ * history through git and never consults the working tree, so uncommitted
+ * edits, untracked files and deleted files cannot change the result. The
+ * candidate order and version-bump normalisation match loadPrSummary.
+ *
+ * A failed object read is an error, not "no summary": the load fails loudly.
+ *
+ * @param repoPath - Absolute path to the repo work directory
+ * @param issueNumber - The issue number to look up
+ * @param sha - Full commit sha to read at; validated before it reaches git
+ * @param runGit - The git runner (runGitCommand in production)
+ * @returns Result with the summary content and source path, or empty content with "not_found"
+ */
+export async function loadCommittedPrSummary(
+  repoPath: string,
+  issueNumber: number,
+  sha: string,
+  runGit: typeof runGitCommand,
+): Promise<Result<PrSummaryResult>> {
+  if (!/^[0-9a-f]{40,64}$/.test(sha)) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to read PR summary: invalid commit sha ${
+          JSON.stringify(sha)
+        }`,
+      ),
+    };
+  }
+
+  for (const relativePath of prSummaryCandidatePaths(issueNumber)) {
+    const listed = await runGit(
+      ["ls-tree", "-z", "--name-only", sha, "--", relativePath],
+      { cwd: repoPath },
+    );
+    if (!listed.ok || listed.value.code !== 0) {
+      return {
+        ok: false,
+        error: committedReadError(relativePath, sha, listed),
+      };
+    }
+    if (listed.value.stdout === "") continue;
+
+    const shown = await runGit(["show", `${sha}:${relativePath}`], {
+      cwd: repoPath,
+    });
+    if (!shown.ok || shown.value.code !== 0) {
+      return {
+        ok: false,
+        error: committedReadError(relativePath, sha, shown),
+      };
+    }
+    const content = shown.value.stdout;
+    if (content.trim().length > 0) {
+      return {
+        ok: true,
+        value: {
+          content: normaliseSummaryVersionBumps(content),
+          source: relativePath,
+        },
+      };
+    }
+  }
+
+  return { ok: true, value: { content: "", source: "not_found" } };
+}
+
+/** Build the fail-loud error for a committed read that did not succeed. */
+function committedReadError(
+  relativePath: string,
+  sha: string,
+  result: Result<GitCommandOutput>,
+): Error {
+  const detail = result.ok
+    ? result.value.stderr.trim().split("\n")[0] ||
+      `git exited ${result.value.code}`
+    : result.error.message;
+  return new Error(
+    `Failed to read PR summary at ${relativePath} in commit ${sha}: ${detail}`,
+  );
 }
 
 export function normaliseSummaryVersionBumps(content: string): string {

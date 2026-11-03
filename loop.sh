@@ -431,7 +431,7 @@ running_vibe_container() {
             }'
 }
 
-# Terminate a wedged container and its matching runtime helper.
+# Recover a wedged container, signalling its client only while its identity holds.
 force_stop_container() {
     local name="$1"
     [[ -z "${name}" ]] && return 0
@@ -447,13 +447,23 @@ force_stop_container() {
         return 0
     fi
 
-    echo "loop.sh: ${name} survived the runtime kill — terminating the client"
-    local client
-    client="$(pgrep -f "container run .*--name ${name}( |$)" 2>/dev/null | head -1 || true)"
-    if [[ -n "${client}" ]]; then
-        kill -TERM "${client}" 2>/dev/null || true
-        sleep 5
-        kill -KILL "${client}" 2>/dev/null || true
+    echo "loop.sh: ${name} survived the runtime kill — checking client identity"
+    local client client_pattern client_start current_start
+    client_pattern="container run .*--name ${name}( |$)"
+    client="$(pgrep -f "${client_pattern}" 2>/dev/null | head -1 || true)"
+    if [[ "${client}" =~ ^[0-9]+$ ]]; then
+        client_start="$(ps -p "${client}" -o lstart= 2>/dev/null | awk '{$1=$1; print}')"
+        current_start="$(ps -p "${client}" -o lstart= 2>/dev/null | awk '{$1=$1; print}')"
+        if [[ -n "${client_start}" && "${current_start}" == "${client_start}" ]] && \
+           pgrep -f "${client_pattern}" 2>/dev/null | grep -Fxq "${client}"; then
+            kill -TERM "${client}" 2>/dev/null || true
+            sleep 5
+            current_start="$(ps -p "${client}" -o lstart= 2>/dev/null | awk '{$1=$1; print}')"
+            if [[ "${current_start}" == "${client_start}" ]] && \
+               pgrep -f "${client_pattern}" 2>/dev/null | grep -Fxq "${client}"; then
+                kill -KILL "${client}" 2>/dev/null || true
+            fi
+        fi
     fi
 
     # Reuse the watchdog's process selector: only runtime executables whose

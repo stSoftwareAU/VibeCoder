@@ -10,7 +10,7 @@ import {
   configureBabysitterLockTrust,
   writeBabysitterAppConfig,
 } from "../lib/fleet_babysitter_app.ts";
-import { checkBabysitterCodexVersion } from "../lib/fleet_babysitter_sandbox.ts";
+import { ensureBabysitterCodex } from "../lib/fleet_babysitter_codex.ts";
 import { fetchWithTimeout, runWithTimeout } from "../lib/subprocess_timeout.ts";
 import { escapeXml } from "../lib/xml_escape.ts";
 import {
@@ -118,7 +118,7 @@ async function main(): Promise<number> {
   for (const binary of ["git", "rtk"]) {
     await command(binary, ["--version"]);
   }
-  await checkBabysitterCodexVersion();
+  await ensureBabysitterCodex(home);
   await runGhCommand(["--version"]);
   if (checkOnly && !argument("app-id")) {
     throw new Error("--check requires --app-id");

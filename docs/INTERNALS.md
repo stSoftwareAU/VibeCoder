@@ -1116,6 +1116,281 @@ This sidecar only ever describes one host; an operator who wants an `issue`-phas
 run to measure or compare behaviour across the whole fleet configures
 `fleet_run_archive` (see [Fleet Run Archive](CONFIGURATION.md#-fleet-run-archive)).
 
+### 📊 PR completion evidence report (Issue #4658)
+
+`deno task pr-completion-report --input <snapshot.json>` reads a normalised,
+read-only evidence snapshot and emits dated JSON. `deno task
+pr-completion-report --collect` builds that snapshot itself and reports on it.
+Exactly one of `--input` and `--collect` is required. Neither mode performs
+GitHub writes or changes host configuration. `--collect` writes only the
+optional `--write-snapshot <path>`, which holds the collected input so a later
+`--input` run reproduces the same report, plus whatever `verifyAllChains` settles
+in an audit directory it sweeps (an interrupted append, Issue #1074; see
+**Limits**). A `--input` snapshot is not authenticated.
+
+`--collect` reads these sources, all read-only. The audit journals are the
+verified fleet source; the review-fleet-prs log is a lower-trust source, set
+out under **Review-fleet-prs log** below:
+
+- **GitHub**, through `gh api` GETs only, for each repository in `--repos`
+  (default `config.repos`): the default branch; the pull requests created in
+  `[start, end)` (`--start` and `--end`, default the fourteen days ending now),
+  paged newest first; each cohort PR's reviews, issue events and commits; and
+  check runs for merged PRs.
+- **Audit journals** in each `--audit-dir` (default the resolved audit
+  directory). Each directory's chains are verified with `verifyAllChains`, the
+  sweep `audit-chain-verify` runs at startup, and each journal is read with
+  `loadEntries`.
+- **Review-run records**: `<round>/review-run.json` under each
+  `--review-run-dir`.
+- **Lifecycle ledgers** named by `--lifecycle-ledger`.
+- **Babysitter heartbeats**: `deployment-health.json` under each
+  `--babysitter-state-dir`.
+- **Review-fleet-prs log**: each `log.jsonl` named by `--review-log`
+  (comma-separated, one per host). Lower trust; see below.
+
+The expected deployment comes from `--expected-components` (default
+`worker,reviewer,babysitter`), `--expected-revision` (default
+`VIBE_BUILD_COMMIT`; the command fails when neither is set), the policy
+fingerprint from `fingerprintWorkerReviewPolicy(config)`, and
+`--max-heartbeat-age-hours` (default 24).
+
+**Cross-host evidence.** The command reads only the audit directories it is
+given. To include another host, export that host's journal directory and pass
+it in `--audit-dir a,b`. An action repeated across directories is counted once,
+and its verified copy is kept. A host whose journals are not supplied is
+invisible to the report. Journals are authenticated only by chain verification:
+if any directory's chains fail, or a directory has no journals, every PR's
+`actionsComplete` is false. Only `audit-*.jsonl` filenames are covered by the
+chain sweep. Other JSONL files contribute unverified actions and a coverage
+note, and make the directory incomplete, even beside valid journals.
+
+**Match rule.** Reviews and dismissals match one verified fleet action of the
+same kind on the same PR within ten minutes. Each commit is attributed to the
+first confirmed, verified implementation or repair push whose recorded
+`deliveredCommits` contains that commit, at or after its committer date within
+the PR lifetime. The git chokepoint reads the remote branch head before pushing
+and enumerates the old-to-local commit range. For a new destination it excludes
+history already in that remote's tracking refs. This range is recorded even for
+a failed push, but only a confirmed push can account for commits.
+A confirmed fleet branch-update call
+accounts for only one commit within ten minutes either side of the call,
+including GitHub's asynchronous update commit. Earlier unmatched commits remain
+unknown. A branch update does not count as a fix round. Only confirmed reviews
+and repair pushes count as review and fix rounds; a rejected push and its
+successful recovery retry count as one fix round. Failed fleet attempts remain
+verified history but cannot match a GitHub event or provide implementation or merge evidence. One
+push can deliver several commits, including commits
+made long before the completion gate finishes. An earlier owner commit already
+on the remote is excluded from a later fleet push's range. Legacy pushes without
+delivery evidence, unsupported push forms and shallow or unavailable history
+leave commits unknown rather than falling back to time-based attribution.
+
+**Merge window.** Auto-merge journals the merge when it is armed, which can be
+hours before GitHub records `mergedAt`. So a fleet `merge` action matches a
+merge event when its timestamp lies from the PR's creation to ten minutes after
+`mergedAt`. An armed merge stamped before the PR existed does not match, nor
+does one stamped more than ten minutes after the merge. A verified, successful
+fleet disarm between the arm and GitHub's merge invalidates that arm. A later
+re-arm can match; failed disarms do not withdraw an arm.
+
+**Push linking.** Production writes `git-push` entries with no repository, only
+the push target. Such a push links across every supplied repository by branch
+name. The name is the target, or the part after the `:` of a refspec, with
+`refs/heads/` removed. The push links only when that name belongs to cohort PRs
+in a single repository and the push falls inside the PR's lifetime: from its
+first commit (or creation if earlier) less ten minutes, to its merge, close or observation, plus ten
+minutes. The latest PR created on the branch wins. A push that carries a
+repository links within that repository under the same lifetime rule.
+Pushes whose target is `HEAD` cannot be linked, because the journal does not
+record the branch `HEAD` names. Empty or `-`-prefixed targets cannot be linked
+either, and nor can a branch name shared by PRs in two repositories. An unlinked
+push leaves its commits as `unknown` actions.
+
+**Review-fleet-prs log (lower trust).** The review-fleet-prs skill posts its
+reviews through its own `gh` calls, which do not pass the audit hook, so no
+audit action records them. After each post, the skill appends one line to its
+`log.jsonl` (`LOG_FILE` in `.claude/skills/review-fleet-prs/scripts/review_log.ts`,
+in the skill's state directory, `stateDir()`). `--review-log <log.jsonl,...>`
+reads those files, one per host, with `parseLog`. The review-log contract and
+parser live in `worker/deno/lib/fleet_review_log.ts`, shared by the collector
+and the skill, which re-exports them. There is no worker-to-skill import. Each record carries `at`, `repo`, `number` and `headSha`, and an
+`outcome` of `approved`, `changes_requested` or `held`. Each is a posted GitHub
+review: a held PR is posted as a COMMENTED review.
+
+A record for a cohort PR becomes a verified fleet `review` action with actor
+`fleet`, outcome `confirmed` and the ID `review-log:<repo>#<number>:<at>`. The
+same record in two logs is one action. It matches a GitHub review event within
+ten minutes, as an audit action does. Matching uses the repository, the PR
+number and the time only. A review posted at an older head still matches, so the
+record's head SHA is not carried because nothing uses it. An action links to
+its PR by repository and number whatever head it was recorded at.
+Records for PRs outside the cohort are ignored. A missing or unreadable file,
+and a malformed line, are coverage notes; the rest of the log is still used.
+
+**This log is not hash-chained or tamper-evident.** The audit-chain verification
+(`verifyAllChains`) does not cover it. It is trusted at the same level as the
+lifecycle ledger and the review-run records: the fleet account's own record,
+not a journal that the chain protects. A record can therefore make a review
+event verified, and so help a PR count as unattended. The review-fleet-prs
+skill still does not journal to the audit chain. A PR whose GitHub review
+events have neither an audit action nor a review-log record stays unknown. With
+no `--review-log` and any GitHub review event in the cohort, the coverage notes
+say `N review events on M PRs had no review-log source`.
+
+**Dismissals.** The review-fleet-prs skill makes no dismissal call; its `gate.ts`
+comments only describe the worker's dismissals. The worker dismisses a review
+once its run reaches a conclusive outcome (`retireReview` in
+`worker/deno/lib/pr_feedback_processor.ts`), through `markCommentProcessed` in
+`worker/deno/lib/pr_comments.ts`, which PUTs
+`repos/<repo>/pulls/<n>/reviews/<id>/dismissals`. That call goes
+through `defaultGhCommand`, `runGhOrThrow` and `spawnGh`, the `gh` chokepoint
+the audit hook sits on, so it is journalled. `actionKindFor` in `audit_hook.ts`
+labels that PUT (`…/reviews/<id>/dismissals`) as kind `dismissal`, and records
+the PR number. A PUT to `…/reviews/<id>` with `state=DISMISSED` is also kind
+`dismissal`. The review-fleet-prs skill makes no dismissal call, so it has none
+to journal.
+
+**Unknown, never human.** A GitHub event with no matching verified fleet action
+becomes an `unknown` action: unverified, outcome unknown, with the ID
+`gh:<repo>#<number>:<kind>:<id>`. GitHub logins are never read, so no login
+makes an action human or fleet.
+
+**Owner gates.** `ownerGateVerified` is always false today, because no hold
+marker is recorded yet. A PR labelled `needs-human` is recorded as
+`ownerGated` but stays in the eligible denominator.
+
+**Blockers produced.** `needs-human` (from the label, open until it is removed)
+and `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
+commit, approval or dismissal). CI-failing and hold blockers are not produced
+yet.
+
+**Regression heuristic.** A cohort PR whose title opens `Revert "…"`, or whose
+title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
+when `N` is a merged cohort PR. It is detected at the earliest such revert and
+is resolved when that revert merged. Reverts of PRs outside the cohort are not
+observed. Each pattern reads a bounded slice (a title's first 1,000 characters,
+a body's first 20,000) and has no nested or overlapping quantifiers, so each
+runs in linear time over its slice. The tests feed long hostile titles and
+bodies to each pattern and assert the exact result.
+
+**Rollup derivation.** A milestone PR (base `milestone/…`) gets a `rollupRoot`
+by ref only, never from its text. The root is the single cohort PR whose head
+is that milestone branch and whose base is the repository's default branch.
+Zero such PRs, or more than one, leave the root unset, and a PR is never its own
+root. The report counts a merged milestone PR with a root as an intermediate
+rollup, not a delivered change, so the root's merge is the one delivery.
+
+**Truncation.** Pull requests are read newest first until the page holding the
+cohort's oldest PR, up to 500 per repository. `--max-prs-per-repo <n>` sets that
+cap to a positive integer. A repository that reaches the cap is listed as
+truncated: the command prints a `TRUNCATED` line, returns the repository in its
+data, and records it in `coverage.truncatedRepos`. The same field is written
+into `--write-snapshot`, so an `--input` replay reports the truncation too.
+Paged event lists stop after ten pages, which is a coverage note. Every missing,
+unreadable or malformed local file is a coverage note, not a silent drop.
+
+**CI scope.** CI minutes come only from the final head SHA's check runs of each
+merged PR. Check runs on earlier pushes are not counted. A coverage note says so
+whenever a merged PR is collected.
+
+**Deployments.** A babysitter heartbeat is kept whatever its age, so the report
+can call it stale. Review-run and ledger rows older than the heartbeat window
+are not counted, and one note says how many were excluded. A ledger row is
+timed by its `recordedAt`.
+
+**Rollout check** (`--rollout-verified-at`). A stranded PR was created before
+the verification instant, was still open at it (no merge or close at or before
+it), was at least 24 hours old at it, and is not labelled `needs-human`. A PR
+that merged after the instant is therefore still stranded, and is listed with
+its rediscovery and processing. It is rediscovered when a verified fleet action
+on it has a timestamp at or after that instant. It is processed when such an
+action is confirmed and is not of kind `unknown`. The check only reads
+ordinary-discovery evidence: it runs no discovery and writes nothing. PRs
+created before `cohort.start` are invisible to the check; an operator who needs
+them widens `--start`.
+
+**Limits.** `verifyAllChains` is the sweep `audit-chain-verify` runs at
+startup. It can settle an interrupted append in a journal it sweeps
+(Issue #1074), so `--collect` does not promise zero writes to a journal left
+mid-append. CI durations are fetched only for merged PRs, because the report
+counts CI only for delivered changes.
+
+**Accepted limits.** These are known and not mitigated in this change:
+
+- The host babysitter has no `WORK_DIR`, which the audit hook requires to
+  enable journalling. Its repair pushes and review dismissals are never
+  journalled, so babysitter-repaired PRs stay unknown under `--collect`.
+  Deployment heartbeats do not provide mutation provenance.
+- A merge armed by the fleet (`gh pr merge --auto`) and completed later by a
+  person is attributed to the fleet. The audit entry cannot see who clicked
+  merge, so verified human-merge detection is not produced.
+- Deployment rows are grouped per component, not per host. One host's missing
+  heartbeat is hidden while another host of the same component reports. The
+  operator supplies per-host state directories and checks the `coverage notes`.
+- Builds older than this change cannot verify journal entries that carry the
+  new fields, nor read ledger rows that carry `reviewPolicyFingerprint`. Upgrade
+  every host before exporting journals across them.
+- `ownerGateVerified` is always false from `--collect`, so an owner-gated PR
+  stays in the completion denominator (conservative). The rollout's stranded
+  set excludes `needs-human` PRs on the label alone, so the two rules differ:
+  a `needs-human` PR is counted in the denominator and left out of the stranded
+  list.
+
+GitHub responses are read strictly. A key GitHub always sends (for example
+`merged_at`, `closed_at`, `labels`, `body`, or a review's `state`) that is absent
+fails the collection, naming the PR and field. Only the explicit empty value
+(`null`, or `[]` for labels) means none.
+
+The snapshot carries explicit UTC `cohort.start`, `cohort.end` and
+`cohort.observedAt` values. PR observations deduplicate by `repo#number`; each
+action also has a stable action ID, run and component identity, timestamp,
+outcome and PR number. `headSha` is optional and is not used for linking: an
+action links to its PR by repository and number whatever head it was recorded
+at, so a verified repair at an earlier head still counts toward the PR's history.
+Absent source coverage remains unknown. A report labels a merged PR unattended only when the recorded action
+history is complete, verified, contains both implementation or repair and
+merge actions, and contains no verified human action. A GitHub user login does
+not change that result. Older ledger entries remain readable but do not gain
+fabricated provenance.
+
+The report keeps stalled and closed-unmerged PRs in the eligible denominator,
+counts owner-gated PRs separately only when their gate evidence is verified,
+and returns `null` for proportions with no denominator. It separates default
+branch deliveries from milestone PRs and intermediate rollup PRs. CI minutes
+are unavailable when a delivered change has a run without a duration. Post-
+merge regressions and unresolved attribution remain separate from merge speed.
+`targetEvaluation` stays pending until a verified rollout has a complete
+fourteen-day window; it reports the provisional 90% target and never gates a
+merge. The repeatable `rollout` counts distinguish eligible stranded PRs,
+rediscovery and processing.
+
+Deployment observations come from the lifecycle ledgers, review-round records
+and babysitter heartbeats named above. Each stores a code revision and the same
+SHA-256 fingerprint over a fixed allowlist of resolved policy settings:
+`issue_executor_split`, `issue_sub_agent_tier`, `issue_reviewer_agents`,
+`external_orchestration`, and `resolved_repo_policies`, which holds each
+repository's resolved executor split, sub-agent tier and `skipAutoMerge`. No
+credentials or raw configuration enter the fingerprint, and changing any
+allowlisted setting changes it. The expected value is computed from the current
+configuration at collection time, so fingerprints recorded by older builds
+report as a policy mismatch until each component writes a new one. Review-run
+records written before the `deployment` field existed contribute no row, and one
+note counts them. Missing or stale heartbeats,
+unknown revisions, policy mismatches and mixed observations make deployment
+status degraded. The report never repairs deployment state or changes the ordinary discovery
+path. The trusted update route remains the existing
+[`worker-checkout-update` launcher step](#-entry-point-runsh--runps1).
+
+```mermaid
+flowchart LR
+    G[GitHub PR observations] --> S[Evidence snapshot]
+    A[Verified audit and round records] --> S
+    H[Worker, reviewer, babysitter heartbeats] --> S
+    S --> R[Read-only PR completion report]
+    R --> T[Fourteen-day rollout evaluation]
+```
+
 ### 🧾 Lifecycle ledger and issue assignment (Issue #3718)
 
 Part of #3644. Before the first agent invocation of an `issue`-phase run, the
@@ -2844,6 +3119,30 @@ flowchart TD
     style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
+### ⏩ One push per fix: the base rides along (`git_push.ts`)
+
+Every push to an open, ready PR runs the whole CI (`pull_request`
+`synchronize`). A fix pushed onto a branch that is behind its base leaves the
+PR `BEHIND`, and the update-branch request that follows runs CI a second time
+for the same fix. Pushes before `gh pr create` start no workflow, so the new-PR
+path can merge and push freely; once the PR exists, the base must go out in the
+same push as the fix (owner rule 2026-11-03).
+
+- **Repair passes** (CI fix, review feedback, spelling) pass the PR's base as
+  `syncBaseBranch` to `commitAndPushPending`. After its gates and just before
+  the push, `mergeBaseBeforePush` merges that base in through the PR-raise
+  sync's own `ensureBranchCurrent` and `mergeOntoBase`: a plain merge commit,
+  never a rebase or force-push. It acts only when there is a fix to push to a
+  branch already on origin, so a pass with no fix pushes nothing. A conflict
+  is aborted and the fix is pushed as before; the conflict lane takes over. A
+  gated head's milestone-fix branch is left alone, because its PR targets the
+  head, not the head's base. `prBaseForSync` supplies the base: the one the
+  caller knows, else `gh pr view --json baseRefName`, else none.
+- **New PRs** are brought up to date by the PR-raise sync before the first
+  push, and checked once more just before `gh pr create`: the base can move
+  while the gates run. When it has, the base is merged in and pushed then,
+  while no PR exists and the push costs no CI.
+
 ### 🔁 One-pass merge for a declined branch (`branch_conflict_pass.ts`)
 
 `ensureBranchCurrent` in `branch_currency.ts` is deliberately not a
@@ -3106,9 +3405,11 @@ A build refused by the ephemeral cargo root's budget is a different case: with
 the host above its floor, a conflict-free merge or a deterministically resolved
 one in a cargo-only tree lands without the cargo build. A Deno-only tree and a
 mixed tree keep their Deno checks and suites and are rolled back when those are
-red. A conflict that needs the agent on a cargo tree is charged on the second
-over-budget cycle, so the recovery ladder applies (Issue #4326,
-see
+red. A conflict that needs the agent on a cargo tree is not landed while the
+cargo root is over budget: that cycle is not charged, does not climb the
+recovery ladder and is not counted toward the refusal ceiling
+(`refusedCycles`), so the branch waits for the host's disk
+(Issues #4326, #4588, see
 [HOST_DISK_BUDGET merges without the build](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326)).
 
 See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
@@ -3220,6 +3521,18 @@ first configured issue label for automatic discovery.
 existing issues with the same title (across all states — open + closed). The
 summary PR body includes a `Closes #N` reference so the tracking issue is
 automatically closed when the PR merges.
+
+**Closed-issue rollup classification** — each closed milestone issue is claimed
+when a merged PR either has the canonical `(Issue #N)` / `(#N)` title reference
+or has a same-repository `issue-N` head branch. The branch lookup recovers
+adopted agent PRs whose titles predate canonical title repair; fork heads,
+other issue numbers and milestone sync branches do not claim the issue. The
+merged PR must also postdate the issue's latest reopen, and an unreadable issue
+timeline remains flagged for review.
+If either PR search fails and the other finds no delivery, the issue is flagged
+as an unreadable PR search. No verdict from partial search results is cached,
+even when the available delivery predates a reopen, so a later scan retries the
+failed lookup with the same issue update timestamp.
 
 **Idempotency** — `has_existing_milestone_summary_pr()` prevents duplicate final
 PRs by checking for PRs with the milestone branch as head ref across all states
@@ -5412,6 +5725,26 @@ flat transient decision and the issue takes no `failed-once` mark. The other
 preflight refusals (CLI not runnable, fixed-price subscription, metered
 credentials) are not covered and stay `worker-crash`.
 
+#### An orchestrated issue run records every provider call's stats (Issue #4595)
+
+`runOrchestratedIssueRun` (`worker/deno/lib/orchestration/issue_run_gate.ts`)
+still returns one result: the last manager (review) call on `done`, or the
+runner's timed-out call on a timed-out run. It now carries the stats of every
+other provider call in `orchestrationCalls`: the plan and executor calls, in
+call order, plus any earlier attempt of a retried call (from its
+`invocationStats`). `recordClaudeRunStats` records each as its own
+`state.claudeRunStats` entry before the returned result's, so the issue's
+cost/model comment and the fleet figures from `measureIssuePhaseRun` (USD,
+duration, models, degradation) cover the whole run rather than the review
+alone. A run that is not orchestrated has no `orchestrationCalls`, so its
+records are unchanged. The CodeGraph and Graft query tallies are not extended:
+they still read the returned call only.
+
+Earlier calls' recorded stats omit `refusals`: the safety-refusal policy still
+reads only the returned call, preserving the existing execute-phase outcome.
+Their original results are unchanged, and their tokens, models and durations
+remain included in the cost/model comment and fleet figures.
+
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 
 The completion phase's pre-push gate (`gateBeforePush()` in
@@ -5843,8 +6176,8 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts)                                                 | Dependency resolution and cycle detection                                                                                                                                                                                       |
 | **PR management**           |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                                                            |
-|                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from its pr-summary file after a fix run when the summary differs from the digest recorded in the body (Issues #3089, #3315; Issue #3678: files the follow-up when a fix run newly reports a gap); also adopts a marker-less agent-raised PR on the run's own `issue-<N>` branch (Issue #3804), and is called by the Priority 1.64 reconcile pass (Issue #3760) |
-|                             | [agent_pr_adoption.ts](../worker/deno/lib/agent_pr_adoption.ts) | Adopts the agent-raised PR on the run's own `issue-<N>` branch at every issue-run completion exit, rebuilding its body with the worker marker and digest (Issue #3804) |
+|                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from its pr-summary file after a fix run when the summary differs from the digest recorded in the body (Issues #3089, #3315; Issue #3678: files the follow-up when a fix run newly reports a gap); also adopts a marker-less agent-raised PR on the run's own `issue-<N>` branch (Issue #3804) from the summary committed at the verified pushed head, skipping if that head moved or the commit has no summary (Issue #4712), and is called by the Priority 1.64 reconcile pass (Issue #3760) |
+|                             | [agent_pr_adoption.ts](../worker/deno/lib/agent_pr_adoption.ts) | Adopts the agent-raised PR on the run's own `issue-<N>` branch at every issue-run completion exit, rebuilding its body with the worker marker and digest (Issue #3804) from the summary committed at the verified pushed head, not the working tree, and skipping if that head moved or the commit has no summary (Issue #4712), and repairing a noncanonical title reference (Issue #4621) |
 |                             | [pr_body_reconcile.ts](../worker/deno/lib/pr_body_reconcile.ts)                                                   | Priority 1.64 sweep: re-syncs an open fleet-authored PR body whose recorded `vibe-pr-summary` digest differs from the summary at its head after a push the worker did not make, rebuilding in a disposable shallow clone (Issue #3760) |
 |                             | [pr_body_sync_follow_up.ts](../worker/deno/lib/pr_body_sync_follow_up.ts)                                         | Files or reuses the parent's `idle-task` follow-up when a PR-body re-sync finds that a fix run newly reports a `partial` or `missing` criterion, after re-verifying the issue's content (Issue #3678)                           |
 |                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts) | Post-agent drift check on review-fix runs: model pass, change-request quotes, Test Plan recount and a mutation check, one recovery turn (Issues #3143, #3244, #3750). Docs-sweep and branch-outcome citation checks were removed (Issue #4234). |

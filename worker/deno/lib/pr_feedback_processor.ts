@@ -24,7 +24,7 @@ import {
 import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { resolvePreFlightSpec } from "./git_push.ts";
+import { prBaseForSync, resolvePreFlightSpec } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   commentCarriesOpenPreprReview,
@@ -227,6 +227,13 @@ export interface PrFeedbackProcessorDeps {
    * file.
    */
   claimAuthorOptions?: AlertDedupAuthorOptions;
+  /**
+   * Whether a fleet-trusted holder has a live branch-update lock on the PR
+   * (Issue #4707). When it answers true the run defers before claiming, so
+   * feedback never pushes beside the fleet PR babysitter or a takeover that
+   * holds the PR's head. Unset in tests that do not exercise the lock.
+   */
+  prUpdateLockHeldFn?: (repo: string, prNumber: number) => Promise<boolean>;
   /**
    * Override the remote push verification (Issue #579). Injected by tests so
    * the "a failed push produces no success claim" regression can be exercised
@@ -537,6 +544,29 @@ export async function processPrFeedback(
         summary: `PR #${prNumber} comment #${commentId} — ${
           prLiveSkipReason(liveState)
         }`,
+      },
+    };
+  }
+
+  // Issue #4707: another fleet worker holding the PR's branch-update lock is
+  // editing its head; a feedback push beside it would race that work. Defer
+  // before the claim, so the comment stays unclaimed for a later poll.
+  if (
+    processorDeps.prUpdateLockHeldFn &&
+    await processorDeps.prUpdateLockHeldFn(repo, prNumber)
+  ) {
+    logger.info("PR branch-update lock held by another worker; deferring", {
+      repo,
+      prNumber,
+      commentId,
+    });
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        summary:
+          `PR #${prNumber} comment #${commentId} — another worker holds the branch-update lock; deferred`,
       },
     };
   }
@@ -1680,11 +1710,28 @@ async function _processFeedbackWithHeartbeat(
       return checked;
     }
     : undefined;
+  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
+  // pushed, so the fix and the branch update reach GitHub in one push and CI
+  // runs once. Not for a gated head's fix branch, whose PR targets the head.
+  const syncBaseBranch = fixBranch === undefined
+    ? await prBaseForSync(
+      undefined,
+      repo,
+      prNumber,
+      (args) => deps.github.runGhCommand(args),
+      (message) => logger.warn(message),
+    )
+    : undefined;
+  const pushOptions = {
+    cwd: processorDeps.workDir,
+    expectedAncestor: beforeSha,
+    ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
+  };
   const finalise = () =>
     deps.git.commitAndPushPending(
       pushBranch,
       `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
-      { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+      pushOptions,
       false,
       preFlight,
       undefined,
@@ -1819,7 +1866,7 @@ async function _processFeedbackWithHeartbeat(
         const retryFinalise = await deps.git.commitAndPushPending(
           pushBranch,
           `Address PR #${prNumber} feedback\n\nRetry after push recovery (Issue #1643).`,
-          { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+          pushOptions,
           false,
           preFlight,
           undefined,

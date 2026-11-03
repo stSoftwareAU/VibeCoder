@@ -25,6 +25,7 @@ import { classifyRunFailure } from "../run_outcome_classifier.ts";
 
 import { redactSecrets } from "../secret_redaction.ts";
 import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
+import { fingerprintWorkerReviewPolicy } from "../pr_completion_report.ts";
 
 import type {
   ExternalOrchestrationSettings,
@@ -578,6 +579,7 @@ async function recordRunAssignment(
       trustedAuthors,
       ...(cohort ? { cohort } : {}),
       roles,
+      reviewPolicyFingerprint: await fingerprintWorkerReviewPolicy(config),
       ...(config.subscriptionAllocationLabel
         ? { subscriptionAllocation: config.subscriptionAllocationLabel }
         : {}),

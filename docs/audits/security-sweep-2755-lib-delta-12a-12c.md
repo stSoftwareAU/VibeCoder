@@ -275,7 +275,7 @@ re-derive them.
   any PR outside the push-capable fleet set (`out-of-scope-author`, on top of
   server-side `--author`), and every field passes `sanitiseIssueText`.
 - **`milestone_resolution_gate.ts` `bash quality.sh`** — repo-committed code
-  runs in the merged milestone-plus-default tree with the inherited env; both
+  runs in the merged milestone-plus-default tree with the inherited env (Issue #4659 since then: the gate spawns through `untrusted_gate_spawn.ts` with an allowlisted environment and no parent credential); both
   branches are writer-controlled and the `deno task`/`cargo test` steps beside
   it already run with the same trust, so no new boundary.
 - **`pr_issue_linking.ts` any-author merged PRs close linked issues** — the PR

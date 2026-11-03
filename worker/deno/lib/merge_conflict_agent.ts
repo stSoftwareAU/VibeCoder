@@ -80,8 +80,9 @@ export interface MergeConflictAgentRequest {
   logger: Logger;
   /**
    * The verification failure this run repairs (Issue #1965). Present only
-   * for a gate-repair run, where the merge is already resolved and committed
-   * and what failed is the check that runs before the push.
+   * for a repair run, where the merge is already resolved (committed, or
+   * staged when `repair.mergeStaged` is set) and what failed is the check
+   * that runs before the push.
    */
   repair?: MergeConflictRepairContext;
   /** The agent runner — `deps.claude.runClaudeWithRetry` in production. */

@@ -12,7 +12,10 @@ import {
   PR_REVIEW_CLAIM_LEASE_MS,
   withRenewedLease,
 } from "../lib/pr_review_claim_lease.ts";
-import { hasLivePrReviewClaim } from "../lib/claim_pr_comment.ts";
+import {
+  hasLivePrClaim,
+  hasLivePrReviewClaim,
+} from "../lib/claim_pr_comment.ts";
 
 // ---------------------------------------------------------------------------
 // withRenewedLease
@@ -395,4 +398,54 @@ Deno.test("hasLivePrReviewClaim is false when trustedAuthors is empty", async ()
   });
 
   assertEquals(result, false);
+});
+
+// Issue #4689: the babysitter defers to a worker's live claim on any comment
+// of the PR, not just one review.
+Deno.test("hasLivePrClaim is true for a live fleet lease on any comment of the PR", async () => {
+  const ghCommandFn = createReadStub([
+    {
+      ...leaseClaimRow(
+        301,
+        "worker-alpha",
+        FLEET_AUTHOR,
+        "2026-04-01T00:00:00Z",
+        "2026-04-01T00:09:00Z",
+      ),
+      body: "<!-- PR_COMMENT_CLAIM:worker-alpha:5730984779 -->\n" +
+        "<!-- PR_COMMENT_CLAIM_LEASE:2026-04-01T00:09:00Z -->",
+    },
+  ]);
+  assertEquals(
+    await hasLivePrClaim({
+      repo: "org/repo",
+      prNumber: 42,
+      ghCommandFn,
+      trustedAuthors: [FLEET_AUTHOR],
+      nowMs: NOW,
+      log: () => {},
+    }),
+    true,
+  );
+});
+
+Deno.test("hasLivePrClaim is false for a stale lease, a stranger or a failed read", async () => {
+  const options = (ghCommandFn: (args: string[]) => Promise<string>) => ({
+    repo: "org/repo",
+    prNumber: 42,
+    ghCommandFn,
+    trustedAuthors: [FLEET_AUTHOR],
+    nowMs: NOW,
+    log: () => {},
+  });
+  const stale = createReadStub([
+    leaseClaimRow(301, "w", FLEET_AUTHOR, "2026-03-31T23:00:00Z"),
+  ]);
+  const stranger = createReadStub([
+    leaseClaimRow(301, "w", "some-rando", "2026-04-01T00:09:00Z"),
+  ]);
+  const failed = createReadStub([], "HTTP 502");
+  assertEquals(await hasLivePrClaim(options(stale)), false);
+  assertEquals(await hasLivePrClaim(options(stranger)), false);
+  assertEquals(await hasLivePrClaim(options(failed)), false);
 });

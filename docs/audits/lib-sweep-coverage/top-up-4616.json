@@ -1,0 +1,12 @@
+{
+  "issue": 4616,
+  "chunk": "top-up-4616",
+  "title": "top-up: pre-push fast checks for merge-conflict resolution",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4616",
+  "definition": "The fast local checks (format, lint, type check, tests) run for the projects a base merge touched before the merge-conflict path pushes, with bounded repair rounds; a check that cannot run refuses the push, and environment faults are left to CI.",
+  "status": "claimed",
+  "sweptAt": "2c1142cf25e142956b4c003a4bf3495832ab92ea",
+  "paths": [
+    "worker/deno/lib/merge_fast_checks.ts"
+  ]
+}

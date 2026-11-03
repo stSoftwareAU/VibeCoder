@@ -114,6 +114,12 @@ export interface MutationRunInput {
    * nothing else beyond the allowlist does.
    */
   credentialEnv?: Record<string, string>;
+  /**
+   * `cargo mutants` flags taken from the repository's own CI job (Issue
+   * #4617): package, features and exclude/examine patterns, so the worker
+   * tries the mutants CI tries. Rust only.
+   */
+  cargoMutantsArgs?: readonly string[];
 }
 
 const DENO_MARKERS = ["deno.json", "deno.jsonc", "deno.lock"];
@@ -671,10 +677,11 @@ function parseOutcomes(text: string): ParsedOutcomes | null {
   for (const o of root.outcomes) {
     const outcome = asRecord(o);
     if (!outcome) return null;
+    if (outcome.scenario === "Baseline") continue;
     const scenario = asRecord(outcome.scenario);
-    if (!scenario) continue; // "Baseline"
+    if (!scenario) return null;
     const mutant = asRecord(scenario.Mutant);
-    if (!mutant) continue;
+    if (!mutant) return null;
     count++;
     const summary = outcome.summary;
     if (summary === "Unviable") {
@@ -686,7 +693,7 @@ function parseOutcomes(text: string): ParsedOutcomes | null {
       tested++;
       continue;
     }
-    if (summary !== "MissedMutant") continue;
+    if (summary !== "MissedMutant") return null;
     tested++;
     const line = Number(asRecord(asRecord(mutant.span)?.start)?.line);
     const file = typeof mutant.file === "string" ? mutant.file : null;
@@ -744,26 +751,32 @@ async function touchedPackages(
   repoPath: string,
   files: Iterable<string>,
   seams: MutationRunnerSeams,
-): Promise<string[]> {
+): Promise<{ names: string[]; complete: boolean }> {
   const names = new Set<string>();
+  let complete = true;
   for (const file of files) {
     if (!file.endsWith(".rs")) continue;
     let dir = dirOf(file);
+    let found = false;
     for (;;) {
       const manifest = dir === "" ? "Cargo.toml" : `${dir}/Cargo.toml`;
       const abs = await confinePath(repoPath, manifest, seams);
       if (abs !== null && await seams.exists(abs)) {
         const name = packageNameOf(await seams.readTextFile(abs));
         if (name !== null) {
-          if (PACKAGE_NAME.test(name)) names.add(name);
+          if (PACKAGE_NAME.test(name)) {
+            names.add(name);
+            found = true;
+          }
           break;
         }
       }
       if (dir === "") break;
       dir = dirOf(dir);
     }
+    if (!found) complete = false;
   }
-  return [...names];
+  return { names: [...names], complete };
 }
 
 /**
@@ -816,16 +829,50 @@ async function runRust(
         "repository (is target a symlink?); refusing to write it",
     };
   }
-  const packages = await touchedPackages(repoPath, added.keys(), seams);
+  const touched = await touchedPackages(repoPath, added.keys(), seams);
+  const packages = touched.names;
+  const ciArgs = input.cargoMutantsArgs ?? [];
+  const ciPackages = ciArgs.flatMap((arg, i) =>
+    arg === "--package" || arg === "-p" ? [ciArgs[i + 1] ?? ""] : []
+  );
+  const scoped = ciPackages.length > 0 && !ciArgs.includes("--workspace");
+  const outside = scoped && touched.complete && packages.length > 0 &&
+    ciPackages.every((p) => PACKAGE_NAME.test(p)) &&
+    packages.every((p) => !ciPackages.includes(p));
+  const args = outside
+    ? ciArgs.filter((arg, i) =>
+      arg !== "--package" && arg !== "-p" &&
+      ciArgs[i - 1] !== "--package" && ciArgs[i - 1] !== "-p"
+    )
+    : ciArgs;
+  const workerPackages = outside || (!scoped && !ciArgs.includes("--workspace"))
+    ? packages
+    : [];
   // cargo-mutants writes `mutants.out/` (outcomes, logs, diffs, lock) under
   // `--output`. Pointing that at a fresh directory outside the repository
   // keeps it out of the working tree (a recovery commit runs `git add -A`)
   // and means a stale copy can never be read as this run's.
   const made = await makeRunTempDir(seams);
-  if (!made.ok) return made.result;
+  if (!made.ok) {
+    return outside ? { ...made.result, ciOutsideScope: true } : made.result;
+  }
   const outDir = made.dir;
   try {
-    return await runCargoMutants(input, seams, diffPath, packages, outDir);
+    const result = await runCargoMutants(
+      { ...input, cargoMutantsArgs: args },
+      seams,
+      diffPath,
+      workerPackages,
+      outDir,
+    );
+    return outside ? { ...result, ciOutsideScope: true } : result;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      kind: "error",
+      reason,
+      ...(outside ? { ciOutsideScope: true as const } : {}),
+    };
   } finally {
     await seams.removeDir(outDir);
   }
@@ -847,6 +894,7 @@ async function runCargoMutants(
     [
       "mutants",
       ...packages.flatMap((p) => ["--package", p]),
+      ...(input.cargoMutantsArgs ?? []),
       "--in-diff",
       diffPath,
       "--output",

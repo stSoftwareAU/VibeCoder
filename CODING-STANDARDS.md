@@ -266,16 +266,45 @@ evidence that supported behaviour, an invariant, or a contract regressed.
 1. When a new test is warranted, write a failing test first that defines the
    expected behaviour.
 2. Implement the code to make the tests pass.
-3. Do not remove, skip, or weaken tests just to pass a gate. If a supported
+3. Do not remove, skip, or weaken tests just to pass a gate. The restriction is
+   against a clean build obtained by deleting useful tests, weakening
+   assertions, adding skips or lowering quality thresholds. If a supported
    contract changes, or a test pins only incidental implementation, update or
    remove the test deliberately and document the reason and remaining coverage.
+   Replacing or removing an obsolete test is approved by the owner: a test
+   change, or a test-file deletion, is never by itself a reason to hold a pull
+   request for a human. Independent review decides whether meaningful regression
+   protection remains (the fleet reviewer; the worker's pre-PR verifier applies
+   the same brief). For each substantive test change it establishes (1) which
+   old behaviour is obsolete or intentionally changed, (2) which required
+   behaviour remains, and (3) which replacement or existing coverage proves it.
+   For genuinely removed functionality, evidence that the behaviour and its
+   callers are gone is the relevant proof; a replacement test is never demanded
+   for it. Where applicable, a reproducible regression or mutation check shows
+   that the replacement fails without the fix. A boolean claim or a vacuous
+   assertion is not proof, and the implementer's own assertion is not
+   independent proof. Unjustified lost protection, deleting a failing useful
+   test, widening a range until it is tautological, adding a skip, removing an
+   uncovered negative case, lowering a threshold, a test-only implementation, a
+   blanket allowlist, or a reduced quality or security requirement is sent back
+   with a request for changes. Missing evidence is repaired or retried, never a
+   hold for a human. Only material uncertainty about the intended product
+   contract goes to the owner, and an explicit per-repo override
+   (`pr_reviewer_test_hold_repos`) keeps the owner hold for every meaningful test
+   change. The governing issue is the one the pull request closes, the validated
+   worker issue (the `issue-<N>-…` branch of a fleet pull request), or an
+   explicit anchored `Part of #N` line; its text is read from the issue itself,
+   and only when the issue's author is trusted. Arbitrary pull request prose is
+   never owner authorisation. No self-approval and no CI bypass: CI and an
+   independent approval remain required.
    **Change only what the issue changes.** When an issue alters part of what
    an existing test expects, edit that expectation and keep every other
    assertion the test made — a green gate before and after does not prove
    nothing was lost. Before raising the PR, go through the assertions your
    diff removes from each existing test (`git diff <base>...HEAD` over the
    edited test files). Each one needs an issue requirement that makes it
-   untrue, recorded in the PR summary. An assertion removed without one is a
+   untrue, or the replacement or existing coverage that still proves the
+   behaviour, recorded in the PR summary. An assertion removed without one is a
    blocking self-review finding: restore it, or move it to a test that still
    covers the behaviour and say where. The Test Plan table that used to block the pull request for this was removed (Issue #4234). The requirement
    shows the new value is right, not that the edited test still checks
@@ -887,8 +916,11 @@ not a reason. An outcome the linked issue asks a test for, in its acceptance
 criteria or Definition of done, cannot be `exempt (untestable)`. Name the
 search so a reviewer can check it (Issue #3428). The diff-scoped mutation
 check (Issue #3393, `docs/mutation-check.md`) reports any added line whose
-mutation the tests do not catch; it does not stop the pull request. A fix to
-an existing PR re-checks every branch its own commits add, not only those a
+mutation the tests do not catch; it does not stop the pull request, unless the
+repository's CI runs a blocking mutation job (Issue #4617). There a survivor that
+remains after the recovery turn holds the pull request as a draft that is not
+auto-merged; on the deferral path it is parked with `draft: true` and opened as a draft by the drain
+(`docs/mutation-check.md`). A fix to an existing PR re-checks every branch its own commits add, not only those a
 review finding named.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
@@ -1889,7 +1921,7 @@ At the end of your work, after all commits are complete, create
 for every PR summary — containing:
 
 1. **Summary** — What was changed and why, including `Part of #<n>` when the
-   `## Acceptance Criteria` block marks any criterion `missing`, otherwise
+   `## Acceptance Criteria` block marks any criterion `partial` or `missing`, otherwise
    `Closes #<n>`.
 2. **Spec** — The after-run record of what the diff alone cannot tell a
    reviewer, under `### Intent and Rationale`, `### Essential Design
@@ -1977,10 +2009,10 @@ issue and raises no PR. A closed or unreadable dependency does not defer;
 the committed run hands off to a human and raises no PR.
 The worker enforces this itself, not only a reviewer, because a PR into a
 milestone branch merges unreviewed on green CI (Issue #3177): a summary
-whose `## Acceptance Criteria` block marks any criterion `missing` is raised
+whose `## Acceptance Criteria` block marks any criterion `partial` or `missing` is raised
 as `Part of #<n>`, never `Closes #<n>`, and when it merges the worker leaves
 the issue open and queued, with its existing labels, so a later run finishes
-the missing criteria (Issue #4304).
+the unmet criteria (Issue #4304).
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits

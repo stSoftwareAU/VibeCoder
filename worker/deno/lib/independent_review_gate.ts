@@ -540,7 +540,7 @@ export function buildIndependentReviewComment(
       "⚠️ **Standards violation left standing.** This issue states no " +
       "acceptance criteria, but the PR summary's `## Standards Review` lists a " +
       "`violation` the gate refuses — a Standards finding is judged against the " +
-      "diff, whatever headings the issue uses (Issue #3761):",
+      "diff, whatever headings the issue uses:",
       "",
       problems,
       "",

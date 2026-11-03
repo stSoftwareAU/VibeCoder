@@ -97,7 +97,7 @@ const fsProbe: ServiceAccountEnvProbe = {
  * Expand a leading `~` to the supplied home directory, mirroring the
  * `load-config` export script (`commands/load_config.ts`).
  */
-function expandHome(path: string, home: string): string {
+export function expandHome(path: string, home: string): string {
   return path.replace(/^~/, home);
 }
 

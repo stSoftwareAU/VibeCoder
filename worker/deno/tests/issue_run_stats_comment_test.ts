@@ -28,6 +28,10 @@ import {
   tallyIssueCost,
 } from "../lib/issue_run_stats_comment.ts";
 import { formatUsd } from "../lib/cost_estimate.ts";
+import {
+  decideRefusalAction,
+  refusalsRecordedSince,
+} from "../lib/haiku_refusal_retry.ts";
 import { estimateCost } from "../lib/token_usage.ts";
 import type { GraftContextResult } from "../lib/graft_context.ts";
 import type { QualityGateAttemptOutcome } from "../lib/issue_run_stats_comment.ts";
@@ -50,6 +54,41 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+Deno.test("recordClaudeRunStats - orchestrated executor refusals do not change refusal action", () => {
+  const state = {} as PhaseState;
+  const refusal = { model: "claude-haiku-4-5", category: "cyber" };
+  const executor = claudeResult([refusal.model], { refusals: [refusal] });
+  recordClaudeRunStats(state, {
+    ...claudeResult(["claude-opus-4-8"]),
+    orchestrationCalls: [executor],
+  });
+  for (const tier of ["haiku", "sonnet"] as const) {
+    assertEquals(
+      decideRefusalAction({
+        tier,
+        refusals: refusalsRecordedSince(state.claudeRunStats, 0),
+        alreadyRetried: false,
+      }),
+      "none",
+    );
+  }
+  assertEquals(
+    state.claudeRunStats?.[0]?.runStats?.tokenUsage,
+    executor.runStats?.tokenUsage,
+  );
+  assertEquals(executor.runStats?.refusals, [refusal]);
+  const before = state.claudeRunStats!.length;
+  recordClaudeRunStats(state, executor);
+  assertEquals(
+    decideRefusalAction({
+      tier: "haiku",
+      refusals: refusalsRecordedSince(state.claudeRunStats, before),
+      alreadyRetried: false,
+    }),
+    "retry-on-sonnet",
+  );
+});
 
 function makeLogger(): Logger {
   return {
@@ -2016,4 +2055,68 @@ Deno.test("quality-gate stages line - follows the quality gate line and leaves i
 Deno.test("quality-gate stages line - a comment without stages is unchanged (Issue #3726)", () => {
   const without = commentWithQualityGate({ status: "failed" });
   assert(!without.includes("quality gate stages"));
+});
+
+Deno.test("recordClaudeRunStats - records an orchestrated run's earlier calls beside its returned result (Issue #4595)", () => {
+  const state = { claudeRunStats: [] } as unknown as PhaseState;
+
+  recordClaudeRunStats(state, {
+    ...claudeResult(["claude-opus-4-8"]),
+    orchestrationCalls: [
+      claudeResult(["claude-sonnet-4-6"]),
+      {
+        ...claudeResult(["claude-haiku-4-5"]),
+        fallbackModel: "claude-haiku-4-5",
+      },
+    ],
+  });
+
+  // One entry per provider call, the returned result last, none nested.
+  assertEquals(
+    state.claudeRunStats?.map((entry) => entry.runStats?.servedModels[0]),
+    ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-8"],
+  );
+  assertEquals(state.claudeRunStats?.[1]?.fallbackModel, "claude-haiku-4-5");
+  assertEquals(
+    state.claudeRunStats?.some((entry) => "orchestrationCalls" in entry),
+    false,
+  );
+});
+
+Deno.test("measureIssuePhaseRun - an orchestrated run's spend and duration include its executor call (Issue #4595)", () => {
+  const stats = (model: string, durationMs: number): PhaseClaudeResult => ({
+    runStats: {
+      servedModels: [model],
+      requestedModel: model,
+      wallClockMs: durationMs,
+      durationMs,
+      tokenUsage: {
+        inputTokens: 1_000_000,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+    },
+  });
+  const state = { claudeRunStats: [] } as unknown as PhaseState;
+  recordClaudeRunStats(state, {
+    ...stats("claude-opus-4-8", 3000),
+    orchestrationCalls: [
+      stats("claude-sonnet-4-6", 1000),
+      stats("claude-haiku-4-5", 2000),
+    ],
+  });
+  const reviewOnly = measureIssuePhaseRun({
+    phase: "issue",
+    claudeResults: [stats("claude-opus-4-8", 3000)],
+    subAgentTier: "sonnet",
+  });
+  const whole = measureIssuePhaseRun({
+    phase: "issue",
+    claudeResults: state.claudeRunStats ?? [],
+    subAgentTier: "sonnet",
+  });
+  assertEquals(whole?.durationSeconds, 6);
+  assertEquals(reviewOnly?.durationSeconds, 3);
+  assertEquals((whole?.usd ?? 0) > (reviewOnly?.usd ?? 0), true);
 });

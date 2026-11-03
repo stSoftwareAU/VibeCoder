@@ -126,7 +126,7 @@ import {
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
-import { requestBranchUpdate } from "./merge_block_escalation.ts";
+import { requestReadyBranchUpdate } from "./required_branch_checks_4613.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
@@ -457,6 +457,8 @@ import {
   setLiveTrustedAuthors,
   trustedAuthorsFor,
 } from "./trust_snapshot.ts";
+import { resolveRepoCredentials } from "./repo_credentials.ts";
+import { setGateCredentialSource } from "./untrusted_gate_spawn.ts";
 import { censusUntrustedLabelIssues } from "./census_untrusted_label_issues.ts";
 import {
   formatDerivedAuthorsFoldSummary,
@@ -726,6 +728,10 @@ export interface ProductionDepsOptions {
    * (Issue #3517).
    */
   autoMergeGhCommandFn?: (args: string[]) => Promise<string>;
+  /** GitHub runner for the blocking-PR stall pass and its guarded refresh. */
+  stallRepairGhCommandFn?: (args: string[]) => Promise<string>;
+  /** Stall-pass seam for exercising production repair wiring. */
+  stallRepairPassFn?: typeof runStallRepairPass;
 
   /**
    * The weekly-pace gate (Issue #1885). Production leaves it unset and gets
@@ -882,6 +888,27 @@ export async function createProductionRunCoreDeps(
   } catch {
     config = buildDefaultWorkerConfig();
   }
+  // The milestone gates run repository commands in a bare directory; give
+  // them the credentials that directory's repository declared (Issue #4659).
+  setGateCredentialSource(async (dir) => {
+    // The gates may run in a project nested in the clone, so the repository
+    // is the first segment below the work directory, not the last.
+    const prefix = `${workDir.replace(/\/+$/, "")}/`;
+    if (!dir.startsWith(prefix)) return {};
+    const name = dir.slice(prefix.length).split("/")[0];
+    const keys = Object.keys(config.repoConfig ?? {}).filter((key) =>
+      key.split("/")[1] === name
+    );
+    // Two repositories sharing a name cannot be told apart by directory.
+    const key = keys.length === 1 ? keys[0] : undefined;
+    if (key === undefined) return {};
+    const resolved = await resolveRepoCredentials(
+      key,
+      config.repoConfig?.[key]?.qualityCredentials,
+    );
+    if (!resolved.ok) throw resolved.error;
+    return resolved.value.env;
+  });
   // Apply phase model config overrides (Issue #1265)
   setPhaseModelConfigOverrides(config.phaseModelOverrides);
   // Apply phase effort config overrides (Issue #1403)
@@ -2582,6 +2609,19 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feeds the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #4707: defer while another fleet worker (the PR
+            // babysitter, a takeover) holds the PR's branch-update lock.
+            prUpdateLockHeldFn: (repo, prNumber) =>
+              prUpdateLockIsHeld(repo, prNumber, {
+                ghCommandFn: runGhCommand,
+                log: (message: string) => logger.warn(message),
+                authorOptions: {
+                  fleetAuthors: resolveEffectiveFleetPrAuthors(
+                    config.fleetPrAuthors,
+                    config.serviceAccounts,
+                  ),
+                },
+              }),
           },
         );
 
@@ -2982,6 +3022,18 @@ export async function createProductionRunCoreDeps(
           // push. A PR that merged inside the scan→push window is a no-op,
           // not the `(stale info)` push failure it used to be reported as.
           getPrState: makeGhPrStateFetcher(runGhCommand),
+          // Issue #4613: plain behind updates use GitHub's guarded refresh
+          // request and shared per-base owner; conflicts still use repair.
+          requestReadyRefresh: (repo, prNumber, base) =>
+            requestReadyBranchUpdate(
+              repo,
+              prNumber,
+              runGhCommand,
+              base,
+              undefined,
+              undefined,
+              { fleetAuthors: maintenanceAuthors },
+            ),
           // Issue #394: this lane works in its **own** worktree, never in the
           // shared `${WORK_DIR}/<repo>` clone. `setupRepo` opens with
           // `reset --hard` + `clean -fd` + `checkout <default>`, so running it
@@ -3524,7 +3576,7 @@ export async function createProductionRunCoreDeps(
     // -- Priority 1.63: Blocking-PR stall repair (Issues #4025, #2802) --
     async scanBlockingPrStalls() {
       try {
-        const scan = await runStallRepairPass({
+        const scan = await (options.stallRepairPassFn ?? runStallRepairPass)({
           repos: pollRepos,
           workOnLabel: config.workOnLabel,
           fleetAuthors,
@@ -3534,7 +3586,7 @@ export async function createProductionRunCoreDeps(
           authorisedCommenters: trustHolder.read().authorisedCommenters,
           config,
           needsHumanLabel: config.needsHumanLabel,
-          ghCommandFn: runGhCommand,
+          ghCommandFn: options.stallRepairGhCommandFn ?? runGhCommand,
           // Share the iteration-scoped cache: the watchdog reuses the
           // `issues_all` / `prs_${author}` entries other priorities
           // already fetched.
@@ -3550,29 +3602,18 @@ export async function createProductionRunCoreDeps(
             nowSeconds: () => Math.floor(Date.now() / 1000),
             // Runs under the pass's lease on this repository.
             syncBranch: async (target) => {
-              const setup = await setupRepo(target.repo, workDir);
-              if (!setup.success) {
-                return { ok: false, error: new Error(setup.message) };
-              }
-              const gitOptions = { cwd: setup.message };
-              const fetched = await runGitCommand(
-                buildFetchArgs("origin", target.baseRefName),
-                gitOptions,
-              );
-              if (!fetched.ok || fetched.value.code !== 0) {
-                return {
-                  ok: false,
-                  error: new Error(
-                    `Failed to fetch base branch '${target.baseRefName}'`,
-                  ),
-                };
-              }
-              return await updatePrBranch(
-                target.headRefName,
+              const result = await requestReadyBranchUpdate(
+                target.repo,
+                target.prNumber,
+                options.stallRepairGhCommandFn ?? runGhCommand,
                 target.baseRefName,
-                gitOptions,
-                "behind",
+                undefined,
+                undefined,
+                { fleetAuthors: maintenanceAuthors },
               );
+              return result.ok
+                ? { ok: true, value: "GitHub branch refresh requested" }
+                : result;
             },
             // Rerun the owning lane on this PR only; the lane takes its own
             // lease, which the pass has already given back.
@@ -3676,10 +3717,23 @@ export async function createProductionRunCoreDeps(
         // `mergeStateStatus`, so the sweep can see an armed PR whose head
         // has fallen behind its base.
         prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
-        // Issue #2462: the REST update-branch call the merge ladder already
-        // uses — reused as-is, never re-implemented here.
-        updateBranchFn: (repo, prNumber) =>
-          requestBranchUpdate(repo, prNumber, gh),
+        // Issue #4613: strict-base refreshes share required-check readiness
+        // and per-base ownership with the other updater lanes.
+        updateBranchFn: (repo, prNumber, base) =>
+          base
+            ? requestReadyBranchUpdate(
+              repo,
+              prNumber,
+              gh,
+              base,
+              undefined,
+              undefined,
+              { fleetAuthors: maintenanceAuthors },
+            )
+            : Promise.resolve({
+              ok: false,
+              error: new Error("PR base is unknown"),
+            }),
         // Issue #4424: an armed PR behind a merge queue is not updated — the
         // queue tests it against its future head and lands it.
         isMergeQueueBase: makeIsMergeQueueBase(gh),

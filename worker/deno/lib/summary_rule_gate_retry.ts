@@ -484,10 +484,11 @@ export async function recoverFromSummaryRuleBlock(
  * a **detached** checkout, where a commit would not reach the branch at all.
  *
  * A commit that cannot be made leaves the file on disk exactly as the recovery
- * wrote it — the pre-existing behaviour, and still enough for the PR body,
- * which is read from disk. So it does not fail the run; it is logged at
- * **error** with the consequence named, because a silent warning is how this
- * exact loss went unnoticed in the first place.
+ * wrote it — the pre-existing behaviour. Exit-time adoption reads the summary
+ * committed at the pushed head (Issue #4712), but a completion re-run can
+ * still publish the working-tree summary (Issue #4764). The failed commit does
+ * not fail the run; it is logged at **error** with the consequence named,
+ * because a silent warning is how this loss went unnoticed.
  *
  * The removed claim-correction turn used to call this after it wrote a
  * corrected summary (Issue #3324). That turn is gone (Issue #4234). A
