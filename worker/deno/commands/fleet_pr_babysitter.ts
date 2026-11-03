@@ -610,14 +610,15 @@ export function prBodyEditArgs(
  * Stage the runner's trusted PR description in the runner-owned exchange
  * directory, which the agent cannot write (Issue #4731), then apply it.
  */
-async function applyPrBody(
+export async function applyPrBody(
   repo: string,
   number: number,
   body: string,
   exchange: string,
+  edit: (args: string[]) => Promise<unknown> = (args) => run("gh", args),
 ): Promise<void> {
   const file = await writeExchangeFile(exchange, "pr-body.md", body);
-  await run("gh", prBodyEditArgs(repo, number, file));
+  await edit(prBodyEditArgs(repo, number, file));
   console.log(`${repo}#${number}: updated the PR description`);
 }
 

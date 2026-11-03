@@ -55,6 +55,7 @@ import {
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
+  applyPrBody,
   attemptKey,
   babysitterRtkInstruction,
   baseAlreadyMerged,
@@ -1123,7 +1124,7 @@ Deno.test("a review repair may propose a PR description for the runner to apply"
 });
 
 Deno.test("the proposed PR description is taken out of the clone before commit", async () => {
-  const dir = await Deno.makeTempDir();
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "New body\n");
     assertEquals(
@@ -1141,7 +1142,7 @@ Deno.test("the proposed PR description is taken out of the clone before commit",
 });
 
 Deno.test("a proposed PR description keeps the closing references it dropped", async () => {
-  const dir = await Deno.makeTempDir();
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(
       `${dir}/.babysitter-pr-body`,
@@ -1160,7 +1161,7 @@ Deno.test("a proposed PR description keeps the closing references it dropped", a
 });
 
 Deno.test("an empty or oversized PR description proposal is not applied", async () => {
-  const dir = await Deno.makeTempDir();
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "  \n");
     assertEquals(await takePrBodyProposal(dir, "Old"), undefined);
@@ -1391,6 +1392,65 @@ Deno.test("the PR description update passes the write allowlist for its repo onl
       WriteRepoBlockedError,
     );
   });
+});
+
+// Issue #4731: the PR description is staged in the runner-owned exchange
+// directory, which the agent cannot write, and applied from there.
+Deno.test("applyPrBody stages the body in the exchange at mode 0600 and edits from it", async () => {
+  const exchange = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const calls: string[][] = [];
+    await applyPrBody("owner/repo", 7, "New description", exchange, (args) => {
+      calls.push(args);
+      return Promise.resolve(undefined);
+    });
+    const file = `${exchange}/pr-body.md`;
+    assertEquals(await Deno.readTextFile(file), "New description");
+    assertEquals(((await Deno.stat(file)).mode ?? 0) & 0o777, 0o600);
+    assertEquals(calls, [prBodyEditArgs("owner/repo", 7, file)]);
+  } finally {
+    await Deno.remove(exchange, { recursive: true });
+  }
+});
+
+Deno.test("applyPrBody refuses a symlink planted at the body path and never edits", async () => {
+  const exchange = await Deno.realPath(await Deno.makeTempDir());
+  const victimDir = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const victim = `${victimDir}/victim.txt`;
+    await Deno.writeTextFile(victim, "original");
+    await Deno.symlink(victim, `${exchange}/pr-body.md`);
+    let edited = false;
+    await assertRejects(() =>
+      applyPrBody("owner/repo", 7, "agent-controlled body", exchange, () => {
+        edited = true;
+        return Promise.resolve(undefined);
+      })
+    );
+    assertEquals(await Deno.readTextFile(victim), "original");
+    assertEquals(edited, false);
+  } finally {
+    await Deno.remove(exchange, { recursive: true });
+    await Deno.remove(victimDir, { recursive: true });
+  }
+});
+
+Deno.test("applyPrBody edits from the exchange, not from the agent's scratch directory", async () => {
+  const exchange = await Deno.realPath(await Deno.makeTempDir());
+  const scratch = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const calls: string[][] = [];
+    await applyPrBody("owner/repo", 7, "body", exchange, (args) => {
+      calls.push(args);
+      return Promise.resolve(undefined);
+    });
+    const bodyFile = calls[0]!.at(-1)!;
+    assertEquals(bodyFile, `${exchange}/pr-body.md`);
+    assert(!bodyFile.startsWith(`${scratch}/`));
+  } finally {
+    await Deno.remove(exchange, { recursive: true });
+    await Deno.remove(scratch, { recursive: true });
+  }
 });
 
 // Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
