@@ -262,9 +262,12 @@ Deno.test("an outdated PR is armed before its branch is refreshed", async () => 
     "/unused",
     gh,
     () => Promise.resolve(),
-    async (_repo, pr) => {
-      assertEquals(pr.number, initial.number);
-      order.push("arm");
+    3,
+    {
+      armAutoMerge: async (_repo, pr) => {
+        assertEquals(pr.number, initial.number);
+        order.push("arm");
+      },
     },
   );
   assertEquals(order, ["arm", "update"]);

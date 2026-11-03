@@ -1,3 +1,4 @@
+import { BABYSITTER_HANDOFF_MARKER } from "./babysitter_retry_state.ts";
 /**
  * Stall repair for blocking PRs (Issue #2802, part of #2788).
  *
@@ -271,7 +272,8 @@ function readRepairHistory(
       history.humanGate = true;
     }
     if (
-      body.includes(NEEDS_HUMAN_ESCALATION_MARKER_PREFIX) ||
+      (body.includes(NEEDS_HUMAN_ESCALATION_MARKER_PREFIX) &&
+        !body.includes(BABYSITTER_HANDOFF_MARKER)) ||
       parseCiFixAttemptMarkers(body).length > 0
     ) {
       history.fleetEscalated = true;
