@@ -73,7 +73,7 @@ const NEGATED_CLOSE_RE =
   /((?:\bnot|\bnever|\bcannot|n['’]t|\bno\s+longer)\s+)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s+(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b)/gi;
 
 /** Any `#N` reference, whether same-repository or qualified. */
-const ISSUE_MENTION_RE = /#(\d+)\b/g;
+const ISSUE_MENTION_RE = /(?<![\w./-])(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
 
 /**
  * A colon closing phrase such as `Closes: #N` or `resolved : owner/repo#N`.
@@ -248,7 +248,7 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
         issueNumber,
         identity,
       );
-      if (!mentionsIssue(maskMarkdownCode(text), issueNumber)) {
+      if (!mentionsIssue(maskMarkdownCode(text), issueNumber, repo)) {
         appended.unshift(`Part of #${issueNumber}`);
       }
     }
@@ -400,9 +400,14 @@ function namesClosingOrPartOf(
 }
 
 /** Whether a masked body mentions `#N` in any form. */
-function mentionsIssue(masked: string, issueNumber: number): boolean {
+function mentionsIssue(
+  masked: string,
+  issueNumber: number,
+  repo: string,
+): boolean {
   return [...masked.matchAll(ISSUE_MENTION_RE)].some((match) =>
-    Number(match[1]) === issueNumber
+    Number(match[2]) === issueNumber &&
+    (match[1] === undefined || match[1].toLowerCase() === repo.toLowerCase())
   );
 }
 

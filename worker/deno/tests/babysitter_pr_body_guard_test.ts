@@ -21,6 +21,24 @@ import {
 
 const REPO = "owner/repo";
 
+Deno.test("a withheld issue association is preserved when only another repository is mentioned (PR #4779 review)", () => {
+  for (
+    const [mention, appended] of [["owner/other#4674", true], [
+      "owner/repo#4674",
+      false,
+    ], ["#4674", false]] as const
+  ) {
+    const output = guardPrBodyProposal({
+      proposal: `Rewritten. Ported from ${mention}.`,
+      liveBody: liveBodyFor(4674, "Closes #4674"),
+      summary: partSummary("partial"),
+      repo: REPO,
+      headRefName: "feature",
+    });
+    assertEquals(output.includes("Part of #4674"), appended);
+  }
+});
+
 /** A summary whose one criterion is `status`, and which says it is only part of #4674. */
 function partSummary(status: "partial" | "missing"): string {
   return [

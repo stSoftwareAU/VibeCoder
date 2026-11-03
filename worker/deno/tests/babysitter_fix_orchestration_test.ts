@@ -17,6 +17,7 @@ import {
   type FixDeps,
   forwardAgentStderr,
   observeTrackedPr,
+  pendingPublicationStore,
   readSharedBabysitterAttempts,
   reconcileTrackedPr,
   repairFailureIdentity,
@@ -43,6 +44,7 @@ interface AgentScript {
   expiresInMs?: number;
   elapsedMs?: number;
   setupScratch?: (scratch: string) => Promise<void>;
+  proposal?: string;
 }
 
 function basePr(over: Record<string, unknown> = {}) {
@@ -90,10 +92,23 @@ function harness(
     escalateFails: 0,
     markerFailures: 0,
     reviewId: 10,
+    editFailures: 0,
+    dismissals: 0,
   };
   let nextId = 100;
   const gh = (args: string[]): Promise<string> => {
     const joined = args.join(" ");
+    if (args[0] === "pr" && args[1] === "edit") {
+      if (state.editFailures-- > 0) {
+        return Promise.reject(new Error("edit failed"));
+      }
+      return Deno.readTextFile(args[args.indexOf("--body-file") + 1]!).then(
+        (body) => {
+          state.pr.body = body;
+          return "";
+        },
+      );
+    }
     if (joined.includes("pulls/1/reviews")) {
       return Promise.resolve(
         JSON.stringify([[{
@@ -205,6 +220,12 @@ function harness(
     if (!await beforeSpawn()) return undefined;
     state.sessions++;
     await script.setupScratch?.(agentOptions.scratch);
+    if (script.proposal) {
+      await Deno.writeTextFile(
+        `${agentOptions.dir}/.babysitter-pr-body`,
+        script.proposal,
+      );
+    }
     state.prompts.push(agentOptions.prompt);
     if ((script.code ?? 0) === 0) {
       await Deno.writeTextFile(
@@ -238,6 +259,10 @@ function harness(
     run,
     clone: () => Promise.resolve(),
     mergeBase: () => Promise.resolve({ kind: "current" }),
+    dismiss: () => {
+      state.dismissals++;
+      return Promise.resolve();
+    },
     armAutoMerge: () => Promise.resolve(),
     startAgent,
     commit: () => {
@@ -269,6 +294,40 @@ function harness(
     );
   return { state, gh, deps, attempt };
 }
+
+Deno.test("fix resumes a failed publication without another agent session (PR #4779 review)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    h.state.editFailures = 1;
+    await assertRejects(() => h.attempt(), Error, "edit failed");
+    const store = pendingPublicationStore(
+      stateDir,
+      REPO,
+      1,
+      [{
+        id: 10,
+        state: "CHANGES_REQUESTED",
+        user: { login: "reviewer" },
+      }] as never,
+    );
+    assertEquals(await store.load(HEAD), {
+      proposal: "Rewritten description.",
+      pushed: false,
+    });
+    assertEquals(h.state.dismissals, 0);
+    await elapse(stateDir);
+    await h.attempt();
+    assertEquals(h.state.sessions, 1);
+    assertEquals(h.state.pr.body, "Rewritten description.");
+    assertEquals(h.state.dismissals, 1);
+    assertEquals(await store.load(HEAD), undefined);
+  });
+});
 
 async function withState<T>(
   action: (stateDir: string) => Promise<T>,

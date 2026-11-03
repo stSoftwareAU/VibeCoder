@@ -167,7 +167,7 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   and
   `a resumed publication for a pushed head still publishes the proposal that the push backs (PR #4779 review)`
   and
-  `repairInClone: a failed publication is retried at the same head through the attempt marker, without a second agent run (PR #4779 review)`
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix resumes a failed publication without another agent session (PR #4779 review)`
   and
   `with nothing pushed, a proposal over a governing committed summary keeps the reviews open and leaves no pending record, and the same proposal is published once a push backs it (PR #4779 review)`
   — reviewer: met
@@ -324,17 +324,11 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   `mentionsIssue` in place of `namesClosingOrPartOf`; no branch fallback in
   `governingIssueNumber`; no-change suppression removed; `pushedByEarlierRepair`
   not passed on resume; `save` writing another head's key; `clear` removed —
-  each went red in the matching tests (per-break counts not restated; not re-run
-  in the second-review fix). Before the merge from main, `repairInClone`
-  exercised the publication order: with an attempt marker
-  already on disk, a failed publication is recorded (the store reaches the
-  finish), a second scan finishes it with the agent not started again, and a
-  third scan with nothing pending is stopped by the marker
-  (`repairInClone: a failed publication is retried at the
-  same head through the attempt marker, without a second agent run (PR #4779 review)`).
-  Red-checks on that test: the store dropped from the finish call → red
-  (`Values are not equal`); resume made unreachable, as if it ran after the
-  marker → red. Both re-run on this head.
+  each went red in the matching tests (per-break counts not restated). The
+  production `fix()` orchestration test records a failed edit, resumes it at
+  the same head without another session, dismisses and clears the record.
+  Removing the store from the finish call or making resume unreachable made
+  this test fail; the latter mutation ran with `--no-check`.
 - Test changes in this round (TDD rule 3). Obsolete: with nothing pushed, a
   proposal over a governing committed summary was published, and then (in the
   first round) dropped with the reviews dismissed; it is now refused and the
@@ -343,10 +337,7 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   withholding and the retry; they now pass `pushedByEarlierRepair: true` so the
   proposal has committed work behind it, and still assert what their names say.
   `a failed publication is resumed by the next scan without the agent, and the record is cleared (PR #4779 review)`
-  therefore expects the record as `pushed: true`, and
-  `repairInClone: a failed publication is retried at the same head through the attempt marker, without a second agent run (PR #4779 review)`
-  uses a repository with no committed summary for the PR's issue, so its
-  proposal is published through the guard. Red-check on this head: the `clear`
+  therefore expects the record as `pushed: true`. Red-check on this head: the `clear`
   in the refusal path replaced by a no-op → the refusal test went red (the
   record remained); the refusal condition forced off → the same test went red
   (the proposal was published and the review dismissed). Remaining: a proposal
@@ -398,12 +389,8 @@ listed the post-push sync callers were updated. Issues cited as provenance:
 
 ## Not done
 
-- `fix()` itself (lock, clone, `gh` reads) is not driven by a test. Everything
-  from the clone onward, which holds the resume-before-marker order and the
-  store handed to the finish, is `repairInClone`
-  (`worker/deno/commands/fleet_pr_babysitter.ts`) and is tested through it with
-  a fake agent start, GitHub and state directory. What stays unchecked is that
-  `fix()` calls `repairInClone` with the clone it cloned, which is one call.
+- The orchestration test uses fake GitHub, clone and agent boundaries; live
+  GitHub and clone operations remain covered by integration and CI.
 - Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working
   tree, as noted in #4712.
 - The pending-publication record is written only for a repair that addresses
@@ -420,3 +407,10 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   `fleet_pr_babysitter_single_push_test.ts` and `fleet_pr_babysitter_test.ts`
   passes. Neither check can be fixed in this change, since both flags are
   repository settings.
+
+Review follow-up: the obsolete test-only `repairInClone` path and its test
+were removed. The remaining production retry and store wiring are covered by
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::fix resumes a failed publication without another agent session (PR #4779 review)`.
+The withheld-close guard retains the governing association when another
+repository has the same issue number, covered by
+`worker/deno/tests/babysitter_pr_body_guard_test.ts::a withheld issue association is preserved when only another repository is mentioned (PR #4779 review)`.
