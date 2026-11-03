@@ -221,11 +221,15 @@ to posting as the `gh` user. The App needs **Pull requests**, **Issues**,
 **Contents** and **Workflows** read and write, plus **Checks** and **Commit
 statuses** read: Contents write lets the Dependabot upkeep merge an
 already-clean PR with `gh pr merge --auto` and arm auto-merge, and lets the
-skill bring an approved fleet PR's branch up to date (`update-branch`);
+skill request a branch refresh for an approved PR that passes the shared
+strict-base readiness and ownership policy (`update-branch`);
 Workflows write lets it merge Dependabot's GitHub Actions bumps, which change
 `.github/workflows/*`. Installation is needed on every monitored repo and on
 `stSoftwareAU/VibeCoder` (for improvement issues). Add `<app-slug>[bot]` to
 `authorized_commenters` (not `pr_reviewers`, which would make PR creation fail).
+Also add the login to `service_accounts` or `fleet_pr_authors` on every fleet
+host, so worker and reviewer lanes trust the same strict-base refresh owners.
+The reviewer refuses refreshes if its own configuration omits the login.
 An interactive `/review-fleet-prs` session is separate from this runner and
 still uses its invoking `gh` credentials.
 

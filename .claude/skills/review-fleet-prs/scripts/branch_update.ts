@@ -1,18 +1,22 @@
 // Bringing an approved fleet or Dependabot PR up to date (Issues #3225, #3663).
 //
-// Every fleet PR is armed with auto-merge on three conditions: CI green,
-// approved, and branch up to date. The review comes first, so the approval
-// is of the diff as reviewed; this module then asks GitHub to merge the base
-// into the PR (the `update-branch` endpoint, as the worker's own merge path
-// does), so the third condition clears and the PR merges once CI re-runs.
-// Dependabot uses this same leased update after the reviewer's approval;
+// On a strict, non-queue base, the shared policy refreshes an approved, armed
+// PR only after its current-head required checks pass. The review comes first,
+// so the approval is of the diff as reviewed; the branch update then reruns CI
+// against the current base. Other bases keep their existing update path, while
 // conflicting branches wait without a push or a bot-command comment.
 
+import { loadConfig } from "../../../../worker/deno/lib/config.ts";
+import {
+  type AlertDedupAuthorOptions,
+  resolveAlertDedupAuthors,
+} from "../../../../worker/deno/lib/alert_dedup_authors.ts";
 import { prKey, sameLogin } from "./review_log.ts";
 import {
   FileLockTimeoutError,
   withFileLock,
 } from "../../../../worker/deno/lib/file_lock.ts";
+import { requestReadyBranchUpdate } from "../../../../worker/deno/lib/required_branch_checks_4613.ts";
 import {
   BRANCH_UPDATE_FILE,
   FAILED_FILE,
@@ -75,31 +79,53 @@ export type BranchUpdateResult =
 // update never lands on a head the review did not see. A refusal is
 // reported, never thrown: one stuck PR must not stop a pass or a post.
 export async function updateBranch(
-  pr: { repo: string; number: number; headSha: string },
+  pr: { repo: string; number: number; headSha: string; baseRefName: string },
   runGh: RunGh,
+  authorOptions?: AlertDedupAuthorOptions,
+  reviewer?: string,
 ): Promise<BranchUpdateResult> {
-  try {
-    await runGh([
-      "api",
-      "--method",
-      "PUT",
-      `repos/${pr.repo}/pulls/${pr.number}/update-branch`,
-      "-f",
-      `expected_head_sha=${pr.headSha}`,
-    ]);
-    return { updated: true };
-  } catch (e) {
-    return { updated: false, error: (e as Error).message.split("\n")[0]! };
+  const options = authorOptions ?? {
+    env: () => undefined,
+    loadConfigFn: () =>
+      loadConfig(
+        Deno.args.find((arg) => arg.startsWith("--config="))?.slice(9) ??
+          new URL("../../../../.config.json", import.meta.url).pathname,
+        { env: () => undefined },
+      ),
+  };
+  if (reviewer !== undefined) {
+    const authors = await resolveAlertDedupAuthors(options, console.error);
+    if (!authors.some((author) => sameLogin(author, reviewer))) {
+      return {
+        updated: false,
+        error:
+          `Reviewer ${reviewer} must be in service_accounts or fleet_pr_authors on every fleet host`,
+      };
+    }
   }
+  const result = await requestReadyBranchUpdate(
+    pr.repo,
+    pr.number,
+    runGh,
+    pr.baseRefName,
+    pr.headSha,
+    undefined,
+    options,
+  );
+  return result.ok
+    ? { updated: true }
+    : { updated: false, error: result.error.message.split("\n")[0]! };
 }
 
 // Gate and parallel post processes share one request lease per PR. Re-read
 // after taking the lock, and persist only this action's entry; another PR
 // can finish its API call in parallel without losing either cached head.
 export async function updateBranchOnce(
-  pr: { repo: string; number: number; headSha: string },
+  pr: { repo: string; number: number; headSha: string; baseRefName: string },
   dir: string,
   runGh: RunGh,
+  authorOptions?: AlertDedupAuthorOptions,
+  reviewer?: string,
 ): Promise<BranchUpdateResult | undefined> {
   await Deno.mkdir(dir, { recursive: true });
   const key = prKey(pr.repo, pr.number);
@@ -115,10 +141,28 @@ export async function updateBranchOnce(
           updateAsked[key] === pr.headSha ||
           failed[`${key} branch-update`] === pr.headSha
         ) return undefined;
-        const result = await updateBranch(pr, runGh);
+        const result = await updateBranch(pr, runGh, authorOptions, reviewer);
         if (result.updated) {
           await writeMemory(dir, BRANCH_UPDATE_FILE, { [key]: pr.headSha });
         } else {
+          if (
+            [
+              "must be in service_accounts or fleet_pr_authors",
+              "merge-queue base is exempt",
+              "base does not require strict up-to-date checks",
+              "base refresh owned by",
+              "PR base or head changed before branch update",
+              "PR no longer ready for a branch update",
+              "PR changed while its required checks were read",
+              "PR test merge changed while required checks were read",
+              "required current-head checks have not passed",
+              "required-check read failed:",
+              "test merge or required checks changed before branch update",
+            ].some((marker) => result.error.includes(marker))
+          ) {
+            console.warn(`${key} branch refresh skipped: ${result.error}`);
+            return undefined;
+          }
           await writeMemory(dir, FAILED_FILE, {
             [`${key} branch-update`]: pr.headSha,
           });
