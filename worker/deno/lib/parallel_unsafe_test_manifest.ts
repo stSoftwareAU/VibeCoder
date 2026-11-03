@@ -164,6 +164,8 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * left out goes red one run in five, on somebody else's change.
  */
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
+  // Continuation-joining growth guard compares N and 4N without contention.
+  "tests/ci_mutation_contract_test.ts",
   // The admin-only hand-off strips code fences and inline code spans from an
   // untrusted issue body before matching; only a growth measurement separates
   // that linear strip from a backtracking one on hostile backtick runs

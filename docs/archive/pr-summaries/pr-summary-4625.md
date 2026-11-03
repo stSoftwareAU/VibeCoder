@@ -380,3 +380,6 @@ unavailable/recovery assertion while adding separate absent-default coverage.
 
 - Retained runner-owned validation and checkpoint handling while incorporating
   the base branch’s test-change evidence guidance in the repair prompt.
+- Incorporated the base's single-push repair flow: compare staged changes to
+  the merged-tree baseline, retain the merge context in the prompt and commit,
+  and arm auto-merge while keeping runner validation and checkpoint cleanup.

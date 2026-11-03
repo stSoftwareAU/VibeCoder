@@ -755,6 +755,133 @@ Deno.test("evaluateMutationGate - not applicable passes and explains", () => {
   assertStringIncludes(v.note, "docs only");
 });
 
+const CI_EXEMPT_SUMMARY = "`lib/a.ts:12` exempt (untestable): logging only";
+
+Deno.test("evaluateMutationGate - a blocking CI job ignores a PR-summary exemption", () => {
+  const v = evaluateMutationGate(completed(), CI_EXEMPT_SUMMARY, {
+    tool: "deno_task",
+    workflow: "Mutation testing",
+    job: "stryker-pr",
+  });
+  assert(v.blocked);
+  assertEquals(v.survivors, [SURVIVOR]);
+  assertEquals(v.exempted, []);
+  assertEquals(v.ciBlock, { workflow: "Mutation testing", job: "stryker-pr" });
+  assertStringIncludes(
+    v.reason,
+    "1 mutant of changed lines survived (no test went red) and the repository's CI job 'stryker-pr' (Mutation testing) blocks on them",
+  );
+});
+
+Deno.test("evaluateMutationGate - the same exemption without a CI job still passes (positive control)", () => {
+  const v = evaluateMutationGate(completed(), CI_EXEMPT_SUMMARY);
+  assertFalse(v.blocked);
+  assertEquals(v.exempted, [SURVIVOR]);
+  assertEquals(v.ciBlock, undefined);
+});
+
+Deno.test("evaluateMutationGate - a blocking CI job holds a budget-exhausted survivor", () => {
+  const v = evaluateMutationGate(
+    { ...EXHAUSTED, survivors: [SURVIVOR] },
+    "",
+    { tool: "deno_task", workflow: "Lint", job: "cap-run" },
+  );
+  assert(v.blocked);
+  assert(v.budgetExhausted);
+  assertEquals(v.ciBlock, { workflow: "Lint", job: "cap-run" });
+  assertStringIncludes(v.reason, "'cap-run' (Lint) blocks on them");
+});
+
+Deno.test("evaluateMutationGate - a blocking CI job with a budget-exhausted run and no survivors says CI will still try every mutant", () => {
+  const v = evaluateMutationGate(
+    { ...EXHAUSTED, survivors: [] },
+    "",
+    { tool: "deno_task", workflow: "Nightly", job: "deep-scan" },
+  );
+  assertFalse(v.blocked);
+  assertEquals(v.ciBlock, { workflow: "Nightly", job: "deep-scan" });
+  assertStringIncludes(
+    v.note,
+    "— the repository's CI job 'deep-scan' will still try every mutant",
+  );
+  // Untested mutants are unvalidated: the PR is held with a named next action.
+  assert(v.incomplete !== undefined);
+  assertStringIncludes(buildMutationGateComment(v), "validation incomplete");
+  assertStringIncludes(buildMutationGateComment(v), "Next action:");
+  const noCi = evaluateMutationGate({ ...EXHAUSTED, survivors: [] }, "");
+  assertEquals(noCi.ciBlock, undefined);
+  assertEquals(noCi.incomplete, undefined);
+});
+
+Deno.test("evaluateMutationGate - a blocking CI job with no survivors does not hold the PR", () => {
+  const v = evaluateMutationGate(completed([]), "", {
+    tool: "deno_task",
+    workflow: "CI",
+    job: "mutants-pr",
+  });
+  assertFalse(v.blocked);
+  assertEquals(v.ciBlock, undefined);
+  assertEquals(v.reason, "");
+});
+
+Deno.test("evaluateMutationGate - a blocking CI job holds an error as incomplete validation with a next action", () => {
+  const ci = { workflow: "Mutants", job: "mutation-check" };
+  const v = evaluateMutationGate(
+    { kind: "error", reason: "npm ci failed" },
+    "",
+    { ...ci, tool: "deno_task" },
+  );
+  assert(v.blocked);
+  assertEquals(v.ciBlock, ci);
+  assertStringIncludes(
+    v.incomplete?.nextAction ?? "",
+    "install the missing tool",
+  );
+  assertStringIncludes(buildMutationGateComment(v), "Next action:");
+  assertStringIncludes(
+    v.reason,
+    "mutation check failed to run (npm ci failed)",
+  );
+  assertStringIncludes(
+    v.reason,
+    "the repository's CI job 'mutation-check' will run the same check",
+  );
+  assertStringIncludes(v.reason, "unvalidated, not passed");
+  const plain = evaluateMutationGate(
+    { kind: "error", reason: "npm ci failed" },
+    "",
+  );
+  assertFalse(plain.reason.includes("unvalidated"));
+  assertEquals(plain.ciBlock, undefined);
+  assertEquals(plain.incomplete, undefined);
+});
+
+Deno.test("evaluateMutationGate - a worker-fault error on a blocking CI repository is also held (Issue #4617)", () => {
+  const v = evaluateMutationGate(
+    { kind: "error", reason: `${MUTATION_TEMP_DIR_UNWRITABLE}: /tmp full` },
+    "",
+    { tool: "deno_task", workflow: "CI", job: "mutants" },
+  );
+  assert(v.workerFault);
+  assertEquals(v.ciBlock, { workflow: "CI", job: "mutants" });
+  assertStringIncludes(v.incomplete?.nextAction ?? "", "temporary directory");
+});
+
+Deno.test("evaluateMutationGate - a hostile CI job name is sanitised and capped (Issue #4617)", () => {
+  const v = evaluateMutationGate(completed(), "", {
+    tool: "deno_task",
+    workflow: "wf`\nsteps",
+    job: "mut`ants\n# injected" + "z".repeat(150),
+  });
+  assert(v.blocked);
+  assertEquals(v.ciBlock?.workflow, "wf steps");
+  assertEquals(v.ciBlock?.job.length, 100);
+  assert(v.ciBlock?.job.startsWith("mutants # injected"));
+  assertFalse(v.reason.includes("`"));
+  assertFalse(v.reason.includes("\n"));
+  assertStringIncludes(v.reason, "(wf steps)");
+});
+
 // ---------------------------------------------------------------------------
 // buildMutationGateComment
 // ---------------------------------------------------------------------------
@@ -784,6 +911,47 @@ Deno.test("buildMutationGateComment - sanitises backticks and newlines", () => {
 Deno.test("buildMutationGateComment - includes the budget note when exhausted", () => {
   const v = evaluateMutationGate({ ...EXHAUSTED, survivors: [SURVIVOR] }, "");
   assertStringIncludes(buildMutationGateComment(v), "untested, not passed");
+});
+
+Deno.test("buildMutationGateComment - a blocking CI job replaces the exemption advice", () => {
+  const v = evaluateMutationGate(completed(), "", {
+    tool: "deno_task",
+    workflow: "Mutation testing",
+    job: "stryker-pr",
+  });
+  const comment = buildMutationGateComment(v);
+  assertStringIncludes(
+    comment,
+    "## Mutation check: changed lines are not pinned",
+  );
+  assertStringIncludes(comment, "'stryker-pr' (Mutation testing)");
+  assertStringIncludes(comment, "is not read by CI");
+  assertStringIncludes(comment, "Add a test that kills each mutation.");
+  assertFalse(comment.includes("record `file:line` exempt"));
+});
+
+Deno.test("buildMutationGateComment - without a CI job the exemption advice is unchanged", () => {
+  const comment = buildMutationGateComment(
+    evaluateMutationGate(completed(), ""),
+  );
+  assertStringIncludes(
+    comment,
+    "record `file:line` exempt (untestable): <reason> in the PR summary.",
+  );
+  assertFalse(comment.includes("is not read by CI"));
+});
+
+Deno.test("buildMutationGateComment - a hostile CI job name is sanitised", () => {
+  const v = evaluateMutationGate(completed(), "", {
+    tool: "deno_task",
+    workflow: "wf`\nsteps",
+    job: "mut`ants\n# injected",
+  });
+  const comment = buildMutationGateComment(v);
+  assertStringIncludes(comment, "'mutants # injected' (wf steps)");
+  assertFalse(comment.includes("`mutants"));
+  assertFalse(comment.includes("\n# injected"));
+  assertFalse(comment.includes("wf`"));
 });
 
 // ---------------------------------------------------------------------------
@@ -980,4 +1148,27 @@ Deno.test("wiring mutants - a key holding $ is matched as a name, not as a patte
       m.description === "reverted property `$state` to shorthand"
     ),
   );
+});
+
+Deno.test("evaluateMutationGate - CI for another language honours exemptions", () => {
+  const denoResult = completed();
+  const rustResult = {
+    ...completed(),
+    language: "rust",
+  } as MutationCheckResult;
+  for (
+    const [result, tool] of [[denoResult, "cargo"], [
+      rustResult,
+      "deno_task",
+    ]] as const
+  ) {
+    const verdict = evaluateMutationGate(result, CI_EXEMPT_SUMMARY, {
+      workflow: "CI",
+      job: "mutants",
+      tool,
+    });
+    assertFalse(verdict.blocked);
+    assertEquals(verdict.ciBlock, undefined);
+    assertEquals(verdict.exempted, [SURVIVOR]);
+  }
 });
