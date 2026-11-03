@@ -261,8 +261,16 @@ Deno.test("merge checks: a cargo target the account cannot write is built in a p
 Deno.test("real sudo: a checkout the agent can reach runs its command, and one it cannot traverse is refused before any command runs (Issue #4697)", async () => {
   // Skipped where this host cannot drop to the agent account.
   if (!await canRunAsUntrustedUser()) return;
-  const readable = await Deno.makeTempDir({ prefix: "issue-4697-readable-" });
-  const blocked = await Deno.makeTempDir({ prefix: "issue-4697-blocked-" });
+  // Under /tmp, not TMPDIR: a run's TMPDIR can itself be mode 0700 (the
+  // mutation runner's is), and the account could then reach neither directory.
+  const readable = await Deno.makeTempDir({
+    dir: "/tmp",
+    prefix: "issue-4697-readable-",
+  });
+  const blocked = await Deno.makeTempDir({
+    dir: "/tmp",
+    prefix: "issue-4697-blocked-",
+  });
   try {
     // The account must be able to write the checkout and read its manifest.
     await Deno.chmod(readable, 0o777);

@@ -82,6 +82,12 @@ Backend change; no UI file is touched. The real-sudo test in
   channel-fault test uses a temporary checkout holding a `Cargo.toml` instead of
   `/tmp`, because a checkout without one is now the missing-manifest case. No
   assertion was removed or weakened.
+- Mutation check: it reported "baseline tests fail before mutation" because the
+  real-sudo test made its checkouts under the runner's `TMPDIR`, a `0700`
+  directory the `agent` account cannot traverse, so the readable checkout was
+  refused. The test now makes both checkouts under `/tmp`. Run the way the
+  mutation runner runs it (`deno test --no-check -A`, a fresh `0700` `TMPDIR`),
+  the four covering test files pass (157 passed, 0 failed).
 - Passed: `deno task test:unit` over those three files plus
   `tests/untrusted_gate_spawn_test.ts` and
   `tests/pr_merge_conflict_processor_test.ts` (191 passed, 0 failed).
