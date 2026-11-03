@@ -24,7 +24,8 @@ flowchart LR
   Trusted writes now go to a directory only the runner can write; the one file
   the agent must still write is read through a hardened reader.
 - Deno has no `O_NOFOLLOW`/`O_NONBLOCK`, so the reader extends the existing
-  `readTextFileNoFollow` (lstat, open, fstat identity) rather than adding a copy.
+  `readTextFileNoFollow` (lstat, open, fstat identity) rather than adding a
+  copy.
 
 ### Essential Design Decisions
 
@@ -55,8 +56,8 @@ flowchart LR
 Backend only. The retry session named in the issue is not on `main`; the only
 response read is the initial one in `fix`, now `readAgentResponse`.
 
-Call sites changed: `takePrBodyProposal` (`.babysitter-pr-body`),
-`applyPrBody` (both callers in `fix`), `readAgentResponse` (`fix`),
+Call sites changed: `takePrBodyProposal` (`.babysitter-pr-body`), `applyPrBody`
+(both callers in `fix`), `readAgentResponse` (`fix`),
 `spawnBabysitterAgent`/`startBabysitterAgent` (all callers, including
 `worker/deno/tests/fleet_babysitter_app_test.ts`). Callers of
 `readTextFileNoFollow` (`gh_wrapper.ts`, `gitignore_enforcer.ts`,
@@ -69,25 +70,25 @@ the write-grants sentence).
 ## Test Plan
 
 New: `worker/deno/tests/fleet_babysitter_exchange_test.ts` (13 tests: symlink,
-FIFO, hard link, oversize, exactly-at-cap, replaced parent directory, bad
-names, open timeout, O_EXCL write over a planted link), 8 cases in
+FIFO, hard link, oversize, exactly-at-cap, replaced parent directory, bad names,
+open timeout, O_EXCL write over a planted link), 8 cases in
 `worker/deno/tests/file_utils_test.ts`, and in
 `worker/deno/tests/fleet_pr_babysitter_test.ts` the `takePrBodyProposal`
 symlink/FIFO/oversize cases, `readAgentResponse` ok/absent/symlink/oversize,
 `spawnBabysitterAgent` response-file refusals and three `applyPrBody` tests.
 
-Edited expectations: the spawn-args test now expects `--output-last-message`
-at the exchange `responseFile` (was `${dir}/.babysitter-response`); the other
-spawn tests and five `startBabysitterAgent` calls gained `responseFile`; three
+Edited expectations: the spawn-args test now expects `--output-last-message` at
+the exchange `responseFile` (was `${dir}/.babysitter-response`); the other spawn
+tests and five `startBabysitterAgent` calls gained `responseFile`; three
 `takePrBodyProposal` tests use a canonical temp directory. No assertion was
 removed.
 
-Red checks (each reverted): `takePrBodyProposal` via `Deno.readTextFile` → symlink
-test red; `--output-last-message` back inside the clone → spawn-args test red;
-responseFile guard removed → refusal test red; `applyPrBody` writing with
-`Deno.writeTextFile` → planted-symlink test red; `maxBytes` pre-check removed
-and the open-timeout race removed → their `file_utils_test.ts` cases red. The
-`dev` comparison is not testable on one filesystem (unreached).
+Red checks (each reverted): `takePrBodyProposal` via `Deno.readTextFile` →
+symlink test red; `--output-last-message` back inside the clone → spawn-args
+test red; responseFile guard removed → refusal test red; `applyPrBody` writing
+with `Deno.writeTextFile` → planted-symlink test red; `maxBytes` pre-check
+removed and the open-timeout race removed → their `file_utils_test.ts` cases
+red. The `dev` comparison is not testable on one filesystem (unreached).
 
 Results on the final head: `deno task test:unit` for `file_utils_test.ts` (30
 passed), `fleet_babysitter_exchange_test.ts` (13 passed),
@@ -99,12 +100,13 @@ fetched in the sandbox), `gh_wrapper_test.ts` and `gitignore_enforcer_test.ts`
 files.
 
 `./quality.sh` on the final head: every stage passes (completeness checks, lint,
-type check, fmt, semgrep, markdownlint) except `deno tests` (parallel pass), which
-fails two tests in files this change does not touch:
-`fleet_pr_babysitter_test.ts` "babysitter default heartbeat resolves its checkout
-revision" (cannot fetch `jsr.io/@std/crypto`; it fails the same way on base
-`0a4d803a`) and `milestone_resolution_gate_test.ts` "verifyResolvedTree - the
-repository's own task sees only the allowlisted environment" (untrusted `/tmp`
-account; not re-run on base). The serial pass did not run because the parallel
-pass failed. A first gate run also failed `lib_sweep_coverage_test.ts` for the
-new module; `docs/audits/lib-sweep-coverage/top-up-4731.json` fixes that.
+type check, fmt, semgrep, markdownlint) except `deno tests` (parallel pass),
+which fails two tests in files this change does not touch:
+`fleet_pr_babysitter_test.ts` "babysitter default heartbeat resolves its
+checkout revision" (cannot fetch `jsr.io/@std/crypto`; it fails the same way on
+base `0a4d803a`) and `milestone_resolution_gate_test.ts` "verifyResolvedTree -
+the repository's own task sees only the allowlisted environment" (untrusted
+`/tmp` account; not re-run on base). The serial pass did not run because the
+parallel pass failed. A first gate run also failed `lib_sweep_coverage_test.ts`
+for the new module; `docs/audits/lib-sweep-coverage/top-up-4731.json` fixes
+that.
