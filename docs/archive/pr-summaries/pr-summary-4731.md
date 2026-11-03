@@ -52,7 +52,9 @@ flowchart LR
 - With `openTimeoutMs` set, the reader opens read-write, preventing a FIFO
   raced in before the open from blocking on Unix; the descriptor check refuses
   it. This requires write permission. Other stalled opens are abandoned after
-  the timeout and their descriptors are closed if they later complete.
+  the timeout and their descriptors are closed if they later complete. A
+  pending open can keep a process alive; non-watch passes explicitly exit after
+  cleanup, while watch mode continues with the open pending.
 
 ## Evidence
 
@@ -123,6 +125,17 @@ writes a PR body proposal and records the actual `gh pr edit --body-file`
 path and contents. It asserts that staging is outside both write grants
 (clone and scratch). Changing `fix()` back to scratch staging makes this
 end-to-end test fail. Existing assertions remain intact; no tests were removed.
+
+The latest review repair exercises the real non-watch CLI with a FIFO swapped
+into a read-only open, leaving a genuine pending open after the timeout. The
+child exits with the failure after cleanup; without the explicit exit it times
+out. The operator documentation and reader JSDoc describe the residual open.
+The four affected suites pass (135 tests), as do whole-tree Deno formatting,
+lint and type checking. No existing assertions were removed.
+The local full gate passed its static checks but the parallel unit pass hit
+the host Deno permission-pledge panic; the serial pass did not run. Base CI
+run 41550561600 passed all four test shards. Semgrep and the pinned Checkov
+version were unavailable locally; config integration had no configuration.
 
 The subsequent review repair tests a real FIFO swapped into the open in a child
 Deno process and requires the child to refuse it and exit. The test failed with

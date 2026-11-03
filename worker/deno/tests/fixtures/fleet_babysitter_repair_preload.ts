@@ -4,6 +4,18 @@ export {};
 const root = Deno.env.get("BABYSITTER_REPAIR_FIXTURE");
 if (!root) throw new Error("BABYSITTER_REPAIR_FIXTURE is required");
 
+// Exercise a real pending open in the production CLI child process.
+if (Deno.env.get("BABYSITTER_BLOCK_OPEN") === "1") {
+  const originalOpen = Deno.open;
+  Deno.open = async (path, options) => {
+    if (String(path).endsWith("/.babysitter-pr-body")) {
+      await Deno.rename(`${root}/blocked-fifo`, path);
+      return await originalOpen(path, { read: true });
+    }
+    return await originalOpen(path, options);
+  };
+}
+
 const pr = {
   state: "OPEN",
   number: 1,
@@ -68,6 +80,7 @@ function commandOutput(
     }
   }
   if (executable === "git") {
+    if (args.includes("maintenance")) return "";
     if (args[0] === "clone") {
       Deno.writeTextFileSync(`${root}/clone-calls.log`, args.join(" ") + "\n", {
         append: true,

@@ -456,8 +456,9 @@ export interface ReadTextFileNoFollowOptions {
  *    Unix, and stops waiting if the open itself stalls.
  *
  * Residual: an open that times out is abandoned, not cancelled. If it later
- * completes, its descriptor is closed, not used. Read-write opens also require
- * write permission on the file.
+ * completes, its descriptor is closed, not used. A pending open can keep the
+ * process alive; the babysitter's non-watch entry point explicitly exits after
+ * its pass. Read-write opens also require write permission on the file.
  *
  * An absent file is reported as a `null` value, not an error — callers that
  * treat "missing" as "empty" ask for that case explicitly.

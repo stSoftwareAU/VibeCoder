@@ -1474,4 +1474,7 @@ if (import.meta.main) {
     }
     if (watch) await new Promise((resolve) => setTimeout(resolve, 300_000));
   } while (watch);
+  // A timed-out special-file open can remain pending in Deno's blocking pool.
+  // The pass and its cleanup have finished; do not let it hold the supervisor.
+  Deno.exit(Deno.exitCode);
 }

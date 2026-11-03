@@ -84,7 +84,7 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
           gh_config_dir: `${home}/decoy-gh`,
         }),
       );
-      const result = await runWithTimeout(Deno.execPath(), [
+      const cliArgs = [
         "run",
         // Match the host launcher: Deno's narrower permission checks can
         // normalise '..' before realPath reaches the filesystem.
@@ -100,18 +100,41 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
         new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
         "--repo=owner/repo",
         "--pr=1",
-      ], {
+      ];
+      const childEnv = {
+        HOME: home,
+        CONFIG_PATH: configPath,
+        TMPDIR: `${home}/tmp`,
+        BABYSITTER_REPAIR_FIXTURE: home,
+        DENO_DIR: denoDir,
+      };
+      if (Deno.build.os !== "windows") {
+        const fifo = await new Deno.Command("mkfifo", {
+          args: [`${home}/blocked-fifo`],
+        }).output();
+        assert(fifo.success);
+        const blocked = await runWithTimeout(Deno.execPath(), cliArgs, {
+          cwd: home,
+          timeoutMs: 12_000,
+          clearEnv: true,
+          env: { ...childEnv, BABYSITTER_BLOCK_OPEN: "1" },
+        });
+        assert(blocked.ok, "non-watch pass exits despite a pending open");
+        assertEquals(blocked.value.success, false);
+        assertStringIncludes(blocked.value.stderr, "timed out opening");
+        await Deno.remove(
+          `${home}/.local/state/vibe-coder/fleet-pr-babysitter`,
+          {
+            recursive: true,
+          },
+        );
+        await Deno.remove(`${home}/clone-calls.log`);
+      }
+      const result = await runWithTimeout(Deno.execPath(), cliArgs, {
         cwd: home,
         timeoutMs: 20_000,
         clearEnv: true,
-        env: {
-          HOME: home,
-          CONFIG_PATH: configPath,
-          TMPDIR: `${home}/tmp`,
-          BABYSITTER_REPAIR_FIXTURE: home,
-          // Reuse the populated module cache without inheriting host settings.
-          DENO_DIR: denoDir,
-        },
+        env: childEnv,
       });
       assert(result.ok);
       assertEquals(result.value.success, true, result.value.stderr);

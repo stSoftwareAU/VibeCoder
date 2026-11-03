@@ -157,7 +157,11 @@ final message, through a no-follow, regular-file, size-bounded reader. A
 symlink, FIFO, hard link or oversized file fails the repair before anything is
 published. The bounded reader opens read-write, so a FIFO raced in before the
 open does not block on Unix; it then refuses the non-regular descriptor. This
-also requires write permission on the output file. A repair that fails this way
+also requires write permission on the output file. Another special file can
+still leave an open pending after the timeout; it cannot be cancelled and can
+keep a process alive. The non-watch pass explicitly exits after cleanup so it
+cannot hold the supervisor. Watch mode continues running with the pending open;
+if it eventually completes, its descriptor is closed. A repair that fails this way
 publishes no PR description and dismisses no review. It is recorded as a failed
 attempt for that head, so it is
 not retried on this host until its state file is removed, as described above; a
