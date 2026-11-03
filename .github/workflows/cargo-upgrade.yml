@@ -30,7 +30,7 @@ jobs:
       # SHA-pinned, so the toolchain can no longer be read from the ref
       # name — it is named explicitly instead (Issue #3645).
       # dtolnay/rust-toolchain@v1
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         if: hashFiles('Cargo.toml') != ''
         with:
           toolchain: stable
