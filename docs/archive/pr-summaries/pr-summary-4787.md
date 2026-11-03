@@ -74,7 +74,13 @@ outside `docs/archive/` found no other hit.
 - Added to `worker/deno/tests/milestone_resolution_gate_test.ts`: a type check
   that advances the clock by 800 000 ms still leaves the first task the full
   `RESOLUTION_GATE_BUDGET_MS`.
-- No existing test edited, no assertion removed.
+- One existing test edited:
+  `merge-only e2e - root Cargo cannot hide a failing
+  nested Deno resolution suite (PR #4343)`
+  in `worker/deno/tests/milestone_merge_only_4326_test.ts`. Only its
+  `web/deno.json` fixture content was reformatted (from `JSON.stringify` output
+  to a pre-formatted literal) so it passes the pre-push `deno fmt --check` gate.
+  The tasks are the same and no assertion was added, removed or changed.
 - Red-checks: `typeCheckTimeoutMs` returning the Deno limit for cargo → the
   merge-gate tests red; deadline computed before the type check → the
   resolution-gate budget test red. Each break was applied alone and restored.
