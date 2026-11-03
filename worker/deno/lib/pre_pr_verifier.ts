@@ -39,6 +39,7 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import type { TestChangeKind, TestChangeNote } from "./fleet_review_log.ts";
 import {
   type ClaudeRunResult,
   type RetryOptions,
@@ -142,11 +143,8 @@ export interface ReviewFinding {
   problem: string;
   fix?: string;
 }
-export interface ReviewTestChangeNote {
-  file: string;
-  line: number;
-  change: string;
-}
+/** The shared test-change note shape (Issue #4655); see {@link parseTestChangeNotes}. */
+export type ReviewTestChangeNote = TestChangeNote;
 export interface ReviewUnrelatedIssue {
   title: string;
   body: string;
@@ -205,7 +203,7 @@ export function parseReviewReply(text: string): ReviewReply {
     summary: r.summary,
     findings: r.findings.map(parseFinding),
     testChanges: r.testChanges,
-    testChangeNotes: r.testChangeNotes ?? [],
+    testChangeNotes: parseTestChangeNotes(r.testChangeNotes),
     unrelatedIssues: parseUnrelatedIssues(r.unrelatedIssues),
     checklist: parseChecklistVerdicts(r.checklist),
     closure: parseClosureEntryVerdicts(r.closure),
@@ -250,6 +248,104 @@ function parseUnrelatedIssues(raw: unknown): ReviewUnrelatedIssue[] {
     typeof i.title === "string" && i.title.trim() !== "" &&
     typeof i.body === "string" && i.body.trim() !== ""
   ).slice(0, MAX_UNRELATED_ISSUES);
+}
+
+const TEST_CHANGE_KINDS: readonly TestChangeKind[] = [
+  "expected-value",
+  "removed-case",
+  "added-skip",
+  "weakened-assertion",
+  "removed-file",
+  "other",
+  "replaced",
+  "threshold-reduced",
+];
+const TEST_CHANGE_VERDICTS: readonly NonNullable<TestChangeNote["verdict"]>[] =
+  ["justified", "unjustified", "owner"];
+const COVERAGE_ROLES = ["replacement", "existing", "gone"] as const;
+
+// A string field, trimmed; blank or non-string is absent.
+function trimmedText(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = v.trim();
+  return t === "" ? undefined : t;
+}
+
+function oneOf<T extends string>(
+  v: unknown,
+  allowed: readonly T[],
+): T | undefined {
+  return allowed.find((a) => a === v);
+}
+
+// Same coercion as parseFinding: a numeric string counts, anything else is 0.
+function coerceLine(raw: unknown): number {
+  const n = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+  return typeof n === "number" && Number.isFinite(n) ? n : 0;
+}
+
+function parseCoverage(raw: unknown): NonNullable<TestChangeNote["coverage"]> {
+  if (!Array.isArray(raw)) return [];
+  const refs: NonNullable<TestChangeNote["coverage"]> = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      continue;
+    }
+    const c = entry as Record<string, unknown>;
+    const role = oneOf(c.role, COVERAGE_ROLES);
+    const path = trimmedText(c.path);
+    if (role === undefined || path === undefined) continue;
+    const name = trimmedText(c.name);
+    refs.push({ role, path, ...(name === undefined ? {} : { name }) });
+  }
+  return refs;
+}
+
+/**
+ * Parse the reply's test-change notes (Issue #4655). A malformed note is
+ * dropped, never a reason to reject the review; a field of the wrong type is
+ * left out, so the policy sees it as absent and says what is missing.
+ */
+export function parseTestChangeNotes(raw: unknown): ReviewTestChangeNote[] {
+  if (!Array.isArray(raw)) return [];
+  const notes: ReviewTestChangeNote[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      continue;
+    }
+    const n = entry as Record<string, unknown>;
+    const file = trimmedText(n.file);
+    if (file === undefined) continue;
+    const kind = oneOf(n.kind, TEST_CHANGE_KINDS);
+    const verdict = oneOf(n.verdict, TEST_CHANGE_VERDICTS);
+    const failsWithoutChange = typeof n.failsWithoutChange === "boolean"
+      ? n.failsWithoutChange
+      : trimmedText(n.failsWithoutChange);
+    const criterionQuote = trimmedText(n.criterionQuote);
+    const requirementQuote = trimmedText(n.requirementQuote);
+    const obsolete = trimmedText(n.obsolete);
+    const remaining = trimmedText(n.remaining);
+    const verification = trimmedText(n.verification);
+    const ownerQuestion = trimmedText(n.ownerQuestion);
+    notes.push({
+      file,
+      line: coerceLine(n.line),
+      change: trimmedText(n.change) ?? "",
+      ...(kind === undefined ? {} : { kind }),
+      ...(criterionQuote === undefined ? {} : { criterionQuote }),
+      ...(failsWithoutChange === undefined ? {} : { failsWithoutChange }),
+      ...(verdict === undefined ? {} : { verdict }),
+      ...(obsolete === undefined ? {} : { obsolete }),
+      ...(remaining === undefined ? {} : { remaining }),
+      ...(Array.isArray(n.coverage)
+        ? { coverage: parseCoverage(n.coverage) }
+        : {}),
+      ...(requirementQuote === undefined ? {} : { requirementQuote }),
+      ...(verification === undefined ? {} : { verification }),
+      ...(ownerQuestion === undefined ? {} : { ownerQuestion }),
+    });
+  }
+  return notes;
 }
 
 /** Upper bound on the verifier's run time, whatever the caller allows. */

@@ -720,7 +720,7 @@ export function planRepoSettingsHardening(
       endpoint: `rulesets/${options.defaultBranch}`,
       body: JSON.stringify({ require_code_owner_review: false }),
       warning:
-        "A PR touching a path in .github/CODEOWNERS no longer waits for a human code owner: the fleet reviewer's approval merges it, and a PR that removes or loosens tests is held for the owner instead.",
+        "A PR touching a path in .github/CODEOWNERS no longer waits for a human code owner: the fleet reviewer's approval merges it, and the reviewer decides whether a PR that removes or loosens tests keeps meaningful regression protection, holding it for the owner only where the product contract is unclear or the repo overrides that.",
     });
   }
   // A milestone ruleset that enforces its status checks on branch CREATION
