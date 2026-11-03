@@ -62,6 +62,12 @@ soon as CI is green, the branch is current and the review is approved.
   throw; an outdated PR is armed before its branch is refreshed.
 - `tests/fleet_pr_babysitter_test.ts`: the strict-readiness branch refresh test
   injects a no-op arming step. No assertions were removed.
+- `tests/fixtures/fleet_babysitter_repair_preload.ts`: the offline repair
+  fixture answers the base-ancestry check (base already in the head) and its PR
+  is already armed, so the end-to-end credential test in
+  `tests/fleet_babysitter_app_test.ts` keeps exercising the repair path. That
+  test failed on CI without this fixture change (an unexpected `gh api` rules
+  lookup from arming) and passes locally with it.
 
 ## Merge verification
 
