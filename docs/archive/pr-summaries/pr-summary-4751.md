@@ -44,9 +44,9 @@ flowchart LR
 
 ### Undiscoverable Facts
 
-- The incident's worker log is not on this host. The cause is inferred from
-  code and from the evidence in the issue: no scan-skip section, all three
-  alerting repos hold a `Cargo.toml` (checked with `gh api`), and
+- The incident's worker log is not on this host. The cause is inferred from code
+  and from the evidence in the issue: no scan-skip section, all three alerting
+  repos hold a `Cargo.toml` (checked with `gh api`), and
   `GRQ-AutoTraderBackTesting` had no `work-on` work to show.
 - A local `findOldestIssue` run against the live repo (fresh approval store)
   selected a candidate, so the 39 issues are not refused by any per-issue gate
@@ -65,10 +65,11 @@ Backend-only change; no UI file touched. Verified by tests below.
   `runIdleDetectAudit` and `runIdleDecisionCensus`, with an injected cargo set.
 - Red checks (each break restored): dropped the cargo check in
   `resolveRepoScanState` → 2 resolver tests red; dropped
-  `!isRepoCargoDeferredSkipReason` from `deferredInversionRepos` → 2 red; removed
-  the formatter note → 1 red; removed the census `scanCargoDeferredRepos`
-  argument → the wiring `scanned=false` test red; removed the audit
-  `...scanCargoDeferred.keys()` union → the `mis_classification` test red.
+  `!isRepoCargoDeferredSkipReason` from `deferredInversionRepos` → 2 red;
+  removed the formatter note → 1 red; removed the census
+  `scanCargoDeferredRepos` argument → the wiring `scanned=false` test red;
+  removed the audit `...scanCargoDeferred.keys()` union → the
+  `mis_classification` test red.
 - Callers of `resolveRepoScanState` checked: `run_core_production_deps.ts` (now
   passes the new set; the only production caller) and the 2085, 898 and 1091
   tests, which omit the optional set and keep their behaviour.
@@ -79,9 +80,12 @@ Backend-only change; no UI file touched. Verified by tests below.
   Siblings grepped: `repo_backed_off`, `repo_held_in_flight`,
   `backedOffInversionRepos`, `inversion_repo_held`.
 - `./quality.sh` on the final head: every stage passed except `deno tests`
-  (32207 passed, 2 failed, parallel pass): `babysitter default heartbeat
-  resolves its checkout revision` (the host cannot download `@std/crypto` from
-  JSR) and `verifyResolvedTree - the repository's own task sees only the
-  allowlisted environment (Issue #4659)` (the temp checkout is not readable by
-  the `agent` account here). Neither touches the census. The serial pass did not
-  run after the parallel failure, so CI covers it.
+  (32207 passed, 2 failed, parallel pass):
+  `babysitter default heartbeat
+  resolves its checkout revision` (the host
+  cannot download `@std/crypto` from JSR) and
+  `verifyResolvedTree - the repository's own task sees only the
+  allowlisted environment (Issue #4659)`
+  (the temp checkout is not readable by the `agent` account here). Neither
+  touches the census. The serial pass did not run after the parallel failure, so
+  CI covers it.
