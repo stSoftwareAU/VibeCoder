@@ -42,10 +42,10 @@ send-back. Any other force-push still gets a fresh review. Closes #4723.
 
 ## Evidence
 
-Backend/CLI only. Tests (all in
-`worker/deno/tests/review_fleet_prs_gate_2675_test.ts`, six new "Issue #4723"
-tests) pass: `deno task test:unit tests/review_fleet_prs_gate_2675_test.ts` → 60
-passed, 0 failed; the 13 other importers of `gate.ts` → 187 passed, 0 failed.
+Backend/CLI only. At head `7cbefaf`, the gate suite contains seven new
+Issue #4723 tests and passes all 61 tests. The pass-level suite adds one
+Issue #4723 test. The gate, pass-level and earlier-findings suites passed 80
+tests together, with no failures.
 
 Docs updated: `.claude/skills/review-fleet-prs/SKILL.md` (rule 8) and
 `.claude/skills/review-fleet-prs/references/edge-cases.md` ("Version-only
@@ -54,39 +54,23 @@ other sentence became false.
 
 ## Test Plan
 
-Second review follow-up: export `isEarlierGap` from the gap builder and use it
-to accept structured wrappers only when their original finding is content.
-The regression builds real records with `earlierFindingGaps`: a content gap
-alone or alongside a plain finding stays `awaiting-fix`; a commit-message gap
-or text-only gap gets a fresh review. The new test failed before the fix
-(null instead of `awaiting-fix`). No existing assertion was removed.
-All 80 tests across the gate, pass-level wiring and earlier-findings suites
-pass, alongside targeted formatting, lint and type checking.
-
-Review follow-up: added a pass-level regression in
-`worker/deno/tests/review_fleet_prs_upkeep_failure_2891_test.ts` with an
-`app/dependabot` PR, a changes-requested record at X naming `a.ts`, a
-diverged X-to-head comparison, only Dependabot-authored base-to-head commits,
-and identical patches. It asserts one `awaiting-fix` skip and no ready PRs;
-the same fixture with a fleet author is ready for review. Removing `kind`
-from the production `pass` call makes this test fail (0 skips instead of 1);
-restoring it passes. No production behaviour changed in this follow-up.
-
-Follow-up validation: both relevant suites pass (66 tests), as do
-`check:manifests` (847 tests), formatting, lint, type checking, Markdown lint
-and the summary checks available without issue metadata. The full local gate
-reaches a Deno 2.9.5 macOS runtime panic in its parallel unit pass:
-`pledge test permissions called before restoring previous pledge`.
-All other runnable gate stages pass. Semgrep and Checkov lack their local
-binaries/images; config integration lacks its configuration. The PR's CI and
-the required checks on PR #4715, which produced the current base, are green.
+- The gate suite passes 61 tests with `deno task test:unit
+  tests/review_fleet_prs_gate_2675_test.ts`. Running that suite with
+  `review_fleet_prs_upkeep_failure_2891_test.ts` and
+  `earlier_findings_3784_test.ts` passes 80 tests.
+- The pass-level regression checks that a Dependabot re-cut is skipped as
+  `awaiting-fix`, while the same fleet-authored fixture is ready for review.
+  Removing `kind` from the production call made that regression fail.
 
 Covered: Dependabot diverged + identical patch → `awaiting-fix`; one
 non-Dependabot or null-author commit → review; fleet/omitted kind with diverged
 head → review (VibeCoder#3772 case); differing patch, version-only difference,
 or dropped file → review; undefined/empty findings, a finding on a non-file, or
 a non-file `earlier` → review (with a positive control naming `a.ts`);
-context-only change in an unnamed file → review (strict path).
+context-only change in an unnamed file → review (strict path). A structured
+content gap alone or alongside a plain finding → `awaiting-fix`; a COMMIT_MSG
+gap or text-only gap → review. The earlier-gap test failed before its fix.
+No existing assertion was removed.
 
 Red checks (each break reverted afterwards):
 
@@ -94,10 +78,3 @@ Red checks (each break reverted afterwards):
 - drop the author check → the commit-author test red
 - drop the findings content check → the content-findings test red
 - make the file loop non-strict → the strict-path and whole-patch tests red
-
-`./quality.sh`: all stages pass except `deno tests`, which has 3 failures in
-files this change does not touch, caused by the sandbox:
-`fleet_pr_babysitter_test.ts` (cannot load `jsr.io/@std/crypto`),
-`merge_fallback_issue_test.ts` (label creation through gh) and
-`milestone_resolution_gate_test.ts` (untrusted `/tmp` account). The serial pass
-did not run because of them. CI runs the same checks.
