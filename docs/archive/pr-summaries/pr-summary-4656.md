@@ -241,3 +241,21 @@ parallel test pass hit the host Deno permission-pledge panic; serial tests did
 not run. Base Quality run 41555343824 passed. Semgrep and the pinned Checkov
 were unavailable; config integration lacked configuration. Summary freshness
 requires the babysitter commit. No twinned transport classifier was found.
+
+## Transport classification review repair
+
+Clone and fetch failures now default to infrastructure after capability checks;
+push failures do too unless a ref rejection identifies a race or a server rule
+rejects the change. The obsolete phrase-list classification treated unknown
+download failures as code; local validation and server rule failures remain
+substantive. `worker/deno/tests/babysitter_fix_orchestration_test.ts::git transport outages and maintenance timeout do not spend repair attempts`
+covers the reported macOS, TLS, fetch and HTTP/2 diagnostics, unknown failures,
+push races and rule rejections. The local-validation test retains coverage of
+substantive local failures. No twinned operation-boundary classifier was found.
+The PR description identifies #4656 as partial work without closing it.
+
+The 28 orchestration tests pass. The local quality gate passes formatting,
+lint, type checking, completeness and static checks; its parallel test pass
+again hits the Deno permission-pledge panic, before the serial pass. Base
+Quality run 41555343824 passed all test shards. Semgrep and pinned Checkov
+are unavailable locally; summary freshness requires the babysitter's commit.

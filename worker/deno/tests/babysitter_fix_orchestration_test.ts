@@ -1010,7 +1010,7 @@ Deno.test("local validation diagnostics spend the budget even in timeout paths",
   );
   assertEquals(
     classifyBabysitterGitFailure(["push"], new Error(message)).blockerClass,
-    "code",
+    "infrastructure",
   );
   await withState(async (stateDir) => {
     const h = harness(stateDir);
@@ -1104,6 +1104,12 @@ Deno.test("git transport outages and maintenance timeout do not spend repair att
     "fatal: unable to access 'https://github.com/o/r': The requested URL returned error: 429",
     "Connection closed by 192.0.2.1 port 22\nfatal: Could not read from remote repository.",
     "kex_exchange_identification: Connection closed by remote host",
+    "ssh: connect to host github.com port 22: Operation timed out",
+    "fatal: unable to access repository: LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to github.com:443",
+    "fetch-pack: unexpected disconnect while reading sideband packet\nfatal: early EOF",
+    "fatal: early EOF\nfatal: index-pack failed",
+    "HTTP/2 stream 1 was not closed cleanly before end of the underlying stream",
+    "an unfamiliar download failure",
   ];
   for (const operation of ["clone", "fetch", "push"]) {
     for (const message of messages) {
@@ -1113,6 +1119,38 @@ Deno.test("git transport outages and maintenance timeout do not spend repair att
         "infrastructure",
       );
     }
+  }
+  for (
+    const message of [
+      "! [rejected] HEAD -> x (fetch first)",
+      "! [rejected] HEAD -> x (non-fast-forward)",
+    ]
+  ) {
+    assertEquals(
+      classifyBabysitterGitFailure(["push"], new Error(message)).blockerClass,
+      "race",
+    );
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      h.state.runFailures.push({ match: "git push", message });
+      await assertRejects(() => h.attempt());
+      const [record] = await records(stateDir);
+      assertEquals(record!.blockerClass, "race");
+      assertEquals(record!.attempts.substantive, 0);
+      assertEquals(h.state.markers.length, 0);
+    });
+  }
+  for (
+    const message of [
+      "! [remote rejected] HEAD -> x (pre-receive hook declined)",
+      "remote: error: GH013: Repository rule violations found",
+    ]
+  ) {
+    assertEquals(
+      classifyBabysitterGitFailure(["push"], new Error(message)).blockerClass,
+      "code",
+    );
   }
   const timeout =
     "TIMEOUT: git -c maintenance.autoDetach=false -c gc.autoDetach=false maintenance run --auto timed out after 1800s (Issue #619)";

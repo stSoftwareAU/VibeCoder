@@ -152,12 +152,19 @@ export function classifyBabysitterGitFailure(
   ) {
     return new BabysitterFailure(message, "capability");
   }
-  const transportFailure =
-    /could not resolve host|connection (?:timed out|reset|refused)|connection closed by [^\n]* port \d+\b|kex_exchange_identification|failed to connect|remote end hung up|rpc failed|remote: internal server error|http\s+(?:401|403|408|429|5\d\d)\b|the requested URL returned error: (?:408|429|5\d\d)\b|authentication failed|bad credentials|token expired|^(?:git(?: [a-z-]+)? failed: )?TIMEOUT: git (?:clone|fetch|push)\b|^git failed: (?:clone|fetch|push) timed out/i
-      .test(message);
+  if (operation === "push") {
+    if (
+      /\[remote rejected\]|pre-receive hook declined|\bGH0\d\d\b/i.test(message)
+    ) {
+      return new BabysitterFailure(message, "code");
+    }
+    if (/\[rejected\]/i.test(message)) {
+      return new BabysitterFailure(message, "race");
+    }
+  }
   return new BabysitterFailure(
     message,
-    (transport && transportFailure) ||
+    transport ||
       (operation === "maintenance" &&
         /^(?:git(?: [a-z-]+)? failed: )?TIMEOUT: git\b/i.test(
           message,
