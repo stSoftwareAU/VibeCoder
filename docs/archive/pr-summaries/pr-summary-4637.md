@@ -147,11 +147,12 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   passed.
 - `./quality.sh < /dev/null`: the first run failed on `completeness checks`
   (the new module and a `VIBE_`-prefixed constant name), the fixture used by
-  `fleet_babysitter_app_test.ts`, and two sandbox-only tests; those were fixed
-  and the affected tests re-run as listed. The gate was not re-run end to end
-  after the fixes because it takes about nine minutes here.
-
-<!-- vibe-quality-gate-skipped reason="full gate re-run after the last fixes did not fit the run budget; CI runs the same checks" -->
+  `fleet_babysitter_app_test.ts`, and two sandbox-only tests. After the fixes
+  the second full run passed every stage except `deno tests`, whose only two
+  failures are the sandbox-only tests named above (`babysitter default
+  heartbeat resolves its checkout revision`, which cannot download JSR metadata,
+  and `verifyResolvedTree - the repository's own task sees only the allowlisted
+  environment`, which cannot use a `/tmp` account); neither touches this change.
 
 ## Not done
 
