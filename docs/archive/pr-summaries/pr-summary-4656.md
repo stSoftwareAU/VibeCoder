@@ -232,8 +232,9 @@ failures through clone, fetch and push; mirror maintenance timeouts do too. A
 stale conflict now records and logs a five-minute mergeability recheck.
 `worker/deno/tests/babysitter_fix_orchestration_test.ts::git transport outages and maintenance timeout do not spend repair attempts`
 and `worker/deno/tests/babysitter_fix_orchestration_test.ts::stale conflict defers until GitHub recomputes mergeability`
-cover these paths. This PR no longer claims to close #4656: automated recovery
-for review, conflict and non-blocking CI handoffs remains outstanding.
+cover these paths. Automated recovery for review, conflict and non-blocking CI
+handoffs remains outstanding. The published body still has closing references;
+the current review proposes removing them.
 
 Validation: the 28 orchestration tests and seven merged push-flow tests pass.
 The local gate passed formatting, lint, type checking and completeness. Its
@@ -252,8 +253,28 @@ substantive. `worker/deno/tests/babysitter_fix_orchestration_test.ts::git transp
 covers the reported macOS, TLS, fetch and HTTP/2 diagnostics, unknown failures,
 push races and rule rejections. The local-validation test retains coverage of
 substantive local failures. No twinned operation-boundary classifier was found.
-The proposed PR description identifies #4656 as partial work and removes its
-closing references; the babysitter applies the proposal after validation.
+The earlier proposal identified #4656 as partial work, but the runner restored
+the dropped closing references. The current proposal removes them again for the
+babysitter to apply after validation.
+
+## Stderr and description review repair
+
+The obsolete scratch-file write had no consumer and could follow an agent's
+symlink. The runner now forwards stderr to its log and classifies a bounded
+tail in memory; the adapter's redacted message and category reach the failure.
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::agent stderr preserves the symlink target and reports authentication`
+covers the removal and remaining diagnostic path;
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::agent stderr forwards all chunks and retains a bounded tail`
+covers forwarding and the bound. The existing green-review handoff test covers
+bounded sessions. The complete PR body proposal removes the closing references
+because issue #4656 remains only partially addressed.
+
+Validation: all 32 orchestration tests passed, as did repository-wide Deno
+formatting, lint and type checks. The quality gate passed completeness,
+Markdown, Mermaid and chokepoint checks; its parallel tests hit the host Deno
+permission-pledge panic and the serial pass did not run. Base Quality run
+41555343824 passed. Semgrep, pinned Checkov and config integration were not
+available locally. Summary freshness requires the babysitter's commit.
 
 ## Provider failure review follow-up
 

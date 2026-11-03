@@ -15,6 +15,7 @@ import {
   type EscalationRequest,
   fix,
   type FixDeps,
+  forwardAgentStderr,
   observeTrackedPr,
   readSharedBabysitterAttempts,
   reconcileTrackedPr,
@@ -41,6 +42,7 @@ interface AgentScript {
   response?: string;
   expiresInMs?: number;
   elapsedMs?: number;
+  setupScratch?: (scratch: string) => Promise<void>;
 }
 
 function basePr(over: Record<string, unknown> = {}) {
@@ -184,6 +186,7 @@ function harness(
     );
     if (!await beforeSpawn()) return undefined;
     state.sessions++;
+    await script.setupScratch?.(agentOptions.scratch);
     state.prompts.push(agentOptions.prompt);
     if ((script.code ?? 0) === 0) {
       await Deno.writeTextFile(
@@ -589,6 +592,44 @@ Deno.test("provider and gh network failures do not spend repair attempts", async
     assertEquals(h.state.markers.length, 0);
     assert(record!.nextEligibleAt !== null);
   });
+});
+
+Deno.test("agent stderr preserves the symlink target and reports authentication", async () => {
+  await withState(async (stateDir) => {
+    const target = `${stateDir}/target`;
+    await Deno.mkdir(stateDir, { recursive: true });
+    await Deno.writeTextFile(target, "unchanged");
+    const h = harness(stateDir);
+    h.state.agents.push({
+      code: 1,
+      stderr: "HTTP 401 unauthorized",
+      setupScratch: (scratch) =>
+        Deno.symlink(target, `${scratch}/codex-stderr`),
+    });
+    await assertRejects(() => h.attempt(), Error, "authentication");
+    assertEquals(await Deno.readTextFile(target), "unchanged");
+  });
+});
+
+Deno.test("agent stderr forwards all chunks and retains a bounded tail", async () => {
+  const chunks = [
+    new Uint8Array(70_000).fill(65),
+    new TextEncoder().encode("end"),
+  ];
+  const forwarded: Uint8Array[] = [];
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const tail = await forwardAgentStderr(stream, (chunk) => {
+    forwarded.push(chunk);
+    return Promise.resolve();
+  });
+  assertEquals(forwarded, chunks);
+  assertEquals(tail.length, 65_536);
+  assert(tail.endsWith("end"));
 });
 
 Deno.test("an empty agent diagnostic retries and a reported retry-after is honoured", async () => {

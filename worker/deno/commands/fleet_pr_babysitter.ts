@@ -1054,6 +1054,29 @@ export function spawnBabysitterAgent(
   });
 }
 
+/** Forward agent diagnostics while retaining only a bounded tail for classification. */
+export async function forwardAgentStderr(
+  stream: ReadableStream<Uint8Array>,
+  write: (chunk: Uint8Array) => Promise<void> = async (chunk) => {
+    while (chunk.length) chunk = chunk.subarray(await Deno.stderr.write(chunk));
+  },
+): Promise<string> {
+  const limit = 64 * 1024;
+  let tail = new Uint8Array();
+  for await (const chunk of stream) {
+    await write(chunk);
+    const recent = chunk.subarray(Math.max(0, chunk.length - limit));
+    const previous = tail.subarray(
+      Math.max(0, tail.length + recent.length - limit),
+    );
+    const combined = new Uint8Array(previous.length + recent.length);
+    combined.set(previous);
+    combined.set(recent, previous.length);
+    tail = combined;
+  }
+  return new TextDecoder().decode(tail);
+}
+
 /** Mint a scoped credential and bound the child session to its expiry. */
 export async function startBabysitterAgent(
   app: BabysitterAppConfig,
@@ -1827,11 +1850,10 @@ export async function fix(
       );
       if (!child) return;
       const diagnostics = child.stderr
-        ? new Response(child.stderr).text().catch(() => "")
+        ? forwardAgentStderr(child.stderr)
         : Promise.resolve("");
       const result = await child.status;
       const stderr = await diagnostics;
-      await Deno.writeTextFile(`${scratch}/codex-stderr`, stderr);
       child = undefined;
       if (result.success && !renewalFailed) break;
       if (
@@ -1868,6 +1890,10 @@ export async function fix(
       throw new BabysitterFailure(
         `agent exited unsuccessfully with code ${result.code}${
           result.signal ? ` after ${result.signal}` : ""
+        }${
+          failure
+            ? `: ${failure.category}: ${redactSecrets(failure.message)}`
+            : ""
         }`,
         stderr && failure?.category === "task-failure" && !result.signal &&
           result.code !== 137 && result.code !== 143
