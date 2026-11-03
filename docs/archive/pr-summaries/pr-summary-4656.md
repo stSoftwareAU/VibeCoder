@@ -139,8 +139,8 @@ tested.
   `skip_auto_merge`; the babysitter does not merge itself.
 - Classification: failures raised by the agent, lock and head checks carry a
   structured class; the record is saved before the guarded marker write.
-- Orchestration tests and `docs/workflows/fleet-pr-babysitter.md` now match
-  the behaviour.
+- Orchestration tests and `docs/workflows/fleet-pr-babysitter.md` now match the
+  behaviour.
 - Not re-run in this turn: the full `./quality.sh` (it previously reported 7
   failures in files this change does not touch) and the coverage carry-over
   check, whose failure was the merge-base run of the two babysitter test files,
