@@ -129,6 +129,7 @@ interface Scenario {
   prCreateRateLimited?: boolean;
   /** `gh pr create` and the REST fallback both hit the secondary limit, so the PR is parked (Issue #4617). */
   prCreateDeferred?: boolean;
+  secondaryOnly?: boolean;
 }
 
 interface Outcome {
@@ -198,6 +199,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     issueComments: "",
     githubUser: "testbot",
     config,
+    ...(scenario.secondaryOnly ? { cycleDeadlineEpochMs: 1 } : {}),
   };
   const state: PhaseState = {
     branchName: `issue-${ISSUE}-mutation`,
@@ -219,6 +221,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         ghCalls.push(args);
         if (args[0] === "pr" && args[1] === "create") {
           prCreateCalls++;
+          if (scenario.secondaryOnly) {
+            return Promise.reject(
+              new Error("You have exceeded a secondary rate limit"),
+            );
+          }
           if (scenario.prCreateDeferred) {
             return Promise.reject(
               new Error(
@@ -232,6 +239,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
               new Error("GraphQL: API rate limit exceeded for user ID 1."),
             );
           }
+        }
+        if (scenario.prCreateRateLimited && args[0] !== "api") {
+          return Promise.reject(new Error("GraphQL: API rate limit exceeded"));
         }
         if (scenario.prCreateDeferred && args[0] === "api") {
           return Promise.reject(
@@ -882,9 +892,7 @@ Deno.test("completion - a held survivor on an existing PR converts it to a draft
   assertEquals(outcome.finalisePrCalls, 0);
 });
 
-Deno.test("completion - a held PR the REST fallback opens is converted to a draft and not armed", async () => {
-  // gh cannot open a draft on the primary quota, so the REST pulls endpoint
-  // raises the PR ready-for-review; the held PR must be turned back into a draft.
+Deno.test("completion - a held PR the REST fallback opens is a draft and not armed", async () => {
   const outcome = await runCompletion({
     mutation: completed([SURVIVOR]),
     workflow: CI_BLOCKING_WORKFLOW,
@@ -900,31 +908,49 @@ Deno.test("completion - a held PR the REST fallback opens is converted to a draf
     true,
     "the PR was opened through the REST fallback",
   );
-  const ready = prVerbCalls(outcome, "ready");
   assertEquals(
-    ready.some((args) => args.includes("--undo")),
+    outcome.ghCalls.some((args) =>
+      args[0] === "api" && args.includes("draft=true")
+    ),
     true,
-    "the REST-opened PR is turned back into a draft",
   );
+  const ready = prVerbCalls(outcome, "ready");
   assertEquals(
     ready.some((args) => !args.includes("--undo")),
     false,
     "the held PR is never marked ready",
   );
-  const edits = prVerbCalls(outcome, "edit");
   assertEquals(
-    edits.some((args) =>
-      flagValue(args, "--body").includes(DRAFT_CONTINUATION_MARKER)
-    ),
-    true,
-    "the PR body carries the hold marker",
-  );
-  assertEquals(
-    prVerbCalls(outcome, "merge").length,
+    prVerbCalls(outcome, "merge").filter((args) =>
+      !args.includes("--disable-auto")
+    ).length,
     0,
     "auto-merge is not armed",
   );
   assertEquals(outcome.finalisePrCalls, 0, "finalisePr is never called");
+});
+
+Deno.test("completion - secondary-only deferral parks the hold as a draft", async () => {
+  const outcome = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow: CI_BLOCKING_WORKFLOW,
+    secondaryOnly: true,
+  });
+  assertEquals(outcome.deferred.length, 1);
+  assertEquals(outcome.deferred[0]!.draft, true);
+  assertStringIncludes(outcome.deferred[0]!.body, DRAFT_CONTINUATION_MARKER);
+});
+
+Deno.test("completion - a near-limit summary keeps the held body within GitHub's limit", async () => {
+  const outcome = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow: CI_BLOCKING_WORKFLOW,
+    summary: SUMMARY + "x".repeat(65000),
+  });
+  const body = flagValue(createCall(outcome), "--body");
+  assertEquals(body.length <= 65536, true);
+  assertStringIncludes(body, DRAFT_CONTINUATION_MARKER);
+  assertStringIncludes(body, "shortened");
 });
 
 Deno.test("completion - the CI job's cargo mutants flags reach the worker's runner", async () => {

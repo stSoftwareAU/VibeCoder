@@ -77,7 +77,8 @@ This approximates "a required check or the job feeding it": a job that another
 job in the same workflow lists under `needs` is reported with that aggregator.
 The `cargo mutants` flags that choose the mutants or the build (`--package`,
 `--workspace`, `--features`, `--all-features`, `--no-default-features`,
-`--exclude`, `--exclude-re`, `--examine-re`, `-F`, `-E`, `--exclude-file`) are
+`--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`,
+`--regex`, `--examine-re`, `--examine-regex`, `-F`, `-f`, `--file`) are
 read from the job's command line and passed to the worker's own run, so it tries
 the mutants CI tries; diff, output, jobs and shuffle flags stay the worker's.
 Not evaluated or read: reusable-workflow `uses:` jobs, other mutation tools, job
@@ -114,8 +115,7 @@ blocking, because CI fails on them whatever the PR summary says:
    run continues the branch.
 
 A repository without such a job is unchanged: survivors are notes, auto-merge
-stays armed and summary exemptions still work. The review-fix path described
-below is not changed by this.
+stays armed and summary exemptions still work.
 
 ```mermaid
 flowchart TD
@@ -152,7 +152,8 @@ one), its lines cannot be separated and the check is reported as unable to run.
 The runner, mutator and mutant cap (40) are the PR-raise ones. So are
 `skip_mutation_check`, `mutation_check_budget_seconds`, the
 `quality_credentials` handling and the `exempt (untestable)` exemptions, which
-are read from the PR summary. The skip, runner, budget and credential sequence
+are read from the PR summary. On a repository with a blocking CI mutation job,
+summary exemptions are ignored in review-fix runs too; the push is not blocked. The skip, runner, budget and credential sequence
 is shared with the PR-raise gate (`invokeMutationCheck`).
 
 **Recovery.** An unexempted survivor is a drift-check hit. It goes into the

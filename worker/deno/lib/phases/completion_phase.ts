@@ -228,6 +228,7 @@ import {
 } from "../screenshot_gate_retry.ts";
 import {
   assessPrBodyLength,
+  degradePrBodyToGitHubLimit,
   PR_BODY_TOO_LONG_REASON,
   recoverFromPrBodyLength,
 } from "../pr_body_length.ts";
@@ -860,7 +861,13 @@ export async function recoverAndFinaliseExistingPr(
   // Issue #4617: a held pull request keeps the hold body, so this body write
   // does not drop the validation-incomplete note.
   const recoverBody = state.mutationHold
-    ? buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold)
+    ? degradePrBodyToGitHubLimit(
+      buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold),
+      {
+        summaryPath: `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
+        issueNumber,
+      },
+    ).body
     : prBody;
   // Update existing PR body with latest content
   await deps.pr.recoverExistingPr(repo, issueNumber, prUrl, recoverBody);
@@ -1446,6 +1453,7 @@ async function createPrViaRestFallback(
     body: pr.body,
     head: state.branchName,
     base: pr.base,
+    ...(state.mutationHold ? { draft: true } : {}),
     reviewers: ctx.config.prReviewers,
   }, {
     ghCommandFn: deps.github.runGhCommand,
@@ -3572,12 +3580,18 @@ async function completionBody(
   });
 
   // Issue #4617: a held pull request is raised as a draft whose body says
-  // validation is incomplete. The REST fallback below converts the PR to a
-  // draft after creation. The deferred-creation path (a GitHub secondary rate
+  // validation is incomplete. The REST fallback also opens it as a draft.
+  // The deferred-creation path (a GitHub secondary rate
   // limit parked the PR) records `draft: true`, so `lib/deferred_pr_drain.ts`
   // opens it later over REST as a draft; the drain never arms auto-merge.
   const createBody = state.mutationHold
-    ? buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold)
+    ? degradePrBodyToGitHubLimit(
+      buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold),
+      {
+        summaryPath: `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
+        issueNumber,
+      },
+    ).body
     : prBody;
 
   // Create PR via gh CLI
@@ -3784,9 +3798,8 @@ async function completionBody(
     if (prNumber > 0 && reviewRecord.length > 0) {
       await postPreprReviewRecord(repo, prNumber, reviewRecord, deps);
     }
-    // Issue #4617: the REST fallback cannot open a draft, so a held pull
-    // request it raised ready-for-review is made a draft here, its auto-merge
-    // disarmed and its body rewritten with the hold marker.
+    // Issue #4617: retain conversion as a fallback for an existing PR returned
+    // during creation, including its auto-merge and body safeguards.
     if (prNumber > 0 && state.mutationHold && clearedDuringCreate) {
       await convertToDraftContinuation({
         repo,

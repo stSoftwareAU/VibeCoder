@@ -123,15 +123,16 @@ through the real `workOnIssueCompletion`.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Use the repository's actual required CI contract (including jobs
+- **partial** — Use the repository's actual required CI contract (including jobs
   feeding an aggregator) — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a job another job needs is reported with its aggregator`
-  — reviewer: met (branch protection and required-check names are still not
-  read; the workflow files and `needs` are)
-- **met** — Run the applicable changed-code mutation command with CI-equivalent
+  — reviewer: partial — reason: branch protection and rulesets are not read,
+  any PR-triggered job counts, and reusable workflows are not followed
+- **partial** — Run the applicable changed-code mutation command with CI-equivalent
   flags after the final relevant edit — evidence:
   `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - the CI job's cargo mutants flags reach the worker's runner`
-  — reviewer: met (the worker still adds its own `--package` and `--in-diff`)
+  — reviewer: partial — reason: Deno task flags and review-fix cargo flags are
+  not carried; the worker also adds its own `--package` and `--in-diff`
 - **partial** — retain an explicit resumable state if validation cannot finish —
   evidence: `worker/deno/lib/mutation_gate.ts` (`incomplete`),
   `completion - a runner error with a blocking CI job holds the PR as an incomplete-validation draft`
@@ -202,3 +203,7 @@ through the real `workOnIssueCompletion`.
 - A repository whose workflows cannot be read, or whose `quality_credentials`
   cannot be resolved, is not held: the contract or check is unknown.
 - The review-fix path reports but never holds a push.
+
+Review follow-up: REST creation carries the draft flag, held bodies obey the
+GitHub length limit, and CI detection ignores installation commands while
+carrying the supported cargo-mutants filter flags.

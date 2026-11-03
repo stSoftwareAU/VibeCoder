@@ -621,7 +621,9 @@ Six checks run, each only when it applies:
    resolution counts as the run's own. It uses the PR-raise gate's runner,
    mutator, 40-mutant cap, `skip_mutation_check`,
    `mutation_check_budget_seconds`, `quality_credentials` handling and
-   `exempt (untestable)` exemptions read from the PR summary. An unexempted
+   `exempt (untestable)` exemptions read from the PR summary. On a repository
+   with a blocking CI mutation job, summary exemptions are ignored here too;
+   the push is still not blocked. An unexempted
    survivor is a hit for the recovery turn, which kills each survivor with a
    test and may remove or fix a line a survivor shows is dead or wrong. A
    budget, cap or runner error is reported, not a hit. Survivors still left are

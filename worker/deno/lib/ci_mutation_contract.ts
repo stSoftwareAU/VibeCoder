@@ -66,7 +66,7 @@ export interface CiMutationContract {
 
 type Mapping = Record<string, unknown>;
 
-const CARGO_MUTANTS = /\bcargo(?:\s+\+\S+)?[ -]mutants\b/;
+const CARGO_MUTANTS = /(?:^|[;&|]\s*)\s*cargo(?:\s+\+\S+)?[ -]mutants\b/;
 const DENO_MUTATION_TASK = /\bdeno\s+task\s+\S*mutat\S*/i;
 
 /** Only `*.yml` / `*.yaml` names are workflows. */
@@ -191,12 +191,18 @@ const VALUE_FLAGS = new Set([
   "--package",
   "-p",
   "--exclude",
+  "-e",
+  "--re",
+  "--regex",
+  "--examine-regex",
+  "--exclude-regex",
+  "-f",
+  "--file",
   "--exclude-re",
   "-E",
   "--examine-re",
   "-F",
   "--features",
-  "--exclude-file",
 ]);
 
 /** `cargo mutants` flags without a value. */

@@ -890,7 +890,7 @@ check (Issue #3393, `docs/mutation-check.md`) reports any added line whose
 mutation the tests do not catch; it does not stop the pull request, unless the
 repository's CI runs a blocking mutation job (Issue #4617). There a survivor that
 remains after the recovery turn holds the pull request as a draft that is not
-auto-merged; on the deferral path it is raised ready for review, a known gap
+auto-merged; on the deferral path it is parked with `draft: true` and opened as a draft by the drain
 (`docs/mutation-check.md`). A fix to an existing PR re-checks every branch its own commits add, not only those a
 review finding named.
 

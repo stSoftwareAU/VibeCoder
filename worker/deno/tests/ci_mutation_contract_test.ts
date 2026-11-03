@@ -461,6 +461,54 @@ Deno.test("hostile: a 200000-space run before a non-no-op tail returns promptly"
 
 import { extractCargoMutantsArgs } from "../lib/ci_mutation_contract.ts";
 
+Deno.test("installation does not count as a mutation run", async () => {
+  for (
+    const install of [
+      "cargo install --locked cargo-mutants",
+      "cargo binstall cargo-mutants",
+    ]
+  ) {
+    await withRepo({
+      "mutants.yml": prWorkflow(`${install}\n        cargo mutants || true`),
+    }, async (repo) => {
+      assertEquals((await findBlockingMutationJob(repo)).blocking, null);
+    });
+    await withRepo({
+      "mutants.yml": prWorkflow(
+        `${install}\n        cargo mutants --file 'src/core/**'`,
+      ),
+    }, async (repo) => {
+      assertEquals((await findBlockingMutationJob(repo)).blocking?.cargoArgs, [
+        "--file",
+        "src/core/**",
+      ]);
+    });
+  }
+});
+
+Deno.test("cargo mutant filter aliases are carried", () => {
+  for (
+    const flag of [
+      "-e",
+      "--re",
+      "--regex",
+      "--examine-regex",
+      "--exclude-regex",
+      "-f",
+      "--file",
+    ]
+  ) {
+    assertEquals(extractCargoMutantsArgs(`cargo mutants ${flag} pattern`), [
+      flag,
+      "pattern",
+    ]);
+  }
+  assertEquals(
+    extractCargoMutantsArgs("cargo mutants --exclude-file pattern"),
+    [],
+  );
+});
+
 Deno.test("a workflow entry that is a directory named like a workflow is skipped", async () => {
   await withRepo(undefined, async (repo) => {
     await Deno.mkdir(`${repo}/.github/workflows/mutants.yml`, {
