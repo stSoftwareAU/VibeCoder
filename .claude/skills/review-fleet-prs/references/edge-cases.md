@@ -141,8 +141,12 @@ all three hold:
 
 - the skill's latest counted review is that hold, at an earlier commit;
 - this host's `log.jsonl` has a `held` record for that commit made under the
-  current `HOLD_POLICY_VERSION` (in `scripts/review_log.ts`). A held record
-  without a `holdPolicy` field counts as version 1;
+  current `HOLD_POLICY_VERSION`, which is 2 (in `scripts/review_log.ts`). The
+  version of a hold is read from its hold marker `<!-- vibe-hold-policy v=N -->`
+  on a line of its own in the review body (a marker quoted in prose does not
+  count); a held review whose body lacks the marker counts as version 1. A hold
+  under an older version is not a review at its head, so the PR is reviewed
+  afresh once even when its head is unchanged;
 - `ownDiffUnchanged` confirms the PR's own diff is unchanged since the hold.
 
 A hold has no findings, so the comparison takes its strict path: context lines
@@ -157,5 +161,9 @@ as a fix commit or a conflict resolution.
 The comparison covers only the PR's own diff. Unchanged own-diff text does not
 prove that a base dependency did not change. The skip is the same own-diff
 comparison used for send-backs. The reassessment triggers are a change to the
-own diff, and a bump of `HOLD_POLICY_VERSION`, which makes each existing hold
-reassessed once even when the head is unchanged.
+own diff, and the hold policy version: `HOLD_POLICY_VERSION` is 2, so each
+existing hold made under version 1 is reassessed once, even when the head is
+unchanged. A new policy is a reason to reassess, not automatic approval. The
+reviewer removes only its own obsolete `needs-human` label, and only after a
+successful fresh assessment; an independent human or security hold is
+preserved.

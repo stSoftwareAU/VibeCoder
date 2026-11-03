@@ -10,11 +10,16 @@ import {
   runRepositoryCommand,
 } from "../lib/untrusted_gate_spawn.ts";
 import type { untrustedSpawn } from "../lib/quality_gate_phase.ts";
+import { untrustedAccountOf } from "../lib/quality_gate_phase.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
 import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
-import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
+import {
+  ALLOWED_ENV_NAMES,
+  asUntrustedUser,
+  canRunAsUntrustedUser,
+} from "../lib/untrusted_command_env.ts";
 
 type Spawned = Awaited<ReturnType<typeof runWithTimeout>>;
 type SpawnOptions = Parameters<typeof runWithTimeout>[2];
@@ -548,36 +553,233 @@ Deno.test("a cargo target the environment already names is not probed for writab
   });
 });
 
-Deno.test("declared credentials survive an available agent account", async () => {
+/** The command the credential tests name. Its text is what the spawns record. */
+const CHANNEL_SCRIPT = 'printf "%s|%s" "$NPM_TOKEN" "${GH_TOKEN-unset}"';
+
+/**
+ * Decode a credential channel payload (Issue #4705): a count line, then one
+ * `NAME=base64` line per credential.
+ */
+function decodeChannel(stdin: string): Record<string, string> {
+  const [countLine = "", ...rest] = stdin.split("\n");
+  const lines = rest.filter((line) => line.length > 0);
+  assertEquals(Number(countLine), lines.length);
+  const decoded: Record<string, string> = {};
+  for (const line of lines) {
+    const at = line.indexOf("=");
+    const bytes = Uint8Array.from(
+      atob(line.slice(at + 1)),
+      (char) => char.charCodeAt(0),
+    );
+    decoded[line.slice(0, at)] = new TextDecoder().decode(bytes);
+  }
+  return decoded;
+}
+
+/** A spawn that records each call. The probe succeeds; the command answers `answer`. */
+function spawnAnsweringCommand(answer: Spawned) {
+  const calls: Call[] = [];
+  const spawn: typeof runWithTimeout = async (executable, args, options) => {
+    calls.push({ executable, args: [...args], options });
+    return calls.length === 1 ? { ok: true, value: OK } : answer;
+  };
+  return { calls, spawn };
+}
+
+/** Run {@link CHANNEL_SCRIPT} as `agent` through the recording `spawn`. */
+function runChannelCommand(
+  cwd: string,
+  spawn: typeof runWithTimeout,
+  credentials: Record<string, string>,
+) {
+  return runRepositoryCommand(
+    "/bin/sh",
+    ["-c", CHANNEL_SCRIPT],
+    { cwd, timeoutMs: 1000 },
+    {
+      spawn,
+      drop: agentDrop,
+      source: SOURCE,
+      trimRefused: false,
+      credentials: async () => credentials,
+    },
+  );
+}
+
+Deno.test("declared credentials cross sudo on the stdin channel and the account stays agent (Issue #4705)", async () => {
   await withCheckout(async (cwd) => {
-    const calls: Call[] = [];
-    const spawn: typeof runWithTimeout = async (executable, args, options) => {
-      calls.push({ executable, args, options });
-      return await runWithTimeout(executable, args, options);
-    };
-    const result = await runRepositoryCommand(
+    const { calls, spawn } = recordingSpawn();
+    const { result, lines } = await captureConsoleError(() =>
+      runChannelCommand(cwd, spawn, { NPM_TOKEN: "declared" })
+    );
+    assert(result.ok);
+    assertEquals(calls.length, 2);
+    const final = callAt(calls, 1);
+    assertEquals(final.executable, "sudo");
+    assertEquals(
+      untrustedAccountOf([final.executable, ...final.args]),
+      "agent",
+    );
+    assertEquals(final.args.slice(0, 4), ["-n", "-u", "agent", "--"]);
+    assertEquals(final.args.slice(4, 6), ["sh", "-c"]);
+    assert(!final.args.join(" ").includes("declared"));
+    assertEquals(final.options.clearEnv, true);
+    assertEquals(final.options.env?.GH_TOKEN, undefined);
+    const stdin = final.options.stdin;
+    assert(stdin !== undefined);
+    assertEquals(decodeChannel(stdin), { NPM_TOKEN: "declared" });
+    assertEquals(lines.filter((line) => line.includes("[SECURITY]")), []);
+  });
+});
+
+Deno.test("only the declared names are carried, never an ambient credential (Issue #4705)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    // SOURCE holds GH_TOKEN and ANTHROPIC_API_KEY, which nothing declared.
+    await runChannelCommand(cwd, spawn, {
+      NPM_TOKEN: "npm-4705",
+      REGISTRY_TOKEN: "registry-4705",
+    });
+    const final = callAt(calls, 1);
+    const stdin = final.options.stdin;
+    assert(stdin !== undefined);
+    assertEquals(
+      decodeChannel(stdin),
+      { NPM_TOKEN: "npm-4705", REGISTRY_TOKEN: "registry-4705" },
+    );
+    assertEquals(final.options.env?.GH_TOKEN, undefined);
+    assertEquals(final.options.env?.ANTHROPIC_API_KEY, undefined);
+  });
+});
+
+Deno.test("a wrapper fault leaves the command to CI and names the fault, never the value (Issue #4705)", async () => {
+  await withCheckout(async (cwd) => {
+    const { spawn } = spawnAnsweringCommand({
+      ok: true,
+      value: {
+        ...OK,
+        success: false,
+        code: 78,
+        stderr: "[vibe-credential-channel] undecodable credential NPM_TOKEN\n",
+      },
+    });
+    const result = await runChannelCommand(cwd, spawn, {
+      NPM_TOKEN: "declared-4705-value",
+    });
+    assert(!result.ok);
+    assert(result.error instanceof GateAccountUnavailable);
+    assert(
+      result.error.message.includes(
+        "[vibe-credential-channel] undecodable credential NPM_TOKEN",
+      ),
+    );
+    assert(result.error.message.includes("Issue #4705"));
+    assert(!result.error.message.includes("declared-4705-value"));
+  });
+});
+
+Deno.test("exit 78 without the channel marker is an ordinary result (Issue #4705)", async () => {
+  await withCheckout(async (cwd) => {
+    const { spawn } = spawnAnsweringCommand({
+      ok: true,
+      value: {
+        ...OK,
+        success: false,
+        code: 78,
+        stderr: "the command's own failure\n",
+      },
+    });
+    const result = await runChannelCommand(cwd, spawn, {
+      NPM_TOKEN: "declared-4705-value",
+    });
+    assert(result.ok);
+    assertEquals(result.value.code, 78);
+  });
+});
+
+Deno.test("the channel marker with no declared credentials is the command's own result, not a fault (Issue #4705)", async () => {
+  await withCheckout(async (cwd) => {
+    const { spawn } = spawnAnsweringCommand({
+      ok: true,
+      value: {
+        ...OK,
+        success: false,
+        code: 78,
+        stderr: "[vibe-credential-channel] printed by the command itself\n",
+      },
+    });
+    const result = await runChannelCommand(cwd, spawn, {});
+    assert(result.ok);
+    assertEquals(result.value.code, 78);
+  });
+});
+
+Deno.test("an invalid declared name is a configuration fault that names it and stops the command (Issue #4705)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    const result = await runChannelCommand(cwd, spawn, {
+      "NPM-TOKEN": "declared-4705-value",
+    });
+    assert(!result.ok);
+    assert(!(result.error instanceof GateAccountUnavailable));
+    assert(result.error.message.includes("NPM-TOKEN"));
+    assert(!result.error.message.includes("declared-4705-value"));
+    assertEquals(
+      calls.filter((call) => call.args.includes(CHANNEL_SCRIPT)).length,
+      0,
+    );
+  });
+});
+
+Deno.test("no declared credentials means no wrapper and no stdin (Issue #4705)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    const result = await runChannelCommand(cwd, spawn, {});
+    assert(result.ok);
+    const final = callAt(calls, 1);
+    assertEquals(
+      final.args,
+      ["-n", "-u", "agent", "--", "/bin/sh", "-c", CHANNEL_SCRIPT],
+    );
+    assertEquals(final.options.stdin, undefined);
+  });
+});
+
+/** Run {@link CHANNEL_SCRIPT} for real as `agent` through the host's sudo. */
+async function runAsAgentForReal(credentials: Record<string, string>) {
+  const cwd = await Deno.makeTempDir({ prefix: "vibe_4705_real_" });
+  try {
+    await Deno.chmod(cwd, 0o777);
+    return await runRepositoryCommand(
       "/bin/sh",
-      ["-c", 'printf %s "$NPM_TOKEN"'],
-      { cwd, timeoutMs: 1000 },
+      ["-c", CHANNEL_SCRIPT],
+      { cwd, timeoutMs: 20000 },
       {
-        spawn,
-        drop: agentDrop,
-        source: SOURCE,
+        drop: (cmd) => Promise.resolve(asUntrustedUser(cmd, { enabled: true })),
+        source: { PATH: "/usr/bin:/bin", GH_TOKEN: "ambient-secret" },
         trimRefused: false,
-        credentials: async () => ({ NPM_TOKEN: "declared" }),
+        credentials: async () => credentials,
       },
     );
-    assertEquals(calls.length, 1);
-    const final = callAt(calls, 0);
-    assertEquals(final.executable, "/bin/sh");
-    assert(result.ok);
-    assertEquals(result.value.code, 0);
-    assertEquals(result.value.stdout, "declared");
-    assertEquals(final.options.env?.NPM_TOKEN, "declared");
-    assertEquals(final.options.env?.GH_TOKEN, undefined);
-    assertEquals(final.options.clearEnv, true);
-    assert(!final.args.join(" ").includes("declared"));
-  });
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+}
+
+Deno.test("a declared credential reaches a real agent command through sudo (Issue #4705)", async () => {
+  if (!await canRunAsUntrustedUser()) return;
+  const result = await runAsAgentForReal({ NPM_TOKEN: "synthetic-4705" });
+  assert(result.ok);
+  assertEquals(result.value.code, 0);
+  assertEquals(result.value.stdout, "synthetic-4705|unset");
+});
+
+Deno.test("with no declared credential a real agent command sees neither (Issue #4705)", async () => {
+  if (!await canRunAsUntrustedUser()) return;
+  const result = await runAsAgentForReal({});
+  assert(result.ok);
+  assertEquals(result.value.code, 0);
+  assertEquals(result.value.stdout, "|unset");
 });
 
 Deno.test("real probe permission verdicts", async () => {

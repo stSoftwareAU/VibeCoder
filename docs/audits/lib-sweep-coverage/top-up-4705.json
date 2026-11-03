@@ -1,0 +1,12 @@
+{
+  "issue": 4705,
+  "chunk": "top-up-4705",
+  "title": "top-up: credential channel through sudo for declared quality credentials",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4705",
+  "definition": "The module that carries a repository's declared quality_credentials across sudo's env_reset to the agent-account command, on the stdin pipe of a fixed sh -c wrapper.",
+  "status": "claimed",
+  "sweptAt": "0a4d803ab862753bd35fcf39f5df4b3c91545504",
+  "paths": [
+    "worker/deno/lib/credential_channel.ts"
+  ]
+}

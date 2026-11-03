@@ -52,7 +52,13 @@ Docs updated: `.claude/skills/review-fleet-prs/SKILL.md` (rule 8) and
 re-bumps"). Grepped both for `force-push`, `ancestor`, `ahead`, `diverged`; no
 other sentence became false.
 
+The merge conflict in the gate test imports retains both the Dependabot
+finding type and the base branch's hold-policy marker for their tests.
+
 ## Test Plan
+
+- After resolving the import conflict, `deno fmt --check`, `deno lint` and
+  `deno check '**/*.ts'` passed from `worker/deno`.
 
 - The gate suite passes 61 tests with `deno task test:unit
   tests/review_fleet_prs_gate_2675_test.ts`. Running that suite with

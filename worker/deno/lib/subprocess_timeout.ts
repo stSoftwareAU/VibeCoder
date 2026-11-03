@@ -236,6 +236,13 @@ export async function runWithTimeout(
     /** Start from an empty environment rather than inheriting the worker's. */
     clearEnv?: boolean;
     /**
+     * Text written to the child's stdin, then closed (Issue #4705). Omitted,
+     * the child's stdin is /dev/null, as it always was. A child that exits
+     * before reading the text is not an error: its exit status and stderr
+     * carry the cause.
+     */
+    stdin?: string;
+    /**
      * Return whatever the child printed before it was killed on timeout,
      * instead of empty streams (Issue #806).
      *
@@ -280,7 +287,7 @@ export async function runWithTimeout(
       cwd: options?.cwd,
       ...(options?.env ? { env: options.env } : {}),
       ...(options?.clearEnv ? { clearEnv: true } : {}),
-      stdin: "null",
+      stdin: options?.stdin === undefined ? "null" : "piped",
       stdout: options?.quiet ? "null" : "piped",
       // stderr is always piped + captured. Muting stderr at the OS
       // level discards exit-trap diagnostics from helper scripts
@@ -291,6 +298,13 @@ export async function runWithTimeout(
     });
 
     const child = command.spawn();
+    // The write starts now and runs beside the wait; it is awaited below.
+    const stdinDone = options?.stdin === undefined
+      ? undefined
+      : writeChildStdin(child, options.stdin);
+    // A timed-out call returns without awaiting the write, so a failure there
+    // must not surface as an unhandled rejection.
+    stdinDone?.catch(() => {});
     const outcome = await waitForChildExit(
       child,
       controller.signal,
@@ -343,6 +357,7 @@ export async function runWithTimeout(
       };
     }
 
+    if (stdinDone) await stdinDone;
     const output = outcome.output;
     return {
       ok: true,
@@ -396,6 +411,28 @@ export function isCommandTimeoutError(error: unknown): error is Error {
 /** After a timeout, how long the child has to exit on SIGTERM before SIGKILL. */
 const TIMEOUT_KILL_GRACE_MS = 5_000;
 
+/**
+ * Write `text` to a spawned child's stdin, then close it (Issue #4705).
+ *
+ * A `BrokenPipe` is the child exiting before it read everything: its exit
+ * status and stderr carry the cause, and a wrapper that expects more input
+ * reports the short stream itself. Only that error is swallowed; any other
+ * failure is rethrown. The text is never logged.
+ */
+async function writeChildStdin(
+  child: Deno.ChildProcess,
+  text: string,
+): Promise<void> {
+  const writer = child.stdin.getWriter();
+  try {
+    await writer.write(new TextEncoder().encode(text));
+    await writer.close();
+  } catch (error: unknown) {
+    if (error instanceof Deno.errors.BrokenPipe) return;
+    throw error;
+  }
+}
+
 /** Read `reader` to its end. A cancelled reader ends early, keeping its bytes. */
 async function drainReader(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -432,9 +469,16 @@ async function drainReader(
  */
 export async function commandOutputWithTimeout(
   executable: string,
-  options: Deno.CommandOptions & { timeoutMs: number },
+  options: Deno.CommandOptions & {
+    timeoutMs: number;
+    /**
+     * Text written to the child's stdin, then closed (Issue #4705). When set,
+     * stdin is piped; a child that exits before reading is not an error.
+     */
+    stdinText?: string;
+  },
 ): Promise<Deno.CommandOutput> {
-  const { timeoutMs, ...commandOptions } = options;
+  const { timeoutMs, stdinText, ...commandOptions } = options;
   if (!(timeoutMs > 0)) {
     throw new Error(`${executable} timed out after ${timeoutMs}ms`);
   }
@@ -459,10 +503,19 @@ export async function commandOutputWithTimeout(
   try {
     child = new Deno.Command(executable, {
       ...commandOptions,
+      ...(stdinText === undefined ? {} : { stdin: "piped" as const }),
       stdout: stdoutMode,
       stderr: stderrMode,
       signal: controller.signal,
     }).spawn();
+    // The write starts now and runs beside the collection; it is awaited
+    // after the child exits, and only on the success path (Issue #4705).
+    const stdinDone = stdinText === undefined
+      ? undefined
+      : writeChildStdin(child, stdinText);
+    // A timed-out call throws without awaiting the write, so a failure there
+    // must not surface as an unhandled rejection.
+    stdinDone?.catch(() => {});
     const empty = Promise.resolve(new Uint8Array(0));
     const collect = (stream: ReadableStream<Uint8Array>) => {
       const reader = stream.getReader();
@@ -480,6 +533,7 @@ export async function commandOutputWithTimeout(
     if (controller.signal.aborted) {
       throw new Error(`${executable} timed out after ${timeoutMs}ms`);
     }
+    if (stdinDone) await stdinDone;
     return { ...status, stdout, stderr };
   } catch (error) {
     if (
