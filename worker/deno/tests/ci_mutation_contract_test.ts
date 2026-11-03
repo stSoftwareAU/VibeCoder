@@ -16,7 +16,85 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { findBlockingMutationJob } from "../lib/ci_mutation_contract.ts";
+import {
+  blockingMutationLine,
+  findBlockingMutationJob,
+} from "../lib/ci_mutation_contract.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
+
+Deno.test("symlinked workflows outside the checkout are unreadable", async () => {
+  await withRepo({
+    "outside.yml":
+      "on: pull_request\njobs:\n  outside_job:\n    steps:\n      - run: cargo mutants\n",
+  }, async (outside) => {
+    await withRepo({}, async (repo) => {
+      await Deno.symlink(
+        `${outside}/.github/workflows/outside.yml`,
+        `${repo}/.github/workflows/link.yml`,
+      );
+      assertEquals(await findBlockingMutationJob(repo), {
+        blocking: null,
+        unreadable: ["link.yml"],
+      });
+    });
+  });
+});
+
+Deno.test("oversized workflows are unreadable before parsing", async () => {
+  await withRepo({
+    "large.yml":
+      "on: pull_request\njobs:\n  mutants:\n    steps:\n      - run: cargo mutants\n#" +
+      "x".repeat(1024 * 1024),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: ["large.yml"],
+    });
+  });
+});
+
+Deno.test("continued workflow lines have linear growth", () => {
+  assertEquals(
+    assertLinearGrowth(
+      "continued workflow lines",
+      (n) => "a \\\n".repeat(n),
+      (run) => blockingMutationLine({ steps: [{ run }] }),
+      { baseChars: 20000 },
+    ),
+    null,
+  );
+});
+
+Deno.test("repeated aliased steps are scanned once across jobs", () => {
+  let scans = 0;
+  const step = {
+    get run() {
+      scans++;
+      if (scans > 2) throw new Error("aliased run scanned again");
+      return "a \\\n".repeat(80000);
+    },
+  };
+  const seen = new WeakSet<object>();
+  for (let i = 0; i < 100; i++) {
+    assertEquals(
+      blockingMutationLine({ steps: Array(100).fill(step) }, seen),
+      null,
+    );
+  }
+  assertEquals(scans, 2);
+});
+
+Deno.test("many continued lines and YAML step aliases remain non-blocking", async () => {
+  const workflow =
+    "on: pull_request\njobs:\n  check:\n    steps:\n      - &s\n        run: |\n" +
+    "          a \\\n".repeat(40000) + "      - *s\n".repeat(100);
+  await withRepo({ "aliases.yml": workflow }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
 
 /**
  * Creates a temporary repository holding the given workflow files under

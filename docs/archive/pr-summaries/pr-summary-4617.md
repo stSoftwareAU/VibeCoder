@@ -49,6 +49,10 @@ flowchart TD
   `if:`/path filters are not evaluated and reusable-workflow callers are not
   followed (the module and `docs/mutation-check.md` say so). An unreadable
   workflow is logged and read as unknown, never as a pass.
+  Only regular files up to 1 MiB are read, with bounded reads if a file grows;
+  skipped symlinks and oversized files are reported as unreadable. Continued
+  lines are collected and joined once, and YAML step aliases are scanned only
+  once per file, including aliases shared across jobs.
 - On a blocking-CI repository a survivor for the matching language, or a check
   that cannot finish (runner error, missing tool, baseline failure, worker fault, exhausted budget or
   mutant cap), holds the PR as a draft. The incomplete case carries an
@@ -85,6 +89,11 @@ mutation verdict, completion phase, deferral and review-fix paths.
   aggregator reporting and scope extraction after `;`, `&&` and `||`.
   Hostile inputs include a separator followed by 200000 spaces and no cargo,
   cargo whitespace, toolchain text, a Deno task name and a non-no-op tail.
+  Reader regressions cover a symlink outside the checkout and an oversized
+  workflow, both reported unreadable without a blocking job. Continuation
+  joining has an N/4N growth guard; a getter counts reads across repeated step
+  aliases and jobs. A real YAML fixture combines 40000 continued lines with
+  100 aliases. The detector suite runs in the serial pass for its growth guard.
 - `worker/deno/tests/mutation_gate_test.ts`: matching CI ignores summary
   exemptions; mismatched tools retain exemptions in both language directions;
   errors, budget, cap and hostile job labels retain their coverage.
@@ -160,6 +169,12 @@ mutation verdict, completion phase, deferral and review-fix paths.
   tool field; completion hold fixtures now return Rust for cargo CI, and the
   review-fix hold fixture uses a Deno CI task for its Deno result. Those
   fixtures keep exercising the original hold behaviour with matching tools.
+- Reader regressions failed before the fix: the symlink and oversized workflow
+  both produced a blocking job, continued-line growth exceeded the linear
+  allowance (24 ms at N versus 479 ms at 4N), and the counted alias guard
+  detected repeated scanning. No duplicate reader or continuation helper was
+  found; both callers use the same detector. The operator manual now records
+  the file cap and alias handling.
 - Both production callers pass the tool to the shared `evaluateMutationGate`;
   it owns language matching, so completion and review fixes use one rule.
   No second detector or verdict implementation was found.
@@ -167,7 +182,9 @@ mutation verdict, completion phase, deferral and review-fix paths.
   review workflow. `docs/workflows/pr-feedback.md` was corrected earlier in
   this PR; it is not an unchanged-hit claim. The coding-standard sentence and
   its prompt twin remain aligned.
-- Results: the six focused files passed (180 tests); full-tree `deno fmt`,
+- Results: the six focused files passed (238 tests), covering the detector,
+  mutation gate, completion, review-fix, parallel-unsafe manifest and test-pass
+  planner; full-tree `deno fmt`,
   `deno lint`, `deno check`, Mermaid and Markdown lint passed. Manifest checks
   passed (847 tests, one existing ignored case). `pr-summary-check` reported
   zero blocked gates; closure, independent review and reproduction were not
@@ -177,7 +194,9 @@ mutation verdict, completion phase, deferral and review-fix paths.
   panic: `pledge test permissions called before restoring previous pledge`.
   The serial pass did not run after that crash. The base branch merge (PR
   #4715, Quality run 41555343824) and the existing PR head (Quality run
-  41557562405) passed all CI test shards, confirmed with `gh`.
+  41562135230) passed all CI test shards, confirmed with `gh`. PR #4715's
+  checked head is `b223dc4d391dd328b6cfa4600469a2a9507a598f` and its merge
+  commit is the checkout's `origin/main` (`0a4d803a`).
 - Local Semgrep and Checkov were unavailable (no installed binary or cached
   container); config integration was skipped because no local config exists.
   CI remains authoritative for those checks. No tests were skipped or changed

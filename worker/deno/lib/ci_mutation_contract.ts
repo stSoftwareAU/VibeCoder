@@ -28,8 +28,10 @@
  * command (package, features, exclude patterns) are carried so the worker's
  * run uses them (see `extractCargoMutantsArgs`).
  *
- * Files that cannot be read or parsed are reported in `unreadable` rather than
- * being treated as non-blocking silently, so the caller can log them.
+ * Files that cannot be read or parsed, symlinks and files over 1 MiB are
+ * reported in `unreadable` rather than being treated as non-blocking silently,
+ * so the caller can log them. Script continuation joins are linear and each
+ * YAML step mapping is scanned once per file, including aliased mappings.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -87,16 +89,21 @@ function isTrueFlag(value: unknown): boolean {
 
 /**
  * Sorted names of the workflow files directly under `.github/workflows/`, or
- * `null` when that directory does not exist. Any other read error propagates.
+ * `null` when that directory does not exist. Non-directory entries that are
+ * not regular files (including symlinks) are reported as unreadable. Any other
+ * read error propagates.
  */
-async function listWorkflowFiles(repoPath: string): Promise<string[] | null> {
+async function listWorkflowFiles(
+  repoPath: string,
+  unreadable: string[],
+): Promise<string[] | null> {
   const dir = `${repoPath}/${WORKFLOWS_DIR}`;
   const names: string[] = [];
   try {
     for await (const entry of Deno.readDir(dir)) {
-      if (!entry.isDirectory && isWorkflowName(entry.name)) {
-        names.push(entry.name);
-      }
+      if (!isWorkflowName(entry.name)) continue;
+      if (entry.isFile) names.push(entry.name);
+      else if (!entry.isDirectory) unreadable.push(entry.name);
     }
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return null;
@@ -148,33 +155,41 @@ function isNonFailing(line: string): boolean {
  */
 function logicalLines(run: string): string[] {
   const lines: string[] = [];
-  let carry: string | null = null;
+  let parts: string[] = [];
   for (const raw of run.split("\n")) {
-    const text: string = carry === null ? raw : `${carry} ${raw.trimStart()}`;
-    const trimmed: string = text.trimEnd();
+    const text = parts.length === 0 ? raw : raw.trimStart();
+    const trimmed = text.trimEnd();
     if (trimmed.endsWith("\\")) {
-      carry = trimmed.slice(0, -1).trimEnd();
+      parts.push(trimmed.slice(0, -1).trimEnd());
     } else {
-      lines.push(text);
-      carry = null;
+      parts.push(text);
+      lines.push(parts.join(" "));
+      parts = [];
     }
   }
-  if (carry !== null) lines.push(carry);
+  if (parts.length > 0) lines.push(parts.join(" "));
   return lines;
 }
 
 /**
  * The first blocking mutation command line of a job (the line `cargoArgs` is
  * read from), or `null` when no step of the job runs the tool in a way that
- * can fail it.
+ * can fail it. Share `seen` across a file's jobs to bound alias scanning.
  */
-function blockingMutationLine(job: Mapping): string | null {
+export function blockingMutationLine(
+  job: Mapping,
+  seen = new WeakSet<object>(),
+): string | null {
   if (isTrueFlag(job["continue-on-error"])) return null;
   const steps = job.steps;
   if (!Array.isArray(steps)) return null;
   for (const step of steps) {
+    // YAML aliases share object identity, including across jobs. Scan each
+    // eligible mapping once per file so aliases cannot multiply run work.
+    if (!isMapping(step) || seen.has(step)) continue;
+    seen.add(step);
     if (
-      !isMapping(step) || typeof step.run !== "string" ||
+      typeof step.run !== "string" ||
       isTrueFlag(step["continue-on-error"])
     ) continue;
     const line = logicalLines(step.run).find((l) =>
@@ -290,18 +305,22 @@ function findAggregator(jobs: Mapping, jobName: string): string | undefined {
 export async function findBlockingMutationJob(
   repoPath: string,
 ): Promise<CiMutationContract> {
-  const files = await listWorkflowFiles(repoPath);
+  const unreadable: string[] = [];
+  const files = await listWorkflowFiles(repoPath, unreadable);
   if (files === null) return { blocking: null, unreadable: [] };
 
-  const unreadable: string[] = [];
   let blocking: BlockingMutationJob | null = null;
 
   for (const name of files) {
     let doc: unknown;
     try {
-      const text = await Deno.readTextFile(
-        `${repoPath}/${WORKFLOWS_DIR}${name}`,
-      );
+      const path = `${repoPath}/${WORKFLOWS_DIR}${name}`;
+      const stat = await Deno.lstat(path);
+      if (!stat.isFile || stat.size > MAX_WORKFLOW_BYTES) {
+        unreadable.push(name);
+        continue;
+      }
+      const text = await readWorkflow(path);
       doc = parseYaml(text);
     } catch {
       unreadable.push(name);
@@ -314,8 +333,9 @@ export async function findBlockingMutationJob(
     if (blocking !== null || !triggersOnPullRequest(doc)) continue;
     if (!isMapping(doc.jobs)) continue;
 
+    const seen = new WeakSet<object>();
     for (const [jobName, job] of Object.entries(doc.jobs)) {
-      const line = isMapping(job) ? blockingMutationLine(job) : null;
+      const line = isMapping(job) ? blockingMutationLine(job, seen) : null;
       if (line !== null) {
         const aggregator = findAggregator(doc.jobs, jobName);
         blocking = {
@@ -330,5 +350,24 @@ export async function findBlockingMutationJob(
     }
   }
 
-  return { blocking, unreadable };
+  return { blocking, unreadable: unreadable.sort() };
+}
+
+/** Bound both allocation and reads, including a file growing after lstat. */
+const MAX_WORKFLOW_BYTES = 1024 * 1024;
+
+async function readWorkflow(path: string): Promise<string> {
+  using file = await Deno.open(path, { read: true });
+  const stat = await file.stat();
+  if (!stat.isFile || stat.size > MAX_WORKFLOW_BYTES) {
+    throw new Error("Workflow is not a regular file within the size cap");
+  }
+  const bytes = new Uint8Array(MAX_WORKFLOW_BYTES + 1);
+  let used = 0;
+  while (used < bytes.length) {
+    const read = await file.read(bytes.subarray(used));
+    if (read === null) return new TextDecoder().decode(bytes.subarray(0, used));
+    used += read;
+  }
+  throw new Error("Workflow exceeds the size cap");
 }

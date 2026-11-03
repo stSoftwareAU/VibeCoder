@@ -85,6 +85,12 @@ Not evaluated or read: reusable-workflow `uses:` jobs, other mutation tools, job
 `if:` and path filters, flags of a `deno task`, and the repository's branch
 protection (required-check names).
 
+Only regular workflow files up to 1 MiB are read. Symlinks and oversized
+files are reported as unreadable, leaving their contract unknown. Reads are
+bounded even if a file grows after its size check. Continued script lines are
+joined once, and each YAML step mapping is scanned once per file so aliases
+cannot multiply the work.
+
 The CI tool must match the mutation result: cargo-mutants checks Rust, and a
 Deno mutation task checks Deno. A result for the other language stays advisory
 and retains summary exemptions, at completion and during review fixes. Runner
