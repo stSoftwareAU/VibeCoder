@@ -1717,6 +1717,29 @@ artefacts.
   can read, so the values are kept out of both and out of the wrapper text and
   the logs. The channel needs no `SETENV` or `env_keep` grant, so the sudo rule
   is unchanged.
+- **The untrusted account reaches the checkout through HOME (Issue #4733).**
+  The `agent` account could not traverse the `0700` HOME to any clone under
+  `~/auto-issue-work`. The **image** now sets HOME to group `vibework`, mode
+  `0710` (`container/Containerfile`, after the recursive `chown`), because HOME
+  is an image layer and the read-only root (`--read-only`) of Docker and Podman
+  refuses an entrypoint `chgrp`/`chmod`. The entrypoint repeats the grant only
+  as a fallback for an older image on a writable root (Apple `container`).
+  The account can pass through to the clones but cannot list HOME. Traverse
+  also lets it open any fixed-name child of HOME by path, so the entrypoint
+  first closes the worker-state children to group and other (`chmod go-rwx`):
+  the host log mount `~/logs` and the two state volume roots
+  `~/auto-issue-work-agent-state` (the coding agent's transcripts and session
+  stores) and `~/auto-issue-work-approval-state`. Those are writable mounts, so
+  this works under `--read-only`. The credential directories keep their own
+  `0700`/`0600` modes and the staged `run-config` is a `0700` read-only mount.
+  If one of those roots stays open, the fallback grant is withheld and a
+  warning names the path; if the image already carries the grant, the warning
+  says the account can read it. The same entrypoint pass makes each clone root
+  sticky and strips group and other write from its `.git` (Issue #4737).
+  Clone reuse and stale-clone rescue check ownership before running worker git;
+  untrusted paths are refused and retained for inspection (Issues #4737, #4756). A gate probe that still fails names the first directory the account
+  cannot traverse, in the form
+  `untrusted account cannot use '<cwd>' (probe 1; cannot traverse '<dir>')`.
 - **An unusable root is a reported fallback, not a broken build.** If
   `/var/tmp/vibe-cargo-target` cannot be created `1777`, the launch says so and
   the build stays on the volume.

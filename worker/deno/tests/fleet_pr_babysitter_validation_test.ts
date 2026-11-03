@@ -23,7 +23,7 @@ const WORKER_ROOT = new URL("../", import.meta.url);
 /** Every scenario title in the fixture. */
 const SCENARIO_TITLES: readonly string[] = [
   "a failed repository gate blocks the push, keeps the attempt, and dismisses no review",
-  "an unavailable repository gate pushes nothing, forgets the attempt, and a retry on the same head pushes",
+  "an unavailable repository gate cools down without a substantive attempt, then retries",
   "a passed repository gate pushes as before and dismisses the addressed review after the push",
   "a ready claim with a failed gate does not publish the head",
   "the gate runs on the committed head in the clone, with the loaded repository configs, before the push",

@@ -1,3 +1,7 @@
+import {
+  BABYSITTER_HANDOFF_MARKER,
+  buildBabysitterAttemptMarker,
+} from "../lib/babysitter_retry_state.ts";
 /**
  * Tests for stall_repair.ts — the two-trip self-repair ladder that replaced
  * the blocking-PR stall escalation (Issue #2802).
@@ -604,4 +608,68 @@ Deno.test("a PR held for a declared human gate keeps its needs-human (owner rule
   assertEquals(await repairStalledPr(stall, deps), "skipped-needs-human");
   assertEquals(state.calls.filter((a) => a[0] !== "api"), []);
   assertEquals(state.syncs, 0);
+});
+
+Deno.test("babysitter attempts and cap handoffs never lift an owner's needs-human hold", async () => {
+  const attempt = buildBabysitterAttemptMarker(
+    REPO,
+    PR,
+    "failed CI",
+    "a".repeat(40),
+    1,
+    "no-change",
+  ).marker;
+  for (
+    const body of [
+      attempt,
+      `${
+        buildDedupMarker("auto-fix-cap:abcdef0123456789")
+      }\n${BABYSITTER_HANDOFF_MARKER}`,
+    ]
+  ) {
+    const { state, deps } = harness({
+      prComments: [
+        { body, user: { login: FLEET }, created_at: iso(NOW) },
+      ],
+    });
+    assertEquals(
+      await repairStalledPr(
+        stallFor("red-ci", { labels: ["needs-human"] }),
+        deps,
+      ),
+      "skipped-needs-human",
+    );
+    assertEquals(state.calls.filter((a) => a[0] !== "api"), []);
+    assertEquals(state.syncs, 0);
+    assertEquals(state.prClosed, false);
+  }
+});
+Deno.test("babysitter cap handoff goes straight to the existing second-trip recovery", async () => {
+  const { state, deps } = harness({
+    prComments: [{
+      body: `${
+        buildDedupMarker("auto-fix-cap:abcdef0123456789")
+      }\n${BABYSITTER_HANDOFF_MARKER}`,
+      user: { login: FLEET },
+      created_at: iso(NOW),
+    }],
+  });
+  assertEquals(await repairStalledPr(stallFor("red-ci"), deps), "abandoned");
+  assertEquals(state.syncs, 0);
+  assert(state.issueLabels.includes("idle-task"));
+});
+
+Deno.test("review handoff does not cap a later red-CI stall", async () => {
+  const { state, deps } = harness({
+    prComments: [{
+      body: `${
+        buildDedupMarker("babysitter-handoff:signature:head")
+      }\n${BABYSITTER_HANDOFF_MARKER}`,
+      user: { login: FLEET },
+      created_at: iso(NOW),
+    }],
+  });
+  assertEquals(await repairStalledPr(stallFor("red-ci"), deps), "first-trip");
+  assertEquals(state.syncs, 1);
+  assertEquals(state.prClosed, false);
 });

@@ -461,7 +461,9 @@ jobs:
   tests:
     name: validate (tests ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Shard 1 ran 10-14 minutes on unrelated PRs, so a 15-minute cap cancelled it
+    # on a slow runner (PR #4753) and the gate closed on a cancelled job.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

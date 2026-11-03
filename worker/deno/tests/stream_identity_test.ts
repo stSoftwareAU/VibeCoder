@@ -110,6 +110,13 @@ Deno.test("streamKey - milestone key carries the slug and a short hash", () => {
   );
 });
 
+Deno.test("streamKey - preserves the SHA-256 key used by existing streams", () => {
+  assertEquals(
+    streamKey(resolveStreamId("org/repo", "abc")),
+    "org__repo__m-abc-ba7816bf",
+  );
+});
+
 Deno.test("streamKey - is stable across calls", () => {
   const first = streamKey(resolveStreamId(REPO, MILESTONE));
   const second = streamKey(resolveStreamId(REPO, MILESTONE));

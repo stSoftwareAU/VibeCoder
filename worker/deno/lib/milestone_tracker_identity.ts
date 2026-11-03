@@ -40,7 +40,7 @@ import {
   type AlertDedupAuthorOptions,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
-import { MILESTONE_TRACKING_MARKER } from "./issue_filter.ts";
+import { MILESTONE_TRACKING_MARKER } from "./milestone_tracking_marker.ts";
 
 /**
  * Regex matching a milestone-tracking-issue title regardless of the inner
@@ -75,7 +75,7 @@ export function isMilestoneTrackingTitle(title: string): boolean {
 /**
  * The HTML comment marker `createMilestoneTrackingIssue` writes into every
  * tracking-issue body (Issue #1134), re-exported here because it is the second
- * of the three identity checks (Issue #1246). `issue_filter.ts` remains its
+ * of the three identity checks (Issue #1246). `milestone_tracking_marker.ts` is its
  * home — a second copy of the string is a second thing to drift.
  */
 export { MILESTONE_TRACKING_MARKER };

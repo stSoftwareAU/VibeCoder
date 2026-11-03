@@ -191,7 +191,10 @@ the branch rewrapped it.
 ## Merge conflict repair
 
 Preserved the base branch documentation of pre-PR and feedback verifier target
-cleanup in `docs/CONTAINER.md` while retaining the branch formatting.
+cleanup in `docs/CONTAINER.md` while retaining the branch formatting. The later merge retains main’s retry-state
+and restartable agent flow: an unavailable repository gate is recorded as a
+capability failure with a cooldown, rather than deleting the obsolete attempt
+marker; failed gates remain substantive failures.
 
 ## Test Plan
 
@@ -222,7 +225,7 @@ Red checks (the change broken on purpose, test goes red, then restored):
 - CI/feedback/spelling: guard dropped from the retry call, verifier-first order,
   unavailable treated as passed: the matching `beforePush` tests go red.
 - babysitter: `validate` call removed: 6 of 8 scenarios go red through the
-  parent test; unavailable treated as passed, attempt record not removed, the
+  parent test; unavailable treated as passed, the
   renewal re-check removed, and the config load removed each turn their scenario
   red.
 - CI unavailable release: the refund call removed, the retry stays charged and

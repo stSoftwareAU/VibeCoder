@@ -274,6 +274,46 @@ Deno.test("selectLargestFirst - takes the fewest dirs that free the space", () =
   );
 });
 
+Deno.test("tier reclaim keeps untrusted metadata without push advice", async () => {
+  const workDir = await Deno.makeTempDir();
+  const warnings: string[] = [];
+  const warn = console.warn;
+  try {
+    await makeDir(workDir, "foreign", { ageDays: 30 });
+    const repo = `${workDir}/foreign`;
+    const uid = (await Deno.lstat(repo)).uid!;
+    const { pushUnpushedBranches } = await import("../lib/stale_workdir.ts");
+    const { checkCloneOwnership } = await import("../lib/broken_clone.ts");
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    const result = await reclaimWorkVolumeTiers({
+      workDir,
+      monitoredRepos: MONITORED,
+      mode: "age",
+      maxAgeDays: 3,
+      nowFn: () => NOW,
+      sizeOf: sizes({ foreign: GIB }),
+      anySlotActive: NEVER_ACTIVE,
+      rescue: (path) =>
+        pushUnpushedBranches(path, {
+          checkOwnership: (p) =>
+            checkCloneOwnership(p, () => Promise.resolve(uid), async (name) => {
+              const info = await Deno.lstat(name);
+              return name.endsWith("/.git") ? { ...info, uid: uid + 1 } : info;
+            }),
+        }),
+    });
+    assertEquals(result.keptRescueFailed, ["foreign"]);
+    assert(await exists(repo));
+    const message = [...result.errors, ...warnings].join(" ");
+    assert(message.includes("untrusted"), message);
+    assert(!message.includes("unpushed commits"), message);
+    assert(!message.includes("push it manually"), message);
+  } finally {
+    console.warn = warn;
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
 Deno.test("reclaimWorkVolumeTiers - disk-low removes largest first and keeps monitored repos", async () => {
   const workDir = await Deno.makeTempDir();
   try {

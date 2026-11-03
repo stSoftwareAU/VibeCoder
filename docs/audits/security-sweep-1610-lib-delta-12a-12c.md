@@ -140,20 +140,21 @@ covers them.
 
 ### Added (read in full)
 
-| Path                                            | Disposition                                                                |
-| ----------------------------------------------- | -------------------------------------------------------------------------- |
-| `worker/deno/lib/git_message_redaction.ts`      | outbound secret redaction on `git commit -m`/`-F`; no GitHub text ingested |
-| `worker/deno/lib/graphql_quota_probe.ts`        | fixed GraphQL probe; parses rate-limit headers / JSON only                 |
-| `worker/deno/lib/milestone_activity_gate.ts`    | gates on numeric `closed_issues`; worker-local JSON state                  |
-| `worker/deno/lib/milestone_conflict_dedup.ts`   | dedup key from git branch / SHA / paths; comment read is substring match   |
-| `worker/deno/lib/milestone_conflict_git.ts`     | conflicted paths from the git index, `--`-terminated argv                  |
-| `worker/deno/lib/milestone_conflict_triage.ts`  | pure classification; worker-authored analysis markdown                     |
-| `worker/deno/lib/milestone_resolution_gate.ts`  | repo `deno task` names from manifest constants                             |
-| `worker/deno/lib/milestone_sync_conflict.ts`    | commit subjects are display-only; branches are worker-managed              |
-| `worker/deno/lib/milestone_tracker_identity.ts` | title is a pre-filter; tracker acts require body marker + fleet author     |
-| `worker/deno/lib/orphan_deps_severity_gate.ts`  | strips fenced untrusted regions; posts a fixed template                    |
-| `worker/deno/lib/orphan_deps_untrusted.ts`      | fences / scrubs third-party metadata before issue filing                   |
-| `worker/deno/lib/repo_slug.ts`                  | `REPO_SLUG_PATTERN` rejects `..`; inert rendering for errors               |
+| Path | Disposition |
+| ---- | ----------- |
+| `worker/deno/lib/git_message_redaction.ts` | outbound secret redaction on `git commit -m`/`-F`; no GitHub text ingested |
+| `worker/deno/lib/graphql_quota_probe.ts` | fixed GraphQL probe; parses rate-limit headers / JSON only |
+| `worker/deno/lib/milestone_activity_gate.ts` | gates on numeric `closed_issues`; worker-local JSON state |
+| `worker/deno/lib/milestone_conflict_dedup.ts` | dedup key from git branch / SHA / paths; comment read is substring match |
+| `worker/deno/lib/milestone_conflict_git.ts` | conflicted paths from the git index, `--`-terminated argv |
+| `worker/deno/lib/milestone_conflict_triage.ts` | pure classification; worker-authored analysis markdown |
+| `worker/deno/lib/milestone_resolution_gate.ts` | repo `deno task` names from manifest constants |
+| `worker/deno/lib/milestone_sync_conflict.ts` | commit subjects are display-only; branches are worker-managed |
+| `worker/deno/lib/milestone_tracker_identity.ts` | title is a pre-filter; tracker acts require body marker + fleet author |
+| `worker/deno/lib/milestone_tracking_marker.ts` | constant marker only; no input or side effects |
+| `worker/deno/lib/orphan_deps_severity_gate.ts` | strips fenced untrusted regions; posts a fixed template |
+| `worker/deno/lib/orphan_deps_untrusted.ts` | fences / scrubs third-party metadata before issue filing |
+| `worker/deno/lib/repo_slug.ts` | `REPO_SLUG_PATTERN` rejects `..`; inert rendering for errors |
 
 ### Modified
 

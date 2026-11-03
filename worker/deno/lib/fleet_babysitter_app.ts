@@ -268,9 +268,9 @@ export const BABYSITTER_AGENT_PERMISSIONS: Readonly<Record<string, string>> =
 /**
  * Mint the Codex agent's own read-only token, reaching one repository (Issue #4572).
  *
- * The agent only reads; every write is the runner's. The token is always a
- * fresh mint, never cached, so it lasts a full hour. It is not refreshed, so a
- * late read in a longer repair fails rather than writes.
+ * The agent only reads; every write is the runner's. The token is freshly
+ * minted for one repository and its expiry is returned so the caller can end
+ * the session before the credential expires.
  *
  * Fails closed: GitHub must report the permissions it granted, and each one
  * must be exactly "read".
@@ -278,14 +278,14 @@ export const BABYSITTER_AGENT_PERMISSIONS: Readonly<Record<string, string>> =
  * @param config - Babysitter App credentials that sign the token request.
  * @param repo - `owner/repo` slug the token may reach.
  * @param fetchFn - Optional fetch function (injectable for testing).
- * @returns The read-only installation token.
+ * @returns The read-only installation token and GitHub's expiry timestamp.
  * @throws Error when GitHub reports no permissions, or grants any write.
  */
 export async function mintBabysitterAgentToken(
   config: BabysitterAppConfig,
   repo: string,
   fetchFn: FetchFn = globalThis.fetch,
-): Promise<string> {
+): Promise<{ token: string; expiresAt: Date }> {
   const jwt = await generateAppJWT(
     config.appId,
     await Deno.readTextFile(config.privateKeyPath),
@@ -309,7 +309,7 @@ export async function mintBabysitterAgentToken(
       );
     }
   }
-  return minted.token;
+  return { token: minted.token, expiresAt: minted.expiresAt };
 }
 
 /**

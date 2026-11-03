@@ -17,11 +17,14 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
-  attemptKey,
   babysitterRepoConfigs,
   fix,
   withBabysitterWriteScope,
 } from "../../commands/fleet_pr_babysitter.ts";
+import {
+  listBabysitterRetryStates,
+  saveBabysitterRetryState,
+} from "../../lib/babysitter_retry_state.ts";
 import { loadConfig } from "../../lib/config.ts";
 import type { BabysitterAppConfig } from "../../lib/fleet_babysitter_app.ts";
 import type {
@@ -99,20 +102,12 @@ function upstreamFeature(h: Host): Promise<string> {
   return git(["rev-parse", "feature"], h.upstream);
 }
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await Deno.stat(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return false;
-    throw error;
-  }
+function stateDir(h: Host): string {
+  return `${h.root}/state/vibe-coder/fleet-pr-babysitter`;
 }
 
-function attemptPath(h: Host, reviews: Review[]): string {
-  return `${h.root}/state/vibe-coder/fleet-pr-babysitter/${
-    attemptKey(REPO, 1, h.head, reviews)
-  }`;
+async function records(h: Host) {
+  return await listBabysitterRetryStates(stateDir(h), REPO);
 }
 
 function output(success: boolean, stdout: string): Deno.CommandOutput {
@@ -138,6 +133,9 @@ async function fakeGh(args: string[]): Promise<string> {
     return "{}";
   }
   if (args[0] === "api" && args[1]?.startsWith("users/")) return "12345\n";
+  if (args[0] === "api" && args[1] === "repos/owner/repo/issues/1/comments") {
+    return args.includes("POST") ? JSON.stringify({ id: 101 }) : "[[]]";
+  }
   if (
     args[0] === "api" && args[1]?.startsWith("repos/owner/repo/actions/runs")
   ) {
@@ -443,8 +441,8 @@ function repair(
       configPath,
       fakeGh,
       () => Promise.resolve(),
-      () => Promise.resolve(),
-      validate,
+      3,
+      { armAutoMerge: () => Promise.resolve(), validate },
     ));
 }
 
@@ -474,12 +472,11 @@ Deno.test("a failed repository gate blocks the push, keeps the attempt, and dism
     assertEquals(await upstreamFeature(h), h.head);
     assertEquals(h.dismissals, []);
     assertEquals(h.ghCalls.filter((args) => args.includes("edit")), []);
-    // The head was attempted, so its record stays and a later pass skips it.
-    assert(await exists(attemptPath(h, h.reviews)));
+    assertEquals((await records(h))[0]?.blockerClass, "code");
   });
 });
 
-Deno.test("an unavailable repository gate pushes nothing, forgets the attempt, and a retry on the same head pushes", async () => {
+Deno.test("an unavailable repository gate cools down without a substantive attempt, then retries", async () => {
   await withHost(async (h) => {
     const first: Seen[] = [];
     const error = await assertRejects(
@@ -499,7 +496,14 @@ Deno.test("an unavailable repository gate pushes nothing, forgets the attempt, a
     assertEquals(first.length, 1);
     assertEquals(h.pushes.length, 0);
     assertEquals(await upstreamFeature(h), h.head);
-    assertEquals(await exists(attemptPath(h, [])), false);
+    const record = (await records(h))[0]!;
+    assertEquals(record.blockerClass, "capability");
+    assertEquals(record.attempts.substantive, 0);
+    assert(record.nextEligibleAt !== null);
+    await saveBabysitterRetryState(stateDir(h), {
+      ...record,
+      nextEligibleAt: null,
+    });
     assertEquals(h.agentRuns, 1);
 
     // The same head is attempted again: the agent runs, and the gate passes.
@@ -516,7 +520,10 @@ Deno.test("an unavailable repository gate pushes nothing, forgets the attempt, a
     assertEquals(second.length, 1);
     assertEquals(h.pushes.length, 1);
     assertEquals(await upstreamFeature(h), second[0]!.head);
-    assert(await exists(attemptPath(h, [])));
+    assertEquals(
+      (await records(h))[0]?.reconciliation,
+      "waiting-for-ci-review",
+    );
   });
 });
 
@@ -539,7 +546,10 @@ Deno.test("a passed repository gate pushes as before and dismisses the addressed
     assert(pushed !== h.head, "the fix was pushed");
     assertEquals(h.dismissals.length, 1);
     assertStringIncludes(h.dismissals[0]!, "/pulls/1/reviews/77/dismissals");
-    assert(await exists(attemptPath(h, h.reviews)));
+    assertEquals(
+      (await records(h))[0]?.reconciliation,
+      "waiting-for-ci-review",
+    );
   });
 });
 
@@ -564,7 +574,7 @@ Deno.test("a ready claim with a failed gate does not publish the head", async ()
     assertEquals(seen.length, 1);
     assertEquals(h.pushes.length, 0);
     assertEquals(await upstreamFeature(h), h.head);
-    assert(await exists(attemptPath(h, [])));
+    assertEquals((await records(h))[0]?.blockerClass, "code");
   });
 });
 

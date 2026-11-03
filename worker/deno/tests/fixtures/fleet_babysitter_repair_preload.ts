@@ -22,7 +22,7 @@ const pr = {
   title: "repair fixture",
   author: { login: "fleet" },
   headRefName: "feature",
-  headRefOid: "abc",
+  headRefOid: "a".repeat(40),
   baseRefName: "main",
   isCrossRepository: false,
   isDraft: false,
@@ -35,6 +35,7 @@ const pr = {
   autoMergeRequest: { enabledAt: null, mergeMethod: "MERGE" },
 };
 let lock: Record<string, unknown> | undefined;
+const attempts: Record<string, unknown>[] = [];
 
 function commandOutput(
   executable: string,
@@ -52,6 +53,27 @@ function commandOutput(
       return "";
     }
     if (args[0] === "pr" && args[1] === "view") return JSON.stringify(pr);
+    if (
+      args[0] === "api" &&
+      args[1] === "repos/owner/repo/issues/1/comments" &&
+      args.includes("--method") && args.includes("POST")
+    ) {
+      const field = args[args.indexOf("--field") + 1]!;
+      const attempt = {
+        id: 101,
+        body: field.slice("body=".length),
+        created_at: new Date().toISOString(),
+        user: { login: "babysitter[bot]" },
+      };
+      attempts.push(attempt);
+      Deno.writeTextFileSync(`${root}/attempt-marker.txt`, attempt.body);
+      return JSON.stringify({ id: 101 });
+    }
+    if (
+      args[0] === "api" &&
+      args[1] === "repos/owner/repo/issues/1/comments" &&
+      args.includes("--paginate") && args.includes("--slurp")
+    ) return JSON.stringify([attempts]);
     if (args[0] === "issue" && args[1] === "comment") {
       lock = {
         id: 100,
@@ -77,7 +99,9 @@ function commandOutput(
     // No cancelled runs, so the failed-CI repair proceeds to the agent.
     if (
       args[0] === "api" &&
-      args[1]?.startsWith("repos/owner/repo/actions/runs?head_sha=abc")
+      args[1]?.startsWith(
+        `repos/owner/repo/actions/runs?head_sha=${"a".repeat(40)}`,
+      )
     ) {
       return "[]";
     }
@@ -103,7 +127,9 @@ function commandOutput(
     if (args.includes("merge-base") && args.includes("--is-ancestor")) {
       return "";
     }
-    if (args.includes("rev-parse") && args.includes("HEAD")) return "abc";
+    if (args.includes("rev-parse") && args.includes("HEAD")) {
+      return "a".repeat(40);
+    }
     if (args.includes("status") && args.includes("--porcelain")) return "";
   }
   if (executable === "rtk" && args[0] === "--version") return "rtk 1";
