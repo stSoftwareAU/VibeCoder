@@ -162,3 +162,90 @@ Deno.test("primaryCloneHoldingBranch - undefined when cwd is not a git repositor
     await Deno.remove(workDir, { recursive: true });
   }
 });
+
+Deno.test("primaryCloneHoldingBranch - undefined when git cannot run the worktree listing (Issue #4789)", async () => {
+  const stderr = "fatal: 'x' is already used by worktree at '/work/repo'";
+  const run: typeof runGitCommand = () =>
+    Promise.resolve({ ok: false, error: new Error("spawn failed") });
+  assertEquals(
+    await primaryCloneHoldingBranch(stderr, "/work/repo", run),
+    undefined,
+  );
+});
+
+Deno.test("primaryCloneHoldingBranch - undefined when the worktree listing exits non-zero, whatever it printed (Issue #4789)", async () => {
+  const stderr = "fatal: 'x' is already used by worktree at '/work/repo'";
+  const run: typeof runGitCommand = () =>
+    Promise.resolve({
+      ok: true,
+      value: { code: 128, stdout: "worktree /work/repo\n", stderr: "fatal" },
+    });
+  assertEquals(
+    await primaryCloneHoldingBranch(stderr, "/work/repo", run),
+    undefined,
+  );
+});
+
+Deno.test("primaryCloneHoldingBranch - the first listed worktree is the primary (Issue #4789)", async () => {
+  const stderr = "fatal: 'x' is already used by worktree at '/work/repo'";
+  const run: typeof runGitCommand = () =>
+    Promise.resolve({
+      ok: true,
+      value: {
+        code: 0,
+        stdout: "worktree /work/repo\nHEAD abc\n\nworktree /work/other\n",
+        stderr: "",
+      },
+    });
+  assertEquals(
+    await primaryCloneHoldingBranch(stderr, "/work/repo", run),
+    "/work/repo",
+  );
+});
+
+Deno.test("createFeatureBranchFromBase - repairs a broken ref named by a refused checkout (Issue #4789)", async () => {
+  const { workDir, repoPath, lanePath } = await primaryHeldFixture();
+  const shimDir = `${workDir}/shim`;
+  const brokenRef = `${repoPath}/.git/refs/heads/issue-broken`;
+  try {
+    const which = await new Deno.Command("sh", {
+      args: ["-c", "command -v git"],
+      stdout: "piped",
+    }).output();
+    const realGit = new TextDecoder().decode(which.stdout).trim();
+    assert(realGit !== "", "these tests need a real git on PATH");
+
+    // A corrupt loose ref that only `checkout` complains about, as git does
+    // when a checkout trips over a ref whose object is missing.
+    await Deno.writeTextFile(
+      brokenRef,
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n",
+    );
+    await Deno.mkdir(shimDir);
+    await Deno.writeTextFile(
+      `${shimDir}/git`,
+      `#!/bin/sh
+if [ "$1" = "checkout" ] && [ -e "${brokenRef}" ]; then
+  echo "error: bad object refs/heads/issue-broken" >&2
+  exit 128
+fi
+exec "${realGit}" "$@"
+`,
+      { mode: 0o755 },
+    );
+
+    const result = await createFeatureBranchFromBase(
+      "issue-4789-fresh",
+      "main",
+      {
+        cwd: lanePath,
+        env: { PATH: `${shimDir}:${Deno.env.get("PATH") ?? ""}` },
+      },
+    );
+
+    assertEquals(result.ok, true, JSON.stringify(result));
+    assertEquals(await headOf(lanePath), "issue-4789-fresh");
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
