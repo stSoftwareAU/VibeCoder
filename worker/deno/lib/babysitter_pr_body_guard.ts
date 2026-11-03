@@ -237,7 +237,7 @@ export function stripVibeMarkers(text: string): string {
     at = end;
   }
   kept.push(text.slice(at));
-  return kept.join("").trimEnd();
+  return neutraliseAgentMarkers(kept.join("")).text.trimEnd();
 }
 
 /**

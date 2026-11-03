@@ -190,26 +190,30 @@ unchanged head, the description steps run in order:
    open. So does any skip outside the harmless set: `no worker marker`,
    `summary unchanged`, `summary file deleted`, `body already current` and
    `summary not committed at the pushed head`.
-2. It reads the live description once and requires the live head to equal the
-   pushed head. Nothing waits for GitHub's PR view to catch up here, so a
-   lagging view fails this step and the review stays open. The sync in step 1
-   is more lenient: it accepts a view whose head is an ancestor of the pushed
-   checkout. The proposal is then published on top of that sync. With no
-   proposal, the body is edited only to withhold a close that GitHub still
-   honours.
-3. It strips every hidden `<!-- vibe-… -->` marker from the proposal and appends
-   the live body's markers (worker issue, summary digest, sub-agent tier and
-   assignment id), so the digest reconcile keeps working.
+2. After a push, it waits for GitHub's PR view to report the pushed head before
+   the sync in step 1 runs. It reads the view up to ten times, one second
+   apart (`waitForPushedHead`). If the view never shows that head, the step
+   fails and the review stays open. Publishing then reads the live description
+   and requires its head to equal the pushed head. The proposal is published
+   on top of the sync. With no proposal, the body is edited only to withhold a
+   close that GitHub still honours.
+3. It strips every complete hidden `<!-- vibe-… -->` marker from the proposal
+   in one linear scan. A marker quoted in a Markdown code span in the live body
+   is not copied. A stray unclosed `<!--` in the proposal is neutralised, so it
+   cannot hide the appended reference or markers. It then appends the live
+   body's markers (worker issue, summary digest, sub-agent tier and assignment
+   id), so the digest reconcile keeps working.
 4. It decides closing or non-closing for the worker's issue. Closing
    (`Closes #N`) is kept only when the summary committed at the pushed head has
    no `partial` or `missing` criterion, itself closes the issue, and the
    proposal, if any, has no `partial` or `missing` criterion of its own. The
-   committed summary is read from the clone's `HEAD` (the pushed commit after a
-   push) at the canonical path `docs/archive/pr-summaries/pr-summary-<N>.md`
-   only, with `git ls-tree` and `git show`; the working tree is never read.
-   Legacy summary paths are not read for this decision, so a summary kept only
-   there withholds the close. An unmet criterion, a missing committed summary or
-   unknown evidence gives `Part of #N`. So does a negated sentence such as "does
+   summary is read with the shared committed loader (`loadCommittedPrSummary`)
+   at the verified pushed head sha, using `git ls-tree` and `git show`. The
+   working tree is never read. The loader tries the same candidate paths as the
+   sync, in order: the canonical `docs/archive/pr-summaries/pr-summary-<N>.md`,
+   the legacy `docs/pr-summary-<N>.md`, then `.pr_summary`. A failed read leaves
+   the review open. An unmet criterion, a missing committed summary or unknown
+   evidence gives `Part of #N`. So does a negated sentence such as "does
    not close #N", which GitHub still honours as a closing reference, so that
    sentence is reworded. An association the proposal dropped entirely is
    restored in the form the evidence supports, and closing references to other
@@ -218,15 +222,18 @@ unchanged head, the description steps run in order:
    again after it. When an edit was made, the description read back must match
    what was published. When the close is withheld, GitHub's
    `closingIssuesReferences` must not list the issue as closed by the PR; this
-   check runs only in that case. Dismissal then waits up to ten reads, one
-   second apart, for the PR head to show the pushed head, and dismisses only
-   the reviews that are still requested.
+   check runs only in that case. The body reads must include
+   `closingIssuesReferences` as an array: a missing key is rejected, not read
+   as "no references". Dismissal then waits up to ten reads, one second apart,
+   for the PR head to show the pushed head, and dismisses only the reviews that
+   are still requested.
 
-The composed description is checked against GitHub's 65,536-character limit
-when it is published, after the push and the sync. The limit applies to the
-whole description, including the appended references and markers, so a
-proposal under the limit can still be refused. Nothing checks the proposal's
-size when it is read. A refusal leaves the review open.
+A proposal over GitHub's 65,536-character limit is rejected at intake, once
+surrounding whitespace is trimmed, and the review stays open. The composed
+description is checked against the same limit again when it is published,
+after the push and the sync. The limit applies to the whole description,
+including the appended references and markers, so a proposal under the limit
+can still be refused. A refusal leaves the review open.
 
 Any failure leaves the review open, and the next scan retries on the pushed
 head. The retry is idempotent: a body that is already current is not edited

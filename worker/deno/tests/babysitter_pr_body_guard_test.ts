@@ -61,6 +61,21 @@ function partialSuffix(): string {
 }
 
 /**
+ * Equality for the large hostile outputs. `assertEquals` diffs both strings on
+ * failure, which for a body of tens of thousands of characters takes minutes
+ * and can exhaust memory, so a mismatch is reported by its first differing
+ * offset instead (Issue #4637).
+ */
+function assertSameText(actual: string, expected: string, label: string): void {
+  if (actual === expected) return;
+  let at = 0;
+  while (at < actual.length && actual[at] === expected[at]) at++;
+  throw new Error(
+    `${label}: texts differ at offset ${at} (lengths ${actual.length} and ${expected.length})`,
+  );
+}
+
+/**
  * Asserts every HTML comment in `body` closes before another one opens, so no
  * comment hides the text that follows its opener (Issue #4637).
  */
@@ -451,8 +466,12 @@ Deno.test("an unmet criterion withholds the close even when the summary's own cl
 
 Deno.test("a run of 30,000 unclosed `<!--vibe-` openers is defused in one pass (Issue #4637)", () => {
   const openers = "<!--vibe-".repeat(30_000);
-  assertEquals(stripVibeMarkers(openers), "<!- -vibe-".repeat(30_000));
-  assertEquals(stripVibeMarkers(`${openers}-->`), "");
+  assertSameText(
+    stripVibeMarkers(openers),
+    "<!- -vibe-".repeat(30_000),
+    "unclosed openers",
+  );
+  assertSameText(stripVibeMarkers(`${openers}-->`), "", "closed run");
 });
 
 Deno.test("a long run of `not` and spaces with no keyword is guarded without a close (Issue #4637)", () => {
@@ -463,7 +482,7 @@ Deno.test("a long run of `not` and spaces with no keyword is guarded without a c
     summary: partSummary("partial"),
     repo: REPO,
   });
-  assertEquals(output, `${spaced}${partialSuffix()}`);
+  assertSameText(output, `${spaced}${partialSuffix()}`, "not and spaces");
   const words = "not ".repeat(15_000);
   const wordsOutput = guardPrBodyProposal({
     proposal: words,
@@ -471,7 +490,11 @@ Deno.test("a long run of `not` and spaces with no keyword is guarded without a c
     summary: partSummary("partial"),
     repo: REPO,
   });
-  assertEquals(wordsOutput, `${words.trimEnd()}${partialSuffix()}`);
+  assertSameText(
+    wordsOutput,
+    `${words.trimEnd()}${partialSuffix()}`,
+    "not and a space",
+  );
 });
 
 Deno.test("a long run of `#1` references is guarded without a closing reference (Issue #4637)", () => {
@@ -482,7 +505,7 @@ Deno.test("a long run of `#1` references is guarded without a closing reference 
     summary: partSummary("partial"),
     repo: REPO,
   });
-  assertEquals(output, `${refs}${partialSuffix()}`);
+  assertSameText(output, `${refs}${partialSuffix()}`, "#1 run");
 });
 
 Deno.test("a marker quoted in a code span of the live body is not carried into the description (Issue #4637)", () => {
