@@ -47,9 +47,10 @@ function commandOutput(
     if (args[0] === "pr" && args[1] === "edit") {
       const path = args[args.indexOf("--body-file") + 1]!;
       Deno.writeTextFileSync(`${root}/body-file`, path);
+      pr.body = Deno.readTextFileSync(path);
       Deno.writeTextFileSync(
         `${root}/applied-body`,
-        Deno.readTextFileSync(path),
+        pr.body,
       );
       return "";
     }

@@ -229,6 +229,10 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   PR head; the oversized-proposal test now asserts rejection at intake (the
   original assertion); `tests/fixtures/fleet_babysitter_repair_preload.ts` gains
   `body` and `closingIssuesReferences`. Existing assertions removed: none.
+- CI repair: the offline GitHub fixture now returns the newly edited PR body on
+  subsequent reads, matching a successful edit. The existing
+  `worker/deno/tests/fleet_babysitter_app_test.ts::production repair forwards CONFIG_PATH and denies canonical credential targets`
+  exercises publication and read-back through the real repair orchestration.
 - `docs/audits/lib-sweep-coverage/top-up-4637.json` registers the new module.
 - `deno task test:unit` over `babysitter_pr_body_guard_test.ts`,
   `fleet_pr_babysitter_test.ts`, `pr_body_sync_test.ts`,
