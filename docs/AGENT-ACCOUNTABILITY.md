@@ -201,7 +201,7 @@ never throw — a journalling failure can never abort or perturb the
 mutation it is recording.
 
 **The journal is the worker's, never the agent's (Issue #2400).** The hooks
-switch on wherever `WORK_DIR` is set, and the coding agent's environment is
+switch on wherever `WORK_DIR` or `VIBE_AUDIT_DIR` is set, and the coding agent's environment is
 the worker's minus a denylist — so anything the agent started, including the
 repository's own test suite driving real `git` against fixture repositories,
 used to append to the production trail under the worker's identity, and could
@@ -264,9 +264,12 @@ Verify the journal with a build that includes these fields.
 
 **Storage — outside the worker's repo working tree.** Entries are
 appended to `${WORK_DIR}/audit/audit-<workerId>-YYYY-MM-DD.jsonl`,
-rotated daily and partitioned per worker. Because the journal lives
-under `${WORK_DIR}/audit/` — a sibling of, never inside, any cloned
-repo — a bug in the worker that rewrites a repo's history cannot rewrite
+rotated daily and partitioned per worker. When `VIBE_AUDIT_DIR` is set, that
+directory is used verbatim instead; it must be an absolute path with no `..`
+segment. A babysitter host with neither variable journals to `audit` under its
+state directory, which the babysitter exports as `VIBE_AUDIT_DIR` at start-up.
+The default location, `${WORK_DIR}/audit/`, is a sibling of, never inside, any
+cloned repo — so a bug in the worker that rewrites a repo's history cannot rewrite
 its own audit log. `audit` is a **reserved work-root name**
 ([`stale_workdir.ts`](../worker/deno/lib/stale_workdir.ts)), as are the
 `audit.roster.jsonl` and `audit.roster.seen` sidecars beside it — and any
@@ -291,7 +294,8 @@ surviving prefix still chains perfectly, and deleting the file leaves
 nothing to check. Every append therefore also updates a **chain anchor**
 ([`worker/deno/lib/audit_anchor.ts`](../worker/deno/lib/audit_anchor.ts))
 holding the record count and head hash outside the journal, at
-`${WORK_DIR}/audit/anchors/<journal>.anchor.json`:
+`<audit directory>/anchors/<journal>.anchor.json` (`${WORK_DIR}/audit/anchors/`
+by default):
 
 - A journal shorter than its anchor → `journal truncated`.
 - A journal whose anchored entry no longer carries the anchored hash →

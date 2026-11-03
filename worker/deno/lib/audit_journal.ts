@@ -8,11 +8,12 @@
  * entry by a SHA-256 chain so that any single-entry corruption (or a
  * deleted interior entry) is detectable on verification.
  *
- * The journal lives OUTSIDE any repo working tree — under
- * `${WORK_DIR}/audit/` — so a bug in the worker that rewrites a repo's
- * history cannot rewrite the history of its own audit log. Files are
- * partitioned per worker and per UTC day:
- *   `${WORK_DIR}/audit/audit-<workerId>-YYYY-MM-DD.jsonl`
+ * The journal lives OUTSIDE any repo working tree — under the base directory
+ * `resolveBaseDir` picks: `VIBE_AUDIT_DIR` verbatim when set, else
+ * `${WORK_DIR}/audit/`, else a per-account shared temporary directory — so a
+ * bug in the worker that rewrites a repo's history cannot rewrite the history
+ * of its own audit log. Files are partitioned per worker and per UTC day:
+ *   `<base>/audit-<workerId>-YYYY-MM-DD.jsonl`
  *
  * The chain alone only detects interior edits, so every append also
  * updates a **chain anchor** (`audit_anchor.ts`) holding the record count

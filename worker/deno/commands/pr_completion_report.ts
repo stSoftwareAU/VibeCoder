@@ -14,9 +14,10 @@
  * settles in an audit directory it sweeps (an interrupted append, Issue #1074).
  *
  * `--collect` also takes `--human-actor-id <id,...>` (numeric GitHub user ids
- * whose merges count as human-assisted) and `--expected-host <name,...>` (hosts
- * that must each report every expected component). Both are comma-separated;
- * the top-level parser keeps only the last value of a repeated flag.
+ * whose unmatched reviews, dismissals and merges are attributed to a human) and
+ * `--expected-host <name,...>` (hosts that must each report every expected
+ * component). Both are comma-separated; the top-level parser keeps only the
+ * last value of a repeated flag.
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */

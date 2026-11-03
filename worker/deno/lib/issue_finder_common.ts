@@ -146,7 +146,8 @@ export interface FindIssuesOptions {
    *
    * Mainly used by tests to point the filing-attestation reader at a
    * temporary audit directory instead of the host's own. In production the
-   * collector reads `${WORK_DIR}/audit` itself.
+   * collector resolves the audit directory itself, as `resolveBaseDir` does
+   * (`VIBE_AUDIT_DIR`, else `${WORK_DIR}/audit`).
    */
   selfDiagnosticDeps?: SelfDiagnosticDeps;
   /**

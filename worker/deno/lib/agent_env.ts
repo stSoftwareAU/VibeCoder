@@ -25,7 +25,8 @@
  * The audit journal's off switch, set in every agent child (Issue #2400).
  *
  * The journal is the tamper-evident record of the **worker's own** GitHub
- * mutations. `audit_hook.ts` turns it on wherever `WORK_DIR` is set, and the
+ * mutations. `audit_hook.ts` turns it on wherever `WORK_DIR` or `VIBE_AUDIT_DIR`
+ * is set, and the
  * child environment is the worker's minus a denylist — so everything the agent
  * started inherited the switch, the worker id and the run id. The agent runs
  * the repository's test suite, ~85 files of which drive real `git` against

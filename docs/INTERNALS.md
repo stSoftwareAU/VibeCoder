@@ -1139,7 +1139,8 @@ out under **Review-fleet-prs log** below:
   runs on each cohort PR's final head and last twenty commits; and check runs on
   the merge commit of each merged PR into the default branch.
 - **Audit journals** in each `--audit-dir` (default the resolved audit
-  directory). Each directory's chains are verified with `verifyAllChains`, the
+  directory: `VIBE_AUDIT_DIR`, else `${WORK_DIR}/audit`, else the per-account
+  temporary directory). Each directory's chains are verified with `verifyAllChains`, the
   sweep `audit-chain-verify` runs at startup, and each journal is read with
   `loadEntries`.
 - **Review-run records**: `<round>/review-run.json` under each
@@ -1357,9 +1358,11 @@ counts CI only for delivered changes.
 
 **Accepted limits.** These are known and not mitigated in this change:
 
-- The host babysitter has no `WORK_DIR`, which the audit hook requires to
-  enable journalling. Its repair pushes and review dismissals are never
-  journalled, so babysitter-repaired PRs stay unknown under `--collect`.
+- A host babysitter with neither `WORK_DIR` nor `VIBE_AUDIT_DIR` journals to
+  `audit` under its state directory, which it exports as `VIBE_AUDIT_DIR` at
+  start-up. If that directory cannot be created, the cause is logged, nothing is
+  journalled, and babysitter-repaired PRs stay unknown under `--collect`. The
+  journal is read only when that directory is passed in `--audit-dir`.
   Deployment heartbeats do not provide mutation provenance.
 - A merge armed by the fleet (`gh pr merge --auto`) and completed later by a
   person through the arming account is attributed to the fleet. GitHub

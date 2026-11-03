@@ -20,9 +20,10 @@
  *
  * What that buys, precisely:
  *
- *   - The journal lives **outside** every repo working tree, under
- *     `${WORK_DIR}/audit/`, so nothing the agent writes in the clone
- *     reaches it.
+ *   - The journal lives **outside** every repo working tree, under the audit
+ *     base directory (`VIBE_AUDIT_DIR`, else `${WORK_DIR}/audit/`, else a
+ *     per-account temporary directory), so nothing the agent writes in the
+ *     clone reaches it.
  *   - The agent's own `gh` calls *are* journalled — by `gh_guard_shim.ts`,
  *     under the mutation classifier's verb (`issue create`), never under
  *     this module's verb and never carrying the created issue's number,
@@ -88,7 +89,7 @@ const CONTENT_DIGEST_FIELD = "content-sha256";
 
 /** Where attestations are written and read. Overridden by tests only. */
 export interface AttestationOptions {
-  /** Audit directory; defaults to the environment's `${WORK_DIR}/audit`. */
+  /** Audit directory; defaults to {@link resolveBaseDir} over the environment. */
   baseDir?: string;
   /** Environment lookup; defaults to the real process environment. */
   env?: EnvLookup;

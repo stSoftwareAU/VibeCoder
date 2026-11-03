@@ -302,6 +302,28 @@ Deno.test("runReviewRound refreshes reviewer build and policy metadata with its 
   assert(Number.isFinite(Date.parse(final().deployment?.observedAt ?? "")));
 });
 
+Deno.test("runReviewRound stamps the host its deps name into the deployment block, and omits it when none is named (Issue #4658)", async () => {
+  const options = {
+    roundDir: "/logs/review-fleet-prs/rounds/20261016-101500",
+    deployment: {
+      component: "reviewer" as const,
+      codeRevision: "abcdef0123456789",
+      policyFingerprint: "a".repeat(64),
+    },
+  };
+  const named = recordingDeps([{ code: 0, output: "Round done" }]);
+  await runReviewRound("p", ROUND_ARGS, { ...named.deps, host: "round-host" }, options);
+  const withHost: Record<string, unknown> = { ...named.final().deployment };
+  assertEquals(withHost.host, "round-host");
+
+  const unnamed = recordingDeps([{ code: 0, output: "Round done" }]);
+  await runReviewRound("p", ROUND_ARGS, unnamed.deps, options);
+  const withoutHost: Record<string, unknown> = {
+    ...unnamed.final().deployment,
+  };
+  assertEquals("host" in withoutHost, false);
+});
+
 Deno.test("runReviewRound records a DeepSeek fallback attempt as deepseek, not claude (Issue #3632)", async () => {
   const { deps, records, final } = recordingDeps(
     [

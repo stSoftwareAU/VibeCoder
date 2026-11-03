@@ -34,13 +34,24 @@ import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
 import { detectUsageLimit } from "./claude_executor.ts";
 import { DEEPSEEK_PROVIDER_ID } from "./agent_provider.ts";
 import { buildDeepSeekChildEnv } from "./deepseek_env.ts";
+import { sanitiseHostname } from "./fleet_telemetry_sidecar.ts";
 import {
   REVIEW_RUN_FILE,
   type ReviewRunAttempt,
   type ReviewRunRecord,
 } from "./review_run_record.ts";
+import { getHostname } from "./worker_identity.ts";
 
 export { REVIEW_RUN_FILE, type ReviewRunAttempt, type ReviewRunRecord };
+
+/**
+ * The record's deployment block, with the host the round ran on (Issue #4658).
+ * Named here rather than in `review_run_record.ts`, so the record's own type
+ * stays as the skill's readers expect it.
+ */
+type ReviewRunDeployment = NonNullable<ReviewRunRecord["deployment"]> & {
+  host?: string;
+};
 
 /**
  * The fallback provider's model for a round (Issue #3632): DeepSeek's best.
@@ -110,6 +121,8 @@ export interface ReviewRoundDeps {
   ): Promise<ReviewRoundAttempt>;
   /** Save the round's attempt log in its directory. */
   recordRun?(roundDir: string, record: ReviewRunRecord): Promise<void>;
+  /** The host the round runs on, recorded in its deployment block (Issue #4658). */
+  host?: string;
   /** Where the round's own lines go. */
   log(message: string): void;
 }
@@ -142,16 +155,17 @@ export async function runReviewRound(
   };
   const args = ["-p", prompt, ...claudeArgs];
   const roundDir = options.roundDir?.replace(/\/+$/, "");
+  const deploymentBlock = (
+    deployment: NonNullable<ReviewRoundOptions["deployment"]>,
+  ): ReviewRunDeployment => ({
+    ...deployment,
+    observedAt: new Date().toISOString(),
+  });
   const record: ReviewRunRecord = {
     round: roundDir?.split("/").pop() ?? "",
     attempts: [],
     ...(options.deployment
-      ? {
-        deployment: {
-          ...options.deployment,
-          observedAt: new Date().toISOString(),
-        },
-      }
+      ? { deployment: deploymentBlock(options.deployment) }
       : {}),
   };
   // Each attempt is recorded before it starts, so a review posted while it
@@ -172,10 +186,7 @@ export async function runReviewRound(
     };
     record.attempts.push(entry);
     if (options.deployment) {
-      record.deployment = {
-        ...options.deployment,
-        observedAt: new Date().toISOString(),
-      };
+      record.deployment = deploymentBlock(options.deployment);
     }
     await deps.recordRun?.(roundDir, record);
     const result = await deps.runClaude(
@@ -391,10 +402,12 @@ export async function runClaudeCli(
  *   omits it and gets the environment-resolved directory; a wiring test
  *   points it at a fixture so no process environment is mutated. Scoped to
  *   the fallback export — the Claude pool keeps its own resolution.
+ * @param options.host - The host the round is recorded as running on (Issue
+ *   #4658). Production omits it and gets this machine's hostname, sanitised.
  */
 export function createReviewRoundDeps(
   log: (message: string) => void,
-  options: { credentialDir?: string } = {},
+  options: { credentialDir?: string; host?: string } = {},
 ): ReviewRoundDeps {
   const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
   const pool = createClaudeCredentialPool({ log, provider });
@@ -442,6 +455,7 @@ export function createReviewRoundDeps(
       return { providerId: DEEPSEEK_PROVIDER_ID, env };
     },
     runClaude: runClaudeCli,
+    host: options.host ?? sanitiseHostname(getHostname()),
     recordRun: async (roundDir, record) => {
       // Best effort: an unwritable round directory leaves the reviews
       // without a named model ("cost unknown"), never a failed round.

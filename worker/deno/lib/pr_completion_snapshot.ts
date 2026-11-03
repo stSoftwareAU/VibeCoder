@@ -9,11 +9,13 @@
  * never reach the network. Nothing here writes to GitHub or to host
  * configuration.
  *
- * A GitHub event is never attributed to a human or to the fleet from a login:
- * it becomes a `TrustedPrAction` with actor `unknown` unless a verified fleet
- * action of the same kind sits within {@link MATCH_WINDOW_MS} of it. Those
- * actions are audit actions, plus, as a lower-trust source, the review-fleet-prs
- * skill's own review log (`reviewLogs`), which is not hash-chained.
+ * A GitHub event is never attributed to a fleet actor from a login: it becomes
+ * a `TrustedPrAction` whose actor is `human` when its account is one the
+ * operator declared (`humanActorIds`), and `unknown` otherwise, unless a
+ * verified fleet action of the same kind sits within {@link MATCH_WINDOW_MS}
+ * of it. Those actions are audit actions, plus, as a lower-trust source, the
+ * review-fleet-prs skill's own review log (`reviewLogs`), which is not
+ * hash-chained.
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */
@@ -160,8 +162,8 @@ const AUTO_MERGE_ARM_EVENTS: ReadonlySet<string> = new Set([
 const AUTO_MERGE_DISARM_EVENT = "auto_merge_disabled";
 /** A numeric GitHub user id, as the operator declares it. */
 const USER_ID_PATTERN = /^\d{1,20}$/;
-/** A host or worker identifier: a bounded hostname-like token. */
-const HOST_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/;
+/** A host identifier, bounded as `pr_completion_report.ts` bounds it. */
+const HOST_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 /** Shown once per collection: the CI scope limit, for the coverage notes. */
 const CI_SCOPE_NOTE =
   `CI runs are read from each PR's final head and its last ${CI_COMMIT_LIMIT} commits; check runs on older commits are not counted`;
@@ -661,10 +663,6 @@ function blockersFor(
 }
 
 /**
- * The GitHub-observed events for one PR: submitted reviews, dismissals, the
- * merge, and each commit. Commit delivery requires a verified push's recorded range.
- */
-/**
  * Who merged the PR, and the auto-merge arm standing before it. The merger is
  * the actor of the one `merged` event, or null when there is not exactly one.
  * `armSeen` is set by any auto-merge enable before the merge; `armerId` is the
@@ -695,7 +693,8 @@ function mergeHistory(
 
 /**
  * The GitHub-observed events for one PR: submitted reviews, dismissals, the
- * merge, and each commit. Commit delivery requires a verified push's recorded range.
+ * merge, and each commit. Commit delivery requires a verified push's recorded
+ * range.
  */
 function gitHubEvents(
   observed: ObservedPr,
@@ -1060,14 +1059,15 @@ function regressionsFor(observed: ObservedPr[]): Regression[] {
 
 /**
  * One deployment row, or the reason the record is unusable. `host` is set only
- * when the source record names one; otherwise the row has no host.
+ * when the source record names one, and a named host must be a host identifier;
+ * a record without one (written before the field existed) yields a host-less row.
  */
 function deploymentRow(
   component: unknown,
   revision: unknown,
   fingerprint: unknown,
   observedAt: unknown,
-  host?: string,
+  host: unknown,
 ): DeploymentRow | string {
   if (typeof component !== "string" || !COMPONENT_PATTERN.test(component)) {
     return "component is not a component identifier";
@@ -1086,16 +1086,17 @@ function deploymentRow(
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-  if (host !== undefined && !HOST_PATTERN.test(host)) {
-    return "host is not a host identifier";
-  }
   const row: DeploymentRow = {
     component,
     revision,
     policyFingerprint: fingerprint,
     observedAt,
   };
-  return host === undefined ? row : { ...row, host };
+  if (host === undefined) return row;
+  if (typeof host !== "string" || !HOST_PATTERN.test(host)) {
+    return "host is not a host identifier";
+  }
+  return { ...row, host };
 }
 
 type JsonRead =
@@ -1160,6 +1161,7 @@ async function collectDeployments(
       o.codeRevision,
       o.policyFingerprint,
       o.observedAt,
+      o.host,
     );
     if (typeof row === "string") {
       notes.push(`babysitter heartbeat ${path}: ${row}; skipped`);
@@ -1205,6 +1207,7 @@ async function collectDeployments(
         d.codeRevision,
         d.policyFingerprint,
         d.observedAt,
+        d.host,
       );
       if (typeof row === "string") {
         notes.push(`review-run record ${path}: ${row}; skipped`);

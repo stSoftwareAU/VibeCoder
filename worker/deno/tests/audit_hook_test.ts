@@ -786,7 +786,10 @@ Deno.test("audit_hook - VIBE_AUDIT_DISABLED beats VIBE_AUDIT_DIR (Issue #4658)",
 });
 
 Deno.test("audit_hook - a git push through VIBE_AUDIT_DIR lands a journal in that directory (Issue #4658)", async () => {
-  const auditDir = await Deno.makeTempDir();
+  // The journal's roster is a sibling of its directory, so keep the directory
+  // one level inside the temp root to have the roster removed with it.
+  const root = await Deno.makeTempDir();
+  const auditDir = `${root}/audit`;
   try {
     const env = envFrom({
       VIBE_AUDIT_DIR: auditDir,
@@ -808,6 +811,6 @@ Deno.test("audit_hook - a git push through VIBE_AUDIT_DIR lands a journal in tha
     assertEquals(loaded.value[0]?.verb, "git-push");
     assertEquals(loaded.value[0]?.target, "feature-branch");
   } finally {
-    await Deno.remove(auditDir, { recursive: true });
+    await Deno.remove(root, { recursive: true });
   }
 });

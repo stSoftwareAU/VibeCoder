@@ -2845,6 +2845,146 @@ Deno.test("collect - a ledger deployment carries its host, a review-run deployme
   });
 });
 
+/** Seed a babysitter heartbeat and a round's review-run record, each with the given deployment fields. */
+async function seedHostedDeployments(
+  dir: string,
+  babysitter: Json,
+  reviewer: Json,
+): Promise<{ babysitterDir: string; roundsDir: string }> {
+  const babysitterDir = `${dir}/babysitter`;
+  const roundsDir = `${dir}/rounds`;
+  await Deno.mkdir(babysitterDir, { recursive: true });
+  await Deno.mkdir(`${roundsDir}/20261101-100000`, { recursive: true });
+  await Deno.writeTextFile(
+    `${babysitterDir}/deployment-health.json`,
+    JSON.stringify(babysitter),
+  );
+  await Deno.writeTextFile(
+    `${roundsDir}/20261101-100000/review-run.json`,
+    JSON.stringify({
+      round: "20261101-100000",
+      attempts: [],
+      deployment: reviewer,
+    }),
+  );
+  return { babysitterDir, roundsDir };
+}
+
+const HOSTED_BEAT = {
+  codeRevision: "rev1",
+  policyFingerprint: FP,
+  observedAt: "2026-11-01T22:00:00Z",
+};
+
+Deno.test("collect - a babysitter heartbeat and a review-run record name their host on their rows", async () => {
+  await withDir(async (dir) => {
+    const { babysitterDir, roundsDir } = await seedHostedDeployments(
+      dir,
+      { component: "babysitter", ...HOSTED_BEAT, host: "host-a" },
+      { component: "reviewer", ...HOSTED_BEAT, host: "host-a" },
+    );
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture()),
+      { babysitterStateDirs: [babysitterDir], reviewRunDirs: [roundsDir] },
+    ));
+    const byComponent = new Map(
+      snapshot.input.deployments.map((row) => [row.component, row]),
+    );
+    assertEquals(byComponent.get("babysitter")?.host, "host-a");
+    assertEquals(byComponent.get("reviewer")?.host, "host-a");
+    assertEquals(
+      snapshot.coverageNotes.some((note) => note.includes("host is not")),
+      false,
+    );
+  });
+});
+
+Deno.test("collect - a heartbeat or review-run record written before the host field yields a host-less row", async () => {
+  await withDir(async (dir) => {
+    const { babysitterDir, roundsDir } = await seedHostedDeployments(
+      dir,
+      { component: "babysitter", ...HOSTED_BEAT },
+      { component: "reviewer", ...HOSTED_BEAT },
+    );
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture()),
+      { babysitterStateDirs: [babysitterDir], reviewRunDirs: [roundsDir] },
+    ));
+    assertEquals(
+      snapshot.input.deployments.map((row) => row.component).sort(),
+      ["babysitter", "reviewer"],
+    );
+    for (const row of snapshot.input.deployments) {
+      assertEquals("host" in row, false, `${row.component} has no host`);
+    }
+    assertEquals(
+      snapshot.coverageNotes.some((note) => note.includes("host is not")),
+      false,
+    );
+  });
+});
+
+Deno.test("collect - a malformed host skips its deployment row with a note, never silently", async () => {
+  await withDir(async (dir) => {
+    const bad = [
+      ["babysitter", 42],
+      ["babysitter", "a".repeat(65)],
+      ["reviewer", "bad host!"],
+      ["reviewer", null],
+    ] as const;
+    for (const [index, [component, host]] of bad.entries()) {
+      const { babysitterDir, roundsDir } = await seedHostedDeployments(
+        `${dir}/case-${index}`,
+        component === "babysitter"
+          ? { component, ...HOSTED_BEAT, host }
+          : { component: "babysitter", ...HOSTED_BEAT },
+        component === "reviewer"
+          ? { component, ...HOSTED_BEAT, host }
+          : { component: "reviewer", ...HOSTED_BEAT },
+      );
+      const snapshot = await collectPrCompletionSnapshot(options(
+        fakeGh(emptyFixture()),
+        { babysitterStateDirs: [babysitterDir], reviewRunDirs: [roundsDir] },
+      ));
+      assertEquals(
+        snapshot.input.deployments.some((row) => row.component === component),
+        false,
+        `${component} row with host ${JSON.stringify(host)} is skipped`,
+      );
+      assertStringIncludes(
+        snapshot.coverageNotes.join("\n"),
+        `${component === "babysitter" ? "deployment-health.json" : "review-run.json"}: host is not a host identifier; skipped`,
+      );
+    }
+  });
+});
+
+Deno.test("collect - with expected hosts, a babysitter and a reviewer row on each host leave no component@host missing", async () => {
+  await withDir(async (dir) => {
+    const { babysitterDir, roundsDir } = await seedHostedDeployments(
+      dir,
+      { component: "babysitter", ...HOSTED_BEAT, host: "host-a" },
+      { component: "reviewer", ...HOSTED_BEAT, host: "host-a" },
+    );
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture()),
+      {
+        babysitterStateDirs: [babysitterDir],
+        reviewRunDirs: [roundsDir],
+        expected: {
+          components: ["babysitter", "reviewer"],
+          revision: "rev1",
+          policyFingerprint: FP,
+          maxHeartbeatAgeHours: 24,
+          expectedHosts: ["host-a"],
+        },
+      },
+    ));
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.deployment.missingHostHeartbeats, []);
+  });
+});
+
 Deno.test("collect - an event actor without an id is refused by name, and a null actor is accepted", async () => {
   const withoutId = emptyFixture({
     pulls: { [REPO]: [pull(1)] },

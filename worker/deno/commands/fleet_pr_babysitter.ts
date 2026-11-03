@@ -39,6 +39,8 @@ import {
   PR_BODY_LIMIT,
 } from "../lib/babysitter_pr_body_guard.ts";
 import { getRunId } from "../lib/run_id.ts";
+import { sanitiseHostname } from "../lib/fleet_telemetry_sidecar.ts";
+import { getHostname } from "../lib/worker_identity.ts";
 import {
   accessibleBabysitterRepositories,
   babysitterAgentEnv,
@@ -2742,12 +2744,16 @@ function babysitterStateDir(): string {
   }/vibe-coder/fleet-pr-babysitter`;
 }
 
-/** Persist the babysitter's current build and resolved policy heartbeat. */
+/**
+ * Persist the babysitter's current build, resolved policy and host heartbeat
+ * (Issue #4658). `host` defaults to this machine's sanitised hostname.
+ */
 export async function recordBabysitterDeployment(
   stateDir: string,
   config: Awaited<ReturnType<typeof loadConfig>>,
   codeRevision?: string,
   observedAt = new Date().toISOString(),
+  host = sanitiseHostname(getHostname()),
 ): Promise<void> {
   codeRevision ??= Deno.env.get("VIBE_BUILD_COMMIT") ??
     await resolveBuildCommitStamp(

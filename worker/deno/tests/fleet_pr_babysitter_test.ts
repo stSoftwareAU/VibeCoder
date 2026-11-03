@@ -107,6 +107,8 @@ import {
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { sanitiseHostname } from "../lib/fleet_telemetry_sidecar.ts";
+import { getHostname } from "../lib/worker_identity.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 
 /** Run a real git command for fixtures and for the injected runner in clone tests. */
@@ -2474,6 +2476,38 @@ Deno.test("babysitter deployment heartbeat stores only revision and policy finge
       first.policyFingerprint !== second.policyFingerprint,
       "a change to issueExecutorSplit changes the heartbeat's policy fingerprint",
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("babysitter deployment heartbeat names its host, defaulting to this machine's sanitised hostname (Issue #4658)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const config = buildDefaultWorkerConfig();
+    const observedAt = "2026-11-02T00:00:00.000Z";
+    await recordBabysitterDeployment(
+      `${dir}/named`,
+      config,
+      "abcdef0123456789",
+      observedAt,
+      "build-host-4658",
+    );
+    const named = JSON.parse(
+      await Deno.readTextFile(`${dir}/named/deployment-health.json`),
+    );
+    assertEquals(named.host, "build-host-4658");
+
+    await recordBabysitterDeployment(
+      `${dir}/defaulted`,
+      config,
+      "abcdef0123456789",
+      observedAt,
+    );
+    const defaulted = JSON.parse(
+      await Deno.readTextFile(`${dir}/defaulted/deployment-health.json`),
+    );
+    assertEquals(defaulted.host, sanitiseHostname(getHostname()));
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

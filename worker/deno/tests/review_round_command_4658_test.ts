@@ -18,7 +18,9 @@ import {
   assertNotEquals,
 } from "@std/assert";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { sanitiseHostname } from "../lib/fleet_telemetry_sidecar.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
+import { getHostname } from "../lib/worker_identity.ts";
 import {
   createReviewRoundDeps,
   REVIEW_RUN_FILE,
@@ -81,6 +83,11 @@ Deno.test("review-round command records reviewer build and policy in review-run.
     assert(
       Number.isFinite(Date.parse(record.deployment.observedAt)),
       "the round records when it observed its deployment",
+    );
+    assertEquals(
+      record.deployment.host,
+      sanitiseHostname(getHostname()),
+      "the round records the machine it ran on, as the lifecycle ledger names it",
     );
   } finally {
     await Deno.remove(base, { recursive: true });
