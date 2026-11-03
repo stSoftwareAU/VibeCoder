@@ -16,6 +16,10 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import {
+  carryCredentialsThroughSudo,
+  credentialChannelFault,
+} from "./credential_channel.ts";
 import type { MergeConflictAgentOutcome } from "./merge_conflict_agent.ts";
 import type { MergeConflictRepairContext } from "./prompt_builder.ts";
 import {
@@ -363,8 +367,14 @@ export async function planFastChecks(
 /**
  * Spawn one check within its remaining budget.
  *
- * A spawn failure (the toolchain is not installed) throws, so the caller
- * reports the check as unverified rather than as a failure or a pass.
+ * The check is dropped to the `agent` account and refuses to run when that
+ * account is unavailable (there is no fallback to the worker). The declared
+ * `repoCredentialEnv` rides the stdin channel of the `sudo` wrapper
+ * (Issue #4705): the values are never in argv, because `sudo`'s `env_reset`
+ * would strip them from the environment. A spawn failure (the toolchain is not
+ * installed) throws, and so does a channel fault, naming the wrapper's fault
+ * line but never a value, so the caller reports the check as unverified rather
+ * than as a failure or a pass.
  */
 export async function spawnFastCheck(
   check: FastCheck,
@@ -391,9 +401,10 @@ export async function spawnFastCheck(
     dropped,
     target === undefined ? {} : { CARGO_TARGET_DIR: target },
   );
+  const channelled = carryCredentialsThroughSudo(command, repoCredentialEnv);
   const result = await spawn(
-    command[0]!,
-    command.slice(1),
+    channelled.argv[0]!,
+    channelled.argv.slice(1),
     {
       cwd: check.dir,
       timeoutMs: check.timeoutMs,
@@ -401,10 +412,24 @@ export async function spawnFastCheck(
       // to trim it (Issue #2247); empty on every other runtime.
       env,
       clearEnv: true,
+      // The declared credentials, base64 encoded, for the wrapper to read
+      // (Issue #4705). Undefined when nothing is declared.
+      stdin: channelled.stdin,
     },
   );
   if (!result.ok) throw result.error;
   const { code, stdout, stderr, timedOut } = result.value;
+  // Only a spawn that went through the channel has a wrapper that can fault;
+  // otherwise a check's own marker + exit 78 is an ordinary failure.
+  const fault = channelled.stdin === undefined
+    ? undefined
+    : credentialChannelFault({ code, stderr });
+  if (fault !== undefined) {
+    throw new Error(
+      "the declared quality_credentials could not be delivered to the " +
+        `isolated account (Issue #4705): ${fault}`,
+    );
+  }
   const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean)
     .join("\n");
   if (timedOut) {

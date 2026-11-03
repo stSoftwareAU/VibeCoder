@@ -66,6 +66,13 @@ regexes = [
   # Issue #4656: this synthetic redaction fixture appeared in two lines of
   # an earlier commit. Match only those lines and this exact test value.
   '''^\s*("token gh[p]_abcdefghijklmnopqrstuvwxyz0123456789",|assert\(!secret\[0\]!\.includes\("gh[p]_abcdefghijklmnopqrstuvwxyz0123456789"\)\);)\s*$''',
+  # Issue #4705: exact synthetic values in historical credential-channel
+  # tests. The PR range retains these lines even if later commits edit them.
+  '''^\s*const SECRET = "synthetic-secret-4705";\s*$''',
+  '''^\s*GH_TOKEN: "planted-4705-gh",\s*$''',
+  '''^\s*const restore = plantEnv\(\{ GH_TOKEN: "planted-4705-gh" \}\);\s*$''',
+  '''^\s*\{ NPM_TOKEN: "synthetic-4705" \},\s*$''',
+  '''^\s*const result = await runAsAgentForReal\(\{ NPM_TOKEN: "synthetic-4705" \}\);\s*$''',
   # Issue #4659: this is an environment variable NAME, not a credential value.
   # Earlier commits declare it in both gate tests before moving it to their
   # shared harness. Exempt only the exact synthetic declaration, including

@@ -193,3 +193,10 @@ Quality run 41555343824 passed all unit shards and its gate (verified with gh).
 Semgrep and Checkov remain unavailable; config integration has no config file.
 The summary CLI reports zero blocked gates; its three missing-input checks
 remain not checked. Commit-history freshness runs after the babysitter commits.
+
+## Merge conflict repair
+
+The Gitleaks configuration retains both the PR’s synthetic redaction fixture
+exception and the base branch’s credential-channel fixture exceptions. The
+combined TOML configuration parses successfully; its exceptions remain scoped
+to the exact historical fixture lines.

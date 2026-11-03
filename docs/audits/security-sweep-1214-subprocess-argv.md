@@ -244,8 +244,7 @@ repository's `deno task`, `cargo test` or `bash quality.sh`) and
 `cargo check`) both spawned with the worker's whole environment. They now spawn
 through [`worker/deno/lib/untrusted_gate_spawn.ts`](../../worker/deno/lib/untrusted_gate_spawn.ts):
 an allowlisted environment, `clearEnv: true`, and no inherited repository
-credential. With an available account and no declared credentials, commands
-stay on `agent`: failed, timed out or unreadable/unwritable access probes
+credential. With an available account, commands stay on `agent`: failed, timed out or unreadable/unwritable access probes
 leave the command to CI through the gates' existing environment-fault path.
 A nested project directory or a manifest replaced by a prior repository task
 cannot select the worker account. Symbolic-link manifests and manifests whose
@@ -261,13 +260,14 @@ remain authoritative.
 
 Each gate's real default runner has a test that plants a parent credential
 and asserts the child cannot see it. Declared `quality_credentials` are
-resolved per checkout through `setGateCredentialSource` and placed last in
-the child environment. A mint failure stops the command. Until #4705 provides
-a credential channel through sudo, operator-declared credentials select the
-logged worker fallback, with the restricted environment and no secrets in
-argv. A host without an available agent account also uses that environment.
-These fallbacks retain access to the worker's credential files; project
-layout and per-command probe results no longer select them.
+resolved per checkout through `setGateCredentialSource`. A mint failure stops
+the command. An `agent` command receives them on its stdin, through a fixed
+wrapper inside `sudo`, and not in argv or the wrapper text (Issue #4705). The
+worker account runs a command only where the image has no `agent` account at
+all, with the restricted environment, and there the declared values are placed
+in that environment, last. That fallback retains access to the worker's
+credential files. Neither a declared credential nor project layout nor
+per-command probe results select the worker account.
 
 ## Swept paths
 

@@ -74,8 +74,11 @@ surrounding controls already close most of the workflow-tampering chain:
 `/.github/` (workflows, actions and CI scripts) and `/infra/rulesets/`, so
 they are asked to review those paths. Code-owner review is deliberately
 **not required**: the fleet reviewer App approves (it cannot be a code
-owner), and a PR that removes or loosens tests is held for the owner — the
-trade is recorded as residual risk R14 in
+owner), and the reviewer decides whether a PR that removes or loosens tests
+still keeps meaningful regression protection: an unjustified removal is sent
+back with a request for changes, and only an unclear product contract (or an
+explicit per-repo override) is held for the owner — the trade is recorded as
+residual risk R14 in
 [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). The default
 branch carries required status checks plus the direct-merge wall
 documented in [docs/MERGE.md](docs/MERGE.md). Signed commits would add

@@ -440,3 +440,13 @@ Deno.test("the host cache reclaim keys are known config keys (Issue #4498, #4500
   };
   assertEquals(detectUnknownConfigKeys(record), []);
 });
+
+Deno.test("config_unknown_keys - the review-fleet-prs test-policy keys are known (Issue #4655)", () => {
+  // Both are read by the skill, not the worker; an unknown-key warning on
+  // either would tell the owner to delete a working override.
+  for (
+    const key of ["pr_reviewer_test_hold_repos", "pr_reviewer_auto_release"]
+  ) {
+    assertEquals(KNOWN_CONFIG_KEYS.has(key), true, key);
+  }
+});
