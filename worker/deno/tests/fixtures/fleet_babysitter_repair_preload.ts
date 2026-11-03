@@ -4,6 +4,18 @@ export {};
 const root = Deno.env.get("BABYSITTER_REPAIR_FIXTURE");
 if (!root) throw new Error("BABYSITTER_REPAIR_FIXTURE is required");
 
+// Exercise a real pending open in the production CLI child process.
+if (Deno.env.get("BABYSITTER_BLOCK_OPEN") === "1") {
+  const originalOpen = Deno.open;
+  Deno.open = async (path, options) => {
+    if (String(path).endsWith("/.babysitter-pr-body")) {
+      await Deno.rename(`${root}/blocked-fifo`, path);
+      return await originalOpen(path, { read: true });
+    }
+    return await originalOpen(path, options);
+  };
+}
+
 const pr = {
   state: "OPEN",
   number: 1,
@@ -31,6 +43,15 @@ function commandOutput(
 ): string {
   const args = options.args?.map(String) ?? [];
   if (executable === "gh") {
+    if (args[0] === "pr" && args[1] === "edit") {
+      const path = args[args.indexOf("--body-file") + 1]!;
+      Deno.writeTextFileSync(`${root}/body-file`, path);
+      Deno.writeTextFileSync(
+        `${root}/applied-body`,
+        Deno.readTextFileSync(path),
+      );
+      return "";
+    }
     if (args[0] === "pr" && args[1] === "view") return JSON.stringify(pr);
     if (
       args[0] === "api" &&
@@ -86,6 +107,7 @@ function commandOutput(
     }
   }
   if (executable === "git") {
+    if (args.includes("maintenance")) return "";
     if (args[0] === "clone") {
       Deno.writeTextFileSync(`${root}/clone-calls.log`, args.join(" ") + "\n", {
         append: true,
@@ -114,6 +136,10 @@ function commandOutput(
   if (executable === "codex") {
     if (args[0] === "--version") return "codex-cli 0.164.0";
     if (args[0] === "exec") {
+      Deno.writeTextFileSync(
+        `${args[args.indexOf("--cd") + 1]}/.babysitter-pr-body`,
+        "Reviewed PR description\n",
+      );
       Deno.writeTextFileSync(`${root}/agent-spawn.json`, JSON.stringify(args));
       Deno.writeTextFileSync(
         args[args.indexOf("--output-last-message") + 1]!,

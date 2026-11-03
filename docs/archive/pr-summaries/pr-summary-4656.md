@@ -36,7 +36,8 @@ Version bump: none; no release version or external extension contract changed.
 - A separate fleet-authored marker family shares the consecutive no-progress
   tally. It reuses strict attribute validation, with author verification.
 - Trusted runner sessions restart before read-token expiry. The agent receives
-  no runner write token or App key.
+  no runner write token or App key. On restart, the runner clears the response
+  in its protected exchange directory before launching the next session.
 - The stall ladder cap marker owns eligible red-CI recovery; green review and conflict incidents stop sessions until the head or review changes. Evidence is redacted,
   marker-neutralised and fenced before publication.
 

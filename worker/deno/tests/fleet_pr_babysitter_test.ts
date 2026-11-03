@@ -63,6 +63,7 @@ import {
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
+  applyPrBody,
   attemptKey,
   babysitterRtkInstruction,
   baseAlreadyMerged,
@@ -76,6 +77,7 @@ import {
   loadConfigAndPublishDeployment,
   prBodyEditArgs,
   publishBabysitterDeployment,
+  readAgentResponse,
   reason,
   recordBabysitterDeployment,
   recoverTemporaryClones,
@@ -888,6 +890,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
   const agentToken = "agent-read-only-token";
   const scratch = "/tmp/babysitter-scratch";
   const dir = "/tmp/babysitter-clone";
+  const responseFile = "/tmp/babysitter-exchange/response";
   const prompt = "Fix conflicts on PR #1";
   const protectedPaths = [
     "/home/u/.vibe-coder/fleet-pr-babysitter",
@@ -905,6 +908,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
       agentToken,
       protectedPaths,
       codex: "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
+      responseFile,
     },
     (executable, options) => {
       calls.push({ executable, options });
@@ -935,7 +939,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     "--cd",
     dir,
     "--output-last-message",
-    `${dir}/.babysitter-response`,
+    responseFile,
     prompt,
   ]);
   assertEquals(call.options.stdin, "null");
@@ -958,6 +962,7 @@ Deno.test("codex agent is not given the workspace-write sandbox and cannot read 
       agentToken: "agent-read-only-token",
       protectedPaths,
       codex: "codex",
+      responseFile: "/tmp/babysitter-exchange/response",
     },
     (_executable, options) => {
       calls.push(options.args as string[]);
@@ -1002,6 +1007,7 @@ Deno.test("codex agent refuses to start without protected credential paths", () 
           agentToken: "agent-read-only-token",
           protectedPaths: [],
           codex: "codex",
+          responseFile: "/tmp/babysitter-exchange/response",
         },
         () => {
           spawned = true;
@@ -1009,6 +1015,65 @@ Deno.test("codex agent refuses to start without protected credential paths", () 
         },
       ),
     Error,
+  );
+  assertEquals(spawned, false);
+});
+
+Deno.test("codex agent refuses a response file inside the clone or scratch directory", () => {
+  for (
+    const responseFile of [
+      "/tmp/babysitter-clone/response",
+      "/tmp/babysitter-clone",
+      "/tmp/babysitter-scratch/response",
+      "/tmp/babysitter-scratch",
+    ]
+  ) {
+    let spawned = false;
+    assertThrows(
+      () =>
+        spawnBabysitterAgent(
+          {
+            dir: "/tmp/babysitter-clone",
+            scratch: "/tmp/babysitter-scratch",
+            prompt: "Fix conflicts on PR #1",
+            agentToken: "agent-read-only-token",
+            protectedPaths: ["/home/u/.vibe-coder/fleet-pr-babysitter"],
+            codex: "codex",
+            responseFile,
+          },
+          () => {
+            spawned = true;
+            return {} as unknown as Deno.ChildProcess;
+          },
+        ),
+      Error,
+      "writable path",
+    );
+    assertEquals(spawned, false, `spawned with ${responseFile}`);
+  }
+});
+
+Deno.test("codex agent refuses a relative response file and does not spawn", () => {
+  let spawned = false;
+  assertThrows(
+    () =>
+      spawnBabysitterAgent(
+        {
+          dir: "/tmp/babysitter-clone",
+          scratch: "/tmp/babysitter-scratch",
+          prompt: "Fix conflicts on PR #1",
+          agentToken: "agent-read-only-token",
+          protectedPaths: ["/home/u/.vibe-coder/fleet-pr-babysitter"],
+          codex: "codex",
+          responseFile: "response",
+        },
+        () => {
+          spawned = true;
+          return {} as unknown as Deno.ChildProcess;
+        },
+      ),
+    Error,
+    "not absolute",
   );
   assertEquals(spawned, false);
 });
@@ -1096,7 +1161,7 @@ Deno.test("a review repair may propose a PR description for the runner to apply"
 });
 
 Deno.test("the proposed PR description is taken out of the clone before commit", async () => {
-  const dir = await Deno.makeTempDir();
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "New body\n");
     assertEquals(
@@ -1114,7 +1179,7 @@ Deno.test("the proposed PR description is taken out of the clone before commit",
 });
 
 Deno.test("a proposed PR description keeps the closing references it dropped", async () => {
-  const dir = await Deno.makeTempDir();
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(
       `${dir}/.babysitter-pr-body`,
@@ -1133,7 +1198,7 @@ Deno.test("a proposed PR description keeps the closing references it dropped", a
 });
 
 Deno.test("an empty or oversized PR description proposal is not applied", async () => {
-  const dir = await Deno.makeTempDir();
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "  \n");
     assertEquals(await takePrBodyProposal(dir, "Old"), undefined);
@@ -1149,6 +1214,125 @@ Deno.test("an empty or oversized PR description proposal is not applied", async 
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Issue #4731: the agent writes the proposal into the clone, so a planted link,
+// FIFO or oversized file must be refused before anything is published.
+Deno.test("a PR description proposal that is a symlink to a secret is refused without being read", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const dir = `${base}/clone`;
+    await Deno.mkdir(dir);
+    await Deno.writeTextFile(`${base}/secret.txt`, "SECRET-TOKEN-4731");
+    await Deno.symlink(`${base}/secret.txt`, `${dir}/.babysitter-pr-body`);
+    const error = await assertRejects(
+      () => takePrBodyProposal(dir, "Old body"),
+      Error,
+      "refused unsafe agent output",
+    );
+    assert(!error.message.includes("SECRET-TOKEN-4731"));
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("a PR description proposal that is a FIFO is refused rather than waited on", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const dir = `${base}/clone`;
+    await Deno.mkdir(dir);
+    const made = await new Deno.Command("mkfifo", {
+      args: [`${dir}/.babysitter-pr-body`],
+    }).output();
+    assert(made.success, "mkfifo created the FIFO");
+    await assertRejects(
+      () => takePrBodyProposal(dir, "Old body"),
+      Error,
+      "refused unsafe agent output",
+    );
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("a PR description proposal over the byte bound is refused before it is read", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const dir = `${base}/clone`;
+    await Deno.mkdir(dir);
+    await Deno.writeTextFile(
+      `${dir}/.babysitter-pr-body`,
+      "x".repeat(65_536 * 4 + 1),
+    );
+    await assertRejects(
+      () => takePrBodyProposal(dir, "Old body"),
+      Error,
+      "refused unsafe agent output",
+    );
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+// Issue #4731: the Codex final message is read from the runner's exchange
+// directory through the same hardened reader.
+Deno.test("the agent's completion response is read from the exchange directory", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    await Deno.writeTextFile(
+      `${base}/response`,
+      "Done.\nBABYSITTER_READY",
+    );
+    assertEquals(await readAgentResponse(base), "Done.\nBABYSITTER_READY");
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("a missing completion response is reported as not written", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    await assertRejects(
+      () => readAgentResponse(base),
+      Error,
+      "did not write its completion response",
+    );
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("a completion response that is a symlink to a secret is refused", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const exchange = `${base}/exchange`;
+    await Deno.mkdir(exchange);
+    await Deno.writeTextFile(`${base}/secret.txt`, "SECRET-TOKEN-4731");
+    await Deno.symlink(`${base}/secret.txt`, `${exchange}/response`);
+    const error = await assertRejects(
+      () => readAgentResponse(exchange),
+      Error,
+      "refused unsafe agent output",
+    );
+    assert(!error.message.includes("did not write"));
+    assert(!error.message.includes("SECRET-TOKEN-4731"));
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("an oversized completion response is refused", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    await Deno.writeTextFile(`${base}/response`, "x".repeat(1_048_577));
+    await assertRejects(
+      () => readAgentResponse(base),
+      Error,
+      "refused unsafe agent output",
+    );
+  } finally {
+    await Deno.remove(base, { recursive: true });
   }
 });
 
@@ -1245,6 +1429,65 @@ Deno.test("the PR description update passes the write allowlist for its repo onl
       WriteRepoBlockedError,
     );
   });
+});
+
+// Issue #4731: the PR description is staged in the runner-owned exchange
+// directory, which the agent cannot write, and applied from there.
+Deno.test("applyPrBody stages the body in the exchange at mode 0600 and edits from it", async () => {
+  const exchange = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const calls: string[][] = [];
+    await applyPrBody("owner/repo", 7, "New description", exchange, (args) => {
+      calls.push(args);
+      return Promise.resolve(undefined);
+    });
+    const file = `${exchange}/pr-body.md`;
+    assertEquals(await Deno.readTextFile(file), "New description");
+    assertEquals(((await Deno.stat(file)).mode ?? 0) & 0o777, 0o600);
+    assertEquals(calls, [prBodyEditArgs("owner/repo", 7, file)]);
+  } finally {
+    await Deno.remove(exchange, { recursive: true });
+  }
+});
+
+Deno.test("applyPrBody refuses a symlink planted at the body path and never edits", async () => {
+  const exchange = await Deno.realPath(await Deno.makeTempDir());
+  const victimDir = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const victim = `${victimDir}/victim.txt`;
+    await Deno.writeTextFile(victim, "original");
+    await Deno.symlink(victim, `${exchange}/pr-body.md`);
+    let edited = false;
+    await assertRejects(() =>
+      applyPrBody("owner/repo", 7, "agent-controlled body", exchange, () => {
+        edited = true;
+        return Promise.resolve(undefined);
+      })
+    );
+    assertEquals(await Deno.readTextFile(victim), "original");
+    assertEquals(edited, false);
+  } finally {
+    await Deno.remove(exchange, { recursive: true });
+    await Deno.remove(victimDir, { recursive: true });
+  }
+});
+
+Deno.test("applyPrBody edits from the exchange, not from the agent's scratch directory", async () => {
+  const exchange = await Deno.realPath(await Deno.makeTempDir());
+  const scratch = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const calls: string[][] = [];
+    await applyPrBody("owner/repo", 7, "body", exchange, (args) => {
+      calls.push(args);
+      return Promise.resolve(undefined);
+    });
+    const bodyFile = calls[0]!.at(-1)!;
+    assertEquals(bodyFile, `${exchange}/pr-body.md`);
+    assert(!bodyFile.startsWith(`${scratch}/`));
+  } finally {
+    await Deno.remove(exchange, { recursive: true });
+    await Deno.remove(scratch, { recursive: true });
+  }
 });
 
 // Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in

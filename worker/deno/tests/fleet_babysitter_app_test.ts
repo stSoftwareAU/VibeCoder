@@ -84,7 +84,7 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
           gh_config_dir: `${home}/decoy-gh`,
         }),
       );
-      const result = await runWithTimeout(Deno.execPath(), [
+      const cliArgs = [
         "run",
         // Match the host launcher: Deno's narrower permission checks can
         // normalise '..' before realPath reaches the filesystem.
@@ -100,18 +100,41 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
         new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
         "--repo=owner/repo",
         "--pr=1",
-      ], {
+      ];
+      const childEnv = {
+        HOME: home,
+        CONFIG_PATH: configPath,
+        TMPDIR: `${home}/tmp`,
+        BABYSITTER_REPAIR_FIXTURE: home,
+        DENO_DIR: denoDir,
+      };
+      if (Deno.build.os !== "windows") {
+        const fifo = await new Deno.Command("mkfifo", {
+          args: [`${home}/blocked-fifo`],
+        }).output();
+        assert(fifo.success);
+        const blocked = await runWithTimeout(Deno.execPath(), cliArgs, {
+          cwd: home,
+          timeoutMs: 12_000,
+          clearEnv: true,
+          env: { ...childEnv, BABYSITTER_BLOCK_OPEN: "1" },
+        });
+        assert(blocked.ok, "non-watch pass exits despite a pending open");
+        assertEquals(blocked.value.success, false);
+        assertStringIncludes(blocked.value.stderr, "timed out opening");
+        await Deno.remove(
+          `${home}/.local/state/vibe-coder/fleet-pr-babysitter`,
+          {
+            recursive: true,
+          },
+        );
+        await Deno.remove(`${home}/clone-calls.log`);
+      }
+      const result = await runWithTimeout(Deno.execPath(), cliArgs, {
         cwd: home,
         timeoutMs: 20_000,
         clearEnv: true,
-        env: {
-          HOME: home,
-          CONFIG_PATH: configPath,
-          TMPDIR: `${home}/tmp`,
-          BABYSITTER_REPAIR_FIXTURE: home,
-          // Reuse the populated module cache without inheriting host settings.
-          DENO_DIR: denoDir,
-        },
+        env: childEnv,
       });
       assert(result.ok);
       assertEquals(result.value.success, true, result.value.stderr);
@@ -143,6 +166,17 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
         arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={`)
       );
       assert(profile);
+      assertEquals(
+        await Deno.readTextFile(`${home}/applied-body`),
+        "Reviewed PR description",
+      );
+      const bodyFile = await Deno.readTextFile(`${home}/body-file`);
+      const writablePaths = [...profile.matchAll(/"([^"]+)" = "write"/g)]
+        .map((match) => match[1]!);
+      assertEquals(writablePaths.length, 2, "clone and scratch write grants");
+      for (const writable of writablePaths) {
+        assert(bodyFile !== writable && !bodyFile.startsWith(`${writable}/`));
+      }
       for (
         const path of [
           privateKeyPath,
@@ -220,6 +254,7 @@ Deno.test("agent launch mints a scoped token and passes it to Codex", async () =
           dir: "/clone",
           scratch: "/scratch",
           prompt: "repair",
+          responseFile: "/exchange/response",
           home,
           configPath,
           env: (name) => hostEnv[name],
@@ -286,6 +321,7 @@ Deno.test("agent launch does not record an attempt when token minting fails", as
             dir: "/clone",
             scratch: "/scratch",
             prompt: "repair",
+            responseFile: "/exchange/response",
             home,
             configPath: `${home}/missing-config.json`,
           },
@@ -326,6 +362,7 @@ Deno.test("agent session ends before the read token expires and reports its expi
           prompt: "repair",
           home,
           configPath: `${home}/missing-config.json`,
+          responseFile: "/exchange/response",
           maxSessionMs: 9 * 60_000,
           onTokenExpiry: (value) => observedExpiry = value,
         },
@@ -362,6 +399,7 @@ Deno.test("agent launch refuses a relative HOME before minting a token or spawni
             dir: "/clone",
             scratch: "/scratch",
             prompt: "repair",
+            responseFile: "/exchange/response",
             home: "relative",
             configPath: "/missing-config.json",
           },
@@ -401,6 +439,7 @@ Deno.test("agent launch does not spawn an already attempted head", async () => {
           dir: "/clone",
           scratch: "/scratch",
           prompt: "repair",
+          responseFile: "/exchange/response",
           home,
           configPath: `${home}/missing-config.json`,
         },
@@ -760,6 +799,7 @@ Deno.test("agent launch stops before mint, attempt or spawn when Codex cannot be
           dir: "/clone",
           scratch: "/scratch",
           prompt: "repair",
+          responseFile: "/exchange/response",
           home: "/home",
           configPath: "/missing-config.json",
         },

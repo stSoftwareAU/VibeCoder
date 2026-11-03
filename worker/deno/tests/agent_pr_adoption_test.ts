@@ -169,6 +169,20 @@ Deno.test("adoptAgentRaisedPrBody - Issue #3804: syncs the PR on the run's own b
   assertEquals(call.beforeSha, undefined);
 });
 
+Deno.test("adoptAgentRaisedPrBody - Issue #4712: the body is pinned to the pushed head it was verified against", async () => {
+  const syncCalls: SyncPrBodyInput[] = [];
+  await adoptAgentRaisedPrBody(
+    input(),
+    deps({ head: SHA, remote: SHA, prUrl: PR_URL, gitCalls: [] }),
+    recordingSync(syncCalls),
+  );
+
+  assertEquals(syncCalls.length, 1);
+  const call = syncCalls[0];
+  assert(call, "expected one sync call");
+  assertEquals(call.committedHeadSha, SHA);
+});
+
 Deno.test("adoptAgentRaisedPrBody - repairs a noncanonical title before adopting the body", async () => {
   const ghCalls: string[][] = [];
   const syncCalls: SyncPrBodyInput[] = [];
