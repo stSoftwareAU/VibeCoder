@@ -5,11 +5,10 @@
 The review-fleet-prs runner (`.claude/skills/review-fleet-prs/run.sh`) used to
 start each review round as `claude -p` on the host, using the host's own
 `claude` login. #3289 then copied the worker's credential plumbing into a host
-script (`claude_credential.ts`) to pick a subscription. Now the cheap parts
-stay on the host: the gate pass, the audit send-backs and the escalation. The
-round itself runs as a `container run` of the worker image. That gives one
-place that knows how to run Claude unattended on the right subscription,
-instead of two.
+script (`claude_credential.ts`) to pick a subscription. Now the cheap parts stay
+on the host: the gate pass, the audit send-backs and the escalation. The round
+itself runs as a `container run` of the worker image. That gives one place that
+knows how to run Claude unattended on the right subscription, instead of two.
 
 - **`worker/deno/lib/review_round.ts`, `worker/deno/commands/review_round.ts`**:
   the new `review-round` driver command. It exports the subscription the
@@ -19,8 +18,8 @@ instead of two.
   switches to the next subscription with budget (`selectAvailable` with the
   spent label excluded, then `applySelection`) and runs once more. Labels are
   logged; token values never are.
-- **`container/entrypoint.sh`**: when `review-round` is the first argument,
-  the entrypoint does its usual staging and then runs that command instead of
+- **`container/entrypoint.sh`**: when `review-round` is the first argument, the
+  entrypoint does its usual staging and then runs that command instead of
   `run-entrypoint`.
 - **`run.sh`**: builds the round's container from the worker's own
   `mod.ts container-launch-plan`, with the same image, credential mounts, log
@@ -28,16 +27,15 @@ instead of two.
   - It leaves out the worker's named volumes.
   - It passes the reviewer App token as `--env GH_TOKEN`, by name only.
   - It checks that the image is built and the runtime is on `PATH`.
-  - It writes the prompt to `prompt.md` in the round directory, using
-    container paths.
+  - It writes the prompt to `prompt.md` in the round directory, using container
+    paths.
   - A timed-out round's container is killed by name.
   - `claude_credential.ts` and its test are removed.
-- **`post.ts`**: a new `--state-dir=<dir>` option, because inside the
-  container the state directory is mounted at another path.
-- **`SKILL.md`**: the host requirements are now the worker's (container
-  runtime, built image, credential directory) instead of a host `claude`
-  login. A new section explains where a round runs and how its subscription is
-  chosen.
+- **`post.ts`**: a new `--state-dir=<dir>` option, because inside the container
+  the state directory is mounted at another path.
+- **`SKILL.md`**: the host requirements are now the worker's (container runtime,
+  built image, credential directory) instead of a host `claude` login. A new
+  section explains where a round runs and how its subscription is chosen.
 
 Closes #3293
 
@@ -52,29 +50,29 @@ Closes #3293
 
 ### Essential Design Decisions
 
-- The round's container comes from `container-launch-plan`, not from a
-  second hand-written `run` line, so the containment contract stays in one
-  module. The named volumes are dropped because the worker's own container
-  may be using them. On Apple `container` they are block devices that must not
-  be mounted by two VMs at once.
+- The round's container comes from `container-launch-plan`, not from a second
+  hand-written `run` line, so the containment contract stays in one module. The
+  named volumes are dropped because the worker's own container may be using
+  them. On Apple `container` they are block devices that must not be mounted by
+  two VMs at once.
 - Inside the container, the round reaches the state directory through the
   worker's existing log mount (`<log_dir>` → `/home/vibe/logs`). `post.ts` is
   told the path with `--state-dir`, not an environment override; `log_dir.ts`
   deliberately ignores log-directory environment variables.
 - `--env GH_TOKEN` with no value makes the runtime copy the variable from the
-  host environment. The token is minted on the host as before, and its value
-  is never on a command line, in a `bash -x` trace or in a file.
-- The 50-minute alarm, the per-round directory and the runner's log lines
-  are unchanged. The usage-limit rotation now happens inside the container,
-  so its log lines come from the driver.
+  host environment. The token is minted on the host as before, and its value is
+  never on a command line, in a `bash -x` trace or in a file.
+- The 50-minute alarm, the per-round directory and the runner's log lines are
+  unchanged. The usage-limit rotation now happens inside the container, so its
+  log lines come from the driver.
 
 ### Undiscoverable Facts
 
 - The image tag is derived from the content of `container/entrypoint.sh`
-  (`container_image_hash.ts`). An image built before this change therefore
-  never matches the plan, and the runner reports
-  `the worker image is not built` instead of starting an old entrypoint, which
-  would run the worker loop. The worker's next launch builds the new image.
+  (`container_image_hash.ts`). An image built before this change therefore never
+  matches the plan, and the runner reports `the worker image is not built`
+  instead of starting an old entrypoint, which would run the worker loop. The
+  worker's next launch builds the new image.
 - A real `container-launch-plan` on a macOS host emits the mounts as
   `--volume src:target[:ro]` and the named volumes as `volume=` keys. The
   runner's parser was checked against a real plan.
@@ -84,15 +82,15 @@ Closes #3293
 This changes infrastructure only and has no UI, so there are no screenshots.
 `review_round_test.ts`, `review_fleet_prs_runner_test.ts` and
 `container_entrypoint_test.ts` pin the behaviour. A real launch plan was
-generated on a macOS host and its argument layout checked against the
-runner's parser.
+generated on a macOS host and its argument layout checked against the runner's
+parser.
 
 **Docs sweep:** grep `claude_credential.ts`, `review-fleet-prs/run.sh`,
 `review-round`, `host's claude login`. Updated
 `.claude/skills/review-fleet-prs/SKILL.md` (Running unattended; Where a round
 runs; Persistent failure escalation; the `post.ts` `--state-dir` note).
-`docs/CONFIGURATION.md:382` is still true because the runner is still
-`run.sh`, and it still reviews as the App.
+`docs/CONFIGURATION.md:382` is still true because the runner is still `run.sh`,
+and it still reviews as the App.
 
 ## Test Plan
 

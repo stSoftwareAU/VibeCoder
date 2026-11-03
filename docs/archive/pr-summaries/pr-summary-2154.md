@@ -44,20 +44,21 @@ Backend/config change with no web interface to screenshot. Evidence is the test
 run and the full quality gate:
 
 - `deno test tests/config_test.ts tests/config_unknown_keys_test.ts
-  tests/codegraph_context_config_test.ts tests/lib_sweep_coverage_test.ts` —
-  179 passed, 0 failed.
+  tests/codegraph_context_config_test.ts tests/lib_sweep_coverage_test.ts`
+  — 179 passed, 0 failed.
 - `./quality.sh` — `Result: PASSED (with skipped checks)`; the one skip is
-  `config integration`, which is skipped on this host for want of a live
-  config, not by this change. `deno tests`, `deno lint`, `deno type check`,
-  `deno fmt`, `completeness checks`, `markdownlint` and `semgrep` all PASSED.
+  `config integration`, which is skipped on this host for want of a live config,
+  not by this change. `deno tests`, `deno lint`, `deno type check`, `deno fmt`,
+  `completeness checks`, `markdownlint` and `semgrep` all PASSED.
 
 **Not tested here:** the "both switches true" case. `graft_context` does not
 exist anywhere on this branch (`grep -rn "graft_context"` returns nothing) —
-#2098 landed it on `milestone/2060-add-graft-repo-context-injection-off-by-defau`
-— so a test naming it would assert nothing about co-existence. The two blocks
-are read independently: `parseCodegraphContext` looks at `codegraph_context`
-alone, and `graft_context` is neither read nor referenced by it, so nothing in
-this diff can make one switch interfere with the other.
+#2098 landed it on
+`milestone/2060-add-graft-repo-context-injection-off-by-defau` — so a test
+naming it would assert nothing about co-existence. The two blocks are read
+independently: `parseCodegraphContext` looks at `codegraph_context` alone, and
+`graft_context` is neither read nor referenced by it, so nothing in this diff
+can make one switch interfere with the other.
 
 ## Acceptance Criteria
 
@@ -76,10 +77,10 @@ this diff can make one switch interfere with the other.
   `worker/deno/tests/codegraph_context_config_test.ts::parseCodegraphContext - a non-object block is refused, naming the key`
   and the two `config_test.ts` load-failure cases — reviewer: partial — reason:
   the reviewer saw the non-object fault naming only the block, and `null`
-  reading as off; both were fixed in commit `2f827d29` — every refusal now
-  names `codegraph_context.enabled`, and `null` is refused
-- **partial** — both switches true on one config loads without error —
-  evidence: `worker/deno/lib/codegraph_context_config.ts:56` reads only
+  reading as off; both were fixed in commit `2f827d29` — every refusal now names
+  `codegraph_context.enabled`, and `null` is refused
+- **partial** — both switches true on one config loads without error — evidence:
+  `worker/deno/lib/codegraph_context_config.ts:56` reads only
   `codegraph_context` — reviewer: missing — reason: `graft_context` is on
   another milestone branch, so the issue's own instruction ("add this case when
   the Graft switch is present … otherwise note it in the PR summary") applies;
@@ -100,9 +101,9 @@ this diff can make one switch interfere with the other.
   suggestion code was cheaper than a second copy of it; top-level behaviour is
   unchanged (all 26 pre-existing unknown-key tests pass)
 - **unrequested** — `docs/audits/lib-sweep-coverage.json` +
-  `docs/audits/security-sweep-2154-codegraph-context-config.md` —
-  reviewer: unrequested — reason: a new `lib/` module claimed by no sweep slice
-  makes `completeness checks` red; this is the repo's required record for it
+  `docs/audits/security-sweep-2154-codegraph-context-config.md` — reviewer:
+  unrequested — reason: a new `lib/` module claimed by no sweep slice makes
+  `completeness checks` red; this is the repo's required record for it
 
 ## Standards Review
 
@@ -117,9 +118,9 @@ this diff can make one switch interfere with the other.
   `worker/deno/lib/codegraph_context_config.ts:1` — reason: fixed here by the
   `top-up-2154` slice and its written record
 - **violation** — `codegraph_context: null` silently returned the default,
-  contradicting the module's own fail-loud preamble and the docs row —
-  evidence: `worker/deno/lib/codegraph_context_config.ts:62` — reason: fixed
-  here; only `undefined` is silence, and a test pins it
+  contradicting the module's own fail-loud preamble and the docs row — evidence:
+  `worker/deno/lib/codegraph_context_config.ts:62` — reason: fixed here; only
+  `undefined` is silence, and a test pins it
 - **violation** — the `false` default was written in more than one place —
   evidence: `worker/deno/lib/codegraph_context_config.ts:42` — reason: fixed
   here; `defaultCodegraphContext()` reads `OPERATIONAL_DEFAULTS`, which is the
@@ -132,10 +133,10 @@ this diff can make one switch interfere with the other.
   key that does not exist on this branch — evidence:
   `docs/CONFIGURATION.md:1737` — reason: fixed here; the row names milestone
   #2060 as where that key lives
-- **violation** — no `docs/archive/pr-summaries/pr-summary-2154.md` —
-  evidence: repository root — reason: fixed here; this file
-- **clean** — Australian English throughout (`recognised`, `behaviour`);
-  TDD with real-function tests (every test calls `loadConfig`,
+- **violation** — no `docs/archive/pr-summaries/pr-summary-2154.md` — evidence:
+  repository root — reason: fixed here; this file
+- **clean** — Australian English throughout (`recognised`, `behaviour`); TDD
+  with real-function tests (every test calls `loadConfig`,
   `parseCodegraphContext` or `detectUnknownConfigKeys` with real data — no
   source-grepping); fail-loud posture matching `container_extension_config.ts`;
   `Result<T, E>` and `unknown` at the trust boundary; fast self-contained unit
@@ -158,11 +159,10 @@ Added:
   load error naming `codegraph_context.enabled`, non-object block → load error,
   unknown nested key → one warning naming `codegraph_context.enabeld` and
   suggesting `enabled`, with the load still succeeding.
-- `worker/deno/tests/config_unknown_keys_test.ts` — 4 tests:
-  `codegraph_context` recognised at the top level, a nested typo warned with
-  its block prefix and a block-qualified suggestion, a nested key with no close
-  match warned without a suggestion, and a non-object block yielding no nested
-  warnings.
+- `worker/deno/tests/config_unknown_keys_test.ts` — 4 tests: `codegraph_context`
+  recognised at the top level, a nested typo warned with its block prefix and a
+  block-qualified suggestion, a nested key with no close match warned without a
+  suggestion, and a non-object block yielding no nested warnings.
 
 Unmodified and still passing: the 26 pre-existing unknown-key tests (top-level
 warning behaviour is unchanged) and `tests/lib_sweep_coverage_test.ts`.

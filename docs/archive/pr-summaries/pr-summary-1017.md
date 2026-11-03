@@ -14,7 +14,7 @@ fatal: Could not read from remote repository.
 ```
 
 `No user exists for uid 501` is macOS Directory Services failing to resolve the
-*invoking* user — 501 being the operator's own uid. `git` could not read the
+_invoking_ user — 501 being the operator's own uid. `git` could not read the
 passwd entry of the user it was already running as, so it could not find that
 user's `~/.ssh` or `~/.gitconfig` and gave up, with git's "make sure you have
 the correct access rights" boilerplate attached. It is neither a credentials
@@ -26,13 +26,13 @@ Three defects followed from that one line, and all three are fixed.
 generic fetch failure, sending an operator to deploy keys and SSH agents with
 nothing wrong with either. It is now recognised by name and reported as what it
 is — a host directory-services fault, naming the uid, saying it is transient and
-self-clearing, and saying explicitly what it is *not*. The diagnosis is decided
+self-clearing, and saying explicitly what it is _not_. The diagnosis is decided
 before the development-tree one, because a dirty checkout is not why this
 failed.
 
 **2. It was not retried.** The condition typically clears within seconds, and
 the launcher gave up on the first occurrence and ran on the stale checkout. Git
-steps are now retried in place while *this specific* condition is the reason
+steps are now retried in place while _this specific_ condition is the reason
 they failed, on a short bounded backoff (500 ms, 1.5 s, 3 s), and a run that
 recovers inside it never reaches the failure streak at all. Every other failure
 returns immediately, exactly as before. A step that only succeeded because it
@@ -40,15 +40,16 @@ was retried says so in `pull.log`; a step that kept failing does not, because
 the failure already reports itself and a "retried" line beside it would read as
 though the retry had helped.
 
-**3. The streak counted runs, not persistence.** `checkout-update-failure-streak`
-went 1 → 2 → 3 between 09:47:44 and 09:47:52, tripping a threshold whose comment
-says "3 consecutive runs" and whose author meant three hourly launches — an hour
-of a host running stale code. A streak that can be exhausted faster than the
-condition can clear is not measuring persistence. The file now carries the first
-failure's timestamp beside the count, and escalation requires **both** the count
-and a minimum elapsed span of fifteen minutes: well above any burst of launches,
-well below the two hours three hourly launches span, so the case the threshold
-was written for still escalates on its third failure.
+**3. The streak counted runs, not persistence.**
+`checkout-update-failure-streak` went 1 → 2 → 3 between 09:47:44 and 09:47:52,
+tripping a threshold whose comment says "3 consecutive runs" and whose author
+meant three hourly launches — an hour of a host running stale code. A streak
+that can be exhausted faster than the condition can clear is not measuring
+persistence. The file now carries the first failure's timestamp beside the
+count, and escalation requires **both** the count and a minimum elapsed span of
+fifteen minutes: well above any burst of launches, well below the two hours
+three hourly launches span, so the case the threshold was written for still
+escalates on its third failure.
 
 ```mermaid
 flowchart TD
@@ -79,10 +80,10 @@ either way.
 
 A host upgrades in place, and a launcher that died parsing its own state file
 would be worse than the bug it was fixing. `parseCheckoutStreak` accepts the
-JSON object written since this change *and* the bare decimal count every worker
+JSON object written since this change _and_ the bare decimal count every worker
 wrote before it, and anything that stops the file meaning what it says — absent,
 empty, malformed, negative — reads as no streak. A legacy count has no start,
-which reads as "unknown", and an unknown start never *blocks* an escalation:
+which reads as "unknown", and an unknown start never _blocks_ an escalation:
 silencing a host running stale code is the worse of the two errors.
 
 ## Evidence
@@ -118,6 +119,6 @@ code, which escalates on the third.
 - `updateCheckout - the streak file lives under the log directory (Issue #513)`
   now drives an hourly clock and asserts the persisted start belongs to the
   streak, not to each failure.
-- `tests/checkout_update_escalation_spool_test.ts` — all eight Issue #1018
-  tests pass under an hourly clock, so the re-armed escalation and its spool are
+- `tests/checkout_update_escalation_spool_test.ts` — all eight Issue #1018 tests
+  pass under an hourly clock, so the re-armed escalation and its spool are
   unchanged by the span rule.

@@ -4,10 +4,10 @@
 
 Closes #3015
 
-PR bodies were written mid-run. When the branch later moved on, the body was
-not re-derived. Either a merge from the base branch superseded the fix
+PR bodies were written mid-run. When the branch later moved on, the body was not
+re-derived. Either a merge from the base branch superseded the fix
 (GRQ-validation#904), or an abandoned design iteration's description survived
-(GRQ-www#103). The #2879 rule only asked that every claim *exist at the head*.
+(GRQ-www#103). The #2879 rule only asked that every claim _exist at the head_.
 This PR ties the summary to the PR's own diff on every surface that writes or
 refreshes it:
 
@@ -76,8 +76,7 @@ flowchart LR
 ## Test Plan
 
 1. `deno task test:unit tests/pr_body_matches_final_diff_3015_test.ts tests/pr_summary_final_state_2879_test.ts tests/phantom_test_and_stub_contract_3011_test.ts tests/coding_guidelines_twin_drift_test.ts`
-2. `deno task test:unit` over the prompt tests that load `pr_feedback`,
-   `ci_fix` and `merge_conflict`, including
-   `tests/merge_conflict_prompt_v2_test.ts` and
+2. `deno task test:unit` over the prompt tests that load `pr_feedback`, `ci_fix`
+   and `merge_conflict`, including `tests/merge_conflict_prompt_v2_test.ts` and
    `tests/prompt_docs_sweep_2952_test.ts`.
 3. `./quality.sh`

@@ -3,9 +3,9 @@
 ## Summary
 
 A `.config.json` selecting only Codex still built a Claude image: the launch
-plan resolved the enabled provider set for the credential mounts alone, so
-every build took the Containerfile's `AGENT_PROVIDERS="claude"` default and the
-Codex CLI was simply absent from the image the host then ran.
+plan resolved the enabled provider set for the credential mounts alone, so every
+build took the Containerfile's `AGENT_PROVIDERS="claude"` default and the Codex
+CLI was simply absent from the image the host then ran.
 
 The **same resolved set** now drives the mounts, the build argument and the
 image tag:
@@ -64,8 +64,8 @@ branch — `run_core_test.ts` / `run_core_rate_limit_resume_test.ts` hit a live
   configured set
 - **status** — `verified` — with the build-argument branch in
   `worker/deno/lib/container_launch.ts` disabled, the two plan tests below fail
-  (`expected "codex", got undefined`); with it in place all eleven pass. The
-  tag half was red as a type error before `ContainerImageHashOptions` carried
+  (`expected "codex", got undefined`); with it in place all eleven pass. The tag
+  half was red as a type error before `ContainerImageHashOptions` carried
   `agentProviders`
 - **regression test** —
   `worker/deno/tests/container_image_provider_set_test.ts::buildContainerLaunchPlan - a Codex-only configuration builds a Codex image`
@@ -79,7 +79,8 @@ branch — `run_core_test.ts` / `run_core_rate_limit_resume_test.ts` hit a live
 - **met** — a Codex-only `.config.json` builds an image whose
   `VIBE_IMAGE_AGENT_PROVIDERS` reports `codex` — evidence:
   `worker/deno/lib/container_launch.ts` build args + `container/Containerfile`
-  ARG→ENV; `worker/deno/tests/container_image_provider_set_test.ts::readConfiguredAgentProviderSet - a Codex-only config resolves to a Codex build`
+  ARG→ENV;
+  `worker/deno/tests/container_image_provider_set_test.ts::readConfiguredAgentProviderSet - a Codex-only config resolves to a Codex build`
   — reviewer: met
 - **met** — that image installs the Codex CLI and not Claude — evidence:
   `container/install-providers.sh` runs exactly the requested ids — reviewer:
@@ -137,9 +138,9 @@ branch — `run_core_test.ts` / `run_core_rate_limit_resume_test.ts` hit a live
   the provider table rows) — reason: fixed in the second commit; all now say the
   launcher builds the configured set
 - **violation** — stale in-code comment claiming the provider set is only the
-  Containerfile default — evidence:
-  `worker/deno/lib/container_image_hash.ts:52` — reason: fixed; it now names
-  `AGENT_PROVIDERS_HASH_INPUT` as the config-derived input
+  Containerfile default — evidence: `worker/deno/lib/container_image_hash.ts:52`
+  — reason: fixed; it now names `AGENT_PROVIDERS_HASH_INPUT` as the
+  config-derived input
 - **violation** — the launcher-level composition had no test — evidence:
   `worker/deno/commands/container_launch_plan.ts` — reason: fixed by extracting
   `readConfiguredAgentProviderSet` into a lib seam and testing it over real
@@ -167,18 +168,17 @@ Added `worker/deno/tests/container_image_provider_set_test.ts` (11 tests):
   build; a Claude-only or unconfigured one needs no build argument; four
   unusable configurations fail loud.
 - `buildContainerLaunchPlan` — a Codex-only configuration carries
-  `--build-arg AGENT_PROVIDERS=codex` before the build context; a
-  multi-provider one passes all four ids in one argument; a Claude-only one
-  reproduces today's exact argument list.
-- `resolveContainerImageReference` — the image default keeps today's tag;
-  four differing sets yield four tags.
+  `--build-arg AGENT_PROVIDERS=codex` before the build context; a multi-provider
+  one passes all four ids in one argument; a Claude-only one reproduces today's
+  exact argument list.
+- `resolveContainerImageReference` — the image default keeps today's tag; four
+  differing sets yield four tags.
 
 Added to `worker/deno/tests/container_image_hash_test.ts` (3 tests): the
 configured provider set moves the printed reference and is reported as a hash
 input; selecting the image's own set keeps today's reference; an unsupported id
-fails the command naming it. Added
-`worker/deno/tests/fixtures/provider_env.ts` so those tests are not judged
-against the image the suite itself runs in.
+fails the command naming it. Added `worker/deno/tests/fixtures/provider_env.ts`
+so those tests are not judged against the image the suite itself runs in.
 
 No existing test was removed or weakened.
 

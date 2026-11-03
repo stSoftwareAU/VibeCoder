@@ -2,10 +2,10 @@
 
 ## Summary
 
-Part of #4568. Stop a probe when its supervisor dies or changes parent, or
-when its watched worker container disappears. Reap registered orphaned probes
-at the next supervisor start. Orphans from versions before registration was
-introduced still require a manual kill.
+Part of #4568. Stop a probe when its supervisor dies or changes parent, or when
+its watched worker container disappears. Reap registered orphaned probes at the
+next supervisor start. Orphans from versions before registration was introduced
+still require a manual kill.
 
 ## Spec
 
@@ -18,24 +18,24 @@ introduced still require a manual kill.
 
 - Record the supervisor's parent and check it on each probe tick. Watch the
   first worker container, excluding the egress and init side containers.
-- Only reap a registered PID when the checkout, parent and command match.
-  An unregistered orphan cannot be distinguished safely from a legitimate
-  `loop.sh` launched under PID 1 using those process properties alone.
+- Only reap a registered PID when the checkout, parent and command match. An
+  unregistered orphan cannot be distinguished safely from a legitimate `loop.sh`
+  launched under PID 1 using those process properties alone.
 
 ### Undiscoverable Facts
 
-- `loop.ps1` has no matching Apple container control-plane probe. Its absence
-  is an intended asymmetry in `worker/deno/lib/loop_contract.ts`.
+- `loop.ps1` has no matching Apple container control-plane probe. Its absence is
+  an intended asymmetry in `worker/deno/lib/loop_contract.ts`.
 
 ## Evidence
 
 The process and container behaviours are exercised by
 `worker/deno/tests/loop_supervisor_test.ts`. The added
 `pid_guard_identity_501_test.ts` case carries over the prior coverage notice:
-when a descendant cannot be fingerprinted it is skipped while other
-identifiable descendants are signalled. Read the “Wedged container watchdog”
-section of `docs/workflows/resilience-and-concurrency.md` and updated it with
-the registration and legacy-orphan limitation. No visual evidence is relevant.
+when a descendant cannot be fingerprinted it is skipped while other identifiable
+descendants are signalled. Read the “Wedged container watchdog” section of
+`docs/workflows/resilience-and-concurrency.md` and updated it with the
+registration and legacy-orphan limitation. No visual evidence is relevant.
 
 ## Test Plan
 
@@ -51,23 +51,25 @@ the registration and legacy-orphan limitation. No visual evidence is relevant.
 - `loop.sh #4568 - a fresh supervisor reaps the real registered probe`.
 - `pid_guard - terminateDescendants skips a descendant that cannot be fingerprinted and signals the rest (PR #4609 review)`.
 
-The focused listing and side-container test and the fingerprint carry-over
-test passed locally. The other process-based tests could not be validated in
-this sandbox: spawning `ps` was denied. The full quality gate was not run.
+The focused listing and side-container test and the fingerprint carry-over test
+passed locally. The other process-based tests could not be validated in this
+sandbox: spawning `ps` was denied. The full quality gate was not run.
 
 ## Acceptance Criteria
 
 - **met** — the probe exits when the `loop.sh` that started it is dead or has a
   different parent, and when the container it watched has gone — evidence:
-  `worker/deno/tests/loop_supervisor_test.ts` (`loop.sh #4568 - SIGKILL to the supervisor alone takes its control-plane probe down too`, `loop.sh #4568 - the probe stops once the container it watched is gone, and loop.sh keeps supervising`)
+  `worker/deno/tests/loop_supervisor_test.ts`
+  (`loop.sh #4568 - SIGKILL to the supervisor alone takes its control-plane probe down too`,
+  `loop.sh #4568 - the probe stops once the container it watched is gone, and loop.sh keeps supervising`)
 - **met** — start-up ends a registered orphaned probe from the same checkout —
   evidence: `worker/deno/tests/loop_supervisor_test.ts`
   (`loop.sh #4568 - a fresh supervisor reaps a probe orphaned from its checkout`)
 - **missing** — start-up ends any probe whose parent is PID 1 from the same
-  checkout, including orphans started before registration existed — reason:
-  an unregistered orphan cannot be told apart from a legitimate `loop.sh`
-  launched under PID 1 using process properties alone, so only registered
-  probes are reaped and older orphans still need a manual kill
+  checkout, including orphans started before registration existed — reason: an
+  unregistered orphan cannot be told apart from a legitimate `loop.sh` launched
+  under PID 1 using process properties alone, so only registered probes are
+  reaped and older orphans still need a manual kill
 
 ## Merge verification
 

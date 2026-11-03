@@ -7,18 +7,17 @@ Closes #2387.
 `rtk_output.enabled` now exists end to end — the config key (#2380), the module
 (#2382), the two implementation phases (#2383), the four other agent paths
 (#2384), the `RTK:` stats line (#2385), the `rtk` callback block (#2386) and the
-pinned toolchain (#2381) — but nothing wrote down *how the trial is judged*.
+pinned toolchain (#2381) — but nothing wrote down _how the trial is judged_.
 This PR adds that page, links it from every surface that names the switch, and
 cuts the 1.7.0 release that carries the whole switch.
 
-- **`docs/RTK-OUTPUT-TRIAL.md`** (276 lines, 11 sections) follows the skeleton of
-  its sibling `docs/REPO-CONTEXT-TRIAL.md`: the candidate and its wiring, the
-  motivation (stated as motivation, **not** evidence), the bar, the
-  human-opened window, the comparison rule, where every figure is read from,
-  the security posture of a third-party binary sitting ahead of every Bash
-  command, a results template ending "clears / does not clear", what a pass and
-  a miss change, and the comparable tools recorded as facts rather than trial
-  candidates.
+- **`docs/RTK-OUTPUT-TRIAL.md`** (276 lines, 11 sections) follows the skeleton
+  of its sibling `docs/REPO-CONTEXT-TRIAL.md`: the candidate and its wiring, the
+  motivation (stated as motivation, **not** evidence), the bar, the human-opened
+  window, the comparison rule, where every figure is read from, the security
+  posture of a third-party binary sitting ahead of every Bash command, a results
+  template ending "clears / does not clear", what a pass and a miss change, and
+  the comparable tools recorded as facts rather than trial candidates.
 - **Four link edits** so no surface names the switch without reaching the
   protocol: `docs/REPO-CONTEXT-TRIAL.md` §9, the `README.md` Documentation
   table, the `rtk_output` row in `docs/CONFIGURATION.md`, and a new residual
@@ -27,13 +26,13 @@ cuts the 1.7.0 release that carries the whole switch.
   taken (the `PreToolUse` Bash-output rewrite hook, trialled behind a switch),
   and the trial page as where it shows up.
 - **`worker/deno/tests/rtk_output_trial_docs_test.ts`** keeps the page honest:
-  the statuses, the rendered `RTK:` shapes, the hook matcher/command, the
-  config key and the `[RTK_UNAVAILABLE]` marker are all taken from the **live**
+  the statuses, the rendered `RTK:` shapes, the hook matcher/command, the config
+  key and the `[RTK_UNAVAILABLE]` marker are all taken from the **live**
   modules, so renaming a status or changing a rendered line fails in CI instead
   of leaving the page quietly wrong.
 - **Release**: `.release-floor` → `1.7.0` with a `## 1.7.0` entry in
-  `docs/RELEASE-NOTES.md`, both in the same commit as
-  `docs/RELEASE-TAGGING.md` requires.
+  `docs/RELEASE-NOTES.md`, both in the same commit as `docs/RELEASE-TAGGING.md`
+  requires.
 
 This is the **last** sub-issue of milestone #2328 to merge, so the 1.7.0 tag
 carries the whole switch and the toolchain it needs.
@@ -89,24 +88,28 @@ PASSED (with skipped checks)   # only `config integration` skipped (no host conf
   `REPO-CONTEXT-TRIAL.md` §9, the README Documentation table and the
   `rtk_output` CONFIGURATION row — evidence: `docs/RTK-OUTPUT-TRIAL.md:1-278`,
   `docs/REPO-CONTEXT-TRIAL.md:278`, `README.md:472`,
-  `docs/CONFIGURATION.md:1743`; test `the trial page is linked from every
-  surface that names the switch` — reviewer: met
+  `docs/CONFIGURATION.md:1743`; test
+  `the trial page is linked from every
+  surface that names the switch` —
+  reviewer: met
 - **met** — `deno test worker/deno/tests/rtk_output_trial_docs_test.ts` passes
-  against the live `rtk_output.ts` exports — evidence: 11 passed / 0 failed in
-  7 ms; the statuses come from real `prepareRtkRun` calls
+  against the live `rtk_output.ts` exports — evidence: 11 passed / 0 failed in 7
+  ms; the statuses come from real `prepareRtkRun` calls
   (`rtk_output_trial_docs_test.ts:64-84`), the shapes from real
   `buildRtkStatsLine` calls (`:219-248`), the marker from
   `RTK_UNAVAILABLE_MARKER` (`:250-255`) — reviewer: met
-- **met** — `docs/REFERENCES.md` carries the RTK row and its path-existence
-  test passes — evidence: `docs/REFERENCES.md:69` names the source, what was
-  taken and `docs/RTK-OUTPUT-TRIAL.md` as where it shows up;
-  `references_doc_test.ts` 16 tests pass — reviewer: met
+- **met** — `docs/REFERENCES.md` carries the RTK row and its path-existence test
+  passes — evidence: `docs/REFERENCES.md:69` names the source, what was taken
+  and `docs/RTK-OUTPUT-TRIAL.md` as where it shows up; `references_doc_test.ts`
+  16 tests pass — reviewer: met
 - **met** — `.release-floor` reads `1.7.0` with the matching `## 1.7.0` entry in
   the same commit — evidence: `.release-floor:17` plus the reason at `:14-16`,
-  `docs/RELEASE-NOTES.md:17` — the `## 1.7.0 — RTK Bash-output trial behind
-  rtk_output.enabled` heading — naming the new key, the two record surfaces, the
-  `VIBECODER_RTK_*` scalars, migration (none) and rollback (set `false`); both
-  in commit `13aa2685` — reviewer: met
+  `docs/RELEASE-NOTES.md:17` — the
+  `## 1.7.0 — RTK Bash-output trial behind
+  rtk_output.enabled` heading —
+  naming the new key, the two record surfaces, the `VIBECODER_RTK_*` scalars,
+  migration (none) and rollback (set `false`); both in commit `13aa2685` —
+  reviewer: met
 - **met** — the stale-headings follow-up exists and is referenced here —
   evidence: **#2422** ("docs/RELEASE-NOTES.md: two stale 'Unreleased' headings
   that have since shipped", filed from this issue after a dedup search that
@@ -120,15 +123,15 @@ PASSED (with skipped checks)   # only `config integration` skipped (no host conf
 
 The spec reviewer found no scope creep — the diff touches exactly the ten files
 the issue's deliverable list names, with no source or behaviour changes. It
-recorded one factual deviation, now **fixed here**: `docs/RTK-OUTPUT-TRIAL.md:26`
-attributed the config parser to #2382, but the key and its parser are #2380
-(`worker/deno/lib/rtk_output_config.ts:1-2`) and #2382 is the run module, which
-made the trial page contradict `docs/CONFIGURATION.md`. The sentence now credits
-both issues correctly. Two further notes changed no criterion: the
-`.release-floor` reason runs to three comment lines rather than one (the floor
-carries seven sub-issues and naming them is what makes the floor auditable), and
-the drift suite asserts a few surfaces the issue did not enumerate — additive
-coverage consistent with its intent.
+recorded one factual deviation, now **fixed here**:
+`docs/RTK-OUTPUT-TRIAL.md:26` attributed the config parser to #2382, but the key
+and its parser are #2380 (`worker/deno/lib/rtk_output_config.ts:1-2`) and #2382
+is the run module, which made the trial page contradict `docs/CONFIGURATION.md`.
+The sentence now credits both issues correctly. Two further notes changed no
+criterion: the `.release-floor` reason runs to three comment lines rather than
+one (the floor carries seven sub-issues and naming them is what makes the floor
+auditable), and the drift suite asserts a few surfaces the issue did not
+enumerate — additive coverage consistent with its intent.
 
 ## Standards Review
 
@@ -142,7 +145,7 @@ coverage consistent with its intent.
   `/no worker flips it/i`), `:236-247`, `:274-281`
   (`/clears \/ does not clear/i`), `:287-297` (`/#2348/`), `:302-312`
   (`/not trialled/i`), against `CODING-STANDARDS.md:104-107` — reason: stands,
-  and is now recorded rather than argued. The four cases the code *can* express
+  and is now recorded rather than argued. The four cases the code _can_ express
   do drive live modules (`prepareRtkRun` `:64-84`, `buildRtkStatsLine`
   `:223-235`, `parseRtkOutput`/`RTK_OUTPUT_KEYS` `:111-121`, the imported
   matcher/command/marker constants); the other seven pin rules — the bar, the
@@ -165,20 +168,20 @@ coverage consistent with its intent.
   `worker/deno/tests/rtk_output_trial_docs_test.ts:71-88` and fixtures at
   `:114-117` (pre-refactor) — reason: fixed here. The suite now imports
   `rtkSeam`, `rtkExited`, `rtkVersion` and `rtkGain` from the shared module
-  (`:43`), the same seam seven other suites use. Net effect of the two fixes:
-  52 insertions, 100 deletions.
+  (`:43`), the same seam seven other suites use. Net effect of the two fixes: 52
+  insertions, 100 deletions.
 - **violation** — missing `docs/archive/pr-summaries/pr-summary-2387.md` —
   evidence: `docs/archive/pr-summaries/` — reason: fixed here; this file is it.
 - **violation** — minor: three commits are titled "WIP checkpoint: periodic
   agent progress snapshot (Issue #4170)" while carrying this change set's
   deliverables, so `git log` attributes #2387's work to an unrelated issue
-  number — evidence: `git log` at `376e9881`, `f1987a8c` and `a93314db`,
-  against `CODING-STANDARDS.md:648-650` — reason: stands. All three are
-  worker-generated automatic checkpoints rather than hand-authored commits, and
-  all three are already pushed; correcting the titles would mean rewriting
-  published history, which the bound-irreversible-actions rule forbids. The
-  substantive commit `13aa2685` is correctly titled and carries the run-id
-  trailer, and every checkpoint carries a valid trailer too.
+  number — evidence: `git log` at `376e9881`, `f1987a8c` and `a93314db`, against
+  `CODING-STANDARDS.md:648-650` — reason: stands. All three are worker-generated
+  automatic checkpoints rather than hand-authored commits, and all three are
+  already pushed; correcting the titles would mean rewriting published history,
+  which the bound-irreversible-actions rule forbids. The substantive commit
+  `13aa2685` is correctly titled and carries the run-id trailer, and every
+  checkpoint carries a valid trailer too.
 
 Two observations recorded without a fix. First, the five `- **RTK:**` stats-line
 shapes appear in three places — the trial page §6, the `rtk_output` row in
@@ -199,14 +202,14 @@ passed in 5.6 s; fmt/lint/check clean; markdownlint 0 issues across 176 files).
 
 ## Test Plan
 
-| Check | Command | Result |
-| --- | --- | --- |
-| New drift suite | `deno test --allow-read tests/rtk_output_trial_docs_test.ts < /dev/null` | 11 passed / 0 failed (7 ms) |
-| References path test | `deno test --allow-read tests/references_doc_test.ts < /dev/null` | 16 passed |
-| Release-floor rules | `deno test --allow-read tests/next_release_tag_test.ts < /dev/null` | passed |
-| Manifests | `deno task check:manifests < /dev/null` | 662 passed (5.6 s) |
-| Markdown | `markdownlint-cli2` (via the gate) | 0 issues / 176 files |
-| Full gate | `timeout 900 ./quality.sh < /dev/null` | PASSED (only `config integration` skipped) |
+| Check                | Command                                                                  | Result                                     |
+| -------------------- | ------------------------------------------------------------------------ | ------------------------------------------ |
+| New drift suite      | `deno test --allow-read tests/rtk_output_trial_docs_test.ts < /dev/null` | 11 passed / 0 failed (7 ms)                |
+| References path test | `deno test --allow-read tests/references_doc_test.ts < /dev/null`        | 16 passed                                  |
+| Release-floor rules  | `deno test --allow-read tests/next_release_tag_test.ts < /dev/null`      | passed                                     |
+| Manifests            | `deno task check:manifests < /dev/null`                                  | 662 passed (5.6 s)                         |
+| Markdown             | `markdownlint-cli2` (via the gate)                                       | 0 issues / 176 files                       |
+| Full gate            | `timeout 900 ./quality.sh < /dev/null`                                   | PASSED (only `config integration` skipped) |
 
 Regression coverage this adds: the drift suite fails if a status is renamed in
 `rtk_output.ts`, if `buildRtkStatsLine` changes a rendered shape, if the hook

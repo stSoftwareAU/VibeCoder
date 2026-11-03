@@ -21,19 +21,19 @@ the milestone conflict path no longer writes `needs-human` anywhere. Closes
 - **The branch is not stranded.** The failed roll-back records the
   default-branch tip it answered for (`fallbackDefaultSha`), and a default tip
   that has moved past it re-arms the two-run budget on the next cycle. Nothing
-  else re-armed it — the roll-back is the last automatic step, so without this
-  a branch whose roll-back failed would sit out every remaining cycle for ever,
+  else re-armed it — the roll-back is the last automatic step, so without this a
+  branch whose roll-back failed would sit out every remaining cycle for ever,
   which is only tolerable if somebody was asked to look, and nobody is any more.
 - The repeated-identical-failure escalation of Issue #1964 is removed, along
   with `isRepeatedFailureReason`. The streak escalation
-  (`MILESTONE_SYNC_ESCALATION_THRESHOLD`) survives for **non-conflict**
-  failures only — a fetch, a push, an ordinary git error.
-- New self-heal event `fallback_flagged`, carrying the flag issue number,
-  beside `sync_failed` and `rolled_back`.
+  (`MILESTONE_SYNC_ESCALATION_THRESHOLD`) survives for **non-conflict** failures
+  only — a fetch, a push, an ordinary git error.
+- New self-heal event `fallback_flagged`, carrying the flag issue number, beside
+  `sync_failed` and `rolled_back`.
 - The milestone half of the flag lives in its own module,
   `lib/milestone_fallback_flag.ts` — what to file, read back and render — with
-  its own tests and its security-sweep ledger entry (`top-up-2311`), rather
-  than another 180 lines inside the 2,700-line sync module.
+  its own tests and its security-sweep ledger entry (`top-up-2311`), rather than
+  another 180 lines inside the 2,700-line sync module.
 - Supporting records so the flag has something true to report: the ledger keeps
   every charged run (`failedAttempts`) with its host, timings and per-file
   analysis; a conflict refusal now carries its rendered timings line
@@ -57,12 +57,13 @@ flowchart TD
 
 ## Evidence
 
-Backend/worker change with no web interface to screenshot. Evidence is the
-test suite: the targeted files below (175 passed, 0 failed), the milestone and
-conflict sweep (`deno test -A tests/*milestone*.ts tests/*merge_fallback*.ts
-tests/*conflict*.ts tests/git_pull*.ts` — 1648 passed, 0 failed) and the full
-`./quality.sh`, which passes: every check green, `config integration` skipped
-as it is without a live config.
+Backend/worker change with no web interface to screenshot. Evidence is the test
+suite: the targeted files below (175 passed, 0 failed), the milestone and
+conflict sweep
+(`deno test -A tests/*milestone*.ts tests/*merge_fallback*.ts
+tests/*conflict*.ts tests/git_pull*.ts`
+— 1648 passed, 0 failed) and the full `./quality.sh`, which passes: every check
+green, `config integration` skipped as it is without a live config.
 
 ## Reproduction
 
@@ -115,8 +116,8 @@ as it is without a live config.
   over 1053 files — reviewer: met
 - **unrequested** — `docs/audits/security-sweep-2311-milestone-fallback-flag.md`
   and the `top-up-2311` entry in `docs/audits/lib-sweep-coverage.json` —
-  reviewer: unrequested — reason: the issue does not ask for them; a new
-  `lib/` module cannot land without a sweep ledger entry, which
+  reviewer: unrequested — reason: the issue does not ask for them; a new `lib/`
+  module cannot land without a sweep ledger entry, which
   `worker/deno/lib/lib_sweep_coverage.ts` enforces repo-wide
 - **unrequested** — the `docs/INTERNALS.md` and
   `docs/workflows/merge-conflicts.md` edits — reviewer: unrequested — reason:
@@ -133,8 +134,8 @@ as it is without a live config.
   bound matched the wall-clock classifier, so the file counted as a wall-clock
   test missing from the manifest — evidence:
   `worker/deno/tests/milestone_sync_streak_test.ts:516` — reason: fixed here;
-  the bound is now a named local and `check:manifests` passes (656/656), as
-  does the full gate
+  the bound is now a named local and `check:manifests` passes (656/656), as does
+  the full gate
 - **violation** — the canonical operator manual still described the removed
   behaviour: `needs-human` on a failed roll-back, the streak being marked
   escalated, the ledger field list and the self-heal events — evidence:
@@ -143,12 +144,12 @@ as it is without a live config.
 - **violation** — the documented invariant "a moved tip never refills
   `conflictAttempts`" was contradicted by the new re-arm and not revisited —
   evidence: `docs/INTERNALS.md:3691` — reason: rewritten to state the one
-  exception (a roll-back that could not merge), why it exists and what bounds
-  it — one re-arm per default-branch push, never one per sync cycle
+  exception (a roll-back that could not merge), why it exists and what bounds it
+  — one re-arm per default-branch push, never one per sync cycle
 - **violation** — `docs/workflows/milestones.md` still described the deleted
   Issue #1964 rule as live — evidence: `docs/workflows/milestones.md:354` —
-  reason: corrected here, along with the adjacent "reaches a human" sentence
-  the same change falsified
+  reason: corrected here, along with the adjacent "reaches a human" sentence the
+  same change falsified
 - **violation** — the PR summary was not part of the change — evidence:
   `docs/archive/pr-summaries/pr-summary-2311.md` untracked — reason: committed
   in this change
@@ -165,17 +166,15 @@ as it is without a live config.
   comparable degraded-but-continuing line carries — evidence:
   `worker/deno/lib/milestone_branch_sync.ts:816` — reason: fixed in the
   extracted module
-- **violation** — `alreadyEscalated` became dead at its only production caller
-  — evidence: `worker/deno/lib/milestone_branch_sync.ts:1035` — reason: the
-  option and its guard are removed; the spent budget is what stops the notice
-  repeating
+- **violation** — `alreadyEscalated` became dead at its only production caller —
+  evidence: `worker/deno/lib/milestone_branch_sync.ts:1035` — reason: the option
+  and its guard are removed; the spent budget is what stops the notice repeating
 - **violation** — `emitSelfHealEvent?.(…).catch(() => undefined)` is
-  catch-and-ignore — evidence:
-  `worker/deno/lib/milestone_fallback_flag.ts:252` — reason: it stands; this is
-  the module family's established convention (three identical pre-existing
-  instances in the sync module, at `milestone_branch_sync.ts:850`, `:878` and
-  `:1812`) and a self-heal sink that fails must not break the fallback it is
-  recording
+  catch-and-ignore — evidence: `worker/deno/lib/milestone_fallback_flag.ts:252`
+  — reason: it stands; this is the module family's established convention (three
+  identical pre-existing instances in the sync module, at
+  `milestone_branch_sync.ts:850`, `:878` and `:1812`) and a self-heal sink that
+  fails must not break the fallback it is recording
 - **violation** — fail-loud: a failed roll-back with neither a fetched nor a
   recorded default tip writes no `fallbackDefaultSha` and logs nothing —
   evidence: `worker/deno/lib/milestone_branch_sync.ts:858-859` — reason: it
@@ -208,32 +207,31 @@ as it is without a live config.
   `MilestonePresyncDeps` gained no `hostFn`, so a presync test cannot name the
   host it records. Small blast radius — the field is asserted nowhere
 - **violation** — the dead half of the contract left behind:
-  `escalateRollbackFailure` still returns `{ posted, issue, countedAsEscalated }`
-  though its sole production caller discards it and `countedAsEscalated` is
-  `true` on every non-throwing path — evidence:
-  `worker/deno/lib/milestone_rollback_requeue.ts:63-66`, `:434`, called at
-  `worker/deno/lib/milestone_branch_sync.ts:864` — reason: it stands; the
-  removal of the `alreadyEscalated` **input** left the matching vestigial
+  `escalateRollbackFailure` still returns
+  `{ posted, issue, countedAsEscalated }` though its sole production caller
+  discards it and `countedAsEscalated` is `true` on every non-throwing path —
+  evidence: `worker/deno/lib/milestone_rollback_requeue.ts:63-66`, `:434`,
+  called at `worker/deno/lib/milestone_branch_sync.ts:864` — reason: it stands;
+  the removal of the `alreadyEscalated` **input** left the matching vestigial
   **output**, now pinned only by a test
 - **violation (low confidence)** — `fileFallbackFlag` returns
   `number | undefined`, collapsing "the filing failed" into the same value as
   "no usable issue number" — evidence:
   `worker/deno/lib/milestone_fallback_flag.ts:216` — reason: it stands, and is
   weak: nothing is swallowed (the failure is logged `WARNING:` and named in the
-  notice) and the filer it wraps, `fileMergeFallbackIssue`, does return
-  `Result`
+  notice) and the filer it wraps, `fileMergeFallbackIssue`, does return `Result`
 - **clean** — Australian English throughout; fail-loud handling on the filing
-  path (the filer returns `Result`, a failed filing logs `WARNING:` and is
-  named in the notice, `parseStageTimings` drops what it cannot read rather
-  than inventing zeros) — but see the silent `fallbackDefaultSha` skip above;
-  every newly exported function has happy, error and edge cases; tests call
-  real functions with no wall-clock sleeps, no source-grepping and no
+  path (the filer returns `Result`, a failed filing logs `WARNING:` and is named
+  in the notice, `parseStageTimings` drops what it cannot read rather than
+  inventing zeros) — but see the silent `fallbackDefaultSha` skip above; every
+  newly exported function has happy, error and edge cases; tests call real
+  functions with no wall-clock sleeps, no source-grepping and no
   `Deno.env`/`chdir` mutation; the flag's untrusted text reaches GitHub through
-  `sanitiseIssueText` (`redactSecrets` plus delimiter neutralisation); no
-  hidden or credential paths staged; `Result<T>` seams and conditional optional
-  spreads under `exactOptionalPropertyTypes`; additive on every persisted and
-  cross-host contract (the ledger gains optional fields that load-drop when
-  malformed, `fallback_flagged` is a new event name) — the removals
+  `sanitiseIssueText` (`redactSecrets` plus delimiter neutralisation); no hidden
+  or credential paths staged; `Result<T>` seams and conditional optional spreads
+  under `exactOptionalPropertyTypes`; additive on every persisted and cross-host
+  contract (the ledger gains optional fields that load-drop when malformed,
+  `fallback_flagged` is a new event name) — the removals
   (`isRepeatedFailureReason`, `EscalateRollbackFailureOptions.alreadyEscalated`)
   and the widening of `MergeFallbackStageTiming.seconds` to `number | null` are
   in-repo TypeScript only
@@ -242,28 +240,27 @@ as it is without a live config.
 
 Added:
 
-- `tests/milestone_branch_sync_test.ts` — the successful roll-back files
-  exactly one `merge-fallback` issue, emits `fallback_flagged`, links the flag
-  from the notice and writes no `needs-human`; the roll-back that could not
-  merge files the flag, writes no `needs-human`, records the answered tip, is
-  not retried against an unmoved tip, and **is** retried once the default tip
-  moves.
+- `tests/milestone_branch_sync_test.ts` — the successful roll-back files exactly
+  one `merge-fallback` issue, emits `fallback_flagged`, links the flag from the
+  notice and writes no `needs-human`; the roll-back that could not merge files
+  the flag, writes no `needs-human`, records the answered tip, is not retried
+  against an unmoved tip, and **is** retried once the default tip moves.
 - `tests/milestone_sync_repeat_escalation_test.ts` — rewritten for Issue #2311:
   a conflict repeating over four cycles writes no `needs-human` and posts no
   comment; a persistent fetch failure still escalates once at the threshold and
   only once; a success clears the streak.
 - `tests/milestone_sync_streak_test.ts` — every charged run is kept with host,
   timings and analysis; the list is capped at the budget; a success drops the
-  spent runs and the fallback tip; both round trip through save/load, dropping
-  a malformed row.
+  spent runs and the fallback tip; both round trip through save/load, dropping a
+  malformed row.
 - `tests/conflict_stage_timer_test.ts` — `parseStageTimings` reads back every
   stage a rendered line carries (including `unfinished`), and invents nothing
   from an untimed report or unreadable text.
 - `tests/merge_fallback_issue_test.ts` — an unfinished stage renders
   `unfinished`, never as a duration.
 - `tests/milestone_rollback_requeue_test.ts` — the failed-roll-back comment
-  names the flag and carries no `needs-human`; a flag that could not be filed
-  is said out loud; the notice links the flag.
+  names the flag and carries no `needs-human`; a flag that could not be filed is
+  said out loud; the notice links the flag.
 - `tests/milestone_sync_conflict_escalation_test.ts` — a conflicting merge's
   captured `gh` writes contain no `needs-human`.
 
@@ -274,7 +271,7 @@ green):
   `escalateRollbackFailure` previously asserted a `needs-human` body and label;
   both now assert the flag link and the absence of `needs-human`, which is the
   behaviour this issue asks for.
-- `milestone_sync_repeat_escalation_test.ts` — the Issue #1964
-  second-occurrence escalation it pinned no longer exists, so its tests were
-  replaced (including the `isRepeatedFailureReason` unit test, whose function
-  was deleted with the trigger).
+- `milestone_sync_repeat_escalation_test.ts` — the Issue #1964 second-occurrence
+  escalation it pinned no longer exists, so its tests were replaced (including
+  the `isRepeatedFailureReason` unit test, whose function was deleted with the
+  trigger).

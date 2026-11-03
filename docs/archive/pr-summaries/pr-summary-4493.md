@@ -59,9 +59,9 @@ Backend only; no UI files touched.
   whole self-check passage; line 392 `proxyAllowlist=enforced` is still true).
 - Callers of the changed helpers: `probeProxyConnect` (also used by
   `apple_egress_controls.ts` `appleAllowedPaths`, unchanged behaviour: it is a
-  wrapper), `probeProxyAllowedDetailed` (`runEgressProbes`),
-  `checkEgressPolicy` (`run_worker.ts`, `commands/egress_selfcheck.ts`; both
-  pass `diagnostics` through).
+  wrapper), `probeProxyAllowedDetailed` (`runEgressProbes`), `checkEgressPolicy`
+  (`run_worker.ts`, `commands/egress_selfcheck.ts`; both pass `diagnostics`
+  through).
 - Fakes: the stub proxy in the scenarios file stands in for
   `lib/egress_proxy.ts`; the property relied on is that a connect-then-close
   with no bytes is ignored, read from `serveClient`.

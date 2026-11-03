@@ -5,9 +5,9 @@
 Added `infra/cloudformation/linux-verification-host.yaml`: a self-contained
 CloudFormation stack that launches one Ubuntu 24.04 EC2 host whose only access
 path is SSM Session Manager, so the launcher's Linux/podman branch — which the
-macOS-only maintainer has never been able to confirm — can be exercised by
-hand. The user data installs the documented Linux prerequisites (`git`, `gh`,
-`jq`, `podman`, Deno, the Claude CLI), clones the checkout, and schedules a
+macOS-only maintainer has never been able to confirm — can be exercised by hand.
+The user data installs the documented Linux prerequisites (`git`, `gh`, `jq`,
+`podman`, Deno, the Claude CLI), clones the checkout, and schedules a
 parameterised auto-stop (default 8 hours). Docker is deliberately absent so the
 podman branch is the one that runs, and podman is left stock so the known
 environment faults still reproduce. Launch, verification and tear-down are
@@ -58,11 +58,11 @@ flowchart LR
   `infra/cloudformation/linux-verification-host.yaml` (`Outputs.InstanceId`,
   `Outputs.StartSessionCommand`) — reviewer: met
 - **met** — Access is SSM Session Manager only: instance profile with
-  `AmazonSSMManagedInstanceCore`, no key pair, no inbound security-group rules
-  — evidence:
+  `AmazonSSMManagedInstanceCore`, no key pair, no inbound security-group rules —
+  evidence:
   `linux_verification_host_template_test.ts::access is SSM only: no key pair and no inbound rule anywhere`
-  and `::the instance profile grants the SSM managed policy and nothing wider`
-  — reviewer: met
+  and `::the instance profile grants the SSM managed policy and nothing wider` —
+  reviewer: met
 - **met** — UserData installs podman, deno, git, gh and the Claude Code CLI and
   clones VibeCoder; verification is by hand over SSM — evidence:
   `linux_verification_host_template_test.ts::the UserData script installs the launcher prerequisites and clones the checkout`
@@ -74,29 +74,29 @@ flowchart LR
   and `docs/EC2-LINUX-VERIFICATION.md` step 3 — reviewer: partial — reason: the
   reviewer found the guide told the operator to run `./setup.sh < /dev/null`,
   which skips every TTY-gated credential prompt; the guide now runs `./setup.sh`
-  on the session terminal and names `claude setup-token` as the token source,
-  so the criterion is satisfied in this diff.
+  on the session terminal and names `claude setup-token` as the token source, so
+  the criterion is satisfied in this diff.
 - **met** — Auto-stop after a parameterised number of hours (default 8);
   tear-down is manual — evidence:
   `linux_verification_host_template_test.ts::the auto-stop delay is computed from the parameter, in minutes`
   (renders `AutoStopHours=3` → `+180`, `8` → `+480`) — reviewer: met
 - **met** — A documentation section in or linked from `docs/DEPLOYMENT.md`
   covering launch, the exact verification commands, and stack tear-down —
-  evidence: `docs/EC2-LINUX-VERIFICATION.md`, linked from
-  `docs/DEPLOYMENT.md` — reviewer: partial — reason: the reviewer's objection
-  was the unrunnable verification sequence (the stdin redirect above, plus an
-  interactive `claude` login that does not provision the worker's token); both
-  are corrected, and a note now warns that the host has no outbound SSH so `gh`
-  and `git` must use HTTPS.
+  evidence: `docs/EC2-LINUX-VERIFICATION.md`, linked from `docs/DEPLOYMENT.md` —
+  reviewer: partial — reason: the reviewer's objection was the unrunnable
+  verification sequence (the stdin redirect above, plus an interactive `claude`
+  login that does not provision the worker's token); both are corrected, and a
+  note now warns that the host has no outbound SSH so `gh` and `git` must use
+  HTTPS.
 - **partial** — "Working OK" = the full cycle: `setup.sh` completes, `run.sh`
   builds the image with podman, the container starts, and the worker processes
-  one issue end to end — evidence: `docs/EC2-LINUX-VERIFICATION.md`, "Verify
-  the launcher" — reviewer: partial — reason: the bar is a manual observation
-  on a live EC2 host; this container has no AWS credentials, so the diff can
-  only make that cycle runnable and documented, not demonstrate it. The
-  maintainer confirms it on the deployed host.
+  one issue end to end — evidence: `docs/EC2-LINUX-VERIFICATION.md`, "Verify the
+  launcher" — reviewer: partial — reason: the bar is a manual observation on a
+  live EC2 host; this container has no AWS credentials, so the diff can only
+  make that cycle runnable and documented, not demonstrate it. The maintainer
+  confirms it on the deployed host.
 - **unrequested** — `worker/deno/tests/linux_verification_host_template_test.ts`
-  — reviewer: unrequested — reason: the issue rules out an automated *EC2*
+  — reviewer: unrequested — reason: the issue rules out an automated _EC2_
   check, not unit tests; the repo's TDD standard requires tests, and these are
   the only automated gate on a template no CI can deploy.
 - **unrequested** — `RootVolumeSizeGb` (default 100 GiB) and an encrypted gp3
@@ -104,9 +104,9 @@ flowchart LR
   fault this host must clear, and unencrypted storage would breach the repo's
   CloudFormation best-practice bucket.
 - **unrequested** — `InstanceType` `AllowedValues` beyond `t3.large`, and the
-  `VibeCoderRepositoryUrl` parameter — reviewer: unrequested — reason:
-  defaults match the issue exactly (`t3.large`, this repository); the
-  parameters only avoid editing the template to verify a bigger host or a fork.
+  `VibeCoderRepositoryUrl` parameter — reviewer: unrequested — reason: defaults
+  match the issue exactly (`t3.large`, this repository); the parameters only
+  avoid editing the template to verify a bigger host or a fork.
 - **unrequested** — port-scoped egress (443/80/53/123) instead of plain
   egress-only — reviewer: unrequested — reason: least privilege on the network
   boundary; the guide states the SSH consequence.
@@ -115,13 +115,13 @@ flowchart LR
   standard hardening, and `stop` is what makes the auto-stop a stop rather than
   a terminate.
 - **unrequested** — `/var/log/vibe-bootstrap.status` and the
-  `BootstrapStatusFile` / `AutoStopAfterHours` outputs — reviewer: unrequested
-  — reason: the repo's fail-loud rule; a cloud-init failure is otherwise
-  invisible to the operator.
-- **unrequested** — `jq`, `uidmap`, `unzip`, `/etc/profile.d/vibe-verification.sh`,
-  `loginctl enable-linger` — reviewer: unrequested — reason: prerequisites of
-  the installs the issue does list (the Deno installer aborts without `unzip`;
-  rootless podman needs lingering).
+  `BootstrapStatusFile` / `AutoStopAfterHours` outputs — reviewer: unrequested —
+  reason: the repo's fail-loud rule; a cloud-init failure is otherwise invisible
+  to the operator.
+- **unrequested** — `jq`, `uidmap`, `unzip`,
+  `/etc/profile.d/vibe-verification.sh`, `loginctl enable-linger` — reviewer:
+  unrequested — reason: prerequisites of the installs the issue does list (the
+  Deno installer aborts without `unzip`; rootless podman needs lingering).
 - **unrequested** — `README.md` documentation-table row and
   `_data/page_titles.yml` entry — reviewer: unrequested — reason: repo
   publishing convention; existing tests fail without them.
@@ -143,38 +143,39 @@ flowchart LR
   `::the bootstrap proves each prerequisite runs before it reports OK`,
   `::every piped installer sets pipefail inside its own shell`, and
   `::a failing bootstrap step records FAILED instead of carrying on`.
-- **violation** — tests grepped the template's raw characters for
-  `Action: "*"`, `KeyName`, `registries.conf` and docker install lines —
-  evidence: `worker/deno/tests/linux_verification_host_template_test.ts:286` —
-  reason: fixed here. Those questions are now asked of the parsed model
-  (`valuesOfKey` walks the template at any depth) or of the rendered script's
-  parsed package set (`aptPackages`), so an alternate spelling no longer slips
-  through.
-- **violation** — three tests asserted UserData *text* (`set -euo pipefail`,
+- **violation** — tests grepped the template's raw characters for `Action: "*"`,
+  `KeyName`, `registries.conf` and docker install lines — evidence:
+  `worker/deno/tests/linux_verification_host_template_test.ts:286` — reason:
+  fixed here. Those questions are now asked of the parsed model (`valuesOfKey`
+  walks the template at any depth) or of the rendered script's parsed package
+  set (`aptPackages`), so an alternate spelling no longer slips through.
+- **violation** — three tests asserted UserData _text_ (`set -euo pipefail`,
   `trap`, `shutdown`) rather than behaviour — evidence: same file, previous
   `:400-432` — reason: fixed here. The fail-loud path is now executed (the
-  script's own prelude plus a failing command, against a redirected status
-  file) and the auto-stop arithmetic is evaluated by bash with `shutdown`
-  stubbed, so both would catch a real regression. Mutation-checked: changing
-  `fail()` to write `OK` turns the fail-loud test red.
+  script's own prelude plus a failing command, against a redirected status file)
+  and the auto-stop arithmetic is evaluated by bash with `shutdown` stubbed, so
+  both would catch a real regression. Mutation-checked: changing `fail()` to
+  write `OK` turns the fail-loud test red.
 - **violation** — the comment above the exported helpers claimed a sharing
-  arrangement with other files that does not exist — evidence: same file,
-  helper block — reason: fixed here; the comment now says what is true, that
-  each helper is unit-tested over synthetic inputs and used by the artefact
-  tests below.
+  arrangement with other files that does not exist — evidence: same file, helper
+  block — reason: fixed here; the comment now says what is true, that each
+  helper is unit-tested over synthetic inputs and used by the artefact tests
+  below.
 - **violation** — two documentation tests assert keyword presence — evidence:
-  same file, `::the verification guide documents launch, verification and
-  tear-down` — reason: stands. The repository has ~15 `*_docs_test.ts` files
-  doing exactly this (`containment_docs_test.ts`, `bucket_docs_test.ts`), and
-  a template whose only launch instructions live in prose needs the prose
-  pinned; the reviewer flagged it at low confidence for this reason.
+  same file,
+  `::the verification guide documents launch, verification and
+  tear-down` —
+  reason: stands. The repository has ~15 `*_docs_test.ts` files doing exactly
+  this (`containment_docs_test.ts`, `bucket_docs_test.ts`), and a template whose
+  only launch instructions live in prose needs the prose pinned; the reviewer
+  flagged it at low confidence for this reason.
 - **clean** — Australian English throughout; no hidden path staged; commit
   message references the issue and carries the run-id trailer; the new page is
   registered in the README table, `_data/page_titles.yml` and
-  `docs/DEPLOYMENT.md`; every cross-reference anchor resolves and the
-  documented `container-runtime-detect` command exists with the flags shown;
-  no secrets, account ids or pinned AMI in the template; no `Export` on any
-  output; no `prompts/` file touched.
+  `docs/DEPLOYMENT.md`; every cross-reference anchor resolves and the documented
+  `container-runtime-detect` command exists with the flags shown; no secrets,
+  account ids or pinned AMI in the template; no `Export` on any output; no
+  `prompts/` file touched.
 
 ## Test Plan
 
@@ -190,10 +191,10 @@ each parses the committed template, or renders and executes a check over it:
 - **Access** — no key pair anywhere; no `AWS::EC2::SecurityGroupIngress`
   resource and no `SecurityGroupIngress` property; egress never covers port 22
   or 3389.
-- **Identity** — exactly one managed policy (`AmazonSSMManagedInstanceCore`),
-  no inline policy, no wildcard action.
-- **Host** — IMDSv2 required with hop limit 1, `stop` on
-  instance-initiated shutdown, encrypted `DeleteOnTermination` root volume.
+- **Identity** — exactly one managed policy (`AmazonSSMManagedInstanceCore`), no
+  inline policy, no wildcard action.
+- **Host** — IMDSv2 required with hop limit 1, `stop` on instance-initiated
+  shutdown, encrypted `DeleteOnTermination` root volume.
 - **Network** — own VPC, subnet, internet gateway and a default route to it.
 - **Parameters** — `AutoStopHours` defaults to 8, `t3.large`, a root-volume
   floor with headroom above the worker's 20 GB claiming floor, and the AMI

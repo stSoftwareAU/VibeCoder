@@ -4,14 +4,14 @@ The milestone sync gate treated a Deno type check that could not fetch remote
 modules (esm.sh, "unsuccessful tunnel") as a refusal, and the same fault left
 milestone/4050 of GRQ-AutoTrader held back. Leaving a connection-class
 module-fetch failure in `checkMergedTree` to CI (Issue #4422's
-`detectRemoteModuleGap`) is already on main from PR #4452 (Issue #4451). This
-PR adds what the report was still missing: the left-to-CI state is carried as
-a structured `checkLeftToCi` field through `checkMergedTree`,
-`verifyResolvedTree`, `syncMilestoneBranchWithDefault`, the
-`CHECK LEFT TO CI:` push note and the conflict report, so the report names the
-check that did not run instead of claiming it passed. The same code change is
-open for #4441 as PR #4459 (identical fault, other milestone); this branch
-carries it too plus the docs update. Version bump: not applicable. Closes #4444.
+`detectRemoteModuleGap`) is already on main from PR #4452 (Issue #4451). This PR
+adds what the report was still missing: the left-to-CI state is carried as a
+structured `checkLeftToCi` field through `checkMergedTree`,
+`verifyResolvedTree`, `syncMilestoneBranchWithDefault`, the `CHECK LEFT TO CI:`
+push note and the conflict report, so the report names the check that did not
+run instead of claiming it passed. The same code change is open for #4441 as PR
+#4459 (identical fault, other milestone); this branch carries it too plus the
+docs update. Version bump: not applicable. Closes #4444.
 
 ## Spec
 
@@ -50,15 +50,15 @@ carries it too plus the docs update. Version bump: not applicable. Closes #4444.
 
 Backend only. Changes: `worker/deno/lib/milestone_merge_gate.ts`,
 `milestone_resolution_gate.ts`, `milestone_sync_conflict.ts`, `git_pull.ts`;
-docs `docs/INTERNALS.md` and `docs/workflows/milestones.md`, hand-wrapped
-edits to the surrounding text only (PR #4465 review: an earlier commit had run
-`deno fmt` over both whole files, so they were restored to main's text and
-the edits re-applied):
+docs `docs/INTERNALS.md` and `docs/workflows/milestones.md`, hand-wrapped edits
+to the surrounding text only (PR #4465 review: an earlier commit had run
+`deno fmt` over both whole files, so they were restored to main's text and the
+edits re-applied):
 
 - The merge-down section of each file: the sentences saying the Issue #4422
   exception covers only the resolution gate's tasks now say it also covers the
-  `checkMergedTree` type check (Issue #4451), and that on the resolution path
-  a type check left to CI lands as `checkLeftToCi` only when another project's
+  `checkMergedTree` type check (Issue #4451), and that on the resolution path a
+  type check left to CI lands as `checkLeftToCi` only when another project's
   check passed; a tree where nothing else was checked is `skipped` and the
   resolution is refused (`verifyResolvedTree`, and the `skipped` refusal in
   `git_pull.ts`).
@@ -69,8 +69,8 @@ the edits re-applied):
   `passed` with `checkLeftToCi` and a `CHECK LEFT TO CI:` note. Only the
   resolution path refuses a `skipped` tree. The `checkMergedTree` exception is
   credited to Issue #4451, and #4444 only for the `checkLeftToCi` reporting.
-- INTERNALS merge-only paragraph: the merge gate's left-to-CI citation now
-  names Issues #4422 and #4451.
+- INTERNALS merge-only paragraph: the merge gate's left-to-CI citation now names
+  Issues #4422 and #4451.
 
 ## Test Plan
 
@@ -86,8 +86,8 @@ the edits re-applied):
   re-run 62 passed, 0 failed; `lib/` restored to `244a4d18` still gives 57
   passed, 5 failed. markdownlint (0 issues), `check-mermaid` (passed) and
   `check:manifests` (passed) ran on the two docs' final text, and
-  `git diff origin/main -- docs/INTERNALS.md docs/workflows/milestones.md`
-  holds only the hand-wrapped sentence edits.
+  `git diff origin/main -- docs/INTERNALS.md docs/workflows/milestones.md` holds
+  only the hand-wrapped sentence edits.
 - `./quality.sh` was not run: the review-fix host cannot reach jsr.io; CI runs
   it.
 

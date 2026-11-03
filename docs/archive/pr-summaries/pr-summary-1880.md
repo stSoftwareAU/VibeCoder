@@ -1,11 +1,12 @@
 ## Summary
 
 When the CI-fix agent reports a failure as pre-existing on the **base branch** —
-ending its `.pr_response_message` with a line of its own, `Depends on
-owner/repo#N` — the worker now verifies that claim and defers instead of
-failing: it reads the base branch's own latest completed run of the same check,
-and only a red one earns a deferral. A verified deferral posts the agent's
-diagnosis **once** with a `vibe-ci-fix-deferred` marker, applies **no**
+ending its `.pr_response_message` with a line of its own,
+`Depends on
+owner/repo#N` — the worker now verifies that claim and defers
+instead of failing: it reads the base branch's own latest completed run of the
+same check, and only a red one earns a deferral. A verified deferral posts the
+agent's diagnosis **once** with a `vibe-ci-fix-deferred` marker, applies **no**
 `needs-human` and charges **no** fix attempt. Every weaker reading — a green
 base, a check the base never ran, a missing base ref, a lookup that errored —
 falls through to the ordinary verbatim no-changes reply with one attempt
@@ -17,7 +18,7 @@ What changed:
   reads `repos/{repo}/commits/{branch}/check-runs?per_page=100` through the
   injected `gh` runner, filters by check name **client-side** (so an
   attacker-chosen workflow name never reaches a URL), takes the highest-id
-  *completed* run and reports whether it concluded `failure`. An API or parse
+  _completed_ run and reports whether it concluded `failure`. An API or parse
   error is a `Result` error — never a quiet `false`.
 - **`baseRef` plumbing** — added to `FailedCiCheck` (`pr_ci_checks.ts`) and
   `CiFixInput` (`pr_ci_processor.ts`), populated from `baseRefName` in
@@ -32,13 +33,13 @@ What changed:
   hold, so no second deferral is granted (whatever issue the agent now names)
   and the attempt cap escalates it to a human.
 - **The deferral post fails loud** — `replyToComment` now returns whether it
-  landed. The comment *is* the deferral record, so a failed post is logged as an
+  landed. The comment _is_ the deferral record, so a failed post is logged as an
   error and reported as `processed: false`, never as a successful deferral.
 - **Prompt and docs** — a `### Base-branch failures` subsection in
   `prompts/ci_fix/prompt.md` § Response Message (search-then-file the tracking
   issue, descriptive labels only, end with the `Depends on owner/repo#N` line),
-  noted in the `docs/PROMPTS.md` ci_fix row and
-  `docs/workflows/ci-fix.md` § "Decision points and exceptions".
+  noted in the `docs/PROMPTS.md` ci_fix row and `docs/workflows/ci-fix.md` §
+  "Decision points and exceptions".
 - **Security sweep** — `ci_base_branch_check.ts` is claimed by slice `12ad` in
   `docs/audits/lib-sweep-coverage.json`, with its reading in
   `docs/audits/security-sweep-1880-ci-base-branch-check.md`.
@@ -71,10 +72,12 @@ ok | 17 passed | 0 failed
 
 - **met** — Base red + `Depends on` ⇒ one comment carrying the agent's diagnosis
   and the issue reference, no `needs-human`, no attempt charged, deferral marker
-  recorded — evidence: `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a Depends on line with a red base defers once, charging no attempt (Issue #1880)`
+  recorded — evidence:
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a Depends on line with a red base defers once, charging no attempt (Issue #1880)`
   — reviewer: met
 - **met** — Base green + `Depends on` ⇒ verbatim no-changes comment and one
-  attempt charged — evidence: `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a Depends on line with a green base takes the ordinary path and charges an attempt (Issue #1880)`
+  attempt charged — evidence:
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a Depends on line with a green base takes the ordinary path and charges an attempt (Issue #1880)`
   — reviewer: met
 - **met** — Prompt instructs the agent to search-then-file the tracking issue
   and end with a `Depends on owner/repo#N` line — evidence:
@@ -98,7 +101,7 @@ ok | 17 passed | 0 failed
 - **unrequested** — the loop guard reads the **prior** deferral's blocker rather
   than the reference this run declared — reviewer: unrequested — reason: the
   issue's literal wording ("the agent names the same issue again") leaves a
-  prior deferral on a *different*, now-closed blocker parking the PR for ever
+  prior deferral on a _different_, now-closed blocker parking the PR for ever
   with no comment, no attempt and no human; reading the prior blocker's state
   implements the issue's stated intent that the loop "fail loud through the
   cap".
@@ -111,8 +114,8 @@ ok | 17 passed | 0 failed
   diagram where one aids understanding of a new decision flow.
 - **unrequested** — sweep slice `12ad` and
   `docs/audits/security-sweep-1880-ci-base-branch-check.md` — reviewer:
-  unrequested — reason: the `completeness checks` gate fails for any new
-  `lib/` module claimed by no sweep slice.
+  unrequested — reason: the `completeness checks` gate fails for any new `lib/`
+  module claimed by no sweep slice.
 
 ## Standards Review
 
@@ -140,7 +143,7 @@ ok | 17 passed | 0 failed
 - **violation** — `_resolveBaseBranchDeferral` was appended to an already-large
   `pr_ci_processor.ts` rather than extracted — evidence:
   `worker/deno/lib/pr_ci_processor.ts` — reason: stands for this change. The
-  base-branch *read* was extracted to its own module; the decision itself reads
+  base-branch _read_ was extracted to its own module; the decision itself reads
   `signature`, `markerState`, `classification` and `customMessage` from the
   processor's own flow, and lifting it would mean threading that state through a
   wider seam than the issue's scope covers.
@@ -158,8 +161,8 @@ ok | 17 passed | 0 failed
 - **Added** `worker/deno/tests/ci_base_branch_check_test.ts` (7 tests) — latest
   completed run failed ⇒ `true`; a green re-run after an earlier failure ⇒
   `false`; the check absent on the branch ⇒ `false`; an in-progress re-run does
-  not hide the completed failure; malformed JSON, a payload with no
-  `check_runs` array and an API rejection are each errors, never `false`.
+  not hide the completed failure; malformed JSON, a payload with no `check_runs`
+  array and an API rejection are each errors, never `false`.
 - **Added** `worker/deno/tests/pr_ci_processor_deferral_test.ts` (10 tests) —
   base red ⇒ exactly one comment carrying the agent's message, the issue
   reference and a deferral marker, with no attempt marker and no `needs-human`;
@@ -170,7 +173,8 @@ ok | 17 passed | 0 failed
   and when it names a different one); no `Depends on` line ⇒ never deferred; a
   bare `#N` resolves to the pull request's own repo; a deferral comment that
   fails to post is reported as `processed: false`, never as a deferral.
-- **Unchanged and still green** — `worker/deno/tests/pr_ci_processor_no_changes_test.ts`,
+- **Unchanged and still green** —
+  `worker/deno/tests/pr_ci_processor_no_changes_test.ts`,
   `worker/deno/tests/ci_fix_attempt_markers_test.ts`,
   `worker/deno/tests/marker_grammar_test.ts`,
   `worker/deno/tests/lib_sweep_coverage_test.ts`.

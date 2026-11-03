@@ -2,12 +2,12 @@
 
 ## Summary
 
-On GRQ-25 the `success` hook — a health heartbeat — failed on every terminal
-run for two days. `recordCallbackOutcomes` did exactly what it was built to do:
-it wrote one `ERROR` record into `worker.log`, which nothing consumed, so the
-board read a working host as dead. The record then fired four times rather than
-once, because the count lived only in `WORK_DIR` — the `vibe-work` volume the
-launcher recreated three times that day (Issue #2077), zeroing it each time.
+On GRQ-25 the `success` hook — a health heartbeat — failed on every terminal run
+for two days. `recordCallbackOutcomes` did exactly what it was built to do: it
+wrote one `ERROR` record into `worker.log`, which nothing consumed, so the board
+read a working host as dead. The record then fired four times rather than once,
+because the count lived only in `WORK_DIR` — the `vibe-work` volume the launcher
+recreated three times that day (Issue #2077), zeroing it each time.
 
 This change puts the same fact where the host's own health reporting can read
 it, without reintroducing any GitHub write (the Issue #2111 boundary stands):
@@ -20,12 +20,14 @@ it, without reintroducing any GitHub write (the Issue #2111 boundary stands):
 - **A count that survives a volume reset.** The work-volume copy is preferred;
   when it is missing, the host copy is read instead, so the streak and its
   "failing since" timestamp carry across a `vibe-work` recreation. The GRQ-25
-  window now produces one record saying *failing since 16 Sep 08:58Z*, not four
+  window now produces one record saying _failing since 16 Sep 08:58Z_, not four
   each claiming a fresh three-issue streak.
-- **The liveness line says so.** `[liveness] tick=… live_epoch=…
-  last_productive=…` now ends with `hook_fail_success=N hook_fail_failure=N
-  hook_fail_always=N` — all three hooks always named, so a host-side parser
-  reads a fixed set of fields.
+- **The liveness line says so.**
+  `[liveness] tick=… live_epoch=…
+  last_productive=…` now ends with
+  `hook_fail_success=N hook_fail_failure=N
+  hook_fail_always=N` — all three
+  hooks always named, so a host-side parser reads a fixed set of fields.
 - **`fleet-summary:` says so.** `hook_failures=N` — failing hook invocations
   this run — sits beside `claims=`, `successes=` and `failures=`.
 - **A copy that cannot be written is reported**, naming the directory and the
@@ -83,8 +85,8 @@ The issue states no `## Acceptance Criteria` heading; its four numbered
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — publish the streak to the host log directory, carrying event,
-  streak, first-failure timestamp, last exit code and duration, redacted
-  stderr head — evidence:
+  streak, first-failure timestamp, last exit code and duration, redacted stderr
+  head — evidence:
   `worker/deno/tests/callback_failure_publication_test.ts::#2297 - the streak is published to the host log directory with the facts the record carries`
   — reviewer: met
 - **met** — keep the count across a volume reset by reading the host copy when
@@ -97,7 +99,8 @@ The issue states no `## Acceptance Criteria` heading; its four numbered
   every event, so the inherited entry is carried into the rebuilt work copy. I
   departed from the verdict and added the test the reviewer said was missing —
   `#2297 - a run that never invoked the failing hook still carries its streak
-  across the reset` — which fails on the behaviour it described and passes here.
+  across the reset`
+  — which fails on the behaviour it described and passes here.
 - **met** — carry `hook_fail_success=N hook_fail_failure=N hook_fail_always=N`
   in the liveness line — evidence: `worker/deno/lib/run_core_production_deps.ts`
   (`checkLivenessWindow`) and
@@ -108,12 +111,12 @@ The issue states no `## Acceptance Criteria` heading; its four numbered
   `workDir` while the writer used `config.workDir`; the second is a real
   divergence and is fixed in this diff — both now use `config.workDir`.
 - **met** — say `hook_failures=N` in `fleet-summary` — evidence:
-  `worker/deno/lib/fleet_telemetry.ts` (`recordHookFailure`, `formatFleetSummary`)
-  and
+  `worker/deno/lib/fleet_telemetry.ts` (`recordHookFailure`,
+  `formatFleetSummary`) and
   `worker/deno/tests/callback_failure_publication_test.ts::#2297 - the fleet summary counts the hook failures beside the run outcomes`
   — reviewer: met
-- **unrequested** — the published file is versioned (`version`, `updatedAt`)
-  and the pre-#2297 bare-count format is still parsed — reviewer: unrequested —
+- **unrequested** — the published file is versioned (`version`, `updatedAt`) and
+  the pre-#2297 bare-count format is still parsed — reviewer: unrequested —
   reason: the file changed shape, so a worker upgrading mid-streak would
   otherwise lose the very count this issue is about; kept.
 - **unrequested** — a hook that succeeded stays in the file at `"streak": 0`
@@ -121,7 +124,7 @@ The issue states no `## Acceptance Criteria` heading; its four numbered
   needs "this hook ran and is healthy", which absence cannot state; kept.
 - **unrequested** — `failing since <timestamp>` added to the `ERROR` record —
   reviewer: unrequested — reason: the issue's own wording for criterion 2
-  ("keeps *failing since* honest") is about that line; kept.
+  ("keeps _failing since_ honest") is about that line; kept.
 - **unrequested** — a 500-character bound on the published stderr head
   (`PUBLISHED_STDERR_HEAD_CHARS`) — reviewer: unrequested — reason: "redacted
   stderr head" needs a bound, and an unbounded one would put a 4,000-character
@@ -140,7 +143,7 @@ The issue states no `## Acceptance Criteria` heading; its four numbered
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — a streak copy that cannot be written was reported at `ERROR`
-  while the run continues, which *Log Levels Are a Promise* reserves for "cannot
+  while the run continues, which _Log Levels Are a Promise_ reserves for "cannot
   continue" — evidence: `worker/deno/lib/callback_failure_streak.ts:225` —
   reason: fixed here. The module gained a `logWarn` sink (defaulting to
   `logError`, so a caller wiring only a fault sink still hears it) and
@@ -163,28 +166,30 @@ The issue states no `## Acceptance Criteria` heading; its four numbered
   when reviewed — evidence: `docs/archive/pr-summaries/pr-summary-2297.md` —
   reason: it is committed with this change.
 - **clean** — Australian English throughout; tests call real code against real
-  temp directories with an injected clock (no sleeps, no host `HOME`/`WORK_DIR`);
-  `deno check` / `fmt` / `lint` / `check:manifests` clean; the new module is
-  claimed in the sweep ledger and has its paired test file; the streak file's
-  legacy format still parses and `fleet-summary:` only gained a field;
-  `redactSecrets` still runs before truncation; both docs updated in the same
-  change; no hidden paths staged; no existing test removed or weakened.
+  temp directories with an injected clock (no sleeps, no host
+  `HOME`/`WORK_DIR`); `deno check` / `fmt` / `lint` / `check:manifests` clean;
+  the new module is claimed in the sweep ledger and has its paired test file;
+  the streak file's legacy format still parses and `fleet-summary:` only gained
+  a field; `redactSecrets` still runs before truncation; both docs updated in
+  the same change; no hidden paths staged; no existing test removed or weakened.
 
 ## Test Plan
 
 New — `worker/deno/tests/callback_failure_publication_test.ts` (11 tests):
 
 - `the streak is published to the host log directory with the facts the record
-  carries` — both copies land; the entry carries the event, path, streak,
-  first/last failure timestamps, status, exit code, duration and redacted
-  stderr, and the `ERROR` record names `failing since …`.
+  carries`
+  — both copies land; the entry carries the event, path, streak, first/last
+  failure timestamps, status, exit code, duration and redacted stderr, and the
+  `ERROR` record names `failing since …`.
 - `a wiped work volume neither restarts the count nor re-records the streak` —
   the GRQ-25 regression: delete the work-volume copy mid-streak, and the count
   continues to six with one record, not two, and `firstFailureAt` unchanged.
 - `a run that never invoked the failing hook still carries its streak across
-  the reset` — the mixed-outcome case: after the reset a failed run fires only
-  `failure` and `always`, and the rebuilt work-volume copy still carries the
-  `success` streak inherited from the host copy.
+  the reset`
+  — the mixed-outcome case: after the reset a failed run fires only `failure`
+  and `always`, and the rebuilt work-volume copy still carries the `success`
+  streak inherited from the host copy.
 - `the work-volume copy is preferred while it exists`.
 - `an older worker's plain-number streak file still reads` — the pre-#2297
   `{"always": 3}` format keeps its count across the upgrade.

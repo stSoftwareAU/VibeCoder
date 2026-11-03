@@ -9,8 +9,8 @@ capture the EXIT trap reaped. Both launchers now write a bounded excerpt of the
 failing step's own output into `run_core.log`, preserve the full output at a
 named, timestamped path under the launcher's log directory, name that path in
 the log line, and carry the heal's own words into the `image_build` escalation.
-Retention is count-based, so the new directory cannot grow without limit.
-Closes #1019.
+Retention is count-based, so the new directory cannot grow without limit. Closes
+#1019.
 
 ## Evidence
 
@@ -76,8 +76,8 @@ run container and every `run.ps1` and parity case ran green under it
   — reviewer: met — reason: the reviewer noted the escalation carries the full
   logs rather than the 40-line excerpt, and does not name the preserved path;
   the full log is a superset of the excerpt, so the criterion stands as met
-- **met** — `run.ps1` has the equivalent behaviour and its tests pass under
-  pwsh — evidence: `run.ps1:384`, `:414`, `:449`, `:798`, `:876`; six
+- **met** — `run.ps1` has the equivalent behaviour and its tests pass under pwsh
+  — evidence: `run.ps1:384`, `:414`, `:449`, `:798`, `:876`; six
   `run_ps1_launcher_test.ts` cases plus
   `launcher_parity_test.ts::run.sh and run.ps1 - both record the failed build's own words…`
   — reviewer: partial — reason: the reviewer's environment had no `pwsh` so all
@@ -143,10 +143,11 @@ run container and every `run.ps1` and parity case ran green under it
   failed build still exits non-zero with its status); tests spawn the real
   launchers through the harness and assert on files and exit codes rather than
   grepping source; no existing test removed or weakened (the
-  `knownWorkerStatuses` assertion is extended with `88`); no hidden paths staged;
-  cross-platform bash (`${arr[@]}` guarded, `mktemp`/`date -u`/`tail -n`/`sed`
-  in portable spellings, `PIPESTATUS[0]` captured before `set -e` is restored);
-  `shellcheck run.sh` clean; docs updated alongside the code
+  `knownWorkerStatuses` assertion is extended with `88`); no hidden paths
+  staged; cross-platform bash (`${arr[@]}` guarded,
+  `mktemp`/`date -u`/`tail -n`/`sed` in portable spellings, `PIPESTATUS[0]`
+  captured before `set -e` is restored); `shellcheck run.sh` clean; docs updated
+  alongside the code
 
 ## Test Plan
 

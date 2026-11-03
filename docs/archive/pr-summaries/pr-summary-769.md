@@ -9,13 +9,14 @@ transcript: host-local, provider-specific, and unreadable by a worker on another
 machine.
 
 The worker now writes the handover note into the clone **before** the preserving
-commit runs, so the same `commitAndPushPending` carries it to the branch on every
-preservation path. The note is built from what the worker already knows —
+commit runs, so the same `commitAndPushPending` carries it to the branch on
+every preservation path. The note is built from what the worker already knows —
 interruption cause, elapsed time, the commits this run added, the
-uncommitted-file list, and whether a wind-down notice was delivered — so it costs
-no agent call and works on the timeout path, where no agent is alive to help.
-Each interruption rewrites the note and keeps a bounded "previous attempts" tail.
-A failed write is logged and non-fatal: losing the note never costs the code.
+uncommitted-file list, and whether a wind-down notice was delivered — so it
+costs no agent call and works on the timeout path, where no agent is alive to
+help. Each interruption rewrites the note and keeps a bounded "previous
+attempts" tail. A failed write is logged and non-fatal: losing the note never
+costs the code.
 
 Closes #769.
 
@@ -24,8 +25,8 @@ Closes #769.
 Issues #770 (advertises the file in the release comment) and #771 (reads it into
 the resuming prompt) merged into the milestone branch first, and both consume
 `handoverFilePath()` from `preserved_wip_branch.ts` —
-`docs/archive/handover/issue-<N>.md`. This writer uses that same constant, so the
-advertisement, the reader and the writer cannot drift apart.
+`docs/archive/handover/issue-<N>.md`. This writer uses that same constant, so
+the advertisement, the reader and the writer cannot drift apart.
 
 Not the `.vibe/handover/…` the issue sketched: `gitignore_enforcer.ts` ignores
 every hidden path in a monitored repo and `pre_commit_safety.ts` refuses to
@@ -38,9 +39,10 @@ note exists to rescue.
 ## Evidence
 
 Backend/CLI change with no web interface to screenshot. The evidence is the test
-suite: 10 execute-phase tests drive the live phase against a real temporary clone
-and assert the note's content **at the moment `commitAndPushPending` is called** —
-i.e. what `git add -A` would stage — plus 22 unit tests over the note itself.
+suite: 10 execute-phase tests drive the live phase against a real temporary
+clone and assert the note's content **at the moment `commitAndPushPending` is
+called** — i.e. what `git add -A` would stage — plus 22 unit tests over the note
+itself.
 
 ```mermaid
 flowchart TD
@@ -81,8 +83,8 @@ ok | 32 passed | 0 failed
   and `… a hard-cap wind-down commits the handover note`, each driven
   independently through `workOnIssueExecuteClaude`; SIGKILL and external SIGTERM
   are covered too — reviewer: met
-- **met** — The file names the interruption cause, the branch, what was done, and
-  what remains. — evidence: `worker/deno/lib/handover_note.ts`
+- **met** — The file names the interruption cause, the branch, what was done,
+  and what remains. — evidence: `worker/deno/lib/handover_note.ts`
   (`buildHandoverNote`),
   `handover_note_test.ts::… names the cause, branch, what was done and what remains`
   — reviewer: met
@@ -114,35 +116,37 @@ ok | 32 passed | 0 failed
   `setup_credential_provisioning_test.ts`, `setup_lockfile_test.ts`,
   `setup_prerequisites_test.ts`, `setup_workdir_reminder_test.ts`); none touches
   preservation or the handover — reviewer: met
-- **unrequested** — A commit is now created on a *clean* working tree when
-  checkpoint commits exist (`wip: handover note for the interrupted run on issue
-  #N`). — reviewer: unrequested — reason: required by the criteria. The
-  phase-end checkpoint usually leaves the tree clean, so without this the note
-  would never be committed on the very path the issue names. The commit keeps the
-  `wip:` prefix, so the #148 WIP-only gate still refuses to build a PR from it.
+- **unrequested** — A commit is now created on a _clean_ working tree when
+  checkpoint commits exist
+  (`wip: handover note for the interrupted run on issue
+  #N`). — reviewer:
+  unrequested — reason: required by the criteria. The phase-end checkpoint
+  usually leaves the tree clean, so without this the note would never be
+  committed on the very path the issue names. The commit keeps the `wip:`
+  prefix, so the #148 WIP-only gate still refuses to build a PR from it.
 - **unrequested** — Release-comment wording: the clean-tree "pushed" branch now
   reports the checkpoint sentence rather than "committed and pushed". —
   reviewer: unrequested — reason: with a note-only commit, "the working tree was
   rescued" would be false; `describeCheckpointCommits` is shared so the two
   wordings cannot drift.
-- **unrequested** — Handover wired on the SIGKILL and external-SIGTERM paths too.
-  — reviewer: unrequested — reason: the scope says "every preservation path";
-  both are covered by tests.
+- **unrequested** — Handover wired on the SIGKILL and external-SIGTERM paths
+  too. — reviewer: unrequested — reason: the scope says "every preservation
+  path"; both are covered by tests.
 - **unrequested** — `redactSecrets` over the note, Liquid-tag defusing of
-  interpolated values, `describeWipCause` exported, `countDirtyFiles` replaced by
-  `listDirtyFiles` with C-quoting/rename decoding. — reviewer: unrequested —
+  interpolated values, `describeWipCause` exported, `countDirtyFiles` replaced
+  by `listDirtyFiles` with C-quoting/rename decoding. — reviewer: unrequested —
   reason: the file list and cause prose are direct inputs to the note; the
-  redaction and Liquid defusing are hardening on a new file that is committed and
-  pushed.
+  redaction and Liquid defusing are hardening on a new file that is committed
+  and pushed.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — the new committed-and-pushed sink was wired through
-  `redactSecrets()` in code but never registered in the sink register — evidence:
-  `SECURITY.md:410` — reason: fixed here; the note is added to the sink list, the
-  sink categories and the Mermaid diagram.
+  `redactSecrets()` in code but never registered in the sink register —
+  evidence: `SECURITY.md:410` — reason: fixed here; the note is added to the
+  sink list, the sink categories and the Mermaid diagram.
 - **violation** — a failed `git status` / `git log` was swallowed and then
   written into a permanent record as the affirmative facts "the working tree was
   clean" and "no commit was recorded" — evidence:
@@ -150,9 +154,9 @@ ok | 32 passed | 0 failed
   `wipCommitSubjects`) — reason: fixed here; both now return `null`, log a
   warning, and the note reports the state as unknown
   (`handover_note_test.ts::… an unreadable git state is reported as unknown, never as clean`).
-- **violation** — the porcelain C-quoting decoder and rename handling had no test
-  at any level — evidence: `run_wip_preservation.ts` (`decodePorcelainPath`) —
-  reason: fixed here through the public seam
+- **violation** — the porcelain C-quoting decoder and rename handling had no
+  test at any level — evidence: `run_wip_preservation.ts`
+  (`decodePorcelainPath`) — reason: fixed here through the public seam
   (`execute_phase_handover_test.ts::… git's porcelain quoting and renames read as real paths`),
   which also exposed that `JSON.parse` cannot decode git's octal byte escapes;
   the decoder now decodes bytes and then UTF-8.
@@ -180,8 +184,8 @@ ok | 32 passed | 0 failed
   `execute_phase_handover_test.ts::… a zero-output timeout leaves the tree alone and writes no note`.
 - **The structure marker was mangled by its only consumer.** `HANDOVER_MARKER`
   was an HTML comment, and #771 splices the note through
-  `fenceUntrustedIssueText` → `neutraliseHtmlComments`, which rewrites `<!--`. It
-  is now a visible code span, asserted through the real fencing function in
+  `fenceUntrustedIssueText` → `neutraliseHtmlComments`, which rewrites `<!--`.
+  It is now a visible code span, asserted through the real fencing function in
   `handover_note_test.ts::… the structure marker survives the untrusted fencing #771 applies`.
 
 ## Test Plan

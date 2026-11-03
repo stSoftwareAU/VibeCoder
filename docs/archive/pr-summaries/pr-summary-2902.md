@@ -8,8 +8,8 @@ When a per-issue `gh issue view` / `gh issue close` failed inside
 `closeIssuesForMergedPrs`, the error was swallowed by a bare `catch` (the PR was
 correctly held back). A failure that kept happening was retried every cycle and
 never logged. The catch now emits one `logger.warn` naming the repo, the issue,
-the PR and the redacted error. The line follows the style of the #2831
-merged-PR fetch-failure warning.
+the PR and the redacted error. The line follows the style of the #2831 merged-PR
+fetch-failure warning.
 
 ```mermaid
 flowchart LR
@@ -37,5 +37,5 @@ This is a backend-only change with no visual surface.
 ## Test Plan
 
 - `deno task test:unit tests/pr_issue_linking_test.ts`: 67 passed, 0 failed.
-- `./quality.sh`: PASSED. The only skip is config integration, which is
-  skipped by design.
+- `./quality.sh`: PASSED. The only skip is config integration, which is skipped
+  by design.

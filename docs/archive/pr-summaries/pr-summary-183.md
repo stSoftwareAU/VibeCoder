@@ -4,13 +4,14 @@
 
 `withWriteRepoAllowlistContext()` (Issue #4175) gave each pool slot its own
 write-repo allowlist, but **nothing in production called it** — the only
-references were tests. Every slot therefore resolved `ctx()` to the
-process-wide `defaultContext`, and because `seedWriteRepoAllowlist()` clears
-`allowed` on every claim, the slot that claimed second clobbered its sibling's
-allowlist. The losing slot's `gh` guard shim was baked with the *other* claim's
-repo, so every GitHub write from that agent was refused — including writes to
-its own claim repo and its `needs-human` escalation (observed: slot B on
-`stSoftwareAU/GRQ#4206` refused with `[WRITE_REPO_BLOCKED] … not on run
+references were tests. Every slot therefore resolved `ctx()` to the process-wide
+`defaultContext`, and because `seedWriteRepoAllowlist()` clears `allowed` on
+every claim, the slot that claimed second clobbered its sibling's allowlist. The
+losing slot's `gh` guard shim was baked with the _other_ claim's repo, so every
+GitHub write from that agent was refused — including writes to its own claim
+repo and its `needs-human` escalation (observed: slot B on
+`stSoftwareAU/GRQ#4206` refused with
+`[WRITE_REPO_BLOCKED] … not on run
 allowlist [stsoftwareau/vibecoder]`).
 
 The slot pool now wraps **every claim** in a fresh allowlist context
@@ -85,10 +86,10 @@ body into another's context: the seed, `registerWriteRepo`, the pins, the
 `enforceGhWriteAllowlist` check at the `spawnGh` chokepoint and the shim
 snapshot all resolve the same per-claim object. Seed order is now irrelevant,
 and a slot can neither lock its sibling out nor inherit the sibling's repo. The
-pool is the only concurrent claim path (the serial loop and the CLI
-single-issue path keep the default context, i.e. today's single-slot
-behaviour); the tests assert the default context is left inactive after a
-two-slot cycle, so a future regression that drops the wrapper fails loudly.
+pool is the only concurrent claim path (the serial loop and the CLI single-issue
+path keep the default context, i.e. today's single-slot behaviour); the tests
+assert the default context is left inactive after a two-slot cycle, so a future
+regression that drops the wrapper fails loudly.
 
 ## Test Plan
 
@@ -104,17 +105,16 @@ interleave:
   against the unfixed code, passes after the fix.
 - `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a claim's heartbeat pin stays inside its own allowlist context (Issue #183/#3760)`
   — a pin taken by one claim is invisible to its sibling, still keeps the
-  claim's own repo writable across a reseed, and stays out of the shim
-  snapshot. Fails against the unfixed code (the sibling's pin leaks), passes
-  after the fix.
+  claim's own repo writable across a reseed, and stays out of the shim snapshot.
+  Fails against the unfixed code (the sibling's pin leaks), passes after the
+  fix.
 
 Full gate: `./quality.sh` passes except for 10 pre-existing, environment-
-dependent failures in `setup_workdir_reminder_test.ts`,
-`fleet_health_test.ts`, `host_workdir_guard_test.ts` and
-`optional_feature_env_test.ts` (this container has a populated host work dir).
-They fail identically on unmodified `main` — verified by stashing this branch's
-changes and re-running those four files.
+dependent failures in `setup_workdir_reminder_test.ts`, `fleet_health_test.ts`,
+`host_workdir_guard_test.ts` and `optional_feature_env_test.ts` (this container
+has a populated host work dir). They fail identically on unmodified `main` —
+verified by stashing this branch's changes and re-running those four files.
 
-Docs updated in the same change: `SECURITY.md` §6 gains the per-claim
-isolation bullet (including why pins stay worker-side), and the
-`write_repo_allowlist.ts` module docstring now names the production wrap site.
+Docs updated in the same change: `SECURITY.md` §6 gains the per-claim isolation
+bullet (including why pins stay worker-side), and the `write_repo_allowlist.ts`
+module docstring now names the production wrap site.

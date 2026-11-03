@@ -17,9 +17,9 @@ What changed:
   the `issue` required placeholders. Missing, unreadable, empty or invalid all
   return an error naming the label and the path. `validatePromptImmutability` is
   deliberately **not** applied: the operator's file is theirs to edit.
-- **`buildIssuePrompt`** takes `customPromptPath` and loads that file in place of
-  `loadPrompt("issue", …)`. Nothing else in the builder changed, so the custom
-  prompt gets the same treatment as the built-in one: the fail-loud
+- **`buildIssuePrompt`** takes `customPromptPath` and loads that file in place
+  of `loadPrompt("issue", …)`. Nothing else in the builder changed, so the
+  custom prompt gets the same treatment as the built-in one: the fail-loud
   unsubstituted-placeholder check, the per-run nonce delimiters, and the
   boundary-integrity instruction around the untrusted issue text.
 - **Prompt-cache key** — `computeStaticPromptHash` takes the custom prompt path
@@ -58,12 +58,13 @@ on source text.
 - Full gate: `env -u CONFIG_PATH ./quality.sh` → every check PASSED except
   `deno tests`, which reports **2 failures out of 16 880**:
   `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
-  dir is restaged writable` (running as root defeats the `chmod 000` the test
-  relies on) and `setup_provider_credential_flow_test.ts::setup.sh - a
-  Codex-only host …` (this container image installs `claude` only). Both were
-  confirmed failing on the base commit in a clean worktree
-  (`git worktree add /tmp/base-check HEAD~1` → same two failures), so neither is
-  introduced here.
+  dir is restaged writable`
+  (running as root defeats the `chmod 000` the test relies on) and
+  `setup_provider_credential_flow_test.ts::setup.sh - a
+  Codex-only host …`
+  (this container image installs `claude` only). Both were confirmed failing on
+  the base commit in a clean worktree (`git worktree add /tmp/base-check HEAD~1`
+  → same two failures), so neither is introduced here.
 - Note on the gate environment: this run exports `CONFIG_PATH`, which makes 33
   further `setup_*` script-harness tests fail with "CONFIG_FILE and CONFIG_PATH
   are both set and name different files". Unsetting it for the gate run
@@ -77,45 +78,53 @@ on source text.
   account, runs the generic implementation phase with the operator's prompt —
   evidence: `worker/deno/lib/run_core_production_deps.ts` (1.86 wiring),
   `worker/deno/tests/custom_label_dispatch_test.ts::custom label dispatch - runs
-  the implementation pipeline with the operator's prompt` — reviewer: met —
-  reason: reviewer flagged that the route inherits `findIssuesByLabel`, which
-  lacks the open-PR/cooldown gating `work-on` gets, so a labelled issue can be
-  re-dispatched while its PR is open; that is the prescribed wiring for this
-  sub-issue, and the gap is filed as stSoftwareAU/VibeCoder#937.
+  the implementation pipeline with the operator's prompt`
+  — reviewer: met — reason: reviewer flagged that the route inherits
+  `findIssuesByLabel`, which lacks the open-PR/cooldown gating `work-on` gets,
+  so a labelled issue can be re-dispatched while its PR is open; that is the
+  prescribed wiring for this sub-issue, and the gap is filed as
+  stSoftwareAU/VibeCoder#937.
 - **met** — the rendered prompt fences the issue text with the same nonce
   markers and boundary-integrity instruction as the built-in prompt — evidence:
   `worker/deno/tests/custom_prompt_builder_test.ts::custom prompt - untrusted
-  issue text keeps the nonce fences and boundary instruction` (extracts the real
-  nonce, asserts the body sits inside the fence) and `…- a fresh nonce per
-  invocation` — reviewer: met — reason: reviewer noted the criterion names
-  "comments", which no implementation prompt carries on either path
-  (`issueComments` is not an `IssuePromptOptions` field); parity holds and the
-  docs were corrected to stop claiming otherwise.
+  issue text keeps the nonce fences and boundary instruction`
+  (extracts the real nonce, asserts the body sits inside the fence) and
+  `…- a fresh nonce per
+  invocation` — reviewer: met — reason: reviewer noted
+  the criterion names "comments", which no implementation prompt carries on
+  either path (`issueComments` is not an `IssuePromptOptions` field); parity
+  holds and the docs were corrected to stop claiming otherwise.
 - **met** — a template missing a required `issue` placeholder is rejected naming
   the file and the placeholder — evidence:
   `worker/deno/tests/custom_prompt_loader_test.ts::a missing required
-  placeholder is rejected by name` — reviewer: met.
+  placeholder is rejected by name`
+  — reviewer: met.
 - **met** — a missing, unreadable or empty prompt file fails the run loudly, no
   fallback and no silent skip — evidence:
   `worker/deno/tests/custom_label_dispatch_test.ts::a missing prompt file fails
-  loud and never runs the pipeline` (asserts the orchestrator never ran) —
-  reviewer: met — reason: reviewer's two caveats were the root-defeated `chmod`
-  test (rewritten against a directory, so it now always asserts) and the absence
-  of a cooldown after the failure, which is the same gating gap tracked in #937.
+  loud and never runs the pipeline`
+  (asserts the orchestrator never ran) — reviewer: met — reason: reviewer's two
+  caveats were the root-defeated `chmod` test (rewritten against a directory, so
+  it now always asserts) and the absence of a cooldown after the failure, which
+  is the same gating gap tracked in #937.
 - **partial** — the custom prompt's content contributes to the prompt-cache key
   — evidence: `worker/deno/lib/prompt_hash.ts`,
   `worker/deno/tests/custom_prompt_builder_test.ts::its content contributes to
-  the prompt-cache key` — reviewer: partial — reason: the hashing is implemented
-  and tested, but the issue-worker pipeline wires `buildPrompt:
-  buildIssuePrompt` (uncached) for **every** run, custom or not, so today no
-  production issue run reaches `buildCachedIssuePrompt`; that pre-existing wiring
-  is outside this sub-issue.
+  the prompt-cache key`
+  — reviewer: partial — reason: the hashing is implemented and tested, but the
+  issue-worker pipeline wires `buildPrompt:
+  buildIssuePrompt` (uncached) for
+  **every** run, custom or not, so today no production issue run reaches
+  `buildCachedIssuePrompt`; that pre-existing wiring is outside this sub-issue.
 - **met** — with no `custom_label_prompts` configured the priority table and
   `work-on` behaviour are unchanged — evidence:
   `worker/deno/tests/custom_label_dispatch_test.ts::priority table - no custom
-  label mappings leaves the ladder unchanged`, `…::production wiring - the
-  handler is wired only when a mapping is configured`, `…::execute phase - a
-  normal run is unchanged by the custom-prompt option` — reviewer: met.
+  label mappings leaves the ladder unchanged`,
+  `…::production wiring - the
+  handler is wired only when a mapping is configured`,
+  `…::execute phase - a
+  normal run is unchanged by the custom-prompt option` —
+  reviewer: met.
 - **partial** — tests added for the loader, the builder path and the dispatch
   wiring; `deno task test` and `./quality.sh` pass — evidence: three new test
   files under `worker/deno/tests/`; gate output above — reviewer: partial —
@@ -151,14 +160,14 @@ on source text.
 - **violation** — the new production wiring branch was untested — evidence:
   `worker/deno/lib/run_core_production_deps.ts:2424` — reason: fixed —
   `custom_label_dispatch_test.ts::production wiring - the handler is wired only
-  when a mapping is configured` now drives `createProductionRunCoreDeps` with and
-  without a mapping.
+  when a mapping is configured`
+  now drives `createProductionRunCoreDeps` with and without a mapping.
 - **violation** — a test that can pass while asserting nothing under root —
-  evidence: `worker/deno/tests/custom_prompt_loader_test.ts:54` — reason: fixed —
-  the case now points the loader at a directory, which fails for every uid, so
+  evidence: `worker/deno/tests/custom_prompt_loader_test.ts:54` — reason: fixed
+  — the case now points the loader at a directory, which fails for every uid, so
   the assertions always run.
-- **violation** — KISS: a nested conditional spread where two plain fields work —
-  evidence: `worker/deno/lib/phases/execute_phase.ts:331` — reason: fixed —
+- **violation** — KISS: a nested conditional spread where two plain fields work
+  — evidence: `worker/deno/lib/phases/execute_phase.ts:331` — reason: fixed —
   `exactOptionalPropertyTypes` is off, so the two fields are passed directly.
 - **violation** — prompt-cache plumbing is unreachable from the feature's live
   path — evidence: `worker/deno/lib/prompt_hash.ts:71`,
@@ -171,8 +180,8 @@ on source text.
   catch-and-ignore; no hidden or credential paths staged; tests call real
   functions (`buildIssuePrompt`, `workOnIssueExecuteClaude`,
   `computeStaticPromptHash`, `buildPriorityDispatchTable`,
-  `createProductionRunCoreDeps`) and assert on behaviour rather than source text;
-  module doc comments on both new files; both new modules small and
+  `createProductionRunCoreDeps`) and assert on behaviour rather than source
+  text; module doc comments on both new files; both new modules small and
   single-purpose; docs updated alongside the code; commit messages carry the
   `Vibe-Coder-Run-Id` trailer; `deno fmt` and `deno lint` clean with no new
   `deno-lint-ignore`.
@@ -226,8 +235,8 @@ New — `worker/deno/tests/custom_label_dispatch_test.ts` (16):
 - the execute phase sends the operator's prompt, still fenced
 - a normal run is unchanged by the custom-prompt option
 - production wiring: the handler is wired only when a mapping is configured
-- the priority row is absent with no mappings, and sits at 1.86 between
-  Question Answering and the generic scan when wired
+- the priority row is absent with no mappings, and sits at 1.86 between Question
+  Answering and the generic scan when wired
 
 Existing suites re-run unchanged: `prompt_builder_test.ts`,
 `prompt_builder_cache_test.ts`, `custom_label_prompts_config_test.ts`,

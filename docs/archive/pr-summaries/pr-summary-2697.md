@@ -16,10 +16,10 @@ decides**, whichever commit it was left on.
 **Merged with #2707 (Issue #2702).** Main fixed the same bug first: a
 `CHANGES_REQUESTED` review is superseded only by a fleet fix commit after its
 `submitted_at` (`isReviewSupersededByFleetFix` / `isFleetAnswerAfter`), and a
-blocked PR is never branch-updated. That stays the single staleness
-mechanism. This PR adds only what #2707 does not: every page of reviews is
-read, a reviewer's later review supersedes their earlier change request, and
-every skip is logged with its reason. The latest-review selection lives in
+blocked PR is never branch-updated. That stays the single staleness mechanism.
+This PR adds only what #2707 does not: every page of reviews is read, a
+reviewer's later review supersedes their earlier change request, and every skip
+is logged with its reason. The latest-review selection lives in
 `lib/pr_feedback_supersede.ts` beside the fleet-fix rule; the separate
 `lib/pr_review_outstanding.ts` module was folded in and removed.
 
@@ -27,8 +27,8 @@ every skip is logged with its reason. The latest-review selection lives in
   - `selectOutstandingReviews` picks the latest review per reviewer (by
     `submitted_at`, falling back to list order; logins compared
     case-insensitively).
-  - It keeps a reviewer only when that latest review is `CHANGES_REQUESTED`.
-    A dismissed review, or a later `APPROVED` or non-empty `COMMENTED` review,
+  - It keeps a reviewer only when that latest review is `CHANGES_REQUESTED`. A
+    dismissed review, or a later `APPROVED` or non-empty `COMMENTED` review,
     retires the request.
   - `PENDING` drafts and empty-bodied `COMMENTED` inline-reply containers are
     ignored.
@@ -36,8 +36,8 @@ every skip is logged with its reason. The latest-review selection lives in
 - **`lib/pr_maintenance.ts`:**
   - After the latest-review selection, #2707's fleet-fix check still applies.
   - Reviews are read with `gh api --paginate`.
-  - Each skipped change request is logged at INFO with its reason:
-    superseded, the host's own review, or no body.
+  - Each skipped change request is logged at INFO with its reason: superseded,
+    the host's own review, or no body.
   - An unreadable review list now warns instead of passing silently.
 - **`lib/claim_pr_comment.ts`:** dismissal is now the only thing that stops a
   review being rediscovered, so a failed claim-time dismissal is logged.
@@ -80,8 +80,8 @@ Regression tests (each fails against the old code):
   claimed.
   - Evidence: `pr_maintenance_review_head_moved_test.ts` "a review on an issue
     branch survives a head move". The claim half is covered by
-    `claim_pr_comment_review_test.ts` "a pr_review with no competitor is
-    claimed and dismissed".
+    `claim_pr_comment_review_test.ts` "a pr_review with no competitor is claimed
+    and dismissed".
   - reviewer: partial.
   - reason: scan and claim are tested separately, not chained. The claim path
     never reads the head sha, so the separate claim test covers the moved-head
@@ -113,8 +113,8 @@ Regression tests (each fails against the old code):
     INFO and deliberately unchanged. A dismissed review is no longer in the
     `CHANGES_REQUESTED` state, so it is not a skipped change request.
 - **met** — No test pinning "commit_id ≠ head ⇒ skip" is kept.
-  - Evidence: no test on `main` pinned it. The `pr_maintenance_test.ts`
-    fixtures only gained `state: "CHANGES_REQUESTED"`.
+  - Evidence: no test on `main` pinned it. The `pr_maintenance_test.ts` fixtures
+    only gained `state: "CHANGES_REQUESTED"`.
   - reviewer: met.
 - **met (via #2707)** — Fix item 4: Update Branches leaves a PR alone while a
   change request is outstanding.
@@ -135,8 +135,8 @@ Regression tests (each fails against the old code):
 - **unrequested** — `PENDING` and empty `COMMENTED` reviews are ignored; logins
   are compared case-insensitively; `user: null` rows are dropped.
   - reviewer: unrequested.
-  - reason: needed for "latest review" to be correct. An inline reply creates
-    an empty `COMMENTED` review that must not withdraw the request.
+  - reason: needed for "latest review" to be correct. An inline reply creates an
+    empty `COMMENTED` review that must not withdraw the request.
 - **unrequested** — `ReviewEntry` removed from `pr_maintenance.ts`.
   - reviewer: unrequested.
   - reason: replaced by `PrReview`; it has no importers left.
@@ -184,9 +184,9 @@ Violations raised by the reviewer, and how each was handled:
 Clean: Australian English; tests call real functions (no source grepping); the
 regression tests fail on the unfixed code; the selection logic has its own unit
 tests; the tests are parallel-safe; log levels are appropriate; the Result
-pattern is used; KISS (standard library only, no new dependencies); the docs
-are updated with Mermaid; lint and fmt are
-clean; the commits cite #2697; no secrets or hidden files are staged.
+pattern is used; KISS (standard library only, no new dependencies); the docs are
+updated with Mermaid; lint and fmt are clean; the commits cite #2697; no secrets
+or hidden files are staged.
 
 ## Test Plan
 

@@ -3,28 +3,30 @@
 ## Summary
 
 The per-language best-practice buckets were undocumented in the standard that is
-supposed to be the entry point: `grep -in 'bucket|best_practices|best practices'
-CODING-STANDARDS.md` returned zero hits, so the Rust rule "prefer `?` over
-`unwrap()` / `expect()`" — which lives in
-`prompts/best_practices/buckets/rust.md` — was unfindable from
-`CODING-STANDARDS.md`. This answers the parent issue's question (#358, *"Where
-does the Rust rule 'never unwrap' exist?"*): the per-language standards already
+supposed to be the entry point:
+`grep -in 'bucket|best_practices|best practices'
+CODING-STANDARDS.md` returned
+zero hits, so the Rust rule "prefer `?` over `unwrap()` / `expect()`" — which
+lives in `prompts/best_practices/buckets/rust.md` — was unfindable from
+`CODING-STANDARDS.md`. This answers the parent issue's question (#358, _"Where
+does the Rust rule 'never unwrap' exist?"_): the per-language standards already
 exist and are already selected per repository; only their discoverability was
 missing.
 
 `CODING-STANDARDS.md` gains one short section, § "Language-Agnostic Standards vs
 Per-Language Buckets", placed after § "Prompt Template Versioning". It:
 
-- States the split — this document plus the injected `prompts/coding_guidelines/`
-  template carry the language-agnostic rules (fail-loud, security, commit
-  safety, TDD, quality gates); language-specific rules live in the buckets and
-  are injected only when the repository uses that language.
+- States the split — this document plus the injected
+  `prompts/coding_guidelines/` template carry the language-agnostic rules
+  (fail-loud, security, commit safety, TDD, quality gates); language-specific
+  rules live in the buckets and are injected only when the repository uses that
+  language.
 - Lists all eight buckets (`rust`, `typescript`, `java`, `react`, `html`,
   `terraform`, `aws-cloudformation`, `general`) in a table, each linking to its
   guide under `prompts/best_practices/buckets/`.
 - Names `worker/deno/lib/best_practices_bucket_picker.ts` as the selector and
-  `worker/deno/lib/language_detector.ts` as its input, so a reader can see *when*
-  a bucket is injected.
+  `worker/deno/lib/language_detector.ts` as its input, so a reader can see
+  _when_ a bucket is injected.
 - Uses the Rust `unwrap()` rule as the worked example, so searching the standard
   for "unwrap" or "Rust" routes to `buckets/rust.md` in one hop.
 
@@ -71,8 +73,8 @@ ok | 17 passed | 0 failed (17ms)
 ## Test Plan
 
 Added `worker/deno/tests/bucket_docs_test.ts` (17 tests), which calls the real
-functions in `worker/deno/lib/bucket_docs_check.ts` with fixtures and against the
-live repository tree:
+functions in `worker/deno/lib/bucket_docs_check.ts` with fixtures and against
+the live repository tree:
 
 - `bucketNamesFromEntries` — extension stripping and sorting, non-Markdown
   entries ignored, empty directory.

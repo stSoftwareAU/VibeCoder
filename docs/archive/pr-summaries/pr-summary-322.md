@@ -14,21 +14,22 @@ saturated the container:
 00:05:10Z INFO  execute: still running · 124m33s elapsed
 ```
 
-The guard against an overrun was itself a casualty of the overrun. The cycle
-ran **2h26m past its deadline** and stopped only because a human killed it.
+The guard against an overrun was itself a casualty of the overrun. The cycle ran
+**2h26m past its deadline** and stopped only because a human killed it.
 
-`loop.sh` was a supervisor in name only: it ran `./run.sh`, waited, recorded
-the outcome and slept. It had a `timeout 120` on the backoff *recorder* and
-none on the run it supervised, so a `run.sh` that never returned meant waiting
-for ever.
+`loop.sh` was a supervisor in name only: it ran `./run.sh`, waited, recorded the
+outcome and slept. It had a `timeout 120` on the backoff _recorder_ and none on
+the run it supervised, so a `run.sh` that never returned meant waiting for ever.
 
 This gives the deadline to the one process guaranteed not to be inside the
-failure. `run_under_deadline` wraps `./run.sh` in `timeout
---kill-after=<grace> <cap>` — SIGTERM at the cap, SIGKILL after the grace —
-defaulting to `VIBE_RUN_MAX_SECONDS=5400` (the 3600 s run duration plus a wide
-margin for a slow but genuinely progressing shutdown). The expiry is reported
-distinctly and flows into the existing `container-restart-backoff` recorder, so
-a host that does this repeatedly escalates (#4072) rather than looping.
+failure. `run_under_deadline` wraps `./run.sh` in
+`timeout
+--kill-after=<grace> <cap>` — SIGTERM at the cap, SIGKILL after the
+grace — defaulting to `VIBE_RUN_MAX_SECONDS=5400` (the 3600 s run duration plus
+a wide margin for a slow but genuinely progressing shutdown). The expiry is
+reported distinctly and flows into the existing `container-restart-backoff`
+recorder, so a host that does this repeatedly escalates (#4072) rather than
+looping.
 
 ### Reaping what a killed run leaves behind
 
@@ -37,13 +38,13 @@ orphaned VM kept running at **705% CPU** with nothing supervising it, which is
 how one wedge becomes a wedged host — the next cycle fails the same way.
 
 `reap_orphaned_containers` identifies orphans by **reparenting**, not by PID:
-once `run.sh` dies, its `container run` client is reparented to init
-(`PPID 1`). That test needs no bookkeeping, and it also clears a client
-stranded by an earlier cycle or by a human kill. A client still owned by a live
-`run.sh` has a PPID that is not 1 and is never touched, so a healthy run is
-safe. SIGTERM, then SIGKILL for anything that survives.
+once `run.sh` dies, its `container run` client is reparented to init (`PPID 1`).
+That test needs no bookkeeping, and it also clears a client stranded by an
+earlier cycle or by a human kill. A client still owned by a live `run.sh` has a
+PPID that is not 1 and is never touched, so a healthy run is safe. SIGTERM, then
+SIGKILL for anything that survives.
 
-Recovering a container whose own *init* has died — where `exec`, `stop` and
+Recovering a container whose own _init_ has died — where `exec`, `stop` and
 `kill` all fail while `container ls` still reports it running — is Issue #323
 and deliberately not attempted here.
 
@@ -53,8 +54,8 @@ Closes #322.
 
 Shell/supervisor change with no web interface, so there is no screenshot.
 
-**The new tests fail against `origin/main`**: without the cap, the
-never-exits stub runs for ever and `run.sh` is invoked exactly once.
+**The new tests fail against `origin/main`**: without the cap, the never-exits
+stub runs for ever and `run.sh` is invoked exactly once.
 
 **They pass here**, alongside the four pre-existing #1836 cases:
 
@@ -77,31 +78,33 @@ ok | 7 passed | 0 failed (46s)
 `deno type check`, `deno lint`, `deno fmt`, markdownlint, mermaid, workflow
 hygiene and the chokepoint gates.
 
-`deno tests` reports the 11 pre-existing `setup.ps1` failures (`NotFound:
-Failed to spawn 'pwsh'`) plus `runClaudeWithRetry - a SIGKILLed agent's
-surviving descendant is collected … (Issue #4382)`. That last one **also fails
-on unmodified `origin/main`** — checked in a detached worktree — so it is not
-from this change. It is in the area Issue #325 covers, and is worth its own
-look there.
+`deno tests` reports the 11 pre-existing `setup.ps1` failures
+(`NotFound:
+Failed to spawn 'pwsh'`) plus
+`runClaudeWithRetry - a SIGKILLed agent's
+surviving descendant is collected … (Issue #4382)`.
+That last one **also fails on unmodified `origin/main`** — checked in a detached
+worktree — so it is not from this change. It is in the area Issue #325 covers,
+and is worth its own look there.
 
 ## Test plan
 
 `worker/deno/tests/loop_supervisor_test.ts` — 3 new cases on the existing
 harness (`spawnLoop` gains an env-override parameter):
 
-| Case | Asserts |
-| --- | --- |
-| a `run.sh` that never exits is terminated and the next cycle starts | The wedged-cycle shape: a stub that `sleep 300`s is killed at a 2 s cap and re-launched, so `run.sh` runs ≥2 times |
-| a run that finishes inside the cap is not disturbed | A 1 s run under a 30 s cap cycles normally — the cap must not truncate healthy work |
-| `VIBE_RUN_MAX_SECONDS=0` disables the cap rather than capping at zero | A misread of `0` as an immediate deadline would kill every run instantly, which is worse than the bug being fixed |
+| Case                                                                  | Asserts                                                                                                            |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| a `run.sh` that never exits is terminated and the next cycle starts   | The wedged-cycle shape: a stub that `sleep 300`s is killed at a 2 s cap and re-launched, so `run.sh` runs ≥2 times |
+| a run that finishes inside the cap is not disturbed                   | A 1 s run under a 30 s cap cycles normally — the cap must not truncate healthy work                                |
+| `VIBE_RUN_MAX_SECONDS=0` disables the cap rather than capping at zero | A misread of `0` as an immediate deadline would kill every run instantly, which is worse than the bug being fixed  |
 
-The third asserts on **completion**, not invocation count: with the cap off,
-the measure is whether a slow run reaches its own exit. A first draft counted
+The third asserts on **completion**, not invocation count: with the cap off, the
+measure is whether a slow run reaches its own exit. A first draft counted
 invocations and failed for the wrong reason — the run had completed and simply
 cycled twice inside the window.
 
 No test drives `reap_orphaned_containers` directly: it operates on live
 `container run` processes, and a test that spawned one would be an integration
 test against the host's container runtime. Its safety property — that a client
-with a live parent is never touched — is a `PPID == 1` guard stated in one
-line, and the function is best-effort by construction.
+with a live parent is never touched — is a `PPID == 1` guard stated in one line,
+and the function is best-effort by construction.

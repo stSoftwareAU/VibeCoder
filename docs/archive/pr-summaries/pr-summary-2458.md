@@ -23,8 +23,8 @@ What changed:
 - `skip_auto_merge` repositories raise the summary PR and leave it unarmed,
   exactly as the sweep already treats them.
 - The push-capable fleet logins are threaded through so an unprotected default
-  branch takes the #4375/#1082 gated direct merge rather than the outright
-  Issue #2416 refusal (the sweep already passes the same set).
+  branch takes the #4375/#1082 gated direct merge rather than the outright Issue
+  #2416 refusal (the sweep already passes the same set).
 - Arming sits **outside** the `gh pr create` try/catch: the PR exists from that
   point on, so an arming fault can never re-label a created PR as `failed`
   (which would suppress `onPrCreated` and leave the tracking issue open).
@@ -51,8 +51,8 @@ scripted-fake test suite and the full quality gate.
   `ghCommandFn` and asserting on the recorded `gh` argv and the log lines.
 - `deno test tests/milestone_summary_pr_auto_merge_test.ts tests/milestone_completion_test.ts tests/milestone_completion_cache_test.ts tests/pr_auto_merge_test.ts tests/auto_merge_sweep_test.ts`
   → **151 passed, 0 failed**.
-- `./quality.sh` → **PASSED** (only the environmental `config integration`
-  check skipped).
+- `./quality.sh` → **PASSED** (only the environmental `config integration` check
+  skipped).
 
 ## Reproduction
 
@@ -61,12 +61,15 @@ scripted-fake test suite and the full quality gate.
   picked it up, because `createMilestoneSummaryPr` never issued
   `gh pr merge --auto`
 - **status** — `verified` — with `worker/deno/lib/milestone_completion.ts`
-  stashed to its unfixed state, 4 of the 7 new tests failed (`… is armed before
-  the function returns`, `open children withhold …`, `a refused --auto call …`,
-  `an unreadable PR URL …`); all 7 pass after the fix. The fleet-logins
-  regression was verified the same way — removing the `fleetAuthors` forwarding
-  turns `an unprotected default branch takes the gated merge with the fleet
-  logins` red on its own.
+  stashed to its unfixed state, 4 of the 7 new tests failed
+  (`… is armed before
+  the function returns`, `open children withhold …`,
+  `a refused --auto call …`, `an unreadable PR URL …`); all 7 pass after the
+  fix. The fleet-logins regression was verified the same way — removing the
+  `fleetAuthors` forwarding turns
+  `an unprotected default branch takes the gated merge with the fleet
+  logins`
+  red on its own.
 - **regression test** —
   `worker/deno/tests/milestone_summary_pr_auto_merge_test.ts::summary PR arming - a created summary PR is armed before the function returns`
 
@@ -157,7 +160,7 @@ recorded rather than left silent:
 - **clean** — Australian English throughout the added code, docs and tests; no
   hidden or credential paths staged (`docs/MERGE.md`, three `worker/deno`
   sources, one new test file); no bare `catch {}` — the comment-post failure is
-  caught *and* named, and `finalisePr`'s `ok: false` is never read as armed; no
+  caught _and_ named, and `finalisePr`'s `ok: false` is never read as armed; no
   wall-clock sleeps or timing thresholds in the new tests, which all call real
   exports; the code change carries its docs change (`docs/MERGE.md`)
 
@@ -176,8 +179,8 @@ each driving the real `checkAndHandleMilestoneCompletions`):
   the warn log.
 - `skip_auto_merge repositories are never armed` — PR created, no `--auto`, no
   comment.
-- `an unreadable PR URL fails loud and arms nothing` — warn log, no `--auto`,
-  no comment.
+- `an unreadable PR URL fails loud and arms nothing` — warn log, no `--auto`, no
+  comment.
 - `an unprotected default branch takes the gated merge with the fleet logins` —
   no bare `--auto`, and no Issue #2416 refusal comment (red without the
   `fleetAuthors` forwarding).

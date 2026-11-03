@@ -17,10 +17,10 @@ reads.
 The Codex CLI is not installed in the worker's own container — a default image
 is Claude-only, and `AGENT_PROVIDERS="claude,codex"` is what puts both CLIs in
 one image — so the original rollout verification was a **source reading of
-0.147.0**, not captured live output. Source claims cite their files, so a version bump
-can re-check it in minutes. The opt-in `codex-budget` diagnostic is the live
-half: run it against a real `CODEX_HOME` and it prints what that credential's
-telemetry really contains.
+0.147.0**, not captured live output. Source claims cite their files, so a
+version bump can re-check it in minutes. The opt-in `codex-budget` diagnostic is
+the live half: run it against a real `CODEX_HOME` and it prints what that
+credential's telemetry really contains.
 
 ## The verified sources
 
@@ -122,15 +122,16 @@ returned or logged.
 
 Automatic routing reads `account/rateLimits/read` after the App Server
 `initialize` / `initialized` handshake. This is an account request with no model
-turn; see the [official App Server account API](https://learn.chatgpt.com/docs/app-server).
-It prefers the `codex` entry in `rateLimitsByLimitId`, or the single `rateLimits`
+turn; see the
+[official App Server account API](https://learn.chatgpt.com/docs/app-server). It
+prefers the `codex` entry in `rateLimitsByLimitId`, or the single `rateLimits`
 response when no map was returned. Another model's bucket cannot substitute for
 Codex's subscription. The shared parser accepts the API's `usedPercent`,
 `windowDurationMins` and `resetsAt` fields as well as rollout snake_case fields.
 
 The child receives the selected ChatGPT `CODEX_HOME` with API keys, other vendor
-credentials and GitHub tokens withheld. The probe has a ten-second deadline,
-a 512,000-byte response limit and cleans up its own child on every outcome.
+credentials and GitHub tokens withheld. The probe has a ten-second deadline, a
+512,000-byte response limit and cleans up its own child on every outcome.
 Malformed responses, RPC errors and timeouts remain unknown and expose no raw
 account error text. A failed live probe falls back to the passive observation
 with its original timestamp. A successful observation is cached for five minutes

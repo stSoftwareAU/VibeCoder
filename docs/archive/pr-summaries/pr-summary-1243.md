@@ -41,7 +41,8 @@ Closes #1243.
 Backend-only change — no web interface to screenshot. The evidence is the test
 suite and the quality gate.
 
-**Regression test, red then green.** `worker/deno/tests/idle_task_snapshot_test.ts::fileFindingOnce - files the finding when an outsider planted the finding-id marker`
+**Regression test, red then green.**
+`worker/deno/tests/idle_task_snapshot_test.ts::fileFindingOnce - files the finding when an outsider planted the finding-id marker`
 feeds an outsider-authored body carrying a known finding id through
 `fileFindingOnce()` and asserts the finding is still filed — exactly the failure
 detection the issue asked for. Observed failing against the unfixed
@@ -63,10 +64,10 @@ ok | 63 passed | 0 failed
 whose body contains `<!-- finding-id: BP-LINTER-typescript -->`, opened by any
 GitHub account. `listOpenIssueBodies` is the single read both consumers share,
 and every row it returns has passed `selectFleetAuthoredMatches`, so neither
-`findOpenIssueByFindingId` (pre-file skip) nor `listKnownOpenFindingIds`
-(prompt skip-list) can see an outsider's row at all. There is no second path to
-the marker: the regex, the prefix filter and the truncation warning all operate
-on the already-filtered list, the `logLabel` and `idPrefix` arguments narrow the
+`findOpenIssueByFindingId` (pre-file skip) nor `listKnownOpenFindingIds` (prompt
+skip-list) can see an outsider's row at all. There is no second path to the
+marker: the regex, the prefix filter and the truncation warning all operate on
+the already-filtered list, the `logLabel` and `idPrefix` arguments narrow the
 set further rather than widening it, and an unresolvable fleet author set
 discards **every** row rather than falling back to trusting the body. Spoofing
 the author is not open to an outsider — `author.login` comes from GitHub's own
@@ -87,12 +88,12 @@ Added to `worker/deno/tests/idle_task_snapshot_test.ts`:
   — returns `null` and logs `authored outside the fleet`.
 - `findOpenIssueByFindingId - still matches a fleet-authored marker` — the
   legitimate dedup still works.
-- `listKnownOpenFindingIds - drops outsider-authored ids from the skip-list`
-  — a planted id never reaches `{{KNOWN_OPEN_FINDING_IDS}}`.
-- `listKnownOpenFindingIds - an unresolvable fleet author set drops every id`
-  — the fail-towards-filing direction, with the loud log.
-- `listKnownOpenFindingIds - requests the author field from gh` — the query
-  asks for `number,body,author`.
+- `listKnownOpenFindingIds - drops outsider-authored ids from the skip-list` — a
+  planted id never reaches `{{KNOWN_OPEN_FINDING_IDS}}`.
+- `listKnownOpenFindingIds - an unresolvable fleet author set drops every id` —
+  the fail-towards-filing direction, with the loud log.
+- `listKnownOpenFindingIds - requests the author field from gh` — the query asks
+  for `number,body,author`.
 
 **Existing tests modified, not removed** (business-logic change, documented per
 the TDD standard): every fixture that asserts dedup now attributes its

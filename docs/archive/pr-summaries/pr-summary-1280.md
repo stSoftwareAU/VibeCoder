@@ -58,8 +58,8 @@ flowchart LR
 
 ## Evidence
 
-Backend/CLI change with no web interface, so there is nothing to screenshot.
-The evidence is test output plus the gate.
+Backend/CLI change with no web interface, so there is nothing to screenshot. The
+evidence is test output plus the gate.
 
 **The regression test observed red against the unfixed code.** Before the entry
 points were patched, the production-tree scan named exactly the five leaking
@@ -78,10 +78,11 @@ FAILED | 7 passed | 1 failed (203ms)
 ```
 
 The token test was verified the same way: with the install removed from
-`printGateOutput`, `printGateOutput - masks a token echoed by a check into the
-transcript` and `printGateOutput - masks an exported token in a check's stderr`
-both fail (`FAILED | 1 passed | 2 failed`); with the fix in place all three
-pass.
+`printGateOutput`,
+`printGateOutput - masks a token echoed by a check into the
+transcript` and
+`printGateOutput - masks an exported token in a check's stderr` both fail
+(`FAILED | 1 passed | 2 failed`); with the fix in place all three pass.
 
 After the fix:
 
@@ -93,9 +94,9 @@ Full gate (`./quality.sh`) — `Result: PASSED (with skipped checks)`, with the
 new check reporting alongside the existing chokepoint checks:
 
 ```text
-  gh spawn chokepoint            PASSED
-  issue-create label guard       PASSED
-  console redaction entry points PASSED
+gh spawn chokepoint            PASSED
+issue-create label guard       PASSED
+console redaction entry points PASSED
 ```
 
 ### Original trigger closed, no trivial bypass
@@ -107,10 +108,10 @@ lines (`quality.ts`), the gate-error `console.error`, and the
 `quality_gate.ts:1309`/`:1385` diagnostics are all covered; `printGateOutput()`
 installs it again before printing the transcript and summary. The patch wraps
 every string argument to `console.log/info/warn/error/debug/trace`, so no
-`console.*` spelling in this process escapes it. The equivalent bypass —
-adding a sixth entry point, or a new module with an `import.meta.main` guard,
-that prints without installing the patch — is what the new gate check refuses:
-it scans all production `.ts` under `worker/deno`, matches the guard on
+`console.*` spelling in this process escapes it. The equivalent bypass — adding
+a sixth entry point, or a new module with an `import.meta.main` guard, that
+prints without installing the patch — is what the new gate check refuses: it
+scans all production `.ts` under `worker/deno`, matches the guard on
 comment-stripped source (so a commented-out install does not satisfy it), and
 fails the build. Redaction itself remains the existing conservative
 `redactSecrets()` chokepoint, so ordinary gate output is unchanged — asserted by
@@ -145,8 +146,8 @@ real `quality.ts` print path with a capture sink swapped in ahead of the patch:
   known-shaped fake token (`ghp_…` inside a clone URL) in a check's captured
   output is absent from what the entry point prints, and the placeholder is
   present. Fails against the unfixed code, passes after the fix.
-- `::printGateOutput - masks an exported token in a check's stderr` — the
-  shape a shell trace leaves behind when a step exports an Anthropic API key.
+- `::printGateOutput - masks an exported token in a check's stderr` — the shape
+  a shell trace leaves behind when a step exports an Anthropic API key.
 - `::printGateOutput - prints the summary and skips an empty transcript` — the
   surrounding transcript is untouched, so redaction stays targeted.
 

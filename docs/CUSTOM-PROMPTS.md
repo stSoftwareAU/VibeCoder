@@ -1,23 +1,22 @@
 # ✍️ Custom Label Prompts — the operator-side extension point
 
 Map a GitHub label to a **prompt template that lives outside this repository**,
-so a deployment can run its own instructions without publishing them and
-without forking. Add the file, add the mapping, apply the label — the Vibe
-Coder runs your prompt against the labelled work. A mapping's `target_phase`
-decides what "the labelled work" is: an **issue** by default, or an open
-**pull request** with `"target_phase": "pr"`.
+so a deployment can run its own instructions without publishing them and without
+forking. Add the file, add the mapping, apply the label — the Vibe Coder runs
+your prompt against the labelled work. A mapping's `target_phase` decides what
+"the labelled work" is: an **issue** by default, or an open **pull request**
+with `"target_phase": "pr"`.
 
 The governing rule is the one [Private Extensions](PRIVATE-EXTENSIONS.md)
 states:
 
-> **Core provides extension points. It never learns what is plugged into
-> them.**
+> **Core provides extension points. It never learns what is plugged into them.**
 
 This page is the **operator guide** to that extension point: what it is, a
-worked example you can follow verbatim, the contract a prompt file must
-satisfy, and the exact symptom of every way it can fail. It states only as much
-of the `.config.json` key as the example needs — the field-by-field reference,
-and the full semantics of dispatch and override, live in
+worked example you can follow verbatim, the contract a prompt file must satisfy,
+and the exact symptom of every way it can fail. It states only as much of the
+`.config.json` key as the example needs — the field-by-field reference, and the
+full semantics of dispatch and override, live in
 [Configuration — Custom Label Prompts](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts).
 
 ## 📋 Table of Contents
@@ -36,21 +35,20 @@ and the full semantics of dispatch and override, live in
 
 ## 🧩 What this extension point is
 
-Three extension points share one posture — the operator supplies the
-behaviour, core stays incurious about it — and differ only in the surface they
-expose:
+Three extension points share one posture — the operator supplies the behaviour,
+core stays incurious about it — and differ only in the surface they expose:
 
-| Extension point | Surface | What core knows about it |
-| --- | --- | --- |
-| [Post-run callbacks](CALLBACKS.md) | A **hook** — an executable run after a terminal issue run | The versioned context it passes, and nothing about what the hook does with it |
-| [`CiLogProvider`](EXTENDING.md#-adding-a-ci-log-provider) | A **provider** that fetches a CI log excerpt for the `ci_fix` prompt | The interface, not the CI system behind it |
-| `custom_label_prompts` (this page) | An **operator-side prompt template**, keyed by a GitHub label | The path you configured — never the contents |
+| Extension point                                           | Surface                                                              | What core knows about it                                                      |
+| --------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| [Post-run callbacks](CALLBACKS.md)                        | A **hook** — an executable run after a terminal issue run            | The versioned context it passes, and nothing about what the hook does with it |
+| [`CiLogProvider`](EXTENDING.md#-adding-a-ci-log-provider) | A **provider** that fetches a CI log excerpt for the `ci_fix` prompt | The interface, not the CI system behind it                                    |
+| `custom_label_prompts` (this page)                        | An **operator-side prompt template**, keyed by a GitHub label        | The path you configured — never the contents                                  |
 
-Reach for a custom label prompt when the *instructions* are the private part:
-a house release runbook, a compliance checklist, an internal migration
-procedure — work you want the Vibe Coder to do, written in a prompt you are not
-willing to publish. It is configuration-only: no fork, no code in this
-repository, and nothing about your prompt ever appears here.
+Reach for a custom label prompt when the _instructions_ are the private part: a
+house release runbook, a compliance checklist, an internal migration procedure —
+work you want the Vibe Coder to do, written in a prompt you are not willing to
+publish. It is configuration-only: no fork, no code in this repository, and
+nothing about your prompt ever appears here.
 
 A mapping does one of two things, decided by whether its `label` matches a
 built-in one — and a new label additionally chooses the phase it runs in:
@@ -85,12 +83,12 @@ flowchart TD
   [Configuration — How a `pr`-phase custom label dispatches](CONFIGURATION.md#how-a-pr-phase-custom-label-dispatches-issue-1011).
 - **A built-in label overrides that phase's template.** A mapping naming
   `planning`, `question`, `grill-me`, `quorum` or `work-on` (which owns the
-  implementation phase, and so covers `top-priority` and `low-priority`
-  pickups too) replaces that phase's template and nothing else — the handler,
-  the priority and the trust gate are unchanged. Match the label names **your
-  fleet configured**: a fleet that renamed `planning` to `plan-it` overrides
-  the planning phase with a `plan-it` mapping. `refine-issue` builds its
-  prompt inline and cannot be overridden.
+  implementation phase, and so covers `top-priority` and `low-priority` pickups
+  too) replaces that phase's template and nothing else — the handler, the
+  priority and the trust gate are unchanged. Match the label names **your fleet
+  configured**: a fleet that renamed `planning` to `plan-it` overrides the
+  planning phase with a `plan-it` mapping. `refine-issue` builds its prompt
+  inline and cannot be overridden.
 
 The full semantics of both live in
 [Configuration — Custom Label Prompts](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts).
@@ -122,12 +120,12 @@ inside `repo_config`. Copy this:
 
 - **`label`** — the GitHub label that dispatches, or the built-in label whose
   template this entry overrides.
-- **`prompt_path`** — an **absolute host path**, free of `.` and `..`
-  segments, naming a file that exists and is readable at config load.
+- **`prompt_path`** — an **absolute host path**, free of `.` and `..` segments,
+  naming a file that exists and is readable at config load.
 - **`phase`** (optional) — only on an override, and only where the label owns
   more than one template: `planning_critique` for a `planning` mapping,
-  `quorum_judge` for a `quorum` one. Omitted, the mapping overrides the
-  label's first-turn template.
+  `quorum_judge` for a `quorum` one. Omitted, the mapping overrides the label's
+  first-turn template.
 
 The default is an empty list: a deployment that configures nothing behaves
 exactly as it does today.
@@ -195,10 +193,10 @@ does that, ahead of your template. See
 
 ### 4. Restart the worker
 
-Configuration is read at launch and the container mounts are derived from it,
-so an added mapping takes effect on the **next** launch — restart the service,
-or let the supervising loop start its next cycle. Restarting is also the fast
-check that the mapping is well formed: a malformed entry, or an unreadable
+Configuration is read at launch and the container mounts are derived from it, so
+an added mapping takes effect on the **next** launch — restart the service, or
+let the supervising loop start its next cycle. Restarting is also the fast check
+that the mapping is well formed: a malformed entry, or an unreadable
 `prompt_path`, fails config load loudly and names the offending entry and field
 rather than starting a worker whose extension silently never dispatches.
 
@@ -208,8 +206,8 @@ rather than starting a worker whose extension silently never dispatches.
 gh issue edit 42 --repo my-org/my-service --add-label "release-runbook"
 ```
 
-The account **adding the label** must be on the `allowed_authors` allowlist —
-a trusted issue *author* is not sufficient. See
+The account **adding the label** must be on the `allowed_authors` allowlist — a
+trusted issue _author_ is not sufficient. See
 [Trust — who may add the label](#-trust--who-may-add-the-label).
 
 ### 6. Observe the run
@@ -229,9 +227,9 @@ configured — see [Container operation](#-container-operation). A read outside
 the container translates nothing and names `/opt/vibe-prompts/…` instead.
 
 From there the run is an ordinary implementation run: branch, commits, quality
-gate, PR. A line reading `Issue prompt template: prompts/issue/prompt.md`
-means the built-in template ran — the mapping did not dispatch, and the log
-above it says why.
+gate, PR. A line reading `Issue prompt template: prompts/issue/prompt.md` means
+the built-in template ran — the mapping did not dispatch, and the log above it
+says why.
 
 ```mermaid
 sequenceDiagram
@@ -249,9 +247,9 @@ sequenceDiagram
 
 ## 🧷 The placeholders a prompt must carry
 
-A template is validated against the placeholder contract of the phase it
-serves. Anything it names that the phase does not substitute fails the build
-loudly rather than reaching the agent half-rendered:
+A template is validated against the placeholder contract of the phase it serves.
+Anything it names that the phase does not substitute fails the build loudly
+rather than reaching the agent half-rendered:
 
 ```text
 Prompt template has unsubstituted placeholder(s): {{DEPLOY_TARGET}}
@@ -259,15 +257,15 @@ Prompt template has unsubstituted placeholder(s): {{DEPLOY_TARGET}}
 
 ### A new custom label — `issue` phase (the default)
 
-An `issue`-phase label runs the generic implementation phase, so its template
-is an `issue` template:
+An `issue`-phase label runs the generic implementation phase, so its template is
+an `issue` template:
 
-| Placeholder | Required | What it carries |
-| --- | --- | --- |
-| `{{ISSUE_NUMBER}}` | ✅ | The issue being worked |
-| `{{QUALITY_INSTRUCTIONS}}` | ✅ | The repository's quality-gate commands |
-| `{{REPO}}` | optional | `owner/repo` |
-| `{{VERBOSITY_INSTRUCTIONS}}` | optional | The configured response-verbosity block |
+| Placeholder                       | Required | What it carries                                                                                            |
+| --------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `{{ISSUE_NUMBER}}`                | ✅       | The issue being worked                                                                                     |
+| `{{QUALITY_INSTRUCTIONS}}`        | ✅       | The repository's quality-gate commands                                                                     |
+| `{{REPO}}`                        | optional | `owner/repo`                                                                                               |
+| `{{VERBOSITY_INSTRUCTIONS}}`      | optional | The configured response-verbosity block                                                                    |
 | `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` | optional | The advisor/executor block on a run with `issue_executor_split` on (Issue #2343); empty on every other run |
 
 ### A new custom label — `pr` phase
@@ -276,10 +274,10 @@ A `pr`-phase label runs against a pull request, so its template answers to the
 `pr_feedback` contract instead. Writing an `{{ISSUE_NUMBER}}` template here is
 refused with both the phase and the template type named:
 
-| Placeholder | Required | What it carries |
-| --- | --- | --- |
-| `{{PR_NUMBER}}` | ✅ | The pull request being worked |
-| `{{QUALITY_INSTRUCTIONS}}` | ✅ | The repository's quality-gate commands |
+| Placeholder                  | Required | What it carries                         |
+| ---------------------------- | -------- | --------------------------------------- |
+| `{{PR_NUMBER}}`              | ✅       | The pull request being worked           |
+| `{{QUALITY_INSTRUCTIONS}}`   | ✅       | The repository's quality-gate commands  |
 | `{{VERBOSITY_INSTRUCTIONS}}` | optional | The configured response-verbosity block |
 
 ### An override of a built-in label
@@ -288,14 +286,14 @@ An override answers to the contract of the phase it replaces — not to the
 `issue` one — and that is checked **at config load**, with the phase and the
 missing placeholders named:
 
-| Phase | Required placeholders |
-| --- | --- |
-| `issue` (the implementation phase) | `ISSUE_NUMBER`, `QUALITY_INSTRUCTIONS` |
-| `planning`, `planning_critique` | `REPO`, `ISSUE_NUMBER`, `PLANNING_LABEL` |
-| `question` | `REPO`, `ISSUE_NUMBER`, `QUESTION_LABEL` |
-| `grill-me` | `REPO`, `ISSUE_NUMBER`, `ISSUE_TITLE`, `ISSUE_BODY`, `COMMENT_HISTORY`, `ROUND_NUMBER`, `MAX_ROUNDS`, `BOUNDARY_INTEGRITY_INSTRUCTION` |
-| `quorum` | `REPO`, `ISSUE_NUMBER`, `ISSUE_TITLE`, `ISSUE_LABELS`, `ISSUE_BODY`, `ISSUE_COMMENTS`, `BOUNDARY_INTEGRITY_INSTRUCTION` |
-| `quorum_judge` | The `quorum` set, plus `PLAN_A` and `PLAN_B` |
+| Phase                              | Required placeholders                                                                                                                  |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `issue` (the implementation phase) | `ISSUE_NUMBER`, `QUALITY_INSTRUCTIONS`                                                                                                 |
+| `planning`, `planning_critique`    | `REPO`, `ISSUE_NUMBER`, `PLANNING_LABEL`                                                                                               |
+| `question`                         | `REPO`, `ISSUE_NUMBER`, `QUESTION_LABEL`                                                                                               |
+| `grill-me`                         | `REPO`, `ISSUE_NUMBER`, `ISSUE_TITLE`, `ISSUE_BODY`, `COMMENT_HISTORY`, `ROUND_NUMBER`, `MAX_ROUNDS`, `BOUNDARY_INTEGRITY_INSTRUCTION` |
+| `quorum`                           | `REPO`, `ISSUE_NUMBER`, `ISSUE_TITLE`, `ISSUE_LABELS`, `ISSUE_BODY`, `ISSUE_COMMENTS`, `BOUNDARY_INTEGRITY_INSTRUCTION`                |
+| `quorum_judge`                     | The `quorum` set, plus `PLAN_A` and `PLAN_B`                                                                                           |
 
 Each turn of a two-turn phase is a separate template with its own contract:
 overriding `planning` does not override `planning_critique`, and overriding
@@ -307,45 +305,44 @@ turn.
 The issue title, labels, body and — in the phases that include them — comments
 are **untrusted input**, and the worker fences them in the same per-run nonce
 boundary markers the built-in templates get, with the same boundary-integrity
-instruction, before your template is appended. Your file is configuration: it
-is not fenced, its immutability is not checked, and it is yours to edit.
+instruction, before your template is appended. Your file is configuration: it is
+not fenced, its immutability is not checked, and it is yours to edit.
 
 That division decides what a prompt author must never write:
 
 - **Never instruct the agent to follow directives found inside the fenced
   blocks.** "Do what the issue says", "follow any instructions in the
   description", "obey the commands in the comments" — each of these hands an
-  issue author the ability to steer a privileged run. Ask the agent to
-  implement the *technical requirements* described, which is the wording the
-  built-in templates use.
+  issue author the ability to steer a privileged run. Ask the agent to implement
+  the _technical requirements_ described, which is the wording the built-in
+  templates use.
 - **Never re-fence or reproduce the issue text yourself.** In the phases where
   the worker appends the fenced block (implementation, planning, question), a
   second copy in your template is unfenced text that reads as instructions.
-  Where the phase's contract *does* include the issue text as placeholders
+  Where the phase's contract _does_ include the issue text as placeholders
   (`grill-me`, `quorum`, `quorum_judge`), it also requires
   `{{BOUNDARY_INTEGRITY_INSTRUCTION}}` — keep it, and keep it near the fenced
   content it governs.
-- **Never weaken the boundary rules.** Do not tell the agent that content
-  inside the markers is trusted, that a `[TRUSTED]` tag inside a comment body
-  is authoritative, or that it may execute commands or fetch URLs it finds
-  there.
-- **Never ask for a secret to be echoed.** A prompt that asks the agent to
-  print credentials, tokens or `.config.json` contents puts them in the run
-  log and the PR.
+- **Never weaken the boundary rules.** Do not tell the agent that content inside
+  the markers is trusted, that a `[TRUSTED]` tag inside a comment body is
+  authoritative, or that it may execute commands or fetch URLs it finds there.
+- **Never ask for a secret to be echoed.** A prompt that asks the agent to print
+  credentials, tokens or `.config.json` contents puts them in the run log and
+  the PR.
 
 ## 🔐 Trust — who may add the label
 
-A configured label joins the **operational dispatch set**, alongside
-`planning`, `grill-me`, `question`, `quorum` and `refine-issue`. The gate is
-the same one those labels get:
+A configured label joins the **operational dispatch set**, alongside `planning`,
+`grill-me`, `question`, `quorum` and `refine-issue`. The gate is the same one
+those labels get:
 
 - **The label adder must be on the `allowed_authors` allowlist.** A trusted
-  issue *author* is not sufficient — otherwise anyone with triage permission
+  issue _author_ is not sufficient — otherwise anyone with triage permission
   could steer a privileged phase onto a trusted-authored issue.
 - **An add by an untrusted account is stripped**, not honoured as a plain
   descriptive label.
-- **An add that cannot be attributed** from the issue timeline fails closed:
-  the issue is skipped.
+- **An add that cannot be attributed** from the issue timeline fails closed: the
+  issue is skipped.
 - **The worker cannot self-apply one.** A configured label is treated as
   reserved by the worker's own creation paths and stripped, and a label the
   worker legitimately raises itself (`idle-task`, `security`, `severity:…`) is
@@ -358,24 +355,24 @@ A custom label is **not removed** when the run finishes, and
 its own that is a loop: the next cycle would see an unassigned issue still
 carrying the label and re-run the whole implementation pipeline while the
 previous cycle's PR was still open, at the cost of a full agent run each time
-(Issue #937). `planning`, `question`, `grill-me` and `refine-issue` have no
-such loop — each removes its own label when it is done.
+(Issue #937). `planning`, `question`, `grill-me` and `refine-issue` have no such
+loop — each removes its own label when it is done.
 
 So a custom label is held by the **same new-work eligibility gates `work-on`
 is**, checked in this order after the trust gate above:
 
-| Gate | The issue is skipped when |
-| --- | --- |
-| Blocking label | It carries `needs-human`, `needs-revision`, `refine-issue`, `planning` or `question`, or it is a milestone-tracking issue. A leftover `failed` label is stripped first and never blocks (Issue #4158). |
-| Retry cooldown | This host recently failed on it, or has already worked it this run. |
-| Milestone occupancy | Another fleet account already holds an issue in the same milestone. |
+| Gate                | The issue is skipped when                                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Blocking label      | It carries `needs-human`, `needs-revision`, `refine-issue`, `planning` or `question`, or it is a milestone-tracking issue. A leftover `failed` label is stripped first and never blocks (Issue #4158).       |
+| Retry cooldown      | This host recently failed on it, or has already worked it this run.                                                                                                                                          |
+| Milestone occupancy | Another fleet account already holds an issue in the same milestone.                                                                                                                                          |
 | Closed or merged PR | A fleet PR for this issue closed inside `closed_pr_cooldown_seconds` (default one hour), or merged at any time in the past. A trusted re-add of the custom label dated **after** the PR closed lifts either. |
-| Open PR | A fleet PR is open against the issue's work stream. Add `ignore-open-prs` from an allowlisted account to override. |
-| Dependency | The issue names an open dependency, or has an open sub-issue, or its sub-issues cannot be read. |
+| Open PR             | A fleet PR is open against the issue's work stream. Add `ignore-open-prs` from an allowlisted account to override.                                                                                           |
+| Dependency          | The issue names an open dependency, or has an open sub-issue, or its sub-issues cannot be read.                                                                                                              |
 
 A run that produces no work also puts the issue into the retry cooldown, so a
-persistently failing custom-labelled issue backs off instead of burning an
-agent run every cycle.
+persistently failing custom-labelled issue backs off instead of burning an agent
+run every cycle.
 
 **Overrides are unaffected.** A mapping that names a built-in label replaces
 that phase's template and nothing else — the handler's own gating is whatever
@@ -383,16 +380,16 @@ that phase always had.
 
 ## 📦 Container operation
 
-The worker runs containerised, and the container sees the workspace rather
-than the host — so a prompt on the host would be unreadable at dispatch
-without a mount. The launcher derives the narrowest one that works:
+The worker runs containerised, and the container sees the workspace rather than
+the host — so a prompt on the host would be unreadable at dispatch without a
+mount. The launcher derives the narrowest one that works:
 
-| What is mounted | Where | Mode |
-| --- | --- | --- |
+| What is mounted                                                             | Where                                       | Mode |
+| --------------------------------------------------------------------------- | ------------------------------------------- | ---- |
 | The **containing directory** of each configured `prompt_path`, deduplicated | `/home/vibe/.vibe-coder/custom-prompts/<n>` | `ro` |
 
-- **The directory, not the file** — Apple `container` cannot bind a single
-  file. Everything beside your prompt in that directory is readable inside the
+- **The directory, not the file** — Apple `container` cannot bind a single file.
+  Everything beside your prompt in that directory is readable inside the
   container, which is why the worked example puts them in a directory of their
   own.
 - **Read-only, always.** Nothing inside the container has any business editing
@@ -404,15 +401,14 @@ without a mount. The launcher derives the narrowest one that works:
 - **Refused paths fail the launch, loudly.** Every source goes through the same
   containment allowlist as any other mount. The host home directory or an
   ancestor of it, the filesystem root, a runtime control socket, a relative
-  path, a path carrying a `.` or `..` segment, and a path that resolves
-  (through a symlink) to somewhere other than itself are all refused — the
-  launch fails naming the path rather than starting a container without the
-  mount.
+  path, a path carrying a `.` or `..` segment, and a path that resolves (through
+  a symlink) to somewhere other than itself are all refused — the launch fails
+  naming the path rather than starting a container without the mount.
 - **Nothing configured, nothing added.** With no mappings there is no mount and
   no environment variable; the plan is byte-identical to what it was before.
 
-See [Containment — the mount set](CONTAINMENT.md#the-mount-set) for the
-boundary this addition sits inside.
+See [Containment — the mount set](CONTAINMENT.md#the-mount-set) for the boundary
+this addition sits inside.
 
 ## 🗂️ No versioning convention
 
@@ -432,20 +428,20 @@ Every fault is loud. Nothing here is warned about and defaulted, because a
 silently dropped mapping leaves an operator believing their extension is live
 when it never dispatched.
 
-| Fault | When it is caught | Symptom |
-| --- | --- | --- |
-| `prompt_path` missing, unreadable, or not absolute | Config load | The worker refuses to start, naming `custom_label_prompts[<n>].prompt_path` and the underlying error |
-| `prompt_path` carries a `.` or `..` segment | Config load | Refused by field, naming the path — the mount it would derive is not the path the allowlist checked |
-| An override template short of a required placeholder | Config load | Refused by field, naming the phase and the missing placeholders |
-| `label` is a reserved or discovery label that is not a built-in phase label (`top-priority`, `low-priority`, …) | Config load | `"<label>" is a reserved or discovery label and cannot be remapped` |
-| `label` is `refine-issue` | Config load | Refused by name: that phase builds its prompt inline and has no template file to override |
-| `label` is one the worker applies itself (`idle-task`, `security`, `severity:…`) | Config load | `"<label>" is a label the worker applies itself and cannot be remapped` |
-| Two entries claiming the same label, or the same phase of one label | Config load | Refused as a duplicate, naming the earlier entry's index |
-| An unknown key in an entry | Config load | Refused, naming the key and listing `label`, `prompt_path`, `phase` |
-| A prompt path the containment allowlist refuses, or one that resolves elsewhere | Container launch | `Refusing to launch: the custom prompt path … ` — the launch fails; no container starts |
-| The file is deleted, emptied or made invalid **between** config load and dispatch | Dispatch | `Refusing to dispatch <repo>#<n> for custom label '<label>': …` — the run fails; the built-in `issue` template is never substituted and the issue is never silently skipped |
-| A new label's template short of `{{ISSUE_NUMBER}}` or `{{QUALITY_INSTRUCTIONS}}` | Dispatch | The same refusal, naming the file and the missing placeholders |
-| A placeholder the phase does not substitute | Prompt build | `Prompt template has unsubstituted placeholder(s): {{…}}` |
+| Fault                                                                                                           | When it is caught | Symptom                                                                                                                                                                     |
+| --------------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt_path` missing, unreadable, or not absolute                                                              | Config load       | The worker refuses to start, naming `custom_label_prompts[<n>].prompt_path` and the underlying error                                                                        |
+| `prompt_path` carries a `.` or `..` segment                                                                     | Config load       | Refused by field, naming the path — the mount it would derive is not the path the allowlist checked                                                                         |
+| An override template short of a required placeholder                                                            | Config load       | Refused by field, naming the phase and the missing placeholders                                                                                                             |
+| `label` is a reserved or discovery label that is not a built-in phase label (`top-priority`, `low-priority`, …) | Config load       | `"<label>" is a reserved or discovery label and cannot be remapped`                                                                                                         |
+| `label` is `refine-issue`                                                                                       | Config load       | Refused by name: that phase builds its prompt inline and has no template file to override                                                                                   |
+| `label` is one the worker applies itself (`idle-task`, `security`, `severity:…`)                                | Config load       | `"<label>" is a label the worker applies itself and cannot be remapped`                                                                                                     |
+| Two entries claiming the same label, or the same phase of one label                                             | Config load       | Refused as a duplicate, naming the earlier entry's index                                                                                                                    |
+| An unknown key in an entry                                                                                      | Config load       | Refused, naming the key and listing `label`, `prompt_path`, `phase`                                                                                                         |
+| A prompt path the containment allowlist refuses, or one that resolves elsewhere                                 | Container launch  | `Refusing to launch: the custom prompt path …` — the launch fails; no container starts                                                                                      |
+| The file is deleted, emptied or made invalid **between** config load and dispatch                               | Dispatch          | `Refusing to dispatch <repo>#<n> for custom label '<label>': …` — the run fails; the built-in `issue` template is never substituted and the issue is never silently skipped |
+| A new label's template short of `{{ISSUE_NUMBER}}` or `{{QUALITY_INSTRUCTIONS}}`                                | Dispatch          | The same refusal, naming the file and the missing placeholders                                                                                                              |
+| A placeholder the phase does not substitute                                                                     | Prompt build      | `Prompt template has unsubstituted placeholder(s): {{…}}`                                                                                                                   |
 
 A broken mapping never starves the others: the remaining configured labels are
 still scanned, each fault is logged as an error naming its label and path, and
@@ -474,10 +470,10 @@ Two rules make that safe:
 - **Deploy the resolved path.** A symlinked `prompt_path` fails the container
   launch — the directory the runtime would mount is not the one the allowlist
   checked. Copy the files into place rather than linking to them.
-- **Restart to pick up a new mapping.** Editing a prompt file's *contents*
-  takes effect on the next run that loads it (and invalidates the prompt
-  cache); adding, removing or re-pointing a **mapping** changes
-  `.config.json`, and that is read at launch.
+- **Restart to pick up a new mapping.** Editing a prompt file's _contents_ takes
+  effect on the next run that loads it (and invalidates the prompt cache);
+  adding, removing or re-pointing a **mapping** changes `.config.json`, and that
+  is read at launch.
 
 ---
 

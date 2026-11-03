@@ -3,10 +3,11 @@
 ## Summary
 
 Every disk problem on GRQ-23 was invisible until the host hit 95 %: the only
-per-launch signal was the launcher's `container-store:` line, `work-volume-prune`
-(#228) logs what it *removed*, `work-volume-tiers` (#242) logs the split only
-when it runs, and the host-disk monitor (#226) reports free space — not where it
-went. The worker log said nothing about what the volume still held.
+per-launch signal was the launcher's `container-store:` line,
+`work-volume-prune` (#228) logs what it _removed_, `work-volume-tiers` (#242)
+logs the split only when it runs, and the host-disk monitor (#226) reports free
+space — not where it went. The worker log said nothing about what the volume
+still held.
 
 A new `worker/deno/lib/work_volume_usage.ts` measures what **remains** and
 formats it as one line, logged at cycle start beside the `Concurrency:` line and
@@ -21,7 +22,7 @@ Work volume: total 18.4 GB — monitored repos 2.1 GB (15) · side/data clones 1
   `.gh-*-cache`, `.claude-*`), other (reserved names, remaining state
   directories, state files). Those four disjoint buckets sum to the total.
 - **Build artefacts are a cross-cut, not a fifth bucket.** A `target/` dir (the
-  same discovery #228 uses) lives *inside* a clone, so its bytes are already
+  same discovery #228 uses) lives _inside_ a clone, so its bytes are already
   counted there; naming it says which clone the space is in.
 - **Top 3 named inline** for side/data clones and artefact dirs, so the log line
   alone says where the space went.
@@ -105,15 +106,15 @@ New — `worker/deno/tests/work_volume_usage_test.ts` (15):
   unreadable work root reports an error instead of an empty volume; the walk
   stops at the budget and states measured/skipped counts (injected clock).
 - `formatWorkVolumeUsage` — the exact one-line format with the top offenders and
-  the `…` overflow marker; an empty volume with a caller-supplied label; a single
-  artefact dir without a plural or an ellipsis.
+  the `…` overflow marker; an empty volume with a caller-supplied label; a
+  single artefact dir without a plural or an ellipsis.
 - `reportWorkVolumeUsage` — refuses to publish a split with no monitored list;
   scans and formats with one.
 
 New — `worker/deno/tests/work_volume_prune_command_test.ts` (4): an idle run
-reports the standing totals once with no "after" line; a reclamation reports both
-before and after (and the after line no longer names the removed target); no
-monitored repositories refuses the split; an invalid knob is still rejected
+reports the standing totals once with no "after" line; a reclamation reports
+both before and after (and the after line no longer names the removed target);
+no monitored repositories refuses the split; an invalid knob is still rejected
 before anything is measured.
 
 New — `worker/deno/tests/run_core_work_volume_usage_test.ts` (4): the line is

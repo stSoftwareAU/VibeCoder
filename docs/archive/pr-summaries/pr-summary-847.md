@@ -4,7 +4,7 @@ Extends the operational-dispatch trust gate to operator-configured
 `custom_label_prompts` labels. A custom label dispatches a privileged automation
 phase with an operator-supplied prompt, so it now sits in the same AND-gated set
 as `planning` and `grill-me`: the label **adder** must be on the trusted-author
-allowlist, a trusted issue *author* is not sufficient, and an add that cannot be
+allowlist, a trusted issue _author_ is not sufficient, and an add that cannot be
 attributed fails closed. Landing this ahead of dispatch (#848) means no release
 ever ships custom-label dispatch ungated. Closes #847.
 
@@ -15,10 +15,10 @@ What changed:
   `findIssuesByLabel`'s `strictLabelAdderCheck` demands
   `wasLabelAddedByAllowedAuthor` — which returns false when no `labeled` event
   attributes the add.
-- `isOperationalLabel` / `verifyOperationalLabels` take the config-driven labels,
-  and all four discovery collectors pass them, so an untrusted actor's custom
-  label is stripped rather than surviving as a plain descriptive label. Custom
-  labels are never blocking-only, so an unverifiable adder fails closed.
+- `isOperationalLabel` / `verifyOperationalLabels` take the config-driven
+  labels, and all four discovery collectors pass them, so an untrusted actor's
+  custom label is stripped rather than surviving as a plain descriptive label.
+  Custom labels are never blocking-only, so an unverifiable adder fails closed.
 - The creation-time reserved-label filters (`filterReservedLabels`,
   `filterReservedLabelsWithWarning`, `createGitHubIssuesWithPartialFailures`)
   treat configured custom labels as reserved, so the worker's own creation paths
@@ -55,9 +55,9 @@ changes stashed and the new tests in place, `deno test --no-check` over the five
 touched suites reported `FAILED | 134 passed | 12 failed`; with the fix applied
 the same suites report `0 failed`. The named regression test is
 `worker/deno/tests/issue_finder_test.ts::issue_finder - findIssuesByLabel skips
-a custom-label issue when the label adder is untrusted (Issue #847)` — it
-reproduces the flaw (a custom label applied by a non-allowlisted account on a
-trusted-authored issue was dispatched), fails against the unfixed code, and
+a custom-label issue when the label adder is untrusted (Issue #847)`
+— it reproduces the flaw (a custom label applied by a non-allowlisted account on
+a trusted-authored issue was dispatched), fails against the unfixed code, and
 passes after the fix.
 
 **Original trigger is closed, with no trivial bypass.** The attack input — an
@@ -101,7 +101,7 @@ flowchart LR
 - **met** — an issue carrying a custom label added by an allowlisted account is
   selected for dispatch — evidence:
   `worker/deno/tests/issue_finder_test.ts::issue_finder - findIssuesByLabel surfaces a custom-label issue when a trusted author added the label (Issue #847)`
-  — reviewer: met — reason: the reviewer noted the pre-existing case-*sensitive*
+  — reviewer: met — reason: the reviewer noted the pre-existing case-_sensitive_
   timeline match in `issue_query.ts` (`e.label?.name === labelName`) means a
   mapping whose case differs from the repo's label is skipped rather than
   dispatched; that mechanism is shared with `planning` and is fail-closed, so it
@@ -112,8 +112,9 @@ flowchart LR
   and
   `worker/deno/tests/label_security_test.ts::label_security - a custom label with no attributable adder fails closed (Issue #847)`
   — reviewer: met
-- **met** — with no `custom_label_prompts` configured `operationalDispatchLabels`
-  returns exactly the six labels it returns today — evidence:
+- **met** — with no `custom_label_prompts` configured
+  `operationalDispatchLabels` returns exactly the six labels it returns today —
+  evidence:
   `worker/deno/tests/operational_dispatch_labels_test.ts::operationalDispatchLabels - unchanged when no custom labels are configured (Issue #847)`
   — reviewer: met
 - **partial** — tests added to `operational_dispatch_labels_test.ts` and the
@@ -126,10 +127,10 @@ flowchart LR
   (`76 passed | 35 failed` both sides), so they are environmental and unrelated
   to this diff. Every other gate stage passes.
 - **unrequested** — `filterReservedLabels` gained the same optional
-  `extraReserved` parameter as `filterReservedLabelsWithWarning`, though only the
-  warning variant is used in production — reviewer: unrequested — reason: the two
-  are documented siblings that must return the same filtered list; letting them
-  diverge would make the documented contract false.
+  `extraReserved` parameter as `filterReservedLabelsWithWarning`, though only
+  the warning variant is used in production — reviewer: unrequested — reason:
+  the two are documented siblings that must return the same filtered list;
+  letting them diverge would make the documented contract false.
 - **unrequested** — `suggest_improvements.ts` renames `_config` to `config` and
   passes two positional `undefined` placeholders to reach the new argument —
   reviewer: unrequested — reason: it is the only way to reach the reserved-label
@@ -143,24 +144,25 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — only one of the four `verifyOperationalLabels()` call sites was
-  updated, leaving a half-applied gate across otherwise identical collectors —
-  evidence: `worker/deno/lib/collect_work_on_candidates.ts:283`,
-  `collect_low_priority_candidates.ts:171`, `collect_idle_task_candidates.ts:173`
-  — reason: fixed in this diff; all four now pass
-  `customLabelPromptLabels(config)`.
+- **violation** — only one of the four `verifyOperationalLabels()` call sites
+  was updated, leaving a half-applied gate across otherwise identical collectors
+  — evidence: `worker/deno/lib/collect_work_on_candidates.ts:283`,
+  `collect_low_priority_candidates.ts:171`,
+  `collect_idle_task_candidates.ts:173` — reason: fixed in this diff; all four
+  now pass `customLabelPromptLabels(config)`.
 - **violation** — `docs/INTERNALS.md` claimed the strip covered "the discovery
   path" when it covered one collector — evidence: `docs/INTERNALS.md:1239` —
   reason: fixed in this diff, and the claim is now true of all four.
 - **violation** — `docs/CONFIGURATION.md` claimed the worker "never self-applies
-  a custom label", which overstated the change: the model-driven `gh issue
-  create` paths (`reserved_label_strip.ts`, `escape_hatch_label_strip.ts`) still
-  read the static `isReservedLabel` — evidence: `docs/CONFIGURATION.md:521` —
-  reason: the prose is corrected to say what actually holds. Those post-creation
-  strips are left alone deliberately: a label a fleet worker applied is never a
-  trusted adder, so such an issue cannot dispatch, and threading a config-driven
-  set through the planning / PR-feedback / CI-fix call chains is beyond this
-  issue.
+  a custom label", which overstated the change: the model-driven
+  `gh issue
+  create` paths (`reserved_label_strip.ts`,
+  `escape_hatch_label_strip.ts`) still read the static `isReservedLabel` —
+  evidence: `docs/CONFIGURATION.md:521` — reason: the prose is corrected to say
+  what actually holds. Those post-creation strips are left alone deliberately: a
+  label a fleet worker applied is never a trusted adder, so such an issue cannot
+  dispatch, and threading a config-driven set through the planning / PR-feedback
+  / CI-fix call chains is beyond this issue.
 - **violation** — the new exported `customLabelPromptLabels` had no test in its
   own module's suite — evidence:
   `worker/deno/lib/custom_label_prompts_config.ts:200` — reason: fixed in this
@@ -168,14 +170,14 @@ flowchart LR
 - **violation** — no `docs/archive/pr-summaries/pr-summary-847.md` — evidence:
   repository tree at review time — reason: fixed in this diff (this file).
 - **violation** — a label literal was re-typed inline one line after being bound
-  to a `const` — evidence: `worker/deno/tests/github_test.ts:634` — reason: fixed
-  in this diff.
-- **clean** — Australian English throughout; tests call real functions and assert
-  on decisions and side effects (no source grepping, no wall-clock thresholds);
-  fail-loud posture preserved (unattributable adder skips rather than degrades);
-  backwards compatibility asserted explicitly; comments explain *why* and are
-  anchored to issue numbers; no hidden paths staged; commit carries the
-  `Vibe-Coder-Run-Id` trailer.
+  to a `const` — evidence: `worker/deno/tests/github_test.ts:634` — reason:
+  fixed in this diff.
+- **clean** — Australian English throughout; tests call real functions and
+  assert on decisions and side effects (no source grepping, no wall-clock
+  thresholds); fail-loud posture preserved (unattributable adder skips rather
+  than degrades); backwards compatibility asserted explicitly; comments explain
+  _why_ and are anchored to issue numbers; no hidden paths staged; commit
+  carries the `Vibe-Coder-Run-Id` trailer.
 
 ## Test Plan
 
@@ -197,5 +199,5 @@ flowchart LR
   `createGitHubIssuesWithPartialFailures` strip a configured custom label
   case-insensitively, with a warning, and leave it alone when unconfigured.
 - `worker/deno/tests/custom_label_prompts_config_test.ts` — a label the worker
-  applies itself is refused at config load; `customLabelPromptLabels` returns the
-  configured labels in order, and `[]` when nothing is configured.
+  applies itself is refused at config load; `customLabelPromptLabels` returns
+  the configured labels in order, and `[]` when nothing is configured.

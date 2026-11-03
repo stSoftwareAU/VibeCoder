@@ -17,18 +17,18 @@ all. Closes #2310.
   `EXHAUSTED_CONFLICT_NEXT_STEP`. A declined or failed rung records
   `budget-spent` with the route (and the step) at WARN and leaves the PR open.
 - `worker/deno/lib/conflict_abandon_restart.ts` — `no-originating-issue` no
-  longer declines. The flag is filed **first**, carrying `idle-task` and the PR's
-  diff summary, and only then is the PR closed; `AbandonRestartOutcome` carries
-  `flagIssueNumber`, and `issueNumber` is that flag, because it is the re-do
-  item. A flag that cannot be filed — or whose number cannot be read — leaves
-  the PR open naming the new `fallback-flag` step.
+  longer declines. The flag is filed **first**, carrying `idle-task` and the
+  PR's diff summary, and only then is the PR closed; `AbandonRestartOutcome`
+  carries `flagIssueNumber`, and `issueNumber` is that flag, because it is the
+  re-do item. A flag that cannot be filed — or whose number cannot be read —
+  leaves the PR open naming the new `fallback-flag` step.
 - New `worker/deno/lib/conflict_fallback_context.ts` — parses the timings line
   back off a conclusion comment, reads `behind_by` and the label's `labeled`
   event, and reads the diff summary (capped at 200 paths, the excess counted).
   Every reader is best-effort and never silent: a failed read WARNs and the flag
   renders `not recorded` rather than a guessed number.
 - The disruption bound is untouched: three attempts cut short before any
-  conclusion is a *worker* fault and still escalates, and a hand-applied
+  conclusion is a _worker_ fault and still escalates, and a hand-applied
   `needs-human` is still honoured as a veto.
 
 ```mermaid
@@ -64,11 +64,15 @@ and the quality gate.
 - **symptom** — a conflicting PR whose budget was spent ended at `needs-human`
   (or, with no findable originating issue, was left open for a human who never
   came), and the fallback left no durable record of the conflict behind
-- **status** — `verified` — `findConflictingPr - an exhausted PR with no
-  originating issue is closed and flagged (Issue #2310)` and `... an abandoned PR
-  leaves one merge-fallback flag behind (Issue #2310)` were both observed failing
-  against the unfixed code (the first asserted the old "not closed, escalated"
-  behaviour; the second found no filed flag) and pass after the change
+- **status** — `verified` —
+  `findConflictingPr - an exhausted PR with no
+  originating issue is closed and flagged (Issue #2310)`
+  and
+  `... an abandoned PR
+  leaves one merge-fallback flag behind (Issue #2310)`
+  were both observed failing against the unfixed code (the first asserted the
+  old "not closed, escalated" behaviour; the second found no filed flag) and
+  pass after the change
 - **regression test** —
   `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr - an exhausted PR with no originating issue is closed and flagged (Issue #2310)`,
   plus `assertNoNeedsHumanWrites`, which fails against the old `needs-human`
@@ -86,15 +90,15 @@ and the quality gate.
   `::findConflictingPr - a spent budget falls back rather than stalling (Issue #2310)`,
   `assertNoNeedsHumanWrites` — reviewer: partial — reason: done on the scan, but
   the reviewer is right that `pr_merge_conflict_processor.ts` — the path that
-  normally *sees* the second concluded failure — still escalates and files no
+  normally _sees_ the second concluded failure — still escalates and files no
   flag. The issue names only the scan and the abandon rung as the files to
   change, and scopes the processor's parked-PR behaviour to the next sub-issue
   under #2298, so it is left untouched and the docs now say so explicitly rather
   than claiming the whole path. The link also rides a second comment on the PR
-  rather than the abandon comment itself, because that comment is posted *before*
-  the close as the cross-host restart claim and cannot carry a number that does
-  not exist yet; the no-originating-issue route does put the link in its close
-  comment.
+  rather than the abandon comment itself, because that comment is posted
+  _before_ the close as the cross-host restart claim and cannot carry a number
+  that does not exist yet; the no-originating-issue route does put the link in
+  its close comment.
 - **met** — No originating issue → PR closed; the flag carries the diff summary
   and `idle-task` — evidence:
   `worker/deno/lib/conflict_abandon_restart.ts::abandonWithoutOriginatingIssue`,
@@ -102,15 +106,15 @@ and the quality gate.
   `::... an appended flag is labelled idle-task (Issue #2310)`,
   `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr - an exhausted PR with no originating issue is closed and flagged (Issue #2310)`
   — reviewer: met — reason: the reviewer found a real hole here on the first
-  commit — an *appended* flag gets no labels from the filer, so a second fallback
-  on one PR would have closed it against an unqueued flag — and it is fixed and
-  tested in the second commit.
+  commit — an _appended_ flag gets no labels from the filer, so a second
+  fallback on one PR would have closed it against an unqueued flag — and it is
+  fixed and tested in the second commit.
 - **partial** — A flag-filer failure is logged at WARN and does not stop the
   close/re-queue — evidence:
   `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr - a flag that cannot be filed warns and leaves the abandon standing (Issue #2310)`
   — reviewer: partial — reason: true on the re-queue route, where the close has
   already happened. On the no-originating-issue route it is deliberately
-  inverted: the flag *is* the re-do item there, so a filing failure returns
+  inverted: the flag _is_ the re-do item there, so a filing failure returns
   `fallback-flag` and leaves the PR open. Closing against a record nobody can
   find is the loss the old decline existed to prevent, so that route fails loud
   instead.
@@ -121,19 +125,20 @@ and the quality gate.
   fails against the old route — reviewer: met
 - **met** — `./quality.sh` passes — evidence: full gate run in the foreground
   after the final edit — reviewer: missing — reason: the reviewer ran it against
-  the first commit, where `deno fmt` and the sweep-coverage ledger were red; both
-  are fixed in the second commit and the gate was re-run green here.
-- **unrequested** — `MergeFallbackStageTiming.seconds` widened to `number | null`
-  with `unfinished` rendering — reviewer: unrequested — reason: the issue asks for
-  "each run's timings line" to reach the flag, and `formatStageTimings` renders a
-  stage that never stopped as `unfinished`; without the widening that stage would
-  have been silently dropped from the record.
+  the first commit, where `deno fmt` and the sweep-coverage ledger were red;
+  both are fixed in the second commit and the gate was re-run green here.
+- **unrequested** — `MergeFallbackStageTiming.seconds` widened to
+  `number | null` with `unfinished` rendering — reviewer: unrequested — reason:
+  the issue asks for "each run's timings line" to reach the flag, and
+  `formatStageTimings` renders a stage that never stopped as `unfinished`;
+  without the widening that stage would have been silently dropped from the
+  record.
 - **unrequested** — `MERGE_CONFLICT_LABEL` moved to `merge_conflict_markers.ts`
   and re-exported — reviewer: unrequested — reason: the issue requires reading
   that label's `labeled` event from a module the scan imports, which is a cycle
   while the constant lives in the scan. No importer's path changed.
-- **unrequested** — new module `conflict_fallback_context.ts` and its test file —
-  reviewer: unrequested — reason: the issue requires three new reads; putting
+- **unrequested** — new module `conflict_fallback_context.ts` and its test file
+  — reviewer: unrequested — reason: the issue requires three new reads; putting
   them in either caller would have deepened the cycle the label move avoids.
   Cost: its own sweep-ledger slice, added here.
 - **unrequested** — the `SAFE_REF` guard on the compare path — reviewer:
@@ -141,52 +146,50 @@ and the quality gate.
   first place a branch name reaches an API path in this family; validating it is
   the secure-coding standard, not a feature.
 - **unrequested** — the `fallback-flag` step and the "unreadable flag number
-  leaves the PR open" gate — reviewer: unrequested — reason: the issue removes the
-  old "no issue, no abandon" refusal; something has to hold the invariant it was
-  protecting, and this is the narrowest form of it.
-- **unrequested** — the declined/failed `budget-spent` route now writes nothing to
-  GitHub, where it previously wrote one comment, and such a PR re-runs the rung
-  each pass rather than being skipped — reviewer: unrequested — reason: the issue
-  says to remove the `escalateConflictingPr` call, and that call was both the
-  label and the comment. The parked-PR behaviour that replaces the quiet skip is
-  explicitly the next sub-issue under #2298.
-- **unrequested** — doc edits to `docs/MERGE.md` and `docs/workflows/README.md` —
-  reviewer: unrequested — reason: both assert the behaviour this change alters
-  ("only then does a human hear about it"), and the standards require the docs to
-  follow the code.
+  leaves the PR open" gate — reviewer: unrequested — reason: the issue removes
+  the old "no issue, no abandon" refusal; something has to hold the invariant it
+  was protecting, and this is the narrowest form of it.
+- **unrequested** — the declined/failed `budget-spent` route now writes nothing
+  to GitHub, where it previously wrote one comment, and such a PR re-runs the
+  rung each pass rather than being skipped — reviewer: unrequested — reason: the
+  issue says to remove the `escalateConflictingPr` call, and that call was both
+  the label and the comment. The parked-PR behaviour that replaces the quiet
+  skip is explicitly the next sub-issue under #2298.
+- **unrequested** — doc edits to `docs/MERGE.md` and `docs/workflows/README.md`
+  — reviewer: unrequested — reason: both assert the behaviour this change alters
+  ("only then does a human hear about it"), and the standards require the docs
+  to follow the code.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — `deno fmt --check` red on the committed state — evidence:
-  `worker/deno/tests/conflict_abandon_restart_test.ts:737` — reason: fixed in the
-  second commit; `deno fmt --check` is clean over all 2,726 files.
-- **violation** — the new `lib/` module was claimed by no sweep slice — evidence:
-  `worker/deno/lib/conflict_fallback_context.ts:1` — reason: fixed —
+  `worker/deno/tests/conflict_abandon_restart_test.ts:737` — reason: fixed in
+  the second commit; `deno fmt --check` is clean over all 2,726 files.
+- **violation** — the new `lib/` module was claimed by no sweep slice —
+  evidence: `worker/deno/lib/conflict_fallback_context.ts:1` — reason: fixed —
   `docs/audits/lib-sweep-coverage.json` gains `top-up-2310`, with its written
   record in `docs/audits/security-sweep-2310-conflict-fallback-context.md`.
 - **violation** — no PR summary file — evidence:
   `docs/archive/pr-summaries/pr-summary-2310.md` — reason: this file.
 - **violation** — the "no conflict outcome asks a person" claim was overbroad
-  while the processor still escalates — evidence:
-  `DESIGN-PRINCIPLES.md:274`, `docs/MERGE.md:853`,
-  `docs/workflows/merge-conflicts.md:1061` — reason: fixed — every one of those
-  claims is now scoped to the scan and names the processor's remaining
-  escalation as the next sub-issue under #2298.
+  while the processor still escalates — evidence: `DESIGN-PRINCIPLES.md:274`,
+  `docs/MERGE.md:853`, `docs/workflows/merge-conflicts.md:1061` — reason: fixed
+  — every one of those claims is now scoped to the scan and names the
+  processor's remaining escalation as the next sub-issue under #2298.
 - **violation** — fail-loud: an unreadable flag number was swallowed on the
   re-queue route — evidence: `worker/deno/lib/pr_merge_conflict_scan.ts:1079` —
   reason: fixed — it now WARNs naming the URL, and a test asserts the line.
-- **violation** — DRY: the filer adapter was duplicated verbatim in both routes —
-  evidence: `worker/deno/lib/pr_merge_conflict_scan.ts:1016`,
+- **violation** — DRY: the filer adapter was duplicated verbatim in both routes
+  — evidence: `worker/deno/lib/pr_merge_conflict_scan.ts:1016`,
   `worker/deno/lib/conflict_abandon_restart.ts:1181` — reason: fixed — one
   `createFallbackFlagFiler` in `merge_fallback_issue.ts`, tested.
 - **violation** — positional coupling: two filters over the thread paired by
-  array index — evidence:
-  `worker/deno/lib/conflict_abandon_restart.ts:272` — reason: fixed —
-  `summariseFailedAttempts` carries the parsed timings on each attempt and
-  `mergeFallbackRunsFromHistory` reads them from there, so the second pass is
-  gone.
+  array index — evidence: `worker/deno/lib/conflict_abandon_restart.ts:272` —
+  reason: fixed — `summariseFailedAttempts` carries the parsed timings on each
+  attempt and `mergeFallbackRunsFromHistory` reads them from there, so the
+  second pass is gone.
 - **violation** — a seam nothing supplies (`timelineCache`) — evidence:
   `worker/deno/lib/conflict_fallback_context.ts:134` — reason: fixed — removed.
 - **violation** — new public functions without their own tests
@@ -233,9 +236,9 @@ its failure, `mergeFallbackRunsFromHistory` with and without a timings line, and
 two `buildNoIssueAbandonPrComment` cases.
 
 Added (`pr_merge_conflict_scan_test.ts`): one flag per abandon with its link
-comment, the filer payload (runs, timings, host, `behind_by`, no diff summary), a
-filing failure warning while the abandon stands, an unreadable flag number, and
-`buildFallbackFlagLinkComment`'s three branches.
+comment, the filer payload (runs, timings, host, `behind_by`, no diff summary),
+a filing failure warning while the abandon stands, an unreadable flag number,
+and `buildFallbackFlagLinkComment`'s three branches.
 
 Added (`merge_fallback_issue_test.ts`): `unfinished` timing rendering, the diff
 summary with its omitted count, a diff nobody read rendering no section, a diff
@@ -247,7 +250,7 @@ Rewritten, with the behaviour change documented in each test's comment: the five
 `needs-human` (no-originating-issue, the restart bound, a failed abandon step,
 the per-step matrix, and the backstop test) now assert the fallback and
 `assertNoNeedsHumanWrites`; two of them inject a declining rung so the
-`budget-spent` operands stay covered. One
-`conflict_abandon_restart_test.ts` test — "no originating issue: nothing is
-closed at all" — is replaced by the four tests of the new route, because the
-issue reverses exactly the behaviour it pinned.
+`budget-spent` operands stay covered. One `conflict_abandon_restart_test.ts`
+test — "no originating issue: nothing is closed at all" — is replaced by the
+four tests of the new route, because the issue reverses exactly the behaviour it
+pinned.

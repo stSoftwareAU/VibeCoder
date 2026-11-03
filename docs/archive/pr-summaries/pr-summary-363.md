@@ -14,10 +14,10 @@ Claude. Codex has both levers, so both are now wired. Closes #363.
   (`config_defaults.ts`) cover the same phase keys as the Claude tables: the
   eight planning-shaped phases on `gpt-5-codex` at `high`, `issue` on `gpt-5` at
   `high`, the reactive fixes on `gpt-5` at `medium`, and the trivial trio
-  (`spelling_fix`, `summarise`, `health`) on `gpt-5-mini` at `low`. Codex accepts
-  four effort levels (`minimal`/`low`/`medium`/`high`), so there is no equivalent
-  of Claude's `xhigh`/`max`. The model ids are an implementation choice
-  documented in the code; configuration always overrides them.
+  (`spelling_fix`, `summarise`, `health`) on `gpt-5-mini` at `low`. Codex
+  accepts four effort levels (`minimal`/`low`/`medium`/`high`), so there is no
+  equivalent of Claude's `xhigh`/`max`. The model ids are an implementation
+  choice documented in the code; configuration always overrides them.
 - **The six-step precedence chain is stated once**, in the new
   `phase_routing.ts`: `PREFIX_<PHASE>` env var → per-repo phase override →
   per-repo base → global config phase override → phase default → base env var.
@@ -53,17 +53,19 @@ flowchart LR
     P -->|nothing, phase set| W["⚠️ warn once, CLI default stands"]
 ```
 
-Targeted run (`deno test --allow-all tests/codex_phase_routing_test.ts
+Targeted run
+(`deno test --allow-all tests/codex_phase_routing_test.ts
 tests/agent_provider_routing_seam_test.ts
-tests/agent_provider_per_invocation_test.ts`): **38 passed, 0 failed**.
+tests/agent_provider_per_invocation_test.ts`):
+**38 passed, 0 failed**.
 
 `./quality.sh` is green on every check except `deno tests`, which reports **10
 pre-existing environment-dependent failures** in `fleet_health_test.ts`,
 `host_workdir_guard_test.ts`, `optional_feature_env_test.ts` and
-`setup_workdir_reminder_test.ts` (work-dir path and env-var assumptions about the
-host). They were confirmed to fail identically on an untouched worktree of the
-base branch `milestone/357-audit-model-selection-for-codex-gemini-documen`, so
-they are not caused by this change. No test touched by this PR fails.
+`setup_workdir_reminder_test.ts` (work-dir path and env-var assumptions about
+the host). They were confirmed to fail identically on an untouched worktree of
+the base branch `milestone/357-audit-model-selection-for-codex-gemini-documen`,
+so they are not caused by this change. No test touched by this PR fails.
 
 ## Test Plan
 

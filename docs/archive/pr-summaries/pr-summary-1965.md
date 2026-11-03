@@ -10,13 +10,13 @@ and only a tree the gate still refuses reaches a human. Closes #1965.
 
 - **`worker/deno/lib/milestone_gate_repair.ts`** (new) — runs the verification,
   offers a failure back to the agent rung for at most two rounds a cycle, folds
-  whatever the agent stages *or* commits into the merge commit, and re-runs the
+  whatever the agent stages _or_ commits into the merge commit, and re-runs the
   gate. A repair that rewinds the branch off the merge commit is refused rather
   than absorbed: that is a side-pick arriving as history.
 - **`git_pull.ts`** — the gate now runs before the push path (which resets a
   refused merge away at once, so a resolution reset away cannot be repaired),
   and the escalation carries both gate outputs.
-- **Budget** — a repair spends what is left of the cycle's *single* agent grant
+- **Budget** — a repair spends what is left of the cycle's _single_ agent grant
   (Issue #1693), not a fresh one. A grant that cannot cover one is refused by
   name and the escalation says the repair was never attempted.
 - **Record** — the merge commit, the sync's log line and the report comment all
@@ -25,8 +25,8 @@ and only a tree the gate still refuses reaches a human. Closes #1965.
 
 ## Evidence
 
-Backend/CLI change with no web interface, so the evidence is the test run, not
-a screenshot.
+Backend/CLI change with no web interface, so the evidence is the test run, not a
+screenshot.
 
 ```mermaid
 flowchart TD
@@ -50,8 +50,8 @@ tests/milestone_gate_repair_prompt_test.ts ok | 5 passed | 0 failed (7ms)
 The headline fixture was watched failing against the unfixed code first
 (worktree at `271ae85`, same test file): it escalated with
 `Refused to push the merge of 'main' into 'milestone/1965' … error[E0046]: not
-all trait items implemented, missing: find_by_client_order_id` — the issue's
-symptom exactly — and passes after the change.
+all trait items implemented, missing: find_by_client_order_id`
+— the issue's symptom exactly — and passes after the change.
 
 ## Acceptance Criteria
 
@@ -60,20 +60,21 @@ symptom exactly — and passes after the change.
 - **met** — The trait-method fixture syncs without a human, and the merge commit
   names the repaired file and the rung that repaired it — evidence:
   `worker/deno/tests/milestone_sync_gate_repair_test.ts::a gate failure in a
-  file git never conflicted is repaired by the agent rung and pushed` — reviewer: met
+  file git never conflicted is repaired by the agent rung and pushed`
+  — reviewer: met
 - **met** — A repair that fails the gate escalates once with both gate outputs;
   no second repair is attempted in the same cycle — evidence:
   `worker/deno/tests/milestone_sync_gate_repair_test.ts::a repair the gate still
-  refuses escalates once, with both gate outputs` — reviewer: partial — reason:
-  the reviewer read the checkbox literally (one repair) against the implemented
-  bound of two; the issue's own comment amends it to "up to two repair rounds
-  per cycle before escalating with both gate outputs", which is what shipped —
-  the cycle still escalates exactly once, and the test asserts the rung is never
-  asked a third time
-- **met** — `./quality.sh` passes — evidence: full gate run after the final
-  edit — reviewer: missing — reason: the reviewer saw only the diff and could
-  not run the gate to completion; it was run here (see Test Plan)
-- **partial** — the repair prompt carries the *full* compiler output, all errors
+  refuses escalates once, with both gate outputs`
+  — reviewer: partial — reason: the reviewer read the checkbox literally (one
+  repair) against the implemented bound of two; the issue's own comment amends
+  it to "up to two repair rounds per cycle before escalating with both gate
+  outputs", which is what shipped — the cycle still escalates exactly once, and
+  the test asserts the rung is never asked a third time
+- **met** — `./quality.sh` passes — evidence: full gate run after the final edit
+  — reviewer: missing — reason: the reviewer saw only the diff and could not run
+  the gate to completion; it was run here (see Test Plan)
+- **partial** — the repair prompt carries the _full_ compiler output, all errors
   (issue comment) — evidence: `worker/deno/lib/prompt_builder.ts`
   `buildGateRepairSection` carries `MergeGateOutcome.output` verbatim —
   reviewer: partial — reason: the gate captures a 40-line/4000-char **tail** at
@@ -107,8 +108,8 @@ symptom exactly — and passes after the change.
   `worker/deno/tests/milestone_gate_repair_prompt_test.ts:175` — reason: fixed
   here; `bindMilestoneConflictAgent` gained the `promptsDir` seam the runner
   already had, and the env hack is gone
-- **violation** — the new `lib/` module was claimed by no sweep slice — evidence:
-  `docs/audits/lib-sweep-coverage.json` — reason: fixed here; slice
+- **violation** — the new `lib/` module was claimed by no sweep slice —
+  evidence: `docs/audits/lib-sweep-coverage.json` — reason: fixed here; slice
   `top-up-1965` and its written record were added, and `check:manifests` passes
 - **violation** — a repair that ran and failed was reported as "not attempted" —
   evidence: `worker/deno/lib/milestone_gate_repair.ts` `stop()` — reason: fixed
@@ -122,8 +123,8 @@ symptom exactly — and passes after the change.
   reason: fixed here; extracted to `runGateWithRepair`, leaving the sync a call
   site
 - **violation** — the new module had no companion test file, and its failure
-  branches were untested — evidence: `worker/deno/lib/milestone_gate_repair.ts` —
-  reason: fixed here; `worker/deno/tests/milestone_gate_repair_test.ts` covers
+  branches were untested — evidence: `worker/deno/lib/milestone_gate_repair.ts`
+  — reason: fixed here; `worker/deno/tests/milestone_gate_repair_test.ts` covers
   all of them plus `readMergedCommitSubjects`
 - **violation** — catch-and-ignore in a test's temp-dir cleanup — evidence:
   `worker/deno/tests/milestone_sync_gate_repair_test.ts:166` — reason: fixed
@@ -145,11 +146,11 @@ symptom exactly — and passes after the change.
   new interface field optional, nothing removed; no hidden path staged; run-id
   trailer present
 
-Two further spec-review findings were also fixed rather than argued: a
-`skipped` verification (a repo defining no checks) no longer buys agent repair
-runs — it is refused under Issue #1559 as before, with a test — and each repair
-round now reports the files *it* changed, measured against the tree it started
-from, so round two no longer inherits round one's list.
+Two further spec-review findings were also fixed rather than argued: a `skipped`
+verification (a repo defining no checks) no longer buys agent repair runs — it
+is refused under Issue #1559 as before, with a test — and each repair round now
+reports the files _it_ changed, measured against the tree it started from, so
+round two no longer inherits round one's list.
 
 ## Test Plan
 
@@ -175,10 +176,11 @@ from, so round two no longer inherits round one's list.
   `deno tests`, which reports two failures that pre-date this change and are
   environmental —
   `agent_provider_test.ts::the per-run provider override beats the configured
-  file value (Issue #2062)` and
+  file value (Issue #2062)`
+  and
   `config_test.ts::the per-run provider override applies to the loaded agent
-  (Issue #2062)`, both raising *"The running container image did not install the
-  'deepseek' coding-agent provider. Installed: claude."* Both were reproduced
-  failing identically on the base commit `271ae85` in a clean worktree, with no
-  code from this change in the tree. Nothing else in the suite fails
-  (21,585 passed).
+  (Issue #2062)`,
+  both raising _"The running container image did not install the 'deepseek'
+  coding-agent provider. Installed: claude."_ Both were reproduced failing
+  identically on the base commit `271ae85` in a clean worktree, with no code
+  from this change in the tree. Nothing else in the suite fails (21,585 passed).

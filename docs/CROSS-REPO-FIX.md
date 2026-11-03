@@ -1,42 +1,41 @@
 # 🔀 Cross-repo fix — raise a PR in an internal dependency
 
 When an assigned issue's root cause lives in an internal `stSoftwareAU/*`
-dependency the worker can access (e.g. `@stsoftware/private-repo-14`), the worker should
-fix it **in that dependency's own repo by raising a PR there, in the same run** —
-not spin the real fix out into follow-up issues. This document describes the
-**capability** that makes that possible: resolving the dependency repo, probing
-"can access", and opening the PR.
+dependency the worker can access (e.g. `@stsoftware/private-repo-14`), the
+worker should fix it **in that dependency's own repo by raising a PR there, in
+the same run** — not spin the real fix out into follow-up issues. This document
+describes the **capability** that makes that possible: resolving the dependency
+repo, probing "can access", and opening the PR.
 
-> **Filing an issue instead?** Which repository an *issue* belongs in — and
-> how to move one filed in the wrong place — is
-> [Issue routing](ISSUE-ROUTING.md).
+> **Filing an issue instead?** Which repository an _issue_ belongs in — and how
+> to move one filed in the wrong place — is [Issue routing](ISSUE-ROUTING.md).
 
-> **Scope.** This is the *plumbing* (build + verify the worker's ability to
-> raise a cross-repo PR). The *behaviour* that tells the worker when to use it
+> **Scope.** This is the _plumbing_ (build + verify the worker's ability to
+> raise a cross-repo PR). The _behaviour_ that tells the worker when to use it
 > and the dedup / one-follow-up rules are sibling issues under parent; the
 > release-gating boundaries that hold once the dep PR is open are described in
 > [Release-gating](#release-gating--never-auto-release) below.
 
 ## "Can access" = internal + clonable + pushable
 
-The classification reuses the **** rule rather than introducing a new one:
-a dependency is **internal** when its package scope is `@stsoftware` (matching
-the `jsr:@stsoftware/*` / `npm:@stsoftware/*` exclude globs that give internal
-deps a 0h quarantine window). Everything else is **external**.
+The classification reuses the **** rule rather than introducing a new one: a
+dependency is **internal** when its package scope is `@stsoftware` (matching the
+`jsr:@stsoftware/*` / `npm:@stsoftware/*` exclude globs that give internal deps
+a 0h quarantine window). Everything else is **external**.
 
 "Can access" then adds two runtime conditions, both confirmed by a single
 `gh api repos/<owner>/<repo>` call:
 
-| Condition | How it is checked | If it fails |
-| --- | --- | --- |
-| **Internal** | package scope is `@stsoftware` | classified `external` |
-| **Clonable / visible** | `gh api repos/<repo>` returns 200 | classified `external` (404/403) |
-| **Pushable (can open a PR)** | `permissions.push === true` | classified `external` |
+| Condition                    | How it is checked                 | If it fails                     |
+| ---------------------------- | --------------------------------- | ------------------------------- |
+| **Internal**                 | package scope is `@stsoftware`    | classified `external`           |
+| **Clonable / visible**       | `gh api repos/<repo>` returns 200 | classified `external` (404/403) |
+| **Pushable (can open a PR)** | `permissions.push === true`       | classified `external`           |
 
 Any failure reports the dep as `external`, so the caller falls back to the
 deferral path (a sibling issue owns the instruction side). The probe returns the
-repo's **canonical** `full_name`, so a package named `private-repo-14` correctly resolves
-to the `stSoftwareAU/private-repo-14` repo regardless of casing.
+repo's **canonical** `full_name`, so a package named `private-repo-14` correctly
+resolves to the `stSoftwareAU/private-repo-14` repo regardless of casing.
 
 ## Flow
 
@@ -76,11 +75,10 @@ take an injectable command runner (no real network in tests).
   `applyFix`, commits, pushes, and opens the PR; returns a `Result` carrying the
   **PR URL**. Refuses to push to the dependency repo's default branch (the
   read-only invariant,). Refuses a branch name that is not a valid git ref
-  component — empty, dash-leading, or carrying whitespace / `~^:?*[\` / `..`
-  — before any subprocess is spawned, since the name reaches git as a
-  positional on both `checkout -b` and `push` (Issue #1548). Any failed step
-  returns an error `Result` rather than throwing, so the caller can fall back
-  to deferral.
+  component — empty, dash-leading, or carrying whitespace / `~^:?*[\` / `..` —
+  before any subprocess is spawned, since the name reaches git as a positional
+  on both `checkout -b` and `push` (Issue #1548). Any failed step returns an
+  error `Result` rather than throwing, so the caller can fall back to deferral.
 
 > **Transitive root causes.** `resolveCrossRepoTarget` resolves a single spec.
 > When the root cause lives further down the chain (dep-of-a-dep), the consuming
@@ -103,8 +101,8 @@ deno run --allow-env --allow-run worker/deno/mod.ts \
 ```
 
 The PR-raising half (`openCrossRepoFixPr`) needs an `applyFix` callback and is
-therefore driven from a consuming flow, not the CLI. It is verified
-by the integration test
+therefore driven from a consuming flow, not the CLI. It is verified by the
+integration test
 [`worker/deno/tests/cross_repo_fix_test.ts`](../worker/deno/tests/cross_repo_fix_test.ts),
 which drives the full clone → branch → fix → commit → push → PR sequence with a
 scripted runner and asserts an actual PR is opened against a **different** repo
@@ -124,8 +122,8 @@ blocked call and left a finished fix on an unreferenced branch.
 `worker/deno/lib/cross_repo_pr_handoff.ts` closes that gap **without changing
 the agent's boundary**:
 
-1. The agent pushes the fix branch to the dependency repo — `git` is not
-   guarded — and **declares** the PR it wants with a marker in its output:
+1. The agent pushes the fix branch to the dependency repo — `git` is not guarded
+   — and **declares** the PR it wants with a marker in its output:
 
    ```text
    <!-- vibe-cross-repo-pr repo="stSoftwareAU/Dep" branch="fix/123-thing" base="Develop" title="Fix the thing" summary="why" -->
@@ -144,20 +142,20 @@ the agent's boundary**:
    dependency remote, and not that repo's default branch. An already-open PR for
    the same head is reused, never duplicated.
 
-   Sharing the `stSoftwareAU` owner is *ownership*, not authority. The fleet
+   Sharing the `stSoftwareAU` owner is _ownership_, not authority. The fleet
    works many separate tenant repositories under that one owner, and the whole
    declaration is parsed out of the run's own generated text, so the owner check
    alone establishes only that the target is in-house — not that this run has
-   any business writing to it. The dependency manifests
-   (`deno.json`, `deno.jsonc`, `package.json`, `worker/deno/deno.json`, and —
-   Issue #1864 — `Cargo.toml` with each literal workspace member's `Cargo.toml`,
-   where a `path = "../../<Repo>/…"` sibling checkout or a github.com `git` URL
-   under the fleet owner names the dependency) are read
-   from the consuming repo's **default branch on GitHub**, never from the run's
-   working tree: that tree is writable by the very agent whose output produced
-   the request, so it cannot also be the authority for it. A target that
-   resolves to no declared dependency — and a consuming repo with no readable
-   manifest — is refused and escalated, never opened.
+   any business writing to it. The dependency manifests (`deno.json`,
+   `deno.jsonc`, `package.json`, `worker/deno/deno.json`, and — Issue #1864 —
+   `Cargo.toml` with each literal workspace member's `Cargo.toml`, where a
+   `path = "../../<Repo>/…"` sibling checkout or a github.com `git` URL under
+   the fleet owner names the dependency) are read from the consuming repo's
+   **default branch on GitHub**, never from the run's working tree: that tree is
+   writable by the very agent whose output produced the request, so it cannot
+   also be the authority for it. A target that resolves to no declared
+   dependency — and a consuming repo with no readable manifest — is refused and
+   escalated, never opened.
 3. The single `gh pr create` runs through the worker's own `spawnGh` chokepoint
    inside `withScopedWriteRepo()` — the allowlist opens for that one call and
    closes again in a `finally`, announced with
@@ -196,17 +194,17 @@ onward) and `prompts/issue/` (from v28 onward):
 
 - **No auto-release.** The worker must **not** auto-merge or publish the
   dependency PR, and must **not** bump the consumer to a raw commit/git-ref or a
-  pre-release to pull the fix in early. Releasing the fixed dependency is a human
-  decision; the consumer is bumped to the released version through the ordinary
-  dependency-bump flow once that release exists.
+  pre-release to pull the fix in early. Releasing the fixed dependency is a
+  human decision; the consumer is bumped to the released version through the
+  ordinary dependency-bump flow once that release exists.
 - **Human-gated release is the one legitimate deferral.** The only reason to
-  defer *after* the dependency PR is open is that the consumer bump needs a human
-  to release the fixed dependency first. The worker handles it with exactly
-  **one** follow-up (reusing the search-before-file / one-follow-up dedup rule,
-  ), filed in **either** the consuming repo (where the bump will land) **or**
-  the dependency repo (beside the PR) — whichever it can reach — and
-  **cross-linked to the open dependency PR** so the release and the consumer bump
-  stay connected.
+  defer _after_ the dependency PR is open is that the consumer bump needs a
+  human to release the fixed dependency first. The worker handles it with
+  exactly **one** follow-up (reusing the search-before-file / one-follow-up
+  dedup rule, ), filed in **either** the consuming repo (where the bump will
+  land) **or** the dependency repo (beside the PR) — whichever it can reach —
+  and **cross-linked to the open dependency PR** so the release and the consumer
+  bump stay connected.
 
 ```mermaid
 flowchart TD

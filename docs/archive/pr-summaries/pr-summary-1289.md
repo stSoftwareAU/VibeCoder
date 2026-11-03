@@ -2,11 +2,12 @@
 
 ## Summary
 
-The default-branch ruleset configurator treated the `.vibe/no-default-branch-ruleset`
-marker file as strong enough evidence to **delete** the "Vibe Coder default
-branch" ruleset. The marker is ordinary repository content: anybody with write
-access — or anybody whose PR gets merged — can land it, so one commit removed
-the required-status-check gate on the next `setup.sh` run.
+The default-branch ruleset configurator treated the
+`.vibe/no-default-branch-ruleset` marker file as strong enough evidence to
+**delete** the "Vibe Coder default branch" ruleset. The marker is ordinary
+repository content: anybody with write access — or anybody whose PR gets merged
+— can land it, so one commit removed the required-status-check gate on the next
+`setup.sh` run.
 
 `BranchPushPolicy` now records **which** opt-out signal fired, and removal is
 gated on evidence the worker trusts:
@@ -16,9 +17,9 @@ gated on evidence the worker trusts:
 - `planDefaultBranchRuleset` deletes the worker's own ruleset only for
   `direct-push` (commit history the worker read itself) or an `opted-out`
   verdict whose `source` is `"topic"` — the `direct-push` repository topic is
-  repository *settings* and takes admin permission to write
+  repository _settings_ and takes admin permission to write
   (`worker/deno/lib/default_branch_ruleset.ts`).
-- The marker still suppresses *creating* a ruleset. It simply cannot remove
+- The marker still suppresses _creating_ a ruleset. It simply cannot remove
   protection that already exists, which is the direction the fix refuses.
 
 Closes #1289.
@@ -44,9 +45,9 @@ Full gate: `./quality.sh` — `Result: PASSED (with skipped checks)` (the three
 skips are the pre-existing environment-gated checks: config integration,
 pages-liquid, mermaid built output).
 
-**Original trigger is closed, with no trivial bypass.** The trigger was:
-land an empty `.vibe/no-default-branch-ruleset` on the default branch, then let
-setup delete the ruleset. That input now yields
+**Original trigger is closed, with no trivial bypass.** The trigger was: land an
+empty `.vibe/no-default-branch-ruleset` on the default branch, then let setup
+delete the ruleset. That input now yields
 `{ kind: "opted-out", source: "marker" }`, and `removeOwn` is true only for
 `policy.kind === "direct-push"` or `source === "topic"` — so the plan is
 `action: "none"` and no `DELETE /repos/{repo}/rulesets/{id}` call is made. The
@@ -73,13 +74,15 @@ flowchart TD
 
 ## Test Plan
 
-- Added `worker/deno/tests/default_branch_ruleset_test.ts::ruleset - the marker file never deletes an existing fleet ruleset`
+- Added
+  `worker/deno/tests/default_branch_ruleset_test.ts::ruleset - the marker file never deletes an existing fleet ruleset`
   — plans and applies against a repo that has both an existing fleet ruleset
   (requiring `gitleaks`) and the marker present, asserting `action: "none"`,
   `deleted === false`, `preserved: ["gitleaks"]`, and zero ruleset writes or
   deletes. It reproduces the flaw: it **fails against the unfixed code**
   (`action` was `delete`) and **passes after the fix**.
-- Added `worker/deno/tests/branch_push_policy_test.ts::push_policy - the opt-out names which signal fired`
+- Added
+  `worker/deno/tests/branch_push_policy_test.ts::push_policy - the opt-out names which signal fired`
   — drives the real `assessBranchPushPolicy` and asserts the new `source`
   discriminator is `"topic"` for the topic and `"marker"` for the marker file.
 - Existing coverage kept unchanged and still green: the topic opt-out still

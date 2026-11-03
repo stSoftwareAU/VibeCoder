@@ -3,16 +3,16 @@
 ## Summary
 
 Mermaid's `securityLevel` and the CDN script's SRI hash are the two things
-standing between the Pages site and arbitrary JavaScript from a third-party
-CDN. Both were asserted **only** on the source include:
+standing between the Pages site and arbitrary JavaScript from a third-party CDN.
+Both were asserted **only** on the source include:
 `mermaid_security_level_test.ts` and `mermaid_cdn_integrity_test.ts` each read
 `_includes/head-custom.html`. `runMermaidCheck` is syntax-only — it validates
 diagram blocks in Markdown, not head configuration. `pages.yml` inspected the
 artifact for structural files (`index.html`, `README.html`, `SECURITY.md`,
 `docs/OVERVIEW.html`) and never looked at what those files execute.
 
-Between the include and the served page sit Jekyll, a layout that may or may
-not pull the include in, `strip_unpublished_links.rb` and
+Between the include and the served page sit Jekyll, a layout that may or may not
+pull the include in, `strip_unpublished_links.rb` and
 `normalise_heading_ids.rb`. A Mermaid bump that loosened `strict` or dropped
 `integrity` in the built HTML would pass every test and every Pages step. The
 value that matters is the one that ships.
@@ -20,8 +20,8 @@ value that matters is the one that ships.
 New `worker/deno/lib/mermaid_built_output_check.ts` walks the built site and
 asserts, per page:
 
-- every page that initialises Mermaid carries a safe `securityLevel`
-  (`strict` or `antiscript`); and
+- every page that initialises Mermaid carries a safe `securityLevel` (`strict`
+  or `antiscript`); and
 - every page that loads Mermaid from the CDN pins an exact `X.Y.Z` version and
   carries a valid SRI hash with `crossorigin`.
 
@@ -84,44 +84,44 @@ ok | 14 passed | 0 failed (68ms)
 known-environmental ones:
 
 ```text
-  git ref chokepoint             PASSED     mermaid                        PASSED
-  workflow hygiene               PASSED     mermaid built output           SKIPPED
-  source targets                 PASSED     markdownlint                   PASSED
-  deno lint                      PASSED     docs prompt versions           PASSED
-  deno type check                PASSED     deno fmt                       PASSED
+git ref chokepoint             PASSED     mermaid                        PASSED
+workflow hygiene               PASSED     mermaid built output           SKIPPED
+source targets                 PASSED     markdownlint                   PASSED
+deno lint                      PASSED     docs prompt versions           PASSED
+deno type check                PASSED     deno fmt                       PASSED
 ```
 
 `mermaid built output` correctly reports SKIPPED with no local Jekyll build.
 `deno tests` reports only the 11 pre-existing `setup.ps1` failures
-(`NotFound: Failed to spawn 'pwsh'`, environmental — reproduces on the
-milestone branch).
+(`NotFound: Failed to spawn 'pwsh'`, environmental — reproduces on the milestone
+branch).
 
 Three gate findings from the first run were fixed rather than waived:
 
-| Finding | Fix |
-| --- | --- |
-| `deno fmt` FAILED | `deno fmt worker/deno/` |
-| `mod - createDefaultRegistry has all built-in commands registered` (138 vs 139) | Count bumped with a comment naming this issue, matching the existing convention in that test |
-| `supply-chain-gate: inventory-stale` | `mod.ts supply-chain-gate --write-inventory` — the new pinned `denoland/setup-deno` reference in `pages.yml` had to be recorded |
+| Finding                                                                         | Fix                                                                                                                             |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `deno fmt` FAILED                                                               | `deno fmt worker/deno/`                                                                                                         |
+| `mod - createDefaultRegistry has all built-in commands registered` (138 vs 139) | Count bumped with a comment naming this issue, matching the existing convention in that test                                    |
+| `supply-chain-gate: inventory-stale`                                            | `mod.ts supply-chain-gate --write-inventory` — the new pinned `denoland/setup-deno` reference in `pages.yml` had to be recorded |
 
 ## Test plan
 
 `worker/deno/tests/mermaid_built_output_check_test.ts` — 14 new cases:
 
-| Group | Cases |
-| --- | --- |
-| Page classification | A page with neither the script nor `mermaid.initialize` is out of scope; either one alone brings it in scope |
+| Group               | Cases                                                                                                                                                                                                                                                                                                           |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Page classification | A page with neither the script nor `mermaid.initialize` is out of scope; either one alone brings it in scope                                                                                                                                                                                                    |
 | Per-page assertions | A hardened strict page is clean; a non-Mermaid page yields nothing; **`securityLevel` loosened in the built page is caught**; **a dropped SRI hash is caught**; a floating `mermaid@10` pin is caught; initialising with no verifiable script tag is reported; two problems on one page are reported separately |
-| Whole-site scan | A hardened site passes and counts what it saw; one loosened page fails the whole site and is named in the output; **a missing build is SKIPPED, never PASSED**; a build with no HTML is SKIPPED |
+| Whole-site scan     | A hardened site passes and counts what it saw; one loosened page fails the whole site and is named in the output; **a missing build is SKIPPED, never PASSED**; a build with no HTML is SKIPPED                                                                                                                 |
 
-The two bolded per-page cases are the regression the issue describes; the
-bolded site case is the property that keeps the check honest.
+The two bolded per-page cases are the regression the issue describes; the bolded
+site case is the property that keeps the check honest.
 
 Acceptance criteria from the issue:
 
-- *Wire `mermaid_security_level` + `mermaid_cdn_integrity` into the quality gate
-  (or a Pages-build step)* — both: the `mermaid built output` gate check and the
+- _Wire `mermaid_security_level` + `mermaid_cdn_integrity` into the quality gate
+  (or a Pages-build step)_ — both: the `mermaid built output` gate check and the
   `pages.yml` step, sharing one implementation.
-- *Prefer asserting the built `_site` HTML, not only the include source* — the
+- _Prefer asserting the built `_site` HTML, not only the include source_ — the
   check reads `_site` exclusively; the existing source-include tests are left in
   place as the fast local signal.

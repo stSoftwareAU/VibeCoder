@@ -2,14 +2,14 @@
 
 ## Summary
 
-Issue #2342 hands a split `issue`-phase run `--agents` executor definitions,
-but nothing told the advisor to use them, so a key-on run behaved exactly like
-a key-off one. The `issue` template now carries an
+Issue #2342 hands a split `issue`-phase run `--agents` executor definitions, but
+nothing told the advisor to use them, so a key-on run behaved exactly like a
+key-off one. The `issue` template now carries an
 `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` placeholder: it resolves to the
 advisor/executor block when `isIssueExecutorSplitEnabled()` is true and to the
 empty string otherwise, leaving a key-off prompt byte-identical to what it is
-today. Both `issue`-phase call sites resolve the key **once**, before the
-prompt is built, so the prompt and the argv cannot disagree. Closes #2343.
+today. Both `issue`-phase call sites resolve the key **once**, before the prompt
+is built, so the prompt and the argv cannot disagree. Closes #2343.
 
 ```mermaid
 flowchart LR
@@ -28,10 +28,12 @@ What was tested instead:
   against this branch's template and compared byte for byte (fence nonce
   normalised): identical. The same invariant is pinned by
   `issue_prompt_executor_split_2343_test.ts`.
-- `./quality.sh` run in full after the final edit: `Result: PASSED (with
-  skipped checks)` — only `config integration` skipped (it needs credentials).
-- New suite: 9 passed. Failure-detection set
-  (`prompt_builder_test.ts`, `issue_prompt_v39_independent_review_test.ts`,
+- `./quality.sh` run in full after the final edit:
+  `Result: PASSED (with
+  skipped checks)` — only `config integration` skipped
+  (it needs credentials).
+- New suite: 9 passed. Failure-detection set (`prompt_builder_test.ts`,
+  `issue_prompt_v39_independent_review_test.ts`,
   `coding_guidelines_overlay_test.ts`, plus the new file): 104 passed.
 
 ## Acceptance Criteria
@@ -63,28 +65,29 @@ What was tested instead:
 - **unrequested** — the block's text lives in
   `worker/deno/lib/issue_executor_split_prompt.ts` rather than inside
   `prompts/issue/prompt.md` — reviewer: unrequested — reason: a placeholder
-  cannot pull conditional text out of the same file it is in, so the gated
-  prose has to live where the gate is; the template keeps the splice point.
+  cannot pull conditional text out of the same file it is in, so the gated prose
+  has to live where the gate is; the template keeps the splice point.
 - **unrequested** — `console.warn` when a split run reads a template with no
   `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` placeholder
-  (`worker/deno/lib/prompt_builder.ts:676`) — reviewer: unrequested — reason:
-  an operator's custom prompt or `work-on` override otherwise drops the block
-  in silence on exactly the runs this issue exists to fix; fail-loud, not a new
+  (`worker/deno/lib/prompt_builder.ts:676`) — reviewer: unrequested — reason: an
+  operator's custom prompt or `work-on` override otherwise drops the block in
+  silence on exactly the runs this issue exists to fix; fail-loud, not a new
   feature.
 - **unrequested** — `EXECUTOR_SPLIT_INSTRUCTIONS` registered in
   `OPTIONAL_PLACEHOLDERS` (`worker/deno/lib/prompt_manager.ts:257`) — reviewer:
   unrequested — reason: that registry is the code-side record of every optional
   placeholder; leaving it out would make the docs row a second source of truth.
 - **unrequested** — executors are told to redirect stdin from `/dev/null`
-  (`worker/deno/lib/issue_executor_split_prompt.ts:49`) — reviewer:
-  unrequested — reason: the repo's own standing rule for unattended test runs;
-  an executor that hangs on stdin stalls the whole advisor.
+  (`worker/deno/lib/issue_executor_split_prompt.ts:49`) — reviewer: unrequested
+  — reason: the repo's own standing rule for unattended test runs; an executor
+  that hangs on stdin stalls the whole advisor.
 - **unrequested** — `docs/CONFIGURATION.md` and `docs/CUSTOM-PROMPTS.md` rows —
   reviewer: unrequested — reason: a code change owes a docs change; both
   surfaces document the key and the placeholder.
-- **unrequested** — `docs/audits/security-sweep-2343-issue-executor-split-prompt.md`
-  and the `top-up-2343` slice in `docs/audits/lib-sweep-coverage.json` —
-  reviewer: unrequested — reason: the `completeness checks` gate fails any new
+- **unrequested** —
+  `docs/audits/security-sweep-2343-issue-executor-split-prompt.md` and the
+  `top-up-2343` slice in `docs/audits/lib-sweep-coverage.json` — reviewer:
+  unrequested — reason: the `completeness checks` gate fails any new
   `worker/deno/lib/` module that no sweep slice claims.
 - **unrequested** — the `isIssueExecutorSplitEnabled` call and its log line
   hoisted above the prompt build in both call sites — reviewer: unrequested —
@@ -106,9 +109,8 @@ What was tested instead:
   warning and a test.
 - **violation** — `OPTIONAL_PLACEHOLDERS` was not updated beside the docs row —
   evidence: `worker/deno/lib/prompt_manager.ts:257` — reason: fixed here.
-- **violation** — the flag's path from config into the prompt build was
-  untested on both call sites — evidence:
-  `worker/deno/lib/phases/execute_phase.ts:524`,
+- **violation** — the flag's path from config into the prompt build was untested
+  on both call sites — evidence: `worker/deno/lib/phases/execute_phase.ts:524`,
   `worker/deno/lib/execute_claude_phase.ts:1234` — reason: fixed here; one case
   added to each existing `2342` suite.
 - **violation** — no `docs/archive/pr-summaries/pr-summary-2343.md` — evidence:
@@ -116,15 +118,14 @@ What was tested instead:
 - **violation** (minor) — the new module has no same-named test file
   (`tests/issue_executor_split_prompt_test.ts`) — evidence:
   `worker/deno/tests/issue_prompt_executor_split_2343_test.ts:1` — reason:
-  stands; the repo has issue-numbered test files throughout, and the constant
-  is only observable through the assembled prompt, which is what the suite
-  asserts.
+  stands; the repo has issue-numbered test files throughout, and the constant is
+  only observable through the assembled prompt, which is what the suite asserts.
 - **clean** — Australian English throughout; fail-loud preserved (`substitute`
-  still rejects an unrendered token); tests drive real code, no source
-  grepping; prompt-cache safety (the block rides the always-rebuilt user turn,
-  not the SHA-keyed system prompt); commit safety (no hidden paths, run-id
-  trailers present); additive-only options contract; 64-line module, one
-  exported constant.
+  still rejects an unrendered token); tests drive real code, no source grepping;
+  prompt-cache safety (the block rides the always-rebuilt user turn, not the
+  SHA-keyed system prompt); commit safety (no hidden paths, run-id trailers
+  present); additive-only options contract; 64-line module, one exported
+  constant.
 
 ## Test Plan
 

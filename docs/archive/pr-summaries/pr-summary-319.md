@@ -3,9 +3,9 @@
 ## Summary
 
 `#187` and `#188` were the only open issues in this repository and the only
-claimable work in the whole fleet. They carried `work-on` from a trusted
-author, were unassigned, and had **never been claimed** — no comments, no
-heartbeats, no WIP. They sat untouched from 2026-08-21.
+claimable work in the whole fleet. They carried `work-on` from a trusted author,
+were unassigned, and had **never been claimed** — no comments, no heartbeats, no
+WIP. They sat untouched from 2026-08-21.
 
 Every cycle the worker reported the contradiction and did nothing with it:
 
@@ -33,28 +33,27 @@ PR **#212** is a PR for issue **#209**. Its title reads:
 > …stservice's open **PR #188** did not block VibeCoderST claiming
 > **NEAT-AI-Lamarck#187** 3 min later (and **#178/#184** earlier) (Issue #209)
 
-The `#188` is a **pull request number**. The `#187` is an issue in a
-**different repository**. The matcher knew neither, so one title blocked five
-issue numbers.
+The `#188` is a **pull request number**. The `#187` is an issue in a **different
+repository**. The matcher knew neither, so one title blocked five issue numbers.
 
 **And it never expires.** Per Issue #3151, `fetchRecentlyClosedPRsForFleet`
-keeps *merged* PRs in the blocking set regardless of the cooldown window —
-only closed-unmerged PRs age out. PR #212 merged on 2026-08-21, so the block
-was permanent while being reported as a "cooldown".
+keeps _merged_ PRs in the blocking set regardless of the cooldown window — only
+closed-unmerged PRs age out. PR #212 merged on 2026-08-21, so the block was
+permanent while being reported as a "cooldown".
 
-This is the Issue #174 class in the claim path: #174 fixed "any PR
-referencing #N is this issue's PR" in the completion and close paths; the
-claim scan still did it, with a looser matcher.
+This is the Issue #174 class in the claim path: #174 fixed "any PR referencing
+#N is this issue's PR" in the completion and close paths; the claim scan still
+did it, with a looser matcher.
 
 ### The fix
 
-`prTitleReferencesIssue` replaces the regex. A `#N` counts as this
-repository's issue unless it is:
+`prTitleReferencesIssue` replaces the regex. A `#N` counts as this repository's
+issue unless it is:
 
-| Shape | Example | Why it is not ours |
-| --- | --- | --- |
-| Repo-qualified | `NEAT-AI-Lamarck#187`, `owner/repo#187` | GitHub's cross-repo syntax — another repository's issue |
-| Pull-request-qualified | `PR #188`, `pull #188`, `pull request #188` | A PR number, not an issue |
+| Shape                  | Example                                     | Why it is not ours                                      |
+| ---------------------- | ------------------------------------------- | ------------------------------------------------------- |
+| Repo-qualified         | `NEAT-AI-Lamarck#187`, `owner/repo#187`     | GitHub's cross-repo syntax — another repository's issue |
+| Pull-request-qualified | `PR #188`, `pull #188`, `pull request #188` | A PR number, not an issue                               |
 
 The canonical delimited form the fleet's own titles carry — `(Issue #N)`,
 `(#N)`, `[#N]` — always counts, via the existing `prTitleMatchesIssue`. A bare
@@ -64,7 +63,7 @@ second PR be opened.
 
 `/` is deliberately **not** a repo qualifier. A repo name never ends with a
 slash (`owner/repo#187` ends in `o`), whereas `#178/#184` uses one to separate
-two references to *this* repo's issues — treating it as a qualifier would have
+two references to _this_ repo's issues — treating it as a qualifier would have
 silently stopped the second one blocking. A test pins that.
 
 **Duplication removed rather than added.** The repository already had the
@@ -82,9 +81,9 @@ external value into a pattern is a ReDoS risk, and `issue_query.ts` carries
 ### The skip reason lied
 
 The tally said `closed-pr-cooldown`, which reads as self-healing and sent this
-diagnosis down the wrong path for a day — I ruled the cooldown out early
-because the window is one hour and the PR had merged 24 hours before. It was
-merged PRs never expiring that I had not accounted for.
+diagnosis down the wrong path for a day — I ruled the cooldown out early because
+the window is one hour and the PR had merged 24 hours before. It was merged PRs
+never expiring that I had not accounted for.
 
 All three collectors (`work_on`, `low_priority`, `idle_task`) now distinguish
 the two, with a new `merged-pr-permanent` `SkipReason` that also names what
@@ -101,8 +100,8 @@ Closes #319.
 Backend change with no web interface, so there is no screenshot.
 
 **Reproduced against the live repository** by calling the real
-`collectWorkOnCandidates` with the real config. With PR #212 in
-`repoClosedPRs`, before the fix:
+`collectWorkOnCandidates` with the real config. With PR #212 in `repoClosedPRs`,
+before the fix:
 
 ```text
 CONSIDERED stSoftwareAU/VibeCoder#187 → SKIPPED reason=closed-pr-cooldown PR #212 closed at 2026-08-21T06:06:28Z
@@ -124,8 +123,8 @@ issue #184 -> BLOCKED by PR #212      issue #188 -> BLOCKED by PR #212
                                       issue #209 -> BLOCKED by PR #212
 ```
 
-After: `#209` (its own issue) and the bare `#178`/`#184` still block; `#187`
-and `#188` do not.
+After: `#209` (its own issue) and the bare `#178`/`#184` still block; `#187` and
+`#188` do not.
 
 **Test suite:**
 
@@ -134,8 +133,8 @@ $ deno test --allow-all tests/pr_title_issue_ref_test.ts
 ok | 11 passed | 0 failed
 ```
 
-**No regression** across the query, linking, collector and recovery suites —
-17 files:
+**No regression** across the query, linking, collector and recovery suites — 17
+files:
 
 ```text
 $ deno test --allow-all tests/*issue_query* tests/*pr_issue_linking* \
@@ -148,28 +147,27 @@ ok | 104 passed | 0 failed
 
 **Full quality gate** (`./quality.sh`, host run): every static gate PASSED —
 `deno type check`, `deno lint`, `deno fmt`, markdownlint, mermaid, workflow
-hygiene and the chokepoint gates. `deno tests` reports only the 11
-pre-existing `setup.ps1` failures (`NotFound: Failed to spawn 'pwsh'`,
-environmental).
+hygiene and the chokepoint gates. `deno tests` reports only the 11 pre-existing
+`setup.ps1` failures (`NotFound: Failed to spawn 'pwsh'`, environmental).
 
 ## Test plan
 
 `worker/deno/tests/pr_title_issue_ref_test.ts` — 11 cases, built on PR #212's
 **real** title rather than invented text:
 
-| Case | Asserts |
-| --- | --- |
-| PR #212 refers to 209 and nothing else it mentions | The whole bug in one assertion: `#209` matches, `#187` and `#188` do not |
-| a bare cross-reference in the same title still blocks | `#178`/`#184` deliberately still match — the guard prefers over-matching to a duplicate PR, and narrowing those needs more than a title |
-| another repository's issue never matches | Four qualified shapes, including `owner/repo#187` and `repo.name#187` |
-| a delimited reference still matches next to a qualified one | `OtherRepo#187 (Issue #187)` — the canonical form is a positive identification |
-| a pull-request reference never matches | `PR #188`, `pull #188`, `pull request #188`, `pr #188` |
-| `PR` inside another word does not suppress a real reference | `REPR handling for #188` still matches — the qualifier is the preceding word, not a substring |
-| the worker's own title convention still blocks | All four delimited styles |
-| a bare unqualified reference still blocks | `Fix #42`, `Closes #42`, `Work on #42` |
-| a longer number is not a match | The pre-existing `#42` ⊉ `#421` guarantee, in both paths |
-| a title with no reference matches nothing | Including the empty title |
-| `prTitleMatchesIssue` unchanged by the move (#106) | The moved function keeps its exact contract |
+| Case                                                        | Asserts                                                                                                                                 |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| PR #212 refers to 209 and nothing else it mentions          | The whole bug in one assertion: `#209` matches, `#187` and `#188` do not                                                                |
+| a bare cross-reference in the same title still blocks       | `#178`/`#184` deliberately still match — the guard prefers over-matching to a duplicate PR, and narrowing those needs more than a title |
+| another repository's issue never matches                    | Four qualified shapes, including `owner/repo#187` and `repo.name#187`                                                                   |
+| a delimited reference still matches next to a qualified one | `OtherRepo#187 (Issue #187)` — the canonical form is a positive identification                                                          |
+| a pull-request reference never matches                      | `PR #188`, `pull #188`, `pull request #188`, `pr #188`                                                                                  |
+| `PR` inside another word does not suppress a real reference | `REPR handling for #188` still matches — the qualifier is the preceding word, not a substring                                           |
+| the worker's own title convention still blocks              | All four delimited styles                                                                                                               |
+| a bare unqualified reference still blocks                   | `Fix #42`, `Closes #42`, `Work on #42`                                                                                                  |
+| a longer number is not a match                              | The pre-existing `#42` ⊉ `#421` guarantee, in both paths                                                                                |
+| a title with no reference matches nothing                   | Including the empty title                                                                                                               |
+| `prTitleMatchesIssue` unchanged by the move (#106)          | The moved function keeps its exact contract                                                                                             |
 
 No new test is added for the `merged-pr-permanent` skip reason: it is a log
 label on an existing branch, and the 104 collector/logger cases already cover

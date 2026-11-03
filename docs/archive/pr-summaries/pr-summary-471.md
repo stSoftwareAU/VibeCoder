@@ -14,7 +14,7 @@ The standard applied — and the line drawn on every judgement call:
   the author typed into both the artefact and the test. Such a test is written
   from the same mental model that produced the artefact, so it cannot disagree
   with its author.
-- **Keep** when the expected value is *computed* in a way that can disagree with
+- **Keep** when the expected value is _computed_ in a way that can disagree with
   the author: a real function called with fixture data, a registry set-compared
   against a parsed document, a link graph resolved, a Mermaid block parsed.
   Reading a file is not the disqualifier — reading a file to compare it against
@@ -22,7 +22,7 @@ The standard applied — and the line drawn on every judgement call:
 
 Issue #470 is the worked example this issue was raised from: `buildBatchQuery`
 asked GitHub for the ahead/behind comparison in the wrong direction, and the
-test that "covered" it asserted the query *text*, so it stayed green for the
+test that "covered" it asserted the query _text_, so it stayed green for the
 whole life of the defect.
 
 ## Evidence
@@ -63,15 +63,15 @@ rejected (Issue #3089) => ./tests/timeline_batch_test.ts:53:6
 FAILED | 16 passed | 1 failed
 ```
 
-Restored, the file is green (17 passed). The deleted text assertion would
-simply have been "corrected" to match the new spelling.
+Restored, the file is green (17 passed). The deleted text assertion would simply
+have been "corrected" to match the new spelling.
 
 ### Suite timing, before and after
 
-| | Tests | Runner wall-clock |
-| --- | --- | --- |
+|        | Tests                              | Runner wall-clock               |
+| ------ | ---------------------------------- | ------------------------------- |
 | Before | 16475 passed, 0 failed, 34 ignored | 7m33s (`time` reported 7m41.7s) |
-| After | 14984 passed, 0 failed, 34 ignored | 7m20s (`time` reported 7m26.9s) |
+| After  | 14984 passed, 0 failed, 34 ignored | 7m20s (`time` reported 7m26.9s) |
 
 1491 tests fewer and about 13s faster. The saving is small because the suite's
 wall-clock is dominated by a handful of subprocess-spawning integration tests,
@@ -80,9 +80,9 @@ tests can fail when the code is wrong.
 
 ### Quality gate
 
-`./quality.sh` PASSED — prompt immutability, benchmark audit, chokepoint
-guards, workflow hygiene, mermaid, markdownlint, docs prompt versions, deno
-tests, lint, type check and fmt.
+`./quality.sh` PASSED — prompt immutability, benchmark audit, chokepoint guards,
+workflow hygiene, mermaid, markdownlint, docs prompt versions, deno tests, lint,
+type check and fmt.
 
 ## Deletions
 
@@ -94,7 +94,7 @@ accounted for below.
 Each loaded a versioned prompt with `loadPrompt()` and asserted the body
 contains a phrase ("carries tagged worked examples", "names the actor in the
 first sentence", "keeps the load-bearing worker contracts"). None ever ran the
-prompt; they asserted an instruction is *present*, never that following it
+prompt; they asserted an instruction is _present_, never that following it
 produces anything. The placeholder-contract half of each file is redundant with
 `prompt_manager_test.ts` → "validates all prompt templates pass", which
 validates **every** shipped template in one behaviour test.
@@ -107,8 +107,8 @@ validates **every** shipped template in one behaviour test.
 `docs_owed_by_code_change`, `documentation_audit_prompt_v2/v4/v7`,
 `duplicated_knowledge_prompt_v3`, `escape_hatch_prompts`,
 `follow_up_dedup_prompt`, `format_drift_prompt_v5`,
-`github_actions_audit_prompt_v1`–`v13`, `v16`, `v17`,
-`grill_me_prompt_v1`–`v5`, `v8`, `v9`, `v11`, `v12`, `internal_dep_fix_prompt`,
+`github_actions_audit_prompt_v1`–`v13`, `v16`, `v17`, `grill_me_prompt_v1`–`v5`,
+`v8`, `v9`, `v11`, `v12`, `internal_dep_fix_prompt`,
 `issue_prompt_v12/v14/v15/v16/v17/v23/v25/v30`, `needs_human_prompt`,
 `no_worker_label_add`, `opus5_prompt_retune`, `orphan_deps_prompt_v1/v2/v5`,
 `performance_workflow_prompt`, `planning_critique_v3/v4`,
@@ -129,7 +129,8 @@ Behaviour that survives elsewhere:
   `*_template_test.ts`.
 - `buildSecurityScanPrompt` substitution — `security_scanner_test.ts`.
 - The CWE SARIF tag `security_scan_prompt_v28_test.ts` produced —
-  `security_sarif_test.ts` → "buildSecuritySarif - CWE rides rule.properties.tags".
+  `security_sarif_test.ts` → "buildSecuritySarif - CWE rides
+  rule.properties.tags".
 
 ### 2. Documentation keyword checks — 13 files deleted
 
@@ -143,11 +144,12 @@ Behaviour that survives elsewhere:
 
 Every assertion was `doc.includes(<phrase the author typed>)` over a `.md` file
 — a bucket guide, `QUORUM.md`, `SECURITY.md`, `CODING-STANDARDS.md`,
-`DESIGN-PRINCIPLES.md` or an archived summary. `design_principles_idle_task_count`
-is additionally subsumed by `idle_task_count_docs_test.ts`, which applies the
-same invariants to every live doc with the count derived from the registry.
-`quorum_docs_test.ts` also carried a dead assertion —
-`assertMentions(QUORUM_DOC, "docs/QUORUM.md", "")` passed unconditionally.
+`DESIGN-PRINCIPLES.md` or an archived summary.
+`design_principles_idle_task_count` is additionally subsumed by
+`idle_task_count_docs_test.ts`, which applies the same invariants to every live
+doc with the count derived from the registry. `quorum_docs_test.ts` also carried
+a dead assertion — `assertMentions(QUORUM_DOC, "docs/QUORUM.md", "")` passed
+unconditionally.
 
 ### 3. Individual tests removed from files that keep real coverage — 202 tests
 
@@ -156,10 +158,9 @@ prose assertions do not): `ci_fix_prompt_v4` (3), `coding_guidelines_v42` (11,
 keeping the `findModelGenerationNames` scan), `planning_critique_v5` (18),
 `planning_v20` (16), `question_prompt_v8` (19), `quorum_prompt_v1` (14),
 `quorum_judge_prompt_v1` (15), `screenshot_prompt_precision` (6),
-`workflow_setup_prompt` (16), `workflow_setup_prompt_v5` (11),
-`prompt_builder` (5 — version floors, a "type is exported" tautology and one
-prompt-prose grep), `project_conventions_stanza` (1),
-`orphan_deps_metadata` (1).
+`workflow_setup_prompt` (16), `workflow_setup_prompt_v5` (11), `prompt_builder`
+(5 — version floors, a "type is exported" tautology and one prompt-prose grep),
+`project_conventions_stanza` (1), `orphan_deps_metadata` (1).
 
 Doc files reduced to their computed checks: `agent_provider_readme_docs` (2),
 `agents_md_pointer_anchors` (1), `bucket_docs` (1),
@@ -168,10 +169,10 @@ Doc files reduced to their computed checks: `agent_provider_readme_docs` (2),
 loop-generated families = 22 test instances), `deno_path_docs` (1),
 `design_principles_template_count` (3), `docs_provider_matrix` (5),
 `human_pr_policy_docs` (5), `markdown_anchors` (2), `model_routing_docs` (1),
-`negative_result_lesson_docs` (4 plus an 8-case loop),
-`priority_ladder_docs` (1), `progress_extension_default_422` (1),
-`quality_gate_docs_consistency` (4), `readme_docs_reachability` (3 plus a
-4-case loop), `threat_model_docs` (3), `timeout_docs_consistency` (5).
+`negative_result_lesson_docs` (4 plus an 8-case loop), `priority_ladder_docs`
+(1), `progress_extension_default_422` (1), `quality_gate_docs_consistency` (4),
+`readme_docs_reachability` (3 plus a 4-case loop), `threat_model_docs` (3),
+`timeout_docs_consistency` (5).
 
 In every case the surviving tests in the same file compute their expectation
 from code — a registry set-compared against a parsed table, a launch plan
@@ -205,20 +206,20 @@ The issue's failure-detection list includes "no remaining test asserts on … a
 legitimate tests, so the line drawn is narrower and is stated here so a reviewer
 can disagree with it explicitly:
 
-- **Removed** — a generated request string asserted as a *proxy* for an outcome
+- **Removed** — a generated request string asserted as a _proxy_ for an outcome
   the test could observe directly (the GraphQL query text above).
-- **Kept** — an argv that *is* the function's return value
-  (`buildContainerLaunchPlan().buildArgs`, `buildInvocation()`,
-  `gh_guard`'s `result.ghArgs`) or the only observable side effect at the
-  process boundary (`setup_scheduled_task`'s recorded `schtasks` invocation).
-  These assert an output, not a spelling, and go red when the behaviour changes.
+- **Kept** — an argv that _is_ the function's return value
+  (`buildContainerLaunchPlan().buildArgs`, `buildInvocation()`, `gh_guard`'s
+  `result.ghArgs`) or the only observable side effect at the process boundary
+  (`setup_scheduled_task`'s recorded `schtasks` invocation). These assert an
+  output, not a spelling, and go red when the behaviour changes.
 
-Also kept, as computed rather than copied: `idle_task_cross_repo_body_refs_test.ts`
-(scans every cross-repo prompt body for bare `#NNN` references and internal
-paths, and cross-checks the prompt list against the templates directory),
-`markdown_anchors`/`threat_model_docs` link-and-anchor resolution,
-`idle_task_count_docs`, and the registry-derived halves of the provider and
-timeout doc tests.
+Also kept, as computed rather than copied:
+`idle_task_cross_repo_body_refs_test.ts` (scans every cross-repo prompt body for
+bare `#NNN` references and internal paths, and cross-checks the prompt list
+against the templates directory), `markdown_anchors`/`threat_model_docs`
+link-and-anchor resolution, `idle_task_count_docs`, and the registry-derived
+halves of the provider and timeout doc tests.
 
 A build guard that fails on new grep-shaped tests remains the follow-up the
 issue described; it is not part of this change.
@@ -227,28 +228,33 @@ issue described; it is not part of this change.
 
 Added — `worker/deno/tests/support/github_graphql_fake.ts` plus:
 
-- `timeline_batch - each issue receives its own timeline (Issue #471)` —
-  two issues with distinct labelled events; a mis-aliased query cannot map them
+- `timeline_batch - each issue receives its own timeline (Issue #471)` — two
+  issues with distinct labelled events; a mis-aliased query cannot map them
   back.
 - `timeline_batch - the most-recent untrusted add survives batching and is
-  rejected (Issue #3089)` — 150 labelled events, the newest by an untrusted
-  actor; **fails when `last:` is flipped to `first:`** (demonstrated above).
+  rejected (Issue #3089)`
+  — 150 labelled events, the newest by an untrusted actor; **fails when `last:`
+  is flipped to `first:`** (demonstrated above).
 - `timeline_batch - the trust gate refuses a batched timeline whose last add is
-  untrusted (Issue #3089)` — end-to-end through
-  `wrapGhWithBatchedTimeline` into `wasLabelAddedByAllowedAuthor`.
+  untrusted (Issue #3089)`
+  — end-to-end through `wrapGhWithBatchedTimeline` into
+  `wasLabelAddedByAllowedAuthor`.
 - `timeline_batch - a repository the API cannot resolve is an error, not an
-  empty timeline` — fail-loud, not a silent empty result.
+  empty timeline`
+  — fail-loud, not a silent empty result.
 - `comment_batch - each issue receives its own comments (Issue #471)`.
 - `comment_batch - the newest comments are the ones fetched (Issue #471)` —
   twice the budget exists; the tail is what comes back.
 - `comment_batch - a repository the API cannot resolve fails the batch
-  (Issue #471)` — the issue lands in `failedNumbers`, not in an empty map.
+  (Issue #471)`
+  — the issue lands in `failedNumbers`, not in an empty map.
 - `check_runs_batch - each PR receives its own rollup (Issue #471)`.
 - `check_runs_batch - a PR the API cannot resolve carries no state, not a green
-  one (Issue #471)` — an unresolvable PR must not read as passing.
+  one (Issue #471)`
+  — an unresolvable PR must not read as passing.
 
-Modified — 34 test files reduced to their behaviour tests (§3 above).
-Deleted — 144 test files (§1 and §2 above).
+Modified — 34 test files reduced to their behaviour tests (§3 above). Deleted —
+144 test files (§1 and §2 above).
 
 Docs — `CODING-STANDARDS.md` gains "Fake the external service, do not assert the
 request" under the TDD section, pointing at the new fake as the worked example.

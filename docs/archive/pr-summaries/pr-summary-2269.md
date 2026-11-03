@@ -22,8 +22,8 @@ trade-off is now stated in the `claim_pr_comment.ts` module comment.
   delete all come back as an error.
 - `claimPrComment` calls it on both no-winner paths, and **not** on the lost
   path — there the winner answers the comment, so its marker is correct.
-- A `reactionsPath` helper replaces the three copies of the
-  `pulls/comments` vs `issues/comments` ternary in `pr_comments.ts`.
+- A `reactionsPath` helper replaces the three copies of the `pulls/comments` vs
+  `issues/comments` ternary in `pr_comments.ts`.
 
 Closes #2269.
 
@@ -48,11 +48,12 @@ Backend/CLI change with no web interface to screenshot. The evidence is the test
 run:
 
 - `deno test tests/claim_pr_comment_eyes_reaction_test.ts` — 15 passed against
-  the fix; **3 of them fail** against `origin/main`'s `claim_pr_comment.ts`
-  (the reaction is never taken back and nothing is logged).
+  the fix; **3 of them fail** against `origin/main`'s `claim_pr_comment.ts` (the
+  reaction is never taken back and nothing is logged).
 - `deno test tests/claim_pr_comment_test.ts
   tests/claim_pr_comment_pagination_test.ts tests/pr_comments_test.ts
-  tests/pr_maintenance_test.ts` — 125 passed, 0 failed.
+  tests/pr_maintenance_test.ts`
+  — 125 passed, 0 failed.
 - `./quality.sh` — PASSED (re-run after the final edit).
 
 The reaction endpoints are exercised through a **fake of the API** keyed on the
@@ -98,7 +99,7 @@ goes red (CODING-STANDARDS.md, "Fake the external service").
   `worker/deno/lib/claim_pr_comment.ts` module doc-comment — reviewer: met
 - **partial** — the comment is left rediscoverable for **every** comment type —
   evidence: `worker/deno/lib/pr_comments.ts` (`pr_review` branch) — reviewer:
-  partial — reason: the `pr_review` marker is a review *dismissal* and GitHub
+  partial — reason: the `pr_review` marker is a review _dismissal_ and GitHub
   offers no un-dismissal, so that no-winner case is reported loudly rather than
   undone
 - **partial** — removal restores rediscoverability in all fleet configurations —
@@ -148,10 +149,11 @@ goes red (CODING-STANDARDS.md, "Fake the external service").
 - **violation** — the PR summary file was missing — evidence:
   `docs/archive/pr-summaries/pr-summary-2269.md` — reason: fixed here
 - **violation** — the first commit subject used `Refs #2269` rather than the
-  documented `(Issue #2269)` form — evidence: commit `Take the eyes reaction
-  back when a PR-comment claim has no winner` — reason: stands (the subject is
-  already published on the branch); the follow-up commits use the documented
-  form and the issue number is in every message
+  documented `(Issue #2269)` form — evidence: commit
+  `Take the eyes reaction
+  back when a PR-comment claim has no winner` —
+  reason: stands (the subject is already published on the branch); the follow-up
+  commits use the documented form and the issue number is in every message
 - **violation** — `removeProcessedMark` returns `Error | null` rather than the
   `Result<T, E>` union used elsewhere in the module — evidence:
   `worker/deno/lib/pr_comments.ts` (`removeProcessedMark` signature) — reason:

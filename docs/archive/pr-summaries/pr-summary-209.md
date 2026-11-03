@@ -37,9 +37,9 @@ The issue's item 3 asked `setup.sh` to write the service accounts into
 `fleet_pr_authors` as well. With the union applied at load that write is
 functionally redundant and would leave the same logins recorded in two places,
 free to drift apart — the exact shape of the original bug. The prompts instead
-state the effect, and the runtime union guarantees it regardless of how the
-file was written (including hand-edited configs, which is how the incident host
-was configured).
+state the effect, and the runtime union guarantees it regardless of how the file
+was written (including hand-edited configs, which is how the incident host was
+configured).
 
 ## Evidence
 
@@ -59,18 +59,18 @@ flowchart LR
 
 Acceptance criteria:
 
-| Criterion                                                            | Where verified                                                                 |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| A sibling in `service_accounts` only blocks the issue's claim         | `findOldestIssue - sibling in service_accounts only still blocks the duplicate` |
-| The startup log names the effective fleet-author set                  | `formatFleetConfigValidation - names the effective author set even when warning` |
-| `resolveFleetPrAuthorSet({…, fleetPrAuthors: [], serviceAccounts: ["stservice"]})` contains `stservice` | `resolveFleetPrAuthorSet - a service-account-only sibling is fleet-owned`       |
+| Criterion                                                                                               | Where verified                                                                   |
+| ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| A sibling in `service_accounts` only blocks the issue's claim                                           | `findOldestIssue - sibling in service_accounts only still blocks the duplicate`  |
+| The startup log names the effective fleet-author set                                                    | `formatFleetConfigValidation - names the effective author set even when warning` |
+| `resolveFleetPrAuthorSet({…, fleetPrAuthors: [], serviceAccounts: ["stservice"]})` contains `stservice` | `resolveFleetPrAuthorSet - a service-account-only sibling is fleet-owned`        |
 
 Gate: `./quality.sh` passes every check except `deno tests`, which reports 10
 pre-existing failures unrelated to this change (`fleet_health_test.ts`,
 `host_workdir_guard_test.ts`, `optional_feature_env_test.ts`,
 `setup_workdir_reminder_test.ts` — container work-dir path assumptions). The
-same 10 fail on a clean checkout of the branch point; the remaining 14,774
-tests pass.
+same 10 fail on a clean checkout of the branch point; the remaining 14,774 tests
+pass.
 
 ## Test Plan
 
@@ -92,6 +92,6 @@ New — `worker/deno/tests/fleet_service_accounts_test.ts` (11 tests):
 
 Modified — `worker/deno/tests/fleet_config_validation_test.ts`: the two
 `formatFleetConfigValidation` tests that asserted exact non-`ok` output now
-expect the leading `effective-authors` line (documented behaviour change), and
-a new test asserts the set is named at both `ok` and `warning` level. No test
-was removed or disabled.
+expect the leading `effective-authors` line (documented behaviour change), and a
+new test asserts the set is named at both `ok` and `warning` level. No test was
+removed or disabled.

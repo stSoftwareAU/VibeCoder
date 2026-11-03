@@ -13,18 +13,17 @@ privilege check shaped like `repo_settings_scanner.ts` — same pattern, opposit
 direction: that one asks whether the repository is locked down enough, this one
 asks whether the worker's own token is trusted too much.
 
-Per monitored repo it reads `repos/{owner}/{repo}` and inspects
-`.permissions`. `admin` or `maintain` true means the token can create, edit and
-delete rulesets and change repository settings, so it emits one finding with
-the stable id `BP-WORKER-TOKEN-CAN-EDIT-RULESETS`, filed with `needs-human`,
-`security` and `severity:high`. Only when a grant is found does it spend two
-further reads to name it exactly: the token's identity (`user`) and, for a
-GitHub App installation token, the installation's `administration` /
-`repository_hooks` grants (`repos/{owner}/{repo}/installation`). The body
-states which permission is granted, what it lets the worker do (delete the
-required-status-check ruleset that gates merges), and the human remedy —
-downgrade the service account to `write`/`push`, or narrow the App
-installation's `administration` permission.
+Per monitored repo it reads `repos/{owner}/{repo}` and inspects `.permissions`.
+`admin` or `maintain` true means the token can create, edit and delete rulesets
+and change repository settings, so it emits one finding with the stable id
+`BP-WORKER-TOKEN-CAN-EDIT-RULESETS`, filed with `needs-human`, `security` and
+`severity:high`. Only when a grant is found does it spend two further reads to
+name it exactly: the token's identity (`user`) and, for a GitHub App
+installation token, the installation's `administration` / `repository_hooks`
+grants (`repos/{owner}/{repo}/installation`). The body states which permission
+is granted, what it lets the worker do (delete the required-status-check ruleset
+that gates merges), and the human remedy — downgrade the service account to
+`write`/`push`, or narrow the App installation's `administration` permission.
 
 It is wired into the `github-actions-audit` template as section 5l, beside the
 repository-settings pre-filer (5k), so every monitored repo is covered on the
@@ -34,8 +33,8 @@ Closes #599.
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot; the evidence is the
-test suite plus the type check.
+Backend/CLI change with no web interface to screenshot; the evidence is the test
+suite plus the type check.
 
 ```
 deno test --allow-all tests/worker_token_privilege_scanner_test.ts
@@ -70,16 +69,17 @@ flowchart TD
   `…::scanWorkerTokenPrivileges - an admin token is one needs-human escalation naming the grant (Issue #599)`
   covers the detection itself on the same terms.
 - **Original trigger closed, no trivial bypass** — the unchecked condition was
-  an `admin`/`maintain` worker token silently retaining ruleset write access.
-  It is now read on every audit cycle from the authoritative surface
-  (`repos/{owner}/{repo}.permissions`), and both ruleset-capable permissions
-  are checked, not just `admin`, so a token downgraded from `admin` to
-  `maintain` — the obvious near-miss bypass — is still caught. The two ways to
-  make the check *appear* clean are both closed: an API error and a payload
-  carrying no `.permissions` object each report through `onLookupFailure` and
-  return no finding, so an unreadable scope can never be rendered as a
-  "verified safe" verdict.
-- **No write probe** — `worker/deno/tests/worker_token_privilege_scanner_test.ts::scanWorkerTokenPrivileges - reads only; never probes a ruleset with a write (Issue #599)`
+  an `admin`/`maintain` worker token silently retaining ruleset write access. It
+  is now read on every audit cycle from the authoritative surface
+  (`repos/{owner}/{repo}.permissions`), and both ruleset-capable permissions are
+  checked, not just `admin`, so a token downgraded from `admin` to `maintain` —
+  the obvious near-miss bypass — is still caught. The two ways to make the check
+  _appear_ clean are both closed: an API error and a payload carrying no
+  `.permissions` object each report through `onLookupFailure` and return no
+  finding, so an unreadable scope can never be rendered as a "verified safe"
+  verdict.
+- **No write probe** —
+  `worker/deno/tests/worker_token_privilege_scanner_test.ts::scanWorkerTokenPrivileges - reads only; never probes a ruleset with a write (Issue #599)`
   asserts over every recorded `gh` invocation that it is an `api` call with no
   `-X`/`--method`/`-f`/`--field`/`--input` argument and no `rulesets` endpoint.
 
@@ -92,9 +92,11 @@ flowchart TD
 - **met** — The finding is filed as a `needs-human` + `security` +
   `severity:high` issue, deduplicated by a stable id — evidence:
   `worker/deno/tests/github_actions_audit_template_test.ts::runTask - an over-privileged worker token is filed as a needs-human security escalation (Issue #599)`
-  and `…worker_token_privilege_scanner_test.ts::scanWorkerTokenPrivileges - an already-open finding id is not re-filed (Issue #599)`
+  and
+  `…worker_token_privilege_scanner_test.ts::scanWorkerTokenPrivileges - an already-open finding id is not re-filed (Issue #599)`
 - **met** — The scanner performs no write of any kind — no ruleset probe —
-  evidence: `worker/deno/tests/worker_token_privilege_scanner_test.ts::scanWorkerTokenPrivileges - reads only; never probes a ruleset with a write (Issue #599)`
+  evidence:
+  `worker/deno/tests/worker_token_privilege_scanner_test.ts::scanWorkerTokenPrivileges - reads only; never probes a ruleset with a write (Issue #599)`
 - **met** — A failed lookup logs an error and yields no finding, never a "safe"
   verdict — evidence:
   `worker/deno/tests/worker_token_privilege_scanner_test.ts::scanWorkerTokenPrivileges - a failed permission lookup is reported and yields no finding, never a safe verdict (Issue #599)`
@@ -116,27 +118,26 @@ flowchart TD
   escalation would silently never file in a repo missing `needs-human`.
 - **unrequested** — the shared `makeGhStub` fixture in
   `github_actions_audit_template_test.ts` now returns `permissions` on
-  `repos/org/repo` — reason: fixture update only (no test removed or
-  weakened), so the default-wired scanner sees a correctly scoped push-only
-  token in the existing scenarios.
+  `repos/org/repo` — reason: fixture update only (no test removed or weakened),
+  so the default-wired scanner sees a correctly scoped push-only token in the
+  existing scenarios.
 
 ## Test Plan
 
 - Added `worker/deno/tests/worker_token_privilege_scanner_test.ts` — 7 tests:
   admin → finding; maintain-only → finding and push-only → silent; read-only
-  invariant over every `gh` call; App installation grant named in the
-  evidence; lookup failure and a missing `.permissions` object → reported, no
-  finding; identity read failure → reported but the finding still stands;
-  known-open id → not re-filed.
-- Added two tests to
-  `worker/deno/tests/github_actions_audit_template_test.ts` — the escalation is
-  filed with `needs-human`, `security` and `severity:high` after its labels are
-  ensured; a failing lookup is logged loud and files nothing.
+  invariant over every `gh` call; App installation grant named in the evidence;
+  lookup failure and a missing `.permissions` object → reported, no finding;
+  identity read failure → reported but the finding still stands; known-open id →
+  not re-filed.
+- Added two tests to `worker/deno/tests/github_actions_audit_template_test.ts` —
+  the escalation is filed with `needs-human`, `security` and `severity:high`
+  after its labels are ensured; a failing lookup is logged loud and files
+  nothing.
 - `./quality.sh` run in full. Every check passes except the pre-existing
   environmental failures in this container: `tests/gh_spawn_test.ts` (3),
   `tests/service_account_env_test.ts` (1, asserts a `/tmp` gh-config path
-  against the container's `.container-state/gh-config`) and the uncaught
-  GraphQL "API rate limit already exceeded" errors in `tests/run_core_test.ts`
-  and `tests/run_core_rate_limit_resume_test.ts`. Confirmed pre-existing by
-  running the same four files in a worktree of the branch point: identical
-  `36 failed`.
+  against the container's `.container-state/gh-config`) and the uncaught GraphQL
+  "API rate limit already exceeded" errors in `tests/run_core_test.ts` and
+  `tests/run_core_rate_limit_resume_test.ts`. Confirmed pre-existing by running
+  the same four files in a worktree of the branch point: identical `36 failed`.

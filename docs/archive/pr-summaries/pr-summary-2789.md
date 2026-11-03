@@ -4,12 +4,12 @@
 
 Closes #2789.
 
-GRQ-AutoTrader PRs #1631 and #1634 sat untouched because of how the
-maintenance lane (`m1`) works. The lane runs PR feedback, spelling, CI fixes
-and merge-conflict resolution, and it needs the repository to itself. Whenever
-an issue slot held the repository, the lane logged
-`Deferring … : an issue slot holds the repository` at INFO and tried again
-next cycle.
+GRQ-AutoTrader PRs #1631 and #1634 sat untouched because of how the maintenance
+lane (`m1`) works. The lane runs PR feedback, spelling, CI fixes and
+merge-conflict resolution, and it needs the repository to itself. Whenever an
+issue slot held the repository, the lane logged
+`Deferring … : an issue slot holds the repository` at INFO and tried again next
+cycle.
 
 On a busy repository the slots claim issue after issue, so a slot held it at
 every lane pass. The PRs waited forever, and nothing louder than an INFO line
@@ -19,14 +19,14 @@ Fix, in `InFlightRepoRegistry` (`worker/deno/lib/in_flight_repos.ts`):
 
 - **A refused lane reserves the repository.** While it is reserved, `tryAcquire`
   refuses any **new** slot stream of it, and `claimExcludedRepos()` (leased ∪
-  reserved) keeps the claim scan off it. A slot already working there keeps
-  its hold.
+  reserved) keeps the claim scan off it. A slot already working there keeps its
+  hold.
 - **The lane wins it next.** When the holder releases, the lane's next pass
   takes the lease and the reservation is spent.
 - **Bounded.** Each refused pass refreshes the reservation, which lapses
   `LANE_RESERVATION_TTL_MS` (2 h) after the last refusal. That is two default
-  cycles, because the lane asks once per cycle. A PR fixed elsewhere cannot
-  hold its repository hostage.
+  cycles, because the lane asks once per cycle. A PR fixed elsewhere cannot hold
+  its repository hostage.
 - **Loud.** The three deferral logs are now WARN and say the repository is
   reserved.
 
@@ -70,13 +70,13 @@ ok | 37 passed | 0 failed
 
 ## Test Plan
 
-- [x] New regression tests are green; the existing registry and lane suites
-      are unchanged and green.
+- [x] New regression tests are green; the existing registry and lane suites are
+      unchanged and green.
 - [x] `deno fmt`, `deno lint` and `deno check` pass on the touched files.
 - [x] `./quality.sh`.
-- [ ] After deploy, GRQ-AutoTrader #1631 and #1634 get serviced. Expect a
-      `[m1]` WARN `repository reserved for the maintenance lane`, then a
-      feedback or CI-fix run.
+- [ ] After deploy, GRQ-AutoTrader #1631 and #1634 get serviced. Expect a `[m1]`
+      WARN `repository reserved for the maintenance lane`, then a feedback or
+      CI-fix run.
 
 ## Checklist
 

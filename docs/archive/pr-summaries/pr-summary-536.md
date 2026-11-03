@@ -21,16 +21,16 @@ accepts the block for each listed type" to hold:
 
 - `supply_chain_readiness` and `supply_chain_detection` were in
   `REQUIRED_PLACEHOLDERS` only, so `getOptionalPlaceholders` errored on them.
-  They now have optional entries (`OPEN_ISSUE_TITLES` only — their prompts
-  carry no attribution footer).
+  They now have optional entries (`OPEN_ISSUE_TITLES` only — their prompts carry
+  no attribution footer).
 - `dead_code`, `deprecated_api` and `format_drift` were unregistered in **both**
   maps, so `validatePromptTemplate` refused the surface outright with "Unknown
   template type" and nothing guarded their two dedup placeholders. They are now
   registered with the placeholders every shipped version already carries
   (`SUPPRESSED_IDS`, `KNOWN_OPEN_FINDING_IDS`) — the `doc_coverage` precedent
-  from #3807. Verified backwards compatible: v1 onwards of all three carry
-  both, and the new "every shipped scan version still validates" test asserts
-  it against the real files in `prompts/`.
+  from #3807. Verified backwards compatible: v1 onwards of all three carry both,
+  and the new "every shipped scan version still validates" test asserts it
+  against the real files in `prompts/`.
 
 ## Evidence
 

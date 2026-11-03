@@ -4,9 +4,9 @@
 
 Closes #1927.
 
-The subscription-authenticated multi-provider path was delivered in three
-issues — Codex persistent ChatGPT login (#1924), the shared quota/status probe
-(#1925) and quota-aware automatic selection/failover (#1926). This issue is the
+The subscription-authenticated multi-provider path was delivered in three issues
+— Codex persistent ChatGPT login (#1924), the shared quota/status probe (#1925)
+and quota-aware automatic selection/failover (#1926). This issue is the
 **qualification** layer that decides whether the path is production-ready, not a
 re-implementation of it.
 
@@ -26,9 +26,11 @@ flowchart TD
 
 Three load-bearing properties are exercised offline, without credentials:
 
-- **Restart determinism** — the snapshot is a pure function of `(statuses,
-  auth, now, selection)`, so two identical worker/container generations produce
-  an identical `[soak]` line and a Claude-only baseline cannot drift.
+- **Restart determinism** — the snapshot is a pure function of
+  `(statuses,
+  auth, now, selection)`, so two identical worker/container
+  generations produce an identical `[soak]` line and a Claude-only baseline
+  cannot drift.
 - **Token refresh, not reuse** — `refreshInstant` names the earliest refresh
   instant (expiry wins, else a 12-hour horizon after the last refresh), so a
   long-lived run refreshes rather than reusing an unexpired token forever.
@@ -49,18 +51,20 @@ ok | 23 passed | 0 failed
 ```
 
 The lib-sweep-coverage ledger registers the new module and passes its
-enforcement (`every non-test module under the ledger roots is claimed by
-exactly one sweep slice … ok`), and `markdownlint-cli2` reports 0 issues across
-the 133 scanned Markdown files.
+enforcement
+(`every non-test module under the ledger roots is claimed by
+exactly one sweep slice … ok`),
+and `markdownlint-cli2` reports 0 issues across the 133 scanned Markdown files.
 
 The full `./quality.sh` gate is red only on the ambient container image: this
 host's image installed `deepseek`, not `claude`, so every suite that exercises
 the Claude provider (`claude_runner_*`, `agent_mcp_config`, `agent_progress`,
 the `CONTAINMENT.md` docs test via `buildContainerLaunchPlan`) fails with
 `The running container image did not install the "claude" coding-agent
-provider. Installed: deepseek.` — before and after this change. The failure is
-environmental, not a regression: none of the failing suites is touched here,
-and the suites this change does touch pass cleanly.
+provider. Installed: deepseek.`
+— before and after this change. The failure is environmental, not a regression:
+none of the failing suites is touched here, and the suites this change does
+touch pass cleanly.
 
 ## Acceptance Criteria
 
@@ -69,21 +73,23 @@ and the suites this change does touch pass cleanly.
 The spec reviewer ran against the diff and the issue body and returned FAIL on
 one point only — **Observability**: the new surface was dead code with no
 production call site. That is now fixed by wiring `buildSubscriptionSoakStatus`
-into `refreshAutomaticProviderRouting` (`worker/deno/lib/provider_auto_runtime.ts`),
-so the `[soak]` line is emitted on every `agent_provider_mode: "auto"` decision.
+into `refreshAutomaticProviderRouting`
+(`worker/deno/lib/provider_auto_runtime.ts`), so the `[soak]` line is emitted on
+every `agent_provider_mode: "auto"` decision.
 
 - **met** — Automated restart-cycle coverage exists — evidence:
   `worker/deno/tests/subscription_soak_test.ts::soak status - a Claude-only baseline is byte-identical across worker restarts`,
   `::soak status - repeated builds need no files, settings or ambient state`,
-  and `::soak status - refreshed Codex auth persists outside the disposable container`
+  and
+  `::soak status - refreshed Codex auth persists outside the disposable container`
   — reviewer: met.
 - **met** — Codex refreshed auth survives disposable container replacement —
   evidence: `subscription_soak_test.ts:133` writes `auth.json` under a
   persistent temp dir shared by two simulated container generations and asserts
   both classify it as `chatgpt` via the real `resolveCodexAuthMode` while the
   real `buildIsolatedCodexChildEnv` strips `OPENAI_API_KEY`/`CODEX_API_KEY` —
-  reviewer: met (token refresh itself is the pure-math `refreshInstant`/`isTokenRefreshDue`;
-  the live refresh is manual-soak step 4).
+  reviewer: met (token refresh itself is the pure-math
+  `refreshInstant`/`isTokenRefreshDue`; the live refresh is manual-soak step 4).
 - **met** — Claude-only baseline remains byte-for-byte/config-semantically
   compatible — evidence: the diff touches no routing/config production code;
   `subscription_soak_test.ts:76` and `:111` assert an unchanged baseline with no
@@ -112,7 +118,8 @@ so the `[soak]` line is emitted on every `agent_provider_mode: "auto"` decision.
   `provider_auto_runtime.ts` (was the one FAIL).
 - **met** — Billing guard places metered-looking credentials — evidence:
   `subscription_soak_test.ts:154` places `OPENAI_API_KEY`/`CODEX_API_KEY` and
-  proves stripping; `provider_auto_runtime_test.ts::a metered ANTHROPIC_API_KEY classifies Claude as ineligible for auto routing`
+  proves stripping;
+  `provider_auto_runtime_test.ts::a metered ANTHROPIC_API_KEY classifies Claude as ineligible for auto routing`
   drives the real `resolveAutomaticProviderStatus("claude", …)` to
   `billingMode: "metered"` / `reason: "api-key-account"` — reviewer: met (the
   `ANTHROPIC_API_KEY` literal case was the flagged gap, now covered).
@@ -136,8 +143,8 @@ errors; no secrets in outputs; Deno-native tooling; test quality incl. a fixed
 - **clean** — Australian English throughout; real tests calling real exported
   functions through injected seams (`selectAutomaticProvider`,
   `buildIsolatedCodexChildEnv`, `resolveCodexAuthMode`,
-  `resolveAutomaticProviderStatus`), none deleted; no Node.js/npm introduced;
-  no hidden paths staged; the ledger entry satisfies
+  `resolveAutomaticProviderStatus`), none deleted; no Node.js/npm introduced; no
+  hidden paths staged; the ledger entry satisfies
   `mismatchedTopUpIds`/`unnamedSmallSliceModules` and its written record names
   `worker/deno/lib/subscription_soak_status.ts`.
 - **noted, not a blocker** — the ledger `sweptAt` is the branch base commit

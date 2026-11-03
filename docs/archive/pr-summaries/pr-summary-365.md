@@ -26,13 +26,13 @@ Both now go through the provider seam:
   unchanged.
 - `warnNoModelLadder()` states the outcome loudly and **once per provider**
   (mirroring the `clearGeminiEffortWarnings` pattern in `gemini_executor.ts`),
-  naming the provider and the model. `claude_runner.ts` calls it at both
-  give-up sites — the model-unavailable branch and the rate-limit-exhausted
-  branch — and the rate-limit give-up message now carries the reason.
+  naming the provider and the model. `claude_runner.ts` calls it at both give-up
+  sites — the model-unavailable branch and the rate-limit-exhausted branch — and
+  the rate-limit give-up message now carries the reason.
 
-Under Claude, behaviour and reasons are byte-for-byte what they were: the
-Claude descriptor's `resolveModel` is `resolveClaudeModel`, which is exactly
-what `buildClaudeModelArgs` wraps.
+Under Claude, behaviour and reasons are byte-for-byte what they were: the Claude
+descriptor's `resolveModel` is `resolveClaudeModel`, which is exactly what
+`buildClaudeModelArgs` wraps.
 
 Closes #365.
 
@@ -68,13 +68,14 @@ pre-existing: the identical 10 fail on the stashed, unmodified tree.
 
 ## Test Plan
 
-Added to `worker/deno/tests/model_fallback_test.ts` (all call the real
-functions and assert on returned values / captured output):
+Added to `worker/deno/tests/model_fallback_test.ts` (all call the real functions
+and assert on returned values / captured output):
 
-- `resolveCurrentModel uses the Codex chain under Codex` and `… the Gemini
-  chain under Gemini` — the resolved id equals `resolveCodexModel()` /
-  `resolveGeminiModel()` and differs from what the Claude chain returns for the
-  same phase (the bug).
+- `resolveCurrentModel uses the Codex chain under Codex` and
+  `… the Gemini
+  chain under Gemini` — the resolved id equals
+  `resolveCodexModel()` / `resolveGeminiModel()` and differs from what the
+  Claude chain returns for the same phase (the bug).
 - `resolveCurrentModel follows the active provider from the environment` —
   `VIBE_AGENT_PROVIDER=codex` with no explicit selector.
 - `an explicit model still wins under any provider`.
@@ -87,7 +88,8 @@ functions and assert on returned values / captured output):
 - `the missing ladder is warned about once, naming the provider` — captures
   `console.warn`, calls the warning twice, asserts exactly one message naming
   `codex` and the model.
-- `warnNoModelLadder is silent for every other outcome` and `the warning goes
+- `warnNoModelLadder is silent for every other outcome` and
+  `the warning goes
   to the run logger when one is supplied`.
 
 Existing `model_fallback_retry_test.ts` and `model_fallback_test.ts` cases were
@@ -97,6 +99,6 @@ argument, which resolves to Claude.
 ## Documentation
 
 `docs/MODEL-AND-CACHING.md` § "Model Fallback on Rate Limit" gains a bullet
-stating that the ladder belongs to the active provider, that Codex/Gemini
-return `no-ladder-for-provider` with a once-only warning, and how to give a
-provider a ladder.
+stating that the ladder belongs to the active provider, that Codex/Gemini return
+`no-ladder-for-provider` with a once-only warning, and how to give a provider a
+ladder.

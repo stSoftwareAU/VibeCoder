@@ -18,16 +18,18 @@ Backend/CLI change — no web interface to screenshot. Verified by unit tests
 
 What changed in `worker/deno/lib/grill_me_processor.ts`:
 
-- **Pre-Claude gate (step 3b)** — `hasGrillMeRoundAwaitingReply(comments,
-  githubUser)` replaces `isAwaitingDeveloperReply(comments, githubUser)`, so a
-  peer's unanswered round prevents the invocation rather than being cleaned up
-  after the fact by the Issue #3768 post-run check.
-- **`countGrillMeRounds` / `findLatestWorkerRoundTimestamp` / `hasReadyMarkerBeenPosted`**
-  are author-agnostic. The first two continue the round numbering across
-  identities; the third keeps a peer's Ready marker on the Ready path instead
-  of letting it fall into the awaiting-reply branch, which would have told the
-  developer to "answer the questions in the latest grill-me round" when that
-  round asked none.
+- **Pre-Claude gate (step 3b)** —
+  `hasGrillMeRoundAwaitingReply(comments,
+  githubUser)` replaces
+  `isAwaitingDeveloperReply(comments, githubUser)`, so a peer's unanswered round
+  prevents the invocation rather than being cleaned up after the fact by the
+  Issue #3768 post-run check.
+- **`countGrillMeRounds` / `findLatestWorkerRoundTimestamp` /
+  `hasReadyMarkerBeenPosted`** are author-agnostic. The first two continue the
+  round numbering across identities; the third keeps a peer's Ready marker on
+  the Ready path instead of letting it fall into the awaiting-reply branch,
+  which would have told the developer to "answer the questions in the latest
+  grill-me round" when that round asked none.
 - **Marker matching is line-anchored** (`carriesMarkerHeading`). Author-agnostic
   matching on a bare `includes()` would also match a round quoted by GitHub's
   "Quote reply" button, so a developer answering a round would have re-asserted
@@ -41,9 +43,9 @@ What changed in `worker/deno/lib/grill_me_processor.ts`:
   go-ahead and re-open the gate this issue closes.
 - **`isAwaitingDeveloperReply` is removed** with its 8 unit tests. Its only
   production caller was the gate replaced here, and its behaviour is a strict
-  subset of `hasGrillMeRoundAwaitingReply` (a true result from the old helper
-  is always true under the new one). Documented here per the "existing tests
-  are not removed silently" rule.
+  subset of `hasGrillMeRoundAwaitingReply` (a true result from the old helper is
+  always true under the new one). Documented here per the "existing tests are
+  not removed silently" rule.
 
 ```mermaid
 flowchart TD
@@ -74,18 +76,21 @@ flowchart TD
 - **met** — gate on the author-agnostic check before invoking Claude, keeping
   the Issue #1878 explicit `needs-human` removal override — evidence:
   `worker/deno/lib/grill_me_processor.ts` step 3b and
-  `isNonWorkerRemovalAfterRound`; tests `processGrillMe - skips Claude when a
-  peer identity posted the unanswered round (Issue #1560)` and `processGrillMe -
-  a peer identity's needs-human strip is not a developer signal (Issue #1560)` —
-  reviewer: partial — reason: the reviewer saw the first revision, where the
-  retained override still accepted a *peer worker's* label strip as consent;
+  `isNonWorkerRemovalAfterRound`; tests
+  `processGrillMe - skips Claude when a
+  peer identity posted the unanswered round (Issue #1560)`
+  and
+  `processGrillMe -
+  a peer identity's needs-human strip is not a developer signal (Issue #1560)`
+  — reviewer: partial — reason: the reviewer saw the first revision, where the
+  retained override still accepted a _peer worker's_ label strip as consent;
   fixed here by excluding fleet logins from the override, with a test
 - **met** — `countGrillMeRounds` counts round markers from any worker identity
   so `ROUND_NUMBER` continues from the peer's round — evidence:
   `worker/deno/tests/grill_me_processor_test.ts::processGrillMe - invokes Claude
   once the developer has replied to a peer identity's round (Issue #1560)`
   (asserts `roundNumber === 2` and `Round 2` in the prompt) — reviewer: partial
-  — reason: the reviewer objected that author-*blind* matching let a quoted
+  — reason: the reviewer objected that author-_blind_ matching let a quoted
   round inflate the count and that a peer Ready marker mis-routed; both are
   fixed here (line-anchored markers, fleet-wide `hasReadyMarkerBeenPosted`),
   each with a test
@@ -93,7 +98,8 @@ flowchart TD
   identity B's `processGrillMe` returns the awaiting-reply no-op without
   invoking Claude — evidence:
   `worker/deno/tests/grill_me_processor_test.ts::processGrillMe - skips Claude
-  when a peer identity posted the unanswered round (Issue #1560)` — reviewer: met
+  when a peer identity posted the unanswered round (Issue #1560)`
+  — reviewer: met
 - **unrequested** — `findLatestWorkerRoundTimestamp` and
   `hasReadyMarkerBeenPosted` made fleet-wide, marker matching line-anchored, and
   `isAwaitingDeveloperReply` removed — reviewer: unrequested — reason: each is
@@ -118,10 +124,10 @@ flowchart TD
   contradicting the new bullet two paragraphs below — evidence:
   `docs/INTERNALS.md:1282` — reason: corrected in this diff
 - **violation** — dead `_githubUser` parameter kept "for call-site symmetry" on
-  helpers that ignore it — evidence:
-  `worker/deno/lib/grill_me_processor.ts:294` — reason: parameter dropped from
-  `countGrillMeRounds`, `findLatestWorkerRoundTimestamp` and
-  `hasReadyMarkerBeenPosted`; all call sites updated
+  helpers that ignore it — evidence: `worker/deno/lib/grill_me_processor.ts:294`
+  — reason: parameter dropped from `countGrillMeRounds`,
+  `findLatestWorkerRoundTimestamp` and `hasReadyMarkerBeenPosted`; all call
+  sites updated
 - **violation** — a `pendingRoundIdentity` log field that re-ran a full scan for
   a diagnostic string and mislabelled it — evidence:
   `worker/deno/lib/grill_me_processor.ts:1102` — reason: removed

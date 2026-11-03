@@ -73,9 +73,9 @@ markdownlint).
 New tests in `worker/deno/tests/idle_decision_census_test.ts`:
 
 - `census - an unscanned repo's inversion is deferred, not escalated` — the
-  regression test for this issue: eight `work-on` issues on a
-  `cycle_deadline` cycle still set `inversionDetected` (filer stays suppressed)
-  but produce an empty `escalationRepos`.
+  regression test for this issue: eight `work-on` issues on a `cycle_deadline`
+  cycle still set `inversionDetected` (filer stays suppressed) but produce an
+  empty `escalationRepos`.
 - `census - a scanned repo's inversion is escalation-worthy`
 - `census - escalation is decided per repo, not per cycle`
 - `census - a non-monitored unscanned repo appears in neither list`

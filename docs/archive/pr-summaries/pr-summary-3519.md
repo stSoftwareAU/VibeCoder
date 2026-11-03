@@ -9,15 +9,15 @@ could validate a forged `best-practice-ignore … author=<login>` marker.
 
 - **Name fallback dropped.** `loginFromGitIdentity(email)` now derives a login
   only from a `users.noreply.github.com` address and returns `null` otherwise;
-  `parseBlamePorcelain` no longer reads the `author ` header.
+  `parseBlamePorcelain` no longer reads the `author` header.
 - **Docs corrected.** The `suppression_identity.ts` module doc, the
   `loginFromGitIdentity` and `hasAwsEmulatorWaiver` doc comments,
   `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` and `docs/GATE-SKIP-DRIFT-SCAN.md` no
   longer claim a fork PR "still blames as the attacker" unconditionally: the
   binding holds only when the merge strategy rewrites authorship (squash merge).
-- **Residual risk recorded.** `docs/THREAT-MODEL.md` gains **R15** — the
-  binding depends on the merge strategy; accepted because the marker only
-  suppresses an advisory finding and fails closed.
+- **Residual risk recorded.** `docs/THREAT-MODEL.md` gains **R15** — the binding
+  depends on the merge strategy; accepted because the marker only suppresses an
+  advisory finding and fails closed.
 
 ```mermaid
 flowchart LR
@@ -33,11 +33,11 @@ Closes #3519
 
 ### Intent and Rationale
 
-A suppression marker's `author=` must be bound to someone the contributor
-cannot impersonate by editing their own git config. The author name is free
-text, so it is no evidence of identity; dropping it closes the trivial forgery.
-The noreply email is self-set too, so the docs now state the honest limit
-instead of claiming the binding is unconditional.
+A suppression marker's `author=` must be bound to someone the contributor cannot
+impersonate by editing their own git config. The author name is free text, so it
+is no evidence of identity; dropping it closes the trivial forgery. The noreply
+email is self-set too, so the docs now state the honest limit instead of
+claiming the binding is unconditional.
 
 ### Essential Design Decisions
 
@@ -90,13 +90,13 @@ archived record unrelated to blame binding.
 ## Test Plan
 
 - **Added** `worker/deno/tests/suppression_identity_test.ts` — "findSuppressions
-  - a self-set author name of an allowlisted login does not bind (Issue
-  #3519)": a real git repo commits the marker as `nigel <attacker@example.com>`
-  and asserts `blameFileLineLogins` leaves line 1 unknown, the record is invalid
-  with `allowedAuthors: ["nigel"]`, and `isSuppressed` is `false`. Red-check:
-  run against the base-branch `suppression_comments.ts` /
-  `suppression_identity.ts` it fails (blame returns `"nigel"`); it passes after
-  the fix. This is the regression guard for the issue.
+  - a self-set author name of an allowlisted login does not bind (Issue #3519)":
+    a real git repo commits the marker as `nigel <attacker@example.com>` and
+    asserts `blameFileLineLogins` leaves line 1 unknown, the record is invalid
+    with `allowedAuthors: ["nigel"]`, and `isSuppressed` is `false`. Red-check:
+    run against the base-branch `suppression_comments.ts` /
+    `suppression_identity.ts` it fails (blame returns `"nigel"`); it passes
+    after the fix. This is the regression guard for the issue.
 - **Replaced** "loginFromGitIdentity - treats a login-shaped author name as the
   login" (asserted `("nigel", "nigel@example.com") → "nigel"` and
   `("Nigel", "dev@example.com") → "nigel"`) with "loginFromGitIdentity - ignores
@@ -116,21 +116,22 @@ archived record unrelated to blame binding.
 - Removed from `worker/deno/tests/suppression_identity_test.ts`:
   `assertEquals( loginFromGitIdentity("Nigel Leck", "nigel@users.noreply.github.com"), "nigel", );`
   — #3519 drops the author-name parameter, so the two-argument call no longer
-  exists; the one-argument `loginFromGitIdentity("nigel@users.noreply.github.com")`
-  assertion in the same test keeps the coverage.
+  exists; the one-argument
+  `loginFromGitIdentity("nigel@users.noreply.github.com")` assertion in the same
+  test keeps the coverage.
 - Removed from `worker/deno/tests/suppression_identity_test.ts`:
   `assertEquals( loginFromGitIdentity("Nigel Leck", "12345+nigel@users.noreply.github.com"), "nigel", );`
   — #3519 drops the author-name parameter; the one-argument
   `loginFromGitIdentity("12345+nigel@users.noreply.github.com")` assertion in
   the same test keeps the coverage.
 - Removed from `worker/deno/tests/suppression_identity_test.ts`:
-  `assertEquals(loginFromGitIdentity("nigel", "nigel@example.com"), "nigel");`
-  — #3519 requires that a login-shaped author name with an unrelated email no
+  `assertEquals(loginFromGitIdentity("nigel", "nigel@example.com"), "nigel");` —
+  #3519 requires that a login-shaped author name with an unrelated email no
   longer binds, so the old value is untrue.
 - Removed from `worker/deno/tests/suppression_identity_test.ts`:
-  `assertEquals(loginFromGitIdentity("Nigel", "dev@example.com"), "nigel");`
-  — #3519 requires that the author name is never used, so the old value is
-  untrue; `loginFromGitIdentity("dev@example.com")` now asserts `null`.
+  `assertEquals(loginFromGitIdentity("Nigel", "dev@example.com"), "nigel");` —
+  #3519 requires that the author name is never used, so the old value is untrue;
+  `loginFromGitIdentity("dev@example.com")` now asserts `null`.
 - Removed from `worker/deno/tests/suppression_identity_test.ts`:
   `assertEquals( loginFromGitIdentity("Nigel Leck", "nigel@example.com"), null, );`
   — #3519 drops the author-name parameter; the one-argument
@@ -159,10 +160,10 @@ archived record unrelated to blame binding.
   reached by "blameFileLineLogins - a shallow clone that cannot be deepened
   leaves boundary lines unknown" and "parseBlamePorcelain - a boundary hunk is
   unknown identity"; existing behaviour, unchanged.
-- `worker/deno/lib/suppression_identity.ts:120` hunk with no `author-mail` →
-  the `""` initialiser from line 132 → `null` — reached by "parseBlamePorcelain
+- `worker/deno/lib/suppression_identity.ts:120` hunk with no `author-mail` → the
+  `""` initialiser from line 132 → `null` — reached by "parseBlamePorcelain
   - a hunk without an author-mail header is unknown identity"; deleting the
-  `email` property at line 132 turns it red.
+    `email` property at line 132 turns it red.
 
 ## Pre-PR Security Self-Check
 

@@ -11,16 +11,16 @@ did. Mirrors CodeGraph's #2159/#2160 split. Closes #2384.
 - `worker/deno/lib/question_processor.ts`,
   `worker/deno/lib/pr_feedback_processor.ts` — `prepareRtkRun` beside
   `prepareCodegraphRun`; `rtk.applyPrompt(...)` wraps the prompt outermost;
-  `settingsJsonOption(undefined, rtk.hookSettings())` on the request, so the
-  key is absent — not present-and-empty — whenever nothing is installed; the
-  result on the run's carrier and out on `QuestionResult.rtkOutput` /
+  `settingsJsonOption(undefined, rtk.hookSettings())` on the request, so the key
+  is absent — not present-and-empty — whenever nothing is installed; the result
+  on the run's carrier and out on `QuestionResult.rtkOutput` /
   `PrFeedbackResult.rtkOutput`; `rtk.record()` after the invocation.
 - `worker/deno/lib/pr_ci_processor.ts` — the same, prepared **once** and handed
   to `_runPostClaudeQualityCheck`, so the post-quality retry (a second spawn)
-  carries the same hook and line and the saved-token figure covers both from
-  one baseline. `workDir` is optional on this path: the hook rides on the
-  command line and needs no checkout, so an unnamed `workDir` is left out of
-  the probes and the run records its status as usual.
+  carries the same hook and line and the saved-token figure covers both from one
+  baseline. `workDir` is optional on this path: the hook rides on the command
+  line and needs no checkout, so an unnamed `workDir` is left out of the probes
+  and the run records its status as usual.
 - `worker/deno/lib/planning_processor.ts` — prepared once for the round and
   handed to **every** spawn site: the draft, the publish turn, the #1219 retry,
   and — through `closePlanningIssue` — the Failure-Detection and plan-coverage
@@ -74,14 +74,14 @@ exactly the RTK suffix and the options by exactly `settingsJson` — which is wh
 makes "off is byte-identical to today" an assertion rather than a claim.
 
 - `worker/deno/tests/question_processor_rtk_test.ts`,
-  `pr_feedback_processor_rtk_test.ts` — switch off; switch on and healthy;
-  `rtk` missing; a provider that takes no hooks; RTK's pair outside CodeGraph's
-  when both are on. PR feedback also pins that a caller that never names the
-  switch gets it off.
+  `pr_feedback_processor_rtk_test.ts` — switch off; switch on and healthy; `rtk`
+  missing; a provider that takes no hooks; RTK's pair outside CodeGraph's when
+  both are on. PR feedback also pins that a caller that never names the switch
+  gets it off.
 - `worker/deno/tests/pr_ci_processor_rtk_test.ts` — the same, with the
   post-quality retry driven in the off, missing and unsupported cases too; the
-  retry carrying the hook from **one** preparation with the figure covering
-  both spawns; and a run with no `workDir`, on and off.
+  retry carrying the hook from **one** preparation with the figure covering both
+  spawns; and a run with no `workDir`, on and off.
 - `worker/deno/tests/planning_processor_rtk_test.ts` — one fixture drives a
   round through all five spawn sites and fails loudly if it stops reaching one;
   every spawn is held to the contract in each of the five cases, and a failure
@@ -92,28 +92,27 @@ makes "off is byte-identical to today" an assertion rather than a claim.
   beside the CodeGraph switch. Those dispatch closures sit behind real `git` and
   `gh` and cannot be driven from a unit test. A first version pinned them by
   reading the source and counting occurrences; that was removed in review — it
-  tests *how* the code is spelt, breaks on a rename or a reformat, and this
+  tests _how_ the code is spelt, breaks on a rename or a reformat, and this
   repository deletes such tests rather than keeping them. The CodeGraph switch
   threaded on the same four lines is untested in the same way. An unthreaded
   site would show up as `RTK: off` on PR-feedback and CI-fix runs of a
   switched-on host, which #2385/#2386 make visible.
 
-All were seen red before the wiring existed, then checked by mutation —
-dropping `settingsJson`, the line, `record()`, the carrier or the `rtk` argument
-at each spawn site, ignoring the switch, defaulting it on, bypassing the
-provider seam and passing `cwd: undefined`. 32 of 33 mutants were killed. The
-survivor moved RTK's line inside the other accelerators' and was invisible with
-both of those off, which is why the CodeGraph-coexistence tests exist: they
-passed first time, and the eight ordering mutants — one per spawn site — were
-then all killed.
+All were seen red before the wiring existed, then checked by mutation — dropping
+`settingsJson`, the line, `record()`, the carrier or the `rtk` argument at each
+spawn site, ignoring the switch, defaulting it on, bypassing the provider seam
+and passing `cwd: undefined`. 32 of 33 mutants were killed. The survivor moved
+RTK's line inside the other accelerators' and was invisible with both of those
+off, which is why the CodeGraph-coexistence tests exist: they passed first time,
+and the eight ordering mutants — one per spawn site — were then all killed.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — each of the four paths spawns Claude with the RTK `--settings` entry
-  and prompt line when the switch is on and RTK is available, and
-  byte-identical argv/prompt when off — evidence: question
+  and prompt line when the switch is on and RTK is available, and byte-identical
+  argv/prompt when off — evidence: question
   `worker/deno/lib/question_processor.ts:479-507`; PR feedback
   `worker/deno/lib/pr_feedback_processor.ts:716-744`; CI fix
   `worker/deno/lib/pr_ci_processor.ts:1443-1473` and the retry at `:2370-2379`;
@@ -122,15 +121,20 @@ then all killed.
   self-repairs); the switch is threaded at
   `worker/deno/lib/run_core_production_deps.ts:1871,2098`,
   `worker/deno/commands/pr_feedback_processor.ts:196` and
-  `worker/deno/commands/pr_ci_processor.ts:191`. Asserted per path by `… the RTK
-  switch on installs the hook and the prompt line together`, `pr_ci_processor -
-  the post-quality retry carries the same hook from one preparation` and
+  `worker/deno/commands/pr_ci_processor.ts:191`. Asserted per path by
+  `… the RTK
+  switch on installs the hook and the prompt line together`,
+  `pr_ci_processor -
+  the post-quality retry carries the same hook from one preparation`
+  and
   `planning_processor - every spawn of the round carries the hook and the line`,
   each of which checks matcher `Bash`, command `rtk hook claude`, a prompt
   ending in `RTK_PROMPT_LINE`, and — through `assertOnlyRtkDiffers` — that the
-  off spawn differs from it by nothing else; the off direction by `… the RTK
-  switch off …` in all four files. The threading of the switch into the two
-  reactive processors' production sites has no test (see Tests) — reviewer: met
+  off spawn differs from it by nothing else; the off direction by
+  `… the RTK
+  switch off …` in all four files. The threading of the switch into
+  the two reactive processors' production sites has no test (see Tests) —
+  reviewer: met
 - **met** — each path's `RtkOutputResult` reaches its run-stats/callback carrier
   — evidence: the result fields at `worker/deno/lib/question_processor.ts:104`,
   `worker/deno/lib/pr_feedback_processor.ts:133`,

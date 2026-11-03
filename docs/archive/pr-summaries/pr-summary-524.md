@@ -9,7 +9,7 @@ still park a repo's lower tiers by subtracting the two gates somebody
 remembered:
 
 ```ts
-(filtered.length - dependencyBlockedCount - mergedPrPermanentCount) > 0
+(filtered.length - dependencyBlockedCount - mergedPrPermanentCount) > 0;
 ```
 
 A 25th gate with permanent semantics reintroduces #499 exactly, and nothing
@@ -27,12 +27,12 @@ forces anyone to notice.
   is declared `self`-clearing, accumulated at each decision point. No per-gate
   subtraction remains; `merged-pr-permanent` and `dependency-blocked` are data,
   not special cases.
-- **`idle_decision_census.ts`** — the census mirrors the scan through the *same*
+- **`idle_decision_census.ts`** — the census mirrors the scan through the _same_
   declaration (`censusVisibleRefusal` → `suppressesLowerTiers`) instead of
   restating which gates carve out, so the two instruments cannot disagree about
   a gate.
 - **`work_on_content_integrity.ts`** — a new
-  `verifyWorkOnContentIntegrityDetailed` returns *which* gate refused, not just
+  `verifyWorkOnContentIntegrityDetailed` returns _which_ gate refused, not just
   "blocked". `verifyWorkOnContentIntegrity` is unchanged for its other callers.
   This also closes an Issue #460 gap: a content-blocked issue was missing from
   `blockedDetails` entirely.
@@ -42,9 +42,8 @@ off the suppressing side: `label-author-not-allowed` and
 `content-modified-after-approval`. Both need a person before the issue can ever
 be claimed, so parking the repo's backlog behind them was the #499 deadlock in
 another costume. Every `self`-clearing gate (open PR, occupied stream,
-closed-**unmerged** cooldown) still suppresses, so the
-one-PR-per-work-stream guarantee is untouched — pinned by the covering tests
-listed below.
+closed-**unmerged** cooldown) still suppresses, so the one-PR-per-work-stream
+guarantee is untouched — pinned by the covering tests listed below.
 
 ## Evidence
 
@@ -67,10 +66,10 @@ flowchart LR
 The tests have teeth — each was run against a deliberately broken map before
 being kept:
 
-| Defect reintroduced | Fails |
-|---|---|
+| Defect reintroduced                               | Fails                                                                                               |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `merged-pr-permanent` declared `self` (i.e. #499) | `claim_path_differential_test.ts` (#499 shape) and `collect_work_on_candidates_suppression_test.ts` |
-| `label-author-not-allowed` declared `self` | `claim_path_monotonicity_test.ts` (untrusted label starves the backlog) |
+| `label-author-not-allowed` declared `self`        | `claim_path_monotonicity_test.ts` (untrusted label starves the backlog)                             |
 
 ```text
 deno task test <37 dependent suites> tests/claim_path_*_test.ts
@@ -88,15 +87,15 @@ Added:
 - `tests/claim_path_monotonicity_test.ts` — the two-state invariant: adding an
   issue never leaves the scan with nothing to claim, and a gate parks the lower
   tiers **iff** it is declared `self`-clearing. Includes the covering test that
-  an eligible `work-on` issue *does* still park tier 3, and the converse
+  an eligible `work-on` issue _does_ still park tier 3, and the converse
   direction (blocking an issue never grows its own tier).
 - `tests/claim_path_differential_test.ts` — census vs scan over generated repo
   states: every **pair** of `modelled` gates in three tier arrangements, plus
   each gate alone. Every incident to date (#319, #375, #429, #437, #499) was a
   pair or a single.
-- `tests/claim_path_incident_test.ts` +
-  `tests/fixtures/claim_path_incidents/` — recorded field states replayed in CI.
-  Two committed: `NEAT-AI-Rebase 2026-08-28` (#499, the scan was wrong) and
+- `tests/claim_path_incident_test.ts` + `tests/fixtures/claim_path_incidents/` —
+  recorded field states replayed in CI. Two committed:
+  `NEAT-AI-Rebase 2026-08-28` (#499, the scan was wrong) and
   `NEAT-AI 2026-08-23` (#3852, the census was wrong). The directory README
   documents how to record the next one.
 - `tests/fixtures/claim_path_state.ts` — one repo state described once and

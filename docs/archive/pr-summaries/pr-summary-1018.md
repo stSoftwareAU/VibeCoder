@@ -3,16 +3,18 @@
 ## Summary
 
 The checkout-update crash-loop escalation (Issue #4204) fired only on the single
-run where the streak *equalled* the threshold, and its transport — `gh issue
-create` against `api.github.com` — needs the network whose loss is the dominant
-cause of the streak. The one firing observed on GRQ-23 threw, and the condition
-was never escalated again: the host ran stale code with nothing but a log line.
+run where the streak _equalled_ the threshold, and its transport —
+`gh issue
+create` against `api.github.com` — needs the network whose loss is the
+dominant cause of the streak. The one firing observed on GRQ-23 threw, and the
+condition was never escalated again: the host ran stale code with nothing but a
+log line.
 
 This change re-arms and queues that escalation in
 `worker/deno/lib/checkout_update.ts`:
 
-- delivery is attempted on **every** failing run at or above the threshold
-  until one report lands;
+- delivery is attempted on **every** failing run at or above the threshold until
+  one report lands;
 - the escalated-at marker is recorded **only** on a successful send, and it is
   believed only while the streak is later than the delivery it records, so a
   marker left behind by an earlier streak cannot silence a host for ever;
@@ -88,9 +90,10 @@ Result: PASSED (with skipped checks)
 - **met** — evidence from a failed escalation is spooled durably and delivered
   on the next run with connectivity — evidence:
   `worker/deno/tests/checkout_update_escalation_spool_test.ts::updateCheckout - undelivered evidence is spooled and delivered once (Issue #1018)`
-  and `::updateCheckout - a successful update flushes the spool and clears it with the streak (Issue #1018)`
+  and
+  `::updateCheckout - a successful update flushes the spool and clears it with the streak (Issue #1018)`
   — reviewer: partial — reason: the reviewer saw the first draft, where the
-  drain ran only on a run whose update *also* failed, so a recovered host
+  drain ran only on a run whose update _also_ failed, so a recovered host
   discarded the queued report; commit `990c625a` makes the recovering run
   deliver it (marked "since ended") and the write now goes through
   `atomicWrite`, both covered by the tests named above
@@ -128,9 +131,9 @@ Result: PASSED (with skipped checks)
   here — only `NotFound` is ignored, any other removal failure is logged, and
   the marker is now believed only within its own streak so a leftover file
   cannot silence the host either
-- **violation** — the new persistence layer's error and edge paths were
-  untested — evidence: `worker/deno/tests/checkout_update_escalation_spool_test.ts`
-  (as reviewed) — reason: fixed here — added a corrupt-store test, an
+- **violation** — the new persistence layer's error and edge paths were untested
+  — evidence: `worker/deno/tests/checkout_update_escalation_spool_test.ts` (as
+  reviewed) — reason: fixed here — added a corrupt-store test, an
   unwritable-spool test, an undeliverable-flush test and a stale-marker test
 - **violation** — no `docs/archive/pr-summaries/pr-summary-1018.md` — evidence:
   repo root (as reviewed) — reason: fixed here — this file

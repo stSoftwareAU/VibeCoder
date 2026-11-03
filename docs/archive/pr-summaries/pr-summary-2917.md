@@ -1,10 +1,10 @@
 ## Summary
 
-PR-feedback runs left request-changes findings unresolved. Some were recorded
-in the committed PR summary as a "known limitation" or "open violation"
+PR-feedback runs left request-changes findings unresolved. Some were recorded in
+the committed PR summary as a "known limitation" or "open violation"
 (GRQ-AutoTrader#1820, #1875). Others were fixed in the local worktree, never
-pushed, and still reported to the reviewer as "addressed" (VibeCoder#2866).
-Each time, the next review raised the same item again ("Earlier review item not
+pushed, and still reported to the reviewer as "addressed" (VibeCoder#2866). Each
+time, the next review raised the same item again ("Earlier review item not
 fixed").
 
 This change tightens the `pr_feedback` template. Closes #2917.
@@ -23,8 +23,8 @@ This change tightens the `pr_feedback` template. Closes #2917.
   the fix is on the remote before you claim it_:
   - Push, then run `git fetch origin <branch>` and check each cited fix commit
     with `git merge-base --is-ancestor <sha> origin/<branch>`.
-  - A fix that exists only in the local worktree is never reported as
-    addressed. If the push fails, the reply names the finding as still open.
+  - A fix that exists only in the local worktree is never reported as addressed.
+    If the push fails, the reply names the finding as still open.
 - `docs/workflows/pr-feedback.md`: documents both rules next to the worker's
   existing final-mile push verification.
 - `worker/deno/tests/pr_feedback_finding_resolution_2917_test.ts`: loads the

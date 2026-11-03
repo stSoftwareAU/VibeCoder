@@ -18,9 +18,9 @@ altered. Closes #355.
   unregistered id, the caveat that the default image installs Claude Code alone,
   and links into `docs/CONTAINER.md`, `docs/CONFIGURATION.md`, `docs/SETUP.md`
   and `docs/QUORUM.md`.
-- **README.md** — the *How It Works* sequence diagram participant is now
-  "Coding agent" rather than "Claude Code", since every step in it is the
-  worker's, not the vendor's.
+- **README.md** — the _How It Works_ sequence diagram participant is now "Coding
+  agent" rather than "Claude Code", since every step in it is the worker's, not
+  the vendor's.
 - **docs/SETUP.md** — a **Choosing the coding agent** subsection beside the
   existing configuration examples, covering both keys, both env overrides, the
   per-vendor `<provider>/provider.env` requirement and the image build set.
@@ -58,20 +58,20 @@ ok | 6 passed | 0 failed
 `./quality.sh` passes every gate except `deno tests`, which fails on ten
 assertions that are **pre-existing and environmental** — `fleet_health_test.ts`,
 `host_workdir_guard_test.ts`, `optional_feature_env_test.ts` and
-`setup_workdir_reminder_test.ts` pick up the host's real work-dir paths. Verified
-by running those four files in a clean worktree at `origin/main` (`d7875bd`),
-where they fail identically with no part of this change applied. Nothing in this
-diff touches `worker/deno/lib/`. Filed as #378 rather than fixed here, since it
-is unrelated to this issue.
+`setup_workdir_reminder_test.ts` pick up the host's real work-dir paths.
+Verified by running those four files in a clean worktree at `origin/main`
+(`d7875bd`), where they fail identically with no part of this change applied.
+Nothing in this diff touches `worker/deno/lib/`. Filed as #378 rather than fixed
+here, since it is unrelated to this issue.
 
 ## Test Plan
 
 - Added `worker/deno/tests/agent_provider_readme_docs_test.ts` — six tests that
   import `agentProviderIds()`, `resolveAgentProvider()`,
   `AGENT_PROVIDER_CONFIG_KEY`, `ENABLED_AGENT_PROVIDERS_CONFIG_KEY`,
-  `AGENT_PROVIDER_ENV` and `ENABLED_AGENT_PROVIDERS_ENV`, then assert the
-  README and setup-guide provider sections name each registered id, each
-  display name, both selection keys, both env overrides and the detailed docs
-  they link to. They fail against the unfixed README (no such section existed).
+  `AGENT_PROVIDER_ENV` and `ENABLED_AGENT_PROVIDERS_ENV`, then assert the README
+  and setup-guide provider sections name each registered id, each display name,
+  both selection keys, both env overrides and the detailed docs they link to.
+  They fail against the unfixed README (no such section existed).
 - Ran `./quality.sh < /dev/null`: `deno fmt`, `deno lint`, `deno check`,
   markdownlint and the mermaid gate all pass.

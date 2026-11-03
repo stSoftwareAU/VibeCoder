@@ -10,17 +10,18 @@ released tag could still be fast-forwarded onto a later commit while the file,
 not. The missing rule was the symptom; the absent comparison was the defect.
 
 **The open question is settled.** GitHub **does** accept `update` on a
-tag-target ruleset — `gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/22264472 --input infra/rulesets/release-tags.json`
+tag-target ruleset —
+`gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/22264472 --input infra/rulesets/release-tags.json`
 read back `["deletion","non_fast_forward","update"]`. So the rule was dropped
 when a human applied the payload for Issue #869, not rejected by the API. The
 committed file was already correct and is unchanged; the **live ruleset** was
-corrected, which is why there is no deliberate difference to record in the
-file.
+corrected, which is why there is no deliberate difference to record in the file.
 
 This adds the comparison that would have caught it: `check-release-tag-ruleset`
 and a `release-tag ruleset` stage in the local quality gate. The fetch and the
-drift / absent / skipped semantics move into `worker/deno/lib/ruleset_reconcile.ts`,
-shared with the `main`-branch check of Issue #858 rather than duplicated.
+drift / absent / skipped semantics move into
+`worker/deno/lib/ruleset_reconcile.ts`, shared with the `main`-branch check of
+Issue #858 rather than duplicated.
 
 Closes #1049.
 
@@ -63,13 +64,15 @@ $ echo $?
 0
 ```
 
-**The quality gate**, `./quality.sh < /dev/null` → `Result: PASSED (with skipped
-checks)`, with the new stage visible in the summary:
+**The quality gate**, `./quality.sh < /dev/null` →
+`Result: PASSED (with skipped
+checks)`, with the new stage visible in the
+summary:
 
 ```text
-  semgrep                        PASSED
-  release-tag ruleset            PASSED
-  deno tests                     PASSED
+semgrep                        PASSED
+release-tag ruleset            PASSED
+deno tests                     PASSED
 ```
 
 ```mermaid
@@ -99,13 +102,14 @@ flowchart LR
 - **met** — The check skips cleanly with no credential, and is proven to skip
   rather than pass — evidence:
   `worker/deno/tests/release_tag_ruleset_check_test.ts::checkReleaseTagRuleset - the literal no-credential cases skip`
-  and `::runReleaseTagRulesetQualityCheck - no credential SKIPS, it does not pass`
-  — reviewer: partial — reason: the reviewer was right and this was fixed after
+  and
+  `::runReleaseTagRulesetQualityCheck - no credential SKIPS, it does not pass` —
+  reviewer: partial — reason: the reviewer was right and this was fixed after
   the review. `SKIP_CATEGORIES` matched HTTP shapes only, so an unauthenticated
   CLI (`gh auth login`), a missing `gh` binary and a 404 fell through as
   `unknown` and reddened the gate — the exact fork failure the skip exists to
   avoid. Commit `f8fb5b5` classifies all three as skips, routes the ruleset
-  *detail* read through the same handling, and pins every outcome in tests.
+  _detail_ read through the same handling, and pins every outcome in tests.
 - **met** — `docs/RELEASE-TAGGING.md` states how the file is enforced —
   evidence: `docs/RELEASE-TAGGING.md` "Reconciling it", plus the corrected
   paragraph under "Verifying it" that had claimed the `update` rule was still
@@ -147,10 +151,10 @@ flowchart LR
   `worker/deno/lib/quality_gate.ts:934` — reason: fixed in `f8fb5b5`;
   `runReleaseTagRulesetQualityCheck` takes an injectable reconciler and all four
   outcomes are pinned in `worker/deno/tests/quality_gate_test.ts`.
-- **violation** — `repoRoot()` copied verbatim from `commands/check_main_ruleset.ts`,
-  and it only reproduced the library's own default — evidence:
-  `worker/deno/commands/check_release_tag_ruleset.ts:22` — reason: fixed; both
-  the helper and the `root:` argument are gone.
+- **violation** — `repoRoot()` copied verbatim from
+  `commands/check_main_ruleset.ts`, and it only reproduced the library's own
+  default — evidence: `worker/deno/commands/check_release_tag_ruleset.ts:22` —
+  reason: fixed; both the helper and the `root:` argument are gone.
 - **violation** — "Three outcomes" followed by a four-row table — evidence:
   `docs/RELEASE-TAGGING.md` "Reconciling it" — reason: fixed.
 - **violation** — a tautological assertion that cannot fail given the line above
@@ -173,7 +177,7 @@ flowchart LR
   behaviour and were not modified, which is what proves the refactor
   behaviour-preserving.
 
-Also raised by the reviewer and **not** changed: rule *parameters* are compared
+Also raised by the reviewer and **not** changed: rule _parameters_ are compared
 only by `type`. The issue enumerates the fields to compare — rule types,
 `enforcement`, `bypass_actors`, both `ref_name` lists — and neither live ruleset
 carries rule parameters today.
@@ -189,17 +193,16 @@ carries rule parameters today.
 
 Added `worker/deno/tests/release_tag_ruleset_check_test.ts` — 18 tests:
 
-- **One per drift direction**, each asserting the field is named: a missing
-  rule (`update` — the drift this issue was filed for), an extra rule,
-  `enforcement` moved to `evaluate`, a non-empty `bypass_actors`, a changed
-  `ref_name` include, and a changed `ref_name` exclude.
+- **One per drift direction**, each asserting the field is named: a missing rule
+  (`update` — the drift this issue was filed for), an extra rule, `enforcement`
+  moved to `evaluate`, a non-empty `bypass_actors`, a changed `ref_name`
+  include, and a changed `ref_name` exclude.
 - **A swapped bypass actor at equal count**, which the count-only comparison
   read as agreement, plus the identical-list case that must stay quiet.
 - **The negative direction**: an identical live ruleset passes, and the
-  no-credential runs skip — 401, 403, `gh auth login`, a missing `gh` binary,
-  a 404, an unreachable host, and a detail read that 403s after a successful
-  list.
-- **Absent fails loud, never skips**: no ruleset of that name, and a *branch*
+  no-credential runs skip — 401, 403, `gh auth login`, a missing `gh` binary, a
+  404, an unreachable host, and a detail read that 403s after a successful list.
+- **Absent fails loud, never skips**: no ruleset of that name, and a _branch_
   ruleset sharing the name (matching is by name **and** target).
 - **Nothing is swallowed**: an HTTP 422 and unparseable output both throw; an
   unsafe repo slug is rejected before any call.
@@ -211,8 +214,8 @@ status mapping with the reconciliation injected: `ok` → PASSED, `drift` and
 Updated `worker/deno/tests/mod_test.ts` — command count 146 → 147.
 
 Unchanged and still passing, which is what makes the shared-module refactor
-behaviour-preserving: `worker/deno/tests/main_branch_ruleset_check_test.ts`
-(8), `worker/deno/tests/main_branch_ruleset_test.ts` (12),
+behaviour-preserving: `worker/deno/tests/main_branch_ruleset_check_test.ts` (8),
+`worker/deno/tests/main_branch_ruleset_test.ts` (12),
 `worker/deno/tests/release_tag_ruleset_test.ts` (10), and
 `worker/deno/tests/release_integrity_docs_test.ts`.
 

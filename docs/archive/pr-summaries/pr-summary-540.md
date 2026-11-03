@@ -3,7 +3,7 @@
 ## Summary
 
 Added a framework-wide conformance test that walks the **live** idle-task
-template registry and proves every scan template dedups against *all* open
+template registry and proves every scan template dedups against _all_ open
 issues, not just the ones wearing its own label. Closes #540.
 
 Issue #537 wired `listAllOpenIssueTitles` into each scan template and #538 added
@@ -15,13 +15,15 @@ old, label-scoped pattern. This test is the standing guard:
 For each participating template it drives the real `runTask` through a recording
 `ghCommandFn` and a capturing scan-runner stub, then asserts:
 
-1. **the repo-wide lookup happened** — a `gh issue list … --state open --json
-   number,title` call carrying neither `--label` nor `--search`;
+1. **the repo-wide lookup happened** — a
+   `gh issue list … --state open --json
+   number,title` call carrying neither
+   `--label` nor `--search`;
 2. **its result reached the prompt** — the captured titles are fed through the
    template's own exported `assemble*Prompt` (the same call its default scan
    runner makes) and the rendered `#37 — Add a CODEOWNERS file` line must appear
    with no `{{OPEN_ISSUE_TITLES}}` left unsubstituted;
-3. **the negative** — with the gh stub serving the fixture *only* to a
+3. **the negative** — with the gh stub serving the fixture _only_ to a
    `--label`-scoped title query, a conformant template captures nothing. A
    template that scoped its dedup list by label captures the fixture and fails;
 4. **safe degradation** — a `gh` failure yields an empty list and the scan still
@@ -102,11 +104,14 @@ commit touches only `worker/deno/tests/idle_task_scan_dedup_conformance_test.ts`
 and `docs/IDLE-TASK-FRAMEWORK.md`:
 
 - `gh_spawn_test.ts` ×3 — they run the real `gh --version`, which the agent
-  container's guard wrapper refuses (`[SECURITY] [GH_GUARD_ERROR] guard could
-  not evaluate this gh command`) because its scratch module is missing.
+  container's guard wrapper refuses
+  (`[SECURITY] [GH_GUARD_ERROR] guard could
+  not evaluate this gh command`)
+  because its scratch module is missing.
 - `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
-  dir is restaged writable` — it reads the ambient `VIBE_STATE_DIR` the
-  container exports; verified locally that the file passes under
+  dir is restaged writable`
+  — it reads the ambient `VIBE_STATE_DIR` the container exports; verified
+  locally that the file passes under
   `env -u VIBE_STATE_DIR deno test tests/service_account_env_test.ts`
   (`ok | 22 passed | 0 failed`).
 
@@ -135,8 +140,8 @@ flowchart LR
   `<name> - runTask looks up open issues repo-wide` and
   `<name> - the open issues reach the scan prompt`
 - **met** — Non-participating templates are enumerated in a commented allow-list
-  with a reason each — evidence: `NON_PARTICIPATING` in the test file, guarded by
-  `conformance - every allow-list entry states a reason`,
+  with a reason each — evidence: `NON_PARTICIPATING` in the test file, guarded
+  by `conformance - every allow-list entry states a reason`,
   `conformance - every allow-list entry names a registered template`, and
   `conformance - no template is both covered and allow-listed`
 - **met** — The reported scenario — a same-finding issue open under an unrelated
@@ -145,17 +150,17 @@ flowchart LR
   which asserts `knownOpenFindingIds` stays empty (the finding-id line is blind,
   as reported) while the title list still carries `#37 — Add a CODEOWNERS file`
   into the assembled prompt
-- **partial** — `deno test worker/deno/tests/idle_task_scan_dedup_conformance_test.ts`
-  passes; `./quality.sh` passes — evidence: the 71-passing run above; every
-  `quality.sh` stage passes except `deno tests` — reason: 4 pre-existing sandbox
-  failures in `gh_spawn_test.ts` and `service_account_env_test.ts` (detailed
-  under Evidence) that this diff does not touch and cannot fix from inside the
-  container
-- **unrequested** — `docs/IDLE-TASK-FRAMEWORK.md` gains an
-  "Adding a template — the conformance test enforces this" subsection — reason:
-  the repo's "a code change owes a docs change" rule; a template author needs to
-  know the wire-up-or-exempt choice exists, and the doc already documents the
-  cross-label dedup this test guards
+- **partial** —
+  `deno test worker/deno/tests/idle_task_scan_dedup_conformance_test.ts` passes;
+  `./quality.sh` passes — evidence: the 71-passing run above; every `quality.sh`
+  stage passes except `deno tests` — reason: 4 pre-existing sandbox failures in
+  `gh_spawn_test.ts` and `service_account_env_test.ts` (detailed under Evidence)
+  that this diff does not touch and cannot fix from inside the container
+- **unrequested** — `docs/IDLE-TASK-FRAMEWORK.md` gains an "Adding a template —
+  the conformance test enforces this" subsection — reason: the repo's "a code
+  change owes a docs change" rule; a template author needs to know the
+  wire-up-or-exempt choice exists, and the doc already documents the cross-label
+  dedup this test guards
 
 ## Test Plan
 

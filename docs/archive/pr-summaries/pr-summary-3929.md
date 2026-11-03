@@ -21,9 +21,13 @@ Version bump: no `VERSION` change; the change is documentation and prompt text.
 ## Test Plan
 
 - Removed from `worker/deno/tests/text_gate_matcher_3149_test.ts`: no assertion.
-  The only removed line is the header comment fragment ` * neutralisation.`, which
-  was reworded into a longer sentence that continues the same paragraph (the
-  paragraph now ends "...than VibeCoder."). No `assert*` call, test or fixture was
-  removed, weakened or skipped.
-- Added: `CODING-STANDARDS.md Writing a gate over text covers config and CI workflow files and the policed-files corpus (Issue #3929)` and `issue prompt gate-over-text bullet is self-contained for repos other than VibeCoder (Issue #3929)`, which pin the new wording in both files.
+  The only removed line is the header comment fragment `* neutralisation.`,
+  which was reworded into a longer sentence that continues the same paragraph
+  (the paragraph now ends "...than VibeCoder."). No `assert*` call, test or
+  fixture was removed, weakened or skipped.
+- Added:
+  `CODING-STANDARDS.md Writing a gate over text covers config and CI workflow files and the policed-files corpus (Issue #3929)`
+  and
+  `issue prompt gate-over-text bullet is self-contained for repos other than VibeCoder (Issue #3929)`,
+  which pin the new wording in both files.
 - `deno test -A tests/text_gate_matcher_3149_test.ts`: 8 passed, 0 failed.

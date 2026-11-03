@@ -7,10 +7,11 @@ it, so a Dependabot/Renovate PR the worker fixed drifted behind its base until
 the merge gate skipped it as "branch not fresh". The branch-update scan
 (Priority 1.6) now selects those PRs as well as the worker's own.
 
-- `worker/deno/lib/pr_branch_update.ts` — `isHostPushedBotPr(author,
-  isCrossRepository, commitAuthorLogins, githubUser)`: true when the author is a
-  bot (`isBotLogin`), the head branch is in the target repo
-  (`isCrossRepository === false`), and the commit authors include this host
+- `worker/deno/lib/pr_branch_update.ts` —
+  `isHostPushedBotPr(author,
+  isCrossRepository, commitAuthorLogins, githubUser)`:
+  true when the author is a bot (`isBotLogin`), the head branch is in the target
+  repo (`isCrossRepository === false`), and the commit authors include this host
   (case-insensitive, via `isFleetAuthor`). Its lookup-free half,
   `isBotPrCandidate`, is the single source of the selector's cheap pre-screen so
   the two cannot drift.
@@ -62,21 +63,22 @@ flowchart TD
 - **met** — Wiring: no commit lookup is issued for non-bot PRs; a bot PR whose
   commit lookup fails is excluded and the failure is logged — evidence:
   `worker/deno/tests/pr_branch_update_bot_prs_test.ts::branch-update selection -
-  no commit lookup is issued for a non-bot PR` and `::a failed commit lookup
+  no commit lookup is issued for a non-bot PR`
+  and `::a failed commit lookup
   excludes the PR and is logged` — reviewer: met
 - **met** — Existing `pr_branch_update_*` tests pass unchanged — evidence: the
   six existing suites are untouched (the predicate tests are appended to
   `pr_branch_update_test.ts`); 133 passed, 0 failed — reviewer: met
-- **met** — `./quality.sh` passes — evidence: full gate run after the final edit,
-  `Result: PASSED` — reviewer: met
+- **met** — `./quality.sh` passes — evidence: full gate run after the final
+  edit, `Result: PASSED` — reviewer: met
 - **unrequested** — `docs/HUMAN-PR-POLICY.md` gains a "Keeping a fixed bot PR up
   to date" section and an evidence-table row — reviewer: unrequested — reason:
   the repo standard requires a code change to update the docs surface that
   describes it; this page documents the sibling bot-PR door from #1846
 - **unrequested** — `selectBranchUpdatePrs`, `fetchPrCommitAuthorLogins` and
-  their two interfaces are exported rather than inlined in `listPrs` —
-  reviewer: unrequested — reason: the issue asks for a wiring test, and logic
-  inside the production deps closure cannot be driven by one
+  their two interfaces are exported rather than inlined in `listPrs` — reviewer:
+  unrequested — reason: the issue asks for a wiring test, and logic inside the
+  production deps closure cannot be driven by one
 
 ## Standards Review
 
@@ -105,8 +107,8 @@ flowchart TD
   convention is `Result<T, E>` — evidence:
   `worker/deno/lib/pr_branch_update.ts:450` — reason: stands; it mirrors
   `fetchAllOpenPRs`, whose throw-rather-than-empty-list contract (#4257) is the
-  behaviour this lookup must inherit, and the caller converts it to an
-  exclusion at the seam
+  behaviour this lookup must inherit, and the caller converts it to an exclusion
+  at the seam
 - **clean** — Australian English throughout; secret redaction wired through
   `logger.warn`; fail-closed on unknown head ownership; tests drive the real
   selector and the real `scanPrBranchUpdates` with only `gh` stubbed; happy,
@@ -122,9 +124,9 @@ flowchart TD
   driving the real `selectBranchUpdatePrs` through the real
   `scanPrBranchUpdates`: a bot PR with a host commit reaches the scan and one
   without does not; worker PRs still reach it; no commit lookup for non-bot,
-  fork-headed or dash-leading-ref PRs; a failed lookup is excluded and logged and
-  does not stop the other PRs; the selection issues no mutating `gh` call; and
-  `fetchPrCommitAuthorLogins` reads the commit authors and throws on an
+  fork-headed or dash-leading-ref PRs; a failed lookup is excluded and logged
+  and does not stop the other PRs; the selection issues no mutating `gh` call;
+  and `fetchPrCommitAuthorLogins` reads the commit authors and throws on an
   unparseable or non-array answer.
 - Regression suites re-run unchanged: the six existing `pr_branch_update_*`
   files, `pr_branch_arg_injection_test.ts`, `human_pr_policy_docs_test.ts`,

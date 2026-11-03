@@ -12,8 +12,8 @@ trust vocabulary intact.
 
 This change introduces one shared normalisation helper that removes Unicode
 format characters, Unicode line/paragraph separators, and non-document control
-characters while preserving tab, CR and LF. Both inbound prompt sanitisation
-and outbound prompt-leak detection/redaction use that same canonical form.
+characters while preserving tab, CR and LF. Both inbound prompt sanitisation and
+outbound prompt-leak detection/redaction use that same canonical form.
 
 ```mermaid
 flowchart LR
@@ -43,6 +43,6 @@ Added `worker/deno/tests/prompt_zero_width_security_test.ts` covering:
 - preservation of tab/CR/LF document structure;
 - Unicode line/paragraph separators embedded inside marker vocabulary.
 
-Local gate on the CI-fix commit: `deno task test` on the #1649 regressions
-and sweep-coverage tests, `deno task lint`, `deno task check`, and
+Local gate on the CI-fix commit: `deno task test` on the #1649 regressions and
+sweep-coverage tests, `deno task lint`, `deno task check`, and
 `deno task check:manifests`.

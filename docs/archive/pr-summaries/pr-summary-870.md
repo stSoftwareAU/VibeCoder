@@ -24,8 +24,8 @@ duplication that let the two drift. Closes #870.
   fallback, `✓` confirms the mode chosen, the ref resolved and the versions
   pinned. The styler is a `deps` seam alongside `say`/`ask`, so tests name it
   rather than setting `NO_COLOR` on the shared process.
-- **`prerequisite_installer.ts`** had a third, colourless copy of the glyphs;
-  it now uses the shared styler too.
+- **`prerequisite_installer.ts`** had a third, colourless copy of the glyphs; it
+  now uses the shared styler too.
 
 `setup.sh` necessarily keeps its own bash copy — it prints before Deno is
 installed, so it cannot import a Deno module. The colours and glyphs in
@@ -49,12 +49,12 @@ flowchart LR
 
 Captured from a real pty run of the exact command `setup.sh` invokes
 (`deno run --frozen --lock=… setup_cli.ts update-mode --script-dir … --config-path …`)
-against a scratch checkout, with `NO_COLOR` unset so colour is emitted. It
-shows `ℹ` explaining, `⚠` on a rejected mode, a failed `fetchOrigin`, an
-unresolvable ref and the manifest fallback, `✓` on the mode, the resolved ref
-and the pinned versions, and defaults in brackets where one exists — the
-Claude CLI question has no default (its candidate is inside the release-age
-quarantine) and renders bare, not `[]`.
+against a scratch checkout, with `NO_COLOR` unset so colour is emitted. It shows
+`ℹ` explaining, `⚠` on a rejected mode, a failed `fetchOrigin`, an unresolvable
+ref and the manifest fallback, `✓` on the mode, the resolved ref and the pinned
+versions, and defaults in brackets where one exists — the Claude CLI question
+has no default (its candidate is inside the release-age quarantine) and renders
+bare, not `[]`.
 
 ![The update-mode conversation in the setup.sh house style](docs/evidence/issue-870-update-mode-conversation.png)
 
@@ -74,16 +74,18 @@ rendered the capture instead; the image is a real terminal capture either way.
 - **met** — `setup_cli.ts` and the update-mode conversation both take their
   glyphs and colours from the one shared module; no file defines its own ANSI
   escape constants — evidence: `worker/deno/lib/console_style.ts:36-45` is the
-  only Deno source with escape constants (`grep -rn "x1b\[" worker/deno
-  --include=*.ts` outside tests returns nothing else) — reviewer: partial —
-  reason: the reviewer flagged that `setup.sh:200-228` still defines its own
-  bash constants; that copy cannot be removed because `setup.sh` prints before
-  Deno is installed, so the Deno-side duplication the issue names is fully
-  removed and the bash constraint is now documented in the module header,
-  `docs/SETUP.md` and the INTERNALS index. The reviewer also had not seen
-  `prerequisite_installer.ts`'s third glyph copy, which this diff converts.
-- **met** — unit tests for the shared module cover TTY on → escapes present,
-  TTY off → none, `NO_COLOR` with a TTY → none, and each glyph maps to its
+  only Deno source with escape constants
+  (`grep -rn "x1b\[" worker/deno
+  --include=*.ts` outside tests returns nothing
+  else) — reviewer: partial — reason: the reviewer flagged that
+  `setup.sh:200-228` still defines its own bash constants; that copy cannot be
+  removed because `setup.sh` prints before Deno is installed, so the Deno-side
+  duplication the issue names is fully removed and the bash constraint is now
+  documented in the module header, `docs/SETUP.md` and the INTERNALS index. The
+  reviewer also had not seen `prerequisite_installer.ts`'s third glyph copy,
+  which this diff converts.
+- **met** — unit tests for the shared module cover TTY on → escapes present, TTY
+  off → none, `NO_COLOR` with a TTY → none, and each glyph maps to its
   documented severity — evidence:
   `worker/deno/tests/console_style_test.ts::createConsoleStyler - a TTY emits colour escapes`,
   `::without a TTY the output is byte-clean`,
@@ -101,9 +103,11 @@ rendered the capture instead; the image is a real terminal capture either way.
   same visual style as the surrounding output; screenshot attached — evidence:
   `docs/evidence/issue-870-update-mode-conversation.png` — reviewer: partial —
   reason: the reviewer judged the earlier screenshot synthetic; it was
-  re-captured for this diff from a real pty run of the exact `deno run …
-  setup_cli.ts update-mode` line `setup.sh:874-876` executes, and the caption
-  now names that command rather than implying a full `./setup.sh` run.
+  re-captured for this diff from a real pty run of the exact
+  `deno run …
+  setup_cli.ts update-mode` line `setup.sh:874-876` executes, and
+  the caption now names that command rather than implying a full `./setup.sh`
+  run.
 - **met** — existing setup tests and `./quality.sh` pass — evidence: full gate
   run after the final edit, `Result: PASSED (with skipped checks)` — reviewer:
   partial — reason: the reviewer read the `setup_prerequisites_test.ts`
@@ -123,8 +127,8 @@ rendered the capture instead; the image is a real terminal capture either way.
 - **unrequested** — `worker/deno/tests/baseline_quality_cache_test.ts` env
   stubbing — reason: also red on `origin/main` in any container that exports
   `WORK_DIR`; the two tests meant "WORK_DIR is unset" but fell through to the
-  real environment, so they now stub the lookup. Same root cause as the
-  `#966` seam migration, one line each.
+  real environment, so they now stub the lookup. Same root cause as the `#966`
+  seam migration, one line each.
 - **unrequested** — `question` severity (`?` in yellow) on the shared styler —
   reason: `setup_cli.ts` had a hand-rolled `${YELLOW}?${NC}` prompt; without
   this severity that file would have had to keep an ANSI constant, which the
@@ -136,9 +140,9 @@ rendered the capture instead; the image is a real terminal capture either way.
 - **unrequested** — `prerequisite_installer.ts` reporter converted — reason: a
   third copy of the glyph pairing in the same directory, which the "one shared
   module" criterion is about; four lines.
-- **unrequested** — `docs/archive/handover/issue-870.md` — reason: the
-  worker's own interruption handover note, committed by the interrupted run
-  before this one resumed; it is the repo's existing convention
+- **unrequested** — `docs/archive/handover/issue-870.md` — reason: the worker's
+  own interruption handover note, committed by the interrupted run before this
+  one resumed; it is the repo's existing convention
   (`docs/archive/handover/issue-*.md`), not a change this diff authored.
 - **unrequested** — `docs/INTERNALS.md` lib-index row for `console_style.ts` —
   reason: the repo's "a code change owes a docs change" rule; a new `lib/`
@@ -149,9 +153,9 @@ rendered the capture instead; the image is a real terminal capture either way.
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — no `docs/archive/pr-summaries/pr-summary-870.md` existed when
-  the reviewer read the diff — evidence: `docs/evidence/issue-870-update-mode-conversation.png:1`
-  — reason: fixed here; this file is that summary, and it is committed with the
-  change.
+  the reviewer read the diff — evidence:
+  `docs/evidence/issue-870-update-mode-conversation.png:1` — reason: fixed here;
+  this file is that summary, and it is committed with the change.
 - **violation** — the module header and the INTERNALS row claimed
   `console_style.ts` is "the one … pairing the setup surfaces print through"
   while `prerequisite_installer.ts:206-208` still hand-rolled its own —
@@ -167,9 +171,9 @@ rendered the capture instead; the image is a real terminal capture either way.
 - **violation** — `docs/SETUP.md` said "every question shows its default in
   brackets", contradicted by the deliberate defaultless path — evidence:
   `docs/SETUP.md:263` — reason: fixed here; the sentence now says a question
-  that *has* a default shows it, and one without renders bare.
-- **violation** — unrelated test changes bundled into this issue —
-  evidence: `worker/deno/tests/setup_prerequisites_test.ts:340`,
+  that _has_ a default shows it, and one without renders bare.
+- **violation** — unrelated test changes bundled into this issue — evidence:
+  `worker/deno/tests/setup_prerequisites_test.ts:340`,
   `worker/deno/tests/baseline_quality_cache_test.ts:439` — reason: stands, and
   is declared as `unrequested` above. Both were red on `origin/main` before this
   branch; the gate must pass before a PR exists, so repairing them was the only
@@ -218,7 +222,8 @@ New — `worker/deno/tests/setup_update_mode_test.ts` (8 cases), all driving the
 real `runUpdateModeSetup` through the existing fakes:
 
 - explanatory lines carry `ℹ`; a rejected answer carries `⚠`; a failed
-  `fetchOrigin` and a missing manifest carry `⚠`; a confirmed answer carries `✓`.
+  `fetchOrigin` and a missing manifest carry `⚠`; a confirmed answer carries
+  `✓`.
 - every question shows its default in brackets; a question with no default never
   renders a stray `[]`.
 - a coloured styler reaches every line of the conversation (blue `ℹ`, yellow

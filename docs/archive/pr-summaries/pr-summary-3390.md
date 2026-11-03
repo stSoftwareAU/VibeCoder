@@ -12,16 +12,16 @@ matches a whole path segment, so look-alikes such as `src/env.ts`, `.envrc` and
 
 ### Intent and Rationale
 
-- The repo hook is the local gate for direct pushes, which the PR-only
-  gitleaks workflow never sees. Dotenv files are the most common secret-bearing
-  file, and they were the one class in `FORBIDDEN_STAGED_PATTERNS` with no
-  matching check in the hook.
+- The repo hook is the local gate for direct pushes, which the PR-only gitleaks
+  workflow never sees. Dotenv files are the most common secret-bearing file, and
+  they were the one class in `FORBIDDEN_STAGED_PATTERNS` with no matching check
+  in the hook.
 
 ### Essential Design Decisions
 
-- The regex is identical to the TypeScript pattern, so both gates agree on
-  every path. The hook keeps it as its own copy instead of sharing it, because
-  the hook is a standalone bash script.
+- The regex is identical to the TypeScript pattern, so both gates agree on every
+  path. The hook keeps it as its own copy instead of sharing it, because the
+  hook is a standalone bash script.
 
 ### Reviews
 
@@ -33,11 +33,11 @@ matches a whole path segment, so look-alikes such as `src/env.ts`, `.envrc` and
 ## Acceptance Criteria
 
 - [x] The hook loop has `[[ "$file" =~ (^|/)\.env(\.[^/]*)?(/|$) ]]`
-  (`hooks/pre-commit:86`).
+      (`hooks/pre-commit:86`).
 - [x] Root and nested `.env` / `.env.local` are refused. Covered by
-  `worker/deno/tests/hooks_pre_commit_test.ts::pre-commit hook - blocks force-added dotenv files at any depth (Issue #3390)`.
+      `worker/deno/tests/hooks_pre_commit_test.ts::pre-commit hook - blocks force-added dotenv files at any depth (Issue #3390)`.
 - [x] `src/env.ts` and `.envrc-docs/README.md` are not refused. Covered by
-  `worker/deno/tests/hooks_pre_commit_test.ts::pre-commit hook - allows dotenv look-alikes (Issue #3390)`.
+      `worker/deno/tests/hooks_pre_commit_test.ts::pre-commit hook - allows dotenv look-alikes (Issue #3390)`.
 
 ## Evidence
 
@@ -49,13 +49,14 @@ Backend-only change: no UI files are touched.
 - Issue numbers this diff adds as provenance: #3390, "Repo pre-commit hook lets
   a force-added .env or .env.* file through".
 
-**Docs sweep** — grep: `\.env`, `dotenv`, `Protected Patterns`, `pre-commit`; section: `SECURITY.md#-configuration-file-configjson`; updated: `SECURITY.md`
+**Docs sweep** — grep: `\.env`, `dotenv`, `Protected Patterns`, `pre-commit`;
+section: `SECURITY.md#-configuration-file-configjson`; updated: `SECURITY.md`
 
 The Protected Patterns list in that section gains a `.env`, `.env.*` bullet.
 `SECURITY.md:748-749` already lists `.env*`, so it is still true. The C26 and
 AP-15 entries in `docs/THREAT-MODEL.md` and the hook mentions in
-`docs/SETUP.md:233` and `docs/SETUP.md:1604` describe the hook in general
-terms, so they are also still true.
+`docs/SETUP.md:233` and `docs/SETUP.md:1604` describe the hook in general terms,
+so they are also still true.
 
 ## Standards Review
 
@@ -65,9 +66,9 @@ No departures found.
 
 - Added two tests to `worker/deno/tests/hooks_pre_commit_test.ts`:
   - **Block test:** `.env`, `.env.local`, `.env.production`,
-    `services/api/.env`, `services/api/.env.production`, `config/.env.local`
-    and `.env/secret` each exit 1. The output names the path and the
-    "Attempting to commit sensitive" banner.
+    `services/api/.env`, `services/api/.env.production`, `config/.env.local` and
+    `.env/secret` each exit 1. The output names the path and the "Attempting to
+    commit sensitive" banner.
   - **Look-alike test:** `src/env.ts`, `.envrc-docs/README.md`, `.envrc`,
     `docs/dotenv.md`, `env.example` and `config/my.env` each exit 0.
 - **Flip 1, regex widened to `\.env`:** the look-alike test went red
@@ -75,8 +76,9 @@ No departures found.
 - **Flip 2, regex narrowed to `(^|/)\.env(/|$)`:** the block test went red
   (`expected hook to block '.env.local'`). With the regex restored, 16 tests
   pass.
-- `shellcheck` and `bash -n` on `hooks/pre-commit` were clean. `deno fmt --check`
-  and `deno lint` on the test file were clean. Markdownlint found 0 issues.
+- `shellcheck` and `bash -n` on `hooks/pre-commit` were clean.
+  `deno fmt --check` and `deno lint` on the test file were clean. Markdownlint
+  found 0 issues.
 - `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`. The only
   skip is config integration ("deno or .config.json not available"), because
   this container has no `.config.json`. The deno tests, lint, type check, fmt,
@@ -84,7 +86,11 @@ No departures found.
 
 Branch outcomes:
 
-- `hooks/pre-commit:86` matched → path blocked: covered by `worker/deno/tests/hooks_pre_commit_test.ts::pre-commit hook - blocks force-added dotenv files at any depth (Issue #3390)`. Flip 2 went red.
-- `hooks/pre-commit:86` not matched → path allowed: covered by `worker/deno/tests/hooks_pre_commit_test.ts::pre-commit hook - allows dotenv look-alikes (Issue #3390)`. Flip 1 went red.
+- `hooks/pre-commit:86` matched → path blocked: covered by
+  `worker/deno/tests/hooks_pre_commit_test.ts::pre-commit hook - blocks force-added dotenv files at any depth (Issue #3390)`.
+  Flip 2 went red.
+- `hooks/pre-commit:86` not matched → path allowed: covered by
+  `worker/deno/tests/hooks_pre_commit_test.ts::pre-commit hook - allows dotenv look-alikes (Issue #3390)`.
+  Flip 1 went red.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

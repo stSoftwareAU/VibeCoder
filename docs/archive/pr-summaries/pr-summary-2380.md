@@ -20,8 +20,8 @@ wiring sub-issues of #2328 consume `config.rtkOutput.enabled`. Closes #2380.
   key, and `RTK_OUTPUT_KEYS` in `knownNestedConfigKeys()`.
 - `docs/CONFIGURATION.md` — the reference row after the CodeGraph row.
 - `docs/audits/security-sweep-2380-rtk-output-config.md` and its slice in
-  `docs/audits/lib-sweep-coverage.json` — required of every new `lib/` module
-  by the completeness gate.
+  `docs/audits/lib-sweep-coverage.json` — required of every new `lib/` module by
+  the completeness gate.
 
 Where the config value flows once wired:
 
@@ -35,8 +35,8 @@ flowchart LR
 
 ## Evidence
 
-Backend/config change with no web interface to screenshot. Verified by the
-tests below and by the full gate:
+Backend/config change with no web interface to screenshot. Verified by the tests
+below and by the full gate:
 
 ```text
 completeness checks   PASSED
@@ -64,14 +64,14 @@ as it is for every run here.)
   `worker/deno/tests/config_test.ts::config - a non-boolean rtk_output.enabled fails the load (Issue #2380)`
   — reviewer: met
 - **met** — `rtk_output` is not reported as an unknown top-level key;
-  `rtk_output.enabledd` is reported as an unknown nested key with a suggestion
-  — evidence:
+  `rtk_output.enabledd` is reported as an unknown nested key with a suggestion —
+  evidence:
   `worker/deno/tests/rtk_output_config_test.ts::rtk_output - an unknown nested key is reported with a suggestion`
   — reviewer: met
 - **met** — `docs/CONFIGURATION.md` carries the row and
   `config_docs_consistency_test.ts` passes — evidence:
-  `docs/CONFIGURATION.md:1742`, `worker/deno/tests/config_docs_consistency_test.ts`
-  (6 passed) — reviewer: met
+  `docs/CONFIGURATION.md:1742`,
+  `worker/deno/tests/config_docs_consistency_test.ts` (6 passed) — reviewer: met
 - **met** — `deno test`, `deno lint`, `deno fmt --check` and the repo quality
   gate pass — evidence: the gate output above — reviewer: missing — reason: the
   reviewer ran against the diff before the sweep-ledger fix and saw

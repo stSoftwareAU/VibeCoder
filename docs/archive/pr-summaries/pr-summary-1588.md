@@ -9,27 +9,26 @@ argv differently:
   **value** of a value-taking flag was read as the next positional —
   `["api", "-f", "query=…", "graphql"]` bucketed as `"api"`.
 - `isQuotaExemptGhCall` required `args[0] === "api"` with no flag skipping at
-  all, then tested `args.includes("graphql")`, which matched the token
-  anywhere in argv — including as a flag value.
+  all, then tested `args.includes("graphql")`, which matched the token anywhere
+  in argv — including as a flag value.
 
-So the `api-graphql=` bucket of the `gh-calls:` line and the GraphQL
-attribution that shares the latch predicate answered slightly different
-questions and could not be reconciled.
+So the `api-graphql=` bucket of the `gh-calls:` line and the GraphQL attribution
+that shares the latch predicate answered slightly different questions and could
+not be reconciled.
 
 Both now derive from one flag-aware classifier, `classifyGhCall` in the new
-`worker/deno/lib/gh_argv.ts`, which skips flags *and the values of
-value-taking flags* before reading the endpoint token. It sits in its own leaf
-module because `gh_call_metrics.ts` already imports from
-`primary_quota_latch.ts`, so a helper in the former would invert that
-direction. argv is first run through the repo's existing pflag normaliser
-(`normaliseGhArgs`, `gh_flag_parser.ts`), and shorthand groups are then read
-the way pflag reads them, so neither `gh api -iXPOST graphql` nor
-`gh api -iq .data graphql` can hide the endpoint token behind a flag value;
-no third argv parser was added.
+`worker/deno/lib/gh_argv.ts`, which skips flags _and the values of value-taking
+flags_ before reading the endpoint token. It sits in its own leaf module because
+`gh_call_metrics.ts` already imports from `primary_quota_latch.ts`, so a helper
+in the former would invert that direction. argv is first run through the repo's
+existing pflag normaliser (`normaliseGhArgs`, `gh_flag_parser.ts`), and
+shorthand groups are then read the way pflag reads them, so neither
+`gh api -iXPOST graphql` nor `gh api -iq .data graphql` can hide the endpoint
+token behind a flag value; no third argv parser was added.
 
-The latch stays conservative in the safe direction: only a positively
-classified REST `gh api <path>` is exempt, so anything the classifier cannot
-place as REST is still GraphQL-billed and short-circuited.
+The latch stays conservative in the safe direction: only a positively classified
+REST `gh api <path>` is exempt, so anything the classifier cannot place as REST
+is still GraphQL-billed and short-circuited.
 
 ```mermaid
 flowchart LR
@@ -49,9 +48,10 @@ flowchart LR
 `docs/GH-API-OPTIMISATION.md` now documents the relationship between the two
 telemetry lines: `graphql-calls: N total` counts every GraphQL-billed
 sub-command, `api-graphql=` is the subset that is an explicit `gh api
-graphql`, the explicitly-sourced buckets should sum to `api-graphql` because
-every `withGraphQLSource` call site wraps exactly one `api graphql` spawn, and
-what each direction of a divergence would mean. Closes #1588.
+graphql`,
+the explicitly-sourced buckets should sum to `api-graphql` because every
+`withGraphQLSource` call site wraps exactly one `api graphql` spawn, and what
+each direction of a divergence would mean. Closes #1588.
 
 ## Evidence
 
@@ -64,11 +64,12 @@ $ deno test --allow-all tests/gh_argv_test.ts tests/gh_call_metrics_test.ts \
 ok | 58 passed | 0 failed (90ms)
 ```
 
-The three classifier rules are mutation-verified, not merely covered — with
-the long-flag skip removed 3 tests fail, with the shorthand-group value
-removed 6 fail, and with the `api graphql` rule stubbed to `api-rest` 19 fail.
+The three classifier rules are mutation-verified, not merely covered — with the
+long-flag skip removed 3 tests fail, with the shorthand-group value removed 6
+fail, and with the `api graphql` rule stubbed to `api-rest` 19 fail.
 
-`./quality.sh` ran green after the final edit (every stage PASSED, `config
+`./quality.sh` ran green after the final edit (every stage PASSED,
+`config
 integration` SKIPPED as usual — no `.config.json` in the worktree).
 
 Every production `gh api graphql` call site spells the canonical
@@ -84,8 +85,8 @@ removes the divergence itself and the latent shapes that would reopen it.
   reconciled with the GraphQL attribution that shares the latch predicate:
   `["api", "-f", "query=…", "graphql"]` bucketed as `"api"` while the latch
   billed it as GraphQL
-- **status** — `verified` — the table-driven agreement test was observed
-  failing against the unfixed code (the bucket assertion for that argv row,
+- **status** — `verified` — the table-driven agreement test was observed failing
+  against the unfixed code (the bucket assertion for that argv row,
   `tests/gh_call_metrics_test.ts:812`) and passing after the fix
 - **regression test** —
   `worker/deno/tests/gh_call_metrics_test.ts::gh_call_metrics - classifyGhArgs and isQuotaExemptGhCall agree on every argv shape`
@@ -106,9 +107,10 @@ removes the divergence itself and the latent shapes that would reopen it.
     which owe nothing to the code under test.
   - A row in `classifyGhArgs skips leading flags` for
     `["issue", "--repo", "o/r", "list"]`, which used to bucket as `issue o/r`.
-- Added `worker/deno/tests/primary_quota_latch_test.ts::isQuotaExemptGhCall -
-  the endpoint token decides, not a flag value (Issue #1588)`; the existing
-  latch tests are unchanged and pass.
+- Added
+  `worker/deno/tests/primary_quota_latch_test.ts::isQuotaExemptGhCall -
+  the endpoint token decides, not a flag value (Issue #1588)`;
+  the existing latch tests are unchanged and pass.
 
 ## Acceptance Criteria
 
@@ -138,14 +140,13 @@ removes the divergence itself and the latent shapes that would reopen it.
   first round — a shorthand group whose value letter is outside
   `normaliseGhArgs`'s `{R,l,X,f,F}` (`gh api -iq .data graphql`) still read as
   REST. Departed from `partial` because that class was closed after the review
-  by reading shorthand groups with pflag's own rule; the five shapes it
-  executed now all classify `api-graphql`, and removing the handling fails 6
-  tests
-- **met** — `docs/GH-API-OPTIMISATION.md` documents the relationship between
-  the two counters; `deno test`, `deno lint`, `deno fmt --check` green —
-  evidence: `docs/GH-API-OPTIMISATION.md:375-425`, full `./quality.sh` green —
-  reviewer: met — reason: the reviewer noted the docs' absolute "cannot escape"
-  claim overstated the code; that sentence now states what the code actually
+  by reading shorthand groups with pflag's own rule; the five shapes it executed
+  now all classify `api-graphql`, and removing the handling fails 6 tests
+- **met** — `docs/GH-API-OPTIMISATION.md` documents the relationship between the
+  two counters; `deno test`, `deno lint`, `deno fmt --check` green — evidence:
+  `docs/GH-API-OPTIMISATION.md:375-425`, full `./quality.sh` green — reviewer:
+  met — reason: the reviewer noted the docs' absolute "cannot escape" claim
+  overstated the code; that sentence now states what the code actually
   guarantees (the flag list would have to gain a false entry, not miss one)
 - **unrequested** — `ghCallKindOf` is exported alongside `classifyGhCall` —
   reviewer: unrequested — reason: added after the Standards review so
@@ -153,11 +154,11 @@ removes the divergence itself and the latent shapes that would reopen it.
   second time on the hot path; it keeps the `api graphql` rule in one place
 - **unrequested** — the four-way `GhCallKind` union, including `"sub-command"`
   and `"unknown"` — reviewer: unrequested — reason: the latch needs "not
-  positively REST" as its own state rather than a negation, which is what
-  keeps the conservative direction explicit at the call site
-- **unrequested** — `--` end-of-flags handling — reviewer: unrequested —
-  reason: three lines of pflag fidelity in a parser whose whole purpose is to
-  find positionals; leaving it out would misread the token after `--`
+  positively REST" as its own state rather than a negation, which is what keeps
+  the conservative direction explicit at the call site
+- **unrequested** — `--` end-of-flags handling — reviewer: unrequested — reason:
+  three lines of pflag fidelity in a parser whose whole purpose is to find
+  positionals; leaving it out would misread the token after `--`
 - **unrequested** — value-taking flags beyond the issue's list (`--cache`,
   `--preview`, `--hostname`) — reviewer: unrequested — reason: they are the
   remaining value-taking `gh api` and global flags, and a missing entry is
@@ -167,9 +168,9 @@ removes the divergence itself and the latent shapes that would reopen it.
   found `gh api -iXPOST graphql` escaping the latch; reusing the repo's pflag
   normaliser avoids a third argv parser
 - **unrequested** — new test file `worker/deno/tests/gh_argv_test.ts` —
-  reviewer: unrequested — reason: the repo pairs each `lib/` module with its
-  own test file, and the agreement coverage the issue asked for still lives in
-  the two existing files
+  reviewer: unrequested — reason: the repo pairs each `lib/` module with its own
+  test file, and the agreement coverage the issue asked for still lives in the
+  two existing files
 - **unrequested** — the `worker/deno/lib/gh_argv.ts` entry in
   `docs/audits/lib-sweep-coverage.json` — reviewer: unrequested — reason:
   compulsory, not optional: `tests/lib_sweep_coverage_test.ts` fails any new
@@ -191,12 +192,12 @@ removes the divergence itself and the latent shapes that would reopen it.
 - **violation** — the mixed-sequence test's "independent cross-check" used
   `classifyGhArgs(argv).startsWith("api")`, which is the code under test, and
   compared counts rather than rows — evidence:
-  `worker/deno/tests/gh_call_metrics_test.ts:840` — reason: fixed; every row
-  now carries its expected bucket as a literal, the agreement test asserts it
-  per row, and the sequence test's expectation is built from those literals
+  `worker/deno/tests/gh_call_metrics_test.ts:840` — reason: fixed; every row now
+  carries its expected bucket as a literal, the agreement test asserts it per
+  row, and the sequence test's expectation is built from those literals
 - **violation** — `isApiGraphQLCall` had no production caller and existed only
-  to be tested — evidence: `worker/deno/lib/gh_argv.ts:133` — reason: fixed;
-  the export is removed and the tests call `classifyGhCall` directly
+  to be tested — evidence: `worker/deno/lib/gh_argv.ts:133` — reason: fixed; the
+  export is removed and the tests call `classifyGhCall` directly
 - **violation** — `classifyGhArgs` parsed argv twice per call (once for the
   positionals, once inside `classifyGhCall`), on the hot path of every `gh`
   spawn — evidence: `worker/deno/lib/gh_call_metrics.ts:191,199` — reason:
@@ -209,13 +210,13 @@ removes the divergence itself and the latent shapes that would reopen it.
   `gh` flags take a value" beside `GH_VALUE_SHORTHANDS` — evidence:
   `worker/deno/lib/gh_argv.ts:43` — reason: stands, and is now documented as
   deliberate: the two sets have opposite fail-safe directions (ending a group
-  walk too late is fail-closed there; treating a boolean letter as
-  value-taking would swallow the endpoint token here), so merging them would
-  reopen the escape this issue closes
+  walk too late is fail-closed there; treating a boolean letter as value-taking
+  would swallow the endpoint token here), so merging them would reopen the
+  escape this issue closes
 - **clean** — Australian English throughout; fail-loud/fail-closed asymmetry in
-  `isQuotaExemptGhCall` (only a positively classified `api-rest` is exempt);
-  all new tests call real functions with no sleeps, clocks or spawns; module ↔
-  test pairing and sweep registration; commit safety (no hidden paths, both
-  commits reference Issue #1588 with a run-id trailer); docs-follow-code, with
-  the load-bearing claim verified against all eight `withGraphQLSource` call
-  sites; secure coding — argv classification only, no spawn, no interpolation
+  `isQuotaExemptGhCall` (only a positively classified `api-rest` is exempt); all
+  new tests call real functions with no sleeps, clocks or spawns; module ↔ test
+  pairing and sweep registration; commit safety (no hidden paths, both commits
+  reference Issue #1588 with a run-id trailer); docs-follow-code, with the
+  load-bearing claim verified against all eight `withGraphQLSource` call sites;
+  secure coding — argv classification only, no spawn, no interpolation

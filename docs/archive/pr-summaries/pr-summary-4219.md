@@ -40,11 +40,18 @@ Closes #4218. Closes #4219. Closes #4220. Addresses the loop reported in #3982.
   body-sync call was missing. The same tests passed after the changes.
 - Four focused suites: 126 passed, zero failed. Repository completeness checks:
   805 passed, zero failed, one ignored.
-- Deno lint, format, type checking and Markdown lint passed. The full quality gate has not finished and is not a pass; its test
-  stage is still running. Checkov, Semgrep, config integration and release-tag
-  ruleset checks were skipped by that run.
+- Deno lint, format, type checking and Markdown lint passed. The full quality
+  gate has not finished and is not a pass; its test stage is still running.
+  Checkov, Semgrep, config integration and release-tag ruleset checks were
+  skipped by that run.
 
-**Docs sweep** — grep: `Review-fix`, `body sync`, `feedback-verifier`, `runPrBodySync`, `verifyFeedbackFix`; section: `docs/INTERNALS.md` (Feedback processing flow), `docs/workflows/pr-feedback.md` (Recount the Test Plan after a review fix); siblings: none — no registry or provider gains a member; updated: `docs/INTERNALS.md`, `docs/workflows/pr-feedback.md` and the shared builder's source documentation. Existing publication skip/error log text still describes the publisher's unchanged guards.
+**Docs sweep** — grep: `Review-fix`, `body sync`, `feedback-verifier`,
+`runPrBodySync`, `verifyFeedbackFix`; section: `docs/INTERNALS.md` (Feedback
+processing flow), `docs/workflows/pr-feedback.md` (Recount the Test Plan after a
+review fix); siblings: none — no registry or provider gains a member; updated:
+`docs/INTERNALS.md`, `docs/workflows/pr-feedback.md` and the shared builder's
+source documentation. Existing publication skip/error log text still describes
+the publisher's unchanged guards.
 
 ## Test Plan
 
@@ -56,22 +63,37 @@ Closes #4218. Closes #4219. Closes #4220. Addresses the loop reported in #3982.
   verify repaired candidates replace stale claims in both verifier inputs and
   builder errors prevent verification. Existing assertions are retained;
   fixtures now provide the required head-branch metadata.
-- `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts`: 26 tests.
-  Four additions cover zero and outstanding unpushed commits, an error result
-  and a thrown measurement; every case retains the outstanding review, failed
-  attempt, standing-violation label and disabled auto-merge.
+- `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts`: 26 tests. Four
+  additions cover zero and outstanding unpushed commits, an error result and a
+  thrown measurement; every case retains the outstanding review, failed attempt,
+  standing-violation label and disabled auto-merge.
 - `worker/deno/tests/pr_feedback_processor_test.ts`: 43 existing tests pass,
   including ordinary feedback, post-push sync, gated branches and turn limits.
-- Twinned-rule search: candidate construction is now shared with publication;
-  no second ownership/adoption rule was introduced. CI and conflict processors
+- Twinned-rule search: candidate construction is now shared with publication; no
+  second ownership/adoption rule was introduced. CI and conflict processors
   continue to use the same publisher with its existing signature.
 - No existing assertion was removed or weakened. No UI or persisted schema
   changes are involved.
 
 **Branch outcomes:**
 
-- `worker/deno/lib/pr_feedback_verifier.ts:74` — an eligible body is rebuilt before verification — test `worker/deno/tests/pr_feedback_verifier_3784_test.ts` (`feedback verifier - marker summary repair replaces stale live claims before publication`) — flip: before implementation the test failed because it received Stale live claims instead of the corrected branch summary.
-- `worker/deno/lib/pr_feedback_verifier.ts:74` — own-branch adoption uses the same rebuilt candidate — test `worker/deno/tests/pr_feedback_verifier_3784_test.ts` (`feedback verifier - own-branch summary repair replaces stale live claims before publication`) — flip: before implementation the test failed because the live body was supplied.
-- `worker/deno/lib/pr_feedback_processor.ts:1670` — exactly zero unpushed commits permits sync before recording the hold — test `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts` (`review-fix hold - body sync requires measured zero unpushed commits: 0`) — flip: before implementation the sync count was zero and the expected one call failed.
+- `worker/deno/lib/pr_feedback_verifier.ts:74` — an eligible body is rebuilt
+  before verification — test
+  `worker/deno/tests/pr_feedback_verifier_3784_test.ts`
+  (`feedback verifier - marker summary repair replaces stale live claims before publication`)
+  — flip: before implementation the test failed because it received Stale live
+  claims instead of the corrected branch summary.
+- `worker/deno/lib/pr_feedback_verifier.ts:74` — own-branch adoption uses the
+  same rebuilt candidate — test
+  `worker/deno/tests/pr_feedback_verifier_3784_test.ts`
+  (`feedback verifier - own-branch summary repair replaces stale live claims before publication`)
+  — flip: before implementation the test failed because the live body was
+  supplied.
+- `worker/deno/lib/pr_feedback_processor.ts:1670` — exactly zero unpushed
+  commits permits sync before recording the hold — test
+  `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts`
+  (`review-fix hold - body sync requires measured zero unpushed commits: 0`) —
+  flip: before implementation the sync count was zero and the expected one call
+  failed.
 
 Not checked: model-based review and live fleet behaviour after deployment.

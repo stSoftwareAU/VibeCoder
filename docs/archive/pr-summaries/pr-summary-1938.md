@@ -20,9 +20,9 @@ that to be checked against the pinned CLI. I downloaded
 0.55.1 emits on this stream: `StreamJsonFormatter.convertToStreamStats()`
 projects five flat fields per model —
 `{total_tokens, input_tokens, output_tokens, cached, input}` — where
-`input_tokens` is `tokens.prompt` and `input` is
-`Math.max(0, prompt - cached)`. So **`input_tokens` already includes the cached
-prefix**, and `inputTokens` is prompt *less* cached.
+`input_tokens` is `tokens.prompt` and `input` is `Math.max(0, prompt - cached)`.
+So **`input_tokens` already includes the cached prefix**, and `inputTokens` is
+prompt _less_ cached.
 
 Two consequences worth a reviewer's attention:
 
@@ -34,28 +34,28 @@ Two consequences worth a reviewer's attention:
 - **The nested `tokens` shape is accepted as tolerance, not as a second
   supported format.** It is the CLI's unprojected `ModelMetrics.tokens`, which
   `--output-format json` renders as one pretty-printed document rather than
-  NDJSON — so this decoder cannot reach it today. It is read so a CLI that
-  stops projecting decodes rather than silently reading as "no usage", and it
-  is the one place a `thoughts` count can be honoured. Both documents say so
-  plainly rather than claiming both formats are supported.
+  NDJSON — so this decoder cannot reach it today. It is read so a CLI that stops
+  projecting decodes rather than silently reading as "no usage", and it is the
+  one place a `thoughts` count can be honoured. Both documents say so plainly
+  rather than claiming both formats are supported.
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suite and the verification of the CLI bundle.
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suite and the verification of the CLI bundle.
 
-**Bundle verification** — `sha256sum` of the downloaded
-`gemini-cli-0.55.1.tgz` was
-`4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e`, matching
+**Bundle verification** — `sha256sum` of the downloaded `gemini-cli-0.55.1.tgz`
+was `4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e`, matching
 `container/tools.json`. `convertToStreamStats` and `uiTelemetry.js`'s
 `processApiResponse` were then read directly for the field names and for
-`tokens.input = Math.max(0, tokens.prompt - tokens.cached)`. The tarball and
-its extraction were deleted before committing.
+`tokens.input = Math.max(0, tokens.prompt - tokens.cached)`. The tarball and its
+extraction were deleted before committing.
 
-**Tests** — `deno test tests/gemini_token_usage_test.ts
-tests/provider_token_usage_test.ts`: 27 passed, 0 failed.
-`./quality.sh`: PASSED (config integration SKIPPED — pre-existing, needs
-credentials).
+**Tests** —
+`deno test tests/gemini_token_usage_test.ts
+tests/provider_token_usage_test.ts`:
+27 passed, 0 failed. `./quality.sh`: PASSED (config integration SKIPPED —
+pre-existing, needs credentials).
 
 ```mermaid
 flowchart LR
@@ -85,46 +85,46 @@ flowchart LR
 - **met** — multi-model `stats.models` are summed; non-numeric counters do not
   decode as zero — evidence:
   `worker/deno/tests/gemini_token_usage_test.ts::gemini_token_usage - sums every model under stats.models`
-  and `::gemini_token_usage - one unreadable counter condemns the whole model`
-  — reviewer: partial — reason: the reviewer read a real defect — the first
-  version zero-filled any counter it could not read as long as *one* field in
-  the entry was numeric, so an entry carrying a numeric `input_tokens` beside
-  an `output_tokens` stated as a string decoded to a zero output count rather
-  than to UNKNOWN. Fixed here: `readCounter` distinguishes an
-  absent field from one stated unusably, one unusable counter condemns the
-  whole entry, and an entry missing either billable counter is refused. Three
-  new tests cover it
+  and `::gemini_token_usage - one unreadable counter condemns the whole model` —
+  reviewer: partial — reason: the reviewer read a real defect — the first
+  version zero-filled any counter it could not read as long as _one_ field in
+  the entry was numeric, so an entry carrying a numeric `input_tokens` beside an
+  `output_tokens` stated as a string decoded to a zero output count rather than
+  to UNKNOWN. Fixed here: `readCounter` distinguishes an absent field from one
+  stated unusably, one unusable counter condemns the whole entry, and an entry
+  missing either billable counter is refused. Three new tests cover it
 - **met** — Claude and Codex cases in `provider_token_usage_test.ts` are
-  unchanged and green — evidence: no Claude or Codex test body is touched in
-  the diff; all 9 tests in the file pass — reviewer: met
-- **met** — the decoder's doc-comment states the Gemini CLI version whose
-  output shape was verified — evidence:
-  `worker/deno/lib/gemini_token_usage.ts` header,
+  unchanged and green — evidence: no Claude or Codex test body is touched in the
+  diff; all 9 tests in the file pass — reviewer: met
+- **met** — the decoder's doc-comment states the Gemini CLI version whose output
+  shape was verified — evidence: `worker/deno/lib/gemini_token_usage.ts` header,
   "## The verified event shape (Gemini CLI 0.55.1)" — reviewer: met — the
   reviewer independently re-extracted the bundle and confirmed both the field
   names and the "`input_tokens` already includes the cached prefix" claim
 - **met** — the docs sections above no longer say Gemini usage is unparseable —
   evidence: `docs/MODEL-AND-CACHING.md` matrix rows 123/129/130, blockquotes
-  2001/2005/1831/2347, and the `#### Non-Claude providers` paragraph, bullet
-  and Mermaid flowchart — reviewer: met
+  2001/2005/1831/2347, and the `#### Non-Claude providers` paragraph, bullet and
+  Mermaid flowchart — reviewer: met
 - **met** — `./quality.sh` passes — evidence: full gate run after the final
   edit, `Result: PASSED` — reviewer: met — reason: the reviewer ran `deno fmt`,
   `lint`, `check` and the affected test files but not the full gate; it was run
   here and passed
-- **unrequested** — the nested `tokens` per-model shape is decoded alongside
-  the flat stream-json one — reviewer: unrequested — reason: the issue's
-  mapping instruction (`candidate + thought tokens → outputTokens`) was written
-  against this shape, and verification showed 0.55.1's stream-json projection
-  omits `thoughts` entirely. Dropping the branch would leave that instruction
-  with nowhere to live; keeping it silently would be a false claim. It is kept
-  and labelled as forward-tolerance in the module doc-comment and the audit
-  record, per the reviewers' finding that the original wording overstated it
+- **unrequested** — the nested `tokens` per-model shape is decoded alongside the
+  flat stream-json one — reviewer: unrequested — reason: the issue's mapping
+  instruction (`candidate + thought tokens → outputTokens`) was written against
+  this shape, and verification showed 0.55.1's stream-json projection omits
+  `thoughts` entirely. Dropping the branch would leave that instruction with
+  nowhere to live; keeping it silently would be a false claim. It is kept and
+  labelled as forward-tolerance in the module doc-comment and the audit record,
+  per the reviewers' finding that the original wording overstated it
 - **unrequested** — the Gemini branch falls back to the shared Claude extractor
   when its own decoder finds nothing — reviewer: unrequested — reason: the
-  pre-existing test `provider_token_usage - non-Claude output in a parseable
-  shape is used and stays quiet` passes `provider: "gemini"` with
-  Claude-shaped output and expects measured usage. Removing the fallback would
-  break a test the issue says to leave unchanged
+  pre-existing test
+  `provider_token_usage - non-Claude output in a parseable
+  shape is used and stays quiet`
+  passes `provider: "gemini"` with Claude-shaped output and expects measured
+  usage. Removing the fallback would break a test the issue says to leave
+  unchanged
 - **unrequested** — `docs/audits/security-sweep-1938-gemini-token-usage.md` and
   the `12aa` slice in `docs/audits/lib-sweep-coverage.json` — reviewer:
   unrequested — reason: not requested, but forced —
@@ -140,7 +140,7 @@ flowchart LR
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — a negative counter was propagated instead of refused, so a
-  garbled or forged count could *subtract* from the day's totals and the spend
+  garbled or forged count could _subtract_ from the day's totals and the spend
   ceiling — evidence: `worker/deno/lib/gemini_token_usage.ts:98` (`readCounter`)
   — reason: fixed here. `readCounter` now refuses any count below zero, and
   `gemini_token_usage - a negative counter is refused, never subtracted` is the
@@ -148,8 +148,10 @@ flowchart LR
 - **violation** — a partially-readable model entry recorded fabricated zeros as
   measured usage — evidence: `worker/deno/lib/gemini_token_usage.ts:130`
   (`readModelCounters`) — reason: fixed here, same change as the criterion
-  above; covered by `gemini_token_usage - one unreadable counter condemns the
-  whole model` and `- an entry missing a billable counter is refused`
+  above; covered by
+  `gemini_token_usage - one unreadable counter condemns the
+  whole model` and
+  `- an entry missing a billable counter is refused`
 - **violation** — the written security record asserted safety properties the
   code did not have ("a negative input count cannot be produced", "both of the
   CLI's renderings are accepted") — evidence:
@@ -162,23 +164,23 @@ flowchart LR
   it was written after the reviewers returned, which is the order this route
   prescribes
 - **violation (lower confidence, reviewer's own framing)** — the nested-shape
-  branch is unreachable in production, against KISS / "no unrequested changes"
-  — evidence: `worker/deno/lib/gemini_token_usage.ts:117-130` — reason: it
-  stands, for the reason recorded under the matching `unrequested` entry above;
-  the doc-comment and audit record now label it as tolerance rather than
-  claiming a second supported format
-- **clean** — Australian English throughout (no US spellings in any added
-  line); Deno-native tooling only (`deno fmt`/`lint`/`check`/`test`, no Node
-  files added); DRY (`parseJsonlEvents`, `readNumber`, `readObject` reused from
-  `agent_output.ts`, no new regex and so no ReDoS surface); every test calls
-  the real exported function and asserts on its return value, with no
+  branch is unreachable in production, against KISS / "no unrequested changes" —
+  evidence: `worker/deno/lib/gemini_token_usage.ts:117-130` — reason: it stands,
+  for the reason recorded under the matching `unrequested` entry above; the
+  doc-comment and audit record now label it as tolerance rather than claiming a
+  second supported format
+- **clean** — Australian English throughout (no US spellings in any added line);
+  Deno-native tooling only (`deno fmt`/`lint`/`check`/`test`, no Node files
+  added); DRY (`parseJsonlEvents`, `readNumber`, `readObject` reused from
+  `agent_output.ts`, no new regex and so no ReDoS surface); every test calls the
+  real exported function and asserts on its return value, with no
   source-grepping, sleeps or spawned processes; fail-loud on the main path
   (every unreadable case routes to the `usageUnknown` warning); commit safety
-  (no hidden path, key or credential staged, no `git add -f`, no
-  `--no-verify`); doc-comment conventions (module header plus `@param` /
-  `@returns` on every function); Mermaid fenced and updated in both copies;
-  the sweep ledger registered as a new slice with its own written record rather
-  than appended to a stale one
+  (no hidden path, key or credential staged, no `git add -f`, no `--no-verify`);
+  doc-comment conventions (module header plus `@param` / `@returns` on every
+  function); Mermaid fenced and updated in both copies; the sweep ledger
+  registered as a new slice with its own written record rather than appended to
+  a stale one
 
 ## Test Plan
 
@@ -192,9 +194,9 @@ New — `worker/deno/tests/gemini_token_usage_test.ts` (18 tests):
 - the nested `tokens` shape decodes with thoughts billed as output
 - `undefined`, never zero, for: no `result` line, empty output, whitespace-only
   output, non-JSON output, a `result` with no `stats`, an empty `stats.models`,
-  wholly non-numeric counters, **one** unusable counter among readable ones,
-  an unusable nested counter, an entry missing a billable counter, and a
-  negative counter
+  wholly non-numeric counters, **one** unusable counter among readable ones, an
+  unusable nested counter, an entry missing a billable counter, and a negative
+  counter
 - an unreadable model beside a readable one is skipped, not zero-filled
 - a genuine zero-token run still decodes to measured zeros
 
@@ -214,7 +216,7 @@ Modified — `worker/deno/tests/provider_token_usage_test.ts`:
 
 The decoder, its tests and the sweep-ledger registration are all Deno-native —
 `deno test` with `@std/assert`, run through the repo's existing `deno task`
-gate. No Node tooling, `package.json` or npm dev-dependency was introduced,
-even though the CLI whose output is decoded is itself an npm package: the
-tarball was fetched with `curl`, verified with `sha256sum` and deleted, rather
-than installed.
+gate. No Node tooling, `package.json` or npm dev-dependency was introduced, even
+though the CLI whose output is decoded is itself an npm package: the tarball was
+fetched with `curl`, verified with `sha256sum` and deleted, rather than
+installed.

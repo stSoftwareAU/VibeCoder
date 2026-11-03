@@ -19,7 +19,8 @@ launcher or worker-library code is touched. Closes #75.
   deployer reads it.
 - **`docs/CONFIGURATION.md`** — a `container_tools` row in the defaults table,
   matching the `agent_providers` row in style.
-- **`docs/DEPLOYMENT.md`** — `## 🧰 Changing container_tools forces an image
+- **`docs/DEPLOYMENT.md`** —
+  `## 🧰 Changing container_tools forces an image
   rebuild`, plus a TOC entry.
 - **`docs/CONTAINER-IMAGE.md`** — the "install implementation is still a stub"
   sentence is stale since #70 landed on this milestone branch; it now describes
@@ -28,19 +29,18 @@ launcher or worker-library code is touched. Closes #75.
 
 **One correction to the issue's brief.** The issue asked for a note that
 changing `container_tools` changes the image tag. It does not — yet.
-`computeContainerImageHash()` hashes enumerated *committed* inputs
+`computeContainerImageHash()` hashes enumerated _committed_ inputs
 (`container/install-tools.sh` among them); the **selection** travels as the
 `VIBE_CONTAINER_TOOLS` build argument out of `.config.json`, and folding it into
 the hash is Issue #73, which has not landed. Rather than document a behaviour
-the code does not have, both the container and deployment pages say plainly
-that a selection-only edit leaves the tag unchanged, name #73, and give the
-deployer the action that works today (drop the tag so the next launch
-rebuilds).
+the code does not have, both the container and deployment pages say plainly that
+a selection-only edit leaves the tag unchanged, name #73, and give the deployer
+the action that works today (drop the tag so the next launch rebuilds).
 
 ## Evidence
 
-No web interface is involved, so there is no screenshot. The verification is
-the mechanism running end to end.
+No web interface is involved, so there is no screenshot. The verification is the
+mechanism running end to end.
 
 ```mermaid
 flowchart LR
@@ -76,17 +76,17 @@ Java version: 25.0.4, vendor: Eclipse Adoptium, runtime: /tmp/vibe-tools-e2e/jav
 [INFO] BUILD SUCCESS
 ```
 
-`mvn package` (not just `-version`) was used so dependency resolution from
-Maven Central and `javac` are both exercised, with Maven finding its JDK
-through the `JAVA_HOME` the spec's `env` sets.
+`mvn package` (not just `-version`) was used so dependency resolution from Maven
+Central and `javac` are both exercised, with Maven finding its JDK through the
+`JAVA_HOME` the spec's `env` sets.
 
 **What could not be run on this host.** The worker runs inside the Vibe Coder
 container (`VIBE_IMAGE_AGENT_PROVIDERS=claude`) and that image carries no
-container runtime — `docker`, `podman`, `nerdctl`, `buildah` and `container`
-are all absent and there is no `/var/run/docker.sock` — so the OCI build
-wrapper around the install step could not be executed here. That wrapper is
-already covered by the #71/#72 suites — `container_manifest_test.ts` asserts
-the Containerfile's `ARG VIBE_CONTAINER_TOOLS` → spec-file → `install-tools.sh`
+container runtime — `docker`, `podman`, `nerdctl`, `buildah` and `container` are
+all absent and there is no `/var/run/docker.sock` — so the OCI build wrapper
+around the install step could not be executed here. That wrapper is already
+covered by the #71/#72 suites — `container_manifest_test.ts` asserts the
+Containerfile's `ARG VIBE_CONTAINER_TOOLS` → spec-file → `install-tools.sh`
 block, `container_tools_install_test.ts` the empty-selection no-op, and
 `container_launch_test.ts` the `--build-arg` the launcher passes — and
 everything the image would contain was exercised above at a temporary prefix.
@@ -99,11 +99,11 @@ the procedure the new documentation prescribes.
 ## Test Plan
 
 New suite `worker/deno/tests/container_tools_example_docs_test.ts` (11 cases).
-It extracts the fenced example from `docs/CONTAINER.md` and exercises it
-against real code rather than reading prose:
+It extracts the fenced example from `docs/CONTAINER.md` and exercises it against
+real code rather than reading prose:
 
-- the documented example passes `parseContainerTools()` — the #69 trust
-  boundary — and declares exactly `java` and `maven`;
+- the documented example passes `parseContainerTools()` — the #69 trust boundary
+  — and declares exactly `java` and `maven`;
 - Java pins both `amd64` and `arm64` with 64-hex digests, Maven pins `noarch`;
 - every download is `https:` and ends in an extension `install-tools.sh` can
   extract;
@@ -113,10 +113,10 @@ against real code rather than reading prose:
   `container/install-tools.sh` for **both** architectures: `stripComponents: 1`
   really lands `bin/java` and `bin/mvn`, and the `environment` file really
   carries the two `PATH=` lines plus `JAVA_HOME` / `MAVEN_HOME`;
-- the four documentation surfaces this slice owes carry what they promise —
-  the configuration row, the prefix and mandatory digest, the checksum-drift
-  answer (`.config.json`, never relaxed verification) and the deployment
-  rebuild note — so a later edit that drops one fails the gate.
+- the four documentation surfaces this slice owes carry what they promise — the
+  configuration row, the prefix and mandatory digest, the checksum-drift answer
+  (`.config.json`, never relaxed verification) and the deployment rebuild note —
+  so a later edit that drops one fails the gate.
 
 Commands run:
 

@@ -64,25 +64,29 @@ Added:
 
 - `worker/deno/tests/gh_guard_shim_test.ts::gh-guard-shim #1364 - a masked
   --input body is delivered from the shim's own directory and leaves TMPDIR
-  clean` — end-to-end through the real wrapper and a stub `gh`: the delivered
-  body is redacted, its path is inside the shim directory, the scratch `TMPDIR`
-  is empty, and the file is gone after `shim.cleanup()`.
+  clean`
+  — end-to-end through the real wrapper and a stub `gh`: the delivered body is
+  redacted, its path is inside the shim directory, the scratch `TMPDIR` is
+  empty, and the file is gone after `shim.cleanup()`.
 - `worker/deno/tests/gh_guard_cli_test.ts::gh-guard-cli #1364 - the masked
-  --input copy lands in the caller's --body-dir` — the copy is created under the
-  named directory and vanishes when the caller removes it.
+  --input copy lands in the caller's --body-dir`
+  — the copy is created under the named directory and vanishes when the caller
+  removes it.
 - `worker/deno/tests/gh_guard_cli_test.ts::gh-guard-cli #1364 - a masked --input
-  body with no --body-dir is refused, never written loose` — fail-loud, not a
-  silent temp file.
+  body with no --body-dir is refused, never written loose`
+  — fail-loud, not a silent temp file.
 - `worker/deno/tests/gh_guard_cli_test.ts::gh-guard-cli #1364 - --body-dir
-  requires a value` — malformed invocation still fails closed (exit 2).
+  requires a value`
+  — malformed invocation still fails closed (exit 2).
 
 Modified (documented business-logic change — the default writer no longer picks
 its own `TMPDIR` location):
 
 - `worker/deno/tests/gh_guard_cli_test.ts::gh-guard-cli #92 - masks a secret in a
-  real --input body, pointing --input at the redacted copy` — now passes
-  `--body-dir` and drops its manual `Deno.remove` of the masked copy, since the
-  directory it owns is removed instead. Its assertions are otherwise unchanged.
+  real --input body, pointing --input at the redacted copy`
+  — now passes `--body-dir` and drops its manual `Deno.remove` of the masked
+  copy, since the directory it owns is removed instead. Its assertions are
+  otherwise unchanged.
 
 Commands run:
 
@@ -92,7 +96,7 @@ Commands run:
 
 ## Docs
 
-`SECURITY.md` §6a said the guard child's *only* permission is `--allow-read`;
+`SECURITY.md` §6a said the guard child's _only_ permission is `--allow-read`;
 that is no longer true, so both the permission bullet and the redaction bullet
 now describe `--body-dir`, the narrowed `--allow-write=<dir>`, and the lifetime
 of the masked copy.

@@ -17,17 +17,17 @@ This adds the key: **`log_dir`**. Part of Issue #873.
 }
 ```
 
-| Accepted value | Example |
-| -------------- | ------- |
-| An absolute host path | `"/var/log/vibe-coder"` |
-| A path anchored at `~`, expanded against the host's home | `"~/logs"`, `"~"` |
-| Absent, or blank | The variables, then the platform default |
+| Accepted value                                           | Example                                  |
+| -------------------------------------------------------- | ---------------------------------------- |
+| An absolute host path                                    | `"/var/log/vibe-coder"`                  |
+| A path anchored at `~`, expanded against the host's home | `"~/logs"`, `"~"`                        |
+| Absent, or blank                                         | The variables, then the platform default |
 
 A **relative** path is refused at config load, naming the key and the offending
-value: it would resolve against whichever directory each launcher happened to
-be started in, so `launch-*.log` and `worker-*.log` could land in different
-places. `~` is expanded exactly as it is for the other path-valued keys
-(`ssh_key_path`, `gh_config_dir`).
+value: it would resolve against whichever directory each launcher happened to be
+started in, so `launch-*.log` and `worker-*.log` could land in different places.
+`~` is expanded exactly as it is for the other path-valued keys (`ssh_key_path`,
+`gh_config_dir`).
 
 Precedence — **`log_dir`, then `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the
 platform default** — is the rule `lib/config_precedence.ts` states for every
@@ -62,9 +62,9 @@ flowchart TD
 ```
 
 The shell launchers needed no change: `run.sh`, `loop.sh` and `run.ps1` already
-capture `mod.ts log-dir` rather than spelling the resolution themselves (that
-is what Issue #873's own PR added the command for). The command now reads
-`log_dir` out of the configuration file — from the file, not from the loaded
+capture `mod.ts log-dir` rather than spelling the resolution themselves (that is
+what Issue #873's own PR added the command for). The command now reads `log_dir`
+out of the configuration file — from the file, not from the loaded
 `WorkerConfig`, because `mod.ts` falls back to the default configuration for a
 config-optional command and would otherwise turn a broken config file into a
 silent platform default. This is the same reasoning `commands/run_mode.ts`
@@ -79,7 +79,7 @@ quota-pause marker (`container-restart-backoff`), `green-gate-report`,
 
 Compression (`lib/worker_log_gzip.ts`, Issue #4027) and retention
 (`lib/worker_log_cleanup.ts`, Issue #1902) both run **inside the container**, on
-`${HOME}/logs` — the fixed mount *target*, not a re-spelled host default. That
+`${HOME}/logs` — the fixed mount _target_, not a re-spelled host default. That
 target is bind-mounted from `resolveContainerLaunchHostPaths().logDir`, which
 now honours `log_dir`. So pinning the directory moves the mount and compression
 follows it; nothing re-derives a default of its own along the way.
@@ -88,8 +88,8 @@ pinned directory, then run retention over it and assert the `.gz` survives.
 
 ## Test Plan
 
-New suite `worker/deno/tests/log_dir_config_key_test.ts` (16 tests) — red
-before green; the first run failed to compile with
+New suite `worker/deno/tests/log_dir_config_key_test.ts` (16 tests) — red before
+green; the first run failed to compile with
 `Module '.../lib/log_dir.ts' has no exported member 'LOG_DIR_CONFIG_KEY'` and
 `TS2554 Expected 3-4 arguments, but got 5`.
 
@@ -103,13 +103,13 @@ before green; the first run failed to compile with
   missing file as "nothing stated", and fails loud on unreadable JSON, a
   non-object, or a non-string value
 - **parity**: `resolveLogDirForCommand` (what the launchers capture) and
-  `resolveContainerLaunchHostPaths().logDir` (the writable mount) resolve to
-  the same directory from the same key
-- **compression**: gzip and retention run on the pinned directory and the
-  `.gz` survives
+  `resolveContainerLaunchHostPaths().logDir` (the writable mount) resolve to the
+  same directory from the same key
+- **compression**: gzip and retention run on the pinned directory and the `.gz`
+  survives
 - registration: `log_dir` is in `KNOWN_CONFIG_KEYS`, raises no unknown-key
-  warning, and `validateConfigFileJson` refuses a non-string and a relative
-  path while accepting `~/…` and an absolute path
+  warning, and `validateConfigFileJson` refuses a non-string and a relative path
+  while accepting `~/…` and an absolute path
 - the `log-dir` command itself reports the configured directory
 
 Existing suites updated rather than replaced: `log_dir_default_test.ts`'s

@@ -4,17 +4,17 @@ When the host is above its disk floor but the ephemeral cargo root is over its
 budget (floor + 25 GB headroom) and nothing is prunable, a milestone sync no
 longer defers every cycle. `heavyBuildAdmission` (replacing
 `heavyBuildDeferral`) now returns `build`, `defer` (host below its floor,
-unchanged) or the new `merge-only`. In `merge-only`, a cargo-only tree is
-merged **without** its cargo type-check: a conflict-free merge, and a merge
-whose conflicts the deterministic rules settle, are pushed with the existing
+unchanged) or the new `merge-only`. In `merge-only`, a cargo-only tree is merged
+**without** its cargo type-check: a conflict-free merge, and a merge whose
+conflicts the deterministic rules settle, are pushed with the existing
 `UNGATED:` note and the milestone PR's CI builds them. A Deno-only tree and a
-mixed tree keep their Deno checks and suites and are rolled back when those
-are red. A mixed tree whose Deno half passed records that cargo was left to
-CI, and the report does not claim the cargo half passed. A conflict that needs
-the resolution agent is not landed that cycle (the agent could run the very
-cargo build the host cannot afford). The first such cycle is not charged; the
-next over-budget cycle is charged, so the recovery ladder applies. When the
-grant withholds the agent, the sync is handed no agent. Closes #4326.
+mixed tree keep their Deno checks and suites and are rolled back when those are
+red. A mixed tree whose Deno half passed records that cargo was left to CI, and
+the report does not claim the cargo half passed. A conflict that needs the
+resolution agent is not landed that cycle (the agent could run the very cargo
+build the host cannot afford). The first such cycle is not charged; the next
+over-budget cycle is charged, so the recovery ladder applies. When the grant
+withholds the agent, the sync is handed no agent. Closes #4326.
 
 Version bump: no `VERSION` change was made by hand in this change.
 
@@ -23,15 +23,15 @@ Version bump: no `VERSION` change was made by hand in this change.
 Above-floor merge-only admission defers cargo builds to CI. Both gates delegate
 to the normal repository gates with cargo skipping forced on; Deno type checks
 and unit suites still run in mixed trees. Manifest discovery tracks each
-toolchain separately, so a root Cargo manifest cannot hide nested Deno
-projects, and vice versa. Only cargo-only skipped resolutions
-receive `landUnverified`. A failing Deno check refuses a push, and an unlistable
-resolution tree fails closed. Cargo trees retain the agent restriction because
-an agent can run cargo; Deno-only trees retain the real agent.
+toolchain separately, so a root Cargo manifest cannot hide nested Deno projects,
+and vice versa. Only cargo-only skipped resolutions receive `landUnverified`. A
+failing Deno check refuses a push, and an unlistable resolution tree fails
+closed. Cargo trees retain the agent restriction because an agent can run cargo;
+Deno-only trees retain the real agent.
 
 The admission reason and both sweep and pre-cut log lines now say cargo builds
-wait for CI and Deno projects keep their normal checks. They no longer claim
-the whole repository build was skipped before inspecting the tree.
+wait for CI and Deno projects keep their normal checks. They no longer claim the
+whole repository build was skipped before inspecting the tree.
 
 ## Evidence
 
@@ -86,10 +86,10 @@ requiring the agent on a cargo tree waits for a cycle with build budget.
   end-to-end tests above — reviewer: partial — reason: the chain from stubbed
   figures to a landed push is pinned in four tests rather than one, and a
   conflict that needs the agent does not land in that cycle
-- **partial** — The host's real free space stays above its floor: deferred
-  cargo builds cannot consume the protected headroom, and below-floor admission
-  still defers. Deno checks remain enabled; live host free-space behaviour was
-  not measured during this review fix.
+- **partial** — The host's real free space stays above its floor: deferred cargo
+  builds cannot consume the protected headroom, and below-floor admission still
+  defers. Deno checks remain enabled; live host free-space behaviour was not
+  measured during this review fix.
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4326.json` claims the
   new module in the sweep ledger — reviewer: unrequested — reason: required by
   the repository's completeness check for a new `lib/` module
@@ -105,17 +105,18 @@ requiring the agent on a cargo tree waits for a cycle with build budget.
 
 The review corrections preserve Deno verification and replace misleading budget
 logs. Tests call the real gates with runner spies; existing cargo-only outcome
-assertions remain, including `skipped`, empty output and `landUnverified`.
-The agent and first-verdict-only unverified-resolution restrictions remain.
-Operator documentation and source comments describe cargo-only deferral.
+assertions remain, including `skipped`, empty output and `landUnverified`. The
+agent and first-verdict-only unverified-resolution restrictions remain. Operator
+documentation and source comments describe cargo-only deferral.
 
 ## Test Plan
 
-- Review-fix push: 60 focused tests passed across merge-only bindings, admission,
-  sweep and pre-cut wiring. Root and sibling Cargo/Deno layouts cover success,
-  type-check failure and unit-suite failure; a real-git mixed-tree test proves a
-  failing Deno check leaves the remote branch unchanged. Sweep and pre-cut log
-  regression verifies both Deno checks run and neither log claims a skipped build.
+- Review-fix push: 60 focused tests passed across merge-only bindings,
+  admission, sweep and pre-cut wiring. Root and sibling Cargo/Deno layouts cover
+  success, type-check failure and unit-suite failure; a real-git mixed-tree test
+  proves a failing Deno check leaves the remote branch unchanged. Sweep and
+  pre-cut log regression verifies both Deno checks run and neither log claims a
+  skipped build.
 - Reintroducing blanket cargo skipping independently in either gate makes the
   mixed-tree regression fail. Production code restored after each red check.
 - Review-fix validation: changed TypeScript type checks, lint and formatting
@@ -204,8 +205,8 @@ The shared discovery gate now treats a manifest as covering only its own
 toolchain. Cargo workspace members remain covered by their parent while nested
 Deno projects are found. Tests cover both nesting directions, co-located and
 sibling layouts. A real-git regression proves a deterministically resolved merge
-cannot advance the remote milestone branch when the nested Deno suite fails.
-The new discovery and remote-branch regressions failed before the fix.
+cannot advance the remote milestone branch when the nested Deno suite fails. The
+new discovery and remote-branch regressions failed before the fix.
 
 Validation: 119 focused admission, merge, resolution, repair, sweep and pre-cut
 tests passed; `deno task check:manifests` passed (857 passed, 1 ignored); format

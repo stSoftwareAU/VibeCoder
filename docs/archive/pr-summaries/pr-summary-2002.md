@@ -82,11 +82,11 @@ deno lint (changed modules)  → clean
 
 Full `./quality.sh` on this branch: every stage passes except `deno tests`,
 which reports the twelve host-only failures this macOS host always reports
-(`quality_gate_test` `runDenoCheck`/`runDenoFmtCheck`, `quality_gate_test_env_test`,
-`quality_helpers_test detectTool`, `run_core_idle_detect_audit_test`,
-`pwsh_suites_in_the_gate_test`) — the scrubbed-PATH suites find no `deno` and
-the host has no PowerShell. The set is identical to an unmodified `main` on
-the same host; CI's runners have both.
+(`quality_gate_test` `runDenoCheck`/`runDenoFmtCheck`,
+`quality_gate_test_env_test`, `quality_helpers_test detectTool`,
+`run_core_idle_detect_audit_test`, `pwsh_suites_in_the_gate_test`) — the
+scrubbed-PATH suites find no `deno` and the host has no PowerShell. The set is
+identical to an unmodified `main` on the same host; CI's runners have both.
 
 Not changed here, recorded in the issue: the launcher-side restart question
 (`poolHasAnotherTokenWithBudget`) still receives no `spentLabel`, because the

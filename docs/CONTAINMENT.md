@@ -163,8 +163,8 @@ root filesystem cannot be dropped by a later edit either.
   ownership of its root and `.git` and refuses foreign-owned paths. Tier-2 data
   siblings created and owned by `agent` are left in place.
 - `safe.directory '*'` is kept deliberately: the worker's git needs that trust
-  for the mounted clones. These protections prevent `agent` replacing or
-  writing git metadata in worker-owned clones; tier-2 sibling trust is tracked
+  for the mounted clones. These protections prevent `agent` replacing or writing
+  git metadata in worker-owned clones; tier-2 sibling trust is tracked
   separately in Issue #4756.
 - The cost: tooling run as `agent` can no longer rename over a vibe-owned
   top-level file, such as a lockfile. Builds write elsewhere: on a runtime that
@@ -257,11 +257,10 @@ runtimes disagree about how:
 | Apple `container` | no `tmpfs` at all; the entrypoint's own `0700` sub-directory under the durable state root is the protection                                                                                        |
 
 The `mode=0700` and `noexec` half is **not** dropped to work around Podman's
-refusal: that would hand back the world-readable credential directory that
-Issue #564 closed. The dialect therefore records the two capabilities
-separately — `tmpfsHonoursOptions` (does the runtime parse `path:options` at
-all?) and `tmpfsOwnership` (how does it say "this mount belongs to the
-container user"?).
+refusal: that would hand back the world-readable credential directory that Issue
+#564 closed. The dialect therefore records the two capabilities separately —
+`tmpfsHonoursOptions` (does the runtime parse `path:options` at all?) and
+`tmpfsOwnership` (how does it say "this mount belongs to the container user"?).
 
 Durable state lives **only** in the mounted workspace, logs, configuration and
 credentials. Anything the worker writes elsewhere is gone at the next launch —
@@ -715,8 +714,8 @@ deno run --allow-read --allow-env --allow-net worker/deno/mod.ts egress-proxy \
   established tunnel is closed on both ends with no log line. A route that takes
   a client after `200` owns that connection, so this idle guard does not bound
   it.
-- **Footprint.** The proxy module (`egress_proxy.ts`)
-  opens no files and keeps no cache. Started through `mod.ts`, the command needs
+- **Footprint.** The proxy module (`egress_proxy.ts`) opens no files and keeps
+  no cache. Started through `mod.ts`, the command needs
   `--allow-read --allow-env --allow-net` (`mod.ts` reads `deno.json` when it
   loads) and no `--allow-write`. With the image's modules already cached it runs
   against a read-only Deno cache (`--cached-only`), as checked with a read-only

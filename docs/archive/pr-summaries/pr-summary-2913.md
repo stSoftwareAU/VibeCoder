@@ -7,15 +7,15 @@ Closes #2913
 Issue-phase PR summaries now carry an AfterVibe-style `## Spec` section directly
 after `## Summary`, with three sub-headings: `### Intent and Rationale`,
 `### Essential Design Decisions` and `### Undiscoverable Facts`. Each holds at
-most four bullets, and `None.` is allowed. The section is added to the
-"PR Summary File" list in `prompts/issue/prompt.md` and to the prompt's worked
+most four bullets, and `None.` is allowed. The section is added to the "PR
+Summary File" list in `prompts/issue/prompt.md` and to the prompt's worked
 example. `CODING-STANDARDS.md` and `docs/PROMPTS.md` are updated to match.
 
 ## Spec
 
 ### Intent and Rationale
 
-- A reviewer can see *what* changed in the diff but not *why*. The Spec section
+- A reviewer can see _what_ changed in the diff but not _why_. The Spec section
   records intent, the decisions that must hold, and facts the repo cannot
   reveal.
 - The rule is enforced by the prompt alone: one template edit reaches every
@@ -43,8 +43,8 @@ example. `CODING-STANDARDS.md` and `docs/PROMPTS.md` are updated to match.
 ## Evidence
 
 - `worker/deno/tests/issue_prompt_spec_section_docs_test.ts` reads
-  `prompts/issue/prompt.md` with `readRepoDoc` and narrows it to the
-  "PR Summary File" section with `section()`. Its three tests:
+  `prompts/issue/prompt.md` with `readRepoDoc` and narrows it to the "PR Summary
+  File" section with `section()`. Its three tests:
   1. The required-content list has `**Spec**` before `**Evidence**`, the three
      sub-headings in order, "at most four bullets each" and `None.`.
   2. In the worked example, `## Spec` comes after `## Summary` and before
@@ -61,33 +61,33 @@ example. `CODING-STANDARDS.md` and `docs/PROMPTS.md` are updated to match.
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - [x] `prompts/issue/prompt.md` gains `## Spec` directly after `## Summary`, in
-  both the required-content list and the worked example, with the three
-  sub-headings. reviewer: met
+      both the required-content list and the worked example, with the three
+      sub-headings. reviewer: met
 - [x] Each sub-heading has at most four bullets, and `None.` is allowed.
-  reviewer: met
+      reviewer: met
 - [x] Every issue-phase PR's body and `pr-summary-N.md` carry `## Spec` with the
-  three sub-headings. The single issue prompt drives both. reviewer: met
+      three sub-headings. The single issue prompt drives both. reviewer: met
 - [x] Enforcement is prompt-only: no worker check, gate or warning, and the
-  `pr_feedback`, `ci_fix` and `closure_verdict_recovery.ts` paths are
-  untouched. reviewer: met
-- [x] Blind regeneration and verification conditions are not built.
-  reviewer: met
-- [ ] Post-merge evaluation of the first 10 issue-phase PRs (keep the section
-  if at least 7 of 10 are useful). reviewer: missing — reason: this is a human
-  review step after merge and cannot be done in this diff.
+      `pr_feedback`, `ci_fix` and `closure_verdict_recovery.ts` paths are
+      untouched. reviewer: met
+- [x] Blind regeneration and verification conditions are not built. reviewer:
+      met
+- [ ] Post-merge evaluation of the first 10 issue-phase PRs (keep the section if
+      at least 7 of 10 are useful). reviewer: missing — reason: this is a human
+      review step after merge and cannot be done in this diff.
 - [x] The `CODING-STANDARDS.md` and `docs/PROMPTS.md` updates were not named in
-  the issue. reviewer: unrequested — reason: they keep the documented PR
-  summary contract consistent with the prompt, as "A Code Change Owes a Docs
-  Change" requires.
+      the issue. reviewer: unrequested — reason: they keep the documented PR
+      summary contract consistent with the prompt, as "A Code Change Owes a Docs
+      Change" requires.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- Documentation-drift tests: reviewer: met. The first review was partial
-  because the test ran whole-file `includes` over the prompt. It was rewritten
-  to use `readRepoDoc` and `section()`, renamed to `*_docs_test.ts`, and given
-  a negative control. A re-review confirmed all three conditions are met.
+- Documentation-drift tests: reviewer: met. The first review was partial because
+  the test ran whole-file `includes` over the prompt. It was rewritten to use
+  `readRepoDoc` and `section()`, renamed to `*_docs_test.ts`, and given a
+  negative control. A re-review confirmed all three conditions are met.
 - A Code Change Owes a Docs Change: reviewer: met. The prompt,
   `CODING-STANDARDS.md` and `docs/PROMPTS.md` all agree.
 - Prompt templates (one editable template, no versioned copies): reviewer: met.
@@ -97,10 +97,10 @@ example. `CODING-STANDARDS.md` and `docs/PROMPTS.md` are updated to match.
 ## Test Plan
 
 - [x] Run `deno task test:unit tests/issue_prompt_spec_section_docs_test.ts`
-  from `worker/deno`.
+      from `worker/deno`.
 - [x] Re-run the existing issue-prompt suites
-  (`issue_prompt_v39_independent_review_test.ts` and
-  `completion_phase_summary_rule_retry_test.ts`).
+      (`issue_prompt_v39_independent_review_test.ts` and
+      `completion_phase_summary_rule_retry_test.ts`).
 - [x] Run `./quality.sh` from the repo root.
 - [ ] After merge, check that the next issue-phase PR's summary includes
-  `## Spec` with the three sub-headings.
+      `## Spec` with the three sub-headings.

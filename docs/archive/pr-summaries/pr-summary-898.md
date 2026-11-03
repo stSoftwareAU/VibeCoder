@@ -6,9 +6,9 @@ The idle-inversion escalation was told one **cycle-wide** boolean —
 `claimScanCompleted` — and applied it to every monitored repo. The claim scan
 does not work that way: `findOldestIssue` drops every repository in its
 `excludeRepos` set (`find_oldest_issue.ts:115`) before any collector runs, and
-that set is `InFlightRepoRegistry.heldRepos()` — every repo an issue slot
-(Issue #4176) **or** the maintenance lane (Issue #213) holds. No gate refuses
-those issues; none is ever consulted.
+that set is `InFlightRepoRegistry.heldRepos()` — every repo an issue slot (Issue
+#4176) **or** the maintenance lane (Issue #213) holds. No gate refuses those
+issues; none is ever consulted.
 
 That is why `stSoftwareAU/VibeCoder` escalated on three consecutive cycles with
 nine claimable `work-on` issues and an **empty** "What the claim scan did with
@@ -88,8 +88,8 @@ flowchart TD
   and passing after the fix.
 - **regression test** —
   `worker/deno/tests/idle_census_repo_held_898_test.ts::regression - the held repo the loop escalated no longer does (Issue #898)`
-  composes the loop's scan-state resolution with the census and pins both halves:
-  the pre-fix input escalates, the post-fix input does not.
+  composes the loop's scan-state resolution with the census and pins both
+  halves: the pre-fix input escalates, the post-fix input does not.
 
 ## Test Plan
 
@@ -105,16 +105,17 @@ Added:
   raises no `mis_classification` ALERT, keeps its claimable evidence and its
   per-repo line, does not silence an unheld repo beside it, and omitting the
   option preserves the historical behaviour.
-- `worker/deno/tests/run_core_idle_census_test.ts` (3 tests) — the loop hands the
-  census the repos the completed pass was never shown (a maintenance-lane hold),
-  reports none when the pool held nothing, and reports none for the serial loop.
+- `worker/deno/tests/run_core_idle_census_test.ts` (3 tests) — the loop hands
+  the census the repos the completed pass was never shown (a maintenance-lane
+  hold), reports none when the pool held nothing, and reports none for the
+  serial loop.
 
-Re-run green: `idle_decision_census_test.ts`, `idle_census_claim_gate_479_test.ts`,
-`idle_detect_diagnostics_test.ts`, `idle_detect_gate_suppression_479_test.ts`,
-`idle_inversion_streak_test.ts`, `fleet_telemetry_test.ts`,
-`claim_path_differential_test.ts`, `claim_path_incident_test.ts`, and all
-`run_core*_test.ts` (250 tests). Full `./quality.sh` run before the PR.
+Re-run green: `idle_decision_census_test.ts`,
+`idle_census_claim_gate_479_test.ts`, `idle_detect_diagnostics_test.ts`,
+`idle_detect_gate_suppression_479_test.ts`, `idle_inversion_streak_test.ts`,
+`fleet_telemetry_test.ts`, `claim_path_differential_test.ts`,
+`claim_path_incident_test.ts`, and all `run_core*_test.ts` (250 tests). Full
+`./quality.sh` run before the PR.
 
-Docs: `docs/IDLE-TASK-FRAMEWORK.md` gains the held-repo case in
-"Only a refusal escalates", a branch in its decision diagram, and the new note's
-log shape.
+Docs: `docs/IDLE-TASK-FRAMEWORK.md` gains the held-repo case in "Only a refusal
+escalates", a branch in its decision diagram, and the new note's log shape.

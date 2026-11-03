@@ -5,22 +5,23 @@ Closes #2892.
 The review-fleet-prs runner no longer fails silently.
 
 - **Permission check at mint.** `getInstallationToken`
-  (`worker/deno/lib/github_app_auth.ts`) now returns the token's
-  `permissions`. `mintReviewerToken` (`.claude/skills/review-fleet-prs/app_token.ts`)
-  checks them against `REQUIRED_PERMISSIONS`: pull_requests, issues, contents
-  and workflows `write`, and checks and statuses `read`. If any are missing it
-  fails with one message that names each one. Permissions the App itself lacks
-  point to the App's settings URL. Permissions the App has but the installation
-  has not accepted get "accept the new permissions" and the installation URL.
+  (`worker/deno/lib/github_app_auth.ts`) now returns the token's `permissions`.
+  `mintReviewerToken` (`.claude/skills/review-fleet-prs/app_token.ts`) checks
+  them against `REQUIRED_PERMISSIONS`: pull_requests, issues, contents and
+  workflows `write`, and checks and statuses `read`. If any are missing it fails
+  with one message that names each one. Permissions the App itself lacks point
+  to the App's settings URL. Permissions the App has but the installation has
+  not accepted get "accept the new permissions" and the installation URL.
 - **Escalation.** The new `escalate.ts` keeps a consecutive-failure count in
-  `<state>/failures.json`. On the 12th failed pass it finds or creates one
-  issue in stSoftwareAU/VibeCoder titled `review-fleet-prs runner failing on
-  <host>: <error>`, and appends a `status=unhealthy` line to `<state>/health.log`.
-  `run.sh` copies that line into `runner.log`. The first successful pass after
-  that comments on the issue, closes it, writes a `status=recovered` line and
-  resets the count. `run.sh` runs it as the gh user, with `GH_TOKEN` unset.
-  The error is passed through `redactSecrets` and `neutraliseAgentMarkers`
-  before it is stored or posted.
+  `<state>/failures.json`. On the 12th failed pass it finds or creates one issue
+  in stSoftwareAU/VibeCoder titled
+  `review-fleet-prs runner failing on
+  <host>: <error>`, and appends a
+  `status=unhealthy` line to `<state>/health.log`. `run.sh` copies that line
+  into `runner.log`. The first successful pass after that comments on the issue,
+  closes it, writes a `status=recovered` line and resets the count. `run.sh`
+  runs it as the gh user, with `GH_TOKEN` unset. The error is passed through
+  `redactSecrets` and `neutraliseAgentMarkers` before it is stored or posted.
 - **`--once` and tracing.** `run.sh --once` now runs `housekeep`. Xtrace is
   switched off from the mint through to the login extraction, so `bash -x` never
   prints the token.
@@ -39,10 +40,12 @@ flowchart TD
 ### Checklist
 
 - [x] Return `permissions` from `getInstallationToken`
-- [x] `REQUIRED_PERMISSIONS`, `missingPermissions`, `permissionError`, check in `mintReviewerToken`
+- [x] `REQUIRED_PERMISSIONS`, `missingPermissions`, `permissionError`, check in
+      `mintReviewerToken`
 - [x] `escalate.ts` with dedup, title update, close on recovery, health line
 - [x] Sanitise the error before it reaches the public issue
-- [x] `run.sh`: `--once` housekeep, xtrace suspended around the token, `escalate_result`
+- [x] `run.sh`: `--once` housekeep, xtrace suspended around the token,
+      `escalate_result`
 - [x] SKILL.md documents permissions, escalation and `--once`/`bash -x`
 - [x] Tests and quality gate
 
@@ -98,25 +101,22 @@ From the repo root:
 ```
 
 ## Acceptance Criteria
+
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - At mint, check the App permissions and fail with one message naming each
   missing permission and where to grant it. Evidence: `app_token.ts`, and the
-  `mintReviewerToken rejects …` and `permissionError …` tests.
-  reviewer: MET
+  `mintReviewerToken rejects …` and `permissionError …` tests. reviewer: MET
 - A missing `contents: write` exits non-zero and names `contents`. If the App
   has the permission but the installation has not accepted it, the message says
   "accept the new permissions". Evidence: the two `mintReviewerToken rejects …`
-  tests. `main()` exits 1 on any thrown error.
-  reviewer: MET
+  tests. `main()` exits 1 on any thrown error. reviewer: MET
 - After 12 consecutive failures, open or update one deduplicated issue titled
   with the host and the error, add a host health line, and close the issue on
   the first success. Evidence: `escalate.ts` and the `recordPass: 11 failures …`
-  test.
-  reviewer: MET
+  test. reviewer: MET
 - `--once` runs `housekeep`, and `bash -x` never prints the token. Evidence: the
-  two runner tests named above.
-  reviewer: MET
+  two runner tests named above. reviewer: MET
 
 The spec reviewer noted that `Installation.permissions` was unused. It has been
 removed. The reviewer also noted that the health signal is a new
@@ -125,12 +125,13 @@ signal. The skill runs on its own, outside the worker loop, so it has no
 `worker.log` to write to.
 
 ## Standards Review
+
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 Verdict: PASS WITH NOTES. No material departures. Optional notes:
 
-- `recordPass` is long and has many branches. It is kept as one state machine
-  so the transitions read in order.
+- `recordPass` is long and has many branches. It is kept as one state machine so
+  the transitions read in order.
 - `permissionError` is a little dense. A `levels()` helper keeps each clause on
   one line.
 

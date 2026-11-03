@@ -17,9 +17,9 @@ floor. Closes #1847.
 - `docs/security-advisory-triage.md` records the automatic audit-driven bypass
   beside the maintainer's manual emergency override, and its limit.
 
-No code path changes: `bump_age_audit.ts` is never run on the CI-fix path, so the
-quarantine reaches a CI-fix run only through the injected coding guidelines. The
-new subsection is the more specific instruction that wins there.
+No code path changes: `bump_age_audit.ts` is never run on the CI-fix path, so
+the quarantine reaches a CI-fix run only through the injected coding guidelines.
+The new subsection is the more specific instruction that wins there.
 
 ```mermaid
 flowchart LR
@@ -60,14 +60,15 @@ rendered-prompt tests and the full quality gate:
   `docs/security-advisory-triage.md:158-176` — reviewer: met
 - **met** — `./quality.sh` passes, including the prompt-template checks the gate
   runs — evidence: full gate run after the final edit, PASSED; the reviewer also
-  ran `./quality.sh --validate-prompts` and reported `prompt placeholders:
+  ran `./quality.sh --validate-prompts` and reported
+  `prompt placeholders:
   PASSED` — reviewer: met
 - **unrequested** — the prompt states that this subsection is the more specific
-  instruction and wins over the 24h floor in the injected coding-guidelines block
-  — evidence: `prompts/ci_fix/prompt.md:104` — reviewer: unrequested — reason:
-  without it the run receives two contradicting instructions; the issue's own
-  Context names this precedence as the mechanism the exemption relies on, so it
-  stands
+  instruction and wins over the 24h floor in the injected coding-guidelines
+  block — evidence: `prompts/ci_fix/prompt.md:104` — reviewer: unrequested —
+  reason: without it the run receives two contradicting instructions; the
+  issue's own Context names this precedence as the mechanism the exemption
+  relies on, so it stands
 - **unrequested** — the prompt adds "do not sweep unrelated dependencies forward
   while you are in the manifest" — evidence: `prompts/ci_fix/prompt.md:106` —
   reviewer: unrequested — reason: it is the operational half of the requested
@@ -78,13 +79,13 @@ rendered-prompt tests and the full quality gate:
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — the new tests assert prompt prose rather than a computed
-  decision — evidence:
-  `worker/deno/tests/ci_fix_prompt_v4_test.ts:138` — reason: partly fixed here —
-  the assertions were rewritten to drop markdown emphasis so a formatting edit no
-  longer reddens them. The rest stands: the issue's acceptance criterion *is*
-  "the rendered prompt contains these rules", and this is the established pattern
-  of `ci_fix_reproduction_loop_v14_test.ts`, which pins the same template the
-  same way. The `{{PLACEHOLDER}}` assertion is behavioural.
+  decision — evidence: `worker/deno/tests/ci_fix_prompt_v4_test.ts:138` —
+  reason: partly fixed here — the assertions were rewritten to drop markdown
+  emphasis so a formatting edit no longer reddens them. The rest stands: the
+  issue's acceptance criterion _is_ "the rendered prompt contains these rules",
+  and this is the established pattern of `ci_fix_reproduction_loop_v14_test.ts`,
+  which pins the same template the same way. The `{{PLACEHOLDER}}` assertion is
+  behavioural.
 - **violation** — the exemption lands on the phase prompt while
   `prompts/coding_guidelines/prompt.md` still states the 24h floor
   unconditionally — evidence: `prompts/ci_fix/prompt.md:103` — reason: stands.
@@ -100,7 +101,7 @@ rendered-prompt tests and the full quality gate:
 - **violation** — the docs paragraph called the agent path "the same bypass",
   looser than the maintainer gate's confirmed-exposure-plus-active-exploitation
   conditions — evidence: `docs/security-advisory-triage.md:158` — reason: fixed
-  here; the paragraph now says the trigger is *narrower* and states what it is.
+  here; the paragraph now says the trigger is _narrower_ and states what it is.
 - **clean** — Australian English throughout; every referenced name resolves
   (`VIBE_BUMP_QUARANTINE_HOURS`, `minimumDependencyAge`, and
   `--minimum-dependency-age`, which the installed Deno accepts); the docs change
@@ -117,11 +118,13 @@ template through `buildCiFixPrompt` with `promptsDir` pointing at `prompts/` and
 a `deno audit` failure carrying a GHSA annotation:
 
 - `ci_fix - an advisory-clearing bump is exempt from the publish-age floor
-  (Issue #1847)` — the subsection, the audits it covers, the exemption sentence,
-  the `--minimum-dependency-age=0` mechanism, and the ban on editing the repo's
+  (Issue #1847)`
+  — the subsection, the audits it covers, the exemption sentence, the
+  `--minimum-dependency-age=0` mechanism, and the ban on editing the repo's
   `minimumDependencyAge` config or `exclude` globs.
 - `ci_fix - the audit exemption names all three override mechanisms (Issue
-  #1847)` — direct bump, `deno.json`/`package.json` override for a transitive
+  #1847)`
+  — direct bump, `deno.json`/`package.json` override for a transitive
   `deno.lock` entry, `Cargo.toml` `[patch]`/parent-crate bump, plus the
   re-run-the-audit-green loop.
 - `ci_fix - every other bump in the run keeps the 24h floor (Issue #1847)` — the

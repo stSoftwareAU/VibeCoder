@@ -37,7 +37,11 @@ import {
   withGraftContext,
 } from "./graft_context.ts";
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
-import { getCiCheckRetryCount, recordCiCheckRetry } from "./pr_ci_checks.ts";
+import {
+  getCiCheckRetryCount,
+  recordCiCheckRetry,
+  refundCiCheckRetry,
+} from "./pr_ci_checks.ts";
 import {
   type CheckAnnotation,
   decodeAnnotations,
@@ -2225,6 +2229,14 @@ async function _processCiWithHeartbeat(
   // step and git's own words. Reaches both the log and the PR comment, so a
   // human never gets a bare "please check the branch status" again.
   let pushFailureDetail = "";
+  // Issue #4625: set when the repository's checks could not run (not when they
+  // failed). Such a round is released, not charged as a failed fix.
+  let publicationDeferral: string | undefined;
+  const noteDeferral = (error: Error): void => {
+    if (error instanceof PublicationValidationUnavailableError) {
+      publicationDeferral = error.message;
+    }
+  };
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed, finalUnpushedCount } =
       finaliseResult.value;
@@ -2251,6 +2263,7 @@ async function _processCiWithHeartbeat(
       // Issue #211: keep the reason the recovery failed — it names the step
       // (fetch, merge conflict, rejected retry push, unconfirmed push)
       // and carries git's stderr. Without it the log said only "push failed".
+      if (!recoveryResult.ok) noteDeferral(recoveryResult.error);
       let failureDetail = recoveryResult.ok
         ? undefined
         : publicationFailureDetail(recoveryResult.error);
@@ -2270,6 +2283,7 @@ async function _processCiWithHeartbeat(
           pushSucceeded = true;
           finalUnpushedAfterPush = 0;
         } else {
+          if (!retryFinalise.ok) noteDeferral(retryFinalise.error);
           failureDetail = retryFinalise.ok
             ? `retry after push recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
             : publicationFailureDetail(retryFinalise.error);
@@ -2288,6 +2302,7 @@ async function _processCiWithHeartbeat(
     }
   } else {
     pushFailureDetail = publicationFailureDetail(finaliseResult.error);
+    noteDeferral(finaliseResult.error);
     if (finaliseResult.error instanceof PublicationValidationUnavailableError) {
       // Issue #4625: the repository's checks could not run, which is not a
       // verdict on the fix. The push is deferred to a later cycle.
@@ -2566,6 +2581,32 @@ async function _processCiWithHeartbeat(
     } catch {
       logger.warn("Could not re-enable auto-merge", { repo, prNumber });
     }
+  }
+
+  // Issue #4625: the repository's checks could not run, so nothing was
+  // published and nothing was judged. Release the pull request: refund the
+  // retry charge, post no failed-push comment and write no attempt marker, so
+  // repeated infrastructure faults never reach the attempt cap (which would
+  // close the PR). The next scan retries.
+  if (publicationDeferral !== undefined && !(hasChanges && pushSucceeded)) {
+    await refundCiCheckRetry(stateDir, repo, checkRunId);
+    await recordCiMilestone(
+      processorDeps,
+      input,
+      `Push deferred for \`${checkName}\` — repository checks could not run`,
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount - 1,
+        summary:
+          `PR #${prNumber} (${checkName}) — push deferred: repository checks ` +
+          `could not run (${publicationDeferral}); no attempt charged, retried next scan`,
+      },
+    };
   }
 
   let actuallyPushed = hasChanges && pushSucceeded;

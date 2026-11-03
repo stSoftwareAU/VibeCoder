@@ -2,9 +2,9 @@
 
 This record covers issues #3700, #3701 and #3702. The implementation is based on
 main `75f71756a281bb160b0386902ad0b7df0220f2e1` and includes the independently
-reviewed GitHub connection-failure classifier fix needed by the quality gate.
-It also includes the shared quality-gate test fixture repair that supplies its
-own Markdown runner instead of relying on a host-installed executable.
+reviewed GitHub connection-failure classifier fix needed by the quality gate. It
+also includes the shared quality-gate test fixture repair that supplies its own
+Markdown runner instead of relying on a host-installed executable.
 
 ## Observed CLI behaviour and limits
 
@@ -23,7 +23,8 @@ and deliberately generated stub output; neither is labelled a live capture.
 
 Native provider scanner fixtures follow the
 [Codex item schema](https://raw.githubusercontent.com/openai/codex/main/sdk/typescript/src/items.ts)
-and [Gemini output schema](https://raw.githubusercontent.com/google-gemini/gemini-cli/main/packages/core/src/output/types.ts).
+and
+[Gemini output schema](https://raw.githubusercontent.com/google-gemini/gemini-cli/main/packages/core/src/output/types.ts).
 These fixtures establish supported parsing behaviour, not observed production
 incidents. The scan does not execute transcript content.
 
@@ -36,8 +37,8 @@ tests cover argv, validated defaults, both bootstraps, distinct logs and the
 shared typed terminal error contract. Explicit helper retries preserve that
 terminal cause before further agent invocations or publication.
 
-A total of 108 targeted guard, operand and call-site mutation probes were applied
-independently and restored. The companion
+A total of 108 targeted guard, operand and call-site mutation probes were
+applied independently and restored. The companion
 [transcript facts](../archive/pr-summaries/pr-summary-3700.facts.json) and
 [turn-limit facts](../archive/pr-summaries/pr-summary-3701.facts.json) name the
 specific failed test and mutation. This is targeted mutation evidence, not a
@@ -47,10 +48,9 @@ are explicitly recorded as untestable with the harness search and reason.
 First-red behavioural checks reproduced missing retention, cap arguments,
 terminal classification, native-provider scanner coverage, compressed-file
 coverage loss, scan size limits, stale standalone/shell cap transport and
-partial-work publication. The later verifier regression also returned
-`ok: true` before terminal propagation was added. Import-resolution or type
-errors encountered while building fixtures are not counted as behavioural red
-results.
+partial-work publication. The later verifier regression also returned `ok: true`
+before terminal propagation was added. Import-resolution or type errors
+encountered while building fixtures are not counted as behavioural red results.
 
 No completed local `./quality.sh` result is claimed. The final immutable source
 is intended for the same unchanged quality script in hosted Linux before PR
@@ -71,26 +71,27 @@ before merge, independently of technical validation.
 
 ## First hosted run and follow-up
 
-The [first immutable-source run](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39089145423)
-checked source `9a2fcdc227a08800153cccb7b8a7261fc4df9f9a`. Its parallel unit pass
-reported 28,666 passed, 4 failed and 4 ignored; the serial pass did not run.
-All other required quality stages passed; configuration integration was
+The
+[first immutable-source run](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39089145423)
+checked source `9a2fcdc227a08800153cccb7b8a7261fc4df9f9a`. Its parallel unit
+pass reported 28,666 passed, 4 failed and 4 ignored; the serial pass did not
+run. All other required quality stages passed; configuration integration was
 reported skipped by the existing gate. This is a failed full gate, not a
 completed validation pass.
 
-Three failures were existing DeepSeek/routing argv expectations that omitted
-the new cap. The expectations now retain all prior arguments and add only the
-cap. An isolated mutation removing the production cap argument makes all five
-edited argv tests fail, including the two earlier Claude descriptor assertions.
-The exact replacements and issue requirement are recorded in the turn-limit
+Three failures were existing DeepSeek/routing argv expectations that omitted the
+new cap. The expectations now retain all prior arguments and add only the cap.
+An isolated mutation removing the production cap argument makes all five edited
+argv tests fail, including the two earlier Claude descriptor assertions. The
+exact replacements and issue requirement are recorded in the turn-limit
 archive's Test Plan.
 
-The fourth failure came from the standalone test changing HOME while passing
-an empty DENO_DIR on CI, selecting a fresh child cache. Reproducing DENO_DIR
-unset with an isolated parent default-cache HOME failed the existing test.
-Resolving the actual cache with `deno info --json` before changing HOME fixes
-that case and keeps `--cached-only`, with an explicit frozen lockfile. All
-three affected test files then passed together: 37 passed, 0 failed.
+The fourth failure came from the standalone test changing HOME while passing an
+empty DENO_DIR on CI, selecting a fresh child cache. Reproducing DENO_DIR unset
+with an isolated parent default-cache HOME failed the existing test. Resolving
+the actual cache with `deno info --json` before changing HOME fixes that case
+and keeps `--cached-only`, with an explicit frozen lockfile. All three affected
+test files then passed together: 37 passed, 0 failed.
 
 The follow-up needs a new unchanged full-gate run against its immutable source.
 Human runbook review remains pending.
@@ -110,21 +111,23 @@ previous assertions and real `mod.ts` subprocess launches remain. Each process
 was already independent; no stateful sequence was split. No time threshold,
 manifest exemption or skip changed. The actual `deno task test:unit` runner
 passes all three and its unchanged time budget. A default-cache run with
-`DENO_DIR` unset also passed, with JUnit times of 0.322s, 0.326s and 0.305s before
-the final helper extraction (times are observations, not timing assertions).
+`DENO_DIR` unset also passed, with JUnit times of 0.322s, 0.326s and 0.305s
+before the final helper extraction (times are observations, not timing
+assertions).
 
-Isolated mutations independently break each scenario: replace the configured
-cap with the default (configured scenario fails); suppress default-cap
-propagation (default scenario fails); remove the fallback logger (terminal
-scenario fails). These were assertion failures with the other cases left intact,
-and production source was restored after every probe. Logs are
+Isolated mutations independently break each scenario: replace the configured cap
+with the default (configured scenario fails); suppress default-cap propagation
+(default scenario fails); remove the fallback logger (terminal scenario fails).
+These were assertion failures with the other cases left intact, and production
+source was restored after every probe. Logs are
 `m121-standalone-split-{configured,default,terminal-log}-red.log` and
-`m121-standalone-split-budget-green.log` in the task's temporary evidence folder.
+`m121-standalone-split-budget-green.log` in the task's temporary evidence
+folder.
 
 Main `f498bf3bf86d2d78b828ae920a01a7e3117b7ba7` was merged cleanly before this
-follow-up. Its security-fix retry changes retain the existing agent failure
-stop path. This new tree still requires a full unchanged hosted gate; human
-runbook review remains pending.
+follow-up. Its security-fix retry changes retain the existing agent failure stop
+path. This new tree still requires a full unchanged hosted gate; human runbook
+review remains pending.
 
 ## Documentation sweep
 
@@ -140,13 +143,13 @@ as a point-in-time analysis at base `f108cad7`. Its lines 44, 45, 139, 143 and
 lines 180 and 182 identify these follow-up issues. They are historical evidence,
 not current operator instructions.
 
-Runbook links were checked against the local Configuration, Deployment,
-Agent Accountability and Threat Model manuals and their headings. The Docker
+Runbook links were checked against the local Configuration, Deployment, Agent
+Accountability and Threat Model manuals and their headings. The Docker
 preservation route uses a separately verified local reader image, disables
 networking and mounts the evidence volume read-only. The Apple route explicitly
 retains a stopped named volume untouched until a supported backup is confirmed.
-No containment/credential-rotation command in the runbook was executed against
-a live worker during this task.
+No containment/credential-rotation command in the runbook was executed against a
+live worker during this task.
 
 ### Retained current-document hits
 
@@ -154,53 +157,86 @@ The final grep also found these current references. Each remains true: they
 explain existing wall-clock timeout or scheduling behaviour rather than a claim
 that wall-clock time is the only execution bound.
 
-- `docs/CONFIGURATION.md:43` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:1797` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:1823` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:1824` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:1861` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2170` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2179` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2191` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2413` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2436` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2471` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2484` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2500` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2501` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2503` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2504` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2509` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2543` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2549` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2716` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2816` — still describes the wall-clock timeout or its existing consumer.
-- `docs/CONFIGURATION.md:2966` — still describes the wall-clock timeout or its existing consumer.
-- `docs/MODEL-AND-CACHING.md:778` — still describes the wall-clock timeout or its existing consumer.
-- `docs/MODEL-AND-CACHING.md:3641` — still describes the wall-clock timeout or its existing consumer.
-- `docs/MODEL-AND-CACHING.md:3651` — still describes the wall-clock timeout or its existing consumer.
-- `docs/TROUBLESHOOTING.md:842` — still describes the wall-clock timeout or its existing consumer.
-- `docs/TROUBLESHOOTING.md:1079` — still describes the wall-clock timeout or its existing consumer.
-- `docs/TROUBLESHOOTING.md:1212` — still describes the wall-clock timeout or its existing consumer.
-- `docs/SETUP.md:1659` — still describes the wall-clock timeout or its existing consumer.
-- `docs/SETUP.md:1688` — still describes the wall-clock timeout or its existing consumer.
-- `docs/USAGE.md:411` — still describes the wall-clock timeout or its existing consumer.
-- `docs/workflows/ci-fix.md:181` — still describes the wall-clock timeout or its existing consumer.
-- `docs/workflows/issue-processing.md:1192` — still describes the wall-clock timeout or its existing consumer.
+- `docs/CONFIGURATION.md:43` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:1797` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:1823` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:1824` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:1861` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2170` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2179` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2191` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2413` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2436` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2471` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2484` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2500` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2501` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2503` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2504` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2509` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2543` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2549` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2716` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2816` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/CONFIGURATION.md:2966` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/MODEL-AND-CACHING.md:778` — still describes the wall-clock timeout or
+  its existing consumer.
+- `docs/MODEL-AND-CACHING.md:3641` — still describes the wall-clock timeout or
+  its existing consumer.
+- `docs/MODEL-AND-CACHING.md:3651` — still describes the wall-clock timeout or
+  its existing consumer.
+- `docs/TROUBLESHOOTING.md:842` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/TROUBLESHOOTING.md:1079` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/TROUBLESHOOTING.md:1212` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/SETUP.md:1659` — still describes the wall-clock timeout or its existing
+  consumer.
+- `docs/SETUP.md:1688` — still describes the wall-clock timeout or its existing
+  consumer.
+- `docs/USAGE.md:411` — still describes the wall-clock timeout or its existing
+  consumer.
+- `docs/workflows/ci-fix.md:181` — still describes the wall-clock timeout or its
+  existing consumer.
+- `docs/workflows/issue-processing.md:1192` — still describes the wall-clock
+  timeout or its existing consumer.
 
 ## PR CI: narrow environment permissions
 
-The Markdown workflow reached a separate bootstrap path not covered by the
-full local-style gate: `check-mermaid` runs with an explicit environment
-allowlist that excludes agent transport. PR job 117585618638 failed at the
-unconditional turn-cap export. A real child-process regression reproduced
-the same `NotCapable` failure before the fix.
+The Markdown workflow reached a separate bootstrap path not covered by the full
+local-style gate: `check-mermaid` runs with an explicit environment allowlist
+that excludes agent transport. PR job 117585618638 failed at the unconditional
+turn-cap export. A real child-process regression reproduced the same
+`NotCapable` failure before the fix.
 
 Bootstrap now queries the existing permission before exporting the cap.
-Read-only commands keep their original permissions; agent-capable commands
-still settle the configured cap, and the agent argument builder still
-requires permission to read it. All four standalone cases pass. Forcing
-the guard true breaks the read-only command, and forcing it false breaks
-the configured-cap argv assertion. Neither the workflow permission set nor
-the test budget was broadened. The full hosted gate on `ab2754e1` passed
-before this CI fix; the updated PR checks validate this new source.
+Read-only commands keep their original permissions; agent-capable commands still
+settle the configured cap, and the agent argument builder still requires
+permission to read it. All four standalone cases pass. Forcing the guard true
+breaks the read-only command, and forcing it false breaks the configured-cap
+argv assertion. Neither the workflow permission set nor the test budget was
+broadened. The full hosted gate on `ab2754e1` passed before this CI fix; the
+updated PR checks validate this new source.

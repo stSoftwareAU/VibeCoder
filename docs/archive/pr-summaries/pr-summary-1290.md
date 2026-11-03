@@ -7,7 +7,7 @@ rebuilt from status-check contexts alone. Any other rule an admin had added to
 `Vibe Coder default branch` — `pull_request` (required approvals),
 `non_fast_forward`, `deletion`, `required_signatures`, `bypass_actors` — was
 silently dropped the next time a new check appeared, and the run reported it as
-a success because `preserved` counts *contexts* only.
+a success because `preserved` counts _contexts_ only.
 
 The configurator now reads the live ruleset before it rewrites it, replaces
 **only** the `required_status_checks` rule, and carries every other rule and the
@@ -29,8 +29,8 @@ Changes:
   `worker/deno/setup/setup_cli.ts` — `preservedRules` is threaded through and
   named in the success line, so a run over a hardened ruleset shows what
   survived rather than reporting a context count that hides the loss.
-- `docs/MERGE.md` — new section *The update never weakens the rules it
-  rewrites*, with a flowchart of the read-merge-or-refuse decision.
+- `docs/MERGE.md` — new section _The update never weakens the rules it
+  rewrites_, with a flowchart of the read-merge-or-refuse decision.
 
 ## Evidence
 

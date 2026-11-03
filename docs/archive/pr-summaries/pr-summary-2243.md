@@ -6,7 +6,7 @@
 only the comments that survived `selectImplementationComments` — a 20-comment /
 12,000-character cap — so the comment-flood detector and the suspicious-pattern
 audit saw the capped set rather than the thread. Both detectors are documented
-in `comment_trust_filter.ts` as running *before any cap*, and the implementation
+in `comment_trust_filter.ts` as running _before any cap_, and the implementation
 route was running one in front of them: an attacker posting 15 untrusted
 comments of ~1,200 characters produced no `[SECURITY] [COMMENT_FLOOD]` event,
 and any injection pattern in a comment that lost the budget was silently absent
@@ -14,7 +14,7 @@ from the audit log.
 
 The fix separates the two concerns. Audits now run over the **candidate** set —
 the thread minus worker bookkeeping, before the count and character caps — while
-the selection continues to decide only what the prompt *carries*. The volume
+the selection continues to decide only what the prompt _carries_. The volume
 reaching the prompt is unchanged.
 
 Closes #2243.
@@ -44,9 +44,8 @@ flowchart LR
 
 ## Evidence
 
-Backend/CLI change with no web interface, so there is nothing to screenshot.
-The evidence is the regression tests, run against the unfixed and the fixed
-code.
+Backend/CLI change with no web interface, so there is nothing to screenshot. The
+evidence is the regression tests, run against the unfixed and the fixed code.
 
 Against the unfixed code:
 
@@ -58,14 +57,16 @@ suspicious pattern in a budget-dropped comment is still audited (#2243) ... FAIL
 FAILED | 10 passed | 2 failed
 ```
 
-After the fix, `deno test tests/implementation_comments_test.ts
-tests/comment_trust_filter_test.ts tests/comment_rate_limiter_test.ts` reports
-`ok | 62 passed | 0 failed`. The full `./quality.sh` gate reports `PASSED`.
+After the fix,
+`deno test tests/implementation_comments_test.ts
+tests/comment_trust_filter_test.ts tests/comment_rate_limiter_test.ts`
+reports `ok | 62 passed | 0 failed`. The full `./quality.sh` gate reports
+`PASSED`.
 
 ### Branch note
 
-An earlier attempt checkpointed this work as an orphan root commit with no
-merge base to `main`, which is why it raised no PR. The same four-file change is
+An earlier attempt checkpointed this work as an orphan root commit with no merge
+base to `main`, which is why it raised no PR. The same four-file change is
 re-based onto `main` here and force-pushed over that orphan tip — the only way
 to give the branch a merge base. The content is unchanged; it is the commit's
 parentage that was wrong.
@@ -76,7 +77,7 @@ The trigger in the issue — 15 untrusted comments of ~1,200 characters on an
 implementation run — now raises
 `[SECURITY] [COMMENT_FLOOD] Issue has 15 untrusted comments`, asserted by the
 first test above. The bypass class is closed rather than the one input: the
-audit no longer reads the *output* of any cap, it reads `candidates`, which is
+audit no longer reads the _output_ of any cap, it reads `candidates`, which is
 the whole thread minus content-matched worker bookkeeping. Tuning comment size
 or count to lose the budget therefore cannot move a comment out of the audited
 set, because the budget no longer gates it. The one remaining exclusion is

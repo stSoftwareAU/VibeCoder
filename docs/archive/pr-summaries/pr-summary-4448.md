@@ -126,7 +126,7 @@ Backend-only change; no UI files. Verification is by tests (below).
   `VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH` in the shared process environment.
   `worker/deno/commands/repo_settings_harden.ts` now exposes
   `runHardenCommand(args, defaultBranchCachePath?)`; `execute` calls it with no
-  override (production path) and the tests pass the cache file through it, so
-  no test touches the process environment. Re-ran
+  override (production path) and the tests pass the cache file through it, so no
+  test touches the process environment. Re-ran
   `deno task test:unit tests/setup_repo_settings_harden_test.ts` from
   `worker/deno` on the head: 40 passed, 0 failed, parallel-safety pass green.

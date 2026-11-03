@@ -3,8 +3,8 @@
 - New `worker/deno/lib/json_array_pages.ts`: `parseJsonArrayPages(raw)` scans
   `gh api --paginate` output (concatenated `[...]` pages) while tracking JSON
   string and escape state. A `][` inside a string value no longer reads as a
-  page boundary. Truncated, malformed or non-array input throws with the
-  offset, so an unreadable response stays distinguishable from an empty one.
+  page boundary. Truncated, malformed or non-array input throws with the offset,
+  so an unreadable response stays distinguishable from an empty one.
 - Callers that split on `/\]\s*\[/` now use the shared parser:
   `milestone_close_housekeeping.ts` (local copy removed),
   `milestone_children_gate.ts`, `collaborator_permissions.ts` (errors →
@@ -40,9 +40,9 @@ Quality gate: QUALITY_GATE_RESULT
 - Bodies containing `][` and `]` + newline + `[` parse into the correct issue
   numbers — `json_array_pages_test.ts` and the housekeeping and children-gate
   regression tests. reviewer: met
-- Malformed output still throws, so unreadable ≠ empty — truncation, garbage
-  and non-array page tests in `json_array_pages_test.ts`; the housekeeping test
-  for a truncated response reports an error and leaves the milestone unswept.
+- Malformed output still throws, so unreadable ≠ empty — truncation, garbage and
+  non-array page tests in `json_array_pages_test.ts`; the housekeeping test for
+  a truncated response reports an error and leaves the milestone unswept.
   reviewer: met
 - The other callers that used the same split are fixed — the children gate,
   collaborator permissions and trust exclusions, each with a caller-level test.
@@ -52,9 +52,9 @@ Quality gate: QUALITY_GATE_RESULT
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-No material departures: the change fails loud on bad input, one parser
-replaces four copies (DRY), tests call real functions, and no documented
-behaviour changed.
+No material departures: the change fails loud on bad input, one parser replaces
+four copies (DRY), tests call real functions, and no documented behaviour
+changed.
 
 ## Test Plan
 

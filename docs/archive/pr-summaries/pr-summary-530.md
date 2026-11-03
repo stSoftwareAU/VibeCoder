@@ -2,25 +2,24 @@
 
 ## Summary
 
-`secret_redaction_bounds_test.ts` asserted an absolute 2000 ms wall clock
-inside a unit test, so a fleet host 8% slower than the one the constant was
-chosen on reported a still-linear redaction rule as a correctness failure.
+`secret_redaction_bounds_test.ts` asserted an absolute 2000 ms wall clock inside
+a unit test, so a fleet host 8% slower than the one the constant was chosen on
+reported a still-linear redaction rule as a correctness failure.
 
-The bound is now asserted on the **shape** of the growth instead of the clock.
-A new shared helper, `worker/deno/tests/support/growth.ts`, redacts the same
+The bound is now asserted on the **shape** of the growth instead of the clock. A
+new shared helper, `worker/deno/tests/support/growth.ts`, redacts the same
 hostile shape at N and 4N characters and fails only when the cost grew faster
 than the input did:
 
-- linear work costs ~4× — allowed (the helper permits `slack × sizeFactor`,
-  i.e. 8×);
-- quadratic work costs ~16× — fails loudly, on a fast host and a slow one
-  alike;
-- a uniformly slower host inflates **both** readings, so the ratio is
-  unchanged and the check stays green.
+- linear work costs ~4× — allowed (the helper permits `slack × sizeFactor`, i.e.
+  8×);
+- quadratic work costs ~16× — fails loudly, on a fast host and a slow one alike;
+- a uniformly slower host inflates **both** readings, so the ratio is unchanged
+  and the check stays green.
 
 `graceMs` (default 50 ms) is a floor, not a ceiling: it suppresses the ratio
-only when the scaled run is small enough to be scheduler noise. It cannot mask
-a real blow-up, because a super-linear rule at these sizes costs seconds.
+only when the scaled run is small enough to be scheduler noise. It cannot mask a
+real blow-up, because a super-linear rule at these sizes costs seconds.
 
 The constant was not raised, and no assertion was deleted — all 11 tests in the
 file remain, with the small fixed-size cases (the `sk-` run, the 39-character
@@ -87,9 +86,9 @@ pre-existing, environment-caused failures unrelated to this change:
   broken in this container: `gh --version` exits 1 with
   `error: Module not found "file:///tmp/vibe-scratch/worker-src/worker/deno/lib/gh_guard_cli.ts"`,
   and those tests invoke the real `gh`.
-- `tests/run_core_test.ts`, `tests/run_core_rate_limit_resume_test.ts`
-  (uncaught errors) and `tests/service_account_env_test.ts` — reproduce
-  identically when run alone, with none of the files this PR touches loaded.
+- `tests/run_core_test.ts`, `tests/run_core_rate_limit_resume_test.ts` (uncaught
+  errors) and `tests/service_account_env_test.ts` — reproduce identically when
+  run alone, with none of the files this PR touches loaded.
 
 `deno lint`, `deno check`, `deno fmt`, markdownlint, mermaid and every
 chokepoint check pass.

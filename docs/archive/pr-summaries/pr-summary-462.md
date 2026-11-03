@@ -23,9 +23,9 @@ Three pieces:
   reuses the existing `compareSemver` from `software_updates.ts` rather than
   adding a semver dependency, so `2.1.170` correctly beats `2.1.9`.
 - **Rule registry** — `ManifestRule` (`matches(path)` / `resolve(segments)`) and
-  `createManifestRuleRegistry`, plus the shared `manifestRuleRegistry`
-  instance, so `deno.json`, `package.json`, `Cargo.toml` and `go.mod` handlers
-  register without editing the core.
+  `createManifestRuleRegistry`, plus the shared `manifestRuleRegistry` instance,
+  so `deno.json`, `package.json`, `Cargo.toml` and `go.mod` handlers register
+  without editing the core.
 
 `RuleOutcome` is `resolved` (full text) or `unresolved` (reason) only — there is
 deliberately no `partial`, because a half-resolved file leaves conflict markers
@@ -33,11 +33,11 @@ behind and the processor refuses to push those.
 
 ### Deliberately undecidable
 
-The comparator hands these back to the AI/human path rather than guessing:
-a pre-release on either side, equal versions, differing range prefixes
-(`^1.2.3` vs `~1.2.3` is a policy change, not a bump), different packages, and
-anything it cannot parse (`latest`, `workspace:*`, build metadata, a two-segment
-version, a sub-path export).
+The comparator hands these back to the AI/human path rather than guessing: a
+pre-release on either side, equal versions, differing range prefixes (`^1.2.3`
+vs `~1.2.3` is a policy change, not a bump), different packages, and anything it
+cannot parse (`latest`, `workspace:*`, build metadata, a two-segment version, a
+sub-path export).
 
 ### Fail-loud choices
 
@@ -48,7 +48,7 @@ version, a sub-path export).
   rather than resolving part of the file.
 - A duplicate rule name throws at registration.
 
-`=======` and `>>>>>>>` *outside* a hunk stay literal — a Markdown setext
+`=======` and `>>>>>>>` _outside_ a hunk stay literal — a Markdown setext
 heading underlines with `=======`.
 
 ## Evidence
@@ -79,8 +79,8 @@ flowchart LR
     style A fill:#adb5bd,stroke:#6c757d,color:#000
 ```
 
-The dashed half — wiring the registry into `pr_merge_conflict_processor.ts` —
-is a later sub-issue of #456; this PR adds only the boxes left of the fallback.
+The dashed half — wiring the registry into `pr_merge_conflict_processor.ts` — is
+a later sub-issue of #456; this PR adds only the boxes left of the fallback.
 
 ## Test Plan
 

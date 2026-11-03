@@ -2,9 +2,9 @@
 
 ## Summary
 
-Append-only ledgers — `CHANGELOG.md`, `docs/RELEASE-NOTES.md`, the audit
-ledgers — conflict on every merge, and the answer is never a judgement: both
-sides appended, neither removed anything, so both entries are kept. Both
+Append-only ledgers — `CHANGELOG.md`, `docs/RELEASE-NOTES.md`, the audit ledgers
+— conflict on every merge, and the answer is never a judgement: both sides
+appended, neither removed anything, so both entries are kept. Both
 conflict-resolution ladders now settle that shape without an agent, the default
 branch's entry first. Closes #1768.
 
@@ -12,11 +12,11 @@ branch's entry first. Closes #1768.
   (`worker/deno/lib/both_inserted_conflict_rule.ts`). The PR merge runs without
   `diff3` markers, so the merge base is read from index stage 1
   (`git show :1:<path>`) through a new `RuleContext`/`needsBase` seam in
-  `dependency_conflict_rules.ts`, plumbed by `dependency_conflict_apply.ts`.
-  It fires when **every line of the merge base still appears, in order, outside
-  the conflict hunks** — a base line one side deleted or edited sits inside a
-  hunk instead, so the file defers. Registered last, so manifests still reach
-  their own rules; lock files never reach it at all.
+  `dependency_conflict_rules.ts`, plumbed by `dependency_conflict_apply.ts`. It
+  fires when **every line of the merge base still appears, in order, outside the
+  conflict hunks** — a base line one side deleted or edited sits inside a hunk
+  instead, so the file defers. Registered last, so manifests still reach their
+  own rules; lock files never reach it at all.
 - **Milestone triage** — a new `ConflictCase` `"both-inserted"` with action
   `"union"`, decided after the superset and duplicate-fix rules and **before**
   `rival-designs`, using the existing `git merge-file --union` in
@@ -52,12 +52,15 @@ Two of the tests drive **real git merges** rather than hand-written fixtures,
 because which lines git puts inside a hunk and which it leaves as common text is
 exactly what this rule reads:
 
-- PR ladder: `dependency_conflict_apply_test.ts::applyDependencyConflictRules -
-  resolves a real git CHANGELOG conflict, both entries kept` asserts the merged
-  file is byte-for-byte
+- PR ladder:
+  `dependency_conflict_apply_test.ts::applyDependencyConflictRules -
+  resolves a real git CHANGELOG conflict, both entries kept`
+  asserts the merged file is byte-for-byte
   `"# Changelog\n\n## Unreleased\n\n- main's entry\n- the PR's entry\n\n## 1.0.0\n\n- the first release\n"`.
-- Milestone ladder: `milestone_sync_conflict_resolution_test.ts::… keeps both
-  entries, the default branch's first` asserts
+- Milestone ladder:
+  `milestone_sync_conflict_resolution_test.ts::… keeps both
+  entries, the default branch's first`
+  asserts
   `"# Changelog\n\n## Unreleased\n\n- main's entry\n- the branch's entry\n"`
   after a real bare-remote sync.
 
@@ -67,10 +70,12 @@ exactly what this rule reads:
 
 - **met** — a CHANGELOG hunk with two added entries and an empty base resolves
   to both entries, default branch's first, in both ladders, with the exact text
-  asserted — evidence: `worker/deno/tests/dependency_conflict_apply_test.ts::applyDependencyConflictRules - resolves a real git CHANGELOG conflict, both entries kept`
-  and `worker/deno/tests/milestone_sync_conflict_resolution_test.ts::syncMilestoneBranchWithDefault - a CHANGELOG both branches appended to keeps both entries, the default branch's first (Issue #1768)`
+  asserted — evidence:
+  `worker/deno/tests/dependency_conflict_apply_test.ts::applyDependencyConflictRules - resolves a real git CHANGELOG conflict, both entries kept`
+  and
+  `worker/deno/tests/milestone_sync_conflict_resolution_test.ts::syncMilestoneBranchWithDefault - a CHANGELOG both branches appended to keeps both entries, the default branch's first (Issue #1768)`
   — reviewer: partial — reason: the reviewer found the first implementation
-  required the unconflicted text to *equal* the base, which real git rarely
+  required the unconflicted text to _equal_ the base, which real git rarely
   produces, so the headline case deferred; the test is now driven by a real git
   merge and the rule requires a line-subsequence instead, which is the fix that
   closed the gap.
@@ -80,16 +85,18 @@ exactly what this rule reads:
   `… - a hunk that edits a base line defers`, and
   `milestone_conflict_triage_test.ts::planConflictResolution - rival designs still escalate once a side changed a base line`
   — reviewer: met — reason: the reviewer noted the milestone rung's whole-file
-  line-multiset test lets a *moved* line through where the PR rung defers; that
+  line-multiset test lets a _moved_ line through where the PR rung defers; that
   divergence is deliberate and documented (the milestone rung never sees a
   conflicted working-tree file, only both sides out of the index) and its
   resolutions are verified by `verifyResolvedTree` before they land.
 - **met** — a JSON ledger whose union does not parse is deferred, not written —
-  evidence: `both_inserted_conflict_rule_test.ts::resolveBothInserted - a JSON ledger whose union does not parse defers`
-  and `milestone_sync_conflict_resolution_test.ts::… a JSON ledger whose union does not parse escalates rather than being written (Issue #1768)`,
+  evidence:
+  `both_inserted_conflict_rule_test.ts::resolveBothInserted - a JSON ledger whose union does not parse defers`
+  and
+  `milestone_sync_conflict_resolution_test.ts::… a JSON ledger whose union does not parse escalates rather than being written (Issue #1768)`,
   which also asserts `HEAD` did not move — reviewer: met
-- **met** — `./quality.sh < /dev/null` passes — evidence: full gate run after the
-  final edit, `Result: PASSED (with skipped checks)` — reviewer: missing —
+- **met** — `./quality.sh < /dev/null` passes — evidence: full gate run after
+  the final edit, `Result: PASSED (with skipped checks)` — reviewer: missing —
   reason: the reviewer saw only the diff and could not run the gate; it was run
   here twice, and the first run's two failures (an unregistered lib module, and
   the sweep-ledger test) are fixed in this branch.
@@ -97,21 +104,22 @@ exactly what this rule reads:
   behaviour list and its module list, though the issue named only the prompt and
   `docs/INTERNALS.md` — reviewer: unrequested — reason: that file is the
   operator manual for this exact subsystem and lists every other rule module; a
-  code change owes a docs change, so leaving it stale would have been the defect.
+  code change owes a docs change, so leaving it stale would have been the
+  defect.
 - **unrequested** — the shared `.json` union guard now also covers the
   pre-existing `test-union` path in `milestone_conflict_git.ts`, not only
   `both-inserted` — reviewer: unrequested — reason: one guard in one place beats
   two copies, and the widened case (a `.json` fixture whose union is invalid)
   previously landed broken; it now escalates.
-- **unrequested** — `readConflictedSides` aborts the sync when stage 1 exists but
-  will not read — reviewer: unrequested — reason: stages 2 and 3 already fail
-  loud there for the same reason, and a base silently read as "absent" is what
-  turns a deletion into a union.
+- **unrequested** — `readConflictedSides` aborts the sync when stage 1 exists
+  but will not read — reviewer: unrequested — reason: stages 2 and 3 already
+  fail loud there for the same reason, and a base silently read as "absent" is
+  what turns a deletion into a union.
 - **unrequested** — the PR-resolved comment now describes a ledger union as
   "both additions were kept" and drops the per-dependency paragraph when no
-  dependency was decided — reviewer: unrequested — reason: without it the comment
-  claimed "the higher published version wins" about a `CHANGELOG.md`, which is a
-  pick that was never made.
+  dependency was decided — reviewer: unrequested — reason: without it the
+  comment claimed "the higher published version wins" about a `CHANGELOG.md`,
+  which is a pick that was never made.
 
 ## Standards Review
 
@@ -150,7 +158,8 @@ exactly what this rule reads:
   `worker/deno/tests/dependency_conflict_apply_test.ts:127` — reason: stands,
   documented here as required. The branch it covers is still real for a caller
   supplying its own registry, and the production shape it used to cover is now
-  covered by `… - a ledger whose merge base cannot be read is deferred untouched`.
+  covered by
+  `… - a ledger whose merge base cannot be read is deferred untouched`.
 - **clean** — Australian English throughout; commit safety (no hidden paths, no
   credential-shaped files); both commits carry the `Vibe-Coder-Run-Id` trailer;
   no wall-clock sleeps or polling in the new tests; every test calls real

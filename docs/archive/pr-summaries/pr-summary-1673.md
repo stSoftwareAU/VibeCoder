@@ -8,7 +8,7 @@ Every PR-kind processor built its repo-context directory as
 conflict run went to the agent with no `CLAUDE.md`/`AGENTS.md` context — folded
 silently into `repoContextContent = undefined`.
 
-The clone already *is* the checkout, so the context is now read directly from
+The clone already _is_ the checkout, so the context is now read directly from
 `workDir`, with the surviving `?? Deno.env.get("WORK_DIR") ?? "/tmp"` fallbacks
 dropped with it. The shared `loadRepoContextContent` helper
 (`worker/deno/lib/repo_context_reader.ts`) does the read and logs at `warn` when
@@ -67,6 +67,6 @@ exist and asserts the warning is emitted:
 - `…pr_merge_conflict_processor_test.ts::processMergeConflict - warns when the checkout directory is missing (Issue #1673)`
 
 Unit tests for the new helper in
-`worker/deno/tests/repo_context_reader_test.ts`: reads the checkout itself, stays
-quiet when the checkout has no context files, warns on a missing directory, and
-warns when no directory is supplied.
+`worker/deno/tests/repo_context_reader_test.ts`: reads the checkout itself,
+stays quiet when the checkout has no context files, warns on a missing
+directory, and warns when no directory is supplied.

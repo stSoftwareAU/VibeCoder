@@ -19,20 +19,20 @@ and every mechanism that existed to support versioning is gone with it:
   takes `(promptName, promptsDir?)` and reads `prompts/<type>/prompt.md`
   directly, still returning an error — now naming the missing file — when it is
   absent.
-- **Traceability** — the per-run "Using prompt versions" log entry is replaced by
-  the checkout's git short commit hash. New `getPromptsCommit()` resolves it and
-  **fails loud**: the execute phase logs a warning naming the git error rather
-  than the old `"unknown"` placeholder that masked a broken checkout.
+- **Traceability** — the per-run "Using prompt versions" log entry is replaced
+  by the checkout's git short commit hash. New `getPromptsCommit()` resolves it
+  and **fails loud**: the execute phase logs a warning naming the git error
+  rather than the old `"unknown"` placeholder that masked a broken checkout.
   `recordPromptVersion` became `recordPromptCommit`.
-- **Gates** — the prompt-immutability check is removed from
-  `quality_gate.ts` / `baseline_gate.ts`, and the docs prompt-version freshness
-  check (`docs_prompt_version_check.ts`) is deleted with its test.
+- **Gates** — the prompt-immutability check is removed from `quality_gate.ts` /
+  `baseline_gate.ts`, and the docs prompt-version freshness check
+  (`docs_prompt_version_check.ts`) is deleted with its test.
 - **CLI** — `prompt-manager` drops `get-latest-version`, `list-versions` and
   `validate-immutability`; `record-version` becomes `record-commit`. No doc,
   script or workflow referenced the removed operations.
 - **Tests** — the migration exposed a latent fault: any test reaching the real
   `loadPrompt` without naming a directory resolved it through `PROMPTS_DIR` /
-  `VIBE_BASE_DIR`, which a worker host exports at the *worker's own* checkout.
+  `VIBE_BASE_DIR`, which a worker host exports at the _worker's own_ checkout.
   Those tests were reading another clone's `prompts/` and passed only while its
   layout matched. New `worker/deno/tests/support/repo_prompts.ts` drops both
   overrides so resolution falls through to the module-relative path; the 26
@@ -42,8 +42,8 @@ and every mechanism that existed to support versioning is gone with it:
   `docs/PROMPTS.md`, `AGENTS.md`, `DESIGN-PRINCIPLES.md`, `README.md` and every
   other doc naming a versioned path now refer to `prompts/<type>/prompt.md` or
   the directory alone. `docs/archive/pr-summaries/` and the archival
-  `docs/security/cloudflare-security-audit-gap-analysis.md` keep their historical
-  version citations — they are records of what was true at the time.
+  `docs/security/cloudflare-security-audit-gap-analysis.md` keep their
+  historical version citations — they are records of what was true at the time.
 
 Closes #844.
 
@@ -75,16 +75,17 @@ flowchart LR
   container (`FAILED | 76 passed | 35 failed`), so they are pre-existing and
   environmental, not caused by this change.
 - `./quality.sh < /dev/null` — every check passes except `deno tests`, which
-  carries only those 35 pre-existing failures: benchmark audit, hardcoded
-  branch names, needs-human chokepoint, gh spawn chokepoint, host work-dir
-  guard, git ref chokepoint, workflow hygiene, source targets, mermaid,
-  markdownlint, semgrep, deno lint, deno type check and deno fmt are all
-  `PASSED`.
+  carries only those 35 pre-existing failures: benchmark audit, hardcoded branch
+  names, needs-human chokepoint, gh spawn chokepoint, host work-dir guard, git
+  ref chokepoint, workflow hygiene, source targets, mermaid, markdownlint,
+  semgrep, deno lint, deno type check and deno fmt are all `PASSED`.
 - The six pre-existing failures come from a bash harness that `source`s
-  `setup.sh` with a stripped environment (`worker/deno/tests/setup_lockfile_test.ts:45`);
-  it exits 1 in this container on `main` as well, so it is unrelated to
-  prompt versioning and out of scope here.
-- 324 `vN.md` files deleted, 33 renamed to `prompt.md`; `find prompts -name
+  `setup.sh` with a stripped environment
+  (`worker/deno/tests/setup_lockfile_test.ts:45`); it exits 1 in this container
+  on `main` as well, so it is unrelated to prompt versioning and out of scope
+  here.
+- 324 `vN.md` files deleted, 33 renamed to `prompt.md`;
+  `find prompts -name
   'v[0-9]*.md'` returns nothing.
 
 ## Test Plan

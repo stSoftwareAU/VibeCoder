@@ -64,15 +64,17 @@ Backend/CLI change with no web interface to screenshot.
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — `container/toolchains/rtk.sh` run against a manifest with the `rtk`
-  pin removed exits non-zero *naming the missing pin*, without a network call.
+  pin removed exits non-zero _naming the missing pin_, without a network call.
   `manifest_field()` wraps each `jq -er` lookup so a dropped pin reports
-  `[rtk] the version pin is missing from <manifest>` (or `the sha256 pin for
-  <arch>`) on stderr rather than aborting on a bare exit code — evidence:
+  `[rtk] the version pin is missing from <manifest>` (or
+  `the sha256 pin for
+  <arch>`) on stderr rather than aborting on a bare exit
+  code — evidence:
   `worker/deno/tests/install_toolchains_test.ts::container/toolchains/rtk.sh - a missing pin aborts before downloading`
   and
   `worker/deno/tests/install_toolchains_test.ts::container/toolchains/rtk.sh - a missing version pin aborts, naming it`,
-  which assert on the stderr text and on the stubbed `curl` never being called
-  — reviewer: met
+  which assert on the stderr text and on the stubbed `curl` never being called —
+  reviewer: met
 - **met** — an unsupported `uname -m` value exits non-zero naming the
   architecture — evidence:
   `worker/deno/tests/install_toolchains_test.ts::container/toolchains/rtk.sh - an unsupported architecture aborts, naming it`
@@ -82,8 +84,8 @@ Backend/CLI change with no web interface to screenshot.
   `container/tools.json:327` and
   `worker/deno/tests/toolchain_selfcheck_test.ts::checkContainerToolchains - every probe of the committed manifest passes against what the image really prints`
   — reviewer: met
-- **met** — the image build installs `/usr/local/bin/rtk` reporting
-  `rtk 0.49.0` and aborts on a checksum or version mismatch — evidence:
+- **met** — the image build installs `/usr/local/bin/rtk` reporting `rtk 0.49.0`
+  and aborts on a checksum or version mismatch — evidence:
   `container/toolchains/rtk.sh` run end to end on this host (sandboxed install
   root), plus
   `worker/deno/tests/install_toolchains_test.ts::container/toolchains/rtk.sh - a tampered download aborts before extracting`
@@ -143,7 +145,7 @@ Backend/CLI change with no web interface to screenshot.
   `install_toolchains_test.ts::container/toolchains/rtk.sh - an archive without rtk at its top level aborts`.
 - **violation** — a dropped pin failed silently as far as the operator was
   concerned: `jq -er` exits non-zero but prints nothing, so the build aborted on
-  a bare exit code while the issue requires the missing pin to be *named* —
+  a bare exit code while the issue requires the missing pin to be _named_ —
   evidence: `container/toolchains/rtk.sh:41` — reason: fixed here by
   `manifest_field()`, which reports
   `[rtk] <what is missing> is missing from <manifest>` on stderr before exiting
@@ -152,8 +154,8 @@ Backend/CLI change with no web interface to screenshot.
 - **violation** — the Containerfile comment named a provider-specific path
   (`~/.claude/settings.json`), which
   `agent_provider_test.ts::the generic worker path names no specific provider`
-  forbids — evidence: `container/Containerfile:204` — reason: fixed here;
-  the comment now says "the agent CLI … its own user settings file".
+  forbids — evidence: `container/Containerfile:204` — reason: fixed here; the
+  comment now says "the agent CLI … its own user settings file".
 - **clean** — pins verified against upstream `checksums.txt`; fail-loud
   throughout (`set -euo pipefail`, `jq -er`, pinned URL, `sha256sum -c`, layout
   guard, post-install version probe, `trap` cleanup); Australian English; no

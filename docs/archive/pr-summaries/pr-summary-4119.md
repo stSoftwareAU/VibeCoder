@@ -10,11 +10,11 @@ setup defaulted the question to `frozen`. A host that was following main, and so
 ran `dynamic` by the load-time default, was therefore frozen by a setup run it
 did not ask for. Setup now reads a missing `update_mode` on an existing config
 as `dynamic`, and keeps it unwritten. With no `update_mode` key, `frozen` stays
-the offered default only when no `.config.json` existed before the setup run; a config that
-already holds a mode is offered that mode. A frozen host that is behind the
-newest release now logs that at WARNING on each launch, from `run.sh` and from
-`run.ps1`. `setup.ps1` runs the same update-mode conversation as `setup.sh`,
-with the question visible and a failure fatal.
+the offered default only when no `.config.json` existed before the setup run; a
+config that already holds a mode is offered that mode. A frozen host that is
+behind the newest release now logs that at WARNING on each launch, from `run.sh`
+and from `run.ps1`. `setup.ps1` runs the same update-mode conversation as
+`setup.sh`, with the question visible and a failure fatal.
 
 ## Spec
 
@@ -53,12 +53,12 @@ what a silently frozen host costs.
   `setup.ps1:1646-1648`, both before the prerequisites step.
 - `setup.ps1` calls update-mode through `Invoke-VibeSetupCliPassthrough`, as
   `copilot-review-mode` is called, and exits 1 on a non-zero status
-  (`setup.ps1:1687-1690`). `Invoke-VibeSetupCliOrExit` captured the CLI's
-  stdout into its condition, so the question never reached the console.
+  (`setup.ps1:1687-1690`). `Invoke-VibeSetupCliOrExit` captured the CLI's stdout
+  into its condition, so the question never reached the console.
 - Questions are asked through one shared helper, `askOnConsole`
-  (`worker/deno/setup/console_ask.ts:36-43`). `Out-Host` prints a line only
-  once it ends, so when stdout is not a terminal the question is printed as a
-  whole line and then a bare `>` prompt. This logic was inline in
+  (`worker/deno/setup/console_ask.ts:36-43`). `Out-Host` prints a line only once
+  it ends, so when stdout is not a terminal the question is printed as a whole
+  line and then a bare `>` prompt. This logic was inline in
   `copilot_review_setup.ts`; both `update-mode` and `copilot-review-mode` now
   use the helper (`update_mode_setup.ts:197`, `copilot_review_setup.ts:82`).
 - The frozen-behind notice is a WARNING. `run.sh` prints it on stderr
@@ -72,20 +72,19 @@ what a silently frozen host costs.
 - The existence snapshot must come before prerequisites, because a file the run
   itself creates would otherwise count as existing. `setup.sh` and `setup.ps1`
   both take it first for that reason.
-- `run.ps1` had no release-notice code before this change, and `setup.ps1`
-  never ran update-mode, so making `setup.ps1` freeze a fresh Windows host
-  without porting the notice would have produced exactly the silent freeze the
-  issue describes. Both land together here.
+- `run.ps1` had no release-notice code before this change, and `setup.ps1` never
+  ran update-mode, so making `setup.ps1` freeze a fresh Windows host without
+  porting the notice would have produced exactly the silent freeze the issue
+  describes. Both land together here.
 - `run.ps1` has no outer 120 s bound on `release-notice`, unlike `run.sh`. It
-  relies on the command's own bound on each `gh` call, as its unbounded
-  checkout update already does.
+  relies on the command's own bound on each `gh` call, as its unbounded checkout
+  update already does.
 - The notice text names `./run.sh upgrade` on every platform, and
   `run.ps1 upgrade` does not exist yet; the docs tell a Windows host to move its
   pin by hand.
 - The mutation check does not follow tests that spawn `setup_cli.ts` as a
-  subprocess, which is why the original refusal suite left
-  `setup_cli.ts:472` unpinned. The in-process `runUpdateMode - …` tests now pin
-  it.
+  subprocess, which is why the original refusal suite left `setup_cli.ts:472`
+  unpinned. The in-process `runUpdateMode - …` tests now pin it.
 - The setup.ps1 tests are skipped unless `pwsh` is present. `pwsh` is installed
   at `/usr/local/bin/pwsh` on this host, so those tests ran in this session.
 
@@ -97,29 +96,29 @@ redirected from `/dev/null`:
 - `console_ask_test.ts`, `setup_update_mode_test.ts`,
   `setup_update_mode_refusal_test.ts`, `setup_ps1_update_mode_test.ts`,
   `setup_sh_config_existed_test.ts`, `run_ps1_launcher_test.ts`,
-  `run_sh_launcher_test.ts`, `launcher_parity_test.ts`,
-  `setup_parity_test.ts`, `setup_ps1_test.ts`, `launcher_source_test.ts`,
-  `update_mode_docs_test.ts`, `release_integrity_docs_test.ts`,
-  `integration_test_manifest_test.ts`, `mod_test.ts` and
-  `setup_copilot_review_mode_test.ts`: `ok | 335 passed | 0 failed (7m58s)`.
+  `run_sh_launcher_test.ts`, `launcher_parity_test.ts`, `setup_parity_test.ts`,
+  `setup_ps1_test.ts`, `launcher_source_test.ts`, `update_mode_docs_test.ts`,
+  `release_integrity_docs_test.ts`, `integration_test_manifest_test.ts`,
+  `mod_test.ts` and `setup_copilot_review_mode_test.ts`:
+  `ok | 335 passed | 0 failed (7m58s)`.
 - `deno task check:manifests`: `ok | 805 passed | 0 failed | 1 ignored`
   (`console_ask.ts` is claimed by
   `docs/audits/lib-sweep-coverage/top-up-4119.json`).
 - A manual pty run of the real `setup_cli.ts update-mode` under
   `pwsh … | Out-Host` showed `Update mode (dynamic/frozen) [dynamic]` on the
   console before any answer was typed. A stand-in script that prints an
-  unterminated question (as a bare `prompt()` does) under the same
-  `| Out-Host` showed nothing until after the answer.
+  unterminated question (as a bare `prompt()` does) under the same `| Out-Host`
+  showed nothing until after the answer.
 
 The red claims in the Test Plan come from mutating the fixed code and watching
 the named test fail. M1–M9 were made in scratch copies outside the repository.
 M10–M16 were made in place, one at a time, with the file restored from a backup
 copy after each. M17 and M18 ran the new tests against the earlier head's
-`setup.ps1` call and `run.ps1`. M19–M22 were made in place, one at a
-time (the object property or call line deleted), and restored from a backup;
-M19–M21 fail the new `CONSOLE_ASK_IO` test (also as a type error under a full
-check), and M22 fails the new `usage` test. None comes from running the tests
-against the pre-fix commit.
+`setup.ps1` call and `run.ps1`. M19–M22 were made in place, one at a time (the
+object property or call line deleted), and restored from a backup; M19–M21 fail
+the new `CONSOLE_ASK_IO` test (also as a type error under a full check), and M22
+fails the new `usage` test. None comes from running the tests against the
+pre-fix commit.
 
 ## Acceptance Criteria
 
@@ -127,10 +126,10 @@ against the pre-fix commit.
 
 The issue states four criteria under its `## Acceptance criteria` heading. Each
 is quoted verbatim below with its assessment. The `reviewer:` verdicts come from
-an independent Spec reviewer re-run against this head's diff and the issue
-body, after the `setup.ps1` passthrough and `run.ps1` notice fixes. The
-`askOnConsole` change came after that review and only bears on criterion 4,
-where it makes the question visible under `Out-Host`.
+an independent Spec reviewer re-run against this head's diff and the issue body,
+after the `setup.ps1` passthrough and `run.ps1` notice fixes. The `askOnConsole`
+change came after that review and only bears on criterion 4, where it makes the
+question visible under `Out-Host`.
 
 - **met** — 1. "On a `.config.json` that already exists, a missing `update_mode`
   is read as what the host runs today (`dynamic`). Setup keeps it, interactive
@@ -162,7 +161,7 @@ where it makes the question visible under `Out-Host`.
   one WARNING line on stderr and in run_core.log (Issue #4119)", "run.ps1 - says
   nothing when the release check has nothing to say (Issue #4119)" and "run.ps1
   - a failed release check warns with its reason and the launch proceeds (Issue
-  #4119)" — reviewer: met
+    #4119)" — reviewer: met
 
 - **met** — 4. "`setup.ps1` gets the same behaviour." — evidence:
   `setup.ps1:1648` (snapshot before prerequisites), `setup.ps1:1687-1690`
@@ -176,11 +175,11 @@ where it makes the question visible under `Out-Host`.
 
 - **unrequested** — `--config-existed` is mandatory on `update-mode`, and about
   30 existing test call sites now pass `configExisted` — reviewer: unrequested —
-  reason: fails loud instead of guessing a default; its only callers,
-  `setup.sh` and `setup.ps1`, pass it
+  reason: fails loud instead of guessing a default; its only callers, `setup.sh`
+  and `setup.ps1`, pass it
 - **unrequested** — `runUpdateMode` and `SETUP_CLI_USAGE` exported, and
-  `askOnConsole` shared with `copilot_review_setup.ts` — reviewer: unrequested
-  — reason: test seams for the mutation check, and the fix for the question
+  `askOnConsole` shared with `copilot_review_setup.ts` — reviewer: unrequested —
+  reason: test seams for the mutation check, and the fix for the question
   `Out-Host` held back; the copilot conversation behaves as before
 
 ## Standards Review
@@ -192,12 +191,12 @@ An independent Standards reviewer ran against this head's diff and
 second pass, against the fixes, confirmed each was fixed and reported one more
 (the sweep ledger), which is fixed too. The `consoleIo` parameter on both
 default-deps factories and the two wiring tests in `console_ask_test.ts` came
-after the second pass, in answer to its note that no test reached the two
-`ask:` wiring lines.
+after the second pass, in answer to its note that no test reached the two `ask:`
+wiring lines.
 
 - **violation** — A code change owes a docs change — evidence:
-  `worker/deno/setup/update_mode_setup.ts:5-9` — reason: fixed in this diff
-  (the header named only `setup.sh` and called Windows a follow-up)
+  `worker/deno/setup/update_mode_setup.ts:5-9` — reason: fixed in this diff (the
+  header named only `setup.sh` and called Windows a follow-up)
 - **violation** — A new state re-reads the screen's existing text — evidence:
   `docs/CONFIGURATION.md` New-Release Notice, `docs/SETUP.md`,
   `docs/TROUBLESHOOTING.md` — reason: fixed in this diff (the docs now say the
@@ -208,8 +207,8 @@ after the second pass, in answer to its note that no test reached the two
   keep what the host runs" — reason: fixed in this diff (Enter on a config with
   no `update_mode` writes `"update_mode": "dynamic"`)
 - **violation** — A stub mirrors the real callee's contract — evidence:
-  `worker/deno/setup/update_mode_setup.ts:197` — reason: fixed in this diff
-  (the real `prompt()` question was unterminated and `Out-Host` held it back;
+  `worker/deno/setup/update_mode_setup.ts:197` — reason: fixed in this diff (the
+  real `prompt()` question was unterminated and `Out-Host` held it back;
   `askOnConsole` now prints it whole)
 - **violation** — Unit tests stay fast and self-contained — evidence:
   `worker/deno/tests/setup_update_mode_refusal_test.ts` — reason: fixed in this
@@ -239,35 +238,35 @@ repository; M10–M16 in place, one at a time, restored from a backup after each
 M17 and M18 ran the new tests against the earlier head's `setup.ps1` call and
 `run.ps1`.
 
-| #   | Mutation                                                    | File:line                                         | Reaching test                                                                                                              | Result |
-| --- | ----------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------ |
-| M1  | prompt default always `SETUP_DEFAULT_UPDATE_MODE`           | `worker/deno/setup/update_mode_setup.ts:530`      | runUpdateModeSetup - a pre-existing config with no update_mode offers dynamic, and Enter writes dynamic                    | FAILED |
-| M2  | drop the `options.configExisted` operand                    | `worker/deno/setup/update_mode_setup.ts:671`      | runUpdateModeSetup - a pre-existing config with no update_mode is read as dynamic and left unwritten                       | FAILED |
-| M3  | drop the `existing.value.update_mode !== undefined` operand | `worker/deno/setup/update_mode_setup.ts:671`      | runUpdateModeSetup - a non-interactive run keeps an update_mode the config already holds, even when configExisted is false | FAILED |
-| M6  | prompt default always `DEFAULT_UPDATE_MODE`                 | `worker/deno/setup/update_mode_setup.ts:530`      | runUpdateModeSetup - accepting every default pins a fresh host to the latest release                                       | FAILED |
-| M7  | early return forced on (`if (true \|\| ...)`)               | `worker/deno/setup/update_mode_setup.ts:671`      | runUpdateModeSetup - a non-interactive fresh config pins to the latest release without prompting                           | FAILED |
-| M4  | `--config-existed=true` returns false                       | `worker/deno/setup/setup_cli.ts:452`              | parseConfigExistedFlag - --config-existed=true and =false parse to booleans                                                | FAILED |
-| M8  | `--config-existed=false` returns true                       | `worker/deno/setup/setup_cli.ts:453`              | parseConfigExistedFlag - --config-existed=true and =false parse to booleans                                                | FAILED |
-| M9  | fall-through returns false instead of undefined             | `worker/deno/setup/setup_cli.ts:454`              | parseConfigExistedFlag - an absent flag or any other value is undefined                                                    | FAILED |
-| M5  | refusal guard negated                                       | `worker/deno/setup/setup_cli.ts:472`              | runUpdateMode - no --config-existed answer is refused and .config.json is left untouched (and both flag tests)             | FAILED |
-| M10 | refusal `return false` → `return true`                      | `worker/deno/setup/setup_cli.ts:477`              | runUpdateMode - no --config-existed answer is refused and .config.json is left untouched                                   | FAILED |
-| M11 | `configExisted` property deleted                            | `worker/deno/setup/setup_cli.ts:482`              | runUpdateMode - --config-existed=true leaves a config with no update_mode unwritten                                        | FAILED |
-| M12 | help text `=true\|false` → `=false\|false`                  | `worker/deno/setup/setup_cli.ts:1916`             | setup_cli usage - names the --config-existed=true\|false flag update-mode needs                                            | FAILED |
-| M13 | terminal check negated                                      | `worker/deno/setup/console_ask.ts:40`             | askOnConsole - a pipe gets the question as a whole line, then a bare > prompt; askOnConsole - a terminal is asked the question in place | FAILED |
-| M14 | whole-line `io.log(question)` deleted                       | `worker/deno/setup/console_ask.ts:41`             | askOnConsole - a pipe gets the question as a whole line, then a bare > prompt                                              | FAILED |
-| M15 | `ask:` back to a bare `prompt(question)`                    | `worker/deno/setup/update_mode_setup.ts:197`      | askOnConsole - update-mode's real deps ask through it                                                                      | FAILED |
-| M16 | `ask:` back to a bare `prompt(question)`                    | `worker/deno/setup/copilot_review_setup.ts:82`    | askOnConsole - copilot-review-mode's real deps ask through it                                                              | FAILED |
-| M17 | update-mode back through `Invoke-VibeSetupCliOrExit`        | `setup.ps1:1687`                                  | setup.ps1 - update-mode output reaches the console and a failure stops setup (Issue #4119)                                 | FAILED |
-| M18 | `run.ps1` without the release-notice step                   | `run.ps1:564-587`                                 | the three `run.ps1` release-notice tests named under criterion 3                                                           | FAILED |
-| M19 | `stdoutIsTerminal` property deleted from `CONSOLE_ASK_IO`   | `worker/deno/setup/console_ask.ts:25`             | CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log                                                        | FAILED |
-| M20 | `prompt` property deleted from `CONSOLE_ASK_IO`             | `worker/deno/setup/console_ask.ts:26`             | CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log                                                        | FAILED |
-| M21 | `log` property deleted from `CONSOLE_ASK_IO`                | `worker/deno/setup/console_ask.ts:27`             | CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log                                                        | FAILED |
-| M22 | `console.log(SETUP_CLI_USAGE)` deleted from `usage()`       | `worker/deno/setup/setup_cli.ts:1929`             | setup_cli usage - prints the help text on stdout                                                                           | FAILED |
+| #   | Mutation                                                    | File:line                                      | Reaching test                                                                                                                           | Result |
+| --- | ----------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| M1  | prompt default always `SETUP_DEFAULT_UPDATE_MODE`           | `worker/deno/setup/update_mode_setup.ts:530`   | runUpdateModeSetup - a pre-existing config with no update_mode offers dynamic, and Enter writes dynamic                                 | FAILED |
+| M2  | drop the `options.configExisted` operand                    | `worker/deno/setup/update_mode_setup.ts:671`   | runUpdateModeSetup - a pre-existing config with no update_mode is read as dynamic and left unwritten                                    | FAILED |
+| M3  | drop the `existing.value.update_mode !== undefined` operand | `worker/deno/setup/update_mode_setup.ts:671`   | runUpdateModeSetup - a non-interactive run keeps an update_mode the config already holds, even when configExisted is false              | FAILED |
+| M6  | prompt default always `DEFAULT_UPDATE_MODE`                 | `worker/deno/setup/update_mode_setup.ts:530`   | runUpdateModeSetup - accepting every default pins a fresh host to the latest release                                                    | FAILED |
+| M7  | early return forced on (`if (true \|\| ...)`)               | `worker/deno/setup/update_mode_setup.ts:671`   | runUpdateModeSetup - a non-interactive fresh config pins to the latest release without prompting                                        | FAILED |
+| M4  | `--config-existed=true` returns false                       | `worker/deno/setup/setup_cli.ts:452`           | parseConfigExistedFlag - --config-existed=true and =false parse to booleans                                                             | FAILED |
+| M8  | `--config-existed=false` returns true                       | `worker/deno/setup/setup_cli.ts:453`           | parseConfigExistedFlag - --config-existed=true and =false parse to booleans                                                             | FAILED |
+| M9  | fall-through returns false instead of undefined             | `worker/deno/setup/setup_cli.ts:454`           | parseConfigExistedFlag - an absent flag or any other value is undefined                                                                 | FAILED |
+| M5  | refusal guard negated                                       | `worker/deno/setup/setup_cli.ts:472`           | runUpdateMode - no --config-existed answer is refused and .config.json is left untouched (and both flag tests)                          | FAILED |
+| M10 | refusal `return false` → `return true`                      | `worker/deno/setup/setup_cli.ts:477`           | runUpdateMode - no --config-existed answer is refused and .config.json is left untouched                                                | FAILED |
+| M11 | `configExisted` property deleted                            | `worker/deno/setup/setup_cli.ts:482`           | runUpdateMode - --config-existed=true leaves a config with no update_mode unwritten                                                     | FAILED |
+| M12 | help text `=true\|false` → `=false\|false`                  | `worker/deno/setup/setup_cli.ts:1916`          | setup_cli usage - names the --config-existed=true\|false flag update-mode needs                                                         | FAILED |
+| M13 | terminal check negated                                      | `worker/deno/setup/console_ask.ts:40`          | askOnConsole - a pipe gets the question as a whole line, then a bare > prompt; askOnConsole - a terminal is asked the question in place | FAILED |
+| M14 | whole-line `io.log(question)` deleted                       | `worker/deno/setup/console_ask.ts:41`          | askOnConsole - a pipe gets the question as a whole line, then a bare > prompt                                                           | FAILED |
+| M15 | `ask:` back to a bare `prompt(question)`                    | `worker/deno/setup/update_mode_setup.ts:197`   | askOnConsole - update-mode's real deps ask through it                                                                                   | FAILED |
+| M16 | `ask:` back to a bare `prompt(question)`                    | `worker/deno/setup/copilot_review_setup.ts:82` | askOnConsole - copilot-review-mode's real deps ask through it                                                                           | FAILED |
+| M17 | update-mode back through `Invoke-VibeSetupCliOrExit`        | `setup.ps1:1687`                               | setup.ps1 - update-mode output reaches the console and a failure stops setup (Issue #4119)                                              | FAILED |
+| M18 | `run.ps1` without the release-notice step                   | `run.ps1:564-587`                              | the three `run.ps1` release-notice tests named under criterion 3                                                                        | FAILED |
+| M19 | `stdoutIsTerminal` property deleted from `CONSOLE_ASK_IO`   | `worker/deno/setup/console_ask.ts:25`          | CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log                                                                     | FAILED |
+| M20 | `prompt` property deleted from `CONSOLE_ASK_IO`             | `worker/deno/setup/console_ask.ts:26`          | CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log                                                                     | FAILED |
+| M21 | `log` property deleted from `CONSOLE_ASK_IO`                | `worker/deno/setup/console_ask.ts:27`          | CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log                                                                     | FAILED |
+| M22 | `console.log(SETUP_CLI_USAGE)` deleted from `usage()`       | `worker/deno/setup/setup_cli.ts:1929`          | setup_cli usage - prints the help text on stdout                                                                                        | FAILED |
 
 M10–M12 are the five mutants the earlier mutation check reported surviving at
-`setup_cli.ts:468`, `:473` (twice — "false → true" and "return value → true"
-are the same edit), `:478` and `:1911`, at their current line numbers, along
-with M5 at `:472`.
+`setup_cli.ts:468`, `:473` (twice — "false → true" and "return value → true" are
+the same edit), `:478` and `:1911`, at their current line numbers, along with M5
+at `:472`.
 
 Call-site: `setup.sh:1542` and `setup.ps1:1687` are the only callers that pass
 `--config-existed`. `setup_cli.ts:466` (`runUpdateMode`) consumes the parsed
@@ -288,8 +287,8 @@ notice line now describe both; left alone: `docs/DEPLOYMENT.md:196`,
 unchanged SETUP.md anchor
 
 Quality gate: ./quality.sh — PASSED on the earlier head (with skipped checks:
-config integration, skipped because no .config.json is present in the
-checkout). The worker re-runs it on this head; the changed suites,
+config integration, skipped because no .config.json is present in the checkout).
+The worker re-runs it on this head; the changed suites,
 `deno task check:manifests`, `deno fmt --check`, `deno lint` and
 `markdownlint-cli2` were run on this head and pass.
 

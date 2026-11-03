@@ -44,15 +44,18 @@ flowchart LR
 Two assertions in `quality_gate_test_env_test.ts` asserted the old pass-through
 behaviour and were rewritten in place — no test was deleted or commented out:
 
-- `everything else is passed through (Issue #891)` → `what the suite genuinely
-  needs is kept (Issue #1281)`: asserts the allowlisted names survive
-  (`PATH`, `HOME`, `DENO_DIR`, `DENO_JOBS`, `VIBE_IMAGE_AGENT_PROVIDERS`).
-- `CONFIG_FILE is left alone (Issue #891)` → `an ambient CONFIG_FILE does not
-  reach the suite either (Issue #1281)`: an ambient `CONFIG_FILE` names the
-  operator's own credential-bearing config, so it is absent for the same reason
-  `CONFIG_PATH` is. Nothing is lost — a test wanting its own fixture sets
-  `CONFIG_FILE` in the environment of the process *it* spawns, which this does
-  not touch.
+- `everything else is passed through (Issue #891)` →
+  `what the suite genuinely
+  needs is kept (Issue #1281)`: asserts the
+  allowlisted names survive (`PATH`, `HOME`, `DENO_DIR`, `DENO_JOBS`,
+  `VIBE_IMAGE_AGENT_PROVIDERS`).
+- `CONFIG_FILE is left alone (Issue #891)` →
+  `an ambient CONFIG_FILE does not
+  reach the suite either (Issue #1281)`: an
+  ambient `CONFIG_FILE` names the operator's own credential-bearing config, so
+  it is absent for the same reason `CONFIG_PATH` is. Nothing is lost — a test
+  wanting its own fixture sets `CONFIG_FILE` in the environment of the process
+  _it_ spawns, which this does not touch.
 
 ## Evidence
 
@@ -99,8 +102,8 @@ extras list is fixed in source, guarded against credential-shaped names by
 `VIBE_*` additions must additionally be declared in the env registry.
 
 Out of scope, and stated rather than implied: this bounds what the suite can
-*read from the environment*. It does not run the suite as the separate `agent`
-account, so credential *files* the worker uid owns remain readable — the same
+_read from the environment_. It does not run the suite as the separate `agent`
+account, so credential _files_ the worker uid owns remain readable — the same
 uid-separation gap `untrusted_command_env.ts` records as Issue #571, unchanged
 by this PR.
 
@@ -108,23 +111,23 @@ by this PR.
 
 Added to `worker/deno/tests/quality_gate_test_env_test.ts`:
 
-- `worker/deno/tests/quality_gate_test_env_test.ts::test stage env - a token in the worker's environment cannot be read by the spawned suite (Issue #1281)` —
-  the regression test. Plants a fake installation-token-shaped `GH_TOKEN` in an
-  intermediate process, has that process build the real passes with
+- `worker/deno/tests/quality_gate_test_env_test.ts::test stage env - a token in the worker's environment cannot be read by the spawned suite (Issue #1281)`
+  — the regression test. Plants a fake installation-token-shaped `GH_TOKEN` in
+  an intermediate process, has that process build the real passes with
   `unitTestPasses` and spawn a probe through the gate's own `runCommand`, and
   asserts both passes' children print `ABSENT-IN-GRANDCHILD`. It **fails against
   the unfixed code** (the child printed the planted token, because `GH_TOKEN`
   was never on the two-name denylist) and **passes after the fix**.
 - `…::test stage env - no worker credential reaches the suite (Issue #1281)` —
-  sweeps the built environment by name (`isCredentialVariableName`) and by
-  value over a realistic worker environment.
-- `…::test stage env - an unknown variable is absent rather than inherited (Issue #1281)` —
-  the allowlist covers the credential nobody has added yet.
-- `…::test stage extras - the stage's own allowlist carries no credential name (Issue #1281)` —
-  guard on the guard for `TEST_STAGE_EXTRA_ENV_NAMES`.
+  sweeps the built environment by name (`isCredentialVariableName`) and by value
+  over a realistic worker environment.
+- `…::test stage env - an unknown variable is absent rather than inherited (Issue #1281)`
+  — the allowlist covers the credential nobody has added yet.
+- `…::test stage extras - the stage's own allowlist carries no credential name (Issue #1281)`
+  — guard on the guard for `TEST_STAGE_EXTRA_ENV_NAMES`.
 - `…::test stage env - what the suite genuinely needs is kept (Issue #1281)` and
-  `…::test stage env - an ambient CONFIG_FILE does not reach the suite either (Issue #1281)` —
-  the two rewritten assertions above.
+  `…::test stage env - an ambient CONFIG_FILE does not reach the suite either (Issue #1281)`
+  — the two rewritten assertions above.
 
 Unchanged and still passing: the `#891`/`#1098` scrub tests in the same file,
 `unit_test_passes_test.ts` (25 tests, including the `DENO_JOBS` bound and the

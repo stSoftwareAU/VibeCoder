@@ -5,10 +5,10 @@ A `work-on` run that verifies an issue is already fixed now ends with the issue
 `needs-human` escalation. Closes #241.
 
 The failure this fixes is NEAT-AI-Backpropagation#96: the agent verified the fix
-(commit `4c6f932`, PR #97, test re-run) and said so, but the #519 keyword list in
-`handle_no_changes_phase.ts` did not contain the phrasing it used ("was resolved
-on `Develop` by commit …", "no code change was required"), so the run fell
-through to the analysis-only hand-off.
+(commit `4c6f932`, PR #97, test re-run) and said so, but the #519 keyword list
+in `handle_no_changes_phase.ts` did not contain the phrasing it used ("was
+resolved on `Develop` by commit …", "no code change was required"), so the run
+fell through to the analysis-only hand-off.
 
 What changed:
 
@@ -22,7 +22,7 @@ What changed:
   `unverified` and the run falls back to the existing analysis-only
   `needs-human` hand-off. This deliberately tightens the #519 keyword path,
   which closed on a plain "already fixed" claim, and is what keeps the change
-  clear of #174: a PR that merely *references* the issue is not a reason to
+  clear of #174: a PR that merely _references_ the issue is not a reason to
   close it — the agent must verify the code and cite what it checked. A
   reference to the issue's own number is discarded as self-evidence.
 - **`handle_no_changes_phase.ts`** now closes via that detection and records the
@@ -85,8 +85,8 @@ New — `worker/deno/tests/handle_no_changes_phase_test.ts`:
 
 - The marker closes the issue with commit, PR and verification in the close
   comment, and does not apply `needs-human`.
-- The NEAT#96 narrative (no marker) closes and posts no "Partial Answer" —
-  the regression test for the reported failure.
+- The NEAT#96 narrative (no marker) closes and posts no "Partial Answer" — the
+  regression test for the reported failure.
 - An unevidenced already-fixed claim hands off to `needs-human` and does **not**
   close.
 - A marker inside a blocked run is still deferred, not closed.

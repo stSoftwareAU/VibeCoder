@@ -16,11 +16,11 @@ resolves the candidate and the tool's own upgrade command runs. No caller passes
 `targetVersion` yet — the sub-issue that reads `update_mode` and decides which
 version to pass is separate. Closes #623.
 
-| Tool       | Pinned install                                                                                                                  |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Claude CLI | `curl` the `@anthropic-ai/claude-code` tarball for that version, then `npm install -g --ignore-scripts <tarball>`                 |
-| `gh`       | `curl` the `cli/cli` archive `gh_<version>_<os>_<arch>`, extract, `install` the binary over the `gh` already on PATH              |
-| Deno       | `deno upgrade <version>`                                                                                                          |
+| Tool       | Pinned install                                                                                                       |
+| ---------- | -------------------------------------------------------------------------------------------------------------------- |
+| Claude CLI | `curl` the `@anthropic-ai/claude-code` tarball for that version, then `npm install -g --ignore-scripts <tarball>`    |
+| `gh`       | `curl` the `cli/cli` archive `gh_<version>_<os>_<arch>`, extract, `install` the binary over the `gh` already on PATH |
+| Deno       | `deno upgrade <version>`                                                                                             |
 
 Behaviour of the pinned path:
 
@@ -103,8 +103,8 @@ passes in full (99 passed, 0 failed).
   (asserts the only command run is `claude --version`)
 - **met** — a version mismatch after install fails loud, naming requested and
   actual — evidence:
-  `::updateClaudeCli - a version mismatch after install fails loud`;
-  install failures covered by `::updateClaudeCli - a failed pinned install fails loud`
+  `::updateClaudeCli - a version mismatch after install fails loud`; install
+  failures covered by `::updateClaudeCli - a failed pinned install fails loud`
   and `::updateGhCli - an unlocatable gh binary fails loud`
 - **met** — the "what would dynamic install now" helper returns a version per
   tool, or a clear failure — evidence:
@@ -133,22 +133,22 @@ mismatch"; `verifyPinnedVersion` is its sibling and shares the reader.
 Added to `worker/deno/tests/software_updates_test.ts` (all via injected `runFn`,
 no real spawn, network or sleep):
 
-- `updateClaudeCli - targetVersion installs that exact npm tarball` — asserts the
-  tarball URL, `npm install -g --ignore-scripts <tarball>`, staged-file cleanup,
-  the recorded success timestamp, and that `claude update` is never run
+- `updateClaudeCli - targetVersion installs that exact npm tarball` — asserts
+  the tarball URL, `npm install -g --ignore-scripts <tarball>`, staged-file
+  cleanup, the recorded success timestamp, and that `claude update` is never run
 - `updateClaudeCli - a tool already at the pinned version is left alone`
 - `updateClaudeCli - a version mismatch after install fails loud`
 - `updateClaudeCli - a failed pinned install fails loud`
 - `installPinnedVersion - a malformed version is refused before any command`
-- `updateGhCli - targetVersion installs that exact release archive` — asserts the
-  `cli/cli` URL, the `install -m 0755` destination taken from the located `gh`,
-  and that neither brew nor the extension sweep runs
+- `updateGhCli - targetVersion installs that exact release archive` — asserts
+  the `cli/cli` URL, the `install -m 0755` destination taken from the located
+  `gh`, and that neither brew nor the extension sweep runs
 - `updateGhCli - an unlocatable gh binary fails loud`
 - `ghReleaseArchive - names the published archive per platform` — Linux tarball,
   macOS zip, unsupported OS and arch
 - `updateDeno - targetVersion pins the upgrade instead of the gate verdict`
-- `updateDeno - no targetVersion still pins to the gate verdict` — the
-  unchanged path
+- `updateDeno - no targetVersion still pins to the gate verdict` — the unchanged
+  path
 - `resolveDynamicVersions - reports what dynamic mode would install now`
 - `resolveDynamicVersion - an unresolvable version is reported as a failure`
 - `versionMatchesExactly - exact match, mismatch, and unparseable`

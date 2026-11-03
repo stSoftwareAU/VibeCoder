@@ -6,11 +6,13 @@ Wires the deployer-supplied tool set into the image build and teaches the
 container-manifest parity gate about the new step. Closes #71.
 
 - **`container/Containerfile`** — one generic stage, last of the install steps:
-  `ARG VIBE_CONTAINER_TOOLS=""` → the spec is written from it → `COPY
-  install-tools.sh` → one `RUN` that invokes the script → cleanup. **Fixed size
-  and tool-count independent** (the script loops over the spec, so no tool adds
-  a `RUN`), and an absent or empty argument writes an empty spec, runs nothing
-  and leaves nothing behind — today's image for the default fleet build.
+  `ARG VIBE_CONTAINER_TOOLS=""` → the spec is written from it →
+  `COPY
+  install-tools.sh` → one `RUN` that invokes the script → cleanup.
+  **Fixed size and tool-count independent** (the script loops over the spec, so
+  no tool adds a `RUN`), and an absent or empty argument writes an empty spec,
+  runs nothing and leaves nothing behind — today's image for the default fleet
+  build.
 - **`worker/deno/lib/container_manifest.ts`** — `findContainerfileViolations`
   now reports any build step that downloads without verifying a checksum in the
   same step, and any step that pipes a download into a shell. The single
@@ -20,9 +22,9 @@ container-manifest parity gate about the new step. Closes #71.
   is narrow — the argument must default to empty, must actually be run when
   declared, must be declared when run, and a `curl` written into that same step
   is still reported.
-- **`container/install-tools.sh`** (new) — the script the stage invokes.
-  Issue #70 owns the download/verify/extract implementation, so this is a stub:
-  an empty selection is a no-op, a non-empty one **aborts the build naming the
+- **`container/install-tools.sh`** (new) — the script the stage invokes. Issue
+  #70 owns the download/verify/extract implementation, so this is a stub: an
+  empty selection is a no-op, a non-empty one **aborts the build naming the
   tools it refused** rather than producing an image that silently lacks them.
 - **`worker/deno/lib/container_image_hash.ts`** — `container/install-tools.sh`
   added to `CONTAINER_IMAGE_INPUTS`, so editing it changes the image tag.
@@ -70,19 +72,19 @@ selection.
 **The step, executed** (the RUN body run under `sh` against the committed
 script):
 
-| `VIBE_CONTAINER_TOOLS` | Result |
-| ---------------------- | ------ |
-| unset / empty | exit 0, nothing run, spec removed |
-| `[]` | exit 0, "installing nothing" |
-| two-tool selection | exit 1, `Refusing to install deployer-supplied container tools: java maven` |
-| value carrying `$(…)` / backticks | exit 1, no command executed |
+| `VIBE_CONTAINER_TOOLS`            | Result                                                                      |
+| --------------------------------- | --------------------------------------------------------------------------- |
+| unset / empty                     | exit 0, nothing run, spec removed                                           |
+| `[]`                              | exit 0, "installing nothing"                                                |
+| two-tool selection                | exit 1, `Refusing to install deployer-supplied container tools: java maven` |
+| value carrying `$(…)` / backticks | exit 1, no command executed                                                 |
 
 **Quality gate:** `./quality.sh` passes every check except `deno tests`, which
 reports 10 pre-existing failures unrelated to this change
 (`setup_workdir_reminder_test.ts`, `fleet_health_test.ts`,
 `host_workdir_guard_test.ts`, `optional_feature_env_test.ts` — host work-dir
-probes that fail inside the container). Confirmed pre-existing: the same 10
-fail with this branch's changes stashed. All 14,566 other tests pass.
+probes that fail inside the container). Confirmed pre-existing: the same 10 fail
+with this branch's changes stashed. All 14,566 other tests pass.
 
 ## Test Plan
 
@@ -105,11 +107,12 @@ New cases in `worker/deno/tests/container_manifest_test.ts`:
 
 New suite `worker/deno/tests/container_tools_install_test.ts` — runs the real
 script and asserts on exit codes and output (contracts that survive Issue #70's
-implementation): missing argument aborts, missing spec file aborts naming it,
-an empty selection (`""`, whitespace, `[]`, `[ ]`) exits 0, and a requested tool
+implementation): missing argument aborts, missing spec file aborts naming it, an
+empty selection (`""`, whitespace, `[]`, `[ ]`) exits 0, and a requested tool
 set is never silently skipped.
 
 Existing coverage that now also guards this change:
 `container_image_hash_test.ts::container/ - every committed container file is
-enumerated` (fails if `install-tools.sh` is left out of `CONTAINER_IMAGE_INPUTS`)
-and the stripped-Containerfile size-cap test.
+enumerated`
+(fails if `install-tools.sh` is left out of `CONTAINER_IMAGE_INPUTS`) and the
+stripped-Containerfile size-cap test.

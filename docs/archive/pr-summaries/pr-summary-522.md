@@ -20,10 +20,9 @@ gates:
 - The list is ordered **MVP-first inside the dependency graph**: value ordering
   never places a sub-issue ahead of one it `Depends on #N`.
 - `worker/deno/lib/mvp_slice_gate.ts` re-reads the parent, judges the published
-  plan, and routes a failure through the existing `escalateToHuman()`
-  chokepoint (`needs-human` + one explanation comment, parent left open, run
-  still completes with `mvpSliceOffences`). No new label, no new escalation
-  path.
+  plan, and routes a failure through the existing `escalateToHuman()` chokepoint
+  (`needs-human` + one explanation comment, parent left open, run still
+  completes with `mvpSliceOffences`). No new label, no new escalation path.
 
 Closes #522.
 
@@ -41,7 +40,9 @@ teaches passes the real gate`:
 ```markdown
 Sub-issues created, MVP slice first (dependencies still lead their dependants):
 
-1. #101 — Add the query result cache (`enhancement`) — **MVP slice**: repeated dashboard queries are served from memory, even if nothing after this ever lands
+1. #101 — Add the query result cache (`enhancement`) — **MVP slice**: repeated
+   dashboard queries are served from memory, even if nothing after this ever
+   lands
 2. #102 — Rewrite the query planner (`enhancement`, depends on #101)
 ```
 
@@ -50,13 +51,13 @@ reports four failures that are **pre-existing and environmental**, not caused by
 this change: `tests/gh_spawn_test.ts` (three `spawnGh` cases whose real `gh`
 calls hit `API rate limit already exceeded`) and
 `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
-config dir is restaged writable` (the container's `GH_CONFIG_DIR` overrides the
-temp path the test expects). Verified by running both suites in a git worktree
-at the parent commit — same four failures, `FAILED | 31 passed | 4 failed`.
-Every planning suite this change touches passes:
-`tests/planning_processor_test.ts` (114 passed),
-`tests/mvp_slice_gate_test.ts` (32 passed),
-`tests/planning_mvp_prompts_test.ts` (4 passed).
+config dir is restaged writable`
+(the container's `GH_CONFIG_DIR` overrides the temp path the test expects).
+Verified by running both suites in a git worktree at the parent commit — same
+four failures, `FAILED | 31 passed | 4 failed`. Every planning suite this change
+touches passes: `tests/planning_processor_test.ts` (114 passed),
+`tests/mvp_slice_gate_test.ts` (32 passed), `tests/planning_mvp_prompts_test.ts`
+(4 passed).
 
 ```mermaid
 flowchart TD
@@ -109,9 +110,9 @@ flowchart TD
   (numbers, markers, `Depends on` extraction, issue URLs), both accepted shapes,
   every rejected shape (zero markers, two markers, marker with no value
   sentence, `TBD`/bracketed placeholder, bare no-slice line, contradictory
-  marker + no-slice line, missing list), the ordering rules, the
-  fetch-and-judge orchestration (newest comment wins, body fallback, unreadable
-  parent), the reason wording and the `escalateToHuman()` chokepoint.
+  marker + no-slice line, missing list), the ordering rules, the fetch-and-judge
+  orchestration (newest comment wins, body fallback, unreadable parent), the
+  reason wording and the `escalateToHuman()` chokepoint.
 - **Added** `worker/deno/tests/planning_mvp_prompts_test.ts` — 4 tests: the new
   instructions are present in the built prompts and absent from the immutable
   v22/v6 predecessors, plus the anti-drift test that feeds the publish prompt's
@@ -123,7 +124,7 @@ flowchart TD
 - **Modified (documented)** — the shared fixtures `coverageReadResponse()` and
   `coverageReadWith()` in `worker/deno/tests/planning_processor_test.ts` now
   include a compliant sub-issue list with an MVP marker. No test was removed or
-  weakened: those tests exercise the *coverage* gate, and the published plan
+  weakened: those tests exercise the _coverage_ gate, and the published plan
   they simulate must now also satisfy the MVP-slice gate to reach the close —
   the fixture change reflects that new business rule, and each test still
   asserts exactly what it asserted before.

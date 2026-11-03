@@ -52,8 +52,9 @@ Quality gate: `./quality.sh` passes every check except two pre-existing,
 environment-bound failures unrelated to this diff —
 `tests/provider_auto_runtime_test.ts:136` and `:167` fail with
 `Error: The running container image did not install the "codex" coding-agent
-provider. Installed: claude.` (21269 tests passed, 2 failed). The manifest,
-lint, type-check, fmt, semgrep, mermaid and markdownlint stages all pass.
+provider. Installed: claude.`
+(21269 tests passed, 2 failed). The manifest, lint, type-check, fmt, semgrep,
+mermaid and markdownlint stages all pass.
 
 ## Reproduction
 
@@ -63,9 +64,9 @@ lint, type-check, fmt, semgrep, mermaid and markdownlint stages all pass.
 - **status** — `verified` — the regression tests were run against the unfixed
   code at the milestone base (`ab0390e`) in a throwaway worktree: the refusal
   case attempted **4 pushes** instead of 1, the unreadable-diff case pushed a
-  workflow branch (**1 push** where 0 is required), and
-  `detectFailureCategory` on the wrapped refusal returned **`push_failure`**.
-  All three pass after the fix (`token_scope`, 1 push, 0 pushes respectively).
+  workflow branch (**1 push** where 0 is required), and `detectFailureCategory`
+  on the wrapped refusal returned **`push_failure`**. All three pass after the
+  fix (`token_scope`, 1 push, 0 pushes respectively).
 - **regression test** —
   `worker/deno/tests/completion_phase_workflow_refusal_1952_test.ts::completion - GitHub's workflow-scope refusal fails once, with no rebase recovery (Issue #1952)`
 
@@ -82,10 +83,9 @@ lint, type-check, fmt, semgrep, mermaid and markdownlint stages all pass.
   — reviewer: partial — reason: the reviewer marked it "MET for the completion
   path, PARTIAL system-wide" because the PR-feedback, CI-fix and spelling
   processors still call `recoverFromPushRejection` without the refusal detail;
-  the issue scoped the change to the completion path, and those paths are now
-  at least classified `token_scope` by `detectFailureCategory`
-- **met** — the run record carries `token_scope`, not `push_failure` —
-  evidence:
+  the issue scoped the change to the completion path, and those paths are now at
+  least classified `token_scope` by `detectFailureCategory`
+- **met** — the run record carries `token_scope`, not `push_failure` — evidence:
   `worker/deno/tests/workflow_scope_push_refusal_1952_test.ts::detectFailureCategory - GitHub's raw refusal classifies as token_scope, not push_failure (Issue #1952)`,
   `worker/deno/lib/failure_diagnosis.ts:241` — reviewer: met
 - **met** — with the scope present, workflow-touching branches push as today —
@@ -95,8 +95,8 @@ lint, type-check, fmt, semgrep, mermaid and markdownlint stages all pass.
   reviewer: met
 - **met** — suggested fix: recognise the raw refusal (OAuth and fine-grained
   equivalents) in `detectFailureCategory` — evidence:
-  `worker/deno/lib/workflow_scope.ts:152` and its three-wording test —
-  reviewer: met
+  `worker/deno/lib/workflow_scope.ts:152` and its three-wording test — reviewer:
+  met
 - **met** — suggested fix: `recoverFromPushRejection` stops immediately on it —
   evidence: `worker/deno/lib/git_push_recovery.ts:116`,
   `worker/deno/tests/workflow_scope_push_refusal_1952_test.ts::recoverFromPushRejection - stops on the workflow-scope refusal without running git (Issue #1952)`
@@ -130,8 +130,8 @@ lint, type-check, fmt, semgrep, mermaid and markdownlint stages all pass.
   about; the module-level `tokenHasWorkflowScope()` is unchanged for the
   claim-time heuristic
 - **unrequested** — `docs/SETUP.md` gains the #1952 behaviour and a flowchart —
-  reviewer: unrequested — reason: the repo standard requires a docs change for
-  a behaviour change
+  reviewer: unrequested — reason: the repo standard requires a docs change for a
+  behaviour change
 
 ## Standards Review
 
@@ -142,14 +142,13 @@ lint, type-check, fmt, semgrep, mermaid and markdownlint stages all pass.
   `docs/audits/lib-sweep-coverage.json` — reason: fixed here;
   `worker/deno/lib/workflow_scope_precheck.ts` is registered in slice 12e and
   `tests/lib_sweep_coverage_test.ts` passes
-- **violation** — raw git stderr was quoted into the failure reason
-  unredacted and uncapped, bypassing the `redactedLineTail` contract that
-  exists because a push failure can quote a credentialed remote URL
-  (Issue #1257) — evidence: `worker/deno/lib/workflow_scope.ts:181` — reason:
-  fixed here; the quoted detail is redacted and capped at five lines like
-  every other push failure
-- **violation** — `shouldRetryInfrastructureFailure`'s contract block still
-  said every infrastructure category retries — evidence:
+- **violation** — raw git stderr was quoted into the failure reason unredacted
+  and uncapped, bypassing the `redactedLineTail` contract that exists because a
+  push failure can quote a credentialed remote URL (Issue #1257) — evidence:
+  `worker/deno/lib/workflow_scope.ts:181` — reason: fixed here; the quoted
+  detail is redacted and capped at five lines like every other push failure
+- **violation** — `shouldRetryInfrastructureFailure`'s contract block still said
+  every infrastructure category retries — evidence:
   `worker/deno/lib/infra_retry.ts:82` — reason: fixed here; the `token_scope`
   exclusion is now in the documented contract
 - **violation** — the three-state type immediately re-conflated two states by
@@ -166,20 +165,20 @@ lint, type-check, fmt, semgrep, mermaid and markdownlint stages all pass.
 - **violation** — `ChangedPathProbe.detail` was public surface no caller read —
   evidence: `worker/deno/lib/workflow_scope_precheck.ts:39` — reason: removed;
   `source` is now consumed by the completion phase's messages
-- **clean** — Australian English throughout; TDD with real function calls and
-  no source-grepping; no test deleted or commented out; fail-loud logging
-  replacing two swallowed `logger.info` lines; no hidden paths staged; commit
-  carries `Closes #1952` and the run-id trailer; no import cycle
-  (`workflow_scope.ts` pulls only the redaction helper); the refusal regex is
-  bounded and lazy, so no catastrophic backtracking
+- **clean** — Australian English throughout; TDD with real function calls and no
+  source-grepping; no test deleted or commented out; fail-loud logging replacing
+  two swallowed `logger.info` lines; no hidden paths staged; commit carries
+  `Closes #1952` and the run-id trailer; no import cycle (`workflow_scope.ts`
+  pulls only the redaction helper); the refusal regex is bounded and lazy, so no
+  catastrophic backtracking
 
 ### Existing test modified — documented
 
 `worker/deno/tests/completion_phase_workflow_scope_1475_test.ts` injects the
-scope verdict through `deps.infrastructure`. That seam changed from a boolean
-to the three-state verdict, so the injection was updated
-(`"false"` → `absent`, `"true"` → `granted`, absent → `unknown`). All three
-#1475 cases and their assertions are unchanged and still pass.
+scope verdict through `deps.infrastructure`. That seam changed from a boolean to
+the three-state verdict, so the injection was updated (`"false"` → `absent`,
+`"true"` → `granted`, absent → `unknown`). All three #1475 cases and their
+assertions are unchanged and still pass.
 
 ## Test Plan
 
@@ -196,8 +195,8 @@ Added:
   silently; a non-zero diff and a spawn failure both falling back to the commit
   list with the reason logged; and the loud skip when neither can answer.
 - `worker/deno/tests/completion_phase_workflow_refusal_1952_test.ts` — drives
-  the real `workOnIssueCompletion`: one push and no recovery on the refusal,
-  no push at all when the commit-list fallback finds a workflow file, and a
+  the real `workOnIssueCompletion`: one push and no recovery on the refusal, no
+  push at all when the commit-list fallback finds a workflow file, and a
   warned-but-pushed run when the verdict is unknown.
 
 Modified: `worker/deno/tests/completion_phase_workflow_scope_1475_test.ts` (seam

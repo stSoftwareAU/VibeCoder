@@ -20,53 +20,53 @@ whose shape this record follows.
 > in `container/install-tools.sh`, and all three are fixed in this change with
 > regression tests (below). **No `security` issue was filed**, because no
 > finding survived unfixed — an outcome stated here rather than implied. Several
-> categories the issue named *were* empty, and each is stated as such.
+> categories the issue named _were_ empty, and each is stated as such.
 
 ## The file-set correction
 
 The issue lists **ten** `container/toolchains/*.sh` fragments and calls the
 scope twelve files. On the branch this sweep reads there are **nine**: the tenth
 fragment, `codegraph.sh`, landed on the unmerged milestone branch
-`milestone/2145-trial-codegraph-as-a-second-repo-context-cand`
-(`3328d9f5`, PR #2171) and is not reachable from the default branch. So the
-committed scope is **eleven** files, not twelve, and `codegraph.sh` was read at
-that branch's tip as an eleventh-and-a-half — recorded below as an observation
-rather than swept, because it is not the code this PR's base carries.
+`milestone/2145-trial-codegraph-as-a-second-repo-context-cand` (`3328d9f5`, PR
+#2171) and is not reachable from the default branch. So the committed scope is
+**eleven** files, not twelve, and `codegraph.sh` was read at that branch's tip
+as an eleventh-and-a-half — recorded below as an observation rather than swept,
+because it is not the code this PR's base carries.
 
-| File | Lines (as read) |
-| ---- | --------------- |
-| `container/install-tools.sh` | 234 |
-| `container/install-toolchains.sh` | 134 |
-| `container/toolchains/actionlint.sh` | 69 |
-| `container/toolchains/bats-core.sh` | 69 |
-| `container/toolchains/cargo-deny.sh` | 71 |
-| `container/toolchains/codespell.sh` | 93 |
-| `container/toolchains/gitleaks.sh` | 72 |
-| `container/toolchains/pwsh.sh` | 89 |
-| `container/toolchains/pyyaml.sh` | 160 |
-| `container/toolchains/rust.sh` | 112 |
-| `container/toolchains/shellcheck.sh` | 74 |
-| **Total** | **1,177** |
+| File                                 | Lines (as read) |
+| ------------------------------------ | --------------- |
+| `container/install-tools.sh`         | 234             |
+| `container/install-toolchains.sh`    | 134             |
+| `container/toolchains/actionlint.sh` | 69              |
+| `container/toolchains/bats-core.sh`  | 69              |
+| `container/toolchains/cargo-deny.sh` | 71              |
+| `container/toolchains/codespell.sh`  | 93              |
+| `container/toolchains/gitleaks.sh`   | 72              |
+| `container/toolchains/pwsh.sh`       | 89              |
+| `container/toolchains/pyyaml.sh`     | 160             |
+| `container/toolchains/rust.sh`       | 112             |
+| `container/toolchains/shellcheck.sh` | 74              |
+| **Total**                            | **1,177**       |
 
 Counted at the base of this change, before the lines it adds to
 `install-tools.sh`.
 
 ## Scope and method
 
-The eleven files above, read end to end, against `container/tools.json` (the
-pin manifest they read with `jq`) and the `container/Containerfile` lines that
+The eleven files above, read end to end, against `container/tools.json` (the pin
+manifest they read with `jq`) and the `container/Containerfile` lines that
 invoke them:
 
-| Containerfile line | What it does |
-| ------------------ | ------------ |
-| `:164` | `COPY toolchains/*.sh /tmp/toolchains/` — glob, not a bare directory |
-| `:165` | `COPY install-toolchains.sh /tmp/install-toolchains.sh` |
-| `:166` | `COPY tools.json /tmp/toolchain-manifest.json` |
-| `:193-195` | `bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml` |
-| `:217-220` | `bash /tmp/install-toolchains.sh rust`, then `rm -rf` of the fragments, the script and the manifest |
-| `:399` | `ARG VIBE_CONTAINER_TOOLS=""` |
-| `:401` | `COPY install-tools.sh /tmp/install-tools.sh` |
-| `:403-407` | `printf '%s' "${VIBE_CONTAINER_TOOLS}" > "${spec}"`, then `bash /tmp/install-tools.sh "${spec}"` when non-empty, then `rm -f` |
+| Containerfile line | What it does                                                                                                                  |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `:164`             | `COPY toolchains/*.sh /tmp/toolchains/` — glob, not a bare directory                                                          |
+| `:165`             | `COPY install-toolchains.sh /tmp/install-toolchains.sh`                                                                       |
+| `:166`             | `COPY tools.json /tmp/toolchain-manifest.json`                                                                                |
+| `:193-195`         | `bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml`                   |
+| `:217-220`         | `bash /tmp/install-toolchains.sh rust`, then `rm -rf` of the fragments, the script and the manifest                           |
+| `:399`             | `ARG VIBE_CONTAINER_TOOLS=""`                                                                                                 |
+| `:401`             | `COPY install-tools.sh /tmp/install-tools.sh`                                                                                 |
+| `:403-407`         | `printf '%s' "${VIBE_CONTAINER_TOOLS}" > "${spec}"`, then `bash /tmp/install-tools.sh "${spec}"` when non-empty, then `rm -f` |
 
 Two passes, as #1221 did:
 
@@ -89,8 +89,8 @@ the residuals below residuals rather than findings:
   download URL and an archive path in every fragment. Changing one is a PR
   against this repository, gated by review and by
   `worker/deno/lib/container_manifest.ts`.
-- **`.config.json`'s `container_tools` array** is written by the deployer on
-  the host, and is validated before it reaches the build by
+- **`.config.json`'s `container_tools` array** is written by the deployer on the
+  host, and is validated before it reaches the build by
   `worker/deno/lib/container_tools_config.ts`, which the module's own header
   calls "the trust boundary". Anyone who can write that file can already run
   code as the account that builds the image.
@@ -101,7 +101,7 @@ spec" are **the operator attacking their own build**, and a finding only
 survives here when it breaks an invariant the code itself claims — which is
 exactly what the three below do.
 
-## `shellcheck` triage — and what it did *not* find
+## `shellcheck` triage — and what it did _not_ find
 
 At the level CI enforces, all eleven files are clean:
 
@@ -115,14 +115,15 @@ That gate already covers these files: `.github/workflows/validate-scripts.yml`
 runs a pinned, SHA-256-verified `shellcheck` 0.11.0 over `find . -name "*.sh"`
 in the required `validate` job. No new gate was needed and none was added.
 
-Turning on every optional check surfaces 21 notes and nothing else (11 × SC2154, 5 × SC2250, 2 × SC2310, 3 × SC2312):
+Turning on every optional check surfaces 21 notes and nothing else (11 × SC2154,
+5 × SC2250, 2 × SC2310, 3 × SC2312):
 
-| Check | Where | Triage |
-| ----- | ----- | ------ |
-| SC2154 (referenced but not assigned) | `${CURL_RETRY}` in nine fragments, `${PIP_RETRY}` in two | Correct by design: both are Containerfile `ARG`s inherited through the build environment. Under `set -u` an unset one **aborts** the fragment rather than fetching without a retry policy, so the "unassigned" state fails loud. Case 3 below. |
-| SC2250 (braces around every variable) | `install-tools.sh:186-190` | Style. Five `${ids[$i]}`-family subscripts in the install loop; the rest of the file uses `${var}`. Not a defect. |
-| SC2310 (function in a condition disables `set -e`) | `install-tools.sh:210-211` | Deliberate: `extract_zip` in a `case` arm whose `\|\| { … fail … }` guard is the whole point — the helper's non-zero status is converted into a named abort, not swallowed. |
-| SC2312 (masked return value) | `install-tools.sh:223`, `:228`, `pyyaml.sh:60` | The two in `install-tools.sh` are **finding 3** below — the linter saw the shape, not the consequence. `pyyaml.sh:60` is `uname -m` inside an error message on the already-unsupported-architecture arm. |
+| Check                                              | Where                                                    | Triage                                                                                                                                                                                                                                         |
+| -------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SC2154 (referenced but not assigned)               | `${CURL_RETRY}` in nine fragments, `${PIP_RETRY}` in two | Correct by design: both are Containerfile `ARG`s inherited through the build environment. Under `set -u` an unset one **aborts** the fragment rather than fetching without a retry policy, so the "unassigned" state fails loud. Case 3 below. |
+| SC2250 (braces around every variable)              | `install-tools.sh:186-190`                               | Style. Five `${ids[$i]}`-family subscripts in the install loop; the rest of the file uses `${var}`. Not a defect.                                                                                                                              |
+| SC2310 (function in a condition disables `set -e`) | `install-tools.sh:210-211`                               | Deliberate: `extract_zip` in a `case` arm whose `\|\| { … fail … }` guard is the whole point — the helper's non-zero status is converted into a named abort, not swallowed.                                                                    |
+| SC2312 (masked return value)                       | `install-tools.sh:223`, `:228`, `pyyaml.sh:60`           | The two in `install-tools.sh` are **finding 3** below — the linter saw the shape, not the consequence. `pyyaml.sh:60` is `uname -m` inside an error message on the already-unsupported-architecture arm.                                       |
 
 **Two of the three findings did not come from `shellcheck`**, and the third
 (SC2312) is reported by it only as a style note on a line it cannot judge. The
@@ -131,11 +132,11 @@ directory level, and a status nothing reads.
 
 ## Findings
 
-| # | Where | Class | Severity | Status |
-| - | ----- | ----- | -------- | ------ |
-| 1 | `install-tools.sh` env hand-off | line injection into a `KEY=value` file (CWE-74) | low | **Fixed here** (both halves of the line) |
-| 2 | `install-tools.sh` `extract_zip` | strip level descends a symlink (CWE-59) | low | **Fixed here** |
-| 3 | `install-tools.sh:221-229` | `jq` failure masked as a successful install (CWE-755) | low | **Fixed here** |
+| # | Where                            | Class                                                 | Severity | Status                                   |
+| - | -------------------------------- | ----------------------------------------------------- | -------- | ---------------------------------------- |
+| 1 | `install-tools.sh` env hand-off  | line injection into a `KEY=value` file (CWE-74)       | low      | **Fixed here** (both halves of the line) |
+| 2 | `install-tools.sh` `extract_zip` | strip level descends a symlink (CWE-59)               | low      | **Fixed here**                           |
+| 3 | `install-tools.sh:221-229`       | `jq` failure masked as a successful install (CWE-755) | low      | **Fixed here**                           |
 
 ### 1 — a newline in a `bin` entry, an `env` name or an `env` value writes a second line
 
@@ -158,8 +159,9 @@ PATH=/tmp/evil$
 The third line is outside the install prefix, and the entrypoint prepends it to
 `PATH` for the worker and every agent it spawns. That contradicts three places
 that state the opposite invariant: `install-tools.sh:41-42` ("no spec can point
-PATH or an env var at an arbitrary host path"), `container_tools_config.ts:26-32`
-("the confinement is enforced here"), and `docs/CONTAINER.md`.
+PATH or an env var at an arbitrary host path"),
+`container_tools_config.ts:26-32` ("the confinement is enforced here"), and
+`docs/CONTAINER.md`.
 
 The upstream validator accepted it too — `isConfinedRelativePath` split the
 value on `/`, saw `["x\nPATH=", "evil"]`, and returned `true`. Both layers are
@@ -167,19 +169,18 @@ fixed: the predicate rejects `\r`/`\n`, and `install-tools.sh` refuses the whole
 set before anything downloads.
 
 **Both halves of the line, not just the value.** An `env` **name** is the left
-half of the very same line, so a newline there injects a line exactly as a
-value does — `{"A\nPATH=/tmp/evil:x": ""}` writes a well-formed `PATH=` line
-the entrypoint accepts. The Deno boundary refuses that name already
-(`ENV_NAME_PATTERN`, and JavaScript's `$` is end-of-input, so a trailing
-newline does not slip past it), but the installer must not depend on the
-boundary having run: the check covers `bin` entries, `env` names and `env`
-values alike.
+half of the very same line, so a newline there injects a line exactly as a value
+does — `{"A\nPATH=/tmp/evil:x": ""}` writes a well-formed `PATH=` line the
+entrypoint accepts. The Deno boundary refuses that name already
+(`ENV_NAME_PATTERN`, and JavaScript's `$` is end-of-input, so a trailing newline
+does not slip past it), but the installer must not depend on the boundary having
+run: the check covers `bin` entries, `env` names and `env` values alike.
 
 **Regression tests.**
 `install_tools_test.ts::install-tools - a newline in an env value is refused before any download`,
 `::install-tools - a newline in a bin entry is refused before any download`,
-`::install-tools - a newline in an env NAME is refused before any download`
-and `host_path_style_test.ts::isConfinedRelativePath - a newline-bearing value is refused`.
+`::install-tools - a newline in an env NAME is refused before any download` and
+`host_path_style_test.ts::isConfinedRelativePath - a newline-bearing value is refused`.
 The first three were each observed failing against the code they fix.
 
 ### 2 — a zip whose strip level is a symlink copies the link target in
@@ -187,7 +188,7 @@ The first three were each observed failing against the code they fix.
 `extract_zip` has no `--strip-components` (unzip offers none), so it descends
 one directory level per `stripComponents`, guarded by `[[ -d "${src}" ]]`. That
 test **follows** a symlink, and `cp -a "${src}/." "${dest}/"` then copies the
-link *target's* tree rather than the archive's.
+link _target's_ tree rather than the archive's.
 
 Reproduced with a one-entry zip whose single top-level name is a symlink at a
 directory outside the archive and `stripComponents: 1`: the outside directory's
@@ -220,30 +221,30 @@ exit=0
 $ cat prefix2/environment   # empty — the tool is installed and invisible
 ```
 
-The image carries a tool nobody can run, and the build is green: the
-"absence of a failure marker is not success" shape the coding standards name.
+The image carries a tool nobody can run, and the build is green: the "absence of
+a failure marker is not success" shape the coding standards name.
 
 **Fix.** The new whole-set check in finding 1 reads the same `bin`/`env` blocks
 through a **command substitution assignment**, so a `jq` that cannot walk them
 aborts the build under `set -e` instead of reading as "found no newline" — and
 it does so before any download, keeping the no-half-installed-image discipline.
-Past that pass, every value the recording loops read is a validated
-newline-free string. **Regression test.**
+Past that pass, every value the recording loops read is a validated newline-free
+string. **Regression test.**
 `install_tools_test.ts::install-tools - a bin block jq cannot walk aborts rather than installing a PATH-less tool`.
 
 ## The five cases the issue named
 
-| # | Case | Verdict |
-| - | ---- | ------- |
-| 1 | Every fetch verifies a manifest SHA-256 before use; a mismatch aborts | **Refuted** (no defect) — see below |
-| 2 | The `container_tools` spec cannot escape `/opt/vibe-tools/<id>` | **Confirmed**, three ways — findings 1, 2 and 3. No issue number: all three are fixed in this change, so none survived to be filed |
-| 3 | `TOOLCHAIN_DIR` / `TOOLCHAIN_MANIFEST` / `VIBE_TOOLS_PREFIX` and the unquoted `${CURL_RETRY}` | **Refuted** — see below |
-| 4 | The `python3 -c` bodies in `codespell.sh` / `pyyaml.sh` | **Refuted** — see below |
-| 5 | The toolchain `id` allowlist before `bash "${TOOLCHAIN_DIR}/${id}.sh"` | **Refuted** — see below |
+| # | Case                                                                                          | Verdict                                                                                                                            |
+| - | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 1 | Every fetch verifies a manifest SHA-256 before use; a mismatch aborts                         | **Refuted** (no defect) — see below                                                                                                |
+| 2 | The `container_tools` spec cannot escape `/opt/vibe-tools/<id>`                               | **Confirmed**, three ways — findings 1, 2 and 3. No issue number: all three are fixed in this change, so none survived to be filed |
+| 3 | `TOOLCHAIN_DIR` / `TOOLCHAIN_MANIFEST` / `VIBE_TOOLS_PREFIX` and the unquoted `${CURL_RETRY}` | **Refuted** — see below                                                                                                            |
+| 4 | The `python3 -c` bodies in `codespell.sh` / `pyyaml.sh`                                       | **Refuted** — see below                                                                                                            |
+| 5 | The toolchain `id` allowlist before `bash "${TOOLCHAIN_DIR}/${id}.sh"`                        | **Refuted** — see below                                                                                                            |
 
 ### Case 1 — every fetch is verified, and a mismatch aborts
 
-Twelve `curl` invocations exist across the eleven files — fourteen *fetches*,
+Twelve `curl` invocations exist across the eleven files — fourteen _fetches_,
 because `rust.sh` calls its one `install_rust_pkg` three times, once per
 component package. **Every one** is followed, before the bytes are used, by
 `echo "${checksum}  ${archive}" | sha256sum -c -` against a pin the fragment
@@ -255,7 +256,7 @@ mismatch path names the tool and aborts. There is no unverified fetch and no
 Two consequences of `jq -er` are load-bearing and hold: `-e` makes a **missing**
 pin exit non-zero, and every checksum is read in **assignment** position, where
 `set -e` catches it. `rust.sh:85-92` resolves all three component digests as
-standalone assignments precisely because a command substitution in *argument*
+standalone assignments precisely because a command substitution in _argument_
 position would not, and says so in a comment. The two scripts that `bash` an
 installer out of an archive (`bats-core.sh:57`, `rust.sh:81`) run it only after
 that archive has been verified.
@@ -271,21 +272,20 @@ The `environment` half is findings 1 and 3. The extraction half:
   so a hostile archive aborts the build rather than escaping. `--no-same-owner`
   is passed on both tar paths.
 - **`unzip` is not a traversal sink either.** UnZip 6.00 strips a leading `/`
-  and flattens `../`, so both land *inside* the destination — and the strip
+  and flattens `../`, so both land _inside_ the destination — and the strip
   warning it emits exits 1, which `extract_zip` turns into `extraction failed`.
   Executed.
-- **`stripComponents` cannot be used as a path.** It is validated
-  `^[0-9]+$` before use and is only ever a loop bound or a `--strip-components`
-  value.
+- **`stripComponents` cannot be used as a path.** It is validated `^[0-9]+$`
+  before use and is only ever a loop bound or a `--strip-components` value.
 - **The `id` cannot escape.** `^[a-z][a-z0-9-]*$` admits no `/` and no `.`, so
   `${TOOLS_PREFIX}/${id}` is always one level under the prefix.
 - **An `=` inside a value is not a second vector — empty.**
   `container/entrypoint.sh:517-521` splits each line at the **first** `=`, so
   `KEY=<prefix>/a=b` yields the key `KEY` and the value `<prefix>/a=b`: the
-  extra `=` stays inside the value and the path stays inside the prefix. A
-  `bin` entry behaves the same way, because its line is `PATH=` plus a path.
-  The issue named this vector alongside the newline; it is stated here rather
-  than left to be inferred from the newline finding.
+  extra `=` stays inside the value and the path stays inside the prefix. A `bin`
+  entry behaves the same way, because its line is `PATH=` plus a path. The issue
+  named this vector alongside the newline; it is stated here rather than left to
+  be inferred from the newline finding.
 - **What survived was the symlinked strip level** — finding 2.
 
 **Accepted residual: extraction preserves the archive's file modes.** The build
@@ -311,9 +311,9 @@ directly. Recorded so a future reader does not have to re-derive it.
   of quotes word-splits a fixed flag list; under `set -u` an unset value aborts
   the fragment.
 - **`VIBE_CONTAINER_TOOLS` is not re-parsed as code.** The launcher passes it as
-  one `--build-arg` argv element (no shell), and the Containerfile writes it with
-  `printf '%s' "${VIBE_CONTAINER_TOOLS}" > "${spec}"` — quoted, one expansion,
-  straight to a file that is then read by `jq`.
+  one `--build-arg` argv element (no shell), and the Containerfile writes it
+  with `printf '%s' "${VIBE_CONTAINER_TOOLS}" > "${spec}"` — quoted, one
+  expansion, straight to a file that is then read by `jq`.
 
 ### Case 4 — the `python3 -c` bodies
 
@@ -335,7 +335,7 @@ directly. Recorded so a future reader does not have to re-derive it.
 anything: the id matches `^[a-z][a-z0-9-]*$` (no `/`, no `.`, so
 `${TOOLCHAIN_DIR}/${id}.sh` cannot leave the directory), duplicates are refused,
 `-f "${TOOLCHAIN_DIR}/${id}.sh"` must exist, and the manifest must pin the id
-*with a fragment* — the last of which is why an id that is a real file but an
+_with a fragment_ — the last of which is why an id that is a real file but an
 unpinned one still aborts. Only then does `:125-131` run each fragment, and a
 fragment's non-zero status is named and re-raised rather than swallowed. The
 comma split (`IFS=',' read -r -a ids`) keeps empty entries so `a,,b` is rejected
@@ -359,8 +359,8 @@ category is indistinguishable from one that was skipped.
   prefix and the build architecture.
 - **Word splitting and globbing — empty except where it is the design.** Every
   path, id, version, URL, checksum and prefix is quoted at every expansion. The
-  two deliberate unquoted expansions are `${CURL_RETRY}` / `${PIP_RETRY}`
-  (case 3), each carrying a `# shellcheck disable=SC2086` naming the reason.
+  two deliberate unquoted expansions are `${CURL_RETRY}` / `${PIP_RETRY}` (case
+  3), each carrying a `# shellcheck disable=SC2086` naming the reason.
   `install-toolchains.sh:91` uses the bash-3.2 empty-array idiom
   `${ids[@]+"${ids[@]}"}`, whose alternate value is itself quoted.
 - **`set -euo pipefail` — present on all eleven, none relaxed.** Line 39 of
@@ -399,7 +399,7 @@ category is indistinguishable from one that was skipped.
   install a local, digest-verified wheel with `--no-deps --only-binary=:all:`,
   so no index is consulted and nothing unpinned can enter; the flag would
   restate that rather than change it.
-- **`install-tools.sh` still does not validate the *shape* of an `env` name.**
+- **`install-tools.sh` still does not validate the _shape_ of an `env` name.**
   Its newline is refused (finding 1), but a name that is newline-free and not a
   POSIX identifier — `1TOOL`, say — reaches the hand-off file and is refused by
   `container/entrypoint.sh:522-525`, which aborts the container loudly. The

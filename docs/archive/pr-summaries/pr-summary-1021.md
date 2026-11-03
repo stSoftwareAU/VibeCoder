@@ -1,7 +1,6 @@
 # PR Summary — Issues #1118, #1021
 
-Closes #1118
-Closes #1021
+Closes #1118 Closes #1021
 
 ## Summary
 
@@ -39,7 +38,8 @@ ok | 23 passed | 0 failed
 
 The second, intermittent failure the issue also mentions
 (`createProductionRunCoreDeps - static trust refresh succeeds and does not
-throw`) was fixed by the same PR and passes here too.
+throw`)
+was fixed by the same PR and passes here too.
 
 ### #1021 — `worker log gzip: compressed 0, skipped 39`
 
@@ -60,10 +60,10 @@ disagreement the issue reports cannot come from the counter:
   passes the same `logDir` to both passes.
 
 So the 39 were 39 real header-only stubs: 39 consecutive starts that wrote
-nothing past their header line and therefore never reached the housekeeping
-step that would have deleted them. A run that does work leaves a compressible
-log *and* runs housekeeping, which is exactly why the counter only ever reset on
-a run that logged `compressed 1`.
+nothing past their header line and therefore never reached the housekeeping step
+that would have deleted them. A run that does work leaves a compressible log
+_and_ runs housekeeping, which is exactly why the counter only ever reset on a
+run that logged `compressed 1`.
 
 What was actually broken is that the line could not say any of that. It named no
 directory, no cause, and did not account for the current run's own log — which
@@ -103,19 +103,20 @@ flowchart TD
 No UI change, so no screenshots. The evidence for #1118 is the test output
 above, reproduced from the issue's own command on the current default branch.
 The evidence for #1021 is the regression test below, which fails against the
-unfixed module (`Property 'candidates' does not exist on type
-'GzipWorkerLogsResult'`, and the old message contains neither the directory nor
-a cause) and passes after it.
+unfixed module
+(`Property 'candidates' does not exist on type
+'GzipWorkerLogsResult'`, and the
+old message contains neither the directory nor a cause) and passes after it.
 
 ## Test Plan
 
 Added to `worker/deno/tests/worker_log_gzip_test.ts`:
 
-1. **"the summary names the directory and accounts for every candidate
-   (Issue #1021)"** — a fixture directory holding one current log, three
-   sub-200-byte stubs, two compressible logs, one `.log.gz` and one `pull.log.1`.
-   Asserts the exact candidate count (6), the exact compressed/skipped/failure
-   numbers, the per-reason breakdown, and that
+1. **"the summary names the directory and accounts for every candidate (Issue
+   #1021)"** — a fixture directory holding one current log, three sub-200-byte
+   stubs, two compressible logs, one `.log.gz` and one `pull.log.1`. Asserts the
+   exact candidate count (6), the exact compressed/skipped/failure numbers, the
+   per-reason breakdown, and that
    `compressed + skipped + failures + current === candidates`. A miscount fails
    immediately — this is the assertion that would have caught the reported
    disagreement.

@@ -1,8 +1,8 @@
 # ➕ Add-repo — remote repository onboarding
 
 The **add-repo** feature lets an authorised human onboard a new repository to
-the worker's monitored set by filing a single GitHub issue — no shell access,
-no manual `.config.json` edit, no redeploy step. The worker validates access,
+the worker's monitored set by filing a single GitHub issue — no shell access, no
+manual `.config.json` edit, no redeploy step. The worker validates access,
 records the slug, syncs the full canonical GitHub label set so issues can be
 scheduled immediately, and seeds the twenty idle-task scans so the new repo is
 brought up to standard over the coming idle cycles.
@@ -11,8 +11,8 @@ This is the operator manual: how to trigger it, what the worker does, the
 failure paths, and the timing and secrets caveats.
 
 > The repository name is **not** hardcoded. Every example below uses
-> `stSoftwareAU/private-repo-11` purely as an illustration — any `owner/repo` slug the
-> worker can reach with triage access works identically.
+> `stSoftwareAU/private-repo-11` purely as an illustration — any `owner/repo`
+> slug the worker can reach with triage access works identically.
 
 ## At the keyboard: `./setup.sh --add-repo` / `--remove-repo`
 
@@ -71,63 +71,62 @@ add-repo: stSoftwareAU/private-repo-11
 
 Requirements:
 
-- The issue must carry the `work-on` label so it is claimed through the
-  standard discovery path.
-- The author must be on the worker's authorised-authors allowlist (the same
-  gate every claimed `work-on` issue passes). Untrusted authors are not
-  routed.
-- The title prefix `add-repo:` is matched case-insensitively. The suffix must
-  be a valid `owner/repo` slug — it is re-validated downstream as untrusted
-  input before it reaches any `gh`/git call or the config file.
+- The issue must carry the `work-on` label so it is claimed through the standard
+  discovery path.
+- The author must be on the worker's authorised-authors allowlist (the same gate
+  every claimed `work-on` issue passes). Untrusted authors are not routed.
+- The title prefix `add-repo:` is matched case-insensitively. The suffix must be
+  a valid `owner/repo` slug — it is re-validated downstream as untrusted input
+  before it reaches any `gh`/git call or the config file.
 
 No issue body is required. The slug in the **title** is the only input the flow
 reads.
 
 ## What the worker does
 
-The dispatch loop spots the `add-repo:` title prefix and routes the issue to
-the `process-add-repo` command instead of the standard Claude-driven coding/PR
-flow (which would wrongly try to open a code PR).
+The dispatch loop spots the `add-repo:` title prefix and routes the issue to the
+`process-add-repo` command instead of the standard Claude-driven coding/PR flow
+(which would wrongly try to open a code PR).
 
 **The route claims the request first** (Issue #1193). It dispatches _before_
 `workOnIssue`, whose setup phase held the only `claimIssue` call, so an
 `add-repo:` request used to collect neither an assignee nor a `CLAIM_LOCK`
-comment and two hosts scanning the same repo both ran it. The claim is the
-same one the standard pipeline takes — assignee, `CLAIM_LOCK` comment,
+comment and two hosts scanning the same repo both ran it. The claim is the same
+one the standard pipeline takes — assignee, `CLAIM_LOCK` comment,
 earliest-comment race resolution and a heartbeat that beats for as long as the
 command runs. A host that is refused it runs nothing, writes nothing to the
-issue and — because the fleet shares one GitHub login — releases nothing, so
-the holder keeps its assignee and its marker. See
+issue and — because the fleet shares one GitHub login — releases nothing, so the
+holder keeps its assignee and its marker. See
 [`route_claim.ts`](../worker/deno/lib/route_claim.ts).
 
 The command then runs seven steps:
 
 1. **Parse the title** — extract and validate the `owner/repo` slug. An
-   unparseable title is commented on and closed (see [Failure paths](#failure-paths)).
+   unparseable title is commented on and closed (see
+   [Failure paths](#failure-paths)).
 2. **Validate the target at runtime** — confirm the repo exists, the worker
    account has triage (assignable) access, and determine the repo's
    **visibility** (public or private). Visibility is **detected at runtime**,
    not declared in the request, and fails safe to `private` when uncertain.
 3. **Append to the monitored list** — idempotently add the slug to the `repos`
    array in the per-machine `.config.json`. The whole config object is read,
-   merged, and written back so unknown keys (phase overrides, idle-task
-   weights, etc.) are preserved. A slug already present is a no-op — including
-   one present under a different casing (Issue #1546).
-4. **Sync the canonical label set** — create/update the full
-   canonical GitHub label set on the target repo so a human can schedule and
-   queue issues (apply `work-on`, `top-priority`, `grill-me`, etc.)
-   **immediately** after onboarding, instead of waiting for a later
-   `setup.sh`/idle sync. It reuses the canonical `syncLabelsForRepo` helper
-   over `LABEL_DEFINITIONS` (no second label list) and runs **before** wrapper
-   seeding so the `idle-task` label exists first. Idempotent — re-running over
-   a repo that already has the labels is a safe no-op. **Non-fatal:** a sync
-   failure is reported in the summary, not swallowed, but does not abort
-   onboarding (the worker has write access, so labels rarely need human
-   action).
-5. **Configure the default-branch ruleset** — apply the GitHub
-   ruleset **"wall"** to the onboarded repo's default branch so it inherits the
-   same pre-merge enforcement as existing repos — **immediately**, rather than
-   only on the next manual `setup.sh`. The **visibility resolved in step 2 is
+   merged, and written back so unknown keys (phase overrides, idle-task weights,
+   etc.) are preserved. A slug already present is a no-op — including one
+   present under a different casing (Issue #1546).
+4. **Sync the canonical label set** — create/update the full canonical GitHub
+   label set on the target repo so a human can schedule and queue issues (apply
+   `work-on`, `top-priority`, `grill-me`, etc.) **immediately** after
+   onboarding, instead of waiting for a later `setup.sh`/idle sync. It reuses
+   the canonical `syncLabelsForRepo` helper over `LABEL_DEFINITIONS` (no second
+   label list) and runs **before** wrapper seeding so the `idle-task` label
+   exists first. Idempotent — re-running over a repo that already has the labels
+   is a safe no-op. **Non-fatal:** a sync failure is reported in the summary,
+   not swallowed, but does not abort onboarding (the worker has write access, so
+   labels rarely need human action).
+5. **Configure the default-branch ruleset** — apply the GitHub ruleset
+   **"wall"** to the onboarded repo's default branch so it inherits the same
+   pre-merge enforcement as existing repos — **immediately**, rather than only
+   on the next manual `setup.sh`. The **visibility resolved in step 2 is
    forwarded**, so the visibility-aware required-check selection
    (`getRequiredChecksForRepo`) never marks an unsatisfiable check (e.g.
    GHAS-only `dependency-review` on a private repo) as required. It reuses the
@@ -135,10 +134,12 @@ The command then runs seven steps:
    write; classic branch protection is never written —). The same step also
    decides the merge queue, where GitHub allows one
    ([MERGE.md → Merge queue](MERGE.md#merge-queue)). Settling availability may
-   create and then delete a disabled probe ruleset (`Vibe Coder merge queue
-   probe`); the read-only `audit-default-branch-rulesets` sweep never creates
-   one. Enabling it needs each
-   required check's workflow to run on `merge_group` as well as `pull_request`:
+   create and then delete a disabled probe ruleset
+   (`Vibe Coder merge queue
+   probe`); the read-only
+   `audit-default-branch-rulesets` sweep never creates one. Enabling it needs
+   each required check's workflow to run on `merge_group` as well as
+   `pull_request`:
 
    ```yaml
    on:
@@ -149,17 +150,17 @@ The command then runs seven steps:
    In a `merge_group` run the base and head are
    `github.event.merge_group.base_sha` and `github.event.merge_group.head_sha`,
    not `github.event.pull_request.*`; a job that selects work from the diff must
-   run everything when that diff cannot be read.
-   **Non-fatal:** a configuration failure is reported in the summary, **not
-   swallowed**, but does not abort onboarding; the idempotent setup-time
-   `branch-protection-sync` will reconcile.
+   run everything when that diff cannot be read. **Non-fatal:** a configuration
+   failure is reported in the summary, **not swallowed**, but does not abort
+   onboarding; the idempotent setup-time `branch-protection-sync` will
+   reconcile.
 6. **Seed all twenty idle-task wrappers** — file one wrapper issue per
    registered idle-task template in the **target** repo; the authoritative list
-   is the [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry).
-   This bypasses the normal one-wrapper-per-tick random pick so a single call
-   seeds every template at once, but it honours the per-repo any-open gate
-   (Issue #2752): when the target already holds **any** open `idle-task`
-   issue, nothing is filed and the log reads
+   is the [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry). This bypasses
+   the normal one-wrapper-per-tick random pick so a single call seeds every
+   template at once, but it honours the per-repo any-open gate (Issue #2752):
+   when the target already holds **any** open `idle-task` issue, nothing is
+   filed and the log reads
    `[idle-task] repo=<repo> issue=<n> action=skipped reason=existing_wrapper_open`.
    A lookup that fails is never read as clean — nothing is filed and the log
    reads `reason=lookup_failed`.
@@ -207,18 +208,18 @@ correct — they are claimed once the reloaded config includes the new slug.
 
 ## Failure paths
 
-| Outcome | What the worker does | Repo added? |
-| --- | --- | --- |
-| **Unparseable title** (no valid `owner/repo`) | Posts an explanatory comment asking for a `add-repo: owner/repo` title, then closes the issue. | No |
-| **Repo not found / not visible** (404/403) | Posts a remediation comment and escalates with the `needs-human` label via `escalateToHuman` (the only sanctioned path to that label). | No |
-| **No push access** (visible, but the worker lacks write — triage alone is not enough, Issue #1455) | Posts a remediation comment with the `gh api ... permission=push` fix and escalates with `needs-human`. | No |
-| **Transient validation error** (e.g. the visibility lookup itself fails) | Leaves the issue open so the next loop iteration retries. No escalation, no close. | No |
+| Outcome                                                                                            | What the worker does                                                                                                                   | Repo added? |
+| -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| **Unparseable title** (no valid `owner/repo`)                                                      | Posts an explanatory comment asking for a `add-repo: owner/repo` title, then closes the issue.                                         | No          |
+| **Repo not found / not visible** (404/403)                                                         | Posts a remediation comment and escalates with the `needs-human` label via `escalateToHuman` (the only sanctioned path to that label). | No          |
+| **No push access** (visible, but the worker lacks write — triage alone is not enough, Issue #1455) | Posts a remediation comment with the `gh api ... permission=push` fix and escalates with `needs-human`.                                | No          |
+| **Transient validation error** (e.g. the visibility lookup itself fails)                           | Leaves the issue open so the next loop iteration retries. No escalation, no close.                                                     | No          |
 
 The remediation comment for the not-found / no-access cases includes the exact
 command a repo admin runs to grant the worker push access. Push, not triage: a
-monitored repo's collaborators are listed on every trusted-author refresh,
-which GitHub serves only to a login with push, and a branch cannot be pushed
-without it (Issue #1455):
+monitored repo's collaborators are listed on every trusted-author refresh, which
+GitHub serves only to a login with push, and a branch cannot be pushed without
+it (Issue #1455):
 
 ```bash
 gh api -X PUT repos/owner/repo/collaborators/<worker-user> -f permission=push
@@ -237,10 +238,10 @@ without waiting for the next `setup.sh` run or a steady-state idle sync.
 The sync reuses the canonical `syncLabelsForRepo` helper over
 `LABEL_DEFINITIONS` (the single source of truth — no second label list), syncs
 the full canonical set (workflow **and** UI/category labels), and is idempotent
-so a later setup/idle sync over the same repo is a safe no-op. A sync failure
-is **reported in the success comment, not swallowed**, but is **non-fatal**:
-onboarding still completes because the worker has write access and labels
-rarely need human action.
+so a later setup/idle sync over the same repo is a safe no-op. A sync failure is
+**reported in the success comment, not swallowed**, but is **non-fatal**:
+onboarding still completes because the worker has write access and labels rarely
+need human action.
 
 ## Branch-protection configuration at onboarding
 
@@ -257,23 +258,21 @@ the next manual `setup.sh` run.
   known visibility through also avoids a redundant visibility read.
 - **Idempotent, rulesets only.** It reuses the single-repo
   `syncBranchProtectionForRepo` helper, which reads the live ruleset state and
-  writes only when the desired (visibility-aware) required-check set drifts
-  from the current one. A repo already covered by a ruleset — including a
-  human- or org-managed one — is a genuine no-op, and classic branch protection
-  is never written. A repo whose default branch takes direct
-  pushes, or that opted out (topic `direct-push` / marker
-  `.vibe/no-default-branch-ruleset`), gets **no** ruleset and the success
-  comment says so.
+  writes only when the desired (visibility-aware) required-check set drifts from
+  the current one. A repo already covered by a ruleset — including a human- or
+  org-managed one — is a genuine no-op, and classic branch protection is never
+  written. A repo whose default branch takes direct pushes, or that opted out
+  (topic `direct-push` / marker `.vibe/no-default-branch-ruleset`), gets **no**
+  ruleset and the success comment says so.
 - **Non-fatal, never swallowed.** A configuration failure (for example, the
   worker lacking admin rights to set branch protection) is **reported in the
   success comment**, not silently dropped, but does **not** abort onboarding —
   labels and wrappers are still seeded, and the idempotent setup-time
   `branch-protection-sync` reconciles the protection on the next deploy.
 
-This mirrors the setup-time `branch-protection-sync` that walks
-every monitored repo; the add-repo path applies the same wall to just the one
-newly onboarded repo so there is no gap between "repo added" and "repo
-protected".
+This mirrors the setup-time `branch-protection-sync` that walks every monitored
+repo; the add-repo path applies the same wall to just the one newly onboarded
+repo so there is no gap between "repo added" and "repo protected".
 
 ## Deliberate skip of the remaining one-off setup syncs
 
@@ -282,22 +281,21 @@ syncs that `setup.sh` performs at deploy time — the workflow sync,
 `.gitignore`/`.gitattributes` sync, and collaborator precheck. Re-running those
 syncs per add-repo issue would spend API budget for no benefit.
 
-Best-practice setup is instead **delegated to the twenty idle tasks**. The seeded
-`security-scan`, `best-practices`, `test-audit`, `github-actions-audit`, and
-`supply-chain-readiness` wrappers bring a newly added repo up to standard over
-the coming idle cycles — they file findings for missing CI gates, unpinned
+Best-practice setup is instead **delegated to the twenty idle tasks**. The
+seeded `security-scan`, `best-practices`, `test-audit`, `github-actions-audit`,
+and `supply-chain-readiness` wrappers bring a newly added repo up to standard
+over the coming idle cycles — they file findings for missing CI gates, unpinned
 GitHub Actions, supply-chain gaps, and the rest, which a human then triages.
 
 ## Visibility gating
 
 The add-repo flow **detects** visibility but does **not** gate on it. Which of
 the twenty idle tasks fire — and which individual checks within them run — on a
-private repo is governed at **runtime** by the templates themselves (per
-). For example, the supply-chain-readiness scan confirms repo
-visibility
-before filing any check that needs a public repo or GitHub Advanced Security,
-staying silent unless the repo is confirmed public and failing safe to
-`private` on any uncertainty.
+private repo is governed at **runtime** by the templates themselves (per ). For
+example, the supply-chain-readiness scan confirms repo visibility before filing
+any check that needs a public repo or GitHub Advanced Security, staying silent
+unless the repo is confirmed public and failing safe to `private` on any
+uncertainty.
 
 This means it is safe to add a private repo: the wrappers are seeded
 unconditionally, and each scan suppresses its public-only checks at runtime.
@@ -306,9 +304,9 @@ unconditionally, and each scan suppresses its public-only checks at runtime.
 
 `.config.json` is a **per-machine secrets file** — it is on the always-forbidden
 list for commits (`.config*.json`) and is **never** committed to the repository.
-The add-repo flow appends the new slug to the local `.config.json` on the
-worker host; the change is local to that machine and does not ride along in any
-PR. Each worker host therefore maintains its own monitored set.
+The add-repo flow appends the new slug to the local `.config.json` on the worker
+host; the change is local to that machine and does not ride along in any PR.
+Each worker host therefore maintains its own monitored set.
 
 ## Labels
 
@@ -317,9 +315,9 @@ relies on existing mechanisms:
 
 - The seeded wrappers carry the `idle-task` label — the only operational label
   the worker is permitted to self-apply, via the idle-task framework.
-- The not-found / no-access escalation applies `needs-human` exclusively
-  through `escalateToHuman`, which posts the same-run explanation comment
-  alongside the label as required by the
+- The not-found / no-access escalation applies `needs-human` exclusively through
+  `escalateToHuman`, which posts the same-run explanation comment alongside the
+  label as required by the
   [Worker Label Policy](../README.md#%EF%B8%8F-supported-labels).
 - The canonical label sync (step 4) **creates label definitions** on the target
   repo — it does not **apply** any reserved/operational label to an issue. It
@@ -341,8 +339,8 @@ applied to any issue by the flow.
   — seeds all twenty idle-task wrappers in the target repo.
 - [`worker/deno/setup/label_sync.ts`](../worker/deno/setup/label_sync.ts) —
   `syncLabelsForRepo`, the canonical label sync (over
-  [`label_definitions.ts`](../worker/deno/setup/label_definitions.ts))
-  reused at onboarding.
+  [`label_definitions.ts`](../worker/deno/setup/label_definitions.ts)) reused at
+  onboarding.
 - [`worker/deno/setup/branch_protection_sync.ts`](../worker/deno/setup/branch_protection_sync.ts)
   — `syncBranchProtectionForRepo`, the single-repo enforcement configurator
   reused at onboarding; it wraps the idempotent
@@ -351,9 +349,9 @@ applied to any issue by the flow.
 - [`worker/deno/lib/add_repo_process_issue_route.ts`](../worker/deno/lib/add_repo_process_issue_route.ts)
   — claims an `add-repo:` issue and routes it to the command, wired into the
   main dispatch loop in `run_core_production_deps.ts`.
-- [`worker/deno/lib/route_claim.ts`](../worker/deno/lib/route_claim.ts)
-  — the cross-host claim every pre-pipeline route takes before it runs
-  (Issues #1139, #1193).
+- [`worker/deno/lib/route_claim.ts`](../worker/deno/lib/route_claim.ts) — the
+  cross-host claim every pre-pipeline route takes before it runs (Issues #1139,
+  #1193).
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](IDLE-TASK-FRAMEWORK.md) for the idle-task
 scans the wrappers trigger, and [`docs/CONFIGURATION.md`](CONFIGURATION.md) for

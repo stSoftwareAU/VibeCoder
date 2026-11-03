@@ -1,15 +1,15 @@
 ## Summary
 
-The worker's deferral bookkeeping write appended `Depends on owner/repo#N` to
-an approved issue body, and the content-approval gate read the fleet's own
-routine write as *content changed after approval*. PR #1567 capped the
-resulting escalation to one comment per edit; the collision itself remained.
+The worker's deferral bookkeeping write appended `Depends on owner/repo#N` to an
+approved issue body, and the content-approval gate read the fleet's own routine
+write as _content changed after approval_. PR #1567 capped the resulting
+escalation to one comment per edit; the collision itself remained.
 
 This takes option **(1)** from the issue — scope the exemption to the **edit**,
 not the author. The deferral now writes its line inside a delimited,
 machine-owned block, and the gate strips that block (and the exact separator
-written with it) before hashing. Exempting the worker's *login* was rejected
-for the reason the issue gives: a compromised agent runs as exactly that login.
+written with it) before hashing. Exempting the worker's _login_ was rejected for
+the reason the issue gives: a compromised agent runs as exactly that login.
 
 Closes #1631.
 
@@ -18,8 +18,8 @@ Closes #1631.
 Backend/CLI change — no web interface to screenshot. Verified by tests:
 
 - `worker/deno/tests/content_approval_deferral_edit_test.ts` drives the real
-  `deferBlockedIssue` against a real approval store, so the fix is exercised
-  end to end rather than at the string level.
+  `deferBlockedIssue` against a real approval store, so the fix is exercised end
+  to end rather than at the string level.
 - `./quality.sh` PASSED after the final edit (config integration skipped: no
   `.config.json` in the container).
 

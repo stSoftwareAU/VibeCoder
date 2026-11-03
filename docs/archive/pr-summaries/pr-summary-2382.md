@@ -23,14 +23,14 @@ sub-issues do that. Closes #2382.
 - `prepareRtkRun({ enabled, providerId, logger, cwd?, env?, run? })` — the
   decision order, the preflight, and one status line per run.
 - `record()` — re-reads gain and sets `savedTokens` to the second reading minus
-  the baseline, clamped at zero. A failed second read logs the marker and leaves the figure absent;
-  the status stays `ok`, because the hook did run.
+  the baseline, clamped at zero. A failed second read logs the marker and leaves
+  the figure absent; the status stays `ok`, because the hook did run.
 - `describeRtkRun(result)` — the one-line log summary.
 - `docs/audits/security-sweep-2382-rtk-output.md` plus its `top-up-2382` slice
-  in `docs/audits/lib-sweep-coverage.json` — required of every new `lib/`
-  module by the completeness gate.
-- `docs/CONFIGURATION.md` — the RTK row's scope clause corrected: the module
-  now exists, but no spawn path calls it yet.
+  in `docs/audits/lib-sweep-coverage.json` — required of every new `lib/` module
+  by the completeness gate.
+- `docs/CONFIGURATION.md` — the RTK row's scope clause corrected: the module now
+  exists, but no spawn path calls it yet.
 
 ```mermaid
 flowchart TD
@@ -51,10 +51,10 @@ flowchart TD
 
 ### The saved-token figure is indicative only
 
-The issue asked the implementer to check an assumption: *"one agent invocation
+The issue asked the implementer to check an assumption: _"one agent invocation
 at a time writes that store; if the implementer finds concurrent containers
 share `VIBE_WORK_ROOT/.container-state`, say so in the PR summary and the trial
-page rather than silently trusting the figure."*
+page rather than silently trusting the figure."_
 
 **Checked, and the assumption does not hold.** `container/entrypoint.sh` sets
 `XDG_DATA_HOME="${STATE_ROOT}/data"` with `STATE_ROOT` under the durable work
@@ -96,13 +96,14 @@ as it is for every run here.)
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — `prepareRtkRun` never rejects, whatever the seam does, and every
-  status is reached by a test — evidence: `worker/deno/lib/rtk_output.ts:362-374`
-  (the spawn `try`/`catch` and the `!result.ok` branch) and `408-428` (the parse
-  and figure checks); the table-driven
+  status is reached by a test — evidence:
+  `worker/deno/lib/rtk_output.ts:362-374` (the spawn `try`/`catch` and the
+  `!result.ok` branch) and `408-428` (the parse and figure checks); the
+  table-driven
   `rtk_output_test.ts::prepareRtkRun - no seam outcome fails the run` covers
-  nine seam outcomes — unstartable, non-zero exit, timeout, a throwing seam,
-  and five malformed gain answers — and the `off`, `unsupported`, `failed` and
-  `ok` statuses are each asserted by their own test — reviewer: met
+  nine seam outcomes — unstartable, non-zero exit, timeout, a throwing seam, and
+  five malformed gain answers — and the `off`, `unsupported`, `failed` and `ok`
+  statuses are each asserted by their own test — reviewer: met
 - **met** — a `failed` or `unsupported` preparation returns no hook settings and
   an unchanged prompt — evidence: a single `wired = result.status === "ok"` flag
   drives both halves (`worker/deno/lib/rtk_output.ts:443-448`), asserted for
@@ -116,7 +117,7 @@ as it is for every run here.)
   the absent base and a base with no `hooks` key — reviewer: met
 - **met** — `savedTokens` equals the `summary.total_saved` delta, clamped at
   zero — evidence: `worker/deno/lib/rtk_output.ts:462`; tests cover a normal
-  delta, an unchanged store reading zero, a *lower* second read clamping to zero
+  delta, an unchanged store reading zero, a _lower_ second read clamping to zero
   rather than going negative, and a failed second read leaving the figure absent
   with the status still `ok` — reviewer: met
 - **met** — the quality gate passes — evidence: the gate output above —
@@ -202,7 +203,7 @@ test sleeps:
 - **The indivisible pair**: `hookSettings()` and `applyPrompt()` asserted
   together on every status; the `ok` case matches `buildRtkHookSettings()`
   exactly and appends `RTK_PROMPT_LINE` after a blank line.
-- **The delta**: a normal delta; an unchanged store reading zero; a *lower*
+- **The delta**: a normal delta; an unchanged store reading zero; a _lower_
   second read clamping to zero; a failed second read leaving `savedTokens`
   absent with the status still `ok`; `record()` on a failed preparation spawning
   nothing; repeated `record()` calls re-reading the store.

@@ -8,9 +8,9 @@ The scan was right to skip those 14 issues:
 
 - `selectHighestPriority` drops every `work-on` candidate that shares a
   repo+milestone stream with a PR-blocked `top-priority` issue ("Priority 2").
-- On GRQ-AutoTrader, the 2 PR-blocked `top-priority` issues and all 14
-  `work-on` issues had no milestone, so they shared the no-milestone stream.
-  Every `work-on` issue was parked on purpose.
+- On GRQ-AutoTrader, the 2 PR-blocked `top-priority` issues and all 14 `work-on`
+  issues had no milestone, so they shared the no-milestone stream. Every
+  `work-on` issue was parked on purpose.
 - The census never modelled this rule, so it counted the parked issues as
   claimable.
 
@@ -22,8 +22,8 @@ Closes #2922.
   its stream. It no longer feeds the inversion signal. The count is carried on
   `RepoCensusEntry.workOnSuppressed` and in the `[idle-census]` line.
 - `worker/deno/lib/fleet_telemetry.ts`: a new `work_on_suppressed` fleet idle
-  reason, so the fleet idle reason names the stream-level suppression instead
-  of reporting an unexplained idle cycle.
+  reason, so the fleet idle reason names the stream-level suppression instead of
+  reporting an unexplained idle cycle.
 - Docs: the census gate flowchart and its prose (`docs/IDLE-TASK-FRAMEWORK.md`),
   `docs/INTERNALS.md` and `docs/workflows/issue-processing.md`.
 
@@ -38,15 +38,15 @@ flowchart TD
     W -- no --> U["unblocked+1 → inversion signal"]
 ```
 
-The regression tests in `worker/deno/tests/idle_decision_census_test.ts`
-rebuild the GRQ-AutoTrader shape: a PR-blocked `top-priority` issue plus
-`work-on` siblings with no milestone. They failed before the fix: `work_on`
-was counted and `inversion_signal=true`. With the fix they pass: `work_on=0`,
+The regression tests in `worker/deno/tests/idle_decision_census_test.ts` rebuild
+the GRQ-AutoTrader shape: a PR-blocked `top-priority` issue plus `work-on`
+siblings with no milestone. They failed before the fix: `work_on` was counted
+and `inversion_signal=true`. With the fix they pass: `work_on=0`,
 `work_on_suppressed=n`, and no inversion. Negative cases cover:
 
 - a `work-on` issue in another milestone, which stays claimable;
-- a `top-priority` issue exempted by `ignore-open-prs`, which does not
-  suppress its stream;
+- a `top-priority` issue exempted by `ignore-open-prs`, which does not suppress
+  its stream;
 - an issue that carries both labels, which is not suppressed.
 
 ## Test Plan
@@ -78,5 +78,5 @@ was counted and `inversion_signal=true`. With the fix they pass: `work_on=0`,
 
 ## Final branch state
 
-The head commit contains the census gate, the telemetry reason, the docs and
-the regression tests. No interim notes remain.
+The head commit contains the census gate, the telemetry reason, the docs and the
+regression tests. No interim notes remain.

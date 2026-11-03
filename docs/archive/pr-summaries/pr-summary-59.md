@@ -3,8 +3,8 @@
 ## Summary
 
 A planning run that **published its sub-issues** but could not repair every
-`## Failure Detection` section was being run through `handlePlanningFailure()`
-— `failed-once` on the parent and `ok: false` for the run. On
+`## Failure Detection` section was being run through `handlePlanningFailure()` —
+`failed-once` on the parent and `ok: false` for the run. On
 stSoftwareAU/GRQ-validation#835 that read as a failed plan when the plan was
 sound: 8 sub-issues published, 6 compliant, 2 not. The published sub-issues stay
 published regardless, so the "failure" undid nothing; it only told the retry
@@ -26,7 +26,7 @@ sub-issues and one or more still lack the criterion, the worker:
 The loud failure machinery is unchanged for **genuine** planning failures (a
 prompt failure, a timeout, or a publish failure): they still drive
 `handlePlanningFailure()` with the `failed-once` → `failed` progression. This
-change narrows *when* the gate fails a run, not the failure machinery itself.
+change narrows _when_ the gate fails a run, not the failure machinery itself.
 
 `needs-failure-detection-repair` is in `RESERVED_LABELS` (so the planner can
 never apply it as a descriptive label and manufacture a phantom repair queue)
@@ -78,32 +78,32 @@ Added:
   non-fatal; and the reservation invariants (`isReservedLabel` true
   case-insensitively, `isWorkerAppliableLabel` true, canonical
   name/colour/description present).
-- `planning_processor_test.ts` — *a genuine planning failure still drives the
-  failed-once progression (Issue #59)*: the publish call fails, so
+- `planning_processor_test.ts` — _a genuine planning failure still drives the
+  failed-once progression (Issue #59)_: the publish call fails, so
   `handleIssueFailure()` runs, the result is `ok: false`, and the partial-repair
   label is never applied. This is the paired regression case that stops the two
   outcomes being collapsed back together.
-- `planning_processor_test.ts` — *reopens an inline-closed parent that still has
-  outstanding repairs*.
+- `planning_processor_test.ts` — _reopens an inline-closed parent that still has
+  outstanding repairs_.
 - `failure_detection_gate_test.ts` — `buildParentPartialRepairComment()` names
   every offender with its reason, states the run is not a failure, names the
   label, and shares the failure comment's rule wording.
 
 Modified (business-logic change, documented in-file):
 
-- `planning_processor_test.ts` — *records a partial repair … when a published
-  sub-issue's criterion cannot be repaired*: previously asserted `ok: false` +
-  `failed-once`; now asserts the partial-repair outcome (label on the parent,
-  no `failed-once`, parent not closed, one parent comment naming `#202` only,
+- `planning_processor_test.ts` — _records a partial repair … when a published
+  sub-issue's criterion cannot be repaired_: previously asserted `ok: false` +
+  `failed-once`; now asserts the partial-repair outcome (label on the parent, no
+  `failed-once`, parent not closed, one parent comment naming `#202` only,
   offender sub-issue comment preserved).
-- `planning_processor_test.ts` — *a spent handler deadline defers the repair
-  (Issue #58/#59)*: the deferred set no longer fails the run; the assertions
+- `planning_processor_test.ts` — _a spent handler deadline defers the repair
+  (Issue #58/#59)_: the deferred set no longer fails the run; the assertions
   moved to the partial-repair outcome. Both deferred sub-issues are still named,
   loudly.
 - `setup_label_definitions_test.ts` / `setup_label_sync_test.ts` — label counts
   17 → 18 (16 → 17 workflow) for the new label definition.
 
-Docs updated in the same change: `docs/workflows/planning-and-questions.md`
-(new "Partial repair leaves a resumable state" section, plus the gate/repair
-prose and flowchart that described the old hard-block) and
+Docs updated in the same change: `docs/workflows/planning-and-questions.md` (new
+"Partial repair leaves a resumable state" section, plus the gate/repair prose
+and flowchart that described the old hard-block) and
 `docs/workflows/label-flows.md` (label table row).

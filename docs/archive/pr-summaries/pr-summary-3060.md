@@ -24,9 +24,9 @@ value the test forbids, so each test passed with or without its guard. Closes
 
 ### Intent and Rationale
 
-- #2924 ties a red run to the base branch, but that only covers bug fixes. A
-  new guard has no unfixed base to go red against, so the check has to be "break
-  the guard and watch the test go red".
+- #2924 ties a red run to the base branch, but that only covers bug fixes. A new
+  guard has no unfixed base to go red against, so the check has to be "break the
+  guard and watch the test go red".
 - The rule sits next to the base-branch-red and named-test rules, so it rides
   into every code-writing run through the injected guidelines, and the issue
   prompt checks it again at the self-review step.
@@ -59,9 +59,10 @@ Docs and prompts only, with no runtime code change. Verification:
 - `./quality.sh < /dev/null` passed (one check, config integration, was
   skipped).
 
-**Docs sweep** — grep: "negative test", "legitimate redesign", "named-but-absent";
-updated: `CODING-STANDARDS.md`, `prompts/coding_guidelines/prompt.md`,
-`prompts/issue/prompt.md`, `docs/workflows/issue-processing.md`
+**Docs sweep** — grep: "negative test", "legitimate redesign",
+"named-but-absent"; updated: `CODING-STANDARDS.md`,
+`prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`,
+`docs/workflows/issue-processing.md`
 
 ## Test Plan
 

@@ -4,10 +4,10 @@
 
 A run stopped because the cycle ended or the supervisor's wall-clock hard cap
 was reached used to be reported to the issue as `Claude ran out of time`, with
-advice to split the issue into sub-issues — and it entered the
-`failed-once` → `failed` ladder. Under the parent change (#397) that is simply
-untrue: the run was progressing, its work in progress was committed and pushed,
-and the next claim resumes the branch. Nothing about the issue was at fault.
+advice to split the issue into sub-issues — and it entered the `failed-once` →
+`failed` ladder. Under the parent change (#397) that is simply untrue: the run
+was progressing, its work in progress was committed and pushed, and the next
+claim resumes the branch. Nothing about the issue was at fault.
 
 This change teaches the worker to tell the two apart and say so.
 
@@ -28,8 +28,8 @@ This change teaches the worker to tell the two apart and say so.
   unchanged and still reached, because `terminated` and `externalSigterm` are
   mutually exclusive in the runner.
 - `getFailureDiagnosis` / `getFailureDiagnosisOneliner` gain scheduled-release
-  wording — *"cycle ended or the run hard cap was reached — WIP preserved,
-  resumes next cycle"* — with no "ran out of time" and no "sub-issues" advice.
+  wording — _"cycle ended or the run hard cap was reached — WIP preserved,
+  resumes next cycle"_ — with no "ran out of time" and no "sub-issues" advice.
   The genuine-timeout wording is byte-for-byte unchanged.
 - `handleIssueFailure` returns early for a scheduled release: no `failed-once`,
   no `failed`, no unassign, no `gh` call at all. The claim-release comment still
@@ -46,15 +46,15 @@ This change teaches the worker to tell the two apart and say so.
   phase's WIP-only gate still matches on the `wip:` prefix, so branches carrying
   the older subjects are recognised unchanged.
 - `claude_executor.ts`'s in-progress regex still matches "ran out of time" in
-  *agent output* — unrelated, and deliberately left alone.
+  _agent output_ — unrelated, and deliberately left alone.
 
 Closes #424.
 
 ## Evidence
 
-Backend/CLI only — no web surface to screenshot. Verified by tests plus the
-full quality gate (`./quality.sh`: deno tests, lint, type check, fmt,
-markdownlint, mermaid, chokepoint audits — `Result: PASSED`).
+Backend/CLI only — no web surface to screenshot. Verified by tests plus the full
+quality gate (`./quality.sh`: deno tests, lint, type check, fmt, markdownlint,
+mermaid, chokepoint audits — `Result: PASSED`).
 
 How a stopped run is now classified:
 
@@ -85,9 +85,9 @@ New and modified tests, all passing:
   says `no PR raised — scheduled-release … WIP preserved … resumes next cycle`.
 - `worker/deno/tests/failure_diagnosis_test.ts` — the two cases the issue names
   (`:214`, `:261`) are split into a genuine-timeout case (wording unchanged,
-  still suggests splitting) and a scheduled-release case (asserts neither
-  phrase appears); plus category detection over a full hard-cap diagnostics
-  block that legitimately carries `Watchdog: hard-timeout` and `Timeout: 3600s`.
+  still suggests splitting) and a scheduled-release case (asserts neither phrase
+  appears); plus category detection over a full hard-cap diagnostics block that
+  legitimately carries `Watchdog: hard-timeout` and `Timeout: 3600s`.
 - `worker/deno/tests/wip_commit_marker_test.ts` — every cause builds a subject
   the completion gate still recognises; the scheduled-release subject contains
   neither "timed out" nor "at the cycle deadline"; the genuine-timeout subject

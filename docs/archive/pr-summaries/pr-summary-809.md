@@ -24,8 +24,8 @@ Closes #809.
 
 ## Evidence
 
-Backend/CLI change with no web interface, so there is nothing to screenshot.
-The evidence is the regression suite:
+Backend/CLI change with no web interface, so there is nothing to screenshot. The
+evidence is the regression suite:
 
 ```text
 $ cd worker/deno && deno test --allow-all tests/issue_dependencies_test.ts

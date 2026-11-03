@@ -76,8 +76,8 @@ flowchart LR
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-The green node is the phase this change adds; failures there used to be
-reported as `runtime_detection`.
+The green node is the phase this change adds; failures there used to be reported
+as `runtime_detection`.
 
 ## Test Plan
 
@@ -85,20 +85,22 @@ Added:
 
 - `worker/deno/tests/run_sh_launcher_test.ts`
   - `run.sh - attributes a failed volume init to volume preparation, not
-    runtime detection (Issue #710)` — the regression test: it fails against the
-    unfixed launcher with `runtime_detection`, and also asserts the worker
-    container never starts after a failed init.
+    runtime detection (Issue #710)`
+    — the regression test: it fails against the unfixed launcher with
+    `runtime_detection`, and also asserts the worker container never starts
+    after a failed init.
   - `run.sh - a clean launch still reaches the container_run phase (Issue
-    #710)` — the new marker does not strand a healthy launch.
+    #710)`
+    — the new marker does not strand a healthy launch.
   - `run.sh - the outcome recorder may read the hostname, so the alert can name
-    the host (Issue #710)` — asserts on the argument list the launcher really
-    handed Deno.
+    the host (Issue #710)`
+    — asserts on the argument list the launcher really handed Deno.
 - `worker/deno/tests/run_ps1_launcher_test.ts` — the same two cases for
   `run.ps1` (skipped visibly without PowerShell; CI runs them).
 - `worker/deno/tests/container_restart_backoff_test.ts`
   - `resolveFailurePhase - volume preparation is its own phase (Issue #710)`.
-  - The "each phase is described in the message" case now covers
-    `volume_init`, so the phase reaches the GitHub report.
+  - The "each phase is described in the message" case now covers `volume_init`,
+    so the phase reaches the GitHub report.
 
 Changed:
 

@@ -7,33 +7,35 @@ produced `<repo>-<issue>-<timestamp>`, so the CLI refused it and exited 0.2 s
 after spawn with `Error: Invalid session ID. Must be a valid UUID.` — before
 reaching a model call. Both planning turns (quorum/draft, then publish) died
 instantly on every run, and only the legacy sessionless "retry with explicit
-prompt" path did any work; the planning issue was then closed as if the
-draft → publish flow had run. Closes #204.
+prompt" path did any work; the planning issue was then closed as if the draft →
+publish flow had run. Closes #204.
 
 Three changes:
 
 1. **`session_resume.ts`** — `generateSessionId()` returns
-   `crypto.randomUUID()`. The repo/issue/timestamp identity already lives in
-   the resume-state file name (`.claude-sessions/resume/<owner>-<repo>-<issue>.json`),
-   so nothing needed it in the session id. `createSessionResumeState()` takes no
-   arguments as a result. New `isValidSessionId()` exports the UUID contract.
+   `crypto.randomUUID()`. The repo/issue/timestamp identity already lives in the
+   resume-state file name
+   (`.claude-sessions/resume/<owner>-<repo>-<issue>.json`), so nothing needed it
+   in the session id. `createSessionResumeState()` takes no arguments as a
+   result. New `isValidSessionId()` exports the UUID contract.
 2. **`resume_state_store.ts`** — a persisted entry whose `sessionId` is not a
    UUID was written before this fix. `loadResumeState()` drops the id and keeps
    the entry, so the checkpointed branch still resumes but never primes
    `--resume` with an id the CLI will refuse.
-3. **`claude_runner.ts` / `claude_executor.ts`** — new `detectInvalidSessionId()`;
-   `runClaudeWithRetry()` recognises the refusal, drops the session flags and
-   retries once at `WARNING` plus an `INVALID_SESSION_ID` security event.
-   Clearing the state is what bounds the retry: a second refusal has no session
-   flags left to blame and falls through to the ordinary failure path. The run
-   degrades loudly instead of silently losing its structure.
+3. **`claude_runner.ts` / `claude_executor.ts`** — new
+   `detectInvalidSessionId()`; `runClaudeWithRetry()` recognises the refusal,
+   drops the session flags and retries once at `WARNING` plus an
+   `INVALID_SESSION_ID` security event. Clearing the state is what bounds the
+   retry: a second refusal has no session flags left to blame and falls through
+   to the ordinary failure path. The run degrades loudly instead of silently
+   losing its structure.
 
 ### Business-logic change to existing tests (documented, not removed)
 
 `session_resume_test.ts` asserted the old id format
 (`"owner-repo-42-1700000000000"`) — the exact string the CLI rejects. Those
-generation assertions now assert the UUID contract; every other test in the
-file (flags, phase counting, lifecycle) is unchanged. `resume_state_store_test.ts`'s
+generation assertions now assert the UUID contract; every other test in the file
+(flags, phase counting, lifecycle) is unchanged. `resume_state_store_test.ts`'s
 round-trip fixture moved from `"sess-1"` to a UUID for the same reason. No test
 was commented out or deleted.
 
@@ -70,8 +72,8 @@ None touch session resume, the runner, or planning.
 
 - No new external input surface; the new regex is tail-scoped and anchored to
   session-id phrasing so it cannot fire on unrelated failures.
-- The `WARNING` names the rejected session id (a UUID or an already-logged
-  stale id) — no credential, token or path is added to the log.
+- The `WARNING` names the rejected session id (a UUID or an already-logged stale
+  id) — no credential, token or path is added to the log.
 - No secrets, `.config*.json` or hidden files staged.
 
 ## Test Plan

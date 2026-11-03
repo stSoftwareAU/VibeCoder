@@ -27,12 +27,12 @@ change is made in `docs/security-advisory-triage.md`. Closes #4437.
   the lockfile diff afterwards.
 - A moved version that the advisory-clearing version requires and that has no
   release outside the window meeting that requirement (crates or packages
-  published together, such as `arrow-*` with `parquet`, or `@aws-sdk/*`)
-  cannot be held back. It is part of the advisory-clearing change: the agent
-  takes the oldest satisfying release and names it with its age in the
-  `.pr_response_message` reply, so the advisory is not left red until the
-  window passes (PR #4450 review). Only versions with an older satisfying
-  release are held at the floor. The prompt and the triage doc both say so.
+  published together, such as `arrow-*` with `parquet`, or `@aws-sdk/*`) cannot
+  be held back. It is part of the advisory-clearing change: the agent takes the
+  oldest satisfying release and names it with its age in the
+  `.pr_response_message` reply, so the advisory is not left red until the window
+  passes (PR #4450 review). Only versions with an older satisfying release are
+  held at the floor. The prompt and the triage doc both say so.
 - The lockfile diff the prompt gives is `git diff -- '*Cargo.lock' '*deno.lock'`
   from the repository root. Git's `*` in a pathspec matches across `/`, so it
   reads nested lockfiles such as `worker/deno/deno.lock` or `fuzz/Cargo.lock`;
@@ -56,8 +56,8 @@ Prompt-only change; backed by a rendered-prompt test:
 passed, 0 failed. markdownlint-cli2 on the two edited docs: 0 issues.
 
 - CI fix on this PR (commit 8879d45, VibeCoderST): `validate (tests 4/4)` failed
-  because the CI Deno raises "Child process has already terminated." with a
-  full stop, so the kill-after-exit guard in
+  because the CI Deno raises "Child process has already terminated." with a full
+  stop, so the kill-after-exit guard in
   `worker/deno/lib/capability_security_eval_container.ts` (an exact string
   match) let the `TypeError` escape the timeout handler and fail the run. The
   guard is now `isAlreadyTerminatedError`, which accepts both forms and nothing
@@ -76,9 +76,9 @@ passed, 0 failed. markdownlint-cli2 on the two edited docs: 0 issues.
   restored the test fails (9 passed, 1 failed).
 - PR #4450 second review: the same test pins the wildcard lockfile diff in two
   phrases and asserts the root-only `git diff -- Cargo.lock deno.lock` wording
-  is gone. With the pre-fix prompt restored the test fails (0 of 1 passed
-  under `--filter 4437`). Checked by hand that the wildcard pathspec lists a
-  changed `worker/deno/deno.lock` and the bare one lists nothing.
+  is gone. With the pre-fix prompt restored the test fails (0 of 1 passed under
+  `--filter 4437`). Checked by hand that the wildcard pathspec lists a changed
+  `worker/deno/deno.lock` and the bare one lists nothing.
 - Existing #1847 tests unchanged and still passing. Related rules checked: the
   #1847 tests in the same file; `CODING-STANDARDS.md` lines ~1986-1989 (CI-fix
   audit deferral) are unaffected.

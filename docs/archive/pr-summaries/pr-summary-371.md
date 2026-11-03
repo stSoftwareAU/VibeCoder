@@ -83,8 +83,8 @@ flowchart LR
   (document absent); the live `CODING-STANDARDS.md` names no generation
   (regression guard); and the rewritten section links to both owning sections.
 - Updated `worker/deno/tests/opus5_prompt_tuning_docs_test.ts` — the test that
-  required `CODING-STANDARDS.md` to *name* the current fallback generation now
-  requires it to *link* to the section that owns the chain. The original
+  required `CODING-STANDARDS.md` to _name_ the current fallback generation now
+  requires it to _link_ to the section that owns the chain. The original
   assertion is superseded, not deleted: its intent (the two documents must not
   drift) is unchanged, and the reason for the change is recorded in a comment
   above the test.

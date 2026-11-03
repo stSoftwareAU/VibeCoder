@@ -23,9 +23,10 @@ marker quoted later in the text has no effect.
 
 ### Essential Design Decisions
 
-- **Only the run-ending reason is marked.** That is `reportBlock(…,
-  countsAsBlockedRun=true)` in `lib/security_fix_gate_retry.ts`, the second
-  block in the same run.
+- **Only the run-ending reason is marked.** That is
+  `reportBlock(…,
+  countsAsBlockedRun=true)` in
+  `lib/security_fix_gate_retry.ts`, the second block in the same run.
 - **The first-block reason in `lib/phases/completion_phase.ts` is not marked.**
   `workOnIssueCompletion` always passes that reason to
   `recoverFromSecurityGateBlock`, which replaces it, so it never ends a run.
@@ -42,8 +43,8 @@ marker quoted later in the text has no effect.
 ### Undiscoverable Facts
 
 - Residual risk: the launch-failure reason also quotes the block comment, so
-  declarations quoted there can still be misread. This trade-off is
-  deliberate, so that a genuine launch fault is never hidden.
+  declarations quoted there can still be misread. This trade-off is deliberate,
+  so that a genuine launch fault is never hidden.
 
 ## Evidence
 
@@ -58,26 +59,29 @@ flowchart TD
 
 Cited issues:
 
-- #3454: Security-fix gate refusals that quote an agent test declaration containing `Error:` are classed worker-crash and auto-filed
-- #3440: fix(worker): classify summary-gate refusals as summary_incomplete, not worker-crash (#3431)
+- #3454: Security-fix gate refusals that quote an agent test declaration
+  containing `Error:` are classed worker-crash and auto-filed
+- #3440: fix(worker): classify summary-gate refusals as summary_incomplete, not
+  worker-crash (#3431)
 - #3431: fix(worker): worker-crash — runs releasing with no PR
-- #1575: A false security-fix gate block costs a whole run (#1385 lost three attempts)
+- #1575: A false security-fix gate block costs a whole run (#1385 lost three
+  attempts)
 
 Docs sweep: section: `docs/security-fix-gate-feedback.md` "The in-run retry
 (Issue #1575)" and "Recognising a false block", `docs/INTERNALS.md` (new
-security-fix gate marker subsection, inserted above the unchanged
-"🩹 Host-fault failure labels release themselves (Issue #2890)" heading),
+security-fix gate marker subsection, inserted above the unchanged "🩹 Host-fault
+failure labels release themselves (Issue #2890)" heading),
 `docs/workflows/issue-processing.md` (new paragraph). Both doc paragraphs and
 the `SECURITY_FIX_GATE_MARKER` JSDoc say that only the run-ending twice-blocked
 report (`reportBlock` with `countsAsBlockedRun` true) is marked, and that the
-completion phase's first-block reason stays unmarked; siblings: `summary_incomplete`, `"summary-incomplete"`,
-`workflow_gate`. Every switch and list that names those siblings in
-`lib/failure_diagnosis.ts` (category union, display union,
-`VALID_FAILURE_CATEGORIES`, the infrastructure, display, diagnosis and
-oneliner switches) now also names `security_fix_gate`.
+completion phase's first-block reason stays unmarked; siblings:
+`summary_incomplete`, `"summary-incomplete"`, `workflow_gate`. Every switch and
+list that names those siblings in `lib/failure_diagnosis.ts` (category union,
+display union, `VALID_FAILURE_CATEGORIES`, the infrastructure, display,
+diagnosis and oneliner switches) now also names `security_fix_gate`.
 
-Related rules checked: none found. This change adds no rule to a prompt
-template or coding standard.
+Related rules checked: none found. This change adds no rule to a prompt template
+or coding standard.
 
 ## Test Plan
 
@@ -86,21 +90,21 @@ template or coding standard.
       `worker/deno/tests/coding_failure_ladder_test.ts`,
       `worker/deno/tests/host_fault_test.ts`,
       `worker/deno/tests/completion_phase_security_gate_retry_test.ts` and
-      `worker/deno/tests/security_fix_gate_retry_test.ts` fail against the
-      base. Targeted run of those six files: 224 passed, 0 failed; fmt, lint
-      and check are clean.
+      `worker/deno/tests/security_fix_gate_retry_test.ts` fail against the base.
+      Targeted run of those six files: 224 passed, 0 failed; fmt, lint and check
+      are clean.
 - [x] Red-checks, each mutation reverted afterwards:
 
-  | Mutation | Result |
-  | --- | --- |
-  | Remove the detector rule | 3 failed |
-  | Change `startsWith` to `includes` | 1 failed (the prefix test) |
-  | Remove the ladder early return | 1 failed |
-  | Remove the classifier early return | 3 failed |
-  | Remove the `host_fault` early return | 1 failed |
-  | Remove the `reportBlock` prefix | test (a) failed |
-  | Make `reportBlock` always mark | test (c) and the existing "a retry that cannot be launched charges no blocked run" failed |
-  | Delete `status: "failure"` from the `reportBlock` return (`lib/security_fix_gate_retry.ts:254`) | 2 failed (the two direct `security_fix_gate_retry_test.ts` tests) |
+  | Mutation                                                                                        | Result                                                                                    |
+  | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+  | Remove the detector rule                                                                        | 3 failed                                                                                  |
+  | Change `startsWith` to `includes`                                                               | 1 failed (the prefix test)                                                                |
+  | Remove the ladder early return                                                                  | 1 failed                                                                                  |
+  | Remove the classifier early return                                                              | 3 failed                                                                                  |
+  | Remove the `host_fault` early return                                                            | 1 failed                                                                                  |
+  | Remove the `reportBlock` prefix                                                                 | test (a) failed                                                                           |
+  | Make `reportBlock` always mark                                                                  | test (c) and the existing "a retry that cannot be launched charges no blocked run" failed |
+  | Delete `status: "failure"` from the `reportBlock` return (`lib/security_fix_gate_retry.ts:254`) | 2 failed (the two direct `security_fix_gate_retry_test.ts` tests)                         |
 
 **Branch outcomes:**
 
@@ -108,12 +112,12 @@ template or coding standard.
   `security_fix_gate`. Reached by
   `worker/deno/tests/failure_diagnosis_test.ts::detectFailureCategory - a marked security-fix gate refusal quoting TypeError and timeout is security_fix_gate (Issue #3454)`.
   Removing the rule turned it red.
-- `worker/deno/lib/failure_diagnosis.ts:324`: marker only quoted inside the
-  text → falls through to the free-text rules. Reached by
+- `worker/deno/lib/failure_diagnosis.ts:324`: marker only quoted inside the text
+  → falls through to the free-text rules. Reached by
   `worker/deno/tests/failure_diagnosis_test.ts::detectFailureCategory - the security-fix gate marker must be a prefix, not merely included (Issue #3454)`.
   Changing it to `includes` turned it red.
-- `worker/deno/lib/coding_failure_ladder.ts:165`, `security_fix_gate`
-  operand → `ladder`. Reached by
+- `worker/deno/lib/coding_failure_ladder.ts:165`, `security_fix_gate` operand →
+  `ladder`. Reached by
   `worker/deno/tests/coding_failure_ladder_test.ts::classifyCodingFailure - a marked security-fix gate refusal quoting a timeout and the cycle deadline earns a normal attempt (Issue #3454)`.
   Removing the operand turned it red. The `summary_incomplete` operand is
   covered by the existing #3431 test.
@@ -124,12 +128,12 @@ template or coding standard.
 - `worker/deno/lib/host_fault.ts:100`: marker prefix → `null`. Reached by
   `worker/deno/tests/host_fault_test.ts::host fault - a marked security-fix gate refusal quoting ENOSPC or a clone failure is never a host fault (Issue #3454)`.
   Removing it turned it red.
-- `worker/deno/lib/security_fix_gate_retry.ts:256`, `countsAsBlockedRun` true
-  → marked reason. Reached by
+- `worker/deno/lib/security_fix_gate_retry.ts:256`, `countsAsBlockedRun` true →
+  marked reason. Reached by
   `worker/deno/tests/completion_phase_security_gate_retry_test.ts::completion - a second block quoting TypeError and timeout is marked as the security-fix gate (Issue #3454)`.
   Dropping the prefix turned it red.
-- `worker/deno/lib/security_fix_gate_retry.ts:256`, `countsAsBlockedRun` false
-  → unmarked reason. Reached by
+- `worker/deno/lib/security_fix_gate_retry.ts:256`, `countsAsBlockedRun` false →
+  unmarked reason. Reached by
   `worker/deno/tests/completion_phase_security_gate_retry_test.ts::completion - a launch failure is not marked as the security-fix gate (Issue #3454)`.
   Marking it always turned it red.
 - `worker/deno/lib/security_fix_gate_retry.ts:254`, the `reportBlock` return
@@ -141,15 +145,14 @@ template or coding standard.
   (which runs only tests that import the mutated module) reaches the line.
   Deleting the property turned both red.
 
-Persisted data: none. `security_fix_gate` is a new category value, and no
-stored record changes shape.
+Persisted data: none. `security_fix_gate` is a new category value, and no stored
+record changes shape.
 
 Quality gate: `./quality.sh` ran for about 20 minutes and was stopped by the
-tool time limit before the full test suite finished. Every stage that
-completed passed: completeness checks, source targets, mermaid,
-markdownlint, semgrep and the release-tag ruleset. The targeted suites for
-every touched file pass (224/0), and fmt, lint and check are clean. CI runs
-the full gate.
+tool time limit before the full test suite finished. Every stage that completed
+passed: completeness checks, source targets, mermaid, markdownlint, semgrep and
+the release-tag ruleset. The targeted suites for every touched file pass
+(224/0), and fmt, lint and check are clean. CI runs the full gate.
 
 <!-- vibe-quality-gate-skipped reason="full ./quality.sh exceeded the tool time limit (stopped after ~20 min); completed stages all passed; targeted tests, fmt, lint and check green" -->
 
@@ -157,5 +160,5 @@ the full gate.
 
 - [x] No secrets or hidden files staged.
 - [x] No new external input, shell, SQL or path surface. The marker is a
-      worker-written constant, and the match is a fixed-prefix `startsWith`
-      with no regex.
+      worker-written constant, and the match is a fixed-prefix `startsWith` with
+      no regex.

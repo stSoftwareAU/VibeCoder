@@ -9,25 +9,24 @@ worker's own Graft index, into target repositories. The index lived in the
 working tree, so each repo's `markdownlint-cli2` globbed its `.md` cards and
 failed the gate. The agent then "fixed" the repo's lint config.
 
-- **Environment fix:** the Graft graph now lives in `<git-dir>/graft`. The
-  path is resolved with `git rev-parse --git-path graft`, so linked worktrees
-  are handled correctly. `build`, `ask` and the MCP server all pass Graft's
-  global `--dir` flag. Linters and globbers never enter the git dir, nothing
-  there can be staged, and the graph survives `git reset --hard` and
-  `git clean -fd`.
+- **Environment fix:** the Graft graph now lives in `<git-dir>/graft`. The path
+  is resolved with `git rev-parse --git-path graft`, so linked worktrees are
+  handled correctly. `build`, `ask` and the MCP server all pass Graft's global
+  `--dir` flag. Linters and globbers never enter the git dir, nothing there can
+  be staged, and the graph survives `git reset --hard` and `git clean -fd`.
 - **Legacy cleanup:** `cleanUpLegacyInTreeGraft` removes a stale in-tree
   `graft/` left by an older worker build. It acts only when the directory is
   real (not a symlink), carries Graft's `wiring.json` and is untracked.
 - **Fail loud:** a failed git-path lookup fails the collection rather than
-  writing into the repo root. `graftMcpServer` refuses an empty graph
-  directory, and `bindGraftRun` withholds the tools with
-  `GRAFT_TOOLS_UNAVAILABLE_MARKER` when an ok result carries no `graphDir`.
+  writing into the repo root. `graftMcpServer` refuses an empty graph directory,
+  and `bindGraftRun` withholds the tools with `GRAFT_TOOLS_UNAVAILABLE_MARKER`
+  when an ok result carries no `graphDir`.
 - **Guidance:** `CODING-STANDARDS.md` and the `issue`, `pr_feedback` and
   `ci_fix` prompts now say: never add worker-local paths to a target repo's
   lint, format or ignore config — report the problem instead.
 - **Docs:** `docs/CONFIGURATION.md` ("Where the graph lives") and the
-  `gitignore_enforcer.ts` doc comment describe the new location. `/graft/`
-  stays in `REQUIRED_GITIGNORE_PATTERNS` as belt and braces for legacy copies.
+  `gitignore_enforcer.ts` doc comment describe the new location. `/graft/` stays
+  in `REQUIRED_GITIGNORE_PATTERNS` as belt and braces for legacy copies.
 
 ## Evidence
 
@@ -53,11 +52,12 @@ Tests in `worker/deno/tests/graft_context_test.ts`:
 - line 749 — a real git repo never leaves an `.md` file in the working tree;
   `git status --porcelain --ignored` is empty. This is the issue's "graft index
   present, lint does not see it" check.
-- line 428 — an empty git-path answer fails rather than writing to the repo root.
+- line 428 — an empty git-path answer fails rather than writing to the repo
+  root.
 - line 688 — a failed git-path lookup fails loud and spawns no graft.
 - line 714 — a linked worktree's absolute git-path answer is used verbatim.
-- lines 859, 898, 933 and 969 — legacy cleanup: removes a stale untracked
-  copy; leaves a tracked, symlinked, or `wiring.json`-less copy alone.
+- lines 859, 898, 933 and 969 — legacy cleanup: removes a stale untracked copy;
+  leaves a tracked, symlinked, or `wiring.json`-less copy alone.
 - lines 1368, 1386 and 1397 — `graftMcpServer` roots at the checkout and graph
   directory, and refuses empty values.
 
@@ -75,17 +75,19 @@ usual).
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - [x] Keep the Graft index out of repo tooling's reach (preferred option:
-  outside the working tree) — reviewer: met
+      outside the working tree) — reviewer: met
 - [x] Add the never-add-worker-local-paths rule to the `issue`, `pr_feedback`
-  and `ci_fix` prompts and `CODING-STANDARDS.md` — reviewer: met
+      and `ci_fix` prompts and `CODING-STANDARDS.md` — reviewer: met
 - [x] A test: with a graft index present, the repo's lint does not see it
-  (`graft_context_test.ts:749`) — reviewer: met
+      (`graft_context_test.ts:749`) — reviewer: met
 - [ ] No new fleet PR adds `graft` to markdownlint config — reviewer: partial —
-  reason: an operational fleet outcome that a diff cannot prove; this PR ships
-  the mechanism (graph outside the working tree, plus the guidance rule)
+      reason: an operational fleet outcome that a diff cannot prove; this PR
+      ships the mechanism (graph outside the working tree, plus the guidance
+      rule)
 - [x] Legacy in-tree `graft/` cleanup — reviewer: unrequested — reason: repos
-  already carrying an in-tree `graft/` from an older build would keep failing
-  lint after the fix ships; the cleanup is conservative and test-covered
+      already carrying an in-tree `graft/` from an older build would keep
+      failing lint after the fix ships; the cleanup is conservative and
+      test-covered
 
 ## Standards Review
 

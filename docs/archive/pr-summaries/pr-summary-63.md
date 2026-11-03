@@ -21,7 +21,8 @@ Closes #63.
   `gate` argument and append two lines to the block:
 
   ```markdown
-  - **Failure-Detection gate:** published 8 · offenders 8 · repaired 6 · still offending 1 · deferred 1
+  - **Failure-Detection gate:** published 8 · offenders 8 · repaired 6 · still
+    offending 1 · deferred 1
   - **Failure-Detection repair:** 1m 4s
   ```
 
@@ -51,7 +52,7 @@ Closes #63.
   Every other caller (grill-me and the phase-parametric callers in
   `phase_run_stats.ts` / `quorum_run_stats.ts` / `issue_run_stats_comment.ts`)
   supplies no gate stats, so their output is byte-for-byte unchanged.
-- **The additions are additive.** The gate lines are appended *after* the
+- **The additions are additive.** The gate lines are appended _after_ the
   existing `Degraded:` line, so every established line keeps its exact shape and
   order and `parsePlanningStatsComment()` is unaffected.
 - **Cross-run aggregate — checked, deliberately not extended.**
@@ -76,7 +77,8 @@ processor test asserts reaches the parent issue:
 - **Served model(s):** `claude-fable-5-20250101`
 - **Planning invocations:** 2
 - **Degraded:** no
-- **Failure-Detection gate:** published 3 · offenders 2 · repaired 1 · still offending 1 · deferred 0
+- **Failure-Detection gate:** published 3 · offenders 2 · repaired 1 · still
+  offending 1 · deferred 0
 - **Failure-Detection repair:** 5ms
 ```
 
@@ -120,36 +122,39 @@ across `planning_processor_test.ts`, `planning_run_stats_test.ts`,
 Added to `worker/deno/tests/planning_run_stats_test.ts`:
 
 - `buildPlanningStatsSection - records the gate counts for a partially repaired
-  run (Issue #63)` — the full counter line plus the formatted repair duration.
+  run (Issue #63)`
+  — the full counter line plus the formatted repair duration.
 - `buildPlanningStatsSection - records explicit zeros when the gate found no
-  offenders (Issue #63)` — the case that catches "only reported when broken".
+  offenders (Issue #63)`
+  — the case that catches "only reported when broken".
 - `buildPlanningStatsSection - omits the gate lines entirely when no gate stats
-  are supplied (Issue #63)` — the additions stay additive for every other
-  caller.
+  are supplied (Issue #63)`
+  — the additions stay additive for every other caller.
 - `buildPlanningStatsSection - reports the gate counts even when no planning
   invocation produced stats (Issue #63)`.
 - `buildDegradationReport - threads the gate counts into the rendered section
-  (Issue #63)` — the field can be populated and still be dropped by the shared
-  orchestration helper.
+  (Issue #63)`
+  — the field can be populated and still be dropped by the shared orchestration
+  helper.
 
 Added to `worker/deno/tests/planning_processor_test.ts`:
 
 - `processIssuePlanning - the Failure-Detection gate counts reach the parent
-  run-stats comment for a partially repaired run (Issue #63)` — three sub-issues
-  published, two offending, the batched repair drafts a section for one only, and
-  the comment posted on the parent carries
-  `published 3 · offenders 2 · repaired 1 · still offending 1 · deferred 0`. This
-  is the case that fails if the counts are populated but silently dropped before
-  they reach the issue.
+  run-stats comment for a partially repaired run (Issue #63)`
+  — three sub-issues published, two offending, the batched repair drafts a
+  section for one only, and the comment posted on the parent carries
+  `published 3 · offenders 2 · repaired 1 · still offending 1 · deferred 0`.
+  This is the case that fails if the counts are populated but silently dropped
+  before they reach the issue.
 
 Modified (documented in a test-modification note beside the case):
 
 - `processIssuePlanning - safety-net skips comment + close when Claude already
-  closed inline (Issue #2465)` — previously asserted the inline-close path posts
-  **zero** comments. That was incidental to the mock Claude result carrying no
-  `runStats`: with no model stats the section rendered empty and
-  `postStatsComment()` had nothing to post. The gate counts are now recorded on
-  every gate path, so this path posts the stats comment even without model stats.
-  The assertion now pins what the test is actually about — no duplicate
-  **summary** comment and no extra close — and additionally pins the gate's
-  explicit zeros reaching the parent.
+  closed inline (Issue #2465)`
+  — previously asserted the inline-close path posts **zero** comments. That was
+  incidental to the mock Claude result carrying no `runStats`: with no model
+  stats the section rendered empty and `postStatsComment()` had nothing to post.
+  The gate counts are now recorded on every gate path, so this path posts the
+  stats comment even without model stats. The assertion now pins what the test
+  is actually about — no duplicate **summary** comment and no extra close — and
+  additionally pins the gate's explicit zeros reaching the parent.

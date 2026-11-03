@@ -18,15 +18,16 @@ and the **same GitHub user** (e.g. stsvcbot) is often shared by many Vibe
 Coders. The worker monitors **all open PRs by that user** — it does not act on
 other users’ PRs. It fixes **spelling** and **quality** (shellcheck, Deno
 quality checks) failures, keeps branches **up to date** with the base (on a
-strict base without a merge queue, only a ready PR is refreshed at a time),
-and resolves **merge conflicts** when it can. **Auto-merge** is
-turned on only when the PR is actually mergeable, and every merge first passes a
-**pre-merge gate** that re-checks CI and branch freshness (a merge-queued default branch is landed by its queue instead). User feedback
-(comments, "Request changes") is also handled: address it, push, mark processed.
-Every comment ends with a pushed fix or a reasoned reply: feedback that turns
-on a product choice gets the agent's decision with the assumption stated, and
-feedback the agent judges wrong gets a rebuttal. The worker never hands a PR
-back to a person and files no follow-up issue for leftover work (Issue #4304).
+strict base without a merge queue, only a ready PR is refreshed at a time), and
+resolves **merge conflicts** when it can. **Auto-merge** is turned on only when
+the PR is actually mergeable, and every merge first passes a **pre-merge gate**
+that re-checks CI and branch freshness (a merge-queued default branch is landed
+by its queue instead). User feedback (comments, "Request changes") is also
+handled: address it, push, mark processed. Every comment ends with a pushed fix
+or a reasoned reply: feedback that turns on a product choice gets the agent's
+decision with the assumption stated, and feedback the agent judges wrong gets a
+rebuttal. The worker never hands a PR back to a person and files no follow-up
+issue for leftover work (Issue #4304).
 
 ```mermaid
 flowchart TD
@@ -85,12 +86,12 @@ monitor the PR — author is sufficient.
 
 - **Triggers (in priority order):** (1) PR feedback — an **open PR authored by
   the configured GitHub user** has unprocessed feedback (comment with thumbs-up
-  or from authorised commenter, or CHANGES_REQUESTED review **from an
-  authorised commenter**). (1.5)
-  Spelling/quality — such a PR has a failed check: **spelling** (a
-  spelling-named check whose failing step is codespell, cspell or typos) or
-  **quality** (e.g. shellcheck, Deno quality checks) — fixed automatically. (1.6) Branch updates — the PR branch is behind base or
-  has merge conflicts. (1.65) Auto-merge — the PR exists but auto-merge is not
+  or from authorised commenter, or CHANGES_REQUESTED review **from an authorised
+  commenter**). (1.5) Spelling/quality — such a PR has a failed check:
+  **spelling** (a spelling-named check whose failing step is codespell, cspell
+  or typos) or **quality** (e.g. shellcheck, Deno quality checks) — fixed
+  automatically. (1.6) Branch updates — the PR branch is behind base or has
+  merge conflicts. (1.65) Auto-merge — the PR exists but auto-merge is not
   enabled (and the PR is mergeable).
 - **Actors:** The worker (one per hostname, often sharing one GitHub user);
   GitHub API; Claude (for feedback and spelling/code fixes).
@@ -112,66 +113,63 @@ monitor the PR — author is sufficient.
   otherwise not mergeable.
 - **Close the issue in the pass that merges its PR** (Issue #2502) — GitHub
   honours `Closes #N` only on a merge into the default branch, so a PR the
-  worker merges into a milestone branch would leave its issue open: claimable
-  by a sibling host, and invisible to milestone completion. When the sweep's
-  own merge lands, it closes the linked issue (from the branch name, else the
-  PR title) in the same pass. The merged-PR close-out sweep remains the
-  backstop for merges the worker did not perform.
+  worker merges into a milestone branch would leave its issue open: claimable by
+  a sibling host, and invisible to milestone completion. When the sweep's own
+  merge lands, it closes the linked issue (from the branch name, else the PR
+  title) in the same pass. The merged-PR close-out sweep remains the backstop
+  for merges the worker did not perform.
 - Feedback is processed once: after handling, comments are marked (e.g. eyes
   reaction), and a review is dismissed once the run retires it so it is not
   picked up again. A review is never dismissed at claim time (Issue #3383) —
   claiming it instead posts a lease-carrying claim comment that keeps other
-  hosts off it while the run is alive; see **A review is dismissed only once
-  the run retires it** below. For a review the dismissal is the **only**
-  retirement marker — a moved PR head no longer is (Issue #2697) — so a
-  dismissal that fails when the run retires the review is logged rather than
-  swallowed.
+  hosts off it while the run is alive; see **A review is dismissed only once the
+  run retires it** below. For a review the dismissal is the **only** retirement
+  marker — a moved PR head no longer is (Issue #2697) — so a dismissal that
+  fails when the run retires the review is logged rather than swallowed.
 
 ## ✅ Happy path
 
 The sub-tasks below are listed in **priority order**, matching the worker's main
-loop in the Deno `run-core` command. Each priority level is checked before the next; the first
-match wins and the loop restarts.
+loop in the Deno `run-core` command. Each priority level is checked before the
+next; the first match wins and the loop restarts.
 
 ### 🔴 Priority 1 — PR feedback
 
-The scan also admits a worker-authored verifier hold (Issue #3798): a
-top-level PR comment whose first line is
-`<!-- vibe-pre-pr-verifier-hold -->` and whose author is in the push-capable
-fleet set. It logs `worker-verifier-hold` as the trust reason. This is the
-exception to skipping the host's own comments; an ordinary own-login comment,
-an inline marker or a marker merely quoted in the body does not qualify.
-A fleet eyes reaction marks the hold processed, as for other comments.
-The PR stays armed for auto-merge throughout (Issue #4291): PRs do not
-merge until they have a review approval and CI is green.
+The scan also admits a worker-authored verifier hold (Issue #3798): a top-level
+PR comment whose first line is `<!-- vibe-pre-pr-verifier-hold -->` and whose
+author is in the push-capable fleet set. It logs `worker-verifier-hold` as the
+trust reason. This is the exception to skipping the host's own comments; an
+ordinary own-login comment, an inline marker or a marker merely quoted in the
+body does not qualify. A fleet eyes reaction marks the hold processed, as for
+other comments. The PR stays armed for auto-merge throughout (Issue #4291): PRs
+do not merge until they have a review approval and CI is green.
 
 1. **Discover** — Find an open PR by this user that has unprocessed feedback
    (comment with thumbs-up or from authorised commenter, or CHANGES_REQUESTED
-   review). A review body goes straight into the feedback prompt, so — like a
-   PR comment — it is only actioned when its author is an **authorised
-   commenter**; an unauthorised reviewer's `CHANGES_REQUESTED` body is skipped
-   with a `UNAUTHORISED_REVIEW_SKIPPED` security log (Issue #185).
-   A comment a **sibling fleet host has already pushed against** is not
-   claimed: if a fleet author pushed to the PR after the comment was written,
-   and that push is less than 15 minutes old, the comment is left for the next
-   scan to re-evaluate (Issue #211). The window is a de-duplication guard, not
-   a veto — an older fleet push never suppresses feedback permanently.
-   A `CHANGES_REQUESTED` review stays **outstanding after the PR head moves**
-   (Issue #2697): Priorities 1.6 and 1.65 update the branch *before* PR
-   feedback runs, and a rebase or merge-from-base does not address anything.
-   The scan reads every page of reviews, takes each reviewer's **latest**
-   submitted review (drafts and `COMMENTED` reviews do not count — GitHub
-   never lets a Comment review clear a change request),
-   and acts only where that latest review still requests changes — one entry
-   per reviewer. A request is retired by its dismissal (the processed marker)
-   or by the same reviewer's later `APPROVED` or `CHANGES_REQUESTED` review;
-   every change request it skips is logged at INFO with the reason.
-   Of those still outstanding, no commit retires a review (Issue #4510): not a
-   fleet fix or CI-fix commit, not a base merge, not a bot's formatting or
-   version bump, and not a head move. No commit history is read for reviews.
-   A review already covered by a **live, fleet-authored claim lease**
-   (Issue #3383) is skipped too — not yet dismissed, just claimed by a run
-   still in flight; a lapsed lease (the run timed out, crashed or went
+   review). A review body goes straight into the feedback prompt, so — like a PR
+   comment — it is only actioned when its author is an **authorised commenter**;
+   an unauthorised reviewer's `CHANGES_REQUESTED` body is skipped with a
+   `UNAUTHORISED_REVIEW_SKIPPED` security log (Issue #185). A comment a
+   **sibling fleet host has already pushed against** is not claimed: if a fleet
+   author pushed to the PR after the comment was written, and that push is less
+   than 15 minutes old, the comment is left for the next scan to re-evaluate
+   (Issue #211). The window is a de-duplication guard, not a veto — an older
+   fleet push never suppresses feedback permanently. A `CHANGES_REQUESTED`
+   review stays **outstanding after the PR head moves** (Issue #2697):
+   Priorities 1.6 and 1.65 update the branch _before_ PR feedback runs, and a
+   rebase or merge-from-base does not address anything. The scan reads every
+   page of reviews, takes each reviewer's **latest** submitted review (drafts
+   and `COMMENTED` reviews do not count — GitHub never lets a Comment review
+   clear a change request), and acts only where that latest review still
+   requests changes — one entry per reviewer. A request is retired by its
+   dismissal (the processed marker) or by the same reviewer's later `APPROVED`
+   or `CHANGES_REQUESTED` review; every change request it skips is logged at
+   INFO with the reason. Of those still outstanding, no commit retires a review
+   (Issue #4510): not a fleet fix or CI-fix commit, not a base merge, not a
+   bot's formatting or version bump, and not a head move. No commit history is
+   read for reviews. A review already covered by a **live, fleet-authored claim
+   lease** (Issue #3383) is skipped too — not yet dismissed, just claimed by a
+   run still in flight; a lapsed lease (the run timed out, crashed or went
    silent) makes the review actionable again.
 
    ```mermaid
@@ -187,19 +185,20 @@ merge until they have a review approval and CI is green.
    ```
 2. **Checkout** — Checkout the PR branch in the target repo.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
-   reply; run the **drift check** (see [The worker's drift check (Issue
-   #3143)](#the-workers-drift-check-issue-3143) below); commit and push.
-4. **Mark processed** — For a comment, add the eyes reaction so it is not
-   picked again. The claim adds that reaction *before* it verifies the
-   claim, to narrow the race window, so it **takes the reaction back** whenever
-   the claim ends with no winner — a failed verification read, or a re-read
-   that cannot see this host's own claim (Issue #2269). A marker left on a
-   comment nobody claimed is feedback no host would ever rediscover; when the
-   claim is genuinely lost, the marker stands because the winner answers it.
-   For a review, nothing is marked at claim time — no reaction is ever made
-   for a review, since a review has no reactions endpoint of its own. The
-   review is dismissed only once the run retires it (see **A review is
-   dismissed only once the run retires it** below).
+   reply; run the **drift check** (see
+   [The worker's drift check (Issue #3143)](#the-workers-drift-check-issue-3143)
+   below); commit and push.
+4. **Mark processed** — For a comment, add the eyes reaction so it is not picked
+   again. The claim adds that reaction _before_ it verifies the claim, to narrow
+   the race window, so it **takes the reaction back** whenever the claim ends
+   with no winner — a failed verification read, or a re-read that cannot see
+   this host's own claim (Issue #2269). A marker left on a comment nobody
+   claimed is feedback no host would ever rediscover; when the claim is
+   genuinely lost, the marker stands because the winner answers it. For a
+   review, nothing is marked at claim time — no reaction is ever made for a
+   review, since a review has no reactions endpoint of its own. The review is
+   dismissed only once the run retires it (see **A review is dismissed only once
+   the run retires it** below).
 
 #### Every finding ends fixed or rebutted (Issue #2917)
 
@@ -207,141 +206,134 @@ The pr_feedback prompt closes every finding in a `CHANGES_REQUESTED` review one
 of two ways: **fixed** in a commit pushed to the PR branch, or **rebutted** as a
 false positive with the reason recorded in `.pr_response_message`. Recording a
 finding in the PR summary as a "known limitation", "follow-up" or "open
-violation" is not a resolution — the next review raises it again. There is
-no other exit: no finding is handed to a person or to a follow-up issue
-(Issue #4304). When a finding is fixed, the PR summary text that
-recorded it as a limitation is deleted in the same push, so the summary stays
-true to the head (per the existing "keep the PR summary true to the head"
-rule). After a verified push to the PR's own head, the worker re-syncs the
-description from `pr-summary-<N>.md` when the summary at the head differs
-from the SHA-256 digest recorded in the body's hidden marker (the digest is
-of the summary alone, Issue #4234) — whichever push
-changed it, this run's or an earlier one. A pr_feedback run also re-syncs
-when it pushed nothing and has no commits left unpushed, so a run that
-answers a finding without a push still refreshes a stale body (Issue #3315).
-A body raised before the digest marker existed keeps the older rule:
-rebuilt only when this run's own push changed the summary file. Fix branches
-for a gated milestone head are skipped, and only a worker-authored PR is
-edited. A failed sync is logged once at warning and does not fail the run
-(Issue #3089). A description written outside the worker (no
-`vibe-worker-issue-N` marker, on a branch other than the run's own
-`issue-<N>-…` branch) is never rebuilt; the prompt tells the agent to update
-it with `gh pr edit <n> --body-file <file>` and name that in
-`.pr_response_message` (Issue #4515).
+violation" is not a resolution — the next review raises it again. There is no
+other exit: no finding is handed to a person or to a follow-up issue (Issue
+#4304). When a finding is fixed, the PR summary text that recorded it as a
+limitation is deleted in the same push, so the summary stays true to the head
+(per the existing "keep the PR summary true to the head" rule). After a verified
+push to the PR's own head, the worker re-syncs the description from
+`pr-summary-<N>.md` when the summary at the head differs from the SHA-256 digest
+recorded in the body's hidden marker (the digest is of the summary alone, Issue
+#4234) — whichever push changed it, this run's or an earlier one. A pr_feedback
+run also re-syncs when it pushed nothing and has no commits left unpushed, so a
+run that answers a finding without a push still refreshes a stale body (Issue
+#3315). A body raised before the digest marker existed keeps the older rule:
+rebuilt only when this run's own push changed the summary file. Fix branches for
+a gated milestone head are skipped, and only a worker-authored PR is edited. A
+failed sync is logged once at warning and does not fail the run (Issue #3089). A
+description written outside the worker (no `vibe-worker-issue-N` marker, on a
+branch other than the run's own `issue-<N>-…` branch) is never rebuilt; the
+prompt tells the agent to update it with `gh pr edit <n> --body-file <file>` and
+name that in `.pr_response_message` (Issue #4515).
 
 **Priority 1.64 — Reconcile PR Body Digests** (Issue #3760) covers pushes the
 worker did not make. The re-sync above runs only on the worker's own runs (PR
 feedback, CI fix and merge conflict, after their push; a PR-feedback run that
 pushed nothing also runs it, Issue #3315), so a review-fix commit pushed by
-hand, from a laptop or an interactive Claude Code session, never reaches it:
-the live description stayed on the old summary until some later worker push.
-Each cycle the pass lists the open fleet-authored PRs (the push-capable
-maintenance author set) in the repos due that cycle (`pollRepos`). A listing
-entry with no body (the fleet prefetch's cached maintenance entries carry none)
-is first fetched with `gh pr view <n> --json body,headRefOid`; a failure there
-is logged at warning naming the cause, as for a contents read failure, and the
-body is left unchanged. For a PR whose body carries both the worker marker and
-the `vibe-pr-summary sha256` digest marker, it reads `pr-summary-<N>.md`
-(falling back to the legacy `docs/pr-summary-<N>.md`) at the PR's head
-commit through the contents API
-(`gh api repos/{repo}/contents/<path>?ref=<head>`), with no checkout, and
-computes the same digest the body records. The digest is of the summary
-alone (Issue #4234). When the digest matches, nothing is
-edited and nothing is logged. The match is memoised per PR, keyed on the head
-SHA and the recorded digest, and reused only while both are unchanged, so later
-cycles make no contents calls for that PR; an entry is pruned once the PR is no
-longer listed. When it differs, the pass logs that it is
-rebuilding, fetches the PR head into a disposable shallow clone in a temporary
-directory, runs the same `syncPrBodyFromSummary` rebuild there, and then deletes
-the clone. Every part of that rebuild applies unchanged: the milestone section,
-the bump
-note, the footer markers, and the head check against the PR's current
-`headRefOid`, so a head that moved since the listing is skipped. A body with no
-digest marker (raised before Issue #3315) is skipped, and the older
-before-push-SHA rule on the worker's own pushes still covers it. A contents read
-failure other than a missing file is logged at warning naming the cause, and the
-body is left as it is; a missing summary is skipped. The pass is a deferrable
-fixed-cost sweep: it stands down while the GraphQL budget is in its reserve
-(Issue #2449). It never claims an issue, and because it never touches the shared
-clone it does not run in the maintenance lane. The module is
-`worker/deno/lib/pr_body_reconcile.ts`, and the entry point is
-`reconcilePrBodyDigests`.
+hand, from a laptop or an interactive Claude Code session, never reaches it: the
+live description stayed on the old summary until some later worker push. Each
+cycle the pass lists the open fleet-authored PRs (the push-capable maintenance
+author set) in the repos due that cycle (`pollRepos`). A listing entry with no
+body (the fleet prefetch's cached maintenance entries carry none) is first
+fetched with `gh pr view <n> --json body,headRefOid`; a failure there is logged
+at warning naming the cause, as for a contents read failure, and the body is
+left unchanged. For a PR whose body carries both the worker marker and the
+`vibe-pr-summary sha256` digest marker, it reads `pr-summary-<N>.md` (falling
+back to the legacy `docs/pr-summary-<N>.md`) at the PR's head commit through the
+contents API (`gh api repos/{repo}/contents/<path>?ref=<head>`), with no
+checkout, and computes the same digest the body records. The digest is of the
+summary alone (Issue #4234). When the digest matches, nothing is edited and
+nothing is logged. The match is memoised per PR, keyed on the head SHA and the
+recorded digest, and reused only while both are unchanged, so later cycles make
+no contents calls for that PR; an entry is pruned once the PR is no longer
+listed. When it differs, the pass logs that it is rebuilding, fetches the PR
+head into a disposable shallow clone in a temporary directory, runs the same
+`syncPrBodyFromSummary` rebuild there, and then deletes the clone. Every part of
+that rebuild applies unchanged: the milestone section, the bump note, the footer
+markers, and the head check against the PR's current `headRefOid`, so a head
+that moved since the listing is skipped. A body with no digest marker (raised
+before Issue #3315) is skipped, and the older before-push-SHA rule on the
+worker's own pushes still covers it. A contents read failure other than a
+missing file is logged at warning naming the cause, and the body is left as it
+is; a missing summary is skipped. The pass is a deferrable fixed-cost sweep: it
+stands down while the GraphQL budget is in its reserve (Issue #2449). It never
+claims an issue, and because it never touches the shared clone it does not run
+in the maintenance lane. The module is `worker/deno/lib/pr_body_reconcile.ts`,
+and the entry point is `reconcilePrBodyDigests`.
 
 A re-sync never files a follow-up issue (Issue #4146): a criterion still
 `partial` or `missing` is named on the PR at completion instead (Issue #4234).
 
 Writing `Refs #N` in the summary does not stop the rebuilt description from
 closing the issue, since the rebuild appends `Closes #N` unless a closing
-keyword is already present; marking each unmet acceptance criterion `missing`
-is the way to keep the PR open against the issue instead (Issue #3315).
+keyword is already present; marking each unmet acceptance criterion `missing` is
+the way to keep the PR open against the issue instead (Issue #3315).
 
-Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
-<branch>`, and confirms `origin/<branch>` contains every cited fix commit
-(`git merge-base --is-ancestor`). A fix that exists only in the local worktree
-is never reported as "addressed"; if the push fails, the reply says so and
-names the finding as still open rather than claiming a fix origin does not
+Before writing `.pr_response_message`, the agent pushes, runs
+`git fetch origin
+<branch>`, and confirms `origin/<branch>` contains every cited
+fix commit (`git merge-base --is-ancestor`). A fix that exists only in the local
+worktree is never reported as "addressed"; if the push fails, the reply says so
+and names the finding as still open rather than claiming a fix origin does not
 have. This complements the worker's own final-mile push verification described
-in **The final mile** below, which re-checks the push at the git level after
-the agent runs.
+in **The final mile** below, which re-checks the push at the git level after the
+agent runs.
 
 #### Answer every ask in a finding (Issue #3348)
 
-A change-request finding often carries several asks: lettered parts, "also",
-"as well as", "the same way", a second input or path, or a request to record
+A change-request finding often carries several asks: lettered parts, "also", "as
+well as", "the same way", a second input or path, or a request to record
 observed output in the PR summary alongside a code change. The pr_feedback
-prompt has the agent break each finding into its asks before changing
-anything, and list them under the finding in `.pr_response_message`, each with
-the commit, test or line that settles it or a rebuttal with evidence. Before
-replying, the agent counts the asks it listed against the sentences in the
-finding's **Fix** that request something. An ask with neither a fix nor a
-rebuttal leaves the finding partly fixed, so it does not count as **fixed**
-under **Every finding ends fixed or rebutted** above. Fixing the main ask and
-skipping the rest sent VibeCoder#3312, VibeCoder#3318 and GRQ-AutoTrader#2699
-back for another round ("one part of the earlier review is still not done").
-This complements **Fix the defect everywhere it lives** below, which finds
-instances the finding did not name; this rule covers the parts it did name.
+prompt has the agent break each finding into its asks before changing anything,
+and list them under the finding in `.pr_response_message`, each with the commit,
+test or line that settles it or a rebuttal with evidence. Before replying, the
+agent counts the asks it listed against the sentences in the finding's **Fix**
+that request something. An ask with neither a fix nor a rebuttal leaves the
+finding partly fixed, so it does not count as **fixed** under **Every finding
+ends fixed or rebutted** above. Fixing the main ask and skipping the rest sent
+VibeCoder#3312, VibeCoder#3318 and GRQ-AutoTrader#2699 back for another round
+("one part of the earlier review is still not done"). This complements **Fix the
+defect everywhere it lives** below, which finds instances the finding did not
+name; this rule covers the parts it did name.
 
 #### A request-changes review is never answered with "no change" (Issue #3246)
 
 A claimed `CHANGES_REQUESTED` review (`commentType: "pr_review"`) is dismissed
-only once the run retires it (Issue #3383; see **A review is dismissed only
-once the run retires it** below) — but a run that ends with nothing to show
-for it, and no rebuttal either, still has to end somewhere, or the review
-would be retried for ever with no record that anything was ever tried. The
-worker (`worker/deno/lib/pr_feedback_processor.ts`, with the decision
-helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) retries it
-once more, then redoes the work — it never hands the PR to a human
-(Issue #4304):
+only once the run retires it (Issue #3383; see **A review is dismissed only once
+the run retires it** below) — but a run that ends with nothing to show for it,
+and no rebuttal either, still has to end somewhere, or the review would be
+retried for ever with no record that anything was ever tried. The worker
+(`worker/deno/lib/pr_feedback_processor.ts`, with the decision helpers in
+`worker/deno/lib/pr_feedback_reviewer_no_change.ts`) retries it once more, then
+redoes the work — it never hands the PR to a human (Issue #4304):
 
 - If the run leaves no commit, no working-tree change and no
-  `.pr_response_message`, the worker re-runs the agent once, in the same
-  run, on the same review, with a note appended to the prompt. If the
-  worker cannot tell whether the run left anything — a git read failed — it
-  does not re-run.
+  `.pr_response_message`, the worker re-runs the agent once, in the same run, on
+  the same review, with a note appended to the prompt. If the worker cannot tell
+  whether the run left anything — a git read failed — it does not re-run.
 - After the run (or runs): if no fix was pushed and the agent wrote a
-  `.pr_response_message`, that message is posted as the reply — the
-  rebuttal — never the neutral "could not identify a code change" reply.
-- If no fix was pushed and there is no `.pr_response_message`, the worker
-  posts no neutral reply either. The first time, it charges a failed
-  attempt — the "First Attempt" reply below, naming the review id, the
-  number of runs and the last run's exit code and duration — and leaves the
-  review outstanding, so the next cycle retries it.
+  `.pr_response_message`, that message is posted as the reply — the rebuttal —
+  never the neutral "could not identify a code change" reply.
+- If no fix was pushed and there is no `.pr_response_message`, the worker posts
+  no neutral reply either. The first time, it charges a failed attempt — the
+  "First Attempt" reply below, naming the review id, the number of runs and the
+  last run's exit code and duration — and leaves the review outstanding, so the
+  next cycle retries it.
 - A review that already carries the fleet's failed-once marker and is still
   unanswered closes the PR and re-queues its originating issue through
-  `abandonAndRestart` (`worker/deno/lib/conflict_abandon_restart.ts`), the
-  rung the stall-repair pass uses. The issue keeps its own pickup label or
-  gets `idle-task`. A declined or failed abandon leaves the review
-  outstanding for the next cycle; nothing is charged a second time.
-- At most `MAX_REVIEWER_NO_CHANGE_ATTEMPTS` (2) agent runs are made for a
-  single claimed review.
+  `abandonAndRestart` (`worker/deno/lib/conflict_abandon_restart.ts`), the rung
+  the stall-repair pass uses. The issue keeps its own pickup label or gets
+  `idle-task`. A declined or failed abandon leaves the review outstanding for
+  the next cycle; nothing is charged a second time.
+- At most `MAX_REVIEWER_NO_CHANGE_ATTEMPTS` (2) agent runs are made for a single
+  claimed review.
 
-This only changes behaviour for a claimed request-changes review. A
-no-change run against an inline review comment or a top-level PR comment
-posts the agent's own `.pr_response_message` — its reasoned account of why
-the code is already correct — and only a run that wrote nothing gets the
-stock "could not identify a code change" reply. Neither ever asks the reviewer to clarify
-(Issue #4304; GRQ-AutoTrader#4261 was asked "Please clarify if a change is
-required.").
+This only changes behaviour for a claimed request-changes review. A no-change
+run against an inline review comment or a top-level PR comment posts the agent's
+own `.pr_response_message` — its reasoned account of why the code is already
+correct — and only a run that wrote nothing gets the stock "could not identify a
+code change" reply. Neither ever asks the reviewer to clarify (Issue #4304;
+GRQ-AutoTrader#4261 was asked "Please clarify if a change is required.").
 
 ```mermaid
 flowchart TD
@@ -361,28 +353,27 @@ flowchart TD
 
 #### A review is dismissed only once the run retires it (Issue #3383)
 
-Claiming a `CHANGES_REQUESTED` review used to dismiss it immediately
-(Issue #2697), which made the claim irreversible before any work happened —
-a run that died mid-flight left the review dismissed with nobody having
-answered it. The claim comment (`PR_COMMENT_CLAIM`) on a review now carries a
-lease line (`PR_COMMENT_CLAIM_LEASE:<time>`) instead: the processor renews it
-from its own heartbeat every 5 minutes (renewing edits the comment, which
-bumps GitHub's `updated_at`), and the lease is live while its last renewal is
-within 15 minutes — the fleet's heartbeat live window. The scan skips a
-review a live, fleet-authored lease covers; a lapsed lease (the run timed
-out, crashed or went silent) makes the review actionable again, and the
-stale sweep deletes only lapsed leases. Other comment types are unaffected:
-they still get the eyes reaction at claim time and keep the 60-second claim
-rule.
+Claiming a `CHANGES_REQUESTED` review used to dismiss it immediately (Issue
+#2697), which made the claim irreversible before any work happened — a run that
+died mid-flight left the review dismissed with nobody having answered it. The
+claim comment (`PR_COMMENT_CLAIM`) on a review now carries a lease line
+(`PR_COMMENT_CLAIM_LEASE:<time>`) instead: the processor renews it from its own
+heartbeat every 5 minutes (renewing edits the comment, which bumps GitHub's
+`updated_at`), and the lease is live while its last renewal is within 15 minutes
+— the fleet's heartbeat live window. The scan skips a review a live,
+fleet-authored lease covers; a lapsed lease (the run timed out, crashed or went
+silent) makes the review actionable again, and the stale sweep deletes only
+lapsed leases. Other comment types are unaffected: they still get the eyes
+reaction at claim time and keep the 60-second claim rule.
 
-The review is dismissed only when the run **retires** it: a fix verified on
-the remote, the agent's rebuttal posted, the escape-hatch hand-off, or the
-second failure below. Each of those first three outcomes also requires its
-own announcement to have actually reached the PR — the push-success reply,
-the rebuttal, or the escape-hatch reply. A `gh` call that fails to post that
-announcement charges a failed attempt instead of dismissing a review nothing
-was said about (Issue #3408 review). Any other outcome — an agent error (other
-than a host-disk fault, which is released without a charge; Issue #4511, see
+The review is dismissed only when the run **retires** it: a fix verified on the
+remote, the agent's rebuttal posted, the escape-hatch hand-off, or the second
+failure below. Each of those first three outcomes also requires its own
+announcement to have actually reached the PR — the push-success reply, the
+rebuttal, or the escape-hatch reply. A `gh` call that fails to post that
+announcement charges a failed attempt instead of dismissing a review nothing was
+said about (Issue #3408 review). Any other outcome — an agent error (other than
+a host-disk fault, which is released without a charge; Issue #4511, see
 `docs/CONTAINER.md`), a timeout, a push that never lands on the remote, a fix
 pushed to a gated head's fix branch whose PR could not be raised (retried next
 cycle, since `raiseMilestoneFixPr` reuses an open fix PR), no fix and no
@@ -393,23 +384,23 @@ failure — is charged as a failed attempt instead (Issue #4304):
   `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker and leaves the review
   undismissed, so it still requests changes and is retried once its lease
   lapses.
-- The **second** failure (the marker found, fleet-authored) dismisses the
-  review with a "Permanently Failed" reply.
+- The **second** failure (the marker found, fleet-authored) dismisses the review
+  with a "Permanently Failed" reply.
 
 The dismissal message GitHub shows on the review states the outcome, so a
 dismissed review is never mislabelled as addressed (Issue #3409). Only a
-verified pushed fix says "Changes have been addressed by the automated
-worker."; a rebuttal says no code change was made, a hand-off says it was
-handed off to a follow-up issue, and the second failure says it was not
-addressed after two automated attempts.
+verified pushed fix says "Changes have been addressed by the automated worker.";
+a rebuttal says no code change was made, a hand-off says it was handed off to a
+follow-up issue, and the second failure says it was not addressed after two
+automated attempts.
 
-No reaction is ever made for a review — a review has no reactions endpoint
-of its own; the old code reacted on `issues/comments/<reviewId>`, the wrong
-resource. A branch the host could not check out (held by another worktree,
-or a checkout failure) releases the review **uncharged**, with no reply, so
-it is not counted as an attempt. Because the review stays
-`CHANGES_REQUESTED` until it is retired, the #2702 no-update-branch-while-
-changes-requested guard keeps applying while a fix is pending.
+No reaction is ever made for a review — a review has no reactions endpoint of
+its own; the old code reacted on `issues/comments/<reviewId>`, the wrong
+resource. A branch the host could not check out (held by another worktree, or a
+checkout failure) releases the review **uncharged**, with no reply, so it is not
+counted as an attempt. Because the review stays `CHANGES_REQUESTED` until it is
+retired, the #2702 no-update-branch-while- changes-requested guard keeps
+applying while a fix is pending.
 
 ```mermaid
 stateDiagram-v2
@@ -425,36 +416,34 @@ stateDiagram-v2
 
 #### Fix the defect everywhere it lives (Issues #3086, #3114)
 
-A finding's file, line, repro and suggested fix are one example of a defect,
-not its full extent. The pr_feedback prompt tells the agent to fix the
-outcome the finding protects — "the issue stays open", say, or "no surface
-says the worker does not scrub" — and, before committing, to grep for every
-other place that can break it: other code paths into the same state (retries,
-timers, other callers) and other copies of the same claim or value (the PR
-title as well as the body, the archived PR summary, other docs, code
-comments). Fleet review fixes used to patch only the named spot and leave the
-same defect on another path or copy (GRQ-AutoTrader#2279, #2227,
-VibeCoder#3071). Those other instances count as "what is needed to resolve"
-the finding under the prompt's Change Scope rule, so fixing them is not scope
-creep. Where a finding gave a repro, the agent also tries its obvious
-variants and adds a test for each path that differs, and
+A finding's file, line, repro and suggested fix are one example of a defect, not
+its full extent. The pr_feedback prompt tells the agent to fix the outcome the
+finding protects — "the issue stays open", say, or "no surface says the worker
+does not scrub" — and, before committing, to grep for every other place that can
+break it: other code paths into the same state (retries, timers, other callers)
+and other copies of the same claim or value (the PR title as well as the body,
+the archived PR summary, other docs, code comments). Fleet review fixes used to
+patch only the named spot and leave the same defect on another path or copy
+(GRQ-AutoTrader#2279, #2227, VibeCoder#3071). Those other instances count as
+"what is needed to resolve" the finding under the prompt's Change Scope rule, so
+fixing them is not scope creep. Where a finding gave a repro, the agent also
+tries its obvious variants and adds a test for each path that differs, and
 `.pr_response_message` names, per finding, the other paths and copies it
 checked.
 
-Issue #3114 widened the rule from paths and copies to the whole defect
-class. A finding's locations are examples, not the list: before
-committing, the agent states the defect as a class — the false claim, the
-missing guard or rule, the uncovered order of a race, the stale clock —
-and finds every instance of it in the head. That covers every caller or
-builder of the same shape, test names as well as code comments and docs,
-each order of the parties to a race and every window between their
-steps, and every later iteration of a loop that reads a time budget.
-Each instance is fixed or rebutted with the reason, and
-`.pr_response_message` says what was searched and which other instances
-were fixed. Re-reviews had kept raising findings as "only partly fixed"
-because the fix stopped at the named locations (VibeCoder#3066, #3068, #3065,
-GRQ-AutoTrader#2210, #2220); another instance of the class left in the
-head is now a blocking self-review finding.
+Issue #3114 widened the rule from paths and copies to the whole defect class. A
+finding's locations are examples, not the list: before committing, the agent
+states the defect as a class — the false claim, the missing guard or rule, the
+uncovered order of a race, the stale clock — and finds every instance of it in
+the head. That covers every caller or builder of the same shape, test names as
+well as code comments and docs, each order of the parties to a race and every
+window between their steps, and every later iteration of a loop that reads a
+time budget. Each instance is fixed or rebutted with the reason, and
+`.pr_response_message` says what was searched and which other instances were
+fixed. Re-reviews had kept raising findings as "only partly fixed" because the
+fix stopped at the named locations (VibeCoder#3066, #3068, #3065,
+GRQ-AutoTrader#2210, #2220); another instance of the class left in the head is
+now a blocking self-review finding.
 
 #### Verify the description that will be published (Issue #3982)
 
@@ -476,145 +465,138 @@ labels the PR nor disarms auto-merge (Issue #4291).
 
 A review fix that adds, removes or renames a test changes the archived PR
 summary's Test Plan, even when nothing else in the summary moves. The
-pr_feedback prompt's "keep the PR summary true to the head" rule tells the
-agent to recount from the head: the list of tests, every per-file test count
-and every quoted total ("N tests", "N passed", "N pinned phrases"),
-re-running the commands the summary cites on the final head so the figures
-are that run's. A number is never carried over from the earlier iteration.
-Review-fix heads had edited the summary in the same push yet left a stale
-count or test list (VibeCoder#3075, #3105, #3108). The PR-body sync
-(Issue #3089) copies such a count faithfully, so the recount has to land
-in the summary file itself. The prose rule asks the agent to recount; the
-worker now recounts it too — see **The worker's drift check (Issue #3143)**
-below.
+pr_feedback prompt's "keep the PR summary true to the head" rule tells the agent
+to recount from the head: the list of tests, every per-file test count and every
+quoted total ("N tests", "N passed", "N pinned phrases"), re-running the
+commands the summary cites on the final head so the figures are that run's. A
+number is never carried over from the earlier iteration. Review-fix heads had
+edited the summary in the same push yet left a stale count or test list
+(VibeCoder#3075, #3105, #3108). The PR-body sync (Issue #3089) copies such a
+count faithfully, so the recount has to land in the summary file itself. The
+prose rule asks the agent to recount; the worker now recounts it too — see **The
+worker's drift check (Issue #3143)** below.
 
-A red-on-base result is recounted the same way (Issue #3381): when the
-push adds, removes or changes a test, the head test file is re-run against
-the base branch's production code and the earlier passed and failed
-figures and failing-test list are replaced, not left beside a second
-block. A run against the PR's own earlier commit is not "red on base" and,
-if kept, is labelled with that commit. Review fixes had left a first
-round's "77 passed, 2 failed" from a 79-test file standing after the file
-grew to 80 tests (VibeCoder#3372), and a "0 passed, 3 failed" after the
-file grew to five tests (VibeCoder#3066).
+A red-on-base result is recounted the same way (Issue #3381): when the push
+adds, removes or changes a test, the head test file is re-run against the base
+branch's production code and the earlier passed and failed figures and
+failing-test list are replaced, not left beside a second block. A run against
+the PR's own earlier commit is not "red on base" and, if kept, is labelled with
+that commit. Review fixes had left a first round's "77 passed, 2 failed" from a
+79-test file standing after the file grew to 80 tests (VibeCoder#3372), and a "0
+passed, 3 failed" after the file grew to five tests (VibeCoder#3066).
 
 #### The worker's drift check (Issue #3143)
 
 The prose rules above (Issues #3114, #3117, #3120) ask the agent to keep the
 summary, docs and Test Plan honest, but a fix push still landed with the
-summary, a manual or a prompt describing the **old** behaviour
-(VibeCoder#3134, #3095, #3132). After the agent's turn — and after the
-existing result-placeholder reply retry (Issue #3124) — and before the
-comment is marked processed and the worker's own final-mile commit-and-push,
-the worker runs a **drift check** on the push itself: the working-tree diff
-against the branch head captured before the agent ran, plus any untracked
-files. The check is skipped when there is no before-run head, or the push
-changed nothing.
+summary, a manual or a prompt describing the **old** behaviour (VibeCoder#3134,
+#3095, #3132). After the agent's turn — and after the existing
+result-placeholder reply retry (Issue #3124) — and before the comment is marked
+processed and the worker's own final-mile commit-and-push, the worker runs a
+**drift check** on the push itself: the working-tree diff against the branch
+head captured before the agent ran, plus any untracked files. The check is
+skipped when there is no before-run head, or the push changed nothing.
 
 Six checks run, each only when it applies:
 
-1. **Model drift pass** — only when the push changes a code file, a test
-   file, a recognised source file (`isProseSourcePath`, including source under
-   `docs/`), or a manual or prompt Markdown file (`isManualProsePath`); a push that
+1. **Model drift pass** — only when the push changes a code file, a test file, a
+   recognised source file (`isProseSourcePath`, including source under `docs/`),
+   or a manual or prompt Markdown file (`isManualProsePath`); a push that
    changes only the PR summary or non-Markdown docs gets no model pass. A
-   read-only question (file-writing, sub-agent, web and plan-mode tools
-   denied, the same list as the closure-verdict question) is asked over the
-   PR summary and every doc/prompt/README the PR diff touches against its
-   base (capped at 40 files): list every sentence the change makes false or
-   leaves incomplete, quoted verbatim. The change request this push answers
-   (the review or comment body, carried as the agent's own prompt) is fenced
-   into the question as untrusted text; when it quotes a sentence from the PR
-   summary, a doc or the PR body, the question asks the model to confirm
-   that sentence has been rewritten or removed at the head — a quoted
-   sentence still present, even with a correction added after it, is drift.
-   The question also always asks for any sentence that a later sentence in
-   the same file corrects, supersedes or contradicts (an earlier-round
-   paragraph followed by a "PR-feedback round N" correction, say) — the
-   earlier one is reported. When the files the question asks about include a
-   manual, prompt or source-comment file, it also asks the shared doc-prose
-   question (Issues #3347, #3715, #3731), scoped to this push's change. The
-   shared scope includes changed comments, unchanged attached declaration
-   comments and module headers, plus heading-bounded manual sections the
-   summary names or that mention a changed source path, basename or exported
-   declaration. The extra manual sections exclude `docs/archive/`. No Docs
-   sweep entry is required (Issue #4234).
-   This prose scope has its own 20-file and 40-section caps before the overall
-   40-file model-pass cap; overflow and unreadable input are logged as not
-   checked, never passed. It reports contradictions about triggers, refusals,
-   allowances, skips, absolute words, counted lists or a parity sentence
-   ("as before", "exactly as X", "the same as", "unchanged", "no behaviour
-   change"), quoting the sentence and naming the contradicting `file:line`.
-   A parity sentence is checked against the base side as well as the head;
-   the base may be opened only for that check, with `git show origin/<base>:<path>`.
-   Unchanged sentences are checked
-   only for what this push makes false. Sets without one code list require a
-   grep of the whole head tree. Unconfirmed source/prose findings are logged
-   and do not trigger the write-enabled recovery turn.
-2. **Deterministic Test Plan recount** — whenever the PR diff carries a
-   summary, the worker counts top-level `Deno.test(` / `it(` declarations
-   at the head for every test file the PR diff adds or edits, and flags a
-   `## Test Plan` line naming those files with a test count that disagrees.
-   A paired run result — `N passed, M failed` in either order, with `|`,
-   `,` or `and` between and an optional `ignored` after — is compared as
-   N + M with the runnable count, so a correct red-on-base result with
-   failures is not flagged and a stale one from a smaller test file is
-   (Issue #3381). When such a result has failures and its block names no
-   test file (a red-on-base line usually names the production file it
-   swapped in), it is compared with the section's sole changed test file
-   — the one test file the section names that the PR diff adds or edits —
-   and is not compared when there are several (reported as unchecked, below).
-   When the PR changed no countable test file at all (for example only Rust
-   or shell tests), a file-less red result is out of scope, not unchecked.
-   A file is left out when a declaration is inside a block, parentheses, or
-   a loop, or the scan ends inside a literal or with unbalanced depth.
-   A hard-wrapped paragraph or list item is read as one unit, using the
-   shared `markdownLogicalUnits` splitter in
-   `worker/deno/lib/markdown_code_spans.ts` (Issue #3356). A unit with one
-   count is compared with the sum of the test files it names; a unit with
-   several counts over several test files is compared claim by claim, each
-   count with the files named since the previous count, excluding files
-   already paired with an earlier claim (for example a breakdown). Units never
-   join across a blank line, a heading, a new list item, a table row or a
-   fence. Inside a fenced block each line is its own claim, except a
-   command continued onto the next line with a trailing `\` or `/`.
-   An issue number (`#3143`) is not a count. Each count is decided on its own
-   (Issue #3740): a partial figure — a per-round addition such as "3 tests
-   added to `a_test.ts`", "Added N tests to `a_test.ts`", "2 to `b_test.ts`",
-   "+N tests", or "Added to `x_test.ts` (N tests" without "now has" — is not
-   compared with that file's whole count (Issue #3983 added the "Added N
-   tests to" form), while a whole-file count in the same unit ("the new
-   `b_test.ts` (N tests", "`b_test.ts` (N tests" with no "added" or "+" before
-   it, "now has N", "the file now has N") is. Partial markers are read only
-   before their figure, regardless of the gap shape: "Extended `a_test.ts`
-   by N tests" and "`a_test.ts`: extended with N tests" stay partial. Even
-   in a unit with one figure, prose after
-   "`a_test.ts` (N tests at head)", such as "covers the extended retry path",
-   does not make that count partial. An unchanged test file leaves
-   only its own figure unchecked, not the whole unit, and a token-less count
-   in a separate sentence ("The related suites (689 tests) passed") is
-   unchecked on its own. Lines it skips with `--filter`, unrecognised "N new
-   tests" figures, or a paired result citing `./quality.sh` remain out of
-   scope. Blocks with unknown test files or mixed `tests`/`passed` figures are
-   unchecked, as is a paired result naming an unchanged test file, several
-   files whose runs differ, a red result with no file and no sole changed test
-   file while the PR changed a countable test file (with none, it is out of
-   scope), several counts that do not each follow the test file they count, or
-   different counts for one test file. Each unchecked figure is drift, not a
-   log line: it goes to the recovery turn below.
-3. **Docs sweep re-check** — removed (Issue #4234). A feedback push still updates the manuals the change makes false. The worker does not re-check a Docs sweep line.
-4. **Deterministic quoted-sentence check (Issue #3244)** — on every
-   non-skipped push, the change request this push answers is parsed for its
-   findings in the review-fleet-prs shape (`**\`<file>[:<line>]\`**:
-   <problem>`). For each finding whose file is a
-   `docs/archive/pr-summaries/pr-summary-*.md`, every quoted span of four or
-   more words in the finding's problem text — straight or curly double
-   quotes, single quotes; split at an ellipsis; never across a line break —
-   is looked for in that summary at the head, ignoring case, whitespace, and
-   Markdown emphasis, backticks or underscores. A span still present is a
-   hit. A named summary that cannot be read at the head is reported as not
-   checked rather than given a recovery turn on its own — the same as a
-   model pass that returns no verdict.
-5. **Line-citation check** — removed with the branch-outcomes facts file (Issue #4234). A test the summary names must still exist at the head.
+   read-only question (file-writing, sub-agent, web and plan-mode tools denied,
+   the same list as the closure-verdict question) is asked over the PR summary
+   and every doc/prompt/README the PR diff touches against its base (capped at
+   40 files): list every sentence the change makes false or leaves incomplete,
+   quoted verbatim. The change request this push answers (the review or comment
+   body, carried as the agent's own prompt) is fenced into the question as
+   untrusted text; when it quotes a sentence from the PR summary, a doc or the
+   PR body, the question asks the model to confirm that sentence has been
+   rewritten or removed at the head — a quoted sentence still present, even with
+   a correction added after it, is drift. The question also always asks for any
+   sentence that a later sentence in the same file corrects, supersedes or
+   contradicts (an earlier-round paragraph followed by a "PR-feedback round N"
+   correction, say) — the earlier one is reported. When the files the question
+   asks about include a manual, prompt or source-comment file, it also asks the
+   shared doc-prose question (Issues #3347, #3715, #3731), scoped to this push's
+   change. The shared scope includes changed comments, unchanged attached
+   declaration comments and module headers, plus heading-bounded manual sections
+   the summary names or that mention a changed source path, basename or exported
+   declaration. The extra manual sections exclude `docs/archive/`. No Docs sweep
+   entry is required (Issue #4234). This prose scope has its own 20-file and
+   40-section caps before the overall 40-file model-pass cap; overflow and
+   unreadable input are logged as not checked, never passed. It reports
+   contradictions about triggers, refusals, allowances, skips, absolute words,
+   counted lists or a parity sentence ("as before", "exactly as X", "the same
+   as", "unchanged", "no behaviour change"), quoting the sentence and naming the
+   contradicting `file:line`. A parity sentence is checked against the base side
+   as well as the head; the base may be opened only for that check, with
+   `git show origin/<base>:<path>`. Unchanged sentences are checked only for
+   what this push makes false. Sets without one code list require a grep of the
+   whole head tree. Unconfirmed source/prose findings are logged and do not
+   trigger the write-enabled recovery turn.
+2. **Deterministic Test Plan recount** — whenever the PR diff carries a summary,
+   the worker counts top-level `Deno.test(` / `it(` declarations at the head for
+   every test file the PR diff adds or edits, and flags a `## Test Plan` line
+   naming those files with a test count that disagrees. A paired run result —
+   `N passed, M failed` in either order, with `|`, `,` or `and` between and an
+   optional `ignored` after — is compared as N + M with the runnable count, so a
+   correct red-on-base result with failures is not flagged and a stale one from
+   a smaller test file is (Issue #3381). When such a result has failures and its
+   block names no test file (a red-on-base line usually names the production
+   file it swapped in), it is compared with the section's sole changed test file
+   — the one test file the section names that the PR diff adds or edits — and is
+   not compared when there are several (reported as unchecked, below). When the
+   PR changed no countable test file at all (for example only Rust or shell
+   tests), a file-less red result is out of scope, not unchecked. A file is left
+   out when a declaration is inside a block, parentheses, or a loop, or the scan
+   ends inside a literal or with unbalanced depth. A hard-wrapped paragraph or
+   list item is read as one unit, using the shared `markdownLogicalUnits`
+   splitter in `worker/deno/lib/markdown_code_spans.ts` (Issue #3356). A unit
+   with one count is compared with the sum of the test files it names; a unit
+   with several counts over several test files is compared claim by claim, each
+   count with the files named since the previous count, excluding files already
+   paired with an earlier claim (for example a breakdown). Units never join
+   across a blank line, a heading, a new list item, a table row or a fence.
+   Inside a fenced block each line is its own claim, except a command continued
+   onto the next line with a trailing `\` or `/`. An issue number (`#3143`) is
+   not a count. Each count is decided on its own (Issue #3740): a partial figure
+   — a per-round addition such as "3 tests added to `a_test.ts`", "Added N tests
+   to `a_test.ts`", "2 to `b_test.ts`", "+N tests", or "Added to `x_test.ts` (N
+   tests" without "now has" — is not compared with that file's whole count
+   (Issue #3983 added the "Added N tests to" form), while a whole-file count in
+   the same unit ("the new `b_test.ts` (N tests", "`b_test.ts` (N tests" with no
+   "added" or "+" before it, "now has N", "the file now has N") is. Partial
+   markers are read only before their figure, regardless of the gap shape:
+   "Extended `a_test.ts` by N tests" and "`a_test.ts`: extended with N tests"
+   stay partial. Even in a unit with one figure, prose after "`a_test.ts` (N
+   tests at head)", such as "covers the extended retry path", does not make that
+   count partial. An unchanged test file leaves only its own figure unchecked,
+   not the whole unit, and a token-less count in a separate sentence ("The
+   related suites (689 tests) passed") is unchecked on its own. Lines it skips
+   with `--filter`, unrecognised "N new tests" figures, or a paired result
+   citing `./quality.sh` remain out of scope. Blocks with unknown test files or
+   mixed `tests`/`passed` figures are unchecked, as is a paired result naming an
+   unchanged test file, several files whose runs differ, a red result with no
+   file and no sole changed test file while the PR changed a countable test file
+   (with none, it is out of scope), several counts that do not each follow the
+   test file they count, or different counts for one test file. Each unchecked
+   figure is drift, not a log line: it goes to the recovery turn below.
+3. **Docs sweep re-check** — removed (Issue #4234). A feedback push still
+   updates the manuals the change makes false. The worker does not re-check a
+   Docs sweep line.
+4. **Deterministic quoted-sentence check (Issue #3244)** — on every non-skipped
+   push, the change request this push answers is parsed for its findings in the
+   review-fleet-prs shape (`**\`<file>[:<line>]\`**:
+   <problem>`). For each finding whose file is a`docs/archive/pr-summaries/pr-summary-*.md`,
+   every quoted span of four or more words in the finding's problem text —
+   straight or curly double quotes, single quotes; split at an ellipsis; never
+   across a line break — is looked for in that summary at the head, ignoring
+   case, whitespace, and Markdown emphasis, backticks or underscores. A span
+   still present is a hit. A named summary that cannot be read at the head is
+   reported as not checked rather than given a recovery turn on its own — the
+   same as a model pass that returns no verdict.
+5. **Line-citation check** — removed with the branch-outcomes facts file (Issue
+   #4234). A test the summary names must still exist at the head.
 6. **Diff-scoped mutation check (Issue #3750)** — in every review-fix run the
    mutation check runs over the lines this run itself added: the working tree,
    uncommitted edits and untracked files included, against the before-run head.
@@ -623,50 +605,47 @@ Six checks run, each only when it applies:
    mutator, 40-mutant cap, `skip_mutation_check`,
    `mutation_check_budget_seconds`, `quality_credentials` handling and
    `exempt (untestable)` exemptions read from the PR summary. On a repository
-   with a blocking CI mutation job, summary exemptions are ignored here too;
-   the push is still not blocked. An unexempted
-   survivor is a hit for the recovery turn, which kills each survivor with a
-   test and may remove or fix a line a survivor shows is dead or wrong. A
-   budget, cap or runner error is reported, not a hit. Survivors still left are
-   reported in the PR reply; they do not block the push. The standalone
-   `pr-feedback-processor process` command passes the loaded repository
-   configuration to this check as the run loop does.
-   Details: [Diff-scoped mutation check](../mutation-check.md#review-fix-runs-issue-3750).
+   with a blocking CI mutation job, summary exemptions are ignored here too; the
+   push is still not blocked. An unexempted survivor is a hit for the recovery
+   turn, which kills each survivor with a test and may remove or fix a line a
+   survivor shows is dead or wrong. A budget, cap or runner error is reported,
+   not a hit. Survivors still left are reported in the PR reply; they do not
+   block the push. The standalone `pr-feedback-processor process` command passes
+   the loaded repository configuration to this check as the run loop does.
+   Details:
+   [Diff-scoped mutation check](../mutation-check.md#review-fix-runs-issue-3750).
 
 Any hit gets **one** recovery turn — a Test Plan figure the recount could not
-check is a hit too (Issue #3740) — and the agent, with full tools, is asked
-to rewrite the listed sentences, recount the Test Plan, restate each unchecked
-figure as "`<file>` (N tests at head)" or remove it, and rewrite or remove
-each stale quoted sentence, without changing code, except that a mutation
-survivor (item 6) is answered with tests or docs, and production code only
-where the survivor shows a line is dead or wrong. The checks are then re-run, and
-the mutation check runs once more when survivors were found and the turn ran;
-a prose finding counts
-as fixed only when its quoted sentence was present before the recovery turn
-and is gone after it — a finding whose file was not one of the files the
-question was asked about is never read back, so it stays reported
-regardless of the recovery turn. A stale quoted sentence counts as fixed
-only when it is actually gone after the recovery turn — a correction
-appended below it leaves it standing, so it stays reported. A line-citation
-hit counts as fixed only when the re-run check no longer reports it. A
-model pass that returns no verdict is not a hit and does not trigger a
-recovery turn on its own; it goes straight to the reply note, and a named
-summary the quoted-sentence or line-citation check could not read at the
-head goes there too, along with any not-checked citation case the
-line-citation check reported. Whatever remains after the recovery turn —
-plus a model pass that returned no verdict and a summary that could not be
-checked — is appended to `.pr_response_message` under `### Drift check`, so it
-reaches the PR reply instead of being pushed silently.
+check is a hit too (Issue #3740) — and the agent, with full tools, is asked to
+rewrite the listed sentences, recount the Test Plan, restate each unchecked
+figure as "`<file>` (N tests at head)" or remove it, and rewrite or remove each
+stale quoted sentence, without changing code, except that a mutation survivor
+(item 6) is answered with tests or docs, and production code only where the
+survivor shows a line is dead or wrong. The checks are then re-run, and the
+mutation check runs once more when survivors were found and the turn ran; a
+prose finding counts as fixed only when its quoted sentence was present before
+the recovery turn and is gone after it — a finding whose file was not one of the
+files the question was asked about is never read back, so it stays reported
+regardless of the recovery turn. A stale quoted sentence counts as fixed only
+when it is actually gone after the recovery turn — a correction appended below
+it leaves it standing, so it stays reported. A line-citation hit counts as fixed
+only when the re-run check no longer reports it. A model pass that returns no
+verdict is not a hit and does not trigger a recovery turn on its own; it goes
+straight to the reply note, and a named summary the quoted-sentence or
+line-citation check could not read at the head goes there too, along with any
+not-checked citation case the line-citation check reported. Whatever remains
+after the recovery turn — plus a model pass that returned no verdict and a
+summary that could not be checked — is appended to `.pr_response_message` under
+`### Drift check`, so it reaches the PR reply instead of being pushed silently.
 The residual lists the change-request quotes still present, the prose findings
-and Test Plan counts still standing, a model pass that returned
-no verdict, a named summary the quote check could not read, and — under the heading "Test Plan
+and Test Plan counts still standing, a model pass that returned no verdict, a
+named summary the quote check could not read, and — under the heading "Test Plan
 figures the drift check could not verify" (Issue #3740) — each Test Plan figure
 still unchecked after the recovery turn, with its reason. A push whose only
 drift is an unchecked figure is therefore not reported clean. Surviving mutants
-go in the same residual under their own heading,
-`#### Mutation check`, and so do any budget, cap or runner-error
-reports from the mutation check; those reports never trigger a recovery turn
-by themselves.
+go in the same residual under their own heading, `#### Mutation check`, and so
+do any budget, cap or runner-error reports from the mutation check; those
+reports never trigger a recovery turn by themselves.
 
 ```mermaid
 flowchart TD
@@ -685,27 +664,27 @@ flowchart TD
 #### Verify a claim about another component before rewriting it (Issue #3090)
 
 When a finding says prompt, doc or PR-summary text misdescribes how another
-component behaves, the pr_feedback prompt tells the agent to open the code
-that implements that behaviour before writing the replacement, and to cite the
-file and function or line in `.pr_response_message` (and in the PR summary
-when it repeats the claim). The same applies to any new statement a fix adds
-about another component, above all an exclusive or negative one ("the only
-…", "any …", "never …", "the worker does not …"); security-control claims
-must agree with `SECURITY.md` and `docs/THREAT-MODEL.md`, and a claim the text
-does not need is dropped in favour of stating the rule and its risk. This is
-the fix-run form of the Issue #3072 rule in **Prompt Engineering Guidance**
-(`CODING-STANDARDS.md`): review fixes had replaced a false claim with a new
-unverified one (VibeCoder#3075, #3068).
+component behaves, the pr_feedback prompt tells the agent to open the code that
+implements that behaviour before writing the replacement, and to cite the file
+and function or line in `.pr_response_message` (and in the PR summary when it
+repeats the claim). The same applies to any new statement a fix adds about
+another component, above all an exclusive or negative one ("the only …", "any
+…", "never …", "the worker does not …"); security-control claims must agree with
+`SECURITY.md` and `docs/THREAT-MODEL.md`, and a claim the text does not need is
+dropped in favour of stating the rule and its risk. This is the fix-run form of
+the Issue #3072 rule in **Prompt Engineering Guidance** (`CODING-STANDARDS.md`):
+review fixes had replaced a false claim with a new unverified one
+(VibeCoder#3075, #3068).
 
 #### The final mile — did the push actually land?
 
 Every Claude-driven phase ends with a commit-and-push, and the worker only
-claims success when git says the branch is on origin. Two rules make that
-honest (Issue #211):
+claims success when git says the branch is on origin. Two rules make that honest
+(Issue #211):
 
 - **The count is measured against origin's copy of the branch.** Fleet workdirs
   are single-branch clones, so `refs/remotes/origin/<feature>` does not exist —
-  counting with `--remotes=origin` measured commits ahead of the *default*
+  counting with `--remotes=origin` measured commits ahead of the _default_
   branch and reported a fully pushed branch as unpushed. When the tracking ref
   is absent the branch is fetched and the count is taken against that head. A
   count that cannot be established is an error, never a silent zero.
@@ -730,17 +709,17 @@ sequenceDiagram
     O-->>W: accepted → no "check the branch" comment
 ```
 
-**Out-of-scope feedback → decide or rebut, never hand back.** Sometimes a
-review comment asks for something that looks too large for one run, or turns
-on a product choice. The pr_feedback prompt's **Decide, Never Hand Back** rule
-has the agent decide such a choice itself, stating the assumption in
+**Out-of-scope feedback → decide or rebut, never hand back.** Sometimes a review
+comment asks for something that looks too large for one run, or turns on a
+product choice. The pr_feedback prompt's **Decide, Never Hand Back** rule has
+the agent decide such a choice itself, stating the assumption in
 `.pr_response_message` so the reviewer can overturn it with one more comment,
-and rebut a request it judges wrong for this PR with the reasons. It never
-asks for `needs-human`, never asks the reviewer to clarify, and never files a
-follow-up issue for leftover work (Issue #4304). The worker still recognises
-an old-style hand-off message naming a follow-up issue, as a defence: the
-follow-up must exist and be filed by the worker, a fleet sibling or an
-allowlisted author (Issue #185), and any reserved label on it is stripped. See
+and rebut a request it judges wrong for this PR with the reasons. It never asks
+for `needs-human`, never asks the reviewer to clarify, and never files a
+follow-up issue for leftover work (Issue #4304). The worker still recognises an
+old-style hand-off message naming a follow-up issue, as a defence: the follow-up
+must exist and be filed by the worker, a fleet sibling or an allowlisted author
+(Issue #185), and any reserved label on it is stripped. See
 [DESIGN-PRINCIPLES.md → Escape hatch for out-of-scope work](../../DESIGN-PRINCIPLES.md).
 
 ### 🟠 Priority 1.5 — Spelling and quality fixes (automatic)
@@ -749,11 +728,11 @@ The worker **proactively** fixes spelling and quality failures on all its PRs �
 no user request needed. This applies to:
 
 - **Spelling** — Failed check runs whose name indicates spelling (e.g. spell,
-  cspell, typo, codespell) **and** whose failing Actions step is a spelling
-  tool (codespell, cspell, typos). A bundled job such as `Scripts & spelling`
-  that failed in a bats step goes to the CI-fix route instead (Issue #1579,
-  see [ci-fix.md](ci-fix.md)). Obtain annotations, apply fixes (code or
-  dictionary), commit and push, comment on PR.
+  cspell, typo, codespell) **and** whose failing Actions step is a spelling tool
+  (codespell, cspell, typos). A bundled job such as `Scripts & spelling` that
+  failed in a bats step goes to the CI-fix route instead (Issue #1579, see
+  [ci-fix.md](ci-fix.md)). Obtain annotations, apply fixes (code or dictionary),
+  commit and push, comment on PR.
 - **Quality** — Failed checks such as **shellcheck**, **deno lint**, or **deno
   test** (and other configured quality gates). The worker runs the same quality
   checks (e.g. `./quality.sh`) and fixes reported issues by committing and
@@ -780,28 +759,26 @@ checks pass. The worker does the following:
    persisted per-base owner allows one selected PR to refresh until it merges,
    fails required checks, closes or its six-hour ownership expires. Optional
    checks do not block selection; unreadable required rules are logged and
-   retried. A merge-queue base is not refreshed merely for being behind
-   (Issue #4424). Other behind updates retain the existing updater behaviour.
-   Conflict resolution remains a separate repair path. For ordinary branch
-   repair, fetch the latest base branch, merge it into the feature branch, and push normally — never a
-   rebase and never a force-push, so a PR under review keeps its commits and
-   its review comments (Issue #2807). The comparison and merge always use the
-   PR's actual base branch, so PRs targeting milestone
-   branches are updated against that milestone branch, not the repo default
-  . This keeps the PR up to date and avoids merge conflicts at
-   merge time.
+   retried. A merge-queue base is not refreshed merely for being behind (Issue
+   #4424). Other behind updates retain the existing updater behaviour. Conflict
+   resolution remains a separate repair path. For ordinary branch repair, fetch
+   the latest base branch, merge it into the feature branch, and push normally —
+   never a rebase and never a force-push, so a PR under review keeps its commits
+   and its review comments (Issue #2807). The comparison and merge always use
+   the PR's actual base branch, so PRs targeting milestone branches are updated
+   against that milestone branch, not the repo default . This keeps the PR up to
+   date and avoids merge conflicts at merge time.
 3. **Resolve merge conflicts** — Conflicts are judged against **origin's head
    for the branch**, which is what GitHub merges: the branch is fast-forwarded
    to that head before it is evaluated, so a stale local copy left in the
-   workdir can no longer produce a conflict that does not exist on the PR
-   (Issue #211). A local branch holding genuinely unpushed commits is reported
-   as exactly that and left untouched — never relabelled a base-branch
-   conflict. If the merge hits real conflicts, it is aborted and the branch is
-   left exactly as it was — never side-picked (Issue #4373) — and the conflict
-   is handed to the merge-conflict pass; the PR remains in a non-mergeable
-   state until that pass, the user or a later run resolves it. A plain push the
-   remote rejects is a logged failure carrying git's stderr, never retried with
-   force.
+   workdir can no longer produce a conflict that does not exist on the PR (Issue
+   #211). A local branch holding genuinely unpushed commits is reported as
+   exactly that and left untouched — never relabelled a base-branch conflict. If
+   the merge hits real conflicts, it is aborted and the branch is left exactly
+   as it was — never side-picked (Issue #4373) — and the conflict is handed to
+   the merge-conflict pass; the PR remains in a non-mergeable state until that
+   pass, the user or a later run resolves it. A plain push the remote rejects is
+   a logged failure carrying git's stderr, never retried with force.
 4. **After PR creation or recovery** — When a PR is created or an existing PR is
    recovered, the worker runs a mergeability check. A behind-only refresh on a
    strict base follows the shared readiness and ownership policy above before
@@ -811,8 +788,8 @@ checks pass. The worker does the following:
 5. **Leave a blocked PR alone** (Issue #2702) — A PR whose review decision is
    `CHANGES_REQUESTED` is not updated, behind or conflicting: it cannot merge
    until the review is answered, and the update only moves the head underneath
-   the review. The decision rides the batched branch-state query, so it costs
-   no extra call; the skip is logged at info.
+   the review. The decision rides the batched branch-state query, so it costs no
+   extra call; the skip is logged at info.
 
 So: **PRs are kept mergeable when possible**. A behind PR on a strict base may
 wait for review and for another ready PR's refresh to finish. Merge-queue bases
@@ -823,42 +800,42 @@ test PRs against their future head; conflicts remain on the repair path.
 - **Every open PR by any push-capable fleet author should be marked for
   auto-merge** (squash), so they merge automatically when reviews and checks
   pass. The sweep covers the whole fleet author set, not just this host's own
-  login — a sibling account's PR blocks `work-on` issues exactly as this
-  host's does, so it must be swept exactly as this host's is.
+  login — a sibling account's PR blocks `work-on` issues exactly as this host's
+  does, so it must be swept exactly as this host's is.
 - **Auto-merge can only be enabled when merge issues have been fixed** — i.e.
   when the PR is mergeable (no conflicts, branch up to date with base). The
   worker must resolve merge issues first, then enable auto-merge.
-- **Catch-up** — For each open PR by any fleet author, if auto-merge is not yet enabled
-  and the repo supports it and the PR **is mergeable**: enable auto-merge. This
-  catches PRs where auto-merge was not set due to transient failures during
-  creation or where merge issues have since been fixed.
+- **Catch-up** — For each open PR by any fleet author, if auto-merge is not yet
+  enabled and the repo supports it and the PR **is mergeable**: enable
+  auto-merge. This catches PRs where auto-merge was not set due to transient
+  failures during creation or where merge issues have since been fixed.
 - **No review hold** (Issue #4291) — the sweep never withholds arming, or
   disarms, for a review, a pre-PR finding or a label. PRs do not merge until
   they have a review approval and CI is green, and GitHub enforces both.
-- **Armed and behind** (Issues #2462, #4613) — before asking GitHub to update
-  an armed, behind PR, the sweep re-reads its base, head, review and merge
-  state. It compares the required contexts in the effective rules and classic
-  branch protection with the current head's results, or its verified test-merge
-  results when GitHub reports checks on that merge. Pending, failed, missing
-  or unreadable required checks hold that PR; optional check results are not
+- **Armed and behind** (Issues #2462, #4613) — before asking GitHub to update an
+  armed, behind PR, the sweep re-reads its base, head, review and merge state.
+  It compares the required contexts in the effective rules and classic branch
+  protection with the current head's results, or its verified test-merge results
+  when GitHub reports checks on that merge. Pending, failed, missing or
+  unreadable required checks hold that PR; optional check results are not
   required to pass. App-pinned commit statuses are held when their publisher
-  cannot be verified from GitHub's status response. The sweep verifies the
-  event of a required Actions check. It re-reads the base and head before the
-  request, which pins the head SHA; GitHub provides no base-ref precondition,
-  so a last-moment retarget remains possible. Not for a PR that is only behind
-  when its base is behind a merge queue (Issue #4424): the queue tests the PR
-  against its future head, and an update would only move that head. A
-  conflicting PR on such a base still gets the update. Not when a reviewer has
-  requested changes (Issue #2702): that PR cannot merge anyway, so it gets
-  neither the update nor a merge attempt, and the sweep logs why at info.
-  On a strict base without a merge queue, a repository/base owner serialises
-  refreshes across PRs, hosts and updater lanes. It remains while refreshed CI
-  and merge are pending, then a later pass releases it after merge, closure,
-  failed required checks or bounded expiry. The same required-check contract
-  applies across those lanes; optional pending or skipped jobs do not block.
+  cannot be verified from GitHub's status response. The sweep verifies the event
+  of a required Actions check. It re-reads the base and head before the request,
+  which pins the head SHA; GitHub provides no base-ref precondition, so a
+  last-moment retarget remains possible. Not for a PR that is only behind when
+  its base is behind a merge queue (Issue #4424): the queue tests the PR against
+  its future head, and an update would only move that head. A conflicting PR on
+  such a base still gets the update. Not when a reviewer has requested changes
+  (Issue #2702): that PR cannot merge anyway, so it gets neither the update nor
+  a merge attempt, and the sweep logs why at info. On a strict base without a
+  merge queue, a repository/base owner serialises refreshes across PRs, hosts
+  and updater lanes. It remains while refreshed CI and merge are pending, then a
+  later pass releases it after merge, closure, failed required checks or bounded
+  expiry. The same required-check contract applies across those lanes; optional
+  pending or skipped jobs do not block.
 - **Removed from a merge queue** (Issue #4424) — a PR the queue removed at its
-  current head is not armed until a new head arrives, and a queued base is
-  never merged directly (`merge-queue-removed`,
+  current head is not armed until a new head arrives, and a queued base is never
+  merged directly (`merge-queue-removed`,
   [`pr_auto_merge.ts`](../../worker/deno/lib/pr_auto_merge.ts)). The CI-fix lane
   is handed the removal as a failed `merge queue` check instead
   ([ci-fix.md](ci-fix.md#merge-queue-removals-issue-4424)).
@@ -875,10 +852,10 @@ branch is held strictly **read-only**.
   "branch up to date" rule, configured once per monitored repo at setup time.
   This holds the native auto-merge path (`gh pr merge --auto`) until CI is green
   and the branch is current. Where a merge queue is enabled on the default
-  branch, the strict rule is off and the queue holds the path instead
-  (Issue #4424). Required-check selection is visibility- and
-  language-aware, so an unsatisfiable check (e.g. a GHAS-only check on a private
-  repo) is never marked required — otherwise it would block **every** merge.
+  branch, the strict rule is off and the queue holds the path instead (Issue
+  #4424). Required-check selection is visibility- and language-aware, so an
+  unsatisfiable check (e.g. a GHAS-only check on a private repo) is never marked
+  required — otherwise it would block **every** merge.
 - **The backstop (worker pre-merge gate).** For the direct-merge fallback used
   on unprotected branches, `enforcePreMergeRequirements()` re-fetches CI status
   and branch freshness **at merge time** and refuses to merge unless CI is
@@ -901,8 +878,8 @@ does not force the merge and does not give up — it **defers and retries**:
 
 1. The PR is **left open** and the deferral is logged.
 2. The branch-update maintenance (Priority 1.6 above) merges the latest target
-   into the feature branch and pushes normally — a green PR that is only
-   waiting for approval is kept current this way every cycle.
+   into the feature branch and pushes normally — a green PR that is only waiting
+   for approval is kept current this way every cycle.
 3. CI re-runs on the new head.
 4. The next cycle re-evaluates the gate and merges once CI is green and the
    branch is up to date.
@@ -970,8 +947,8 @@ gitGraph
 
 _The `main` line represents `Develop`. When new commits land on `Develop` (from
 other merged PRs), the worker merges them into the feature branch and pushes
-normally to keep it current — the PR's own commits are never rewritten.
-After feedback fixes and quality checks, the PR is auto-merged._
+normally to keep it current — the PR's own commits are never rewritten. After
+feedback fixes and quality checks, the PR is auto-merged._
 
 ## 🔁 A branch that can never be updated (Issue #335)
 
@@ -980,19 +957,19 @@ transient failure, useless for a permanent one. One branch in
 `stSoftwareAU/NEAT-AI-core` logged the same
 `Failed to checkout branch 'issue-3832-detect-cycles-linear'` warning **65
 times** across days: nothing counted the repeats, nothing escalated, and the
-line never said *why* git refused.
+line never said _why_ git refused.
 
 The pass now keeps a per-`(repo, branch)` memory in
 [`pr_branch_update_failure_streak.ts`](../../worker/deno/lib/pr_branch_update_failure_streak.ts)
-— the same shape as the bump-script (Issue #207) and idle-inversion
-(Issue #321) streaks:
+— the same shape as the bump-script (Issue #207) and idle-inversion (Issue #321)
+streaks:
 
-| Cycle outcome | What happens |
-| --- | --- |
-| Update succeeds | The streak is deleted — the next failure counts from one |
-| Update fails, count below 3 | Counted; the warning carries git's own stderr |
-| Third consecutive failing cycle | **One** issue is filed against the repo naming the PR, the branch, the count and the git error |
-| Any cycle after escalation | The branch is skipped, not retried — re-probed once every 10 cycles so a fixed branch heals itself |
+| Cycle outcome                   | What happens                                                                                       |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Update succeeds                 | The streak is deleted — the next failure counts from one                                           |
+| Update fails, count below 3     | Counted; the warning carries git's own stderr                                                      |
+| Third consecutive failing cycle | **One** issue is filed against the repo naming the PR, the branch, the count and the git error     |
+| Any cycle after escalation      | The branch is skipped, not retried — re-probed once every 10 cycles so a fixed branch heals itself |
 
 The count is per `(repo, branch)`, so one stuck branch never suppresses updates
 for the rest, and it counts **cycles**, not attempts — a pass that runs twice in
@@ -1020,21 +997,20 @@ The pass scans, then executes: PR #381 was read as two commits behind at
 window. The push was refused — then as a `--force-with-lease` `(stale info)`;
 since Issue #2807 the update is a plain push, which a moved branch refuses as
 non-fast-forward — and that refusal is the push doing exactly its job, but the
-run counted `failedCount=1` and logged a WARNING. That buries the signal that matters: a protected branch, a
-permissions problem, or a real rejection over someone else's commits read
-identically to "the PR merged while we were working", and on a busy milestone
-the second one is the common case.
+run counted `failedCount=1` and logged a WARNING. That buries the signal that
+matters: a protected branch, a permissions problem, or a real rejection over
+someone else's commits read identically to "the PR merged while we were
+working", and on a busy milestone the second one is the common case.
 
 The execute step therefore re-checks the PR's live state at the point of action,
-the same lesson
-[`claim_freshness.ts`](../../worker/deno/lib/claim_freshness.ts) learnt one step
-earlier in the pipeline (Issues #344 / #352):
+the same lesson [`claim_freshness.ts`](../../worker/deno/lib/claim_freshness.ts)
+learnt one step earlier in the pipeline (Issues #344 / #352):
 
-| When | What is asked | Outcome |
-| --- | --- | --- |
-| Before the clone and the push | `gh pr view --json state,mergeable` (the shared argv, Issue #2307 — this reader uses the `state` half) | `MERGED`/`CLOSED` → counted as `mergedCount`, logged at INFO, no clone, no push |
-| After a failed update only | The same lookup | `MERGED`/`CLOSED` → `mergedCount`; still `OPEN` → `failedCount`/`conflictCount` and the WARNING, unchanged |
-| Lookup unavailable or failing | — | `UNKNOWN`: the update proceeds and every failure stays loud; the lookup error is warned about, never swallowed |
+| When                          | What is asked                                                                                          | Outcome                                                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Before the clone and the push | `gh pr view --json state,mergeable` (the shared argv, Issue #2307 — this reader uses the `state` half) | `MERGED`/`CLOSED` → counted as `mergedCount`, logged at INFO, no clone, no push                                |
+| After a failed update only    | The same lookup                                                                                        | `MERGED`/`CLOSED` → `mergedCount`; still `OPEN` → `failedCount`/`conflictCount` and the WARNING, unchanged     |
+| Lookup unavailable or failing | —                                                                                                      | `UNKNOWN`: the update proceeds and every failure stays loud; the lookup error is warned about, never swallowed |
 
 The counters stay separate — `mergedCount` is reported in its own clause
 (`, N merged mid-update`) and never folded into `failedCount` — and a mid-cycle
@@ -1071,36 +1047,34 @@ flowchart TD
   is required; do not fail the run.
 - **Spelling fix failure:** Treated like other failures; may trigger failure
   tracking and eventual exit for restart.
-- **PR branch behind target at merge time:** The pre-merge gate **defers** —
-  the PR is left open, branch-update maintenance merges the target in, CI
-  re-runs, and the
-  next cycle re-evaluates (see the dual-layer pre-merge gate above). The merge is
-  never forced against a stale branch.
-- **Out-of-scope PR feedback:** The agent decides with the assumption stated,
-  or rebuts with reasons — never a hand-back or a follow-up issue
-  (Issue #4304).
+- **PR branch behind target at merge time:** The pre-merge gate **defers** — the
+  PR is left open, branch-update maintenance merges the target in, CI re-runs,
+  and the next cycle re-evaluates (see the dual-layer pre-merge gate above). The
+  merge is never forced against a stale branch.
+- **Out-of-scope PR feedback:** The agent decides with the assumption stated, or
+  rebuts with reasons — never a hand-back or a follow-up issue (Issue #4304).
 - **No fix and no rebuttal on a request-changes review:** A claimed
-  `CHANGES_REQUESTED` review whose run leaves no commit, no working-tree
-  change and no `.pr_response_message` is re-run once (in the same worker
-  run, with a note appended) rather than answered with the neutral reply,
-  because the review would otherwise sit retried for ever with no record
-  that anything was tried; if the final run still has neither a pushed fix
-  nor a `.pr_response_message`, the worker charges a failed attempt so the
-  next cycle retries the review, and a review still unanswered after that
-  closes the PR and re-queues its issue (Issue #4304; see **A
-  request-changes review is never answered with "no change"** and **A review
-  is dismissed only once the run retires it** above).
+  `CHANGES_REQUESTED` review whose run leaves no commit, no working-tree change
+  and no `.pr_response_message` is re-run once (in the same worker run, with a
+  note appended) rather than answered with the neutral reply, because the review
+  would otherwise sit retried for ever with no record that anything was tried;
+  if the final run still has neither a pushed fix nor a `.pr_response_message`,
+  the worker charges a failed attempt so the next cycle retries the review, and
+  a review still unanswered after that closes the PR and re-queues its issue
+  (Issue #4304; see **A request-changes review is never answered with "no
+  change"** and **A review is dismissed only once the run retires it** above).
 
 ## 📚 Further reading
 
 - **Merge enforcement:** [Merge Enforcement — Operator Manual](../MERGE.md) —
   the dual-layer pre-merge gate, visibility-aware required checks,
   defer-and-retry, read-only default branch, and workflow-trigger normalisation.
-- **Design overview:** [DESIGN-PRINCIPLES.md](../../DESIGN-PRINCIPLES.md) — dual-layer pre-merge
-  enforcement and the escape-hatch hand-off defence.
+- **Design overview:** [DESIGN-PRINCIPLES.md](../../DESIGN-PRINCIPLES.md) —
+  dual-layer pre-merge enforcement and the escape-hatch hand-off defence.
 - **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue
   selection, PR monitoring, milestone/dependency handling.
-- **Implementation details:** [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts),
+- **Implementation details:**
+  [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts),
   [worker/deno/lib/issue_worker.ts](../../worker/deno/lib/issue_worker.ts),
   [worker/deno/lib/pr_ci_checks.ts](../../worker/deno/lib/pr_ci_checks.ts),
   [worker/deno/lib/pr_comments.ts](../../worker/deno/lib/pr_comments.ts),

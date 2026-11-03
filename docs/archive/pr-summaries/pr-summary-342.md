@@ -7,7 +7,7 @@ crash: the clean mid-loop exit shared its status with a failure, so the launcher
 counted a failure streak, doubled its wait to 16 minutes and beyond, reported
 the "failure" to GitHub, and rebuilt a perfectly healthy container image. The
 re-probe cadence Issue #333 intended (~hourly, because the quota may be
-*extended* before its stated reset) decayed into hours. Closes #342.
+_extended_ before its stated reset) decayed into hours. Closes #342.
 
 The run now declares the pause twice, and the supervisor classifies on that
 declaration:
@@ -15,27 +15,26 @@ declaration:
 - **Its own exit status.** `QUOTA_PAUSE_EXIT_STATUS = 75` (`EX_TEMPFAIL` —
   "temporary failure, the caller is invited to retry"). It sits outside every
   other launcher status: 0 clean, 87 wedged container, 124/137 supervisor
-  deadline, 125–127 the runtime CLI's own "could not start", ≥128 signal
-  deaths.
+  deadline, 125–127 the runtime CLI's own "could not start", ≥128 signal deaths.
 - **A marker file** — `~/logs/quota-pause.json`, on the one host mount both
-  sides of the container boundary share (the work directory rides a named
-  volume the host cannot read). The marker is preferred over the exit status,
-  as the issue asks, so a container runtime that loses the container's exit
-  code and substitutes its own generic status still classifies correctly.
+  sides of the container boundary share (the work directory rides a named volume
+  the host cannot read). The marker is preferred over the exit status, as the
+  issue asks, so a container runtime that loses the container's exit code and
+  substitutes its own generic status still classifies correctly.
 
 The marker is **consumed** (read and deleted) by the recorder, so one
 declaration can only ever explain the one launcher outcome it belongs to — a
 later run that genuinely crashes while the quota is still out has no marker of
-its own, keeps its crash status, and backs off exactly as before. Stale
-(>6 h), corrupt and time-less markers are discarded loudly rather than believed.
+its own, keeps its crash status, and backs off exactly as before. Stale (>6 h),
+corrupt and time-less markers are discarded loudly rather than believed.
 
 On a quota pause the recorder resets the failure streak, escalates nothing,
 claims no recovery (so no `container environment reconstructed` event and no
 teardown of a healthy image), and answers with a **fixed** cadence —
-`--quota-pause-sleep-seconds` / `VIBE_QUOTA_PAUSE_SLEEP_SECONDS`, default
-3600 s — clamped down when the window reopens sooner than that, never grown.
-It is emitted as a `quota_pause` self-heal event, so `self-heal-summary` shows
-an operator "out of quota" instead of a host that keeps crashing.
+`--quota-pause-sleep-seconds` / `VIBE_QUOTA_PAUSE_SLEEP_SECONDS`, default 3600 s
+— clamped down when the window reopens sooner than that, never grown. It is
+emitted as a `quota_pause` self-heal event, so `self-heal-summary` shows an
+operator "out of quota" instead of a host that keeps crashing.
 
 ## Evidence
 
@@ -101,14 +100,14 @@ New tests — `worker/deno/tests/quota_pause_test.ts`:
 
 New tests — `worker/deno/tests/container_restart_backoff_test.ts`:
 
-- `classifyLauncherOutcome` — a declared pause is not a crash; a crash *while*
+- `classifyLauncherOutcome` — a declared pause is not a crash; a crash _while_
   rate-limited (no marker of its own) still is
 - `computeQuotaPauseSleepSeconds` — a fixed cadence, clamped to a nearer reset,
   floored at the base sleep
 - `recordContainerRestartOutcome` — a pause holds the fixed cadence instead of
   decaying, clears the streak without claiming a recovery, and is classified
   from the marker even when the exit status lost the pause (255)
-- a crash *after* a quota pause still backs off, and its streak still grows
+- a crash _after_ a quota pause still backs off, and its streak still grows
 - the command consumes the marker and prints the cadence; the cadence is
   operator-configurable by `VIBE_QUOTA_PAUSE_SLEEP_SECONDS`
 

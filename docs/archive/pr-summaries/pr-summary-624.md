@@ -6,17 +6,18 @@
 branch before every container launch, which would drag a frozen host straight
 off its pin. It now reads `update_mode` and `pinned_ref` from `.config.json`
 under `--base-dir` — it runs before the configuration load, and that file lives
-at the checkout root — and in `frozen` mode holds the checkout at the pinned
-ref instead, saying so in `run_core.log` rather than skipping silently.
-Closes #624.
+at the checkout root — and in `frozen` mode holds the checkout at the pinned ref
+instead, saying so in `run_core.log` rather than skipping silently. Closes #624.
 
 - **`dynamic`, or no `update_mode`** — byte-for-byte the update it always was:
-  `git fetch origin` → `git checkout <branch>` → `git reset --hard
+  `git fetch origin` → `git checkout <branch>` →
+  `git reset --hard
   origin/<branch>` → `git clean -fd`, logged as before.
 - **`frozen`** — `git fetch --tags origin` (so a tag pushed since the last
-  launch resolves), then `git checkout --force --detach <ref>` → `git reset
-  --hard <ref>` → `git clean -fd`. A commit SHA and a tag are both accepted,
-  the checkout is left on that ref with a detached HEAD, and
+  launch resolves), then `git checkout --force --detach <ref>` →
+  `git reset
+  --hard <ref>` → `git clean -fd`. A commit SHA and a tag are both
+  accepted, the checkout is left on that ref with a detached HEAD, and
   `origin/<branch>` is never consulted.
 - **Already on the pin** — when `HEAD` resolves to `pinned_ref` there is no
   fetch, no checkout and no clean; only the log line. A launch does not churn
@@ -36,8 +37,7 @@ Closes #624.
 
 `pinned_ref` is validated with the same allowlist the config loader uses
 (`pinValueErrors`, exported for this caller rather than copied), so a
-hand-edited value carrying whitespace or shell metacharacters never reaches
-git.
+hand-edited value carrying whitespace or shell metacharacters never reaches git.
 
 ## Evidence
 
@@ -50,14 +50,14 @@ deno test --allow-all tests/worker_checkout_update_test.ts tests/checkout_update
 ok | 42 passed | 0 failed (3s)
 ```
 
-`./quality.sh` reports every check PASSED except `deno tests`, which fails on
-36 pre-existing environment failures in `tests/gh_spawn_test.ts`,
+`./quality.sh` reports every check PASSED except `deno tests`, which fails on 36
+pre-existing environment failures in `tests/gh_spawn_test.ts`,
 `tests/service_account_env_test.ts`, `tests/run_core_test.ts` and
 `tests/run_core_rate_limit_resume_test.ts` (discarded-stream handling, an
 "unwritable" directory this container can still write to, and a dangling
 rate-limit promise). Running those four files on the base commit in a separate
-worktree reproduces the same `FAILED | 36 failed` set, so none of them come
-from this change; the whole rest of the 16,083-test suite passes.
+worktree reproduces the same `FAILED | 36 failed` set, so none of them come from
+this change; the whole rest of the 16,083-test suite passes.
 
 ```mermaid
 flowchart TD
@@ -76,39 +76,44 @@ flowchart TD
 - **met** — With `update_mode` absent or `dynamic`, the update sequence and its
   logging are unchanged — evidence:
   `worker/deno/tests/checkout_update_test.ts::updateCheckout - an absent update
-  mode is dynamic and unchanged (Issue #624)` (asserts the
-  `Updating <dir> to origin/trunk` log line and that no pinned path runs), plus
+  mode is dynamic and unchanged (Issue #624)`
+  (asserts the `Updating <dir> to origin/trunk` log line and that no pinned path
+  runs), plus
   `worker/deno/tests/worker_checkout_update_test.ts::dynamic mode in
-  .config.json is the update it always was` and the ten pre-existing command
-  tests, all still passing untouched.
+  .config.json is the update it always was`
+  and the ten pre-existing command tests, all still passing untouched.
 - **met** — With `update_mode: "frozen"` and a `pinned_ref` tag, the checkout
   ends at that tag and `run_core.log` carries the skip line naming mode and ref
-  — evidence: `worker/deno/tests/worker_checkout_update_test.ts::frozen holds
-  the checkout at a pinned tag (Issue #624)`, which pushes a `v1.0.0` tag,
-  moves the default branch on, and asserts `HEAD` is the tagged commit, the
-  branch is detached, and the log line is present.
+  — evidence:
+  `worker/deno/tests/worker_checkout_update_test.ts::frozen holds
+  the checkout at a pinned tag (Issue #624)`,
+  which pushes a `v1.0.0` tag, moves the default branch on, and asserts `HEAD`
+  is the tagged commit, the branch is detached, and the log line is present.
 - **met** — The same holds for a `pinned_ref` given as a commit SHA — evidence:
   `worker/deno/tests/worker_checkout_update_test.ts::frozen holds the checkout
   at a pinned commit SHA (Issue #624)`.
 - **met** — A checkout already at the pinned ref does no git write, and still
-  logs — evidence: `worker/deno/tests/worker_checkout_update_test.ts::frozen
-  leaves a checkout already on the pin untouched (Issue #624)` (an untracked
-  scratch file survives a launch that would otherwise clean it) and
+  logs — evidence:
+  `worker/deno/tests/worker_checkout_update_test.ts::frozen
+  leaves a checkout already on the pin untouched (Issue #624)`
+  (an untracked scratch file survives a launch that would otherwise clean it)
+  and
   `worker/deno/tests/checkout_update_test.ts::frozen does no git write when
-  HEAD is already the pin (Issue #624)` (asserts not even a fetch runs).
+  HEAD is already the pin (Issue #624)`
+  (asserts not even a fetch runs).
 - **met** — An unresolvable `pinned_ref` exits non-zero with a message naming
   the ref; `run.sh` warns and launches on the existing checkout — evidence:
   `worker/deno/tests/worker_checkout_update_test.ts::frozen fails loud on a
-  pinned ref that does not resolve (Issue #624)` (the command fails, names the
-  ref, and leaves `HEAD` where it was) and the unchanged `run.sh` warn-only
-  handling at `run.sh:277-286`.
+  pinned ref that does not resolve (Issue #624)`
+  (the command fails, names the ref, and leaves `HEAD` where it was) and the
+  unchanged `run.sh` warn-only handling at `run.sh:277-286`.
 - **met** — `VIBE_SKIP_CHECKOUT_UPDATE` still skips everything, in both modes,
   with its existing message — evidence: the two pre-existing skip tests plus
   `worker/deno/tests/worker_checkout_update_test.ts::VIBE_SKIP_CHECKOUT_UPDATE
   wins over frozen mode (Issue #624)`.
 - **met** — Unit tests in `worker/deno/tests/checkout_update_test.ts` and
-  `worker/deno/tests/worker_checkout_update_test.ts` cover the above through
-  the injected `CheckoutUpdateDeps`; `./quality.sh` passes — evidence: 42 tests
+  `worker/deno/tests/worker_checkout_update_test.ts` cover the above through the
+  injected `CheckoutUpdateDeps`; `./quality.sh` passes — evidence: 42 tests
   across the two files (10 new in the library suite, 12 new in the command
   suite), the new frozen dependencies (`fetchOrigin`, `resolveCommit`,
   `readHeadCommit`, `checkoutPinnedRef`) all injected through
@@ -116,16 +121,17 @@ flowchart TD
 - **unrequested** — `git checkout --force` (rather than a plain `--detach`) on
   the pinned path — reason: without `--force` a dirty checkout that has drifted
   off the pin refuses the checkout and the host silently stays off its pin;
-  covered by `worker/deno/tests/worker_checkout_update_test.ts::frozen moves a
+  covered by
+  `worker/deno/tests/worker_checkout_update_test.ts::frozen moves a
   dirty checkout that has drifted off the pin (Issue #624)`.
 - **unrequested** — `pinValueErrors` in `worker/deno/lib/config_validator.ts`
   changed from private to exported — reason: the command validates the
   hand-edited `pinned_ref` with the loader's own allowlist instead of a second
   copy of the pattern.
 - **unrequested** — comment-only edits in `run.sh` and the doc updates in
-  `docs/CONFIGURATION.md`, `docs/CONTAINER.md` and `docs/INTERNALS.md` —
-  reason: all three describe the pre-launch update as an unconditional reset to
-  the default branch, which is no longer true for a frozen host.
+  `docs/CONFIGURATION.md`, `docs/CONTAINER.md` and `docs/INTERNALS.md` — reason:
+  all three describe the pre-launch update as an unconditional reset to the
+  default branch, which is no longer true for a frozen host.
 
 ## Test Plan
 

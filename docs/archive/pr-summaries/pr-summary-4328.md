@@ -6,7 +6,8 @@ to the roll-back on the next cycle; a spent budget is handed off from one place
 whoever spent it; and a new rebuild rung follows a spent roll-back. The merge
 gate also stops failing on the worker host's image stamp. Both successful
 rebuild routes now clear the refusal streak and conflict ledger, record recovery
-and increment the rebuild count, so the next cycle resumes normal syncing. Closes #4328.
+and increment the rebuild count, so the next cycle resumes normal syncing.
+Closes #4328.
 
 Version bump: `VERSION` is not edited by this change; the merged commit records
 the final version.
@@ -141,8 +142,8 @@ there unchanged.
   successful rebuild, the next cycle syncs without another rebuild or close.
 - 115 focused refusal-ladder and branch-sync tests pass. Removing hand-off
   bookkeeping makes the next-cycle regression fail; production code restored.
-  Changed TypeScript type checks, lint and formatting pass. Manifests: 854 passed,
-  1 ignored. GitHub CI is rerunning after this summary refresh.
+  Changed TypeScript type checks, lint and formatting pass. Manifests: 854
+  passed, 1 ignored. GitHub CI is rerunning after this summary refresh.
 - Earlier implementation validation follows.
 
 - `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts` (35 tests at

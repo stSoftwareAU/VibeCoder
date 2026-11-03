@@ -2,8 +2,8 @@
 
 ## Summary
 
-The worker diagnosed its own faults accurately and then stopped, because the
-one action that schedules a fix — applying `work-on` — is the one action it must
+The worker diagnosed its own faults accurately and then stopped, because the one
+action that schedules a fix — applying `work-on` — is the one action it must
 never take. Unattended, nobody applied it: `NEAT-AI-Rebase#39` sat for two days,
 and the fix took 79 minutes once a human finally scheduled it.
 
@@ -15,7 +15,8 @@ remain human-only unconditionally. Instead the claim scan gains **tier 2b** —
 below both human-scheduled tiers, above the backlog — whose eligibility rests on
 provenance rather than on a label. Closes #505.
 
-Three signals must agree before an issue qualifies (`self_diagnostic_provenance.ts`):
+Three signals must agree before an issue qualifies
+(`self_diagnostic_provenance.ts`):
 
 1. **Repo** — the worker's own repo, where the deciding code lives.
 2. **Marker** — a recognised template marker (`<!-- VIBE_IDLE_INVERSION:… -->`,
@@ -25,12 +26,12 @@ Three signals must agree before an issue qualifies (`self_diagnostic_provenance.
 
 Bounded, visible and reversible:
 
-| Requirement | Implementation |
-|---|---|
-| Bounded | `self_schedule_diagnostics_max_in_flight` (default `1`), counting assigned diagnostics — the assignee is the fleet's claim lock. The surplus is refused and logged. |
-| Visible | Each decision is written to the audit chain under the distinct `self-schedule-diagnostic` verb **and** announced in a comment on the issue (once, deduped by marker). If either fails the diagnostic is not scheduled that scan. |
-| Escalating | A permanently blocked diagnostic (a merged fleet PR names it) gets `needs-human` plus one explanatory comment instead of waiting silently. |
-| Reversible | `self_schedule_diagnostics_enabled: false` restores the previous behaviour exactly. |
+| Requirement | Implementation                                                                                                                                                                                                                   |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bounded     | `self_schedule_diagnostics_max_in_flight` (default `1`), counting assigned diagnostics — the assignee is the fleet's claim lock. The surplus is refused and logged.                                                              |
+| Visible     | Each decision is written to the audit chain under the distinct `self-schedule-diagnostic` verb **and** announced in a comment on the issue (once, deduped by marker). If either fails the diagnostic is not scheduled that scan. |
+| Escalating  | A permanently blocked diagnostic (a merged fleet PR names it) gets `needs-human` plus one explanatory comment instead of waiting silently.                                                                                       |
+| Reversible  | `self_schedule_diagnostics_enabled: false` restores the previous behaviour exactly.                                                                                                                                              |
 
 The idle-inversion issue body no longer says "the worker cannot self-apply that
 label"; it now states that the worker schedules the diagnostic itself and that a
@@ -94,7 +95,7 @@ flowchart LR
 - **Secrets** — none staged; no hidden files touched.
 - **Injection surface** — no new SQL/shell paths; `gh` is invoked through the
   existing injected command function with argument arrays.
-- **Authorisation** — the new path *narrows* rather than widens: it grants no
+- **Authorisation** — the new path _narrows_ rather than widens: it grants no
   label capability, and every existing reserved-label guard is unchanged. An
   actor who could edit a worker-filed body could already apply `work-on`
   directly, so no new capability is created (stated as residual risk in
@@ -110,8 +111,8 @@ New tests:
 
 - `worker/deno/tests/self_diagnostic_provenance_test.ts` — the recogniser
   accepts real filed bodies from both families and rejects prose naming a
-  marker, an unknown family, a marker with no value, and an empty body; the
-  repo gate and the announcement/escalation builders.
+  marker, an unknown family, a marker with no value, and an empty body; the repo
+  gate and the announcement/escalation builders.
 - `worker/deno/tests/collect_self_diagnostic_candidates_test.ts` — one test per
   acceptance criterion: a diagnostic is claimable with no label and no label
   call is made; the decision is audited and announced; the announcement is
@@ -132,10 +133,10 @@ Modified test:
 
 - `worker/deno/tests/idle_inversion_streak_test.ts` — the body assertion now
   also requires the new "schedules this diagnostic itself" wording; the existing
-  ``Apply `work-on` `` assertion is kept, since the label is still the way to
+  `` Apply `work-on` `` assertion is kept, since the label is still the way to
   schedule a diagnostic sooner.
 
-Documentation updated: `README.md`, `SECURITY.md` (new §5a), `docs/CONFIGURATION.md`
-(two new keys), `docs/INTERNALS.md`, `docs/IDLE-TASK-FRAMEWORK.md`, and
-`docs/workflows/issue-processing.md` (tier table, flow diagram and a new
-"Self-scheduled worker diagnostics" section).
+Documentation updated: `README.md`, `SECURITY.md` (new §5a),
+`docs/CONFIGURATION.md` (two new keys), `docs/INTERNALS.md`,
+`docs/IDLE-TASK-FRAMEWORK.md`, and `docs/workflows/issue-processing.md` (tier
+table, flow diagram and a new "Self-scheduled worker diagnostics" section).

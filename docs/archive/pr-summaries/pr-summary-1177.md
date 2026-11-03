@@ -7,8 +7,8 @@
 worker container exports the live work volume there, so every suite that drove
 the loop without naming a work directory read and wrote the running fleet's
 `idle_disagreement_streak.json`. Under `deno test --parallel` that is one file
-shared by several test processes: each process's load-apply-save dropped the
-run another was accumulating, the elapsed-time bound was never reached, and the
+shared by several test processes: each process's load-apply-save dropped the run
+another was accumulating, the elapsed-time bound was never reached, and the
 forced filer attempt never came — the `0` where `1` was expected that the issue
 reports. Which of the two cases lost the race varied because the interleaving
 did.
@@ -16,8 +16,8 @@ did.
 The loop now takes its work directory from `config.workDir` alone.
 `createProductionRunCoreDeps` already resolves it once (`--work-dir`, then
 `WORK_DIR`, then the default) and puts it in the config, so production is
-unchanged; a caller that names no directory keeps the streak in memory, which
-is the module's documented behaviour for a caller with no volume. The gate's
+unchanged; a caller that names no directory keeps the streak in memory, which is
+the module's documented behaviour for a caller with no volume. The gate's
 `WORK_DIR` scrub (Issue #1098) stays as the second layer for the other
 production readers of that variable.
 
@@ -41,8 +41,8 @@ flowchart TB
 
 ## Evidence
 
-Backend/CLI change with no web interface, so there is nothing to screenshot.
-The evidence is measurement.
+Backend/CLI change with no web interface, so there is nothing to screenshot. The
+evidence is measurement.
 
 **The cause, isolated.** Six concurrent runs of the named suite, with the
 container's `WORK_DIR` present and then removed — the only variable changed:
@@ -68,8 +68,8 @@ final tree:      3 further consecutive passes green
 
 **The guard is host-independent.** Restoring `|| Deno.env.get("WORK_DIR")` in
 `resolveRunStateWorkDir` and running the new planted-`WORK_DIR` case with the
-parent's `WORK_DIR` **unset** still fails it — so the guard also holds under
-the gate, which scrubs that variable from the test stage (Issue #1098).
+parent's `WORK_DIR` **unset** still fails it — so the guard also holds under the
+gate, which scrubs that variable from the test stage (Issue #1098).
 
 **Full quality gate**: `./quality.sh` — `Result: PASSED (with skipped checks)`;
 `deno tests`, `deno lint`, `deno type check`, `deno fmt`, `semgrep`,
@@ -112,8 +112,8 @@ The issue states its criteria under "What needs to be done" rather than an
   measurement — evidence: fixed at the root; the `Deno.env.get("WORK_DIR")`
   fallback is gone and the resolution is `worker/deno/lib/run_core.ts:1338`
   (`resolveRunStateWorkDir`), called at `worker/deno/lib/run_core.ts:4293`. No
-  entry was added to `SUBPROCESS_TIMING_TEST_FILES` or `WALL_CLOCK_TEST_FILES`
-  — reviewer: met
+  entry was added to `SUBPROCESS_TIMING_TEST_FILES` or `WALL_CLOCK_TEST_FILES` —
+  reviewer: met
 - **met** — five consecutive full `--parallel` passes green — evidence: five
   consecutive gate-shaped passes green after the fix and four more on the final
   tree, quoted under Evidence above — reviewer: met — reason: the reviewer saw
@@ -133,21 +133,22 @@ The issue states its criteria under "What needs to be done" rather than an
   required of every PR by the repository's own standards
 - **unrequested** — extracting and exporting `resolveRunStateWorkDir`
   (`worker/deno/lib/run_core.ts:1338`) — reviewer: unrequested — reason: new
-  public API. It exists so the host-independent guard can call the real
-  resolver from a child process; without it the only guards left are ones that
-  bite on the author's host and not under the gate
-- **unrequested** — the lane-rotation cursor (`worker/deno/lib/run_core.ts:5075`)
-  takes the same resolver, so a caller with no `config.workDir` also stops
-  persisting lane rotation — reviewer: unrequested — reason: side effect of the
-  shared resolution, reachable only from tests since production always sets
-  `workDir`; recorded under Evidence and in the field's own doc
+  public API. It exists so the host-independent guard can call the real resolver
+  from a child process; without it the only guards left are ones that bite on
+  the author's host and not under the gate
+- **unrequested** — the lane-rotation cursor
+  (`worker/deno/lib/run_core.ts:5075`) takes the same resolver, so a caller with
+  no `config.workDir` also stops persisting lane rotation — reviewer:
+  unrequested — reason: side effect of the shared resolution, reachable only
+  from tests since production always sets `workDir`; recorded under Evidence and
+  in the field's own doc
 
-Two reviewers ran on this axis. The first returned after the summary was
-written and reproduced the fault independently — four concurrent `deno test`
-processes sharing one `WORK_DIR`, 4/4 red with the fallback restored and 4/4
-green with it gone, plus five consecutive gate-shaped `--parallel` passes green
-at the final tree with `WORK_DIR` deliberately left set. It reached the same
-three `met` verdicts and found nothing implemented wrongly.
+Two reviewers ran on this axis. The first returned after the summary was written
+and reproduced the fault independently — four concurrent `deno test` processes
+sharing one `WORK_DIR`, 4/4 red with the fallback restored and 4/4 green with it
+gone, plus five consecutive gate-shaped `--parallel` passes green at the final
+tree with `WORK_DIR` deliberately left set. It reached the same three `met`
+verdicts and found nothing implemented wrongly.
 
 **Residual, recorded rather than fixed.** The host-independent guard asserts on
 `resolveRunStateWorkDir`, so a future regression that reads
@@ -162,11 +163,12 @@ every fleet container.
 
 - **violation** — the regression cases only went red on a host that exports
   `WORK_DIR`, and the gate scrubs it, so re-introducing the fallback would have
-  merged green — evidence: `worker/deno/tests/run_core_idle_detect_audit_test.ts:517`
-  — reason: fixed here. The resolution is now the exported
-  `resolveRunStateWorkDir`, and a new case plants `WORK_DIR` in a child process
-  and asserts it still resolves to nothing; verified red against the old
-  fallback with the parent's `WORK_DIR` unset.
+  merged green — evidence:
+  `worker/deno/tests/run_core_idle_detect_audit_test.ts:517` — reason: fixed
+  here. The resolution is now the exported `resolveRunStateWorkDir`, and a new
+  case plants `WORK_DIR` in a child process and asserts it still resolves to
+  nothing; verified red against the old fallback with the parent's `WORK_DIR`
+  unset.
 - **violation** — stale JSDoc on `RunCoreConfig.workDir` still said the
   environment read "remains only as the default" — evidence:
   `worker/deno/lib/run_core.ts:198` — reason: fixed here.
@@ -174,10 +176,10 @@ every fleet container.
   present tense — evidence: `CODING-STANDARDS.md:147` — reason: fixed here; the
   paragraph now records that #1177 removed it in the code as well as scrubbing
   it in the gate.
-- **violation** — the new comment credited the
-  `--work-dir` → `WORK_DIR` → default chain to `createProductionRunCoreDeps`
-  when it lives in `commands/run_core.ts` — evidence:
-  `worker/deno/lib/run_core.ts:4256` — reason: fixed here.
+- **violation** — the new comment credited the `--work-dir` → `WORK_DIR` →
+  default chain to `createProductionRunCoreDeps` when it lives in
+  `commands/run_core.ts` — evidence: `worker/deno/lib/run_core.ts:4256` —
+  reason: fixed here.
 - **violation** — the lane-rotation cursor is a second consumer of
   `resolvedWorkDir` and went unmentioned — evidence:
   `worker/deno/lib/run_core.ts:5042` — reason: fixed here; the resolver is named
@@ -218,11 +220,11 @@ output: the worker log, the forced-attempt count, the state file):
 
 - `run_core - a planted WORK_DIR never becomes the loop's state directory (Issue #1177)`
   — a child process is spawned carrying `WORK_DIR=/planted/…`, and the real
-  resolver must still answer "none" for a config that named none, while a
-  config that names one gets it back. The variable is planted in the child, not
-  in the test runner, so nothing races the parallel pass. This is the one guard
-  that does not depend on the host's own environment: red against the old
-  fallback with the parent's `WORK_DIR` unset.
+  resolver must still answer "none" for a config that named none, while a config
+  that names one gets it back. The variable is planted in the child, not in the
+  test runner, so nothing races the parallel pass. This is the one guard that
+  does not depend on the host's own environment: red against the old fallback
+  with the parent's `WORK_DIR` unset.
 - `run_core - a config naming no workDir keeps the streak in memory, whatever WORK_DIR says (Issue #1177)`
   — every `action=audit_scan_disagreement` diagnostic reports `persisted=false`,
   and the bound still forces its one attempt. Red against the unfixed code
@@ -238,9 +240,10 @@ output: the worker log, the forced-attempt count, the state file):
   expected).
 
 Unchanged in behaviour and still passing: the two cases the issue names, the
-rest of `run_core_idle_detect_audit_test.ts`, `idle_disagreement_streak_test.ts`,
-`run_core_idle_task_filer_test.ts`, `run_core_test.ts`,
-`quality_gate_test_env_test.ts` and `unit_test_passes_test.ts`.
+rest of `run_core_idle_detect_audit_test.ts`,
+`idle_disagreement_streak_test.ts`, `run_core_idle_task_filer_test.ts`,
+`run_core_test.ts`, `quality_gate_test_env_test.ts` and
+`unit_test_passes_test.ts`.
 
 No test was removed, weakened or commented out. Three existing disagreement
 cases were re-pointed at the shared `createDisagreementDeps` helper rather than

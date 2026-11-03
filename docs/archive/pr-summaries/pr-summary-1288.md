@@ -12,9 +12,9 @@ the live agent path (`lib/agent_mcp_config.ts:126`), not just setup.
 
 The fix blanks every name in `PLAYWRIGHT_MCP_DENIED_ENV` in the server's own
 `env` block — the map the MCP client hands the process, and therefore what any
-child inherits — and additionally deny-lists the credential stores the
-otherwise unscoped `--allow-read` / `--allow-write` could reach. `--deny-env`
-stays as defence in depth for the in-process read. Closes #1288.
+child inherits — and additionally deny-lists the credential stores the otherwise
+unscoped `--allow-read` / `--allow-write` could reach. `--deny-env` stays as
+defence in depth for the in-process read. Closes #1288.
 
 ```mermaid
 flowchart LR
@@ -37,43 +37,45 @@ run on this host (deno 2.9.6, Claude Code client, `@playwright/mcp@0.0.75`):
 
 1. **The client's `env` semantics were verified before landing the fix**, which
    the issue called for explicitly. A probe MCP server (`command` = a Deno
-   script that dumps `Deno.env.toObject()`) was launched by the real Claude
-   Code client with an `env` block naming one marker variable: the child saw the
-   marker **and** the full inherited environment (62 vars, including a
-   canary variable exported only by the parent). The client **merges**
-   rather than replaces, so blanking overrides the real value and `PATH` is not
-   stripped. A second run with an `env` block blanking that canary showed the
-   child reading `''` with `PATH` intact.
+   script that dumps `Deno.env.toObject()`) was launched by the real Claude Code
+   client with an `env` block naming one marker variable: the child saw the
+   marker **and** the full inherited environment (62 vars, including a canary
+   variable exported only by the parent). The client **merges** rather than
+   replaces, so blanking overrides the real value and `PATH` is not stripped. A
+   second run with an `env` block blanking that canary showed the child reading
+   `''` with `PATH` intact.
 2. **The fix was then verified end to end through the same client.** With
    distinct canary values exported for `GH_TOKEN`, `GITHUB_TOKEN`,
-   `ANTHROPIC_API_KEY` and `VIBE_IMGBB_API_KEY` in the parent, a config
-   produced by the patched `generateMcpConfig` gave the child `''` for all seven denied names,
-   while `PATH`, `HOME` and `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers`
-   survived.
+   `ANTHROPIC_API_KEY` and `VIBE_IMGBB_API_KEY` in the parent, a config produced
+   by the patched `generateMcpConfig` gave the child `''` for all seven denied
+   names, while `PATH`, `HOME` and
+   `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers` survived.
 3. **The real MCP server still works under the new argv.** The server was
    spawned with the exact generated `args` (including
    `--deny-read`/`--deny-write` over `~/.ssh`, `~/.config/gh`, `$GH_CONFIG_DIR`,
    `$CLAUDE_CONFIG_DIR`), driven over stdio through `initialize` →
    `browser_take_screenshot`, and wrote a 4254-byte PNG. Chromium launched from
    the baked browser; nothing was denied that the server needs. `--deny-read`
-   biting was confirmed separately: a Deno process with `--allow-read
-   --deny-read=/home/vibe/.config/gh` fails `NotCapable` on `hosts.yml` while
-   other reads succeed.
+   biting was confirmed separately: a Deno process with
+   `--allow-read
+   --deny-read=/home/vibe/.config/gh` fails `NotCapable` on
+   `hosts.yml` while other reads succeed.
 
 **Original trigger closed, no trivial bypass.** The issue's trigger is
-`printenv <NAME>` (or `sh -c 'curl -d @<(env)'`) from a child of the MCP
-server. A child inherits the environment its parent was given, and that
-environment is now the merge of the worker's environment with
+`printenv <NAME>` (or `sh -c 'curl -d @<(env)'`) from a child of the MCP server.
+A child inherits the environment its parent was given, and that environment is
+now the merge of the worker's environment with
 `{ANTHROPIC_API_KEY:"", GH_TOKEN:"", GITHUB_TOKEN:"", GITHUB_APP_PRIVATE_KEY:"",
-GITHUB_APP_PRIVATE_KEY_PATH:"", GIT_SSH_COMMAND:"", VIBE_IMGBB_API_KEY:""}` —
-so every name the deny list claimed to protect is empty at any depth of the
+GITHUB_APP_PRIVATE_KEY_PATH:"", GIT_SSH_COMMAND:"", VIBE_IMGBB_API_KEY:""}`
+— so every name the deny list claimed to protect is empty at any depth of the
 process tree, not merely unreadable through `Deno.env.get()`. The blanking is
 derived from `PLAYWRIGHT_MCP_DENIED_ENV` itself, so a name cannot be added to
 the deny list and silently missed by the scrub, and
 `setup_screenshot_test.ts::generateMcpConfig - blanks every denied secret in
-the server's own environment (Issue #1288)` fails if one is dropped. The
-equivalent file-side bypass named in the issue (`~/.config/gh/hosts.yml`) is
-closed for the server process by `--deny-read`/`--deny-write`.
+the server's own environment (Issue #1288)`
+fails if one is dropped. The equivalent file-side bypass named in the issue
+(`~/.config/gh/hosts.yml`) is closed for the server process by
+`--deny-read`/`--deny-write`.
 
 **Residual risk, stated rather than papered over:** every Deno permission binds
 the server process only. Chromium must be launched under `--allow-run` and can
@@ -105,16 +107,16 @@ the unfixed generator except where noted, and pass after the fix — observed:
 - `…::resolveDeniedPaths - covers the relocated gh config and the app private key`
 - `…::resolveDeniedPaths - returns nothing when the environment names no home`
 - `…::generateMcpConfig - refuses a denied path Deno cannot express (Issue #1288)`
-  — a comma in a path splits the permission list, so the generator throws
-  rather than emit a deny list that looks complete and protects nothing.
+  — a comma in a path splits the permission list, so the generator throws rather
+  than emit a deny list that looks complete and protects nothing.
 
 **Existing test modified (documented as required):**
 `…::generateMcpConfig - keeps the OS sandbox when no browser is baked in`
 asserted `server.env === undefined` on the host path. The env block is now
 always present because it carries the blanked secrets, so that assertion was
 narrowed to "no `PLAYWRIGHT_BROWSERS_PATH` when nothing is baked" — the
-behaviour the test actually exists to protect. No test was removed or
-commented out.
+behaviour the test actually exists to protect. No test was removed or commented
+out.
 
-Also updated: `docs/DEPLOYMENT.md` and `docs/CONTAINER.md`, both of which
-stated the `--deny-env` guarantee that this change corrects.
+Also updated: `docs/DEPLOYMENT.md` and `docs/CONTAINER.md`, both of which stated
+the `--deny-env` guarantee that this change corrects.

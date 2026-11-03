@@ -1,8 +1,8 @@
 # 🛡️ Security Scans — Operator Manual
 
 This document is the operator-facing reference for the Vibe Coder's MythOS-style
-security audit. The intent is documented in the parent issue and the
-four sub-issues that built it.
+security audit. The intent is documented in the parent issue and the four
+sub-issues that built it.
 
 The security scan is **template #1 of the idle-task framework** — the generic
 mechanism for "things the worker does when no claimable work exists". The
@@ -25,50 +25,48 @@ multi-stage false-positive triage, and patch verification — see the
 
 Every idle security scan runs the same MythOS-style four-phase pipeline. The
 canonical prompt text driving Claude lives in
-[`prompts/security_scan/`](../prompts/security_scan/); the phase
-summary below is reproduced from that prompt:
+[`prompts/security_scan/`](../prompts/security_scan/); the phase summary below
+is reproduced from that prompt:
 
-| Phase                       | Purpose                                                                                                                                                                        | Output                             |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
-| **1 — Plan**                | Inventory the codebase, build a chunk plan covering every entry point and every taint sink, then order the chunks by trust-boundary exposure (internet-facing / unauthenticated first, local / build-time last).                                | Chunk list (chunk ID, files, why, exposure band)  |
-| **2 — Per-chunk detection** | For each chunk, read every referenced file and produce evidence-backed candidate findings against the vulnerability taxonomy below.                                            | Candidate findings (no triage yet) |
-| **3 — Triage**              | Drop candidates with no code evidence, dedup by root cause, adversarially self-verify each survivor (re-read the cited file and attempt to refute reachability — refute → drop, partial → lower `confidence`), then **independently verify** each survivor with a fresh-context pass that never saw the detection reasoning and defaults to refute-unless-proven — high/critical findings run a severity-gated odd N-vote consensus (kept only when a majority cannot refute), medium/low stay single-pass — recalibrate each finding's severity by the exposure band of its trust boundary (raise on an unauthenticated internet-facing route, lower behind an internal-only boundary — one level, static-only), then **chain** survivors that share a statically-traceable data/trust path into one combined exploit-chain finding at the composed severity (may exceed the highest constituent; constituents still filed individually and cross-linked; counts as one issue against the cap), attach `confidence` and `easeOfExploit`. | Surviving findings                 |
-| **4 — Report**              | Emit a machine-readable JSON block and a human-readable Markdown summary (exec summary, findings sorted by severity, unproven hypotheses, coverage map, suggested next scans). | One JSON + one Markdown block      |
+| Phase                       | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Output                                           |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| **1 — Plan**                | Inventory the codebase, build a chunk plan covering every entry point and every taint sink, then order the chunks by trust-boundary exposure (internet-facing / unauthenticated first, local / build-time last).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Chunk list (chunk ID, files, why, exposure band) |
+| **2 — Per-chunk detection** | For each chunk, read every referenced file and produce evidence-backed candidate findings against the vulnerability taxonomy below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Candidate findings (no triage yet)               |
+| **3 — Triage**              | Drop candidates with no code evidence, dedup by root cause, adversarially self-verify each survivor (re-read the cited file and attempt to refute reachability — refute → drop, partial → lower `confidence`), then **independently verify** each survivor with a fresh-context pass that never saw the detection reasoning and defaults to refute-unless-proven — high/critical findings run a severity-gated odd N-vote consensus (kept only when a majority cannot refute), medium/low stay single-pass — recalibrate each finding's severity by the exposure band of its trust boundary (raise on an unauthenticated internet-facing route, lower behind an internal-only boundary — one level, static-only), then **chain** survivors that share a statically-traceable data/trust path into one combined exploit-chain finding at the composed severity (may exceed the highest constituent; constituents still filed individually and cross-linked; counts as one issue against the cap), attach `confidence` and `easeOfExploit`. | Surviving findings                               |
+| **4 — Report**              | Emit a machine-readable JSON block and a human-readable Markdown summary (exec summary, findings sorted by severity, unproven hypotheses, coverage map, suggested next scans).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | One JSON + one Markdown block                    |
 
 The executor in `worker/deno/lib/security_scanner.ts` wraps Claude with the
-prompt and waits for a clean exit; it does **not** parse Claude's stdout. As
-of prompt v5 the contract is **outcome-only** — Claude itself
-files one GitHub issue per surviving finding via `gh issue create` inside the
-scan, and success is verified by diffing the repo's open `security`-labelled
-issues before and after the run. Prompt v6 expanded the Phase
-2 taxonomy to cover the CWE Top 25 + OWASP Top 10 weakness classes missing
-from v5 (CSRF, XSS, XXE, mass assignment, server-side template injection,
-broader authentication/authorisation) and retired the
-`{{REPO_FULL_NAME}}` placeholder — the executor's cwd points at the cloned
-repo, so `gh issue create` operates on the right one without explicit
+prompt and waits for a clean exit; it does **not** parse Claude's stdout. As of
+prompt v5 the contract is **outcome-only** — Claude itself files one GitHub
+issue per surviving finding via `gh issue create` inside the scan, and success
+is verified by diffing the repo's open `security`-labelled issues before and
+after the run. Prompt v6 expanded the Phase 2 taxonomy to cover the CWE Top 25 +
+OWASP Top 10 weakness classes missing from v5 (CSRF, XSS, XXE, mass assignment,
+server-side template injection, broader authentication/authorisation) and
+retired the `{{REPO_FULL_NAME}}` placeholder — the executor's cwd points at the
+cloned repo, so `gh issue create` operates on the right one without explicit
 substitution. The diff lives in
 [`worker/deno/lib/idle_task_templates/security_scan_template.ts`](../worker/deno/lib/idle_task_templates/security_scan_template.ts).
-The scanner returns `Result<{ ok: true }, ScanError>`; the `Finding`/`ScanReport`
-types, the JSON-block extractor, the Markdown-summary extractor, and the
-separate `security_issue_filer.ts` module that previously rendered findings
-were retired in.
+The scanner returns `Result<{ ok: true }, ScanError>`; the
+`Finding`/`ScanReport` types, the JSON-block extractor, the Markdown-summary
+extractor, and the separate `security_issue_filer.ts` module that previously
+rendered findings were retired in.
 
-Write/Edit/MultiEdit/NotebookEdit and plan-mode tools are explicitly
-disallowed; Bash remains allowed so Claude can call `gh issue create`.
+Write/Edit/MultiEdit/NotebookEdit and plan-mode tools are explicitly disallowed;
+Bash remains allowed so Claude can call `gh issue create`.
 
 ## Dependency-update quarantine audit
 
-Every Phase 2 detection pass since prompt
-`v2` audits the target repo's auto-update
-tooling for a `minimumReleaseAge`-style quarantine on external dependencies.
-The audit exists to close the gap identified in and tracked under
+Every Phase 2 detection pass since prompt `v2` audits the target repo's
+auto-update tooling for a `minimumReleaseAge`-style quarantine on external
+dependencies. The audit exists to close the gap identified in and tracked under
 parent: recent supply-chain attacks (npm, PyPI, crates.io maintainer takeovers)
 typically ship malicious versions for a short window before takedown, so a repo
 that auto-merges third-party bumps within minutes of publish is materially
-exposed. The audit makes that exposure visible as a normal scanner-filed
-issue (severity-emoji title, `severity:<level>` and `confidence:<level>` labels
-— see [Reading a filed finding issue](#reading-a-filed-finding-issue)) rather
-than letting it sit silent.
+exposed. The audit makes that exposure visible as a normal scanner-filed issue
+(severity-emoji title, `severity:<level>` and `confidence:<level>` labels — see
+[Reading a filed finding issue](#reading-a-filed-finding-issue)) rather than
+letting it sit silent.
 
 ### What it inspects
 
@@ -84,41 +82,40 @@ rules:
   `minimumReleaseAge`** field — only the in-preview `cooldown` keyword — so a
   Dependabot-only repo without a compensating `bump-deps.sh` will reliably
   surface as a finding.
-- **Deno native `minimumDependencyAge`** — `deno.json`, `deno.jsonc`. For a
-  Deno repo, Deno's CLI has a native quarantine for JSR and `npm:`
-  dependencies. The audit accepts `minimumDependencyAge` as a valid Deno
-  quarantine when its `age` resolves to at least `VIBE_BUMP_QUARANTINE_HOURS`
-  hours (default **24**) — the value may be integer minutes (`"1440"`), an
-  ISO-8601 duration (`"P1D"`, `"PT24H"`), or an RFC3339 cutoff; `"0"`
-  disables it. The object form `{ "age": …, "exclude": [<jsr:/npm: globs>] }`
-  must `exclude` internal `stSoftwareAU` deps (`jsr:@stsoftware/*`,
-  `npm:@stsoftware/*`) so they bypass the wait. A Deno repo missing the field
-  (with no compensating `bump-deps.sh`) surfaces as `quarantine-missing`; one
-  that sets it below the threshold, to `"0"`, or omits the internal-scope
-  `exclude` surfaces as `quarantine-misconfigured`. Non-Deno repos are out of
-  scope for this check.
+- **Deno native `minimumDependencyAge`** — `deno.json`, `deno.jsonc`. For a Deno
+  repo, Deno's CLI has a native quarantine for JSR and `npm:` dependencies. The
+  audit accepts `minimumDependencyAge` as a valid Deno quarantine when its `age`
+  resolves to at least `VIBE_BUMP_QUARANTINE_HOURS` hours (default **24**) — the
+  value may be integer minutes (`"1440"`), an ISO-8601 duration (`"P1D"`,
+  `"PT24H"`), or an RFC3339 cutoff; `"0"` disables it. The object form
+  `{ "age": …, "exclude": [<jsr:/npm: globs>] }` must `exclude` internal
+  `stSoftwareAU` deps (`jsr:@stsoftware/*`, `npm:@stsoftware/*`) so they bypass
+  the wait. A Deno repo missing the field (with no compensating `bump-deps.sh`)
+  surfaces as `quarantine-missing`; one that sets it below the threshold, to
+  `"0"`, or omits the internal-scope `exclude` surfaces as
+  `quarantine-misconfigured`. Non-Deno repos are out of scope for this check.
 - **Per-repo `bump-deps.sh`** — when present, it must either delegate to a
-  correctly-configured Renovate/Dependabot or implement its own age gate
-  against `VIBE_BUMP_QUARANTINE_HOURS` before upgrading external deps (e.g.
-  inspecting npm `time`, JSR publish timestamps, crates.io `created_at`, or
-  Maven Central `lastUpdated`). The script is supplied by the target repo, so
-  it runs with a **built** environment rather than the worker's own
-  (Issue #1214): `PATH`, `HOME`, `TMPDIR`, the locale and the toolchain caches,
-  plus the bump-specific variables — and no credential.
+  correctly-configured Renovate/Dependabot or implement its own age gate against
+  `VIBE_BUMP_QUARANTINE_HOURS` before upgrading external deps (e.g. inspecting
+  npm `time`, JSR publish timestamps, crates.io `created_at`, or Maven Central
+  `lastUpdated`). The script is supplied by the target repo, so it runs with a
+  **built** environment rather than the worker's own (Issue #1214): `PATH`,
+  `HOME`, `TMPDIR`, the locale and the toolchain caches, plus the bump-specific
+  variables — and no credential.
 
 ### Beyond dependency manifests — host toolchain upgrades
 
-The quarantine is **not** limited to dependency manifests. The
-worker also upgrades four externally-distributed executables on its own hosts,
-and each is gated on the same window by
+The quarantine is **not** limited to dependency manifests. The worker also
+upgrades four externally-distributed executables on its own hosts, and each is
+gated on the same window by
 [`worker/deno/lib/tool_release_age.ts`](../worker/deno/lib/tool_release_age.ts):
 
-| Tool             | Release channel checked                | Pinned?                             |
-| ---------------- | -------------------------------------- | ----------------------------------- |
-| Claude CLI       | npm `@anthropic-ai/claude-code`        | No — `claude update` takes no version |
-| `gh` binary      | GitHub releases `cli/cli`              | No — `brew upgrade gh` takes no version |
-| `gh` extensions  | the ref `gh` would install: the latest release tag for a binary extension, the default branch's HEAD commit for a script one | Yes — `gh extension install <repo> --pin <ref> --force` |
-| Deno             | GitHub releases `denoland/deno`        | Yes — `deno upgrade <version>`       |
+| Tool            | Release channel checked                                                                                                      | Pinned?                                                 |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Claude CLI      | npm `@anthropic-ai/claude-code`                                                                                              | No — `claude update` takes no version                   |
+| `gh` binary     | GitHub releases `cli/cli`                                                                                                    | No — `brew upgrade gh` takes no version                 |
+| `gh` extensions | the ref `gh` would install: the latest release tag for a binary extension, the default branch's HEAD commit for a script one | Yes — `gh extension install <repo> --pin <ref> --force` |
+| Deno            | GitHub releases `denoland/deno`                                                                                              | Yes — `deno upgrade <version>`                          |
 
 Three rules differ from the manifest checks above and are deliberate:
 
@@ -130,25 +127,24 @@ Three rules differ from the manifest checks above and are deliberate:
   `gh extension list` and upgraded one at a time so each third-party repository
   is age-checked individually. If the list cannot be read, nothing is upgraded.
 - **The gate dates the ref that is installed.** Bare
-  `gh extension upgrade <name>` installs the latest release for a *binary*
-  extension but pulls the default branch for a *script* extension, so dating
+  `gh extension upgrade <name>` installs the latest release for a _binary_
+  extension but pulls the default branch for a _script_ extension, so dating
   every extension by its latest release let a repo with a stale tag and an
-  active `main` pass the window while a ten-minute-old commit was installed.
-  The gate now resolves whichever ref `gh` would take and the upgrade pins to
-  it. A script extension's HEAD date is self-reported by the pusher — weaker
-  than a GitHub-stamped `published_at`, but it is the date of the artefact
-  actually installed. An extension whose ref cannot be dated is skipped and
-  reported.
+  active `main` pass the window while a ten-minute-old commit was installed. The
+  gate now resolves whichever ref `gh` would take and the upgrade pins to it. A
+  script extension's HEAD date is self-reported by the pusher — weaker than a
+  GitHub-stamped `published_at`, but it is the date of the artefact actually
+  installed. An extension whose ref cannot be dated is skipped and reported.
 
 ### Internal vs external classification
 
-Per the worker-side bump policy in, dependencies under
-`stSoftwareAU/*` are **internal** — bumped immediately, no quarantine, so that
-packages like FLEET stitch in the latest private-repo-14 without delay. All other
-dependencies (npm, JSR, crates.io, Maven Central, third-party GitHub Actions)
-are **external** and require the quarantine. A `packageRules` entry that
-*excludes* `stSoftwareAU/*` from the wait is the correct shape; a rule that
-gates internal deps is itself a misconfiguration to flag.
+Per the worker-side bump policy in, dependencies under `stSoftwareAU/*` are
+**internal** — bumped immediately, no quarantine, so that packages like FLEET
+stitch in the latest private-repo-14 without delay. All other dependencies (npm,
+JSR, crates.io, Maven Central, third-party GitHub Actions) are **external** and
+require the quarantine. A `packageRules` entry that _excludes_ `stSoftwareAU/*`
+from the wait is the correct shape; a rule that gates internal deps is itself a
+misconfiguration to flag.
 
 ### Threshold
 
@@ -159,27 +155,27 @@ on the worker — count as misconfigured.
 ### Finding classes
 
 The audit emits one of two finding classes — Claude itself files them via
-`gh issue create` from inside the scan, with the canonical
-`severity:<level>` / `confidence:<level>` label pair (see
+`gh issue create` from inside the scan, with the canonical `severity:<level>` /
+`confidence:<level>` label pair (see
 [Reading a filed finding issue](#reading-a-filed-finding-issue)) like every
 other finding:
 
-| Class                                     | Meaning                                                                                                                                                                                                                                                                                                  |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `supply-chain:quarantine-missing`         | No eligible quarantine config detected for one or more ecosystems in scope — e.g. a Dependabot-only repo with no compensating `bump-deps.sh`, or no auto-update tooling at all while third-party deps are present.                                                                                       |
-| `supply-chain:quarantine-misconfigured`   | Quarantine config is present but the window is shorter than `VIBE_BUMP_QUARANTINE_HOURS`, the rule does not cover every external ecosystem in scope (e.g. Renovate gates npm but not cargo), or the rule incorrectly gates internal `stSoftwareAU/*` packages (which must bypass the quarantine).        |
+| Class                                   | Meaning                                                                                                                                                                                                                                                                                           |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `supply-chain:quarantine-missing`       | No eligible quarantine config detected for one or more ecosystems in scope — e.g. a Dependabot-only repo with no compensating `bump-deps.sh`, or no auto-update tooling at all while third-party deps are present.                                                                                |
+| `supply-chain:quarantine-misconfigured` | Quarantine config is present but the window is shorter than `VIBE_BUMP_QUARANTINE_HOURS`, the rule does not cover every external ecosystem in scope (e.g. Renovate gates npm but not cargo), or the rule incorrectly gates internal `stSoftwareAU/*` packages (which must bypass the quarantine). |
 
 ### Hard rule: inspect-only, never auto-remediate
 
 The audit is read-only. It must never rewrite `renovate.json`,
-`.github/dependabot.yml`, `deno.json` / `deno.jsonc`, or `bump-deps.sh`, and
-it must never open a remediation PR — in particular it never runs
-`deno update` / `deno outdated --update`. Misconfigurations surface as a normal scanner-filed
+`.github/dependabot.yml`, `deno.json` / `deno.jsonc`, or `bump-deps.sh`, and it
+must never open a remediation PR — in particular it never runs `deno update` /
+`deno outdated --update`. Misconfigurations surface as a normal scanner-filed
 issue, which then flows through the standard Vibe Coder grill-me → planning →
 work-on pipeline. The same prompt-level "Must not modify the codebase"
-constraint that applies to every other Phase 2 finding applies here — the
-audit cites the offending lines and proposes a fix, but the worker leaves the
-actual edit to a downstream issue run after human triage.
+constraint that applies to every other Phase 2 finding applies here — the audit
+cites the offending lines and proposes a fix, but the worker leaves the actual
+edit to a downstream issue run after human triage.
 
 ## Triggers
 
@@ -218,12 +214,12 @@ sequenceDiagram
     Template-->>Main: close wrapper with "0 findings." / "Filed N issues: #A, #B, …" /<br/>"Newly-filed count unavailable …" (a snapshot lookup failed) + SARIF status
 ```
 
-The flowchart below summarises the same flow as a decision tree. The four
-phases (plan → detect → triage → file) sit in the middle of the chart; the
-primary output channel (Claude calling `gh issue create` from inside Phase 4)
-hangs off the file phase, the additive SARIF upload follows the before/after
-snapshot diff, and the wrapper close-comment is rendered from that diff plus the
-SARIF status line.
+The flowchart below summarises the same flow as a decision tree. The four phases
+(plan → detect → triage → file) sit in the middle of the chart; the primary
+output channel (Claude calling `gh issue create` from inside Phase 4) hangs off
+the file phase, the additive SARIF upload follows the before/after snapshot
+diff, and the wrapper close-comment is rendered from that diff plus the SARIF
+status line.
 
 ```mermaid
 flowchart TD
@@ -257,68 +253,67 @@ flowchart TD
 
 Wiring lives in `worker/deno/lib/run_core.ts`. After the priority dispatch and
 the Priority-2 issue scan, when no work was processed
-(`tracker.scanHadSuccess === false`) and the optional `runIdleTaskFiler` hook
-is wired in, the loop invokes the hook inside a `try/catch` so a filer failure
+(`tracker.scanHadSuccess === false`) and the optional `runIdleTaskFiler` hook is
+wired in, the loop invokes the hook inside a `try/catch` so a filer failure
 cannot abort the loop. The production wiring in `run_core_production_deps.ts`
 delegates to the `maybe-file-idle-task` Deno command.
 
 The command itself (`worker/deno/commands/maybe_file_idle_task.ts`) owns the
-rest of the decision tree (retired the in-process trigger and its
-state files — no last-scanned timestamps, no idle-cycle counter, no scan lock):
+rest of the decision tree (retired the in-process trigger and its state files —
+no last-scanned timestamps, no idle-cycle counter, no scan lock):
 
 1. **Repo availability sweep** — short-circuits if any monitored repo has
    claimable work.
 2. **Random repo selection** — shuffles `monitoredRepos` via a
    `crypto.getRandomValues`-backed Fisher-Yates and walks the result, picking
    the first repo with no open `idle-task` issue (label-only dedup).
-3. **File the human-style wrapper issue** — the
-   `security-scan` template files the wrapper as an issue that reads
-   like one a person would type:
+3. **File the human-style wrapper issue** — the `security-scan` template files
+   the wrapper as an issue that reads like one a person would type:
 
    - **Title:** the literal string `Run a security scan`.
-   - **Body:** the latest `prompts/security_scan/` template with
-     the three remaining placeholders (`{{SUPPRESSED_IDS}}`,
-     `{{KNOWN_OPEN_FINDING_IDS}}`, `{{OPEN_ISSUE_TITLES}}`) substituted
-     at file time — no hidden marker, no parameters block. The two dedup
-     lists render as `(none)` on the wrapper itself and are rebuilt from
-     live issues at claim time. Language detection now happens inside
-     the scanning agent during the Phase 1 inventory step (free-form
-     filesystem inspection), so the worker no longer substitutes a
-     language list at raise time. retired the `{{REPO_FULL_NAME}}`
-     placeholder; the worker's cwd is the cloned repo, so `gh issue
-     create` operates on the right one without an explicit `--repo`
-     argument.
-   - **Label:** the canonical `idle-task` label. retired
-     the `idle-task-pending` / `requiresApproval` approval gate;
-     `idle-task` is already the lowest priority in the queue, so a
-     separate approval step added no value.
-   - **No milestone** — the template sets `skipMilestone: true`, so the wrapper is filed as a standalone issue and never
-     gates a milestone-merge PR. See
+   - **Body:** the latest `prompts/security_scan/` template with the three
+     remaining placeholders (`{{SUPPRESSED_IDS}}`, `{{KNOWN_OPEN_FINDING_IDS}}`,
+     `{{OPEN_ISSUE_TITLES}}`) substituted at file time — no hidden marker, no
+     parameters block. The two dedup lists render as `(none)` on the wrapper
+     itself and are rebuilt from live issues at claim time. Language detection
+     now happens inside the scanning agent during the Phase 1 inventory step
+     (free-form filesystem inspection), so the worker no longer substitutes a
+     language list at raise time. retired the `{{REPO_FULL_NAME}}` placeholder;
+     the worker's cwd is the cloned repo, so `gh issue
+     create` operates on
+     the right one without an explicit `--repo` argument.
+   - **Label:** the canonical `idle-task` label. retired the `idle-task-pending`
+     / `requiresApproval` approval gate; `idle-task` is already the lowest
+     priority in the queue, so a separate approval step added no value.
+   - **No milestone** — the template sets `skipMilestone: true`, so the wrapper
+     is filed as a standalone issue and never gates a milestone-merge PR. See
      [Skipping the per-template milestone](IDLE-TASK-FRAMEWORK.md#skipping-the-per-template-milestone)
      in the framework manual.
 
    The next iteration of the main loop claims the issue through standard
    priority dispatch and the claim handler routes it to
-   `securityScanTemplate.runTask` by matching the issue title. The template also re-runs its `shouldFile` gate per repo
-   before filing: no fresh wrapper is created while open security
-   findings or an existing `Run a security scan` wrapper still exist.
+   `securityScanTemplate.runTask` by matching the issue title. The template also
+   re-runs its `shouldFile` gate per repo before filing: no fresh wrapper is
+   created while open security findings or an existing `Run a security scan`
+   wrapper still exist.
 
 ## No PR, ever
 
 A security-scan idle-task **never raises a pull request**, regardless of
-outcome. Every finding is filed as a standalone GitHub issue in the
-scanned repo; the wrapper idle-task issue is closed with a summary
-comment and nothing else. Because the template sets `skipMilestone:
-true`, the wrapper issue is not assigned to any milestone, so closing
-it never triggers the milestone-completion → merge-PR flow that
-ordinary milestone work uses. The only artefacts a scan produces are:
+outcome. Every finding is filed as a standalone GitHub issue in the scanned
+repo; the wrapper idle-task issue is closed with a summary comment and nothing
+else. Because the template sets `skipMilestone:
+true`, the wrapper issue is not
+assigned to any milestone, so closing it never triggers the milestone-completion
+→ merge-PR flow that ordinary milestone work uses. The only artefacts a scan
+produces are:
 
-1. **New finding issues** filed by Claude itself via `gh issue create`
-   from inside Phase 4 of the scan, capped at **6 standalone findings
-   per run** by the Phase 4 instructions in
+1. **New finding issues** filed by Claude itself via `gh issue create` from
+   inside Phase 4 of the scan, capped at **6 standalone findings per run** by
+   the Phase 4 instructions in
    [`prompts/security_scan/`](../prompts/security_scan/).
-2. **An overflow tracker** issue (label `security-scan-overflow`) when
-   survivors exceed the six-finding cap.
+2. **An overflow tracker** issue (label `security-scan-overflow`) when survivors
+   exceed the six-finding cap.
 3. **A SARIF 2.1.0 upload** of the same findings to the scanned repo's own
    GitHub code scanning — additive to the issues, never a replacement. See
    [SARIF publishing to code scanning](#sarif-publishing-to-code-scanning).
@@ -326,37 +321,35 @@ ordinary milestone work uses. The only artefacts a scan produces are:
    [Close-comment shape](#close-comment-shape) below.
 
 There is no separate Deno-side filer module any more — the previous
-`worker/deno/lib/security_issue_filer.ts` was retired in
-. The cap, label set, dedup-against-open-issues check,
-and in-code suppression check are all enforced by the Phase 4
-instructions Claude follows directly.
+`worker/deno/lib/security_issue_filer.ts` was retired in . The cap, label set,
+dedup-against-open-issues check, and in-code suppression check are all enforced
+by the Phase 4 instructions Claude follows directly.
 
-Auto-remediation is **out of scope** for the scanner. Fixes are filed
-as ordinary issues that flow through the normal triage → planning →
-work-on pipeline, where each fix is implemented and reviewed
-individually.
+Auto-remediation is **out of scope** for the scanner. Fixes are filed as
+ordinary issues that flow through the normal triage → planning → work-on
+pipeline, where each fix is implemented and reviewed individually.
 
 ## SARIF publishing to code scanning
 
 Findings are **also** published as a **SARIF 2.1.0** document uploaded to the
 scanned repo's GitHub **code scanning**. This closed a half-open loop: the
-worker already *consumed* code-scanning alerts via the `alert-feed` idle task
+worker already _consumed_ code-scanning alerts via the `alert-feed` idle task
 (see [`docs/IDLE-TASK-FRAMEWORK.md`](IDLE-TASK-FRAMEWORK.md)) but never
-*published* its own findings, so operators saw tool alerts and scanner issues on
+_published_ its own findings, so operators saw tool alerts and scanner issues on
 two unconnected surfaces.
 
 Three durable properties govern the surface:
 
 - **Additive, never a replacement.** The issue-filing path of Phase 4 is
-  unchanged. SARIF runs *after* the before/after issue diff and reads those same
+  unchanged. SARIF runs _after_ the before/after issue diff and reads those same
   issues back; if the upload is impossible the issues still stand on their own,
   and the wrapper task still succeeds.
 - **Per-repo.** The upload targets the scanned repo's own
   `POST repos/<owner>/<repo>/code-scanning/sarifs` endpoint. Nothing is
   centralised cross-repo — each repo owns and triages its own alerts.
-- **Fail-loud.** Every outcome is reported in the wrapper's close
-  comment. A missing code-scanning surface (403/404) is surfaced as its own
-  distinct state, never collapsed into a silent success.
+- **Fail-loud.** Every outcome is reported in the wrapper's close comment. A
+  missing code-scanning surface (403/404) is surfaced as its own distinct state,
+  never collapsed into a silent success.
 
 ```mermaid
 flowchart LR
@@ -374,18 +367,18 @@ flowchart LR
 
 ### What lands in the SARIF
 
-[`worker/deno/lib/security_sarif.ts`](../worker/deno/lib/security_sarif.ts) is
-a pure builder: it parses the filed issues back into structured findings and
-emits **one rule plus one result per finding**.
+[`worker/deno/lib/security_sarif.ts`](../worker/deno/lib/security_sarif.ts) is a
+pure builder: it parses the filed issues back into structured findings and emits
+**one rule plus one result per finding**.
 
-| SARIF field                            | Value                                                                        |
-| -------------------------------------- | ---------------------------------------------------------------------------- |
-| `runs[].tool.driver.name`              | `VibeCoder-security-scan`                                                    |
-| `rule.id` / `result.ruleId`            | the finding's stable `SEC-<hex>` id — the same id the issue body carries      |
-| `result.partialFingerprints`           | `vibeSecurityFindingId` = `SEC-<hex>`, so re-uploads update rather than clone |
-| `rule.properties.tags`                 | `security`, plus `external/cwe/cwe-<n>` when the issue carries a CWE marker   |
-| `rule.properties.security-severity`    | GHAS score derived from the triaged severity (table below)                    |
-| `result.locations`                     | present only when the issue title parsed a `<file>:<line>`; otherwise omitted (the finding is still reported, never dropped) |
+| SARIF field                         | Value                                                                                                                        |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `runs[].tool.driver.name`           | `VibeCoder-security-scan`                                                                                                    |
+| `rule.id` / `result.ruleId`         | the finding's stable `SEC-<hex>` id — the same id the issue body carries                                                     |
+| `result.partialFingerprints`        | `vibeSecurityFindingId` = `SEC-<hex>`, so re-uploads update rather than clone                                                |
+| `rule.properties.tags`              | `security`, plus `external/cwe/cwe-<n>` when the issue carries a CWE marker                                                  |
+| `rule.properties.security-severity` | GHAS score derived from the triaged severity (table below)                                                                   |
+| `result.locations`                  | present only when the issue title parsed a `<file>:<line>`; otherwise omitted (the finding is still reported, never dropped) |
 
 Severity mapping — the scanner's four triaged buckets drive both the SARIF level
 and the GHAS `security-severity` score:
@@ -411,15 +404,15 @@ request body exists, leaving no text for any sink-level redactor to scan. The
 `SEC-<hex>` finding id is not redacted — it is structurally constrained to
 `SEC-<alphanumeric>` and is the rule id and dedupe fingerprint.
 
-**CWE tagging.** The builder emits the GitHub-recognised
-`external/cwe/cwe-<n>` tag whenever a filed issue body carries a
-`<!-- cwe: CWE-<n> -->` marker directly after the `<!-- finding-id: SEC-… -->`
-marker, and those tags are what a future vulnerability-chaining pass (gap G3 of
-the [gap analysis](security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md))
+**CWE tagging.** The builder emits the GitHub-recognised `external/cwe/cwe-<n>`
+tag whenever a filed issue body carries a `<!-- cwe: CWE-<n> -->` marker
+directly after the `<!-- finding-id: SEC-… -->` marker, and those tags are what
+a future vulnerability-chaining pass (gap G3 of the
+[gap analysis](security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md))
 consumes. The `security_scan` prompt emits that marker, so rules built from a
 current run carry both `security` and `external/cwe/cwe-<n>`. Findings filed
-before the marker was added to the prompt carry the `security` tag only;
-uploads are unaffected either way.
+before the marker was added to the prompt carry the `security` tag only; uploads
+are unaffected either way.
 
 ### Upload mechanics
 
@@ -432,16 +425,16 @@ than guessed at), and POSTs via `gh api`.
 orchestrates the three steps and never throws — it returns one status line that
 the template appends to the wrapper close comment.
 
-| Status line appended to the close comment            | Meaning                                                                                        |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `SARIF: uploaded N findings to code scanning.`       | Success — the alerts are live on the repo's code-scanning tab.                                  |
-| `SARIF: skipped (0 findings).`                       | The run filed nothing, so there was nothing to publish.                                         |
-| `SARIF: skipped (no parseable findings).`            | Issues were filed but none carried a readable `SEC-<hex>` marker — check the Phase 4 body shape. |
-| `SARIF: not uploaded — <git error>`                  | The commit/ref could not be resolved (typically a detached HEAD in the clone).                   |
-| `SARIF: code scanning unavailable (HTTP 403\|404) — findings filed as issues only.` | Code scanning is off for the repo, or the token lacks `security_events`. Issues are unaffected. |
-| `SARIF: upload failed — <error>`                     | A hard API failure. The findings still exist as issues; the next scan re-uploads.                |
-| `SARIF: emission threw — <error>`                    | An unexpected fault inside the emitter. Same remedy — the issue path is unaffected.              |
-| `SARIF upload skipped — the newly-filed set is unknown.` | A before/after snapshot lookup failed (Issue #1105), so the run does not know which issues it filed and does not publish a partial document. The findings still exist as issues; the next scan uploads them. |
+| Status line appended to the close comment                                           | Meaning                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SARIF: uploaded N findings to code scanning.`                                      | Success — the alerts are live on the repo's code-scanning tab.                                                                                                                                               |
+| `SARIF: skipped (0 findings).`                                                      | The run filed nothing, so there was nothing to publish.                                                                                                                                                      |
+| `SARIF: skipped (no parseable findings).`                                           | Issues were filed but none carried a readable `SEC-<hex>` marker — check the Phase 4 body shape.                                                                                                             |
+| `SARIF: not uploaded — <git error>`                                                 | The commit/ref could not be resolved (typically a detached HEAD in the clone).                                                                                                                               |
+| `SARIF: code scanning unavailable (HTTP 403\|404) — findings filed as issues only.` | Code scanning is off for the repo, or the token lacks `security_events`. Issues are unaffected.                                                                                                              |
+| `SARIF: upload failed — <error>`                                                    | A hard API failure. The findings still exist as issues; the next scan re-uploads.                                                                                                                            |
+| `SARIF: emission threw — <error>`                                                   | An unexpected fault inside the emitter. Same remedy — the issue path is unaffected.                                                                                                                          |
+| `SARIF upload skipped — the newly-filed set is unknown.`                            | A before/after snapshot lookup failed (Issue #1105), so the run does not know which issues it filed and does not publish a partial document. The findings still exist as issues; the next scan uploads them. |
 
 ### Dedup: issues, SARIF alerts, and the `alert-feed` task
 
@@ -456,63 +449,60 @@ Three dedup mechanisms operate on different surfaces and do not overlap:
    (CodeQL, Dependabot) sit alongside them on the same triage surface.
 3. **`alert-feed` dedup** — the `alert-feed` idle task reads a repo's
    code-scanning and Dependabot feeds and files an issue per **new**
-   high/critical alert, deduping on its own
-   `<!-- alert-fingerprint: … -->` marker. Because the scanner's own alerts are
-   now on that feed, a high/critical scanner finding can be seen twice: once as
-   the Phase 4 issue and once, later, as an `alert-feed` issue derived from the
-   uploaded SARIF. Close the duplicate — they share the underlying finding, and
-   closing the scanner issue does not remove the code-scanning alert (dismiss
-   that on the code-scanning tab, or fix the code).
+   high/critical alert, deduping on its own `<!-- alert-fingerprint: … -->`
+   marker. Because the scanner's own alerts are now on that feed, a
+   high/critical scanner finding can be seen twice: once as the Phase 4 issue
+   and once, later, as an `alert-feed` issue derived from the uploaded SARIF.
+   Close the duplicate — they share the underlying finding, and closing the
+   scanner issue does not remove the code-scanning alert (dismiss that on the
+   code-scanning tab, or fix the code).
 
 ## Dedup against open and recently-closed findings
 
-The v5 prompt instructs Claude to skip findings whose stable
-`SEC-<hex>` id is already present in an issue body. Dedup now relies
-solely on `{{KNOWN_OPEN_FINDING_IDS}}`, the list the worker builds at
-prompt-build time from open issues the **fleet account authored**.
-Phase 4 no longer runs a live `gh issue list --search "SEC- in:body"`
-re-check: an issue body is attacker-writable, but its author is not,
-so a finding-id marker planted in an issue someone else filed must
-not be able to suppress a real finding (Issue #3045).
-`run-security-scan` builds that same list when
-`--known-open-finding-ids` is omitted, and unions the flag with the
-list when the flag is set. Findings whose
-id matches an entry in that fleet-filtered list are skipped — there
-is no in-place update path any more. The expectation is that the
-human operator triages the open issue (close it, fix it, or add a
-`security-scan-ignore: SEC-…` comment in the source); the next scan
-will re-detect the same root cause and either skip it (still open),
-re-file it (closed + re-introduced after the dedup window), or omit
-it entirely (suppression marker now present).
+The v5 prompt instructs Claude to skip findings whose stable `SEC-<hex>` id is
+already present in an issue body. Dedup now relies solely on
+`{{KNOWN_OPEN_FINDING_IDS}}`, the list the worker builds at prompt-build time
+from open issues the **fleet account authored**. Phase 4 no longer runs a live
+`gh issue list --search "SEC- in:body"` re-check: an issue body is
+attacker-writable, but its author is not, so a finding-id marker planted in an
+issue someone else filed must not be able to suppress a real finding (Issue
+#3045). `run-security-scan` builds that same list when
+`--known-open-finding-ids` is omitted, and unions the flag with the list when
+the flag is set. Findings whose id matches an entry in that fleet-filtered list
+are skipped — there is no in-place update path any more. The expectation is that
+the human operator triages the open issue (close it, fix it, or add a
+`security-scan-ignore: SEC-…` comment in the source); the next scan will
+re-detect the same root cause and either skip it (still open), re-file it
+(closed + re-introduced after the dedup window), or omit it entirely
+(suppression marker now present).
 
-Claude also receives three lists at prompt-build time so it can
-prune candidates before Phase 4 fires its `gh issue create` calls:
+Claude also receives three lists at prompt-build time so it can prune candidates
+before Phase 4 fires its `gh issue create` calls:
 
-- `{{KNOWN_OPEN_FINDING_IDS}}` — stable ids of currently-open
-  scanner-filed issues in the repo, read **repo-wide** from the
-  `<!-- finding-id: … -->` body marker regardless of label.
+- `{{KNOWN_OPEN_FINDING_IDS}}` — stable ids of currently-open scanner-filed
+  issues in the repo, read **repo-wide** from the `<!-- finding-id: … -->` body
+  marker regardless of label.
 - `{{OPEN_ISSUE_TITLES}}` — every open issue in the repo as
-  `#<number> — <title>`, again **repo-wide and label-blind**, so a
-  finding already tracked under another scan's label (or typed by a
-  human) is recognised semantically.
+  `#<number> — <title>`, again **repo-wide and label-blind**, so a finding
+  already tracked under another scan's label (or typed by a human) is recognised
+  semantically.
 - `{{SUPPRESSED_IDS}}` — stable ids appearing in an in-source
   `security-scan-ignore: SEC-…` comment (grammar in
   [`worker/deno/lib/suppression_comments.ts`](../worker/deno/lib/suppression_comments.ts)).
 
-Each renders `(none)` when empty. Suppressed and already-open findings
-are dropped **silently** in Phase 3 triage — never filed, and never
-commented on or cross-linked to the existing issue. Both dedup lists are
-bounded (300 titles, 200 finding-id bodies) and hitting the bound is
-logged loudly; see
+Each renders `(none)` when empty. Suppressed and already-open findings are
+dropped **silently** in Phase 3 triage — never filed, and never commented on or
+cross-linked to the existing issue. Both dedup lists are bounded (300 titles,
+200 finding-id bodies) and hitting the bound is logged loudly; see
 [Cross-label dedup](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)
 in the framework manual.
 
 ## Cloud permission chains (AWS IaC)
 
-A deterministic, static, read-only pre-scan looks for three concrete
-permission chains in AWS IAM roles declared in CloudFormation and Terraform.
-The worker walks the checkout and lists candidates in the prompt; Claude
-confirms every cited hop before anything is filed.
+A deterministic, static, read-only pre-scan looks for three concrete permission
+chains in AWS IAM roles declared in CloudFormation and Terraform. The worker
+walks the checkout and lists candidates in the prompt; Claude confirms every
+cited hop before anything is filed.
 
 **Scope.** AWS CloudFormation and Terraform only; IAM roles only; in-repo
 resources only. Nothing is probed live, no credentials are tested, and
@@ -533,22 +523,21 @@ flowchart TD
 
 - **`assume-role-escalation`** — the caller role may `sts:AssumeRole` into a
   target role through an identity-policy resource match. The target's trust
-  names the caller or the account root, and the target holds privileged
-  grants the caller lacks.
-- **`passrole-compute`** — the caller holds `iam:PassRole` on a target role
-  and a compute API that attaches or replaces a role (`lambda:CreateFunction`,
+  names the caller or the account root, and the target holds privileged grants
+  the caller lacks.
+- **`passrole-compute`** — the caller holds `iam:PassRole` on a target role and
+  a compute API that attaches or replaces a role (`lambda:CreateFunction`,
   `lambda:UpdateFunctionConfiguration`, `ec2:RunInstances`,
   `ec2:AssociateIamInstanceProfile`, `ecs:RunTask`,
-  `ecs:RegisterTaskDefinition`). The target's trust admits that service, and
-  the target holds privileged grants the caller lacks.
+  `ecs:RegisterTaskDefinition`). The target's trust admits that service, and the
+  target holds privileged grants the caller lacks.
 - **`ssm-send-command`** — the caller holds `ssm:SendCommand` covering the
-  run-command document and an in-repo instance, and that instance's profile
-  role holds privileged grants the caller lacks.
+  run-command document and an in-repo instance, and that instance's profile role
+  holds privileged grants the caller lacks.
 
-A lone `iam:PassRole`, `sts:AssumeRole` or `ssm:SendCommand` is never a
-finding. Each candidate line names the chain kind, the cited hops
-(`file:line`), the boundary, the conditions, the declared intent and the
-smallest fix.
+A lone `iam:PassRole`, `sts:AssumeRole` or `ssm:SendCommand` is never a finding.
+Each candidate line names the chain kind, the cited hops (`file:line`), the
+boundary, the conditions, the declared intent and the smallest fix.
 
 ### Deny, boundaries, conditions and unknowns
 
@@ -556,27 +545,27 @@ smallest fix.
 - A resolvable permissions boundary that excludes a hop removes that hop.
 - Conditions stay visible on the finding and do not remove a hop.
 - An unresolved external policy, boundary, trust principal or parameter makes
-  the chain `incomplete`. An incomplete chain is neither a proven exploit nor
-  a clean result: it is never filed, and it is never reported as clean.
+  the chain `incomplete`. An incomplete chain is neither a proven exploit nor a
+  clean result: it is never filed, and it is never reported as clean.
 - Claude checks the README, `docs/` and comments for declared intent. A chain
-  whose hops are required by documented intent is dropped, with the reason
-  kept in scratch notes.
+  whose hops are required by documented intent is dropped, with the reason kept
+  in scratch notes.
 
 ### Filing
 
 Each complete chain is filed as one `exploit-chain` finding tagged `CWE-269`.
-Its id is `SEC-` from class `exploit-chain`, the entry-hop file, and the
-snippet `<kind>|<caller>|<target>`. The constituent statements are not filed
-as separate issues; the `## Exploit chain` hops cite the IaC lines. The chain
-counts as one standalone finding against the 6-issue cap.
+Its id is `SEC-` from class `exploit-chain`, the entry-hop file, and the snippet
+`<kind>|<caller>|<target>`. The constituent statements are not filed as separate
+issues; the `## Exploit chain` hops cite the IaC lines. The chain counts as one
+standalone finding against the 6-issue cap.
 
 Before filing, the chain is deduplicated against the suppressed and known-open
 lists, and against open issues that already propose the same fix for the same
 role or resource. Where the checkout holds a Checkov report or SARIF for the
 same resource and defect, the finding cites its check id. The smallest fix
 scopes the target role or its resources, constrains the trust principal or its
-conditions, or removes the unneeded permission. It never recommends denying
-all deployment or SSM access.
+conditions, or removes the unneeded permission. It never recommends denying all
+deployment or SSM access.
 
 Plain wildcard and `PassRole` hygiene stays with the best-practices scan (see
 [BEST-PRACTICES-SCAN.md](BEST-PRACTICES-SCAN.md)). Issues #574 (credential
@@ -609,16 +598,15 @@ from the before/after snapshot diff:
   0 findings.
   ```
 
-  Emitted whenever the AFTER snapshot of open `security`-labelled
-  issues contains the same set as the BEFORE snapshot. Covers clean
-  scans, scans where every candidate was deduplicated against an
-  existing open finding, and scans where Claude failed before filing
-  anything. Emitted **only** when both snapshots were actually read —
-  see the unknown-count string below.
+  Emitted whenever the AFTER snapshot of open `security`-labelled issues
+  contains the same set as the BEFORE snapshot. Covers clean scans, scans where
+  every candidate was deduplicated against an existing open finding, and scans
+  where Claude failed before filing anything. Emitted **only** when both
+  snapshots were actually read — see the unknown-count string below.
 
-- **Unknown newly-filed count** (Issue #1105) — when either snapshot
-  lookup fails (a `gh` error, or a payload that will not parse), the
-  count is reported as unavailable rather than as zero:
+- **Unknown newly-filed count** (Issue #1105) — when either snapshot lookup
+  fails (a `gh` error, or a payload that will not parse), the count is reported
+  as unavailable rather than as zero:
 
   ```text
   Newly-filed count unavailable — an open-issue snapshot lookup failed, so
@@ -627,66 +615,64 @@ from the before/after snapshot diff:
   skipped — the newly-filed set is unknown.
   ```
 
-  A failed AFTER lookup used to render `0 findings.` with no SARIF
-  upload, indistinguishable from a genuinely clean scan; a failed BEFORE
-  lookup diffed to every open `security` issue and over-reported. Both
-  now render this string. The scan itself still ran and any findings
-  Claude filed remain open as issues — the run completes with
-  `ok: true`, and the failed lookup is logged by
+  A failed AFTER lookup used to render `0 findings.` with no SARIF upload,
+  indistinguishable from a genuinely clean scan; a failed BEFORE lookup diffed
+  to every open `security` issue and over-reported. Both now render this string.
+  The scan itself still ran and any findings Claude filed remain open as issues
+  — the run completes with `ok: true`, and the failed lookup is logged by
   `listOpenIssueNumbersByLabel`.
 
-- **One or more newly-filed findings** — a single line listing each
-  new issue number ascending:
+- **One or more newly-filed findings** — a single line listing each new issue
+  number ascending:
 
   ```text
   Security scan complete. Filed 2 issues:,
   ```
 
-  The issue numbers are sorted ascending so the comment is
-  deterministic across reruns and across workers.
+  The issue numbers are sorted ascending so the comment is deterministic across
+  reruns and across workers.
 
-- **Scanner failure** — when `runSecurityScan` returns an error, the
-  wrapper is closed with `security-scan failed: <kind> — <message>`.
-  A thrown error surfaces as `security-scan threw: <message>`.
+- **Scanner failure** — when `runSecurityScan` returns an error, the wrapper is
+  closed with `security-scan failed: <kind> — <message>`. A thrown error
+  surfaces as `security-scan threw: <message>`.
 
-On a **successful** run the SARIF status line is appended to
-whichever of the first two strings applies, giving e.g.
+On a **successful** run the SARIF status line is appended to whichever of the
+first two strings applies, giving e.g.
 `Security scan complete. Filed 2 issues:, SARIF: uploaded 2 findings
-to code scanning.` The failure strings return before the SARIF step, so they
-never carry one. See
-[SARIF publishing to code scanning](#sarif-publishing-to-code-scanning)
-for the full set of status lines.
+to code scanning.`
+The failure strings return before the SARIF step, so they never carry one. See
+[SARIF publishing to code scanning](#sarif-publishing-to-code-scanning) for the
+full set of status lines.
 
-The close-comment summary also appends one cloud permission-chain line,
-in the shape below. `<n>` is the number of complete candidates offered to
-Claude; `<m>` is the number of incomplete chains, which are logged as not
-checked and never filed.
+The close-comment summary also appends one cloud permission-chain line, in the
+shape below. `<n>` is the number of complete candidates offered to Claude; `<m>`
+is the number of incomplete chains, which are logged as not checked and never
+filed.
 
 ```text
 Cloud permission chains: <n> candidate(s) offered; <m> with incomplete evidence (not checked).
 ```
 
-The comment is posted by the idle-task claim handler when it closes
-the wrapper issue; it never opens a PR.
+The comment is posted by the idle-task claim handler when it closes the wrapper
+issue; it never opens a PR.
 
 ## State files
 
-There are none. retired the per-host state files
-(`security_scan_idle.json`, `security-scan-state.json`,
-`security_scan.lock`) — the idle-task filer picks a target by shuffling
-`monitoredRepos` and deduping against open `idle-task` issues, and the
-atomic claim machinery on the filed issue serialises the actual scan
-across workers. Removing the state files eliminates a class of stale-state
+There are none. retired the per-host state files (`security_scan_idle.json`,
+`security-scan-state.json`, `security_scan.lock`) — the idle-task filer picks a
+target by shuffling `monitoredRepos` and deduping against open `idle-task`
+issues, and the atomic claim machinery on the filed issue serialises the actual
+scan across workers. Removing the state files eliminates a class of stale-state
 bugs (orphaned locks, drifted last-scanned timestamps after a clock skew,
-counter desyncs after a crash) and makes the trigger trivially auditable
-from GitHub alone.
+counter desyncs after a crash) and makes the trigger trivially auditable from
+GitHub alone.
 
 ## Reading a filed finding issue
 
 Each finding is filed as its own GitHub issue in the scanned repo.
 
-**Title.** Format is `<emoji> <plain title>` where the emoji
-encodes the severity bucket so the issue list reads severity at a glance:
+**Title.** Format is `<emoji> <plain title>` where the emoji encodes the
+severity bucket so the issue list reads severity at a glance:
 
 | Emoji | Severity |
 | ----- | -------- |
@@ -695,9 +681,10 @@ encodes the severity bucket so the issue list reads severity at a glance:
 | 🟡    | medium   |
 | 🟢    | low      |
 
-The plain title is `<class> in <file>:<first-line>` — e.g. `🔴 injection:SQL in
-src/auth.ts:47`. Findings whose severity falls outside the four-bucket scheme
-(e.g. `Informational`) omit the emoji prefix.
+The plain title is `<class> in <file>:<first-line>` — e.g.
+`🔴 injection:SQL in
+src/auth.ts:47`. Findings whose severity falls outside the
+four-bucket scheme (e.g. `Informational`) omit the emoji prefix.
 
 **Labels.** Every filed issue is auto-tagged with both axes:
 
@@ -705,10 +692,10 @@ src/auth.ts:47`. Findings whose severity falls outside the four-bucket scheme
 - `confidence:high` | `confidence:medium` | `confidence:low`
 
 The labels are created on first use against the target repo if they don't
-already exist. The blanket `security` label is also applied (Phase 4 of the
-v5 prompt — `security` is the always-on label used by the wrapper's
-before/after snapshot diff to identify newly-filed findings). The worker is
-not authorised to apply workflow labels (`work-on`, `top-priority`, etc.);
+already exist. The blanket `security` label is also applied (Phase 4 of the v5
+prompt — `security` is the always-on label used by the wrapper's before/after
+snapshot diff to identify newly-filed findings). The worker is not authorised to
+apply workflow labels (`work-on`, `top-priority`, etc.);
 [`label_security.ts`](../worker/deno/lib/label_security.ts) strips any such
 label from a scanner-filed issue on each subsequent scan, so an accidental
 operational label cannot persist.
@@ -716,126 +703,117 @@ operational label cannot persist.
 The body has three parts (per the Phase 4 instructions in
 [`prompts/security_scan/`](../prompts/security_scan/)):
 
-1. **Marker comment** — `<!-- finding-id: SEC-<hex> -->` on its own
-   line at the top. The scanner reads this on every subsequent run to
-   dedup against open issues, so the same root cause never re-files.
+1. **Marker comment** — `<!-- finding-id: SEC-<hex> -->` on its own line at the
+   top. The scanner reads this on every subsequent run to dedup against open
+   issues, so the same root cause never re-files.
 2. **Prose lead** — names the file, lines, severity, and class, e.g.
    `SQL injection at src/api/orders.ts:47–52 — severity High,
    confidence Medium, class injection:SQL`.
-3. **Structured Markdown sections** — Claude emits only the sections
-   it has evidence for, in this order:
+3. **Structured Markdown sections** — Claude emits only the sections it has
+   evidence for, in this order:
    - `## Why it is a bug` — citation linking the relevant lines.
-   - `## Attacker model` — who can reach this surface and what they
-     already need.
-   - `## Trigger` — concrete request, payload, or sequence that
-     drives the bug.
-   - `## Exploit sketch` — what the attacker gains (data leak, RCE,
-     privilege bump, …).
-   - `## Suggested fix` — a one- or two-paragraph proposal that the
-     downstream issue run will treat as the starting point. A
-     regression test it proposes asserts the output on the trigger
-     input or counts deterministic work through an injected counter —
-     never a wall-clock ratio test, even in a repository whose standard
-     allows one as a last resort — and it names a precedent test file
-     or helper only after confirming it exists in the scanned
-     repository (Issue #3680).
+   - `## Attacker model` — who can reach this surface and what they already
+     need.
+   - `## Trigger` — concrete request, payload, or sequence that drives the bug.
+   - `## Exploit sketch` — what the attacker gains (data leak, RCE, privilege
+     bump, …).
+   - `## Suggested fix` — a one- or two-paragraph proposal that the downstream
+     issue run will treat as the starting point. A regression test it proposes
+     asserts the output on the trigger input or counts deterministic work
+     through an injected counter — never a wall-clock ratio test, even in a
+     repository whose standard allows one as a last resort — and it names a
+     precedent test file or helper only after confirming it exists in the
+     scanned repository (Issue #3680).
 
-**Secret values are redacted.** A finding about a hard-coded or
-committed secret cites it by `file:line` and shows at most the
-value's first four characters followed by `…` — never the full value
-(Issue #3047). The model files the issue body itself with `gh issue
-create`, so this rule is the primary control, carried by the Phase 4
-instructions rather than a worker-side scrub of the finding's prose.
-The agent's `gh issue create` call does pass through the gh guard
-shim's `redactGhBodyArgs` pass
-([`worker/deno/lib/gh_guard_cli.ts`](../worker/deno/lib/gh_guard_cli.ts)),
-which backstops the title and body on every call — but that pass is
-shape-based: it masks recognised credential formats (API keys,
-tokens) and not an arbitrary password or an unrecognised key, which is
-why the Phase 4 instruction above is still load-bearing rather than
-redundant.
+**Secret values are redacted.** A finding about a hard-coded or committed secret
+cites it by `file:line` and shows at most the value's first four characters
+followed by `…` — never the full value (Issue #3047). The model files the issue
+body itself with `gh issue
+create`, so this rule is the primary control, carried
+by the Phase 4 instructions rather than a worker-side scrub of the finding's
+prose. The agent's `gh issue create` call does pass through the gh guard shim's
+`redactGhBodyArgs` pass
+([`worker/deno/lib/gh_guard_cli.ts`](../worker/deno/lib/gh_guard_cli.ts)), which
+backstops the title and body on every call — but that pass is shape-based: it
+masks recognised credential formats (API keys, tokens) and not an arbitrary
+password or an unrecognised key, which is why the Phase 4 instruction above is
+still load-bearing rather than redundant.
 
-Operators who want to suppress the finding on future runs paste the
-in-source comment described in
+Operators who want to suppress the finding on future runs paste the in-source
+comment described in
 [`DESIGN-PRINCIPLES.md → Security scans`](../DESIGN-PRINCIPLES.md#security-scans):
 `security-scan-ignore: SEC-<id> — author=<login> expires=<YYYY-MM-DD> reason`.
 The grammar lives in
 [`worker/deno/lib/suppression_comments.ts`](../worker/deno/lib/suppression_comments.ts)
 and the next scan will pre-substitute the suppressed id into the
-`{{SUPPRESSED_IDS}}` placeholder so Claude drops the finding in
-Phase 3 triage.
+`{{SUPPRESSED_IDS}}` placeholder so Claude drops the finding in Phase 3 triage.
 
-Author, expiry, and reason are all **mandatory**. A marker
-missing any of them, carrying a malformed or past expiry, or naming an
-author outside a configured allowlist is parsed and reported but never
-suppresses — the finding stays visible rather than being waived forever.
-Every marker seen during a run is listed in that run's scan report as
-`Active suppressions (N): …` / `Rejected suppressions (N): …`.
+Author, expiry, and reason are all **mandatory**. A marker missing any of them,
+carrying a malformed or past expiry, or naming an author outside a configured
+allowlist is parsed and reported but never suppresses — the finding stays
+visible rather than being waived forever. Every marker seen during a run is
+listed in that run's scan report as `Active suppressions (N): …` /
+`Rejected suppressions (N): …`.
 
 A marker must also sit on a line of at most **2,000 characters**
-(`MAX_SUPPRESSION_LINE_CHARS`,) — the parser is fed
-attacker-influenced source on the worker's only thread, so the text any
-pattern sees is bounded. A longer line is skipped unparsed, which fails
-safe: the finding stays visible.
+(`MAX_SUPPRESSION_LINE_CHARS`,) — the parser is fed attacker-influenced source
+on the worker's only thread, so the text any pattern sees is bounded. A longer
+line is skipped unparsed, which fails safe: the finding stays visible.
 
 ## Overflow rollover
 
-A single run files at most **six** standalone findings. The cap is
-enforced by the Phase 4 instructions in
-[`prompts/security_scan/`](../prompts/security_scan/) — there
-is no hardcoded constant in Deno any more (the previous
-`MAX_FILED = 6` in `security_issue_filer.ts` was retired with that
-module in). When more than six findings survive triage,
-Claude files the top six (sorted severity → confidence → ease of
-exploit) as standalone `security` issues and rolls the remainder into
-a single **overflow tracker** issue so the follow-up scan knows what
-is still outstanding.
+A single run files at most **six** standalone findings. The cap is enforced by
+the Phase 4 instructions in
+[`prompts/security_scan/`](../prompts/security_scan/) — there is no hardcoded
+constant in Deno any more (the previous `MAX_FILED = 6` in
+`security_issue_filer.ts` was retired with that module in). When more than six
+findings survive triage, Claude files the top six (sorted severity → confidence
+→ ease of exploit) as standalone `security` issues and rolls the remainder into
+a single **overflow tracker** issue so the follow-up scan knows what is still
+outstanding.
 
-**When it is created.** Claude files the tracker from inside Phase 4
-in the same scan invocation that filed the first batch, but only when
-the post-triage survivors list contains more than six items.
+**When it is created.** Claude files the tracker from inside Phase 4 in the same
+scan invocation that filed the first batch, but only when the post-triage
+survivors list contains more than six items.
 
-`prompts/security_scan/prompt.md` carries a second
-trigger: Phase 2 stops sweeping lower-exposure chunks once the candidate set
-already exceeds roughly twice the cap, so a run may finish with chunks
-unswept. The tracker then also carries a `## Chunks not reached` section
-listing each one by number, name, exposure band and prior-sweep state (the
-two line shapes below) — and is filed for that reason alone, titled
-`security-scan-overflow: N chunks not reached`, even when six or fewer
-findings survived, whenever a chunk no earlier sweep recorded was left
-unswept. Genuinely unaudited code is therefore always visible in the filed
-output rather than silent.
+`prompts/security_scan/prompt.md` carries a second trigger: Phase 2 stops
+sweeping lower-exposure chunks once the candidate set already exceeds roughly
+twice the cap, so a run may finish with chunks unswept. The tracker then also
+carries a `## Chunks not reached` section listing each one by number, name,
+exposure band and prior-sweep state (the two line shapes below) — and is filed
+for that reason alone, titled `security-scan-overflow: N chunks not reached`,
+even when six or fewer findings survived, whenever a chunk no earlier sweep
+recorded was left unswept. Genuinely unaudited code is therefore always visible
+in the filed output rather than silent.
 
-**Two line shapes, because "unswept" is not one state (Issue #1614).**
-Phase 1 inventories what earlier sweeps already recorded —
+**Two line shapes, because "unswept" is not one state (Issue #1614).** Phase 1
+inventories what earlier sweeps already recorded —
 `docs/audits/security-sweep-*.md`, a sweep coverage ledger, closed
 `security-scan-overflow` issues — and dates each record with
 `git log -1 --format=%H -- <record>`, so
-`git diff --name-only <commit> HEAD -- <tree>` says which of its modules
-moved since. The worker's clones are shallow, so either command can come
-back empty or `fatal:`; an unanswerable history falls to never-recorded
-rather than reading as a clean sweep. Each unswept chunk is then written in
-whichever of these two shapes its modules put it in:
+`git diff --name-only <commit> HEAD -- <tree>` says which of its modules moved
+since. The worker's clones are shallow, so either command can come back empty or
+`fatal:`; an unanswerable history falls to never-recorded rather than reading as
+a clean sweep. Each unswept chunk is then written in whichever of these two
+shapes its modules put it in:
 
 ```text
 - <n>. <chunk name> (exposure: <band>) — never recorded
 - <n>. <chunk name> (exposure: <band>) — recorded in <record path> at <commit>; N modules changed since
 ```
 
-The title's `N` counts **only the never-recorded chunks**. A recorded,
-unchanged tree is listed for the reader but is already covered, so counting
-it would re-report an audited tree as unaudited — which is exactly what
-the #1608 tracker did to roughly a thousand recorded modules. The stopping
-rule drops previously-swept-and-unchanged chunks first for the same reason:
-the budget is better spent on a chunk no record covers. When every unswept
-chunk is recorded, `N` is zero and no tracker is filed for the stopping
-rule alone.
+The title's `N` counts **only the never-recorded chunks**. A recorded, unchanged
+tree is listed for the reader but is already covered, so counting it would
+re-report an audited tree as unaudited — which is exactly what the #1608 tracker
+did to roughly a thousand recorded modules. The stopping rule drops
+previously-swept-and-unchanged chunks first for the same reason: the budget is
+better spent on a chunk no record covers. When every unswept chunk is recorded,
+`N` is zero and no tracker is filed for the stopping rule alone.
 
 **Title and label.** The tracker issue is titled
-`security-scan-overflow: N unfiled findings`, where `N` is the size of
-the leftover slice. It carries the `security-scan-overflow` label
-only — neither the blanket `security` label nor any workflow label is
-applied.
+`security-scan-overflow: N unfiled findings`, where `N` is the size of the
+leftover slice. It carries the `security-scan-overflow` label only — neither the
+blanket `security` label nor any workflow label is applied.
 
 **Body format.** Claude renders the body with a fixed shape:
 
@@ -852,16 +830,15 @@ follow-up triage.
 - …
 ```
 
-Each bullet follows the pattern `- \`<id>\` — **<severity>** <class>
-in \`<file>\`: <summary>`.
+Each bullet follows the pattern `- \`<id>\` — **<severity>** <class> in
+\`<file>\`: <summary>`.
 
 **Follow-up processing.** The tracker is informational — it is not re-read by
 the scanner on the next run. A subsequent scan re-runs the full four-phase
 pipeline against the current source tree, so any finding that still exists in
-the code will simply be re-detected and re-filed unless its id is already in
-the fleet-authored known-open list built when the prompt is built, or the
-open-issue-titles check catches it.
-The operator workflow is therefore:
+the code will simply be re-detected and re-filed unless its id is already in the
+fleet-authored known-open list built when the prompt is built, or the
+open-issue-titles check catches it. The operator workflow is therefore:
 
 1. Triage the six filed issues — close, fix, or add a
    `security-scan-ignore: SEC-…` comment in the source for any false positives.
@@ -876,21 +853,20 @@ queue for the worker.
 
 **Bounded-sweep visibility.** After a tracker names chunks that were not
 reached, the coverage ledger at
-[`docs/audits/lib-sweep-coverage.json`](audits/lib-sweep-coverage.json)
-(with one file per top-up slice in
-[`docs/audits/lib-sweep-coverage/`](audits/lib-sweep-coverage/))
-is what tells a follow-up scan *which modules those chunks already read*,
-and at which commit. `deno run … mod.ts sweep-drift` prints, for every
-slice, the modules added or modified since that slice's `sweptAt` — the
-file list a delta sweep regenerates from, rather than from stale counts
-in an overflow issue. Drift is a report, not a merge gate: rewriting a
-swept module must not turn CI red. A ledger root may itself be a single
-file rather than a directory, owned as-is with no further walk — this is
-how the root-level launcher scripts (`loop.sh`, `run.sh`, `setup.sh`,
-`quality.sh` and their `.ps1` counterparts) are tracked (#2760).
+[`docs/audits/lib-sweep-coverage.json`](audits/lib-sweep-coverage.json) (with
+one file per top-up slice in
+[`docs/audits/lib-sweep-coverage/`](audits/lib-sweep-coverage/)) is what tells a
+follow-up scan _which modules those chunks already read_, and at which commit.
+`deno run … mod.ts sweep-drift` prints, for every slice, the modules added or
+modified since that slice's `sweptAt` — the file list a delta sweep regenerates
+from, rather than from stale counts in an overflow issue. Drift is a report, not
+a merge gate: rewriting a swept module must not turn CI red. A ledger root may
+itself be a single file rather than a directory, owned as-is with no further
+walk — this is how the root-level launcher scripts (`loop.sh`, `run.sh`,
+`setup.sh`, `quality.sh` and their `.ps1` counterparts) are tracked (#2760).
 
-**Create top-ups with the existing `sweep-drift` command (Issue #3976).**
-From `worker/deno/`, run:
+**Create top-ups with the existing `sweep-drift` command (Issue #3976).** From
+`worker/deno/`, run:
 
 ```sh
 deno run --allow-all mod.ts sweep-drift --repo /path/to/repo --record-top-up /path/to/payload.json
@@ -902,33 +878,33 @@ producer owns `chunk` and `sweptAt`: it resolves the actual remote default,
 fetches it explicitly even in a narrow clone, deepens shallow history if needed,
 and calculates the merge-base with HEAD. It reuses the existing ancestry
 validator, file lock and atomic writer. Missing Git/history/ref/tool or I/O
-results return `Sweep record unavailable`, with no passing coverage record.
-The command returns success only after validating and writing the record.
+results return `Sweep record unavailable`, with no passing coverage record. The
+command returns success only after validating and writing the record.
 
-Repeated generation is idempotent. Existing records keep their original
-coverage horizon, even when main advances; only `claimed` → `swept` may update
-with the same scope, after the audit is actually complete. A changed list needs
-a new issue/top-up. Existing invalid records are refused without modification:
-use the historical repoint procedure below, preserving its original landed
-coverage rather than replacing it with today's tip. Never edit a SHA manually
-to make a new top-up pass. The CI ancestry guard remains required
-and catches invalid records written outside this supported producer. The
-pre-push sweptAt check was removed (Issue #4234).
+Repeated generation is idempotent. Existing records keep their original coverage
+horizon, even when main advances; only `claimed` → `swept` may update with the
+same scope, after the audit is actually complete. A changed list needs a new
+issue/top-up. Existing invalid records are refused without modification: use the
+historical repoint procedure below, preserving its original landed coverage
+rather than replacing it with today's tip. Never edit a SHA manually to make a
+new top-up pass. The CI ancestry guard remains required and catches invalid
+records written outside this supported producer. The pre-push sweptAt check was
+removed (Issue #4234).
 
 **`sweptAt` is a commit reachable from the default branch.** For a new record
 the supported producer takes it from the default-branch merge-base at
-list-generation time. When repointing an existing slice use the commit the record *landed* at on `main` —
+list-generation time. When repointing an existing slice use the commit the
+record _landed_ at on `main` —
 `git log --diff-filter=A -1 --format=%H origin/main -- <record>`, the commit
 that added it, not the last commit to touch it, so a later edit to the record
 cannot skip drift. For a per-issue top-up, `<record>` is the local
 `docs/audits/lib-sweep-coverage/top-up-<issue>.json` file, even when the
 `ledger` provenance field is a GitHub issue URL; do not pass that URL as a git
 pathspec. Never a feature-branch commit: squash-merge deletes it, so
-`git diff <sweptAt> HEAD` later dies with
-`fatal: bad object …` and the whole drift report fails. `driftSince` wraps that
-git exit in a `SweepLedgerError` naming the slice, its `sweptAt` and this
-remedy, so the failure says which slice to repoint rather than only what git
-said (#2178).
+`git diff <sweptAt> HEAD` later dies with `fatal: bad object …` and the whole
+drift report fails. `driftSince` wraps that git exit in a `SweepLedgerError`
+naming the slice, its `sweptAt` and this remedy, so the failure says which slice
+to repoint rather than only what git said (#2178).
 
 **A top-up records `git merge-base origin/main HEAD`, never a branch commit.**
 The branch's own `HEAD` resolves while its PR is open, so nothing notices until
@@ -944,32 +920,35 @@ still open.
 
 ### Producer/build evidence and deployment verification
 
-The [17 October failed run for #3647](https://github.com/stSoftwareAU/VibeCoder/issues/3647#issuecomment-6236914974)
+The
+[17 October failed run for #3647](https://github.com/stSoftwareAU/VibeCoder/issues/3647#issuecomment-6236914974)
 identifies `top-up-3647` and branch-only `sweptAt`
 `a6d4f8b330039754b02a3211ce409f7ae00cf4b4`. That commit is the target
 repository's implementation commit, not an observed worker build. Its public
 commit message includes run ID `vibe-mvcjltbg-9e39f5`; the public failure and
-claim comments do not record the installed worker SHA or prompt revision.
-Those build values are unavailable, so this evidence does not attribute the
-historical recurrence to current main or prove a deployment is fixed.
+claim comments do not record the installed worker SHA or prompt revision. Those
+build values are unavailable, so this evidence does not attribute the historical
+recurrence to current main or prove a deployment is fixed.
 
-The source path reviewed at base `90a8da73bdd8266f15ac150f4f84dd568b5e7876`
-had agent-authored JSON and manual SHA guidance in the security-scan prompt;
+The source path reviewed at base `90a8da73bdd8266f15ac150f4f84dd568b5e7876` had
+agent-authored JSON and manual SHA guidance in the security-scan prompt;
 `sweep-drift` only read/reported records and the completion pre-push check
 rejected the invalid SHA. No deterministic record-creation tool was wired to
-that prompt. This change repairs that path: prompt → existing `sweep-drift
---record-top-up` command → existing ledger validation/ancestry guard → atomic
-record. Historical agent transcripts and the installed prompt revision were
-not available; the source trace is not a claim to have recovered those logs.
+that prompt. This change repairs that path: prompt → existing
+`sweep-drift
+--record-top-up` command → existing ledger validation/ancestry
+guard → atomic record. Historical agent transcripts and the installed prompt
+revision were not available; the source trace is not a claim to have recovered
+those logs.
 
 After merging #3976, record the PR's actual merge SHA and the deployed worker's
-source/artifact SHA, and verify the installed checkout contains that change
-(or its documented build provenance). The package's `1.0.0` string alone does
-not identify a build. Exercise the documented command in a disposable feature
-clone with a payload lacking `chunk`/`sweptAt`, then run the existing ancestry
-check and repeat generation: its record must keep the same SHA and bytes.
-The real-git regression also covers a shallow feature-only clone and later
-squash/default advances. No live fleet deployment is claimed by these fixtures.
+source/artifact SHA, and verify the installed checkout contains that change (or
+its documented build provenance). The package's `1.0.0` string alone does not
+identify a build. Exercise the documented command in a disposable feature clone
+with a payload lacking `chunk`/`sweptAt`, then run the existing ancestry check
+and repeat generation: its record must keep the same SHA and bytes. The real-git
+regression also covers a shallow feature-only clone and later squash/default
+advances. No live fleet deployment is claimed by these fixtures.
 
 ```mermaid
 flowchart LR
@@ -980,42 +959,41 @@ flowchart LR
 ```
 
 **Adding a top-up slice.** A module that enters the ledger roots after the
-chunk-12 slices recorded their coverage gets its own slice, with its own
-written record under `docs/audits/`. The slice is **its own file,
+chunk-12 slices recorded their coverage gets its own slice, with its own written
+record under `docs/audits/`. The slice is **its own file,
 `docs/audits/lib-sweep-coverage/top-up-<issue>.json`**, holding one slice
 object, not a new entry at the end of `lib-sweep-coverage.json`: every PR that
-added a module used to append to that one array, so any two open PRs
-conflicted there, whereas two PRs adding two files never do.
-`readCoverageLedger` reads the ledger file plus every file in that directory;
-a file not named after its own issue fails, so does anything in that
-directory that is not a regular file (a subdirectory or a symlink), and the
-parser refuses any slice for an issue after #3200 in the ledger file itself,
-whatever its chunk id, naming the directory. Its `chunk` id is **`top-up-<issue>`**
-(`topUpChunkId` in `worker/deno/lib/lib_sweep_coverage.ts`), never the next
-letter after the ledger's tail: two runs working in parallel read the same
-tail and so choose the same next letter, which is how #1940 and #1943 both
-picked `12aa` and one slice was dropped in the resolution, turning `main` red
-(#1968, #1966). Deriving the id from the issue makes the collision impossible,
-because two runs never work the same issue. `parseCoverageLedger` refuses a
-ledger with a repeated `chunk` id, a repeated `issue`, or a `top-up-<issue>` id
-that names another slice's issue, so a collision fails on the PR that
-introduces it; and a conflicted `docs/audits/*.json` is unioned
-by value (`json_insertion_union.ts`), so two slices appended in the same window
-reconcile with both present rather than one survivor.
+added a module used to append to that one array, so any two open PRs conflicted
+there, whereas two PRs adding two files never do. `readCoverageLedger` reads the
+ledger file plus every file in that directory; a file not named after its own
+issue fails, so does anything in that directory that is not a regular file (a
+subdirectory or a symlink), and the parser refuses any slice for an issue after
+#3200 in the ledger file itself, whatever its chunk id, naming the directory.
+Its `chunk` id is **`top-up-<issue>`** (`topUpChunkId` in
+`worker/deno/lib/lib_sweep_coverage.ts`), never the next letter after the
+ledger's tail: two runs working in parallel read the same tail and so choose the
+same next letter, which is how #1940 and #1943 both picked `12aa` and one slice
+was dropped in the resolution, turning `main` red (#1968, #1966). Deriving the
+id from the issue makes the collision impossible, because two runs never work
+the same issue. `parseCoverageLedger` refuses a ledger with a repeated `chunk`
+id, a repeated `issue`, or a `top-up-<issue>` id that names another slice's
+issue, so a collision fails on the PR that introduces it; and a conflicted
+`docs/audits/*.json` is unioned by value (`json_insertion_union.ts`), so two
+slices appended in the same window reconcile with both present rather than one
+survivor.
 
 ## Vulnerability taxonomy covered
 
-From the `prompts/security_scan/` v16 prompt the Phase 2 taxonomy
-is organised around the **OWASP Top 10 2025**
-(https://owasp.org/Top10/2025/): each class below is tagged with its
-`A0N:2025` category id+name, and every one of the ten 2025 categories — Broken
-Access Control (A01, with SSRF now merged in), Security Misconfiguration (A02),
-Software Supply Chain Failures (A03), Cryptographic Failures (A04), Injection
-(A05), Insecure Design (A06), Authentication Failures (A07), Software or Data
-Integrity Failures (A08), Security Logging and Alerting Failures (A09), and the
-new Mishandling of Exceptional Conditions (A10) — is represented. The deep
-supply-chain checklist (A03) is cross-referenced to the dedicated
-`supply_chain_readiness` and `github_actions_audit` tasks rather than
+From the `prompts/security_scan/` v16 prompt the Phase 2 taxonomy is organised
+around the **OWASP Top 10 2025** (https://owasp.org/Top10/2025/): each class
+below is tagged with its `A0N:2025` category id+name, and every one of the ten
+2025 categories — Broken Access Control (A01, with SSRF now merged in), Security
+Misconfiguration (A02), Software Supply Chain Failures (A03), Cryptographic
+Failures (A04), Injection (A05), Insecure Design (A06), Authentication Failures
+(A07), Software or Data Integrity Failures (A08), Security Logging and Alerting
+Failures (A09), and the new Mishandling of Exceptional Conditions (A10) — is
+represented. The deep supply-chain checklist (A03) is cross-referenced to the
+dedicated `supply_chain_readiness` and `github_actions_audit` tasks rather than
 duplicated.
 
 The Phase 2 prompt instructs Claude to cover every applicable class from this
@@ -1024,26 +1002,25 @@ list:
 - **Memory safety** — OOB reads/writes, UAF, double free, integer overflow,
   unsafe FFI, missing bounds checks.
 - **Injection** — SQL, command, LDAP, XPath, header (CRLF), log forgery.
-- **Server-side template injection (SSTI)** — user input rendered as a
-  template expression by Jinja, ERB, Twig, Handlebars, or Liquid without
-  strict separation of template source from user data.
-- **XSS** — reflected, stored, and DOM-based XSS where user input is
-  reflected into HTML, JS, or attribute context without contextual encoding
-  for the target sink.
-- **CSRF** — state-changing endpoint authenticating via session cookie
-  without an anti-CSRF token, double-submit cookie, or `SameSite=Strict`
-  attribute.
+- **Server-side template injection (SSTI)** — user input rendered as a template
+  expression by Jinja, ERB, Twig, Handlebars, or Liquid without strict
+  separation of template source from user data.
+- **XSS** — reflected, stored, and DOM-based XSS where user input is reflected
+  into HTML, JS, or attribute context without contextual encoding for the target
+  sink.
+- **CSRF** — state-changing endpoint authenticating via session cookie without
+  an anti-CSRF token, double-submit cookie, or `SameSite=Strict` attribute.
 - **XXE** — XML parser configured to resolve external entities.
-- **Mass assignment** — model populated directly from request body without
-  an allowlist of writable fields.
-- **Authentication gaps** — missing or skipped authentication on a
-  privileged endpoint, broken password-reset flow (predictable or
-  guessable token, no expiry), session fixation, missing MFA on admin
-  paths, weak or missing cert/signature validation.
-- **Authorisation gaps** — IDOR, broken function-level authorisation (role
-  check enforced only by the UI), tenant boundary leakage, missing
-  object-ownership checks on `update`/`delete`, JWT/session weaknesses
-  (none-alg, no expiry, predictable IDs).
+- **Mass assignment** — model populated directly from request body without an
+  allowlist of writable fields.
+- **Authentication gaps** — missing or skipped authentication on a privileged
+  endpoint, broken password-reset flow (predictable or guessable token, no
+  expiry), session fixation, missing MFA on admin paths, weak or missing
+  cert/signature validation.
+- **Authorisation gaps** — IDOR, broken function-level authorisation (role check
+  enforced only by the UI), tenant boundary leakage, missing object-ownership
+  checks on `update`/`delete`, JWT/session weaknesses (none-alg, no expiry,
+  predictable IDs).
 - **Deserialisation / parser confusion** — unsafe `pickle` /
   `ObjectInputStream`, polyglot bugs, YAML/XML expansion bombs, prototype
   pollution.
@@ -1071,18 +1048,18 @@ list:
   CSP on an authenticated app.
 - **Missing rate limiting** — login, password reset, OTP, sensitive API
   endpoints without per-actor throttling.
-- **Security logging & alerting failures (A09)** — auth/authz denials
-  swallowed by a `catch`/`except` block without logging, privileged or
-  state-changing endpoints with no audit-log call on the security path, a
-  logging framework configured to drop security events (level above the
-  event, disabled audit appender), and log sinks with no integrity
-  protection (forge/erase). Precision-first: every finding cites a concrete
-  code path; no blanket "no logging found" finding. Secrets/PII in logs are
-  filed once under the A04 **Secrets** class, cross-referenced here.
+- **Security logging & alerting failures (A09)** — auth/authz denials swallowed
+  by a `catch`/`except` block without logging, privileged or state-changing
+  endpoints with no audit-log call on the security path, a logging framework
+  configured to drop security events (level above the event, disabled audit
+  appender), and log sinks with no integrity protection (forge/erase).
+  Precision-first: every finding cites a concrete code path; no blanket "no
+  logging found" finding. Secrets/PII in logs are filed once under the A04
+  **Secrets** class, cross-referenced here.
 - **Node tooling in a Deno repo (regression)** — Node-only tooling growing
-  inside a Deno repo. Phase 1 records the **dual-marker** state:
-  when both Deno markers (`deno.json`, `deno.jsonc`, `deno.lock`) and Node
-  markers (`package.json`) are present, the repo is classified as **Deno** for
+  inside a Deno repo. Phase 1 records the **dual-marker** state: when both Deno
+  markers (`deno.json`, `deno.jsonc`, `deno.lock`) and Node markers
+  (`package.json`) are present, the repo is classified as **Deno** for
   remediation purposes, and Phase 2 may file a regression finding. A Node-only
   repo (no Deno markers) is still Node and this class does not apply. The
   finding is filed at `severity:medium` with a cited offending path, covering a
@@ -1095,16 +1072,16 @@ list:
   pre-existing Node files are left alone — only growing Node-only tooling is in
   scope.
 
-- **Cloud permission chains (AWS IaC)** — an AssumeRole escalation, a
-  PassRole launch through compute, or an SSM SendCommand into a more privileged
-  instance role, traced across CloudFormation and Terraform IAM. Filed as one
+- **Cloud permission chains (AWS IaC)** — an AssumeRole escalation, a PassRole
+  launch through compute, or an SSM SendCommand into a more privileged instance
+  role, traced across CloudFormation and Terraform IAM. Filed as one
   `exploit-chain` finding (`CWE-269`). See
   [Cloud permission chains (AWS IaC)](#cloud-permission-chains-aws-iac).
 
 ### OWASP GenAI / LLM Top 10 (2025) — LLM-using repos only
 
-From the `prompts/security_scan/` v17 prompt onward (parent)
-the Phase 2 taxonomy also covers the **OWASP GenAI / LLM Top 10 (2025)**
+From the `prompts/security_scan/` v17 prompt onward (parent) the Phase 2
+taxonomy also covers the **OWASP GenAI / LLM Top 10 (2025)**
 (https://genai.owasp.org/llm-top-10/). These ten classes — Prompt Injection
 (LLM01), Sensitive Information Disclosure (LLM02), Supply Chain (LLM03), Data
 and Model Poisoning (LLM04), Improper Output Handling (LLM05), Excessive Agency
@@ -1117,24 +1094,23 @@ code. Findings still file through the standard Phase-4 path with the usual
 
 LLM-usage is decided by the shared, precision-first detection rule in
 [`worker/deno/lib/llm_usage_detection.ts`](../worker/deno/lib/llm_usage_detection.ts)
-(also used by the generic gate, — one mechanism, not two). A repo is
-flagged only on a concrete integration signal in **code or dependency
-manifests**, never on prose, the repo **name**, or mentions in `docs/`,
-`README`, or examples:
+(also used by the generic gate, — one mechanism, not two). A repo is flagged
+only on a concrete integration signal in **code or dependency manifests**, never
+on prose, the repo **name**, or mentions in `docs/`, `README`, or examples:
 
 - **Primary** — a declared LLM client SDK dependency (`@anthropic-ai/sdk`, the
   Claude Agent SDK, `openai`, `@google/genai`, `cohere-ai`, `@mistralai/*`,
   `langchain` / `@langchain/*`, `llamaindex`; Python `anthropic`, `openai`,
   `google-generativeai`, `litellm`).
 - **Secondary** — a live LLM API host, endpoint, or model id in source
-  (`api.anthropic.com`, `api.openai.com`,
-  `generativelanguage.googleapis.com`, `/v1/messages`,
-  `/v1/chat/completions`, or model ids `claude-*`, `gpt-4*`, `gemini-*`).
+  (`api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`,
+  `/v1/messages`, `/v1/chat/completions`, or model ids `claude-*`, `gpt-4*`,
+  `gemini-*`).
 
 When no signal is present the LLM section is skipped entirely (skip on absence).
 
-**The worker computes this verdict deterministically and supplies
-it to the prompt.** `runSecurityScan` in
+**The worker computes this verdict deterministically and supplies it to the
+prompt.** `runSecurityScan` in
 [`worker/deno/lib/security_scanner.ts`](../worker/deno/lib/security_scanner.ts)
 calls `detectLlmUsageForRepo(repo, workDir)` against the clone and substitutes
 the authoritative `LLM-using = YES|NO` verdict into the prompt's `{{LLM_GATE}}`
@@ -1150,33 +1126,33 @@ The allowlist is kept deliberately narrow (precision-first; VibeCoder only,
 "until we work out a better way"). In practice VibeCoder also self-identifies by
 genuine source signals (`api.anthropic.com` / `/v1/messages` and `claude-*`
 model ids in `worker/deno/lib/`), so the floor and the signals agree. Its four
-highest-value LLM surfaces are called out for
-priority audit: untrusted issue/comment ingestion → prompt (LLM01, the
-`BOUNDARY_*` wrap and the `prompt_*` builders), prompt-template construction and
-system-prompt exposure (LLM07/LLM01), tool-call / agent scope and label-security
-enforcement (LLM06, `label_security.ts`), and secret handling (LLM02).
+highest-value LLM surfaces are called out for priority audit: untrusted
+issue/comment ingestion → prompt (LLM01, the `BOUNDARY_*` wrap and the
+`prompt_*` builders), prompt-template construction and system-prompt exposure
+(LLM07/LLM01), tool-call / agent scope and label-security enforcement (LLM06,
+`label_security.ts`), and secret handling (LLM02).
 
 ## Operator playbook
 
-| Symptom                                                                      | What to do                                                                                                                                                                     |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Symptom                                                                          | What to do                                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Worker logs `[idle-task] action=skipped reason=existing_wrapper_open` repeatedly | A `Run a security scan` wrapper (or any other `idle-task` issue) is already open in that repo — one per repository is the limit (Issue #1083). A `scope=repo` line names the repo and issue that held it; `scope=monitored_set` means every monitored repo holds one. Let the worker claim and close them, or close one by hand — the filer resumes on the next idle pass. |
-| Worker logs `[idle-task] action=skipped reason=all_repos_cooled_down` | Every monitored repo is inside its 24-hour per-repo cooldown window. No action needed; the idle-task filer will resume after a repo's window expires. |
-| Worker logs `[idle-task] … reason=output_backlog label=security count=N` | A monitored repo already has six or more open `security`-labelled findings from a previous scan. Triage the existing batch — close, fix, or add `security-scan-ignore` comments — and the next idle pass will resume scanning that repo. |
-| Worker logs `[idle-task] … reason=pending_results` | The `security-scan` template's `shouldFile` returned `false` — either an open security finding or an existing `Run a security scan` wrapper still exists. Same remedy: triage the open work first. |
-| Wrapper closed with `0 findings.`                                            | Either the scan was clean or every candidate was deduplicated against an existing open `security` issue. No action needed unless that pattern persists when you expect new findings. |
-| Wrapper closed with `Newly-filed count unavailable …`                        | A before/after snapshot `gh` lookup failed or returned an unparseable payload (Issue #1105). The scan ran and any findings it filed are open as issues — only the count and the SARIF upload were lost. Check the log for the matching `[idle-task-snapshot] list security numbers:` line; the next scan re-uploads. |
-| Wrapper closed with `security-scan failed: …` or `security-scan threw: …`    | The scanner exited non-zero, timed out, or threw before finishing. Inspect the worker log for the matching `[security-scan]` lines; the run will be retried on the next idle pass once the repo's cooldown window expires. |
-| Filed finding looks wrong                                                    | Either close the issue (dedup reads only the worker-built, fleet-authored `{{KNOWN_OPEN_FINDING_IDS}}` list, so a closed fleet issue no longer suppresses the finding), or add a `security-scan-ignore: SEC-… — reason` comment at the cited line so future scans skip it. |
-| Scan filed a `security-scan-overflow` tracker                                | Resolve the six filed issues, then wait for the next idle trigger to run another batch against the same repo.                                                                  |
-| Scan filed a `security-scan-overflow: N chunks not reached` tracker | The bounded sweep stopped early. Plan follow-up work for the chunks listed `— never recorded` only; a chunk listed `— recorded in <record path> at <commit>` with `0 modules changed since` is already covered by that record and needs no action. A recorded chunk with a non-zero count needs only its changed modules re-swept. |
-| Wrapper comment ends `SARIF: code scanning unavailable (HTTP 403\|404) …`    | Code scanning is disabled for that repo, or the worker token lacks the `security_events` scope. Enable code scanning (or grant the scope) if you want the alerts; the findings are already filed as issues either way. |
-| Wrapper comment ends `SARIF: not uploaded — git symbolic-ref …`              | The clone is on a detached HEAD, so no ref could be attributed. Nothing to do — the next scan on an attached branch uploads normally.                                          |
-| Worker-generated alerts appear on a repo's code-scanning tab | Expected since — they are this scanner's findings, published as SARIF under the `VibeCoder-security-scan` tool. Dismiss them there (closing the matching `security` issue does not clear an alert), or fix the code. |
+| Worker logs `[idle-task] action=skipped reason=all_repos_cooled_down`            | Every monitored repo is inside its 24-hour per-repo cooldown window. No action needed; the idle-task filer will resume after a repo's window expires.                                                                                                                                                                                                                      |
+| Worker logs `[idle-task] … reason=output_backlog label=security count=N`         | A monitored repo already has six or more open `security`-labelled findings from a previous scan. Triage the existing batch — close, fix, or add `security-scan-ignore` comments — and the next idle pass will resume scanning that repo.                                                                                                                                   |
+| Worker logs `[idle-task] … reason=pending_results`                               | The `security-scan` template's `shouldFile` returned `false` — either an open security finding or an existing `Run a security scan` wrapper still exists. Same remedy: triage the open work first.                                                                                                                                                                         |
+| Wrapper closed with `0 findings.`                                                | Either the scan was clean or every candidate was deduplicated against an existing open `security` issue. No action needed unless that pattern persists when you expect new findings.                                                                                                                                                                                       |
+| Wrapper closed with `Newly-filed count unavailable …`                            | A before/after snapshot `gh` lookup failed or returned an unparseable payload (Issue #1105). The scan ran and any findings it filed are open as issues — only the count and the SARIF upload were lost. Check the log for the matching `[idle-task-snapshot] list security numbers:` line; the next scan re-uploads.                                                       |
+| Wrapper closed with `security-scan failed: …` or `security-scan threw: …`        | The scanner exited non-zero, timed out, or threw before finishing. Inspect the worker log for the matching `[security-scan]` lines; the run will be retried on the next idle pass once the repo's cooldown window expires.                                                                                                                                                 |
+| Filed finding looks wrong                                                        | Either close the issue (dedup reads only the worker-built, fleet-authored `{{KNOWN_OPEN_FINDING_IDS}}` list, so a closed fleet issue no longer suppresses the finding), or add a `security-scan-ignore: SEC-… — reason` comment at the cited line so future scans skip it.                                                                                                 |
+| Scan filed a `security-scan-overflow` tracker                                    | Resolve the six filed issues, then wait for the next idle trigger to run another batch against the same repo.                                                                                                                                                                                                                                                              |
+| Scan filed a `security-scan-overflow: N chunks not reached` tracker              | The bounded sweep stopped early. Plan follow-up work for the chunks listed `— never recorded` only; a chunk listed `— recorded in <record path> at <commit>` with `0 modules changed since` is already covered by that record and needs no action. A recorded chunk with a non-zero count needs only its changed modules re-swept.                                         |
+| Wrapper comment ends `SARIF: code scanning unavailable (HTTP 403\|404) …`        | Code scanning is disabled for that repo, or the worker token lacks the `security_events` scope. Enable code scanning (or grant the scope) if you want the alerts; the findings are already filed as issues either way.                                                                                                                                                     |
+| Wrapper comment ends `SARIF: not uploaded — git symbolic-ref …`                  | The clone is on a detached HEAD, so no ref could be attributed. Nothing to do — the next scan on an attached branch uploads normally.                                                                                                                                                                                                                                      |
+| Worker-generated alerts appear on a repo's code-scanning tab                     | Expected since — they are this scanner's findings, published as SARIF under the `VibeCoder-security-scan` tool. Dismiss them there (closing the matching `security` issue does not clear an alert), or fix the code.                                                                                                                                                       |
 
-For deeper internals (e.g. modifying the prompt, raising the
-six-finding cap, adding a new vulnerability class) read
-[`prompts/security_scan/`](../prompts/security_scan/) and
-the modules linked above. Edit `prompts/security_scan/prompt.md` in
-place — git history is the record. The cap, label set, and
-per-finding body shape all live in the prompt, not in Deno code.
+For deeper internals (e.g. modifying the prompt, raising the six-finding cap,
+adding a new vulnerability class) read
+[`prompts/security_scan/`](../prompts/security_scan/) and the modules linked
+above. Edit `prompts/security_scan/prompt.md` in place — git history is the
+record. The cap, label set, and per-finding body shape all live in the prompt,
+not in Deno code.

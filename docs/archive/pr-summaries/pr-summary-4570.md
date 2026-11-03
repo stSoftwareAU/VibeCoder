@@ -82,8 +82,9 @@ Issue numbers cited: #4570 (this issue), #1775 (milestone skip note, existing),
   PR-body resync (`buildSyncedPrBodyCandidate`); both covered by a test above.
   The completion test now also checks the note's position; no assertion removed.
 - Existing text re-read: the milestone skip note and `rejected_*` comments are
-  unchanged and still true. `worker/deno/tests/pr_review_brief_own_bump_4522_test.ts`
-  pins the reworded guidelines sentence and passes at the head (2 tests passed).
+  unchanged and still true.
+  `worker/deno/tests/pr_review_brief_own_bump_4522_test.ts` pins the reworded
+  guidelines sentence and passes at the head (2 tests passed).
 - `deno fmt --check` on `docs/INTERNALS.md`, `docs/TROUBLESHOOTING.md` and
   `prompts/coding_guidelines/prompt.md` already fails on the base copies; not
   reformatted.

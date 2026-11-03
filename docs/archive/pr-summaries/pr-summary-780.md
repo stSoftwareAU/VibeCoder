@@ -43,8 +43,8 @@ Closes #780.
 
 ## Evidence
 
-Prompt-content change with no runtime surface to screenshot. The evidence is
-the drift test, and the carve-out exercised against the real code.
+Prompt-content change with no runtime surface to screenshot. The evidence is the
+drift test, and the carve-out exercised against the real code.
 
 The two rules, and where each applies:
 
@@ -93,11 +93,12 @@ every file in `worker/deno/tests` (0 errors), markdownlint and the
 - **status** — `verified` — the carve-out is exercised, not quoted:
   `verifyOperationalLabels` is called with a timeline in which this worker
   applied both `needs-human` and `planning`, and returns `needs-human` trusted
-  and `planning` untrusted. The list drift is asserted across all eight
-  surfaces and was watched failing on four of them before the change
+  and `planning` untrusted. The list drift is asserted across all eight surfaces
+  and was watched failing on four of them before the change
 - **regression test** —
   `worker/deno/tests/reserved_label_prompt_drift_test.ts::reserved labels - the code trusts a needs-human this worker applied (Issue #780)`
-  and `::reserved labels - every template publishes the same membership (Issue #780)`
+  and
+  `::reserved labels - every template publishes the same membership (Issue #780)`
 
 ## Acceptance Criteria
 
@@ -106,8 +107,8 @@ item is closed out here. Judged in an operator review of the whole diff, not by
 reviewer sub-agents.
 
 - **met** — prompt text only; no change to `label_security.ts`,
-  `escape_hatch_label_strip.ts`, `reserved_label_strip.ts` or
-  `RESERVED_LABELS` — evidence: the diff touches none of them
+  `escape_hatch_label_strip.ts`, `reserved_label_strip.ts` or `RESERVED_LABELS`
+  — evidence: the diff touches none of them
 - **met** — every template stating the self-apply rule says exactly what the
   code does — evidence: each new version states the trust carve-out for an
   existing issue and the post-creation strip for a filed one;
@@ -120,45 +121,45 @@ reviewer sub-agents.
 - **met** — no prompt claims a worker-applied `needs-human` is "silently
   stripped by the `label_security` check" — evidence: the same case, whose
   corrective test deliberately matches the exact claims rather than the word
-  "trusted", because every one of these paragraphs already says
-  "trusted-author allowlist" about a different set of people
+  "trusted", because every one of these paragraphs already says "trusted-author
+  allowlist" about a different set of people
 - **met** — one canonical list; all seven templates carry byte-identical
   membership, each shipped as a new version — evidence: the seven new versions
   and `::every template publishes the same membership (Issue #780)`
 - **met** — a drift test that fails when any prompt's list diverges — evidence:
-  the six cases, which read the *latest* version of each template through
+  the six cases, which read the _latest_ version of each template through
   `getLatestVersion` / `loadPrompt`, so a future version is covered without
   editing the test
-- **partial** — "each shipped as a new version file whose H1 version matches
-  the filename (#792)" — evidence: none of these seven templates declares a
-  version in an H1 at all (each opens with `{{VERBOSITY_INSTRUCTIONS}}` and a
-  mode heading) — reason: there is no H1 version to keep in step here; the
-  sweep that adds or fixes those declarations stays with #792, as the issue
-  says
+- **partial** — "each shipped as a new version file whose H1 version matches the
+  filename (#792)" — evidence: none of these seven templates declares a version
+  in an H1 at all (each opens with `{{VERBOSITY_INSTRUCTIONS}}` and a mode
+  heading) — reason: there is no H1 version to keep in step here; the sweep that
+  adds or fixes those declarations stays with #792, as the issue says
 
 - **unrequested** — `RESERVED_LABEL_PROHIBITION` in `planning_processor.ts` —
   reason: it is an eighth publication of the same list with the same false
   reason, injected into sub-issue instructions on the in-code fallback publish
   path. Leaving it would have meant "one canonical list" with a divergent copy
-  still shipping. It is prompt *text*, not behaviour — the excluded modules
-  are untouched
+  still shipping. It is prompt _text_, not behaviour — the excluded modules are
+  untouched
 - **unrequested** — `grill-me/v16` — reason: its list membership was already
   canonical, so the issue's own analysis did not expect a new version. But its
   label-policy bullet names `needs-human` and `label_security` stripping in one
   breath, which is the exact ambiguity being removed — and Step 5b's whole
   hand-off depends on the carve-out. The drift test found it
-- **unrequested** — three test files were adjusted, all found by CI rather
-  than by the affected-subset run here — evidence:
-  `issue_prompt_v39_independent_review_test.ts` (an exact `latest === "v39"`
-  pin that `issue/v40` makes false; relaxed to "v39 or newer" exactly as #778
-  did for `ci_fix`, with every contract assertion untouched), and
-  `reserved_label_warning_v2826_test.ts`'s two `states reserved labels are
-  silently stripped` cases — reason: the second pair was **my** wording error,
-  not a stale test. The reword had dropped "silently", which is accurate for
-  the nine labels; it is restored, and only what was wrong — `needs-human`'s
-  membership and its reason — is changed. The full suite was then run
-  (16,736 passed; the 17 failures are the known pwsh-and-container-runtime
-  environment cases, unrelated)
+- **unrequested** — three test files were adjusted, all found by CI rather than
+  by the affected-subset run here — evidence:
+  `issue_prompt_v39_independent_review_test.ts` (an exact `latest === "v39"` pin
+  that `issue/v40` makes false; relaxed to "v39 or newer" exactly as #778 did
+  for `ci_fix`, with every contract assertion untouched), and
+  `reserved_label_warning_v2826_test.ts`'s two
+  `states reserved labels are
+  silently stripped` cases — reason: the second
+  pair was **my** wording error, not a stale test. The reword had dropped
+  "silently", which is accurate for the nine labels; it is restored, and only
+  what was wrong — `needs-human`'s membership and its reason — is changed. The
+  full suite was then run (16,736 passed; the 17 failures are the known
+  pwsh-and-container-runtime environment cases, unrelated)
 - **unrequested** — two documentation references — evidence:
   `docs/SPEC-KIT-COMPARISON.md:56` (now the directory-only form the standard
   prescribes) and the #762 audit's citation of `coding_guidelines/v42.md:453`
@@ -177,15 +178,15 @@ reviewer sub-agents.
   operational but not in `RESERVED_LABELS` and `work-on` is the reverse. Naming
   one set would have made the test lie about the other
 - **violation** — the passage extractor parses markdown with regexes over a
-  bounded window — evidence:
-  `reserved_label_prompt_drift_test.ts` `listPassages` — reason: stands. The
-  artefact under test is prose in two shapes (an inline parenthesised list and
-  a bulleted one); the window is bounded, a passage only counts as a list when
-  it names at least three canonical labels, and every case names the offending
-  template and passage on failure
-- **clean** — no behaviour changed: `verifyOperationalLabels` and the strips
-  are read by the test, never modified, and the only non-prompt edit is a
-  string constant that is itself prompt text
+  bounded window — evidence: `reserved_label_prompt_drift_test.ts`
+  `listPassages` — reason: stands. The artefact under test is prose in two
+  shapes (an inline parenthesised list and a bulleted one); the window is
+  bounded, a passage only counts as a list when it names at least three
+  canonical labels, and every case names the offending template and passage on
+  failure
+- **clean** — no behaviour changed: `verifyOperationalLabels` and the strips are
+  read by the test, never modified, and the only non-prompt edit is a string
+  constant that is itself prompt text
 
 ## Test Plan
 

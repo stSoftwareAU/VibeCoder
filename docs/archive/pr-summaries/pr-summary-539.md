@@ -87,5 +87,5 @@ the old query shape:
   known-open look-up on `--label best-practices`; it now dispatches on
   `--json number,body`.
 - `tests/alert_feed_enable_issue_test.ts` — `createGhFake` filtered every list
-  by `--label`; a `--label`-less list now returns every open issue, as real
-  `gh` does.
+  by `--label`; a `--label`-less list now returns every open issue, as real `gh`
+  does.

@@ -31,8 +31,8 @@ Closes #668.
 
 ## Evidence
 
-Backend/CLI change — no web surface to screenshot. The evidence is the test
-run: each new case was observed failing against the unfixed ordering and passing
+Backend/CLI change — no web surface to screenshot. The evidence is the test run:
+each new case was observed failing against the unfixed ordering and passing
 after the fix (see **Reproduction**).
 
 ```mermaid
@@ -50,13 +50,15 @@ sequenceDiagram
     S-->>T: write `terminated` marker, exit 143
 ```
 
-The invariant both stubs now keep: **trap installed → record written → work**.
-A test that sees the record can signal safely at any point after it.
+The invariant both stubs now keep: **trap installed → record written → work**. A
+test that sees the record can signal safely at any point after it.
 
 ## Reproduction
 
-- **symptom** — `run.sh - propagates SIGTERM to the container and reports its
-  status` failed in CI with
+- **symptom** —
+  `run.sh - propagates SIGTERM to the container and reports its
+  status` failed
+  in CI with
   `NotFound: … readfile '/tmp/vibe_launcher_test_*/record/terminated'`: the stub
   was signalled before its TERM trap existed, so it died without writing the
   marker.
@@ -67,7 +69,9 @@ A test that sees the record can signal safely at any point after it.
 - **regression test** —
   `worker/deno/tests/launcher_signal_readiness_test.ts::deno stub - a TERM in
   the window after the run-entrypoint record still writes the marker (Issue
-  #668)` and `::run.sh - a SIGTERM held while the launch is in flight reaches
+  #668)`
+  and
+  `::run.sh - a SIGTERM held while the launch is in flight reaches
   the container (Issue #668)`.
 
 The second, narrower cause — a signal landing between `… &` and `CHILD_PID=$!`
@@ -75,8 +79,9 @@ inside `run.sh` — is fixed but not separately reproduced: that window is a
 single assignment wide in the parent shell and cannot be hit deterministically
 from outside the process. It is covered indirectly by
 `::run.sh - a SIGTERM before any container exists still fails loud (Issue
-#668)`, which proves the new hold path neither swallows a signal nor hangs the
-launcher when there is no child to forward to.
+#668)`,
+which proves the new hold path neither swallows a signal nor hangs the launcher
+when there is no child to forward to.
 
 ## Test Plan
 
@@ -96,7 +101,8 @@ launcher when there is no child to forward to.
   `run_core_rate_limit_resume_test.ts` abort on their simulated
   `API rate limit already exceeded` fixture, and
   `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
-  dir is restaged writable` asserts on a permission this sandbox cannot revoke.
-  The same suite was run at the pre-change commit for comparison: 58 failures
-  before, 58 after (with the 4 new cases passing), and the failing set drifts
-  between runs under parallel load. No launcher case is among them.
+  dir is restaged writable`
+  asserts on a permission this sandbox cannot revoke. The same suite was run at
+  the pre-change commit for comparison: 58 failures before, 58 after (with the 4
+  new cases passing), and the failing set drifts between runs under parallel
+  load. No launcher case is among them.

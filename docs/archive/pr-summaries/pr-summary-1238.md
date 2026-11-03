@@ -13,22 +13,24 @@ directory let it read the token at 0644 for the width of the write. The
 `catch {}` around the loop then moved a partially-staged credential quietly to
 the next candidate. Closes #1238.
 
-- `productionIo.writeFile` now writes through `file_utils`' `atomicWriteSync`:
-  a kernel-random sibling created with `createNew` (`O_EXCL`) at mode 0600 and
+- `productionIo.writeFile` now writes through `file_utils`' `atomicWriteSync`: a
+  kernel-random sibling created with `createNew` (`O_EXCL`) at mode 0600 and
   renamed over the target. `rename(2)` **replaces** a planted symlink rather
   than following it, and the token is never on disk at any other mode.
-- The staging directory is chmod'ed `0700` **before** the credential is
-  written. `mkdir` accepts an existing directory of any mode or ownership
-  silently, so ordering is the security property — and doing it first also
-  refuses a candidate another uid owns or symlinked, because `chmod` belongs to
-  the owner alone.
+- The staging directory is chmod'ed `0700` **before** the credential is written.
+  `mkdir` accepts an existing directory of any mode or ownership silently, so
+  ordering is the security property — and doing it first also refuses a
+  candidate another uid owns or symlinked, because `chmod` belongs to the owner
+  alone.
 - The write probe in `isWritableDir` uses a `crypto.randomUUID()` suffix and
   `createNew`, removing the arbitrary-truncation primitive that the fixed
   `.vibe-write-probe` name gave on every path it probed.
-- A candidate that fails now emits a `[SECURITY] cannot stage the gh
-  credential into …` warning instead of being swallowed.
-- `atomicWrite`/`atomicWriteSync` accept `Uint8Array` content, so the
-  credential bytes reach disk without a lossy decode round-trip.
+- A candidate that fails now emits a
+  `[SECURITY] cannot stage the gh
+  credential into …` warning instead of being
+  swallowed.
+- `atomicWrite`/`atomicWriteSync` accept `Uint8Array` content, so the credential
+  bytes reach disk without a lossy decode round-trip.
 
 ```mermaid
 flowchart LR
@@ -46,8 +48,8 @@ flowchart LR
 ## Evidence
 
 Backend/CLI change with no web interface to screenshot; the evidence is the
-regression suite driving the real functions against a real filesystem
-(temporary directories, real symlinks, real modes).
+regression suite driving the real functions against a real filesystem (temporary
+directories, real symlinks, real modes).
 
 Added `worker/deno/tests/gh_credential_symlink_1238_test.ts`, which reproduces
 the flaw. It **fails against the unfixed code and passes after the fix** — the
@@ -75,27 +77,26 @@ lint, type check, fmt, semgrep, markdownlint).
 
 ### The original trigger is closed, with no trivial bypass
 
-The issue's trigger is
-`ln -s /path/to/read /tmp/vibe-gh-config/hosts.yml` (or pre-creating the
-staging directory at 0755). Both are closed by the changed code path:
+The issue's trigger is `ln -s /path/to/read /tmp/vibe-gh-config/hosts.yml` (or
+pre-creating the staging directory at 0755). Both are closed by the changed code
+path:
 
-- **The symlink is never followed.** The write no longer touches
-  `hosts.yml`'s name with a create; it creates
-  `hosts.yml.tmp.<randomUUID>` with `createNew` (`O_EXCL`, so any pre-existing
-  path — link included — fails the create rather than being opened) and then
-  `rename(2)`s it over `hosts.yml`. `rename` operates on the directory entry,
-  so a link at the target is unlinked, never traversed. The equivalent-bypass
-  candidates are covered: the temp name is kernel-random and therefore not
-  pre-positionable; a **hard** link at `hosts.yml` is likewise replaced by the
-  rename, leaving the other name's contents untouched; and after the fix the
-  attacker cannot even enumerate the directory, because it is 0700 before the
-  first byte is written.
-- **The 0644 read window is closed.** The file exists at mode 0600 from
-  creation (`Deno.openSync(..., { createNew: true, mode })` plus a defensive
-  `chmod` of the temp file before the rename), so there is no moment at which
-  it carries the umask's mode.
-- **The pre-created hostile directory is refused, loudly.** The `chmod` to
-  0700 runs before the write; on a directory owned by another uid it fails with
+- **The symlink is never followed.** The write no longer touches `hosts.yml`'s
+  name with a create; it creates `hosts.yml.tmp.<randomUUID>` with `createNew`
+  (`O_EXCL`, so any pre-existing path — link included — fails the create rather
+  than being opened) and then `rename(2)`s it over `hosts.yml`. `rename`
+  operates on the directory entry, so a link at the target is unlinked, never
+  traversed. The equivalent-bypass candidates are covered: the temp name is
+  kernel-random and therefore not pre-positionable; a **hard** link at
+  `hosts.yml` is likewise replaced by the rename, leaving the other name's
+  contents untouched; and after the fix the attacker cannot even enumerate the
+  directory, because it is 0700 before the first byte is written.
+- **The 0644 read window is closed.** The file exists at mode 0600 from creation
+  (`Deno.openSync(..., { createNew: true, mode })` plus a defensive `chmod` of
+  the temp file before the rename), so there is no moment at which it carries
+  the umask's mode.
+- **The pre-created hostile directory is refused, loudly.** The `chmod` to 0700
+  runs before the write; on a directory owned by another uid it fails with
   `EPERM`, the candidate is abandoned with nothing written, and the failure is
   warned rather than swallowed.
 - **The probe primitive is gone.** `isWritableDir` writes
@@ -108,16 +109,16 @@ staging directory at 0755). Both are closed by the changed code path:
 Added `worker/deno/tests/gh_credential_symlink_1238_test.ts`:
 
 - `worker/deno/tests/gh_credential_symlink_1238_test.ts::restageGhConfigDir - a symlink planted at hosts.yml is replaced, never followed`
-  — the regression test for the reported flaw: real temp dirs, a real symlink
-  at the staged `hosts.yml`, and an assertion that the victim file is untouched
-  and the staged path is a regular file holding the credential.
+  — the regression test for the reported flaw: real temp dirs, a real symlink at
+  the staged `hosts.yml`, and an assertion that the victim file is untouched and
+  the staged path is a regular file holding the credential.
 - `worker/deno/tests/gh_credential_symlink_1238_test.ts::restageGhConfigDir - the credential is never readable at the umask's mode`
   — a pre-existing 0755 staging directory ends at 0700 with the file at 0600.
 - `worker/deno/tests/gh_credential_symlink_1238_test.ts::restageGhConfigDir - the directory is tightened before the token is written`
   — pins the ordering, which both orders' end states otherwise hide.
 - `worker/deno/tests/gh_credential_symlink_1238_test.ts::restageGhConfigDir - a refused candidate is reported, not swallowed`
-  — a chmod refusal warns, writes nothing into that candidate, and falls
-  through to the next.
+  — a chmod refusal warns, writes nothing into that candidate, and falls through
+  to the next.
 - `worker/deno/tests/gh_credential_symlink_1238_test.ts::isGhConfigDirUsable - the write probe does not truncate a planted target`
   — a link at the old fixed probe name no longer truncates its target.
 

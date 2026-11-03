@@ -2,9 +2,9 @@
 
 ## Summary
 
-A `container_start` escalation filed from a Windows host named the phase and
-the exit status and nothing about why: `run.ps1` let the runtime client's
-stderr be inherited by the console and kept it nowhere, so the recorder had no
+A `container_start` escalation filed from a Windows host named the phase and the
+exit status and nothing about why: `run.ps1` let the runtime client's stderr be
+inherited by the console and kept it nowhere, so the recorder had no
 `--launch-log` to hand over. That is exactly the report Issue #711 was, on the
 launcher #711 did not touch.
 
@@ -15,9 +15,9 @@ capture file. On exit status **125**, **126** or **127** (the statuses
 `container_start` escalation) that capture is handed over as `--launch-log`, so
 the report carries the runtime's own refusal. Any other status came from a
 container that started, so its output is never quoted as launch evidence, and
-`Exit-Launcher` deletes the capture only *after* the outcome has been recorded.
+`Exit-Launcher` deletes the capture only _after_ the outcome has been recorded.
 
-Pumping *is* the wait, which is what makes this work on .NET:
+Pumping _is_ the wait, which is what makes this work on .NET:
 `Register-ObjectEvent` handlers do not run while the runspace is blocked in
 `WaitForExit`, so an event-based tee would buffer the container's console output
 for the whole run, and `StandardError.ReadToEnd()` deadlocks a long run
@@ -70,8 +70,10 @@ flowchart LR
 - **symptom** — a Windows host's `container_start` escalation carried the exit
   status and the line ruling out worker code, and no cause; the runtime's own
   refusal went to the console and nowhere else
-- **status** — `verified` — `run.ps1 - a refused container start quotes the
-  runtime client's own stderr (Issue #720)` failed against the unfixed launcher
+- **status** — `verified` —
+  `run.ps1 - a refused container start quotes the
+  runtime client's own stderr (Issue #720)`
+  failed against the unfixed launcher
   (`AssertionError: a container_start escalation with no evidence: … container-restart-backoff --exit-status 125`)
   and passes after the fix, for every status in `CONTAINER_START_EXIT_CODES`
 - **regression test** —
@@ -79,9 +81,10 @@ flowchart LR
 
 The watchdog regression the review found was reproduced the same way:
 `run.ps1 - keeps reaping a container that outruns the watchdog while it is still
-writing (Issue #720)` took **37s** against the first cut of the pump (the reap
-waited for the container to fall quiet) and **6s** after the deadline was moved
-to the top of the loop.
+writing (Issue #720)`
+took **37s** against the first cut of the pump (the reap waited for the
+container to fall quiet) and **6s** after the deadline was moved to the top of
+the loop.
 
 ## Acceptance Criteria
 
@@ -93,7 +96,7 @@ to the top of the loop.
   `worker/deno/tests/run_ps1_launcher_test.ts::the client's stderr reaches the console while the container is still running (Issue #720)`
   — reviewer: partial — reason: the reviewer marked it partial because the pump
   runs on the waiting thread rather than a background runspace; the behaviour
-  the criterion asks for (live console output *and* a capture) is delivered, and
+  the criterion asks for (live console output _and_ a capture) is delivered, and
   the consequence the reviewer named — a dropped wall-clock deadline check — was
   a real defect, now fixed and covered by the watchdog test above
 - **met** — the capture is handed over as `--launch-log` only for the statuses
@@ -104,9 +107,9 @@ to the top of the loop.
   — reviewer: met
 - **met** — `run_ps1_launcher_test.ts` gains the counterparts of the `run.sh`
   tests added in #711 — evidence:
-  `worker/deno/tests/run_ps1_launcher_test.ts:659-780` — reviewer: met —
-  reason: the reviewer could only note them as CI-verified; they were run here
-  against PowerShell 7.6.5 and are green (output above)
+  `worker/deno/tests/run_ps1_launcher_test.ts:659-780` — reviewer: met — reason:
+  the reviewer could only note them as CI-verified; they were run here against
+  PowerShell 7.6.5 and are green (output above)
 - **met** — `docs/workflows/resilience-and-concurrency.md` drops the sentence
   saying Windows does not capture the stream yet — evidence:
   `docs/workflows/resilience-and-concurrency.md:133,135` — reviewer: met
@@ -115,11 +118,12 @@ to the top of the loop.
   unrequested — reason: mirrors `run.sh:1100-1122`; without it a runtime helper
   that inherited the client's stderr holds the pump open after the client is
   gone, which is the wedge the watchdog exists to end
-- **unrequested** — a fourth test, `the stderr capture leaves nothing behind in
-  the temporary directory` — evidence:
-  `worker/deno/tests/run_ps1_launcher_test.ts:825` — reviewer: unrequested —
-  reason: mirrors the same `run.sh` test; a capture leaked per launch would fill
-  the host the launcher exists to keep launching
+- **unrequested** — a fourth test,
+  `the stderr capture leaves nothing behind in
+  the temporary directory` —
+  evidence: `worker/deno/tests/run_ps1_launcher_test.ts:825` — reviewer:
+  unrequested — reason: mirrors the same `run.sh` test; a capture leaked per
+  launch would fill the host the launcher exists to keep launching
 - **unrequested** — the watchdog regression test and the harness's
   `STUB_RUN_STDERR_REPEAT` writer — evidence:
   `worker/deno/tests/run_ps1_launcher_test.ts:781`,
@@ -164,44 +168,48 @@ to the top of the loop.
   drain needs a grandchild holding the client's stderr open. `run.sh` carries
   the same two paths untested for the same reason; both fail loud on stderr when
   they fire
-- **violation** (spec reviewer, minor) — the capture leaks if
-  `[Process]::Start` itself throws — evidence: `run.ps1:955` — reason: stands.
-  Start throwing means the runtime binary disappeared between the launch plan
-  and the launch; the launcher fails loudly and leaves one empty temp file.
-  Wrapping the start would change this launcher's failure semantics, which is
-  outside this issue
+- **violation** (spec reviewer, minor) — the capture leaks if `[Process]::Start`
+  itself throws — evidence: `run.ps1:955` — reason: stands. Start throwing means
+  the runtime binary disappeared between the launch plan and the launch; the
+  launcher fails loudly and leaves one empty temp file. Wrapping the start would
+  change this launcher's failure semantics, which is outside this issue
 - **clean** — Australian English throughout; commit safety (three tracked files,
-  no hidden paths); the `Vibe-Coder-Run-Id` trailer on both commits; docs updated
-  in the same change; tests drive the real launcher and assert on observable
-  effects (recorded `--launch-log` contents, console streaming, exit statuses),
-  never on source text — except the status pin, which is a contract-drift check
-  in the shape `run.sh` already uses; `deno fmt`, `deno lint` and `deno check`
-  clean
+  no hidden paths); the `Vibe-Coder-Run-Id` trailer on both commits; docs
+  updated in the same change; tests drive the real launcher and assert on
+  observable effects (recorded `--launch-log` contents, console streaming, exit
+  statuses), never on source text — except the status pin, which is a
+  contract-drift check in the shape `run.sh` already uses; `deno fmt`,
+  `deno lint` and `deno check` clean
 
 ## Test Plan
 
 Added to `worker/deno/tests/run_ps1_launcher_test.ts`:
 
 - `run.ps1 - a refused container start quotes the runtime client's own stderr
-  (Issue #720)` — the regression test. Drives every status in
-  `CONTAINER_START_EXIT_CODES` and asserts the refusal reached the console, that
-  `--launch-log` was passed, and that the log the recorder was handed still
-  quoted the client's words
+  (Issue #720)`
+  — the regression test. Drives every status in `CONTAINER_START_EXIT_CODES` and
+  asserts the refusal reached the console, that `--launch-log` was passed, and
+  that the log the recorder was handed still quoted the client's words
 - `run.ps1 - the client's stderr reaches the console while the container is
-  still running (Issue #720)` — the stub prints and then stalls, so a console
-  line read before the launcher returns can only have been streamed
+  still running (Issue #720)`
+  — the stub prints and then stalls, so a console line read before the launcher
+  returns can only have been streamed
 - `run.ps1 - a container that started is never quoted as failure evidence
-  (Issue #720)` — exit status 1: a worker that failed for its own reasons is not
-  a refused start, so nothing is quoted
+  (Issue #720)`
+  — exit status 1: a worker that failed for its own reasons is not a refused
+  start, so nothing is quoted
 - `run.ps1 - keeps reaping a container that outruns the watchdog while it is
-  still writing (Issue #720)` — a container writing every 50ms past a 2s
-  deadline is still reaped on the deadline (Issue #4173)
+  still writing (Issue #720)`
+  — a container writing every 50ms past a 2s deadline is still reaped on the
+  deadline (Issue #4173)
 - `run.ps1 - the stderr capture leaves nothing behind in the temporary directory
-  (Issue #720)` — the capture was created (the recorder's copy proves it) and
-  did not outlive the launcher
+  (Issue #720)`
+  — the capture was created (the recorder's copy proves it) and did not outlive
+  the launcher
 - `run.ps1 - the statuses it treats as a refused start are the recorder's own
-  (Issue #720)` — pins `$ContainerStartExitStatuses` against
-  `CONTAINER_START_EXIT_CODES` in both directions
+  (Issue #720)`
+  — pins `$ContainerStartExitStatuses` against `CONTAINER_START_EXIT_CODES` in
+  both directions
 
 Changed in `worker/deno/tests/fixtures/launcher_harness.ts`:
 

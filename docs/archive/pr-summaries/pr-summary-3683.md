@@ -45,8 +45,9 @@ This is a backend/CLI change, so no screenshot applies. The tests covering it:
 - `worker/deno/tests/changed_workflow_gate_test.ts::changed-workflow gate - a best-practice-ignore marker does not clear a finding the run introduced (Issue #3683)`
   pins the premise the message relies on. The marked tag-pinned checkout is
   still blocked when no commit identity is configured. As a positive control,
-  the same marker clears the finding once `setSuppressionCommitAuthors(["nigel"])`
-  is set, which proves the marker is correctly formed.
+  the same marker clears the finding once
+  `setSuppressionCommitAuthors(["nigel"])` is set, which proves the marker is
+  correctly formed.
 - `worker/deno/tests/failure_diagnosis_test.ts::workflow_gate category - diagnosis, oneliner, display and validation all handle it (Issue #2044)`
   now asserts that the diagnosis contains `needs a human` and not
   `best-practice-ignore`.
@@ -56,7 +57,18 @@ best-practice-ignore marker, but the gate can never honour one) and #1859
 (Worker pre-PR check: run WORKFLOW_FILE_CHECKS over every changed
 .github/workflows/ file).
 
-**Docs sweep** — grep: `best-practice-ignore`, "remedy", "Prose in the PR summary", `buildChangedWorkflowGateMessage`, `changed_workflow_gate`; section: `docs/workflows/issue-processing.md#-changed-workflow-files-are-checked-before-the-pr`; siblings: none — no existing set gained a member; updated: `docs/workflows/issue-processing.md`, plus the doc comments in `worker/deno/lib/changed_workflow_gate.ts` (module doc) and `worker/deno/lib/workflow_file_checks.ts` (`fromPerFileScanner`); `worker/deno/lib/workflow_file_checks.ts:130` — still true because the per-step id is the one an audit marker suppresses; `docs/EXTENDING.md:291` — still true because it describes only what the gate scans and blocks, not a remedy; other `best-practice-ignore` hits under `docs/` and `prompts/` describe the idle-task audits' own markers, which this change does not touch
+**Docs sweep** — grep: `best-practice-ignore`, "remedy", "Prose in the PR
+summary", `buildChangedWorkflowGateMessage`, `changed_workflow_gate`; section:
+`docs/workflows/issue-processing.md#-changed-workflow-files-are-checked-before-the-pr`;
+siblings: none — no existing set gained a member; updated:
+`docs/workflows/issue-processing.md`, plus the doc comments in
+`worker/deno/lib/changed_workflow_gate.ts` (module doc) and
+`worker/deno/lib/workflow_file_checks.ts` (`fromPerFileScanner`);
+`worker/deno/lib/workflow_file_checks.ts:130` — still true because the per-step
+id is the one an audit marker suppresses; `docs/EXTENDING.md:291` — still true
+because it describes only what the gate scans and blocks, not a remedy; other
+`best-practice-ignore` hits under `docs/` and `prompts/` describe the idle-task
+audits' own markers, which this change does not touch
 
 ## Test Plan
 
@@ -71,24 +83,24 @@ best-practice-ignore marker, but the gate can never honour one) and #1859
 - Removed from `worker/deno/tests/failure_diagnosis_test.ts`:
   `assertStringIncludes( getFailureDiagnosis("workflow_gate"), "best-practice-ignore", );`
   — #3683 requires that `failure_diagnosis.ts` drop the marker remedy, so the
-  old value is untrue. It is replaced by an inclusion check for
-  `needs a human` and an exclusion check for `best-practice-ignore`.
+  old value is untrue. It is replaced by an inclusion check for `needs a human`
+  and an exclusion check for `best-practice-ignore`.
   - Red-check: restoring the old diagnosis bullet turned this test red at
     `tests/failure_diagnosis_test.ts:718`.
 - Added: the premise test "a best-practice-ignore marker does not clear a
-  finding the run introduced (Issue #3683)". It pins current behaviour, so it
-  is expected to be green on base, and it is: the change it accompanies is to
-  message text, not to suppression. Its positive control (the marker clears
-  once a commit identity is configured) shows that its rejection comes only
-  from the missing identity.
+  finding the run introduced (Issue #3683)". It pins current behaviour, so it is
+  expected to be green on base, and it is: the change it accompanies is to
+  message text, not to suppression. Its positive control (the marker clears once
+  a commit identity is configured) shows that its rejection comes only from the
+  missing identity.
 - `deno task test:unit tests/changed_workflow_gate_test.ts tests/failure_diagnosis_test.ts`
   passed on the final head: 135 passed, 0 failed.
 - `deno fmt`, `deno lint` and `deno check` passed on the five changed TypeScript
   files, and `markdownlint-cli2` reported 0 issues on the edited manual.
-- `./quality.sh` passed, with skipped checks: deno tests, lint, type check,
-  fmt, semgrep and markdownlint all passed. The manual edit landed after that
-  run started, so `markdownlint-cli2` was run on it separately: 0 issues.
-- No production branch, field or parameter was added; only message text and
-  doc comments changed.
+- `./quality.sh` passed, with skipped checks: deno tests, lint, type check, fmt,
+  semgrep and markdownlint all passed. The manual edit landed after that run
+  started, so `markdownlint-cli2` was run on it separately: 0 issues.
+- No production branch, field or parameter was added; only message text and doc
+  comments changed.
 
 <!-- vibe-branch-outcomes -->

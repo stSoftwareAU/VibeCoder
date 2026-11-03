@@ -80,11 +80,15 @@ Backend-only change; no UI file touched. Verified by tests below.
   passes the new set; the only production caller) and the 2085, 898 and 1091
   tests, which omit the optional set and keep their behaviour.
 - The scan reads `cargoDeferredNow()` once; the audit and census use its
-  snapshot. `idle_census_cargo_deferred_wiring_4751_test.ts::production deps -
-  the census reads a cargo-deferred repo as not scanned` and `::production deps -
-  a cargo-deferred repo raises no mis_classification ALERT` cover a gate that
-  changes after the scan. The obsolete live reread is replaced by the scan's
-  verdict; the remaining behaviour reports the actual exclusion in both hooks.
+  snapshot.
+  `idle_census_cargo_deferred_wiring_4751_test.ts::production deps -
+  the census reads a cargo-deferred repo as not scanned`
+  and
+  `::production deps -
+  a cargo-deferred repo raises no mis_classification ALERT`
+  cover a gate that changes after the scan. The obsolete live reread is replaced
+  by the scan's verdict; the remaining behaviour reports the actual exclusion in
+  both hooks.
 - Docs: `docs/IDLE-TASK-FRAMEWORK.md` (decision flowchart, new section).
   Siblings grepped: `repo_backed_off`, `repo_held_in_flight`,
   `backedOffInversionRepos`, `inversion_repo_held`.

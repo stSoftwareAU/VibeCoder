@@ -40,9 +40,9 @@ Changes:
 
 - `worker/deno/lib/gitleaks_drift_scanner.ts` — new `pullRequestCalledWorkflows`
   helper collects the workflow paths that any `pull_request`-triggered workflow
-  in the scanned file set invokes with `uses:`. A gitleaks workflow now counts as
-  PR-scanned when it carries a `pull_request` trigger itself **or** appears in
-  that set. The `no-pr-trigger` finding's `whyItMatters`, `evidence` and
+  in the scanned file set invokes with `uses:`. A gitleaks workflow now counts
+  as PR-scanned when it carries a `pull_request` trigger itself **or** appears
+  in that set. The `no-pr-trigger` finding's `whyItMatters`, `evidence` and
   `suggestedFix` now state both routes, so a genuine finding says what was
   checked and offers the reusable-workflow option alongside the trigger.
 - `worker/deno/lib/pr_check_contexts.ts` — `calledWorkflowPath` exported
@@ -52,8 +52,8 @@ Changes:
   `workflow_trigger_scanner.ts`.
 
 The test is deliberately weaker than the aggregate-gate derivation in
-`pullRequestCheckContexts`: gitleaks *runs* on the PR whether or not the caller's
-gate job is a perfect aggregate, and running is the whole of what
+`pullRequestCheckContexts`: gitleaks _runs_ on the PR whether or not the
+caller's gate job is a perfect aggregate, and running is the whole of what
 `no-pr-trigger` claims. The lenient scanner also stays free of that module's
 throwing `reject()` path.
 
@@ -67,9 +67,9 @@ Out of scope, deliberately:
   a branch that touches `gitleaks.yml` without touching its caller could still
   see this finding locally. That narrowing is a documented, intentional
   limitation of that module (its module doc forbids reading the whole tree
-  there), and Issue #2043's baseline diffing already drops findings that exist at
-  base. The audit path is unaffected — `runTask` passes every workflow file, so
-  `quality.yml` is always in scope there.
+  there), and Issue #2043's baseline diffing already drops findings that exist
+  at base. The audit path is unaffected — `runTask` passes every workflow file,
+  so `quality.yml` is always in scope there.
 
 ## Evidence
 
@@ -85,8 +85,9 @@ FAILED | 19 passed | 2 failed (26ms)
 
 Both failures were the positive cases
 (`scanGitleaksDrift - reusable gitleaks called by a PR-triggered workflow is
-scanned` and `... counts however the caller spells the path`), each asserting
-`[]` and receiving `["BP-GITLEAKS-NO-PR-TRIGGER-gitleaks"]`. After the fix:
+scanned`
+and `... counts however the caller spells the path`), each asserting `[]` and
+receiving `["BP-GITLEAKS-NO-PR-TRIGGER-gitleaks"]`. After the fix:
 
 ```
 ok | 21 passed | 0 failed (41ms)
@@ -121,11 +122,10 @@ New tests in `worker/deno/tests/gitleaks_drift_scanner_test.ts`, all using a
    `.github/workflows/gitleaks.yml` and an `@main`-suffixed ref all count.
 3. **Caller that never runs on PRs** (`on: push`) — `no-pr-trigger` is still
    emitted, `kind === "no-pr-trigger"`. This also proves the caller fixture is
-   not itself misclassified as a gitleaks workflow: exactly one finding, not
-   two (`collectSteps` walks only `jobs.<job>.steps[]`, never a job-level
-   `uses:`).
-4. **PR-triggered caller invoking a different workflow** — `no-pr-trigger`
-   still emitted, so the new path cannot be satisfied by an unrelated call.
+   not itself misclassified as a gitleaks workflow: exactly one finding, not two
+   (`collectSteps` walks only `jobs.<job>.steps[]`, never a job-level `uses:`).
+4. **PR-triggered caller invoking a different workflow** — `no-pr-trigger` still
+   emitted, so the new path cannot be satisfied by an unrelated call.
 
 The 13 pre-existing drift-scanner tests are unchanged and still pass, including
 `scanGitleaksDrift - schedule-only gitleaks workflow leaves PRs unscanned` and

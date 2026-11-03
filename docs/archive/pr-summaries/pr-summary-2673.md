@@ -8,14 +8,15 @@ On Migration_v21 the census reported #451, #450 and #376 as claimable for three
 cycles, but the claim scan kept refusing them. All three issue bodies **quote**
 the milestone-tracker marker (`<!-- milestone-tracking-issue … -->`) in
 backticks or prose. `isMilestoneTrackingIssue` matched the marker as a plain
-substring, so `filterAndSort` dropped each one as a milestone tracker. The census
-has no tracker filter, so it counted them as claimable, and the gap produced a
-false idle-inversion alert on every cycle.
+substring, so `filterAndSort` dropped each one as a milestone tracker. The
+census has no tracker filter, so it counted them as claimable, and the gap
+produced a false idle-inversion alert on every cycle.
 
-`hasLiveMilestoneTrackingMarker` (in `lib/issue_filter.ts`) now counts the marker
-only in the position the worker writes it: a line that opens with the marker,
-indented at most three spaces, outside a fenced code block. A quoted marker
-counts as a mention, not a tracker. The title fallback (`Merge milestone '…'
+`hasLiveMilestoneTrackingMarker` (in `lib/issue_filter.ts`) now counts the
+marker only in the position the worker writes it: a line that opens with the
+marker, indented at most three spaces, outside a fenced code block. A quoted
+marker counts as a mention, not a tracker. The title fallback
+(`Merge milestone '…'
 to …`) is unchanged.
 
 ```mermaid
@@ -25,9 +26,10 @@ flowchart LR
     Q -- no --> W["Work — claimable to scan and census"]
 ```
 
-Follow-up note: `hasMilestoneTrackingMarker` in `lib/milestone_tracker_identity.ts`
-still uses a substring check. That code has a separate purpose (tracker identity
-during milestone completion), so it is out of scope here.
+Follow-up note: `hasMilestoneTrackingMarker` in
+`lib/milestone_tracker_identity.ts` still uses a substring check. That code has
+a separate purpose (tracker identity during milestone completion), so it is out
+of scope here.
 
 ## Evidence
 

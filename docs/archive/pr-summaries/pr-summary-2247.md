@@ -18,25 +18,25 @@ subprocess it runs against a checkout: the coding agent, the repository's own
 quality gate, the milestone merge gate, the milestone resolution gate and the
 pre-flight gate. The volume then keeps only clones, worktrees and state.
 
-- **Keyed by checkout path**, not by slot: cargo takes a file lock on the
-  target directory for the whole build, so a shared directory would serialise
-  two slots' Rust builds — and keying by path covers the lane worktree
-  (`worktrees/<slot>/<repo>`) *and* the shared clone the maintenance passes
+- **Keyed by checkout path**, not by slot: cargo takes a file lock on the target
+  directory for the whole build, so a shared directory would serialise two
+  slots' Rust builds — and keying by path covers the lane worktree
+  (`worktrees/<slot>/<repo>`) _and_ the shared clone the maintenance passes
   build in, where 16 GB of `target/` was measured.
 - **Keyed by account too**, with the shared root created `1777`: the
   repository's own commands drop to `agent` and the worker's run as `vibe`
   (Issue #571), and neither can write into a directory the other created.
-- **Carried in argv past `sudo`.** The image's sudo rule has no `SETENV` tag,
-  so `env_reset` strips a variable handed to `sudo` in the child environment.
-  The dropped spawn therefore becomes
+- **Carried in argv past `sudo`.** The image's sudo rule has no `SETENV` tag, so
+  `env_reset` strips a variable handed to `sudo` in the child environment. The
+  dropped spawn therefore becomes
   `sudo -n -u agent -- env CARGO_TARGET_DIR=… bash -c './quality.sh'`; without
   this the repository's own `target/` — the 1.7–4.4 GB the issue is about —
   would still land on the volume.
 - **Nothing changes where the trim is honoured.** No launcher reading, an older
   launcher that writes no flag, a runtime that trims, or an operator's explicit
   `CARGO_TARGET_DIR` all leave the environment exactly as it was. A root that
-  cannot be provisioned is reported and the build stays where it is today —
-  a disk problem is never turned into a build failure.
+  cannot be provisioned is reported and the build stays where it is today — a
+  disk problem is never turned into a build failure.
 
 Closes #2247.
 
@@ -53,15 +53,15 @@ ok | 85 passed | 0 failed
 
 The untrusted-spawn guard (`untrusted_spawn_env_test.ts`) spawns a real
 repo-supplied command and reads its environment back; it caught the placement
-arriving as a name the allowlist had not granted — on this very host, which
-*is* trim-refused — so `CARGO_TARGET_DIR` joined `ALLOWED_ENV_NAMES` beside
-`CARGO_HOME` and `DENO_DIR` rather than becoming an exception to the
-allowlist.
+arriving as a name the allowlist had not granted — on this very host, which _is_
+trim-refused — so `CARGO_TARGET_DIR` joined `ALLOWED_ENV_NAMES` beside
+`CARGO_HOME` and `DENO_DIR` rather than becoming an exception to the allowlist.
 
 `scanWorkVolumeUsage - a build sent to the ephemeral layer leaves 0 build
-artefacts on the volume` is the telemetry half of the issue's test list: it
-builds a real work root, writes a real artefact tree at the ephemeral target
-path, and asserts the `Work volume:` scan reports `artefacts 0`.
+artefacts on the volume`
+is the telemetry half of the issue's test list: it builds a real work root,
+writes a real artefact tree at the ephemeral target path, and asserts the
+`Work volume:` scan reports `artefacts 0`.
 
 ```mermaid
 flowchart TD
@@ -88,26 +88,25 @@ flowchart TD
   passes build in is covered as well as `worktrees/<slot>/<repo>` — evidence:
   `worker/deno/tests/ephemeral_build_cache_test.ts::cargoTargetDirForCheckout - one directory per checkout, so cargo's lock never serialises two slots`
   — reviewer: met
-- **missing** — `CARGO_HOME` moved to the ephemeral layer — reviewer: missing
-  — reason: deliberately declined and now documented accurately — the
-  entrypoint puts it on the volume (`container/entrypoint.sh:249`), but a
-  download cache grows by what it fetched and is read back next launch,
-  whereas a `target/` is rewritten every build, and that rewrite is what
-  allocates fresh image blocks; moving it buys a cold registry download every
-  launch.
+- **missing** — `CARGO_HOME` moved to the ephemeral layer — reviewer: missing —
+  reason: deliberately declined and now documented accurately — the entrypoint
+  puts it on the volume (`container/entrypoint.sh:249`), but a download cache
+  grows by what it fetched and is read back next launch, whereas a `target/` is
+  rewritten every build, and that rewrite is what allocates fresh image blocks;
+  moving it buys a cold registry download every launch.
 - **partial** — `DENO_DIR` confirmed off the volume, else moved — evidence:
-  `worker/deno/lib/ephemeral_build_cache.ts:50-57` and `docs/CONTAINER.md`
-  — reviewer: missing — reason: the confirmation was performed this time and
-  came back the other way (`container/entrypoint.sh:409-411` puts it on the
-  volume); the move was declined for the same reason as `CARGO_HOME`, and the
-  first draft's claim that it was already ephemeral has been corrected rather
-  than left standing.
+  `worker/deno/lib/ephemeral_build_cache.ts:50-57` and `docs/CONTAINER.md` —
+  reviewer: missing — reason: the confirmation was performed this time and came
+  back the other way (`container/entrypoint.sh:409-411` puts it on the volume);
+  the move was declined for the same reason as `CARGO_HOME`, and the first
+  draft's claim that it was already ephemeral has been corrected rather than
+  left standing.
 - **missing** — any other directory the telemetry classes as "caches"
   (`.deno-cache`, `.vibe-cache`, `.gh-*-cache`) — reviewer: missing — reason:
-  same trade as above; the issue author's own refinement narrowed the fix to
-  the `target/` directories, which is where the measured 16 GB and 4.4 GB sat.
-- **met** — set on every subprocess the slot runs against a checkout: the
-  agent, the quality gate, the milestone merge and resolution gates — evidence:
+  same trade as above; the issue author's own refinement narrowed the fix to the
+  `target/` directories, which is where the measured 16 GB and 4.4 GB sat.
+- **met** — set on every subprocess the slot runs against a checkout: the agent,
+  the quality gate, the milestone merge and resolution gates — evidence:
   `worker/deno/lib/claude_runner.ts:1157`,
   `worker/deno/lib/quality_gate_phase.ts` (`untrustedQualityCommandEnv` +
   `carryEnvThroughSudo`), `worker/deno/lib/milestone_merge_gate.ts:280`,
@@ -150,20 +149,18 @@ flowchart TD
   setting must not be silently overridden; the first draft honoured it at one
   site only.
 - **unrequested** — an empty checkout path throws, and the key is a sanitised
-  single segment — reviewer: unrequested — reason: an unnamed checkout would
-  key every build to one directory (the serialisation the issue's caveat is
-  about), and a key carrying `/` or `..` would place the build outside the
-  root.
+  single segment — reviewer: unrequested — reason: an unnamed checkout would key
+  every build to one directory (the serialisation the issue's caveat is about),
+  and a key carrying `/` or `..` would place the build outside the root.
 - **unrequested** — a second, launch-scoped reader of `host-disk.json` —
   reviewer: unrequested — reason: `HostDiskMonitor` lives in a closure inside
-  the production-deps factory and is not reachable from an environment
-  builder; the flag is a property of the launch, which is why reading it once
-  is sound.
+  the production-deps factory and is not reachable from an environment builder;
+  the flag is a property of the launch, which is why reading it once is sound.
 - **unrequested** — the `docs/CONTAINER.md` section, the `docs/CONTAINMENT.md`
   table row, and the security-sweep record plus ledger slice — reviewer:
   unrequested — reason: house rules — a code change owes a docs change, and
-  every new `lib/` module must be claimed by a sweep slice or
-  `check:manifests` fails.
+  every new `lib/` module must be claimed by a sweep slice or `check:manifests`
+  fails.
 
 ## Standards Review
 
@@ -177,20 +174,20 @@ flowchart TD
 - **violation** — the tests mutated process-wide state (`Deno.env.set("HOME")`)
   to drive the launch verdict, failing the parallel-safety cap — evidence:
   `worker/deno/tests/ephemeral_build_cache_test.ts` — reason: fixed here — the
-  verdict is a parameter (`buildCacheEnvForCheckout(..., { trimRefused })`),
-  the ambient singleton is the production default only, and the test-reset
-  hook is gone.
-- **violation** — `catch { return undefined }` around the environment read hid
-  a missing `--allow-env` as "the runtime trims" — evidence:
-  `worker/deno/lib/ephemeral_build_cache.ts:246` — reason: fixed here — the
-  read is no longer wrapped, so the permission fault propagates.
+  verdict is a parameter (`buildCacheEnvForCheckout(..., { trimRefused })`), the
+  ambient singleton is the production default only, and the test-reset hook is
+  gone.
+- **violation** — `catch { return undefined }` around the environment read hid a
+  missing `--allow-env` as "the runtime trims" — evidence:
+  `worker/deno/lib/ephemeral_build_cache.ts:246` — reason: fixed here — the read
+  is no longer wrapped, so the permission fault propagates.
 - **violation** — `deno fmt --check` failed on two wrapped lines — evidence:
   `worker/deno/tests/ephemeral_build_cache_test.ts` — reason: fixed here; the
   full gate passes.
 - **violation** — the four wiring sites had no tests; `untrustedAccountOf` was
   exported from `quality_gate_phase.ts` but tested in another module's file —
-  evidence: `worker/deno/lib/quality_gate_phase.ts` — reason: partly fixed —
-  the composition is now the exported `untrustedQualityCommandEnv` and
+  evidence: `worker/deno/lib/quality_gate_phase.ts` — reason: partly fixed — the
+  composition is now the exported `untrustedQualityCommandEnv` and
   `carryEnvThroughSudo`, both tested in `tests/quality_gate_phase_test.ts`
   alongside the moved `untrustedAccountOf` tests; the agent and the two
   milestone gates remain one-line calls covered through the shared helper.
@@ -202,9 +199,9 @@ flowchart TD
 - **clean** — Australian English throughout; every test calls a real exported
   function and asserts on its result (no source-grepping); JSDoc with
   `@param`/`@returns`/`@throws` on every export; KISS/DRY (one digest, one
-  helper reused by five spawn sites); fail-loud on an empty checkout path and
-  on an unvouched argv value; no hidden path staged; `deno lint` and
-  `deno check` clean; the docs change lands in the same commit.
+  helper reused by five spawn sites); fail-loud on an empty checkout path and on
+  an unvouched argv value; no hidden path staged; `deno lint` and `deno check`
+  clean; the docs change lands in the same commit.
 
 ## Test Plan
 
@@ -212,8 +209,8 @@ Added `worker/deno/tests/ephemeral_build_cache_test.ts` (24 tests):
 
 - the target directory lands under the ephemeral root and never under the work
   volume; the key is a single path segment even for a hostile checkout name;
-- one directory per checkout (two slots and the shared clone all differ) and
-  one per account; stable for the same checkout;
+- one directory per checkout (two slots and the shared clone all differ) and one
+  per account; stable for the same checkout;
 - an empty checkout path fails loudly rather than keying every build to one
   directory;
 - `workVolumeTrimRefused` true → the env carries the ephemeral path; false, no
@@ -227,8 +224,8 @@ Added `worker/deno/tests/ephemeral_build_cache_test.ts` (24 tests):
 Added to `worker/deno/tests/quality_gate_phase_test.ts`: `untrustedAccountOf`,
 `untrustedQualityCommandEnv` (placement, allowlist still applied, the
 repository's own declaration still winning, no credential leaking) and
-`carryEnvThroughSudo` (argv carriage, untouched when the worker runs the
-command itself, refusal of a value it cannot vouch for).
+`carryEnvThroughSudo` (argv carriage, untouched when the worker runs the command
+itself, refusal of a value it cannot vouch for).
 
 Modified `worker/deno/tests/untrusted_command_env_test.ts` — documented
 deliberately: its source-text assertion pinned the old spelling

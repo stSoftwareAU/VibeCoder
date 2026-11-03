@@ -110,8 +110,8 @@ Results before the same-cycle ladder test was added:
 `deno task test:unit tests/milestone_branch_sync_test.ts tests/milestone_fallback_flag_test.ts`:
 93 passed, 0 failed.
 
-After that test was added, `deno task test:unit tests/milestone_branch_sync_test.ts`:
-82 passed, 0 failed.
+After that test was added,
+`deno task test:unit tests/milestone_branch_sync_test.ts`: 82 passed, 0 failed.
 
 `./quality.sh`: every stage passed except `deno tests` (31306 passed, 3 failed),
 all three failing on the base branch too and not touching this change:

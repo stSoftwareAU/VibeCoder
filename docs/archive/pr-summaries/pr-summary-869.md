@@ -2,19 +2,19 @@
 
 ## Summary
 
-Frozen hosts pull code by release tag, so a released tag must never be
-deletable or movable. This lands the checked-in source of truth for that
-protection — `infra/rulesets/release-tags.json` — plus the tests that hold it
-to its invariants and the apply/verify commands in `docs/RELEASE-TAGGING.md`.
-Closes #869.
+Frozen hosts pull code by release tag, so a released tag must never be deletable
+or movable. This lands the checked-in source of truth for that protection —
+`infra/rulesets/release-tags.json` — plus the tests that hold it to its
+invariants and the apply/verify commands in `docs/RELEASE-TAGGING.md`. Closes
+#869.
 
 Verifying the protection against the live repository found the important part:
 **`deletion` + `non_fast_forward` do not stop a tag being moved.** Deleting
-`refs/tags/1.0.49` was refused, but re-pointing it *forwards* onto a newer
+`refs/tags/1.0.49` was refused, but re-pointing it _forwards_ onto a newer
 commit succeeded, because a forward re-point is a fast-forward update and
 `non_fast_forward` only blocks non-fast-forward ones. The payload therefore
-carries a third rule, `update` ("Restrict updates"), which refuses any update
-to an existing tag while still leaving creation alone.
+carries a third rule, `update` ("Restrict updates"), which refuses any update to
+an existing tag while still leaving creation alone.
 
 ```mermaid
 flowchart LR
@@ -31,13 +31,13 @@ The account running this work has `push` but **not `admin`** on
 done here. Both are recorded on the issue:
 
 1. **`refs/tags/1.0.49` is currently at the wrong commit.** The
-   acceptance-criteria move attempt was accepted by the live ruleset (see
-   above) and the rewind that would undo it is refused by `non_fast_forward`,
-   over both git and the REST API. It now points at
+   acceptance-criteria move attempt was accepted by the live ruleset (see above)
+   and the rewind that would undo it is refused by `non_fast_forward`, over both
+   git and the REST API. It now points at
    `9776760da0ffce2d04536abccf2f56f7ae3d5004` and must be restored to
    `cc375fee1a456bbb4cf7131a67aa36656f83c22c`.
-2. **The live ruleset (id `22264472`) does not yet carry the `update` rule**,
-   so every release tag remains forward-movable until the checked-in payload is
+2. **The live ruleset (id `22264472`) does not yet carry the `update` rule**, so
+   every release tag remains forward-movable until the checked-in payload is
    applied.
 
 Repair, in order, from a checkout of this branch with an admin account:
@@ -78,30 +78,31 @@ remote: - Cannot force-push to this tag
 which carries only `deletion` and `non_fast_forward`):
 
 ```text
- + cc375fe...9776760 9776760da0ffce2d04536abccf2f56f7ae3d5004 -> 1.0.49 (forced update)
++ cc375fe...9776760 9776760da0ffce2d04536abccf2f56f7ae3d5004 -> 1.0.49 (forced update)
 ```
 
-That the delete *was* refused is also the live proof that the ref condition's
+That the delete _was_ refused is also the live proof that the ref condition's
 `[0-9]` character classes match this repository's real release tags.
 
-**Regression test linkage.** `worker/deno/tests/release_tag_ruleset_test.ts::release-tags ruleset - blocks deletion, moving and force-pushing`
-reproduces the flaw: with the rule pair the issue specified
-(`deletion` + `non_fast_forward`) it fails —
+**Regression test linkage.**
+`worker/deno/tests/release_tag_ruleset_test.ts::release-tags ruleset - blocks deletion, moving and force-pushing`
+reproduces the flaw: with the rule pair the issue specified (`deletion` +
+`non_fast_forward`) it fails —
 `missing rule "update" — a released tag could be moved; rules are deletion, non_fast_forward`
-— and it passes with the payload as committed. Verified by removing the
-`update` rule from the payload, re-running (`7 passed | 1 failed`), and
-restoring it (`10 passed | 0 failed`).
+— and it passes with the payload as committed. Verified by removing the `update`
+rule from the payload, re-running (`7 passed | 1 failed`), and restoring it
+(`10 passed | 0 failed`).
 
 **Original trigger closed, no trivial bypass.** The trigger is a token with
-`contents: write` deleting or re-pointing a released tag. Deletion is refused
-by `deletion`; a rewind by `non_fast_forward`; a forward re-point — the bypass
-that actually worked — by `update`, which refuses *any* update to a matching
-existing ref regardless of ancestry. `bypass_actors` is empty, so no actor,
-including the release workflow's own scoped grant, is exempt, and the ref
-condition covers both the bare and `v`-prefixed release forms, so renaming the
-push target does not evade it. The only path left open is *creating* a new tag,
-which is deliberate (Issue #808). This closure takes effect for the live
-repository once an admin applies the payload — see the section above.
+`contents: write` deleting or re-pointing a released tag. Deletion is refused by
+`deletion`; a rewind by `non_fast_forward`; a forward re-point — the bypass that
+actually worked — by `update`, which refuses _any_ update to a matching existing
+ref regardless of ancestry. `bypass_actors` is empty, so no actor, including the
+release workflow's own scoped grant, is exempt, and the ref condition covers
+both the bare and `v`-prefixed release forms, so renaming the push target does
+not evade it. The only path left open is _creating_ a new tag, which is
+deliberate (Issue #808). This closure takes effect for the live repository once
+an admin applies the payload — see the section above.
 
 ## Acceptance Criteria
 
@@ -139,9 +140,9 @@ repository once an admin applies the payload — see the section above.
   `deno fmt --check` was still failing; that is fixed. The remaining five test
   failures (`best_practices_bucket_guides_consumer_test.ts`,
   `boy_scout_idle_tasks_test.ts`) are pre-existing on the milestone base
-  `9776760` — they fail there with none of this branch's files present, and
-  pass on current `main` (`a21441c`), so the milestone branch simply needs
-  refreshing from `main`
+  `9776760` — they fail there with none of this branch's files present, and pass
+  on current `main` (`a21441c`), so the milestone branch simply needs refreshing
+  from `main`
 - **unrequested** — the `update` rule in the payload — reviewer: unrequested —
   reason: the issue specified `deletion` + `non_fast_forward`, which the live
   test showed do not block a move; `update` is what makes the issue's own
@@ -170,9 +171,9 @@ repository once an admin applies the payload — see the section above.
   `worker/deno/lib/release_tag_ruleset.ts:135` — reason: stands, deliberately.
   The shared matcher answers for GitHub Actions branch filters and has no
   character class, which every include pattern in this payload uses. The new
-  matcher does adopt that module's design — tokens plus a memo, never a
-  `RegExp` built from a pattern — which the repo's semgrep stage independently
-  requires (`detect-non-literal-regexp` fired on the first draft)
+  matcher does adopt that module's design — tokens plus a memo, never a `RegExp`
+  built from a pattern — which the repo's semgrep stage independently requires
+  (`detect-non-literal-regexp` fired on the first draft)
 - **violation** — DRY: ruleset types duplicate
   `worker/deno/lib/repo_rulesets.ts:70-89` — evidence:
   `worker/deno/lib/release_tag_ruleset.ts:22-42` — reason: stands. `RulesetBody`
@@ -190,16 +191,16 @@ repository once an admin applies the payload — see the section above.
   exercised the real API, and that live run is what found the `update` gap. The
   documented `gh api` verification in `docs/RELEASE-TAGGING.md` is the standing
   drift check
-- **violation** — `parseTagRuleset` throws where the repo prefers
-  `Result<T, E>` — evidence: `worker/deno/lib/release_tag_ruleset.ts:62` —
-  reason: stands. The standard forbids throwing *for control flow*; a
-  malformed or missing checked-in payload is a fail-loud condition with no
-  caller-recoverable path, and the message names the file and the field
+- **violation** — `parseTagRuleset` throws where the repo prefers `Result<T, E>`
+  — evidence: `worker/deno/lib/release_tag_ruleset.ts:62` — reason: stands. The
+  standard forbids throwing _for control flow_; a malformed or missing
+  checked-in payload is a fail-loud condition with no caller-recoverable path,
+  and the message names the file and the field
 - **clean** — Australian English throughout; fail-loud validation with no
   swallowed errors; `deno lint`, `deno check` and markdownlint clean; tests call
   real functions and finish in milliseconds; no hidden or credential paths
-  staged; commit message carries the issue reference and the run-id trailer;
-  the docs owed by the change (`docs/RELEASE-TAGGING.md`, including its test
+  staged; commit message carries the issue reference and the run-id trailer; the
+  docs owed by the change (`docs/RELEASE-TAGGING.md`, including its test
   inventory) land in the same branch
 
 ## Test Plan
@@ -222,15 +223,14 @@ repository once an admin applies the payload — see the section above.
   chokepoint checks) except `deno tests`, which reports five failures in
   `best_practices_bucket_guides_consumer_test.ts` and
   `boy_scout_idle_tasks_test.ts`. Both were checked out at the milestone base
-  `9776760` on their own and fail there too, and both pass at `main`
-  (`a21441c`) — they are stale-base failures, not this change.
+  `9776760` on their own and fail there too, and both pass at `main` (`a21441c`)
+  — they are stale-base failures, not this change.
 - A later gate run reported the `host work-dir guard` failing on
   `worker/deno/lib/fleet_health.ts:169`, the last `$HOME/auto-issue-work`
   fallback in the tree (allowlisted since Milestone #118, and gone from `main`
-  with the file itself). It is now removed: the in-container `healthDir`
-  default engages only when `WORK_DIR` is set — the run driver exports it
-  (Issue #4370) — and otherwise the sibling default applies, so no work-dir
-  path is ever derived from a home directory. The allowlist entry is trimmed
-  to match, and
+  with the file itself). It is now removed: the in-container `healthDir` default
+  engages only when `WORK_DIR` is set — the run driver exports it (Issue #4370)
+  — and otherwise the sibling default applies, so no work-dir path is ever
+  derived from a home directory. The allowlist entry is trimmed to match, and
   `buildFleetHealthConfig - container mode without WORK_DIR never derives the clone path from HOME (Issue #135)`
   covers it.

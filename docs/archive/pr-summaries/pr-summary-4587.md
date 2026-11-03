@@ -30,7 +30,8 @@ it: the sweep's `priorRefusals` and `resolverRungDue`. Closes #4587.
 - Six existing seeds in `tests/milestone_branch_sync_test.ts` moved from
   `count: N` to `resolverDeclines: N` (with `count: 0`): `ladder`,
   `ladder-in-cycle`, the long-refused retirement, retirement issue cleanup,
-  merge-gate close, and rebuild-without-function close. Assertions are unchanged.
+  merge-gate close, and rebuild-without-function close. Assertions are
+  unchanged.
 
 ### Undiscoverable Facts
 
@@ -46,14 +47,13 @@ Backend ledger change. Run from `worker/deno`:
 - `deno fmt --check`, `deno lint`, `deno check` on the four touched TS files —
   clean.
 - Docs updated: `docs/INTERNALS.md` (deferral paragraph, ledger field list and
-  reset rules),
-  `docs/workflows/milestones.md` (agent-rung paragraph), `docs/MERGE.md`
-  (not-charged row). Grepped `README.md` and `docs/` (excluding archive) for
-  "prior declines" and "recovery ladder"; no other hit reads `count` as
-  declines. Grepped sibling fields `conflictAttempts`, `refusedCycles`,
-  `rollbackFailures` and `rebuilds`: ledger and reset descriptions appear in
-  INTERNALS, with operational descriptions in milestones and MERGE; no other
-  ledger field list needed the new member.
+  reset rules), `docs/workflows/milestones.md` (agent-rung paragraph),
+  `docs/MERGE.md` (not-charged row). Grepped `README.md` and `docs/` (excluding
+  archive) for "prior declines" and "recovery ladder"; no other hit reads
+  `count` as declines. Grepped sibling fields `conflictAttempts`,
+  `refusedCycles`, `rollbackFailures` and `rebuilds`: ledger and reset
+  descriptions appear in INTERNALS, with operational descriptions in milestones
+  and MERGE; no other ledger field list needed the new member.
 
 ## Test Plan
 
@@ -68,8 +68,8 @@ New tests in
   length.
 - Charged non-climbing conflict and ceiling gate-refusal verdicts leave
   `resolverDeclines` at zero; after a budget re-arm for the latter, one genuine
-  decline increments it to one without another hand-off. The focused file
-  passes all 14 tests; removing the guard makes this new test fail.
+  decline increments it to one without another hand-off. The focused file passes
+  all 14 tests; removing the guard makes this new test fail.
 - Three consecutive declines still climb, and `resolverRungDue` returns `null`
   for `{count: 9, resolverDeclines: 0}` and `"rollback"` for three declines. Red
   before the fix (got `"close"`).
@@ -86,9 +86,10 @@ New tests in
   new field.
 - Edited existing tests: only the six seeds above; no assertion removed.
 - `./quality.sh`: completeness, formatting, lint, type check and markdownlint
-  passed; the parallel Deno suite panicked in its runtime with `pledge test
-  permissions called before restoring previous pledge`. Semgrep and Checkov
-  were unavailable locally. Per-operand flips were not run beyond the red
-  checks above.
+  passed; the parallel Deno suite panicked in its runtime with
+  `pledge test
+  permissions called before restoring previous pledge`. Semgrep
+  and Checkov were unavailable locally. Per-operand flips were not run beyond
+  the red checks above.
 
 <!-- vibe-quality-gate-skipped reason="local Deno parallel test runner panicked on permission pledge; targeted tests pass; CI runs the full gate" -->

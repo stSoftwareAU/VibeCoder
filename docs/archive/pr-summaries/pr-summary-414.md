@@ -3,8 +3,8 @@
 ## Summary
 
 Registers `deepseek` as the fourth coding-agent provider, so
-`agent_provider: deepseek` (and `VIBE_AGENT_PROVIDER=deepseek`) actually
-selects it and a Quorum pool can name it. Closes #414.
+`agent_provider: deepseek` (and `VIBE_AGENT_PROVIDER=deepseek`) actually selects
+it and a Quorum pool can name it. Closes #414.
 
 **New — `worker/deno/lib/deepseek_auth.ts`** (the vendor-owned auth module the
 descriptor delegates to, mirroring `codex_auth.ts` / `gemini_auth.ts`):
@@ -19,16 +19,16 @@ descriptor delegates to, mirroring `codex_auth.ts` / `gemini_auth.ts`):
   `deepseek/provider.env` — never `claude login`, which authenticates
   Anthropic's endpoint and cannot fix a DeepSeek credential.
 
-**`worker/deno/lib/agent_provider.ts`** — `DEEPSEEK_PROVIDER_ID`, the
-descriptor and its registration:
+**`worker/deno/lib/agent_provider.ts`** — `DEEPSEEK_PROVIDER_ID`, the descriptor
+and its registration:
 
 - `binary: "deepseek"`, **not** `"claude"`. Both fragments install to
   `/usr/local/bin/<binary>`, so a shared command name in an
   `AGENT_PROVIDERS="claude,deepseek"` image means one provider silently
   overwriting the other.
-- `credentials` → `deepseek/provider.env` /
-  `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY`; `environment` from `deepseek_env.ts`;
-  `install.fragment` → `providers/deepseek.sh`; `promptTransport: "stdin"`.
+- `credentials` → `deepseek/provider.env` / `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY`;
+  `environment` from `deepseek_env.ts`; `install.fragment` →
+  `providers/deepseek.sh`; `promptTransport: "stdin"`.
 - `resolveModel` / `resolveEffort` delegate to `deepseek_executor.ts`; **no**
   `cheaperModel`, so the rate-limit fallback reports `no-ladder-for-provider`
   rather than a silent no-op (#365).
@@ -49,7 +49,7 @@ descriptor-driven and unchanged.
 `deepseek_env.ts` allowed `ANTHROPIC_AUTH_TOKEN` to be **inherited**. Once the
 provider is registered, a `claude,deepseek` run is reachable — and in one, the
 credential preflight exports `claude/provider.env` into the worker's own
-environment, so the inherited `ANTHROPIC_AUTH_TOKEN` is *Anthropic's* token and
+environment, so the inherited `ANTHROPIC_AUTH_TOKEN` is _Anthropic's_ token and
 the DeepSeek child would have sent a live first-party credential to
 `api.deepseek.com` on every request. The variable is now denied on the way in
 and set **only** from `DEEPSEEK_API_KEY`, which is exactly what that module's
@@ -66,10 +66,10 @@ flowchart LR
 
 Three existing tests changed as a result, each documented in place:
 
-- `deepseek_env_test.ts` — "an already-set `ANTHROPIC_AUTH_TOKEN` is left
-  alone" now asserts an inherited Anthropic token is replaced by DeepSeek's
-  key; the denylist/allowlist expectations move with it. A second case covers
-  "no DeepSeek key → the inherited token is simply dropped".
+- `deepseek_env_test.ts` — "an already-set `ANTHROPIC_AUTH_TOKEN` is left alone"
+  now asserts an inherited Anthropic token is replaced by DeepSeek's key; the
+  denylist/allowlist expectations move with it. A second case covers "no
+  DeepSeek key → the inherited token is simply dropped".
 - `multi_provider_credentials_test.ts` — "no vendor sees another vendor's
   secret" now asserts by **value** rather than by variable name, which is
   strictly stronger: a provider carried on another vendor's CLI legitimately
@@ -81,11 +81,10 @@ Three existing tests changed as a result, each documented in place:
 
 ## Evidence
 
-Backend/CLI change with no web interface, so there is no screenshot to take.
-The evidence is the test suite: `deno test` over
-`worker/deno/tests/` — 16 260 passed, 0 failed, including the new
-`agent_provider_deepseek_test.ts` (21 tests) and the extended
-`credential_preflight_test.ts`.
+Backend/CLI change with no web interface, so there is no screenshot to take. The
+evidence is the test suite: `deno test` over `worker/deno/tests/` — 16 260
+passed, 0 failed, including the new `agent_provider_deepseek_test.ts` (21 tests)
+and the extended `credential_preflight_test.ts`.
 
 Argv emitted for a DeepSeek `planning` phase, showing the routed DeepSeek model
 and no `--effort`:
@@ -100,9 +99,9 @@ and no `--effort`:
 New — `worker/deno/tests/agent_provider_deepseek_test.ts` (modelled on
 `agent_provider_gemini_test.ts`):
 
-- `agentProviderIds()` returns `["claude", "codex", "gemini", "deepseek"]`;
-  the descriptor's four facets are populated; an unsupported id names
-  `deepseek` among the supported ids; `cheaperModel` is absent.
+- `agentProviderIds()` returns `["claude", "codex", "gemini", "deepseek"]`; the
+  descriptor's four facets are populated; an unsupported id names `deepseek`
+  among the supported ids; `cheaperModel` is absent.
 - **`DEEPSEEK_PROVIDER.binary !== CLAUDE_PROVIDER.binary`**, plus the
   registry-wide invariant that no two providers share a command name.
 - `agent_provider: deepseek`, `VIBE_AGENT_PROVIDER=deepseek` and
@@ -118,8 +117,8 @@ New — `worker/deno/tests/agent_provider_deepseek_test.ts` (modelled on
 - Auth: DeepSeek's own 401 phrasings are recognised, the message names
   `DEEPSEEK_API_KEY` and `deepseek/provider.env` and not `claude login`, and a
   missing credential classifies as `provider-auth`.
-- The credential preflight reports and then accepts `deepseek/provider.env`
-  with no edit to `credential_preflight.ts`.
+- The credential preflight reports and then accepts `deepseek/provider.env` with
+  no edit to `credential_preflight.ts`.
 
 Extended — `worker/deno/tests/credential_preflight_test.ts`: a
 `deepseek`-enabled run built from `enabledAgentProviders()` asserts the

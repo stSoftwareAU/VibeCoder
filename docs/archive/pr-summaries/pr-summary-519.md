@@ -3,11 +3,12 @@
 ## Summary
 
 Grill-me converged whenever the model judged there was nothing meaningful left
-to ask, and the only quality guidance on the resulting `## Current
-Understanding` block was a single line of prose in the template. That is a
-quality escape: the same defect slips through on one run and is caught on the
-next. This change adopts spec-kit's framing — a checklist is "unit tests for
-English", validating the *requirements text* and explicitly not the
+to ask, and the only quality guidance on the resulting
+`## Current
+Understanding` block was a single line of prose in the template.
+That is a quality escape: the same defect slips through on one run and is caught
+on the next. This change adopts spec-kit's framing — a checklist is "unit tests
+for English", validating the _requirements text_ and explicitly not the
 implementation — and names the failure classes so the judgement is repeatable.
 Closes #519.
 
@@ -22,7 +23,7 @@ What landed:
   regexes over one section, capped at eight findings.
 - **`prompts/grill-me/v13.md`** — Step 3b applies the four named classes to the
   understanding the round just wrote, before Step 4 decides. Every flagged item
-  becomes a question in *that* round, and Step 5b may not post the Ready comment
+  becomes a question in _that_ round, and Step 5b may not post the Ready comment
   while one is outstanding. A worked example shows a Ready being withheld.
 - **`buildGrillMePrompt`** — injects the deterministic pre-pass over the
   understanding already in the body as `{{RUBRIC_FINDINGS}}`, in the same shape
@@ -84,7 +85,7 @@ flowchart TD
 
 - **Input validation** — the rubric only reads text; every excerpt it emits is
   restricted to an allowlisted character class, truncated, and sanitised.
-- **Injection surface** — findings are rendered into the prompt *outside* the
+- **Injection surface** — findings are rendered into the prompt _outside_ the
   untrusted fence, so `sanitiseDelimiterPatterns()` is applied and a
   `<<<ISSUE_BODY_END_…>>>`-shaped fragment in an issue body cannot survive into
   the block. There is a regression test for exactly that.
@@ -95,7 +96,7 @@ flowchart TD
 New — `worker/deno/tests/requirements_rubric_test.ts` (20 tests):
 
 - **Readiness decision (the issue's failure detection)** — an understanding
-  carrying an unquantified adjective *and* an unresolved placeholder yields
+  carrying an unquantified adjective _and_ an unresolved placeholder yields
   `ready: false` with both classes reported; a clean understanding yields
   `ready: true` with no findings; a body with no understanding block is not
   ready.
@@ -113,5 +114,4 @@ New — `worker/deno/tests/requirements_rubric_test.ts` (20 tests):
 Existing suites re-run unchanged: `grill_me_processor_test.ts`,
 `grill_me_processor_escalation_test.ts`, `prompt_substitution_pattern_test.ts`,
 `fable5_remaining_prompts_test.ts`, `unfenced_untrusted_text_test.ts`,
-`prompt_manager_test.ts` — 191 passed. No existing test was modified or
-removed.
+`prompt_manager_test.ts` — 191 passed. No existing test was modified or removed.

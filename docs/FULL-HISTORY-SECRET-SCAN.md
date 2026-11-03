@@ -1,9 +1,7 @@
 # 🔐 Full-history secret scan
 
 Operator manual for the audited, re-runnable secrets sweep across **every ref**
-of this repository (Issue,
-part of the
-proving-ground hardening).
+of this repository (Issue, part of the proving-ground hardening).
 
 `.github/workflows/gitleaks.yml` scans a pull request's commit range. That is
 the right gate for new work and the wrong one for history: a credential that
@@ -45,20 +43,19 @@ flowchart LR
     ROT -- no --> FAIL2[❌ blocks Phase 3]
 ```
 
-`--log-opts=--all` hands `git log` every ref, so gitleaks walks tag-only
-commits as well as dead branches. trufflehog is given no `--branch` filter, so
-its git source walks the whole local clone. Run it against a clone that
-actually holds the refs: the scheduled CI job fetches every branch and tag
-before scanning, because `actions/checkout` leaves only one branch locally.
+`--log-opts=--all` hands `git log` every ref, so gitleaks walks tag-only commits
+as well as dead branches. trufflehog is given no `--branch` filter, so its git
+source walks the whole local clone. Run it against a clone that actually holds
+the refs: the scheduled CI job fetches every branch and tag before scanning,
+because `actions/checkout` leaves only one branch locally.
 
 ## The report
 
-Written to `docs/audits/secrets-full-history-scan.md`, regenerated on every
-run. It records **locations only** — commit, path, rule/detector, which
-scanners saw it, and the triage status. The parsers never read gitleaks'
-`Secret`/`Match` or trufflehog's `Raw`/`RawV2` fields, so a live credential
-cannot reach the report, and the report names the repository rather than the
-operator's checkout path.
+Written to `docs/audits/secrets-full-history-scan.md`, regenerated on every run.
+It records **locations only** — commit, path, rule/detector, which scanners saw
+it, and the triage status. The parsers never read gitleaks' `Secret`/`Match` or
+trufflehog's `Raw`/`RawV2` fields, so a live credential cannot reach the report,
+and the report names the repository rather than the operator's checkout path.
 
 Each scanner names the same match under its own rule id (gitleaks
 `slack-bot-token`, trufflehog `Slack`), and rows are keyed by commit + path +
@@ -113,11 +110,11 @@ does not accumulate dead suppressions. They do not fail the run.
 ## The rotation log
 
 The report's **Rotation log** section is generated from the `confirmed` list:
-one row per confirmed finding recording the credential class, where it was
-used, whether it has been rotated, and the date. An unrotated confirmed finding
-fails the scan — and stays failing even after the credential stops being
-detected, because a leaked credential is live until it is rotated, not until it
-stops appearing in a scan.
+one row per confirmed finding recording the credential class, where it was used,
+whether it has been rotated, and the date. An unrotated confirmed finding fails
+the scan — and stays failing even after the credential stops being detected,
+because a leaked credential is live until it is rotated, not until it stops
+appearing in a scan.
 
 **Unrotated confirmed findings block Phase 3** of the plan.
 
@@ -130,9 +127,9 @@ finding is rotation, not a rewrite.
 
 `.github/workflows/gitleaks.yml` carries two jobs:
 
-| Job | Trigger | Scope |
-| --- | ------- | ----- |
-| `gitleaks` | `pull_request` | The PR commit range only |
+| Job            | Trigger                                 | Scope                    |
+| -------------- | --------------------------------------- | ------------------------ |
+| `gitleaks`     | `pull_request`                          | The PR commit range only |
 | `full-history` | weekly `schedule` + `workflow_dispatch` | Every ref, both scanners |
 
 The scheduled job installs both CLIs pinned by version and verified against a

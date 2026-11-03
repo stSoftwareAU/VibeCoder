@@ -7,7 +7,7 @@ merge, landed through the sanctioned door: `sync/milestone-codex` →
 
 The escalation asked a human to choose between "two designs for the same
 problem". They were not two designs — both conflicted hunks were a **union**,
-and the `main` side of each was *empty*, so the resolution drops nothing:
+and the `main` side of each was _empty_, so the resolution drops nothing:
 
 - `worker/deno/lib/claude_runner.ts` — one hunk inside `summariseLargeContent`'s
   `runner({ … })` call. `main`'s Issue #1607 hardening
@@ -19,8 +19,8 @@ and the `main` side of each was *empty*, so the resolution drops nothing:
   which is what any purely additive export looks like.
 - `worker/deno/tests/claude_runner_test.ts` — keeps the Issue #1754 regression
   test that pins both halves of that call. This file was not conflicted when
-  #1756 was filed; it became conflicted because #1754's resolution squashed
-  onto `milestone/codex`.
+  #1756 was filed; it became conflicted because #1754's resolution squashed onto
+  `milestone/codex`.
 
 The merge is against `main`'s current tip `d1ff55d`, not the `674016f` this
 issue names.
@@ -72,16 +72,17 @@ Backend-only change; there is no web interface to screenshot.
   `/home/vibe/auto-issue-work/sync-1756`, a worktree at the merge result.
 
   A first run from a worktree under `/tmp` reported 2 failures in
-  `tests/cache_secret_redaction_1261_test.ts` (`expected a work-volume
-  directory, got a shared-tmp path`). That is the checkout location, not the
-  merge: the same tree outside `/tmp` passes.
+  `tests/cache_secret_redaction_1261_test.ts`
+  (`expected a work-volume
+  directory, got a shared-tmp path`). That is the
+  checkout location, not the merge: the same tree outside `/tmp` passes.
 - The Issue #1754 regression test was observed **red against the single-sided
   resolution** and green against the union:
 
-  | Resolution taken                                        | `claude_runner_test.ts --filter "Issue #1754"` |
-  | ------------------------------------------------------- | ---------------------------------------------- |
-  | `main` side alone (no `agentProvider` / `env`)          | `FAILED \| 0 passed \| 1 failed`               |
-  | union (what PR #1782 lands)                             | `ok \| 8 passed \| 0 failed`                   |
+  | Resolution taken                               | `claude_runner_test.ts --filter "Issue #1754"` |
+  | ---------------------------------------------- | ---------------------------------------------- |
+  | `main` side alone (no `agentProvider` / `env`) | `FAILED \| 0 passed \| 1 failed`               |
+  | union (what PR #1782 lands)                    | `ok \| 8 passed \| 0 failed`                   |
 
 - The merge commit has **both** parents, which is the whole point:
 
@@ -105,13 +106,13 @@ gitGraph
 
 ## Test Plan
 
-The tests covering the merged behaviour live on `sync/milestone-codex`
-(PR #1782), because the behaviour they cover exists only on `milestone/codex`:
+The tests covering the merged behaviour live on `sync/milestone-codex` (PR
+#1782), because the behaviour they cover exists only on `milestone/codex`:
 
 - Carried through the merge:
   `worker/deno/tests/claude_runner_test.ts::summariseLargeContent - keeps both
-  the restricted tool set and the per-invocation provider (Issue #1754)` —
-  asserts `disallowedTools`, `agentProvider` and `env` on one stubbed runner
+  the restricted tool set and the per-invocation provider (Issue #1754)`
+  — asserts `disallowedTools`, `agentProvider` and `env` on one stubbed runner
   call, so dropping either half of the merge is red. Verified red against the
   `main`-only resolution before the union was committed.
 - `worker/deno/tests/claude_runner_test.ts` — 8 `summariseLargeContent` tests

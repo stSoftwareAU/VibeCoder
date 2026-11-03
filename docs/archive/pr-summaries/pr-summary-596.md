@@ -7,8 +7,8 @@ Two paths provision a repository's `gitleaks.yml` — the deterministic template
 in `worker/deno/lib/workflow_definitions.ts` (refreshed by #594) and the
 LLM-authored setup run driven by `prompts/workflow_setup/`. v7 still described
 `gitleaks-action@v2` with no `pull_request` branch filter and an "optional"
-licence fallback, so an LLM-authored copy reintroduced the milestone-PR gap
-#594 closed. v8's *Gitleaks Reference Implementation* section now reproduces the
+licence fallback, so an LLM-authored copy reintroduced the milestone-PR gap #594
+closed. v8's _Gitleaks Reference Implementation_ section now reproduces the
 refreshed canonical workflow verbatim and states its requirements explicitly:
 
 - gitleaks-action **v3.0.0**, pinned to the SHA in
@@ -64,9 +64,12 @@ pre-existing and environmental — see the Acceptance Criteria entry below.
   explicit `[Develop, main, milestone/*]` branch list, forbids `["*"]`, and
   requires the licence-less CLI fallback — evidence:
   `worker/deno/tests/workflow_setup_prompt_v8_test.ts::workflow_setup v8 -
-  pins the gitleaks action to the repository's v3 pin`, `::the canonical
-  example filters on milestone branches`, `::the prose forbids the bare star
-  filter`, `::the example keeps both scan paths`
+  pins the gitleaks action to the repository's v3 pin`,
+  `::the canonical
+  example filters on milestone branches`,
+  `::the prose forbids the bare star
+  filter`,
+  `::the example keeps both scan paths`
 - **met** — all five required placeholders are present in v8 — evidence:
   `worker/deno/tests/workflow_setup_prompt_v8_test.ts::workflow_setup v8 -
   carries every required placeholder`
@@ -80,8 +83,8 @@ pre-existing and environmental — see the Acceptance Criteria entry below.
   unrelated to this change (`tests/gh_spawn_test.ts` ×3,
   `tests/service_account_env_test.ts` ×1, and `tests/run_core_test.ts` /
   `tests/run_core_rate_limit_resume_test.ts`, which abort on
-  `GraphQL: API rate limit already exceeded`) — reason: the same four
-  assertions fail identically when run from a worktree at the parent commit
+  `GraphQL: API rate limit already exceeded`) — reason: the same four assertions
+  fail identically when run from a worktree at the parent commit
   (`git worktree add /tmp/vc-base-596 HEAD~1` → `4 failed`), so they are the
   container's `gh` config/rate-limit state, not this diff. 15,899 tests pass,
   including all 11 new ones.
@@ -95,9 +98,9 @@ Added `worker/deno/tests/workflow_setup_prompt_v8_test.ts` (11 tests):
 - The canonical example's `on.pull_request.branches` matches `Develop`, `main`
   and `milestone/example` via `anyBranchMatches` (the fleet's own matcher), and
   is not `["*"]`; the prose names the forbidden filter.
-- The example pins `gitleaks/gitleaks-action` to the SHA in
-  `pinned_actions.ts`, every `uses:` resolves to a 40-character SHA, and v8 no
-  longer names `gitleaks-action@v2`.
+- The example pins `gitleaks/gitleaks-action` to the SHA in `pinned_actions.ts`,
+  every `uses:` resolves to a 40-character SHA, and v8 no longer names
+  `gitleaks-action@v2`.
 - Both scan paths survive: the licensed action guarded by
   `env.GITLEAKS_LICENSE != ''`, and the CLI fallback guarded by `== ''` with a
   pinned `GITLEAKS_VERSION` and a `sha256sum -c -` verification; checkout uses

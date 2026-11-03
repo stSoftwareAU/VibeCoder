@@ -12,19 +12,18 @@ dispatches **two independent reviewer sub-agents** before the PR summary is
 written, and their verdicts — not the author's recollection — populate the
 summary, on two headings that are never merged or reranked.
 
-- **`prompts/issue/v39.md`** (new; v38 untouched) — a new
-  **Independent Review Before the PR** section dispatches both reviewers in one
-  parallel `Agent` message. The Spec reviewer gets only
-  `git diff <base>...HEAD` and the issue body (never the implementation
-  transcript) and answers the three Spec questions: requirements missing or
-  partial, behaviour in the diff that was not asked for, and requirements that
-  look implemented but are implemented wrongly. The Standards reviewer gets the
-  diff and `CODING-STANDARDS.md`. The closure block now carries a provenance
-  marker and a `reviewer:` verdict per entry; the Standards findings sit under
-  their own `## Standards Review` heading, and the closing summary names the
-  worst issue *within each axis*. The two reviewers are carved out of the
-  "Delegate sparingly" cap explicitly — an independent context is the point, and
-  it is two agents, not a fleet.
+- **`prompts/issue/v39.md`** (new; v38 untouched) — a new **Independent Review
+  Before the PR** section dispatches both reviewers in one parallel `Agent`
+  message. The Spec reviewer gets only `git diff <base>...HEAD` and the issue
+  body (never the implementation transcript) and answers the three Spec
+  questions: requirements missing or partial, behaviour in the diff that was not
+  asked for, and requirements that look implemented but are implemented wrongly.
+  The Standards reviewer gets the diff and `CODING-STANDARDS.md`. The closure
+  block now carries a provenance marker and a `reviewer:` verdict per entry; the
+  Standards findings sit under their own `## Standards Review` heading, and the
+  closing summary names the worst issue _within each axis_. The two reviewers
+  are carved out of the "Delegate sparingly" cap explicitly — an independent
+  context is the point, and it is two agents, not a fleet.
 - **`worker/deno/lib/independent_review_gate.ts`** (new) — the deterministic
   gate behind that prose, running beside `acceptance_criteria_gate.ts` at the
   same PR-creation chokepoint in `completion_phase.ts`. It blocks when the
@@ -93,10 +92,11 @@ three pre-existing, environment-bound files unrelated to this change:
 `tests/run_core_test.ts` and `tests/run_core_rate_limit_resume_test.ts` abort
 with `gh command failed: GraphQL: API rate limit already exceeded`, and
 `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
-dir is restaged writable` asserts on filesystem permissions. Verified
-pre-existing by running the same two files in a worktree at the base commit
-`b9f6d5f`, where both fail identically (`48 passed | 26 failed`). Full suite
-with this change: `16335 passed | 33 failed`, all 33 inside those three files.
+dir is restaged writable`
+asserts on filesystem permissions. Verified pre-existing by running the same two
+files in a worktree at the base commit `b9f6d5f`, where both fail identically
+(`48 passed | 26 failed`). Full suite with this change:
+`16335 passed | 33 failed`, all 33 inside those three files.
 
 ## Test Plan
 
@@ -125,10 +125,10 @@ Modified (documented behaviour changes, no test removed or weakened):
   no longer a passing summary. The old shape is retained as
   `SUMMARY_SELF_ASSESSED` and drives a new test asserting the review gate blocks
   it. Every pre-existing assertion is unchanged.
-- `worker/deno/tests/issue_prompt_v38_reproduction_method_test.ts` — the
-  "is the version the worker resolves" test now asserts v38 still loads by
-  explicit version and is no longer the resolved one, since v39 supersedes it.
-  All v38 content assertions are untouched.
+- `worker/deno/tests/issue_prompt_v38_reproduction_method_test.ts` — the "is the
+  version the worker resolves" test now asserts v38 still loads by explicit
+  version and is no longer the resolved one, since v39 supersedes it. All v38
+  content assertions are untouched.
 
 Docs updated in the same change: `docs/workflows/issue-processing.md` (new
 "Independent review on two axes" section with a Mermaid diagram),
@@ -141,7 +141,7 @@ the two-axis review).
 
 The gate does not apply to this issue — issue #663 states no
 `## Acceptance Criteria`, so no reviewer sub-agents were dispatched and no
-verdict is claimed. This block is here because the change *is* the two-axis
+verdict is claimed. This block is here because the change _is_ the two-axis
 contract, and the Standards axis of it should be visible on its own PR:
 
 - **clean** — Australian English throughout the new module, its tests and the

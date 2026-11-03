@@ -38,20 +38,20 @@ The report is a Deno command and Deno task. No Node tooling, `package.json` or
   actions in an `--input` snapshot. Accepted trade-off: collected data cannot
   yet tell a human repair from an unrecorded one.
 - Commits match only a confirmed, verified push whose recorded delivered range
-contains them, at or after their committer date. A branch-update call matches only one commit within ten minutes either
-  side of the call, covering GitHub's asynchronous update without absorbing
-  earlier human repairs. Branch updates do not count as fix rounds; failed
-  reviews and repair pushes do not count as completed rounds. One push may
-  deliver multiple commits. Branch linking begins at the first
-  commit, covering WIP pushes before PR creation and delayed completion pushes.
-Legacy pushes without delivery evidence leave commits unknown. The git
-chokepoint reads the remote head before pushing and records the old-to-local
-commit range, excluding repairs already pushed by an owner.
-- Matching window for reviews/dismissals: ±10 minutes; for `merge` the fleet action
-  may be from PR creation up to `mergedAt` + 10 minutes, because the fleet arms
-  auto-merge long before GitHub merges. Accepted trade-off: a fleet-armed merge
-completed by a person is attributed to the fleet, unless a verified successful
-fleet disarm withdrew the arm before the merge.
+  contains them, at or after their committer date. A branch-update call matches
+  only one commit within ten minutes either side of the call, covering GitHub's
+  asynchronous update without absorbing earlier human repairs. Branch updates do
+  not count as fix rounds; failed reviews and repair pushes do not count as
+  completed rounds. One push may deliver multiple commits. Branch linking begins
+  at the first commit, covering WIP pushes before PR creation and delayed
+  completion pushes. Legacy pushes without delivery evidence leave commits
+  unknown. The git chokepoint reads the remote head before pushing and records
+  the old-to-local commit range, excluding repairs already pushed by an owner.
+- Matching window for reviews/dismissals: ±10 minutes; for `merge` the fleet
+  action may be from PR creation up to `mergedAt` + 10 minutes, because the
+  fleet arms auto-merge long before GitHub merges. Accepted trade-off: a
+  fleet-armed merge completed by a person is attributed to the fleet, unless a
+  verified successful fleet disarm withdrew the arm before the merge.
 - Audit `git push` entries carry no repo, so they link to PRs by head-branch
   name inside the PR's lifetime; `HEAD` targets and branch names shared across
   repos stay unlinked. The review skill posts through its own `gh`, so reviews
@@ -268,11 +268,11 @@ does not claim those deliverables.
   rejected push's successful retry retains the requesting processor's repair
   provenance. A production-stack audit test and a collector case cover the
   rejected push and retry, which count as one confirmed fix round.
-- Collector regression: an unjournalled manual repair followed by a fleet
-  branch update and bot merge stays unknown, never unattended. GitHub's update
-  commit dated two seconds after the call is matched. A second nearby commit
-  remains unknown. Removing only the one-to-one guard makes the test fail;
-  removing only the ten-minute branch-update window also makes it fail.
+- Collector regression: an unjournalled manual repair followed by a fleet branch
+  update and bot merge stays unknown, never unattended. GitHub's update commit
+  dated two seconds after the call is matched. A second nearby commit remains
+  unknown. Removing only the one-to-one guard makes the test fail; removing only
+  the ten-minute branch-update window also makes it fail.
 - Confirmed-only matcher regression: a failed fleet review near a GitHub
   approval leaves an unknown review action and an unknown merged PR. Removing
   only the matcher's confirmed-outcome guard makes this test fail. Only
@@ -280,9 +280,9 @@ does not claim those deliverables.
 - Validation: `check:manifests` passes (847 tests). `quality.sh` passes
   formatter, linter, type check, markdownlint, Mermaid and completeness checks.
   Its full parallel test pass aborts in Deno 2.9.5 on macOS with
-  `pledge test permissions called before restoring previous pledge`; test
-  shards pass in CI on this PR and on #4718, which produced the current base.
-  The release-ruleset check passes when rerun with an accessible `GH_CONFIG_DIR`
+  `pledge test permissions called before restoring previous pledge`; test shards
+  pass in CI on this PR and on #4718, which produced the current base. The
+  release-ruleset check passes when rerun with an accessible `GH_CONFIG_DIR`
   (the default config is sandbox restricted). Semgrep and Checkov are absent;
   config integration has no local configuration.
 - The audit-hook, snapshot, report and command suites pass (117 tests). New
@@ -295,18 +295,18 @@ does not claim those deliverables.
   collector tests cover failed attempts, a confirmed direct merge, an unmatched
   merge and a branch-update commit.
 
-- Review fixes: `--disable-auto` is an unknown action, never evidence of a
-  fleet merge. New audit-hook and collector regressions failed before the
-  classifier fix. Checkpoint tests assert that `push-20` and `push-30` link to
-  PR 1, and cover a PR opened more than ten minutes after every push. The
-  operator manual and review-log comment now describe repository/number
-  linking independent of head SHA. The accepted host-babysitter provenance
-  limitation is recorded above and in INTERNALS; no assertion was removed.
-  Both checkpoint tests went red with first-commit lifetime widening removed
-  and green after restoration. The targeted audit-hook, snapshot, report and
-  command suites pass (111 tests), as does `check:manifests` (847 tests).
-  `quality.sh` passes formatter, linter, type check, markdownlint, Mermaid and
-  release-ruleset checks. Its parallel suite aborts in Deno 2.9.5 on macOS
+- Review fixes: `--disable-auto` is an unknown action, never evidence of a fleet
+  merge. New audit-hook and collector regressions failed before the classifier
+  fix. Checkpoint tests assert that `push-20` and `push-30` link to PR 1, and
+  cover a PR opened more than ten minutes after every push. The operator manual
+  and review-log comment now describe repository/number linking independent of
+  head SHA. The accepted host-babysitter provenance limitation is recorded above
+  and in INTERNALS; no assertion was removed. Both checkpoint tests went red
+  with first-commit lifetime widening removed and green after restoration. The
+  targeted audit-hook, snapshot, report and command suites pass (111 tests), as
+  does `check:manifests` (847 tests). `quality.sh` passes formatter, linter,
+  type check, markdownlint, Mermaid and release-ruleset checks. Its parallel
+  suite aborts in Deno 2.9.5 on macOS
   (`pledge test permissions called before restoring previous pledge`), before
   the serial pass. CI test shards pass on this PR head and on #4718, which
   produced the current base. Semgrep and Checkov are absent on this host;
@@ -320,7 +320,8 @@ does not claim those deliverables.
 - Quality-fix push `48efac0f`: extracted the shared review-log contract and
   parser and changed the collector to import it from the worker library.
   `deno test --allow-read --allow-env --allow-run --allow-write
-  --allow-sys=hostname tests/pr_completion_snapshot_test.ts` passed (40 tests).
+  --allow-sys=hostname tests/pr_completion_snapshot_test.ts`
+  passed (40 tests).
 - Verifier and mutation round (this turn): `coverage.openPrsBeforeCohort` counts
   PRs still open that predate `cohort.start` (extra bounded `pulls?state=open`
   scan; a bound reached marks the repository truncated). `excludedPrs` now
@@ -402,18 +403,19 @@ as implementation push callers. The host babysitter resolves its checkout
 revision when the container build stamp is unset. Corrected the shared review
 log parser dependency and documented the assignment policy fingerprint. Added
 production-shaped collector and default heartbeat regression tests; both failed
-before their fixes. The former ten-minute commit-window fixture now uses a push before the commit,
-preserving the unknown-delivery assertions while replacing the obsolete time
-window contract. Review/dismissal window rejection remains covered separately.
-The heartbeat test accepts the existing resolver's explicit dirty suffix.
+before their fixes. The former ten-minute commit-window fixture now uses a push
+before the commit, preserving the unknown-delivery assertions while replacing
+the obsolete time window contract. Review/dismissal window rejection remains
+covered separately. The heartbeat test accepts the existing resolver's explicit
+dirty suffix.
 
 Validation of the review repairs: 116 focused tests passed with the local gate
 permissions; check:manifests passed (847 tests). The gate passed formatting,
 lint, type checking, Markdown lint and Mermaid checks. Its full parallel test
 pass hit a Deno 2.9.5 macOS runtime panic (pledge test permissions called before
-restoring previous pledge). Release-ruleset checking could not read sandboxed
-gh configuration; Semgrep and Checkov are unavailable on this host. The current
-PR checks and the latest main merge (PR #4714) were green in GitHub CI.
+restoring previous pledge). Release-ruleset checking could not read sandboxed gh
+configuration; Semgrep and Checkov are unavailable on this host. The current PR
+checks and the latest main merge (PR #4714) were green in GitHub CI.
 
 ### PR #4709 provenance review follow-up
 
@@ -427,8 +429,8 @@ mutating process state. The authentication retry journals its own result once.
 
 The audit sweep and collector share the journal filename predicate. Other JSONL
 files stay unverified, emit a coverage note and make history incomplete. A
-successful verified disarm invalidates earlier merge arms; a later re-arm and
-a failed disarm retain the expected behaviour. The per-entry schema now includes
+successful verified disarm invalidates earlier merge arms; a later re-arm and a
+failed disarm retain the expected behaviour. The per-entry schema now includes
 `branch-update` and its update-branch endpoint.
 
 Validation: 213 focused audit, collector, report, command and git tests passed.
@@ -442,23 +444,25 @@ updated together; the filename predicate is shared with the sweep.
 
 `check:manifests` passed (847 tests). The quality gate passed formatting, lint,
 type checking, Markdown lint, Mermaid, completeness and release-ruleset checks.
-The full parallel suite hit the Deno 2.9.5 macOS panic, `pledge test permissions
-called before restoring previous pledge`; its serial pass could not start.
-All four CI test shards passed on this PR and on PR #4730, which produced the
-current main commit `d7073ac1`. Semgrep and Checkov are not installed, and config
-integration has no local configuration. No host or GitHub settings were changed.
+The full parallel suite hit the Deno 2.9.5 macOS panic,
+`pledge test permissions
+called before restoring previous pledge`; its serial
+pass could not start. All four CI test shards passed on this PR and on PR #4730,
+which produced the current main commit `d7073ac1`. Semgrep and Checkov are not
+installed, and config integration has no local configuration. No host or GitHub
+settings were changed.
 
 ### PR #4709 production push argument follow-up
 
-The push evidence parser now accepts the `--end-of-options` separator emitted
-by `buildPushArgs`, including upstream-setting pushes. The real-git regression
-uses that builder through the audited chokepoint and asserts the journal's
-delivered range; it failed before the parser fix. New destination branches
-exclude commits already in the remote's tracking refs instead of recording the
-whole repository history. The existing new-destination expectation changes
-from full history to an empty range, and an additional commit proves that new
-branch work is still captured. Existing owner-repair and stale-tracking-ref
-assertions remain. No test is removed or skipped.
+The push evidence parser now accepts the `--end-of-options` separator emitted by
+`buildPushArgs`, including upstream-setting pushes. The real-git regression uses
+that builder through the audited chokepoint and asserts the journal's delivered
+range; it failed before the parser fix. New destination branches exclude commits
+already in the remote's tracking refs instead of recording the whole repository
+history. The existing new-destination expectation changes from full history to
+an empty range, and an additional commit proves that new branch work is still
+captured. Existing owner-repair and stale-tracking-ref assertions remain. No
+test is removed or skipped.
 
 Corrected the audit schema to six optional fields and documented that captured
 push ranges are recorded on failed attempts too. Updated the matching rule's
@@ -470,7 +474,7 @@ history exclusion independently makes its changed expectation fail.
 `check:manifests` passes (847 tests). The full gate passes formatting, lint,
 type checking, Markdown lint, Mermaid, completeness and release-ruleset checks.
 Its parallel test pass aborts in Deno 2.9.5 on macOS with
-`pledge test permissions called before restoring previous pledge`, so the
-serial pass does not run. All four test shards pass in CI on this PR and on
-PR #4730, which produced the current base. Semgrep and Checkov are unavailable
-on this host; config integration has no local configuration.
+`pledge test permissions called before restoring previous pledge`, so the serial
+pass does not run. All four test shards pass in CI on this PR and on PR #4730,
+which produced the current base. Semgrep and Checkov are unavailable on this
+host; config integration has no local configuration.

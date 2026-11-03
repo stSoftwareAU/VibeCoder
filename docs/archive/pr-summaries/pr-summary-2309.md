@@ -30,8 +30,8 @@ Three changes:
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suite: 108 tests across the six milestone-sync suites, and the full
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suite: 108 tests across the six milestone-sync suites, and the full
 `./quality.sh` gate.
 
 ```text
@@ -42,7 +42,8 @@ deno test tests/milestone_branch_sync_test.ts tests/milestone_sync_cadence_test.
 ok | 108 passed | 0 failed
 ```
 
-`./quality.sh` → `Result: PASSED (with skipped checks)` (only `config
+`./quality.sh` → `Result: PASSED (with skipped checks)` (only
+`config
 integration`, which is skipped in this environment as normal).
 
 How one repository's pass now runs:
@@ -121,8 +122,8 @@ flowchart TD
   change" standard forbids.
 - **unrequested** — `docs/audits/lib-sweep-coverage.json` gains
   `milestone_sync_announcement.ts` and `milestone_behind_count.ts` — reviewer:
-  unrequested — reason: the repo's completeness check requires every new
-  `lib/` module to be listed; the gate fails without it.
+  unrequested — reason: the repo's completeness check requires every new `lib/`
+  module to be listed; the gate fails without it.
 - **unrequested** — `orderMilestonesByBehind` and `MeasuredMilestone` exported
   from `milestone_branch_sync.ts`, and `hostFn` / `announceAgentAttemptFn` added
   to `MilestoneBranchSyncDeps` — reviewer: unrequested — reason: injected test
@@ -170,12 +171,13 @@ Two further reviewer findings were assessed and stand, with reasons:
   `::syncMilestoneBranches - a measurement that fails or throws still syncs both branches (Issue #2309)`.
 - **violation** — the production behind-count closure's fetch-failure mapping
   had no test and was unreachable from one — evidence:
-  `worker/deno/lib/run_core_production_deps.ts:5352-5385` — reason: fixed here by
-  extracting `worker/deno/lib/milestone_behind_count.ts`, covered by six tests.
+  `worker/deno/lib/run_core_production_deps.ts:5352-5385` — reason: fixed here
+  by extracting `worker/deno/lib/milestone_behind_count.ts`, covered by six
+  tests.
 - **violation** — an earlier commit subject on this branch carries no issue
   reference — evidence: commit `0aa73576` — reason: stands; rewriting pushed
-  history is the irreversible action the guidelines say to avoid over a
-  cosmetic subject line, and the branch's other commits carry it.
+  history is the irreversible action the guidelines say to avoid over a cosmetic
+  subject line, and the branch's other commits carry it.
 - **clean** — Australian English throughout; WARNING reserved for
   degraded-but-continuing conditions and INFO for expected deferrals; no
   swallowed errors (a failed announcement returns `false` so the ledger is not
@@ -197,7 +199,7 @@ Added:
   wording, the post, a milestone with nowhere to post, and a post that failed.
 - `worker/deno/tests/milestone_branch_sync_test.ts` — every-branch-gets-a-rung,
   the bounded two-run deadline, the floor refusal (now asserting the deferral
-  line), a clean late merge that must *not* report a deferral, longest-behind
+  line), a clean late merge that must _not_ report a deferral, longest-behind
   ordering, the pure sort, the cheap-path measurement skip, a measurement that
   fails or throws, and the three announcement cases.
 - `worker/deno/tests/milestone_sync_cadence_test.ts` — both behind branches

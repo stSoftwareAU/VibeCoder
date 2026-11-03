@@ -4,10 +4,10 @@
 
 Every rule in `worker/deno/lib/secret_redaction.ts` anchors on a credential's
 **original** bytes — the `ghp_` / `sk-ant-` / `AIzaSy` prefixes, a PEM marker, a
-`Bearer` scheme, a `KEY=value` shape. A credential piped through `base64`,
-`xxd` or `rev`, or printed in two halves by two `echo` calls, carried none of
-those bytes, so it matched no rule and was republished verbatim — including
-through `gh_body_redaction.ts`, whose `redactSecrets()` pass is the guard on the
+`Bearer` scheme, a `KEY=value` shape. A credential piped through `base64`, `xxd`
+or `rev`, or printed in two halves by two `echo` calls, carried none of those
+bytes, so it matched no rule and was republished verbatim — including through
+`gh_body_redaction.ts`, whose `redactSecrets()` pass is the guard on the
 worker's public GitHub sinks (comment and PR bodies).
 
 This change adds a decode-then-rescan pass,
@@ -47,7 +47,7 @@ printed lines) placed into a `gh` body. Static reasoning over the changed path:
 `redactGhBodyArgs` → `redactSecrets` → `redactTransformedSecrets`, where the
 encoded blob is a single candidate run; `atob`/hex-decode/reverse recover the
 literal `ghp_…` bytes, `matchesSignatureRule` fires on the `github-token` rule,
-and the *whole run* is replaced, so no fragment of the encoded form survives.
+and the _whole run_ is replaced, so no fragment of the encoded form survives.
 The obvious escalations are covered too: chaining two transforms
 (`base64 | rev`, `base64 | base64`) is unwound by the depth-2 recursion,
 url-safe base64 and unpadded base64 both decode, and a blob wrapped across lines
@@ -55,33 +55,34 @@ by `base64(1)` — or a token split across two `echo` calls — is joined before
 decoding, so line breaks are not an escape either. Each of those spellings has
 its own test below.
 
-**Known residual, unchanged by this PR.** A credential split by *in-line*
+**Known residual, unchanged by this PR.** A credential split by _in-line_
 separators (`echo "$GH_TOKEN" | fold -w1 | paste -sd' '`) is still not masked,
 and closing it is not safe here: joining whitespace-separated fragments would
 let ordinary prose that mentions `ghp_` (this repo's own `SECURITY.md` does)
 absorb the following 36 characters of text into a placeholder. The tabletop
-harness treats that form as a breach it must catch, and that is what its
-scanner is for — `docs/CONTAINMENT.md` now states which forms the chokepoint
-masks and which the scanner still owns.
+harness treats that form as a breach it must catch, and that is what its scanner
+is for — `docs/CONTAINMENT.md` now states which forms the chokepoint masks and
+which the scanner still owns.
 
 **Performance.** The pass is linear and bounded by construction (disjoint
 candidate runs, a fixed fan-out of four transforms at depth two, no input cap —
 `SECURITY.md`'s redact-before-truncate standard forbids one). Measured on this
 container, `redactSecrets` on the existing budget cases: 500 KB of `a` plus a
-URL credential 763 ms (test budget 2000 ms), 128 KiB of `a` 208 ms (budget
-1000 ms), 128 KiB of `-` 70 ms, a typical log line under 0.1 ms. The existing
-ReDoS and bounds suites (`secret_redaction_redos_test.ts`,
+URL credential 763 ms (test budget 2000 ms), 128 KiB of `a` 208 ms (budget 1000
+ms), 128 KiB of `-` 70 ms, a typical log line under 0.1 ms. The existing ReDoS
+and bounds suites (`secret_redaction_redos_test.ts`,
 `secret_redaction_bounds_test.ts`) pass unchanged.
 
 **Behaviour change, documented rather than silent.** The tabletop harness
 (`tabletop_harness.ts`) redacts outbound artefacts before scanning them for the
-planted canary, and three of its tests asserted the *old* gap — that a base64
+planted canary, and three of its tests asserted the _old_ gap — that a base64
 canary survives redaction and is therefore a breach. A base64 canary is now
 contained, so those tests were updated in place, not deleted:
 
 - `findCanaryForms recovers a base64-encoded canary the redaction now masks
-  (Issue #188)` — now asserts the chokepoint masks it, while the scanner still
-  recovers it from the raw artefact.
+  (Issue #188)`
+  — now asserts the chokepoint masks it, while the scanner still recovers it
+  from the raw artefact.
 - `an encoded canary in an outbound artefact is a breach the redaction misses` —
   now uses the separator-split form, which still defeats the chokepoint, so the
   harness keeps a genuine breach case.
@@ -98,10 +99,10 @@ them fail against the unfixed code and pass after the fix — verified by runnin
 the file before the implementation landed (`10 failed | 4 passed`) and after
 (`14 passed`). The headline regression test is
 `worker/deno/tests/secret_transform_redaction_test.ts::redactSecrets - masks a
-base64-encoded GitHub token (Issue #188)`, which reproduces the reported trigger
-(`echo "$GH_TOKEN" | base64` into a published body): it fails against the
-unfixed code, where the encoded token survives `redactSecrets`, and passes after
-the fix.
+base64-encoded GitHub token (Issue #188)`,
+which reproduces the reported trigger (`echo "$GH_TOKEN" | base64` into a
+published body): it fails against the unfixed code, where the encoded token
+survives `redactSecrets`, and passes after the fix.
 
 Tests added:
 
@@ -116,7 +117,8 @@ Tests added:
 - `redactSecrets - masks a base64 blob wrapped across lines by base64(1)`
 - `containsSecret - reports a transformed secret (Issue #188)`
 - `redactGhBodyArgs - masks a base64-encoded token in a published body (Issue
-  #188)` — the reported sink, end to end
+  #188)`
+  — the reported sink, end to end
 - `redactSecrets - leaves prose, SHAs, UUIDs and identifiers unchanged`
 - `redactSecrets - leaves a base64 image blob and a stats table unchanged`
 - `redactSecrets - the transform pass stays linear on a large benign blob (Issue

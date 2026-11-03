@@ -33,12 +33,12 @@ flowchart LR
 
 Where the guard sits in each pass:
 
-| Pass | Claim point | Writes it now precedes |
-| --- | --- | --- |
-| CI fix | top of `processCiFailure` | the cross-host lock comment, the retry counter, the agent run, the push |
-| Review feedback | top of `processPrFeedback` | `claimPrComment`, the reaction, the reply |
-| Merge conflict | `drainConflictingPrs`, before the repo lease | the clone, the attempt marker, the merge push |
-| Auto-merge | `sweepAutoMerge`, before `attemptMerge` | `enableAutoMerge` |
+| Pass            | Claim point                                  | Writes it now precedes                                                  |
+| --------------- | -------------------------------------------- | ----------------------------------------------------------------------- |
+| CI fix          | top of `processCiFailure`                    | the cross-host lock comment, the retry counter, the agent run, the push |
+| Review feedback | top of `processPrFeedback`                   | `claimPrComment`, the reaction, the reply                               |
+| Merge conflict  | `drainConflictingPrs`, before the repo lease | the clone, the attempt marker, the merge push                           |
+| Auto-merge      | `sweepAutoMerge`, before `attemptMerge`      | `enableAutoMerge`                                                       |
 
 ## Reproduction
 
@@ -64,8 +64,8 @@ Where the guard sits in each pass:
   `worker/deno/tests/merge_conflict_drain_test.ts::drainConflictingPrs - a PR closed since the listing is skipped, not resolved`,
   `worker/deno/tests/auto_merge_sweep_test.ts::a PR closed since the cached listing receives no merge attempt`
   — reviewer: partial — reason: the reviewer found one case the log line does
-  not cover in production — a **merged** PR whose head branch GitHub auto-deleted
-  reaches the pre-existing branch-missing skip (Issue #4376) in
+  not cover in production — a **merged** PR whose head branch GitHub
+  auto-deleted reaches the pre-existing branch-missing skip (Issue #4376) in
   `run_core_production_deps.ts` before the processor is called, so it logs
   `branch_missing` rather than `skipped: PR merged`. No write reaches the PR
   either way, so the "no push, comment or label" half holds; moving the read
@@ -82,8 +82,8 @@ Where the guard sits in each pass:
   asserts `getCiCheckRetryCount(...) === 0`;
   `worker/deno/tests/merge_conflict_drain_test.ts::drainConflictingPrs - an unreadable state skips the PR without an attempt`
   asserts no `attempted` decision — reviewer: met
-- **met** — `./quality.sh < /dev/null` passes — evidence: full gate run after the
-  final edit, every check PASSED (`config integration` SKIPPED as always) —
+- **met** — `./quality.sh < /dev/null` passes — evidence: full gate run after
+  the final edit, every check PASSED (`config integration` SKIPPED as always) —
   reviewer: met — reason: the reviewer could not run the gate against the
   working tree mid-edit; it was run here after the last change and passed
 - **unrequested** — `docs/audits/security-sweep-1774-pr-live-state.md` and the
@@ -94,10 +94,10 @@ Where the guard sits in each pass:
   `isPrLiveStateRead` beside `readPrLiveState` — reviewer: unrequested — reason:
   they are the one place the skip line and the argv are decided, so four passes
   and the mock fleet cannot drift apart
-- **unrequested** — `SweepAutoMergeSummary.prsSkippedNotOpen` and its line in the
-  "Auto-merge sweep complete" record — reviewer: unrequested — reason: a sweep
-  that attempted nothing because everything had landed must not read like a
-  sweep that found nothing
+- **unrequested** — `SweepAutoMergeSummary.prsSkippedNotOpen` and its line in
+  the "Auto-merge sweep complete" record — reviewer: unrequested — reason: a
+  sweep that attempted nothing because everything had landed must not read like
+  a sweep that found nothing
 - **unrequested** — the `pr-not-open` member of `ConflictSkipReason` — reviewer:
   unrequested — reason: the drain's per-PR decision is a required return value,
   so a new exit cannot be added without a taxonomy member; it is counted as

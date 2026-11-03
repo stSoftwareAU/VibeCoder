@@ -4,11 +4,11 @@
 
 The public half of the fleet-session-log work — the generic post-run callback
 extension point (#806), the removal of built-in FLEET health (#805), the
-documented contract and conformance fixture (#807) and the 1.2.0 release
-notes (#808) — is merged on `milestone/fleet-logs`. What was **not** true is
-that the branch still worked: successive `main` → `milestone/fleet-logs` sync
-merges had quietly eaten the wiring that fires the hooks, and the branch no
-longer compiled.
+documented contract and conformance fixture (#807) and the 1.2.0 release notes
+(#808) — is merged on `milestone/fleet-logs`. What was **not** true is that the
+branch still worked: successive `main` → `milestone/fleet-logs` sync merges had
+quietly eaten the wiring that fires the hooks, and the branch no longer
+compiled.
 
 This PR lands the restoration, the regression tests that keep it, and the three
 gate failures the branch was carrying. Closes #796.
@@ -16,21 +16,22 @@ gate failures the branch was carrying. Closes #796.
 **What the merges had removed.** Counting `dispatchIssueCallbacks` call sites in
 `worker/deno/lib/run_core.ts` across the branch's history:
 
-| Commit    | What it is                                       | Dispatch sites |
-| --------- | ------------------------------------------------ | -------------: |
-| `43628db` | #806 lands the callbacks                          |              4 |
-| `29ca912` | #928 restores them after two sync merges          |              4 |
-| `165bb42` | `main` sync merge                                 |              3 |
-| `987df13` | `main` sync merge                                 |              2 |
-| `e5d7dab` | milestone HEAD before this PR                     |              2 |
+| Commit    | What it is                               | Dispatch sites |
+| --------- | ---------------------------------------- | -------------: |
+| `43628db` | #806 lands the callbacks                 |              4 |
+| `29ca912` | #928 restores them after two sync merges |              4 |
+| `165bb42` | `main` sync merge                        |              3 |
+| `987df13` | `main` sync merge                        |              2 |
+| `e5d7dab` | milestone HEAD before this PR            |              2 |
 
-The mechanism is visible in `git diff 29ca912 165bb42 -- worker/deno/lib/run_core.ts`:
-`main` changed the `processIssue(issue, endTime)` line **inside** the `try` that
-the milestone branch had wrapped in a new `catch`, and the resolution kept
-`main`'s hunk and dropped the `catch` with it.
+The mechanism is visible in
+`git diff 29ca912 165bb42 -- worker/deno/lib/run_core.ts`: `main` changed the
+`processIssue(issue, endTime)` line **inside** the `try` that the milestone
+branch had wrapped in a new `catch`, and the resolution kept `main`'s hunk and
+dropped the `catch` with it.
 
-The branch was also **not compiling**: `SlotPoolState.callbackGuard` was declared
-but never initialised in the pool literal, so `deno check` failed on
+The branch was also **not compiling**: `SlotPoolState.callbackGuard` was
+declared but never initialised in the pool literal, so `deno check` failed on
 `milestone/fleet-logs` HEAD. Reproduced here against the untouched branch:
 
 ```
@@ -152,14 +153,16 @@ stSoftwareAU/VibeCoder#990. The branch's own contribution went from 38 failures
   evidence: `worker/deno/lib/run_core.ts:1682` — reviewer: met
 - **met** — callbacks are optional executable paths invoked directly with
   versioned run context — evidence: `worker/deno/lib/run_callbacks.ts`
-  (`CALLBACK_SCHEMA_VERSION`), `worker/deno/tests/run_callbacks_integration_test.ts::a non-executable path is reported, never run through a shell`
+  (`CALLBACK_SCHEMA_VERSION`),
+  `worker/deno/tests/run_callbacks_integration_test.ts::a non-executable path is reported, never run through a shell`
   — reviewer: met
-- **met** — no private path, repository or policy is placed in public VibeCoder —
-  evidence: the whole diff introduces no GRQ or private-repo reference —
+- **met** — no private path, repository or policy is placed in public VibeCoder
+  — evidence: the whole diff introduces no GRQ or private-repo reference —
   reviewer: met
 - **met** — public work items #805, #806, #807, #808 — evidence: all four are
   closed and their code is on `milestone/fleet-logs`; this PR reconciles the
-  bookkeeping #805/#807 left (`worker/deno/tests/mod_test.ts:194`) — reviewer: met
+  bookkeeping #805/#807 left (`worker/deno/tests/mod_test.ts:194`) — reviewer:
+  met
 - **partial** — a run record carrying elapsed time, tokens and estimated cost —
   evidence: `worker/deno/lib/run_core.ts:1671` (telemetry rides `TerminalRun`) —
   reviewer: partial — reason: the two restored failure dispatches carry no
@@ -204,8 +207,8 @@ stSoftwareAU/VibeCoder#990. The branch's own contribution went from 38 failures
 - **violation** — commit message standards: `1061193` folds the run id into the
   subject line and cites the wrong issue (`Issue #769`) — evidence: commit
   `1061193` subject — reason: stands; it is the worker's own auto-generated
-  handover checkpoint, and rewriting it means force-pushing shared history for
-  a message-only change
+  handover checkpoint, and rewriting it means force-pushing shared history for a
+  message-only change
 - **violation** — scope discipline: subprocess and command-registry tests are
   edited under a fleet-session-log branch — evidence:
   `worker/deno/tests/subprocess_timeout_test.ts:183` — reason: stands, and is

@@ -30,21 +30,20 @@ rejected. Closes #3389.
   `(text, line, id, path)`. A caller that holds a `WorkflowFile` therefore
   passes its `lineAuthors` without having to remember to.
 - Blame runs only when the text matches `/BP-/i`. Every best-practices marker
-  form needs a `BP-` id, so the check never skips a real marker, and
-  marker-free files skip the blame and its possible unshallow fetch for
-  non-scanner callers (`pr_ci_processor`, `pr_maintenance`,
-  `check_main_ruleset`, `llm_usage_detection`).
+  form needs a `BP-` id, so the check never skips a real marker, and marker-free
+  files skip the blame and its possible unshallow fetch for non-scanner callers
+  (`pr_ci_processor`, `pr_maintenance`, `check_main_ruleset`,
+  `llm_usage_detection`).
 - If blame returns no logins (no git history, or only shallow-boundary hunks),
   `lineAuthors` is left unset and the process-wide list applies, as in
   `orphan_deps_suppression_scan.ts`. Production never sets that list, so the
   marker is rejected.
 - `isAnnotationClassSuppressed` (`workflow_annotation_filer.ts`) passes
   `{ rawText }` with no identity, so it still rejects every marker. The
-  `FileAnnotationClassesOptions.readWorkflowText` doc says the real scan has
-  no local checkout, and there is none to blame.
-  `changed_workflow_gate.ts` builds its own `WorkflowFile`s without
-  `lineAuthors`, so a marker added by the agent's own PR cannot waive a finding
-  in that gate.
+  `FileAnnotationClassesOptions.readWorkflowText` doc says the real scan has no
+  local checkout, and there is none to blame. `changed_workflow_gate.ts` builds
+  its own `WorkflowFile`s without `lineAuthors`, so a marker added by the
+  agent's own PR cannot waive a finding in that gate.
 
 ### Undiscoverable Facts
 
@@ -84,10 +83,10 @@ flowchart LR
 
 **Docs sweep** — grep: `isFindingSuppressed`, `readWorkflowFiles(`,
 `commit identity`, `blame`, `best-practice-ignore` in `README.md`, `docs/`
-(excluding archive and audits) and the source doc comments of the changed
-files. Sections: `docs/GITHUB-ACTIONS-AUDIT-SCAN.md#suppression-comment-syntax`
-and `docs/GATE-SKIP-DRIFT-SCAN.md#suppression`, both updated with the blame
-binding. The `workflow_scan_common.ts` module doc and the doc comments of
+(excluding archive and audits) and the source doc comments of the changed files.
+Sections: `docs/GITHUB-ACTIONS-AUDIT-SCAN.md#suppression-comment-syntax` and
+`docs/GATE-SKIP-DRIFT-SCAN.md#suppression`, both updated with the blame binding.
+The `workflow_scan_common.ts` module doc and the doc comments of
 `isFindingSuppressed`, `readWorkflowFiles`, `WorkflowFile` and `selectLiveSteps`
 were updated in the code. `docs/BEST-PRACTICES-SCAN.md:754` is unchanged and
 still true because it documents the marker grammar, which did not change.
@@ -97,12 +96,11 @@ still true because it documents the marker grammar, which did not change.
 - `./quality.sh < /dev/null` was run on the committed change and passed: deno
   tests, lint, type check, fmt, semgrep and markdownlint all passed; config
   integration was skipped by the gate itself.
-- `deno task test:unit` over the 13 scanner test files
-  (workflow_scan_common, gate_skip_drift, action_pin, artifact_upload,
-  checkout_persist_credentials, ci_install_pin, gitleaks_drift,
-  gitleaks_pr_coverage, milestone_branch_filter, run_injection,
-  workflow_permissions, workflow_trigger, workflow_annotation_scan) passed
-  280/280.
+- `deno task test:unit` over the 13 scanner test files (workflow_scan_common,
+  gate_skip_drift, action_pin, artifact_upload, checkout_persist_credentials,
+  ci_install_pin, gitleaks_drift, gitleaks_pr_coverage, milestone_branch_filter,
+  run_injection, workflow_permissions, workflow_trigger,
+  workflow_annotation_scan) passed 280/280.
 - Added in `worker/deno/tests/workflow_scan_common_test.ts`. None of them sets
   the process-wide commit-author seam.
   - `isFindingSuppressed - honours a marker whose author matches the blamed line without the commit-author seam (Issue #3389)`
@@ -111,7 +109,8 @@ still true because it documents the marker grammar, which did not change.
   - `readWorkflowFiles + isFindingSuppressed - a committed marker is honoured in production wiring (Issue #3389)`
   - `selectLiveSteps - a file's blamed lineAuthors lets an in-source marker drop a step without the seam (Issue #3389)`
 - Added in `worker/deno/tests/gate_skip_drift_scanner_test.ts`, without the
-  seam: `scanGateSkipDrift - a waiver bound by blame suppresses the tool without the commit-author seam (Issue #3389)`.
+  seam:
+  `scanGateSkipDrift - a waiver bound by blame suppresses the tool without the commit-author seam (Issue #3389)`.
   It checks both a waiver blamed on `nigel` (honoured) and one blamed on
   `mallory` (rejected).
 - Modified: the existing `isFindingSuppressed` calls in
@@ -133,24 +132,24 @@ still true because it documents the marker grammar, which did not change.
     `assert(isFindingSuppressed({ rawText: text }, 1, id));`
   - Removed from `worker/deno/tests/workflow_scan_common_test.ts`:
     `assertEquals(isFindingSuppressed(plain, 1, id), false);` — #3389 changes
-    the first parameter to a file object, so the string form is untrue;
-    replaced in `isFindingSuppressed - false when no marker, wrong id, or wrong line`
-    by `assertEquals(isFindingSuppressed({ rawText: plain }, 1, id), false);`
+    the first parameter to a file object, so the string form is untrue; replaced
+    in `isFindingSuppressed - false when no marker, wrong id, or wrong line` by
+    `assertEquals(isFindingSuppressed({ rawText: plain }, 1, id), false);`
   - Removed from `worker/deno/tests/workflow_scan_common_test.ts`:
-    `assertEquals(isFindingSuppressed(wrongId, 2, id), false);` — #3389
-    changes the first parameter to a file object, so the string form is untrue;
-    replaced in the same test by
+    `assertEquals(isFindingSuppressed(wrongId, 2, id), false);` — #3389 changes
+    the first parameter to a file object, so the string form is untrue; replaced
+    in the same test by
     `assertEquals(isFindingSuppressed({ rawText: wrongId }, 2, id), false);`
   - Removed from `worker/deno/tests/workflow_scan_common_test.ts`:
-    `assertEquals(isFindingSuppressed(farAway, 4, id), false);` — #3389
-    changes the first parameter to a file object, so the string form is untrue;
-    replaced in the same test by
+    `assertEquals(isFindingSuppressed(farAway, 4, id), false);` — #3389 changes
+    the first parameter to a file object, so the string form is untrue; replaced
+    in the same test by
     `assertEquals(isFindingSuppressed({ rawText: farAway }, 4, id), false);`
-- The negative assertions (the `mallory` cases) exercise the existing Issue
-  #269 mismatch guard in `suppression_comments.ts`, which this diff does not
-  change. That guard was not flipped in this run. Each negative assertion sits
-  beside a positive assertion on the same fixture, and the positive one went
-  red with the blame call removed, so the fixture does reach the identity check.
+- The negative assertions (the `mallory` cases) exercise the existing Issue #269
+  mismatch guard in `suppression_comments.ts`, which this diff does not change.
+  That guard was not flipped in this run. Each negative assertion sits beside a
+  positive assertion on the same fixture, and the positive one went red with the
+  blame call removed, so the fixture does reach the identity check.
 - Callers checked for the new `lineAuthors` behaviour: `action_pin_scanner`,
   `ci_install_pin_scanner`, `gitleaks_drift_scanner`,
   `gitleaks_pr_coverage_scanner`, `milestone_branch_filter_scanner`,
@@ -178,13 +177,15 @@ still true because it documents the marker grammar, which did not change.
   `worker/deno/tests/workflow_scan_common_test.ts::readWorkflowFiles + isFindingSuppressed - a committed marker is honoured in production wiring (Issue #3389)`
   — removing the blame call turned it red.
 - `worker/deno/lib/workflow_scan_common.ts:216` — `lineAuthors` attached or
-  omitted — reached by the `readWorkflowFiles - blames a file carrying a BP- marker…`
-  test (attached on `marked.yml`, `undefined` on `clean.yml`) — red when the
-  blame call was removed.
+  omitted — reached by the
+  `readWorkflowFiles - blames a file carrying a BP- marker…` test (attached on
+  `marked.yml`, `undefined` on `clean.yml`) — red when the blame call was
+  removed.
 - `worker/deno/lib/workflow_scan_common.ts:338` — `lineAuthors` passed to the
   policy, or absent — reached by
   `isFindingSuppressed - honours a marker whose author matches the blamed line…`
-  (present) and `isFindingSuppressed - rejects a marker blamed on someone else or with no blame…`
+  (present) and
+  `isFindingSuppressed - rejects a marker blamed on someone else or with no blame…`
   (absent, which rejects) — the honours test is red without the policy
   `lineAuthors`, because the seam is cleared.
 - `worker/deno/lib/gate_skip_drift_scanner.ts:744` and the matching spread in

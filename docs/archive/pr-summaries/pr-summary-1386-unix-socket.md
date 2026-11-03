@@ -4,9 +4,9 @@ The host-scoped `--allow-net` from Issue #1386 broke every browser tool call.
 `@playwright/mcp` binds a browser server on a **unix domain socket** whose name
 carries a fresh guid (`makeSocketPath` in `playwright-core` →
 `$TMPDIR/pw-<user-hash>/browser/browser@<guid>.sock`), and Deno scopes a unix
-socket by its **exact absolute path** only — there is no directory or glob
-form. So the allowlist could not name the socket, and the container-build MCP
-probe failed with:
+socket by its **exact absolute path** only — there is no directory or glob form.
+So the allowlist could not name the socket, and the container-build MCP probe
+failed with:
 
 ```text
 FAILED: navigate: NotCapable: object.create: Requires net access to
@@ -18,20 +18,20 @@ FAILED: navigate: NotCapable: object.create: Requires net access to
 endpoints back off it with `--deny-net=<PLAYWRIGHT_MCP_BLOCKED_HOSTS>` — Deno's
 deny list beats its allow list — reusing the list `--blocked-origins` already
 uses. Both failure modes still fail loud: an empty deny list throws rather than
-dropping the guard, and a host carrying a comma or whitespace throws rather
-than emitting a fragmented list that looks complete and denies nothing.
+dropping the guard, and a host carrying a comma or whitespace throws rather than
+emitting a fragmented list that looks complete and denies nothing.
 
 `VIBE_BROWSER_ALLOWED_HOSTS` is removed from the environment registry and
 `docs/DEPLOYMENT.md`: with no allow list left to extend, the knob would have
 been a silent no-op.
 
-**Residual risk, stated plainly:** this is weaker than the allowlist it
-replaces — the MCP server process can reach any host not named in the deny
-list. What remains is the container's egress boundary, `--blocked-origins` on
-what the browser may request, and the denied credential paths and environment
-variables that leave a compromised server nothing worth exfiltrating. Scoping
-the allow side is not expressible in Deno while the server binds a
-randomly-named unix socket.
+**Residual risk, stated plainly:** this is weaker than the allowlist it replaces
+— the MCP server process can reach any host not named in the deny list. What
+remains is the container's egress boundary, `--blocked-origins` on what the
+browser may request, and the denied credential paths and environment variables
+that leave a compromised server nothing worth exfiltrating. Scoping the allow
+side is not expressible in Deno while the server binds a randomly-named unix
+socket.
 
 ## Evidence
 

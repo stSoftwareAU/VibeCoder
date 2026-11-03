@@ -98,12 +98,13 @@ for `Issue #3804` and `agent-raised`; the other hit,
   field.
 - Review fix:
   `worker/deno/tests/pr_body_sync_test.ts::syncPrBodyFromSummary - committed adoption leaves an uncommitted evidence image path unchanged`
-  covers the removal of working-tree image rewriting on committed adoption.
-  An uncommitted image remains relative; the test failed before the fix when it
+  covers the removal of working-tree image rewriting on committed adoption. An
+  uncommitted image remains relative; the test failed before the fix when it
   became a raw URL to an absent image. Other sync paths retain image rewriting.
 - The later review replaced the blanket removal of image rewriting on committed
   adoption: committed images must still render, while working-tree-only images
-  remain relative. `worker/deno/tests/pr_body_sync_test.ts::syncPrBodyFromSummary - committed adoption resolves images against the pushed commit`
+  remain relative.
+  `worker/deno/tests/pr_body_sync_test.ts::syncPrBodyFromSummary - committed adoption resolves images against the pushed commit`
   covers both cases and path repair; it failed before this fix. The earlier
   uncommitted-image test remains in place. The test
   `worker/deno/tests/pr_body_sync_test.ts::syncPrBodyFromSummary - committed image listing failure prevents publication`

@@ -18,15 +18,15 @@ reading** at the end of each workflow doc; those are for a different audience.
 ## 👤 For repo owners and developers (e.g. ST)
 
 If your repository is monitored by the Vibe Coder — for example
-[stSoftwareAU/private-repo-24](https://github.com/stSoftwareAU/private-repo-24/issues) or any other repo
-in the worker's config — this manual is for you. You want to **get the Vibe
-Coder to work on your issues** (e.g. over the weekend) so you can **come in on
-Monday and see lots of work done** in your repos. You care about **how to assign
-work** and **how to set up pseudo-projects**, not how the worker is implemented
-under the hood (that is documented elsewhere). **Nothing reaches the default
-branch without your review** — the worker opens PRs; you approve. It is
-instructed to follow TDD (Test-Driven Development), KISS (Keep It Simple), DRY
-(Don't Repeat Yourself) and the full quality gate; see
+[stSoftwareAU/private-repo-24](https://github.com/stSoftwareAU/private-repo-24/issues)
+or any other repo in the worker's config — this manual is for you. You want to
+**get the Vibe Coder to work on your issues** (e.g. over the weekend) so you can
+**come in on Monday and see lots of work done** in your repos. You care about
+**how to assign work** and **how to set up pseudo-projects**, not how the worker
+is implemented under the hood (that is documented elsewhere). **Nothing reaches
+the default branch without your review** — the worker opens PRs; you approve. It
+is instructed to follow TDD (Test-Driven Development), KISS (Keep It Simple),
+DRY (Don't Repeat Yourself) and the full quality gate; see
 [AGENTS.md](../../AGENTS.md) for the coding standards.
 
 **How to get work done:**
@@ -34,11 +34,11 @@ instructed to follow TDD (Test-Driven Development), KISS (Keep It Simple), DRY
 | Goal                              | What to do                                                                                                                                                                                                                                                                                                | Where it's explained                                                                   |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | **Understand the label flow**     | Read the journey map: `grill-me` ↔ `needs-human`, then `planning` or a work tier, then PRs / milestones / auto-merge — with coloured diagrams.                                                                                                                                                            | **[Label Flows](label-flows.md)**                                                      |
-| **Get issues picked up** | Add a configured label to an issue and leave it unassigned. Label tiers in priority order: `top-priority` > `work-on` (allowed authors only) > `low-priority` (fallback) > `idle-task` (worker-filed only). The deprecated `help wanted` and `claude` labels were retired in. | [Issue processing](issue-processing.md) |
+| **Get issues picked up**          | Add a configured label to an issue and leave it unassigned. Label tiers in priority order: `top-priority` > `work-on` (allowed authors only) > `low-priority` (fallback) > `idle-task` (worker-filed only). The deprecated `help wanted` and `claude` labels were retired in.                             | [Issue processing](issue-processing.md)                                                |
 | **Group issues into a feature**   | Create a GitHub milestone, add it to each issue. Per-issue PRs auto-merge into the milestone branch (quality gate passes), so the worker can **safely** run 24/7 (e.g. overnight/weekend). **No code reaches default without your review** — you approve the **one final PR** with many issues completed. | [Projects and dependencies](projects-and-dependencies.md), [Milestones](milestones.md) |
-| **Order work (dependencies)** | In the issue body, add `Depends on ` or `Blocked by `. The worker only picks issues whose dependencies are closed — and, for a dependency in another milestone, whose milestone has closed too. | [Projects and dependencies](projects-and-dependencies.md) |
+| **Order work (dependencies)**     | In the issue body, add `Depends on` or `Blocked by`. The worker only picks issues whose dependencies are closed — and, for a dependency in another milestone, whose milestone has closed too.                                                                                                             | [Projects and dependencies](projects-and-dependencies.md)                              |
 | **Break down a big issue**        | Add the `planning` label; the worker will create sub-issues and close the parent.                                                                                                                                                                                                                         | [Planning and questions](planning-and-questions.md)                                    |
-| **Get answers without code** | Add the `question` label; the worker posts an answer in a comment, removes `question`, and adds `needs-human` to mark your turn. Re-add `question` to ask a follow-up. | [Planning and questions](planning-and-questions.md) |
+| **Get answers without code**      | Add the `question` label; the worker posts an answer in a comment, removes `question`, and adds `needs-human` to mark your turn. Re-add `question` to ask a follow-up.                                                                                                                                    | [Planning and questions](planning-and-questions.md)                                    |
 | **Refine an issue with feedback** | Add the `refine-issue` label and comment; the worker will update the issue from your feedback.                                                                                                                                                                                                            | [Planning and questions](planning-and-questions.md)                                    |
 | **PRs stay mergeable**            | The worker monitors PRs it opens (by author), fixes spelling/quality and merge issues, and enables auto-merge when mergeable.                                                                                                                                                                             | [PR feedback and upkeep](pr-feedback.md)                                               |
 
@@ -57,21 +57,21 @@ loop that checks work in **priority order**: PR (Pull Request) feedback (1),
 spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6),
 merge-conflict resolution (1.61), CI nudges and the blocking-PR stall repair
 (1.62, 1.63), PR body digest reconcile (1.64), auto-merge (1.65), issue closure
-(1.67), closed-PR recovery (1.68), milestone completion (1.7),
-closed-milestone housekeeping (1.71), branch sync (1.72) and shared-clone ref sweep (1.73), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
-the Failure-Detection repair resume (1.81), questions (1.85), configured
+(1.67), closed-PR recovery (1.68), milestone completion (1.7), closed-milestone
+housekeeping (1.71), branch sync (1.72) and shared-clone ref sweep (1.73),
+refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80), the
+Failure-Detection repair resume (1.81), questions (1.85), configured
 custom-label prompts (1.86) and their PR-phase twin (1.87, both only when an
-operator configured a mapping of that phase),
-stale-workflow detection (1.9), and finally new issues (2,
-oldest first across all repos). The table below is the canonical ladder; the
-dispatch table in `worker/deno/lib/run_core.ts` is the source of truth and a
-test keeps the two in step. With `max_concurrent_issues` above `1` the four
-agent-backed PR passes (1, 1.5, 1.55, 1.61) run in a
+operator configured a mapping of that phase), stale-workflow detection (1.9),
+and finally new issues (2, oldest first across all repos). The table below is
+the canonical ladder; the dispatch table in `worker/deno/lib/run_core.ts` is the
+source of truth and a test keeps the two in step. With `max_concurrent_issues`
+above `1` the four agent-backed PR passes (1, 1.5, 1.55, 1.61) run in a
 [maintenance lane](#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool)
 beside the issue pool rather than ahead of it, so a long CI fix no longer idles
-the slots. One work item per iteration, then sleep and repeat. All
-interaction is via GitHub — no local UI (User Interface). When the same item
-fails repeatedly, the process exits so the next cron run gets fresh code.
+the slots. One work item per iteration, then sleep and repeat. All interaction
+is via GitHub — no local UI (User Interface). When the same item fails
+repeatedly, the process exits so the next cron run gets fresh code.
 
 ```mermaid
 flowchart TD
@@ -119,20 +119,20 @@ implemented internally, see **Further reading** in each workflow doc.
 
 Each workflow or topic is assigned to a dedicated document:
 
-| Topic                                              | Document                                                       | Description                                                                                                                                              |
-| -------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Overview and lifecycle**                         | This file (`README.md`)                                        | Canonical overview, shared concepts, lifecycle map, terminology                                                                                          |
-| **Label flows (which label when)**                 | [label-flows.md](label-flows.md)                               | Shareable journey guide: grill-me, needs-human, planning, work tiers, milestones, auto-merge — coloured diagrams                                         |
-| **Issue → PR implementation**                      | [issue-processing.md](issue-processing.md)                     | Flow from issue discovery through branch, Claude, quality gate, and PR creation                                                                          |
-| **PR feedback and upkeep**                         | [pr-feedback.md](pr-feedback.md)                               | Review feedback loop, spelling fixes, branch updates, auto-merge catch-up                                                                                |
-| **CI fix**                                         | [ci-fix.md](ci-fix.md)                                         | Automatic diagnosis and fix of CI check failures on open PRs                                                                                             |
-| **Merge-conflict resolution** | [merge-conflicts.md](merge-conflicts.md) | Real merge of the base into a `CONFLICTING` PR — both sides survive unless an originating issue explicitly supersedes the other — with the `merge-conflict` label, attempt bounds, abandon-and-restart, and the `merge-fallback` flag every fallback leaves behind |
-| **Planning, questions, refinement, clarification** | [planning-and-questions.md](planning-and-questions.md)         | Clarification phase (clear? small enough? too large → planning): question label, planning label, refine-issue                                            |
-| **Grill-me clarification (vague issues)**          | [grill-me.md](grill-me.md)                                     | Iterative, mobile-friendly back-and-forth that scopes vague issues into a clean requirement, then recommends the developer apply `planning` or `work-on` |
-| **Resilience and concurrency**                     | [resilience-and-concurrency.md](resilience-and-concurrency.md) | Self-healing, restart model, issue claiming, multi-worker coexistence, one PR per target branch                                                          |
-| **Projects and dependencies**                      | [projects-and-dependencies.md](projects-and-dependencies.md)   | Milestones as projects, issue relationships, dependencies, sub-issues, corner cases (e.g. deadlock)                                                      |
-| **Milestones**                                     | [milestones.md](milestones.md)                                 | One PR per target branch, milestone branch flow, final consolidation PR                                                                                  |
-| **Worked example (storyboard)**                    | [WORKED-EXAMPLE.md](WORKED-EXAMPLE.md)                         | End-to-end storyboard: planning → `work-on` → milestone → final consolidation PR, with screenshots                                                       |
+| Topic                                              | Document                                                       | Description                                                                                                                                                                                                                                                        |
+| -------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Overview and lifecycle**                         | This file (`README.md`)                                        | Canonical overview, shared concepts, lifecycle map, terminology                                                                                                                                                                                                    |
+| **Label flows (which label when)**                 | [label-flows.md](label-flows.md)                               | Shareable journey guide: grill-me, needs-human, planning, work tiers, milestones, auto-merge — coloured diagrams                                                                                                                                                   |
+| **Issue → PR implementation**                      | [issue-processing.md](issue-processing.md)                     | Flow from issue discovery through branch, Claude, quality gate, and PR creation                                                                                                                                                                                    |
+| **PR feedback and upkeep**                         | [pr-feedback.md](pr-feedback.md)                               | Review feedback loop, spelling fixes, branch updates, auto-merge catch-up                                                                                                                                                                                          |
+| **CI fix**                                         | [ci-fix.md](ci-fix.md)                                         | Automatic diagnosis and fix of CI check failures on open PRs                                                                                                                                                                                                       |
+| **Merge-conflict resolution**                      | [merge-conflicts.md](merge-conflicts.md)                       | Real merge of the base into a `CONFLICTING` PR — both sides survive unless an originating issue explicitly supersedes the other — with the `merge-conflict` label, attempt bounds, abandon-and-restart, and the `merge-fallback` flag every fallback leaves behind |
+| **Planning, questions, refinement, clarification** | [planning-and-questions.md](planning-and-questions.md)         | Clarification phase (clear? small enough? too large → planning): question label, planning label, refine-issue                                                                                                                                                      |
+| **Grill-me clarification (vague issues)**          | [grill-me.md](grill-me.md)                                     | Iterative, mobile-friendly back-and-forth that scopes vague issues into a clean requirement, then recommends the developer apply `planning` or `work-on`                                                                                                           |
+| **Resilience and concurrency**                     | [resilience-and-concurrency.md](resilience-and-concurrency.md) | Self-healing, restart model, issue claiming, multi-worker coexistence, one PR per target branch                                                                                                                                                                    |
+| **Projects and dependencies**                      | [projects-and-dependencies.md](projects-and-dependencies.md)   | Milestones as projects, issue relationships, dependencies, sub-issues, corner cases (e.g. deadlock)                                                                                                                                                                |
+| **Milestones**                                     | [milestones.md](milestones.md)                                 | One PR per target branch, milestone branch flow, final consolidation PR                                                                                                                                                                                            |
+| **Worked example (storyboard)**                    | [WORKED-EXAMPLE.md](WORKED-EXAMPLE.md)                         | End-to-end storyboard: planning → `work-on` → milestone → final consolidation PR, with screenshots                                                                                                                                                                 |
 
 ## 🔄 Lifecycle overview
 
@@ -191,38 +191,38 @@ flowchart TD
 
 **Priority order (highest to lowest):**
 
-| Priority | Task                                                  | Details                                                                                                                                  |
-| -------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| 0.9 | Deferred PR raise | Raise the PRs GitHub's secondary (content-creation) rate limit refused mid-run — the work is already committed, quality-gated and pushed, so the PR is opened over REST with no agent run (Issue #1951) |
-| 1        | PR feedback and reviews                               | Authorised commenters or thumbs-up                                                                                                       |
-| 1.5      | Failed spelling/quality checks                        | Spelling, shellcheck, Deno quality checks on open PRs                                                                                    |
-| 1.55 | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs |
-| 1.6      | PR branch updates                                     | Rebase/merge to keep branches current                                                                                                    |
-| 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick, unless both sides' originating issues are known and one explicitly supersedes the other; labels the PR `merge-conflict`, bounded to two **concluded** attempts, after which the PR is closed and its originating issue re-queued for a fresh PR (once per issue) before `needs-human`. An attempt disrupted before it concluded is re-attempted rather than counted, bounded at 3 |
-| 1.62 | Nudge stalled CI | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing |
-| 1.63 | Blocking-PR stall repair | Repair PRs that block `work-on` issues: sync and rerun the owning lane (1.55 or 1) once, then abandon and redo — never escalate (Issue #2802) |
-| 1.64 | Reconcile PR body digests | Re-sync the body of an open fleet-authored PR whose recorded `vibe-pr-summary` digest differs from the summary at its head, after a push the worker did not make (e.g. a review-fix commit pushed by hand); deferrable, never claims an issue, not run in the maintenance lane (Issue #3760) |
-| 1.65     | Auto-merge catch-up                                   | Enable auto-merge on mergeable PRs                                                                                                       |
-| 1.66     | Branch cleanup                                        | Delete branches for merged PRs — runs once at start-up, not every cycle                                                                 |
-| 1.67     | Issue closure                                         | Close issues for merged PRs via GH CLI                                                                                                   |
-| 1.68 | Closed-PR recovery | Recover assigned issues with closed-without-merge PRs |
-| 1.7      | Milestone completion                                  | Final consolidation PR                                                                                                                   |
-| 1.71     | Closed-milestone housekeeping                         | Drop a closed milestone's worktrees, local branches and stream session on this host                                                      |
-| 1.72     | Milestone branch sync                                 | Merge the default branch into open `milestone/*` branches; claims nothing                                                                |
-| 1.73     | Shared clone ref sweep                                | Repair broken or NUL-filled loose refs in each shared clone about hourly; skips a clone whose repo lock is held; claims nothing          |
-| 1.75     | Issue refinement                                      | `refine-issue` label                                                                                                                     |
-| 1.78 | Grill-me clarification | `grill-me` label — runs before planning so a freshly-grilled issue is not also planned in the same pass |
-| 1.79 | Quorum plan-off | `quorum` label — decides what the plan is before planning splits it |
-| 1.80     | Planning                                              | `planning` label                                                                                                                         |
-| 1.81 | Failure-Detection repair resume | `needs-failure-detection-repair` label — re-gates a planning parent's sub-issues and finishes the outstanding repairs |
-| 1.85     | Question answering                                    | `question` label                                                                                                                         |
-| 1.86 | Custom label prompts | A configured `custom_label_prompts` label that names a **new** label — runs the generic implementation phase (branch, commits, PR) with the operator's private prompt file. The row exists only when such a mapping is configured; a mapping overriding a built-in label adds no row, it replaces that phase's template (Issue #849) |
-| 1.87 | Custom label PR prompts | A configured `custom_label_prompts` label whose `target_phase` is `pr`, applied to an **open** PR by an allowlisted account — the PR head branch is checked out and the operator's private prompt runs against it with `gh`. The run consumes the label, so one application dispatches at most one run. The row exists only when a `pr` mapping is configured (Issue #1011) |
-| 1.9      | Stale workflow detection                              | Flag `planning` / `question` labels left in place with no progress                                                                       |
-| 2 | New implementation issues | Configured-label tier `top-priority` then `work-on`, globally oldest across repos (`help wanted` / `claude` retired) |
-| 2.5 | Low-priority backlog | `low-priority` label — only consulted when no eligible higher-tier candidate exists in any scanned repo |
-| 2.9 | Idle-task framework | `idle-task` label — strictly below low-priority; the only label the Vibe Coder may self-apply |
-| Idle     | Security scan                                         | Fired after a full cycle ends with no claimable work in any monitored repo. See [Security Scans — Operator Manual](../SECURITY-SCAN.md). |
+| Priority | Task                                                  | Details                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| -------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0.9      | Deferred PR raise                                     | Raise the PRs GitHub's secondary (content-creation) rate limit refused mid-run — the work is already committed, quality-gated and pushed, so the PR is opened over REST with no agent run (Issue #1951)                                                                                                                                                                                                                                                                    |
+| 1        | PR feedback and reviews                               | Authorised commenters or thumbs-up                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 1.5      | Failed spelling/quality checks                        | Spelling, shellcheck, Deno quality checks on open PRs                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 1.55     | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 1.6      | PR branch updates                                     | Rebase/merge to keep branches current                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 1.61     | Resolve PR merge conflicts                            | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick, unless both sides' originating issues are known and one explicitly supersedes the other; labels the PR `merge-conflict`, bounded to two **concluded** attempts, after which the PR is closed and its originating issue re-queued for a fresh PR (once per issue) before `needs-human`. An attempt disrupted before it concluded is re-attempted rather than counted, bounded at 3 |
+| 1.62     | Nudge stalled CI                                      | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing                                                                                                                                                                                                                                                                                                                                                                                               |
+| 1.63     | Blocking-PR stall repair                              | Repair PRs that block `work-on` issues: sync and rerun the owning lane (1.55 or 1) once, then abandon and redo — never escalate (Issue #2802)                                                                                                                                                                                                                                                                                                                              |
+| 1.64     | Reconcile PR body digests                             | Re-sync the body of an open fleet-authored PR whose recorded `vibe-pr-summary` digest differs from the summary at its head, after a push the worker did not make (e.g. a review-fix commit pushed by hand); deferrable, never claims an issue, not run in the maintenance lane (Issue #3760)                                                                                                                                                                               |
+| 1.65     | Auto-merge catch-up                                   | Enable auto-merge on mergeable PRs                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 1.66     | Branch cleanup                                        | Delete branches for merged PRs — runs once at start-up, not every cycle                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 1.67     | Issue closure                                         | Close issues for merged PRs via GH CLI                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 1.68     | Closed-PR recovery                                    | Recover assigned issues with closed-without-merge PRs                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 1.7      | Milestone completion                                  | Final consolidation PR                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 1.71     | Closed-milestone housekeeping                         | Drop a closed milestone's worktrees, local branches and stream session on this host                                                                                                                                                                                                                                                                                                                                                                                        |
+| 1.72     | Milestone branch sync                                 | Merge the default branch into open `milestone/*` branches; claims nothing                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 1.73     | Shared clone ref sweep                                | Repair broken or NUL-filled loose refs in each shared clone about hourly; skips a clone whose repo lock is held; claims nothing                                                                                                                                                                                                                                                                                                                                            |
+| 1.75     | Issue refinement                                      | `refine-issue` label                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 1.78     | Grill-me clarification                                | `grill-me` label — runs before planning so a freshly-grilled issue is not also planned in the same pass                                                                                                                                                                                                                                                                                                                                                                    |
+| 1.79     | Quorum plan-off                                       | `quorum` label — decides what the plan is before planning splits it                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 1.80     | Planning                                              | `planning` label                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 1.81     | Failure-Detection repair resume                       | `needs-failure-detection-repair` label — re-gates a planning parent's sub-issues and finishes the outstanding repairs                                                                                                                                                                                                                                                                                                                                                      |
+| 1.85     | Question answering                                    | `question` label                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 1.86     | Custom label prompts                                  | A configured `custom_label_prompts` label that names a **new** label — runs the generic implementation phase (branch, commits, PR) with the operator's private prompt file. The row exists only when such a mapping is configured; a mapping overriding a built-in label adds no row, it replaces that phase's template (Issue #849)                                                                                                                                       |
+| 1.87     | Custom label PR prompts                               | A configured `custom_label_prompts` label whose `target_phase` is `pr`, applied to an **open** PR by an allowlisted account — the PR head branch is checked out and the operator's private prompt runs against it with `gh`. The run consumes the label, so one application dispatches at most one run. The row exists only when a `pr` mapping is configured (Issue #1011)                                                                                                |
+| 1.9      | Stale workflow detection                              | Flag `planning` / `question` labels left in place with no progress                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 2        | New implementation issues                             | Configured-label tier `top-priority` then `work-on`, globally oldest across repos (`help wanted` / `claude` retired)                                                                                                                                                                                                                                                                                                                                                       |
+| 2.5      | Low-priority backlog                                  | `low-priority` label — only consulted when no eligible higher-tier candidate exists in any scanned repo                                                                                                                                                                                                                                                                                                                                                                    |
+| 2.9      | Idle-task framework                                   | `idle-task` label — strictly below low-priority; the only label the Vibe Coder may self-apply                                                                                                                                                                                                                                                                                                                                                                              |
+| Idle     | Security scan                                         | Fired after a full cycle ends with no claimable work in any monitored repo. See [Security Scans — Operator Manual](../SECURITY-SCAN.md).                                                                                                                                                                                                                                                                                                                                   |
 
 ## 🛠️ Maintenance lane (agent-backed PR passes beside the pool)
 
@@ -284,25 +284,26 @@ registry:
   and self-heal lease every cloned repository each cycle, so they defer without
   reserving (Issue #2793);
 - while it is reserved, no slot takes a **new** stream of that repository. The
-  claim scan skips it (`claimExcludedRepos()` = leased ∪ reserved), and a
-  slot's `tryAcquire` is refused. A slot already working there keeps its hold;
-- when that hold is released, the reservation is spent only when the **ref
-  that reserved it** wins the lease. A sync pass rotated ahead of PR Feedback
-  may win the drained repository, but it does not hand it back to the slots;
+  claim scan skips it (`claimExcludedRepos()` = leased ∪ reserved), and a slot's
+  `tryAcquire` is refused. A slot already working there keeps its hold;
+- when that hold is released, the reservation is spent only when the **ref that
+  reserved it** wins the lease. A sync pass rotated ahead of PR Feedback may win
+  the drained repository, but it does not hand it back to the slots;
 - only a **positive signal** drops it early: after an uncut lane sequence the
-  lane reads each reserving PR (`isReservingPrClosed`), and a PR that is
-  closed or merged releases its reservation (Issue #2795). A pass that skipped
-  the PR — it picked a PR in another repository, or failed before its lease —
-  proves nothing, so the reservation stays. Green checks are not a signal: PR
-  feedback and merge conflict reserve PRs whose checks are often green. An
-  open, unknown or unreadable PR keeps it (an unreadable one is logged as a
-  WARNING; a primary rate limit stops the reads and is handed back like a
-  pass's own, Issue #1921), and a sequence cut short by shutdown, the deadline
-  or a rate limit reads nothing;
+  lane reads each reserving PR (`isReservingPrClosed`), and a PR that is closed
+  or merged releases its reservation (Issue #2795). A pass that skipped the PR —
+  it picked a PR in another repository, or failed before its lease — proves
+  nothing, so the reservation stays. Green checks are not a signal: PR feedback
+  and merge conflict reserve PRs whose checks are often green. An open, unknown
+  or unreadable PR keeps it (an unreadable one is logged as a WARNING; a primary
+  rate limit stops the reads and is handed back like a pass's own, Issue #1921),
+  and a sequence cut short by shutdown, the deadline or a rate limit reads
+  nothing;
 - each refused pass refreshes the reservation, and `LANE_RESERVATION_TTL_MS`
   (two hours, or two default cycles) after the last refusal stays as the
   backstop;
-- the deferral is logged at WARN, ending `repository reserved for the
+- the deferral is logged at WARN, ending
+  `repository reserved for the
   maintenance lane`.
 
 ```mermaid
@@ -327,8 +328,8 @@ The lane logs under an `[m1]` prefix and appears in the status line as
 `m1 owner/repo#<pr>` — that number is a **PR**, not a claimed issue, so the
 finder's claim-shaped views and the shutdown drain both skip it. The
 leaked-heartbeat sweep does **not** skip it (Issue #391): the lane takes a real
-heartbeat for the PR it is servicing, so the sweep reads `heldHeartbeatKeys()`
-— every hold that owns a heartbeat, keyed `issue:<n>` or `pr:<n>` so the two
+heartbeat for the PR it is servicing, so the sweep reads `heldHeartbeatKeys()` —
+every hold that owns a heartbeat, keyed `issue:<n>` or `pr:<n>` so the two
 namespaces cannot alias — and a live merge-conflict resolution keeps its
 heartbeat while an issue slot claims elsewhere. A shutdown bounds the lane
 exactly as it bounds the pool: no new pass starts once SIGTERM lands, and a pass
@@ -351,8 +352,8 @@ That pass now works in its **own linked worktree**,
 clone. It shares the object store — no re-clone, no extra objects — and gets its
 own `HEAD`, index and checkout, so no other lane can move the tree underneath
 it. It no longer runs `reset --hard` / `clean -fd` on the shared clone at all:
-the clone is created only when missing, and a clone git reports as corrupt
-(a bad `.git/config`, say) is moved aside and re-cloned (Issues #2957, #3708).
+the clone is created only when missing, and a clone git reports as corrupt (a
+bad `.git/config`, say) is moved aside and re-cloned (Issues #2957, #3708).
 
 ```mermaid
 flowchart LR
@@ -375,10 +376,11 @@ worktree has checked out rather than pulling it out from under that lane. Those
 refusals — and the Issue #211 refusal to judge a PR from a local branch carrying
 unpushed commits — are **clone contention**, not PR faults. The pass names them
 as such: they are logged at INFO saying the clone changed under the operation
-and the PR was left exactly as it is, counted as `deferred (clone held by
-another lane)` rather than `failed`, kept out of the Issue #335 failure streak
-so they can never escalate an issue against a healthy PR, and retried next
-cycle.
+and the PR was left exactly as it is, counted as
+`deferred (clone held by
+another lane)` rather than `failed`, kept out of the
+Issue #335 failure streak so they can never escalate an issue against a healthy
+PR, and retried next cycle.
 
 **One shared store means one repository-wide fault (Issue #1093).** Sharing the
 object store is the right trade — the work volume does not carry a full checkout
@@ -388,36 +390,41 @@ repairs it. Observed on GRQ-23 on 2026-09-05, `VibeCoder#984` failed at `setup`
 with `error: inflate: data stream error (unknown compression method)`, and the
 next issue in that repository would have failed identically.
 
-`setup` now recognises object-store corruption (`inflate:`, `loose object … is
-corrupt`, `unable to read sha1 file`, `object file … is empty`) as its own class,
-distinct from a bad ref or a missing branch. Every object is recoverable from the
-remote, so the worker repairs rather than fails: it runs `git fsck` for evidence,
-removes the shared clone **and every lane worktree hanging off it** — a surviving
-worktree directory would make `git worktree add` refuse the path — re-clones, and
-retries the branch. The repair is claimed **once per repository per run**, not
-once per issue. A repair that does not clear the corruption fails the run as
+`setup` now recognises object-store corruption (`inflate:`,
+`loose object … is
+corrupt`, `unable to read sha1 file`,
+`object file … is empty`) as its own class, distinct from a bad ref or a missing
+branch. Every object is recoverable from the remote, so the worker repairs
+rather than fails: it runs `git fsck` for evidence, removes the shared clone
+**and every lane worktree hanging off it** — a surviving worktree directory
+would make `git worktree add` refuse the path — re-clones, and retries the
+branch. The repair is claimed **once per repository per run**, not once per
+issue. A repair that does not clear the corruption fails the run as
 `clone_corrupt` with the repository named, and the next run repairs again —
 nothing is handed to a human (Issue #4298).
 
 **A broken ref is repaired cheaper, first (Issue #2884).** A loose ref under
 `refs/heads/` or `refs/remotes/` that names an object the store no longer has
-makes git refuse the fetch or checkout (`fatal: bad object refs/…`, `warning:
-ignoring broken ref refs/…`) without the object store itself being corrupt at
-all — every such ref is individually recoverable from the remote, so discarding
-and re-cloning the whole shared clone for it is needless. When
+makes git refuse the fetch or checkout (`fatal: bad object refs/…`,
+`warning:
+ignoring broken ref refs/…`) without the object store itself being
+corrupt at all — every such ref is individually recoverable from the remote, so
+discarding and re-cloning the whole shared clone for it is needless. When
 `createFeatureBranchFromBase` fails that way, setup runs `sweepBrokenRefs()`
 before it ever reaches the re-clone rung above: list every `refs/heads` and
 `refs/remotes` ref (`git for-each-ref`), remove each that
-`git rev-parse --verify <ref>^{commit}` cannot confirm, `git fetch --prune
-origin` to recreate the remote-tracking refs clean, then retry branch creation
-once. Only a sweep that fails, or a retry that still fails, falls through to
-the object-store re-clone above — the same `claimObjectStoreRepair` claim
-covers both rungs, so the whole ladder still runs **at most once per
-repository per run**. A failure that survives both rungs is categorised
-`clone_corrupt`, named per repository: no `failed-once`/`failed` label is
-applied and the issue's retry budget is never charged, because the fault is the
-host's shared clone, not the issue. It is never handed to a human — the next
-run takes the repair claim afresh and runs the ladder again (Issue #4298).
+`git rev-parse --verify <ref>^{commit}` cannot confirm,
+`git fetch --prune
+origin` to recreate the remote-tracking refs clean, then
+retry branch creation once. Only a sweep that fails, or a retry that still
+fails, falls through to the object-store re-clone above — the same
+`claimObjectStoreRepair` claim covers both rungs, so the whole ladder still runs
+**at most once per repository per run**. A failure that survives both rungs is
+categorised `clone_corrupt`, named per repository: no `failed-once`/`failed`
+label is applied and the issue's retry budget is never charged, because the
+fault is the host's shared clone, not the issue. It is never handed to a human —
+the next run takes the repair claim afresh and runs the ladder again (Issue
+#4298).
 
 ```mermaid
 flowchart TD
@@ -434,32 +441,34 @@ flowchart TD
     style F fill:#9d4e15,stroke:#6b3410,color:#fff
 ```
 
-**A lane holds no branch once its run ends (Issue #1677).** Refs are shared,
-so a lane worktree parked on a branch blocks every other pass that wants that
+**A lane holds no branch once its run ends (Issue #1677).** Refs are shared, so
+a lane worktree parked on a branch blocks every other pass that wants that
 branch in the shared clone. An issue lane used to stay on the feature branch it
 had just pushed until the lane was next reused; on a host under the disk floor
 (no new claims) that was hours, and the CI-fix pass for the very PR the lane
-raised was refused on every cycle — `is already used by worktree at
-…/worktrees/s1/<repo>` — while the PR stayed red, the stall watchdog escalated
-it, and each refused checkout was charged as a CI-fix retry. Now the issue lane
-detaches its worktree when its run ends, PR or not, exactly as the branch-update
-lane always has. The PR passes (`preparePrBranch`,
-`checkoutPrBranchAtRemoteHead`) also recognise the refusal themselves: when the
-holder is one of **this host's own** lane worktrees (`<work
-root>/worktrees/<lane>/<repo>`) they detach it and retry once, the same repair
-the issue path makes for a lane that lost the acquire race (Issue #1564). Any
-other worktree holding the branch is reported in git's words and left alone,
+raised was refused on every cycle —
+`is already used by worktree at
+…/worktrees/s1/<repo>` — while the PR stayed
+red, the stall watchdog escalated it, and each refused checkout was charged as a
+CI-fix retry. Now the issue lane detaches its worktree when its run ends, PR or
+not, exactly as the branch-update lane always has. The PR passes
+(`preparePrBranch`, `checkoutPrBranchAtRemoteHead`) also recognise the refusal
+themselves: when the holder is one of **this host's own** lane worktrees
+(`<work
+root>/worktrees/<lane>/<repo>`) they detach it and retry once, the same
+repair the issue path makes for a lane that lost the acquire race (Issue #1564).
+Any other worktree holding the branch is reported in git's words and left alone,
 the skip is `branch_held` — clone contention, not a PR fault — and no CI-fix
 retry is spent on it: a retry is recorded only once the PR branch is actually
 checked out.
 
-`preparePrBranch` starts every CI-fix, PR-feedback and spelling pass from the
-PR branch's head on origin (Issue #4530): after the fetch it runs
+`preparePrBranch` starts every CI-fix, PR-feedback and spelling pass from the PR
+branch's head on origin (Issue #4530): after the fetch it runs
 `git checkout -B <branch> FETCH_HEAD`, so a local branch that diverged from
 origin — for example an unpushed sync merge — cannot seed the pass. Local
-commits that reset drops are logged at warn level by SHA (at most 20). When
-the fetch itself fails there is no fetched tip, so the pass falls back to
-checking out the local branch with a best-effort `git pull --ff-only`.
+commits that reset drops are logged at warn level by SHA (at most 20). When the
+fetch itself fails there is no fetched tip, so the pass falls back to checking
+out the local branch with a best-effort `git pull --ff-only`.
 
 `${WORK_DIR}/worktrees` is a reserved work-root name, so the stale-work-dir
 sweep never mistakes it for a disposable clone. The startup orphan-worktree
@@ -497,17 +506,17 @@ These behaviours are required for the workflow:
   Claiming, tie-breaking, idempotency, and back-off rules are documented and
   followed.
 - **Shared GitHub user, one Vibe Coder per host** — The same GitHub user (e.g.
-  stsvcbot) is often used by **many** Vibe Coders; there is **one Vibe Coder
-  per hostname**. PRs are identified by **author** (that user); any worker using
+  stsvcbot) is often used by **many** Vibe Coders; there is **one Vibe Coder per
+  hostname**. PRs are identified by **author** (that user); any worker using
   that account sees the same set of open PRs. See
   [pr-feedback.md](pr-feedback.md#-which-prs-are-monitored).
 - **Distinct workflow types** — Implementation, planning, question answering,
   refinement, clarification, PR feedback, spelling/quality fixes, and milestones
   each have defined semantics and do not substitute for one another.
 - **Workflow labels auto-created** — All workflow labels (e.g. `failed-once`,
-  `failed`, `needs-human`, `circular-dependency`) are
-  **automatically created** when first needed, with **consistent colours and
-  descriptions** across repositories. See
+  `failed`, `needs-human`, `circular-dependency`) are **automatically created**
+  when first needed, with **consistent colours and descriptions** across
+  repositories. See
   [projects-and-dependencies.md](projects-and-dependencies.md#%EF%B8%8F-workflow-labels).
 - **Worker escalation via `needs-human`** — When the worker hits an
   unrecoverable blocker (e.g. a decision only a human can make, or a missing
@@ -546,7 +555,7 @@ These existing docs remain the source of truth for their areas:
 | Deployment (cron, systemd, launchd, logs)        | [DEPLOYMENT.md](../DEPLOYMENT.md)                             |
 | Usage (labels, clarification, failure handling)  | [USAGE.md](../USAGE.md)                                       |
 | Security (threat model, tokens)                  | [SECURITY.md](../../SECURITY.md)                              |
-| Worker label policy (worker-added vs human-only) | [README.md](../../README.md#%EF%B8%8F-supported-labels)              |
+| Worker label policy (worker-added vs human-only) | [README.md](../../README.md#%EF%B8%8F-supported-labels)       |
 | Extending (Deno, prompts)                        | [EXTENDING.md](../EXTENDING.md)                               |
 | Worker internals (run loop, selection, PRs)      | [INTERNALS.md](../INTERNALS.md)                               |
 | Troubleshooting                                  | [TROUBLESHOOTING.md](../TROUBLESHOOTING.md)                   |

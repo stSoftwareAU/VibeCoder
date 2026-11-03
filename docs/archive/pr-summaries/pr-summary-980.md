@@ -75,24 +75,31 @@ here; the follow-up carries the analysis.
 - **met** — With no `container_extension`, the emitted plan is identical to
   today's, including a single build and a single tag — evidence:
   `worker/deno/tests/container_launch_test.ts::buildContainerLaunchPlan - no
-  extension leaves the plan exactly as it was (Issue #980)` and
+  extension leaves the plan exactly as it was (Issue #980)`
+  and
   `worker/deno/tests/run_sh_launcher_test.ts::run.sh - no extension leaves the
-  launch exactly as it was (Issue #980)` — reviewer: met
+  launch exactly as it was (Issue #980)`
+  — reviewer: met
 - **met** — Two builds in order, the run uses the extension tag, and
   `--build-arg VIBE_BASE_IMAGE` names the base tag exactly — evidence:
   `worker/deno/tests/container_launch_test.ts::buildContainerLaunchPlan - the
-  extension is a second build, after the standard one (Issue #980)` and
+  extension is a second build, after the standard one (Issue #980)`
+  and
   `run_sh_launcher_test.ts::run.sh - builds the operator's private layer after
-  the standard image (Issue #980)` — reviewer: met
+  the standard image (Issue #980)`
+  — reviewer: met
 - **met** — A Containerfile not deriving `FROM ${VIBE_BASE_IMAGE}` is refused
   with the file named, before any build runs — evidence:
   `worker/deno/lib/container_extension_build.ts::assertExtensionLayersOnBaseImage`
-  and `run_sh_launcher_test.ts::run.sh - a Containerfile that is not FROM the
-  standard image builds nothing (Issue #980)`, which asserts zero builds ran —
-  reviewer: partial — reason: the reviewer found the first-`FROM`-only rule
-  evadable by stage ordering (`FROM ${VIBE_BASE_IMAGE} AS unused` then `FROM
-  ubuntu:24.04`, which a `--target`-less build ships); fixed in `d161a56`, which
-  judges the last stage too, with a covering case
+  and
+  `run_sh_launcher_test.ts::run.sh - a Containerfile that is not FROM the
+  standard image builds nothing (Issue #980)`,
+  which asserts zero builds ran — reviewer: partial — reason: the reviewer found
+  the first-`FROM`-only rule evadable by stage ordering
+  (`FROM ${VIBE_BASE_IMAGE} AS unused` then `FROM
+  ubuntu:24.04`, which a
+  `--target`-less build ships); fixed in `d161a56`, which judges the last stage
+  too, with a covering case
 - **met** — Both launchers run both builds and abort the launch when either
   fails — evidence: `run.sh:625`, `run.ps1:613`, and the launcher cases for a
   failed first build (`buildCount == 1`, no second build, nothing launched) and
@@ -111,16 +118,16 @@ here; the follow-up carries the analysis.
 - **unrequested** — the launch-plan command reads the extension Containerfile
   and reports an unreadable one — reviewer: unrequested — reason: the contract
   check needs the text, and the plan builder is deliberately free of filesystem
-  access; the preflight the issue defers (existence of `start`, of the directory)
-  is not added
+  access; the preflight the issue defers (existence of `start`, of the
+  directory) is not added
 - **unrequested** — the `efdb799` merge repair described above — reviewer:
   unrequested — reason: traceable to #978/#979, not #980, but the branch did not
   type check without it, so no gate could pass
-- **unrequested** — `vibe_env_registry.ts` and `config_unknown_keys.ts` entries —
-  reviewer: unrequested — reason: both are existing gates the change trips, not
-  new behaviour: the registry test fails an undeclared `VIBE_*` wire name, and
-  `container_extension_config_test.ts` already asserted the known-key entry the
-  merge dropped
+- **unrequested** — `vibe_env_registry.ts` and `config_unknown_keys.ts` entries
+  — reviewer: unrequested — reason: both are existing gates the change trips,
+  not new behaviour: the registry test fails an undeclared `VIBE_*` wire name,
+  and `container_extension_config_test.ts` already asserted the known-key entry
+  the merge dropped
 
 ## Standards Review
 
@@ -167,8 +174,8 @@ here; the follow-up carries the analysis.
 - `worker/deno/tests/container_containment_test.ts` — two cases: the extension
   build carries no host mount, no published port, no forbidden flag and no host
   namespace request, and its only host paths are the Containerfile and the
-  context; and the layered tag still runs `--read-only` with every scratch tmpfs,
-  on the base plan's unchanged mount set.
+  context; and the layered tag still runs `--read-only` with every scratch
+  tmpfs, on the base plan's unchanged mount set.
 - `worker/deno/tests/run_sh_launcher_test.ts` / `run_ps1_launcher_test.ts` —
   both builds in plan order with the right tags and build args and the layered
   tag running; a failed first build never reaching the second; a failed second

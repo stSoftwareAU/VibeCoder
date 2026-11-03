@@ -14,25 +14,25 @@ What changed:
   (the maintenance set, resolved once per repository through
   `resolveAlertDedupAuthors`) **and** the body carries the worker's own PR
   marker (`WORKER_PR_MARKER_PREFIX`). The `issue-<n>-…` branch shape is
-  deliberately not evidence — the motivating PR used it — and a head ref with
-  a leading dash is refused (Issue #12). The listing now requests `author` and
-  `body`. A PR that fails the test is logged once and left exactly as raised:
-  no base change, no comment, no label. An unresolved fleet identity retargets
+  deliberately not evidence — the motivating PR used it — and a head ref with a
+  leading dash is refused (Issue #12). The listing now requests `author` and
+  `body`. A PR that fails the test is logged once and left exactly as raised: no
+  base change, no comment, no label. An unresolved fleet identity retargets
   nothing and says so.
 - **Merge dry run before a retarget** — new optional
-  `mergeWouldConflictFn(repo, milestoneBranch, headRefName)` on the deps.
-  `true` refuses the retarget with a log line; `null` (could not read) allows
-  it as before and says so. Production wires it to the host's clone:
-  `git fetch` both refs, then `git merge-tree --write-tree`, exit 1 meaning
-  conflicts; nothing touches the working tree.
+  `mergeWouldConflictFn(repo, milestoneBranch, headRefName)` on the deps. `true`
+  refuses the retarget with a log line; `null` (could not read) allows it as
+  before and says so. Production wires it to the host's clone: `git fetch` both
+  refs, then `git merge-tree --write-tree`, exit 1 meaning conflicts; nothing
+  touches the working tree.
 - **Docs** — `docs/workflows/milestones.md` gains "Which PRs the self-heal may
   retarget".
 
 ## Tests
 
-`worker/deno/tests/milestone_branch_self_heal_test.ts` (45 passing, 7 new):
-a human-authored PR on an `issue-<n>-` branch is never retargeted, commented on
-or edited; a fleet author without the marker is not enough; the marker from a
+`worker/deno/tests/milestone_branch_self_heal_test.ts` (45 passing, 7 new): a
+human-authored PR on an `issue-<n>-` branch is never retargeted, commented on or
+edited; a fleet author without the marker is not enough; the marker from a
 non-fleet author is not enough; an unresolved fleet identity retargets nothing;
 a conflicting dry run refuses with the reason logged; an unreadable dry run
 allows and says so; `isFleetRaisedPr` unit cases. Existing retarget tests keep

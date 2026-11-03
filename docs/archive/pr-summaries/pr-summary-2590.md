@@ -18,8 +18,8 @@ whose last error was only `</details>`. Closes #2590.
   classifier's `rate_limit` branch uses it too, so a payment refusal is still
   classed `out-of-credit` rather than `usage-limit`.
 - **Useless detail line.** `diagnosticErrorLine()` picked the last line of the
-  failure message. That was the `</details>` closing the collapsible block
-  the worker wraps around the agent's output. `<details>`, `<summary>` and
+  failure message. That was the `</details>` closing the collapsible block the
+  worker wraps around the agent's output. `<details>`, `<summary>` and
   code-fence lines are now skipped as scaffolding.
 - **Docs.** The fast-failure section of `docs/CONFIGURATION.md` covers both
   rules.
@@ -35,25 +35,25 @@ flowchart LR
 
 ## Evidence
 
-This is a backend-only change, so the tests are the evidence. On the base
-commit the new tracker and diagnosis tests failed: 4 failed and 113 passed. The
-"402 elsewhere" guard passed. After the change:
+This is a backend-only change, so the tests are the evidence. On the base commit
+the new tracker and diagnosis tests failed: 4 failed and 113 passed. The "402
+elsewhere" guard passed. After the change:
 
 - `deno test -A` passes 178 of 178 across `failure_diagnosis`,
-  `repo_fast_failure_tracker`, `run_outcome_classifier`,
-  `coding_failure_ladder` and `repo_fast_failure_issue`.
+  `repo_fast_failure_tracker`, `run_outcome_classifier`, `coding_failure_ladder`
+  and `repo_fast_failure_issue`.
 - The neighbouring rate-limit, usage-limit, quorum and infra-retry suites pass
   126 of 126.
 - `deno fmt` and `deno lint` are clean.
 
 ## Reproduction
 
-- **Symptom:** a healthy repository is backed off after three agent-API
-  payment refusals of about 12 s each. Its diagnostic's "Last error" is
-  `</details>`.
+- **Symptom:** a healthy repository is backed off after three agent-API payment
+  refusals of about 12 s each. Its diagnostic's "Last error" is `</details>`.
 - **Status:** verified. The regression tests reproduce the real release-message
   layout, failed before the fix and pass after it.
-- **Regression test:** `worker/deno/tests/repo_fast_failure_tracker_test.ts::isFastFailure - an agent-API payment refusal is not the repository's fault (Issue #2590)`.
+- **Regression test:**
+  `worker/deno/tests/repo_fast_failure_tracker_test.ts::isFastFailure - an agent-API payment refusal is not the repository's fault (Issue #2590)`.
   The other regression tests are:
   - `repo_fast_failure_tracker_test.ts::diagnosticErrorLine - markdown scaffolding does not displace the agent's error (Issue #2590)`
   - `repo_fast_failure_tracker_test.ts::diagnosticErrorLine - a fenced block keeps its content, not the fence (Issue #2590)`

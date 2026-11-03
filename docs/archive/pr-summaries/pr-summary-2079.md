@@ -1,8 +1,8 @@
 ## Summary
 
 `stSoftwareAU/GRQ-FX-validation` recorded three fast failures in 24 h and was
-backed off: every claim reached `setup`, tried to open its milestone branch,
-and was refused inside a minute.
+backed off: every claim reached `setup`, tried to open its milestone branch, and
+was refused inside a minute.
 
 ```text
 ! [remote rejected] Develop -> milestone/scan-20260910
@@ -27,7 +27,7 @@ and the handoff now says what the worker tried and why it could not finish.
 `docs/SETUP.md` said "the worker cannot do this itself: a ruleset write needs
 `admin` and the service account holds `write`". That is a per-repository fact,
 not a universal one — the service account holds `admin` on the repository that
-was failing — so the sentence is now about what happens when the write *is*
+was failing — so the sentence is now about what happens when the write _is_
 refused rather than an assumption that it always will be.
 
 Closes #2079.
@@ -59,9 +59,9 @@ flowchart TD
   inside a minute, the milestone-branch push declined by the repository's own
   ruleset, until three fast failures backed the repository off
 - **status** — `verified` — the phase regression test was observed failing
-  against the unfixed phase (`Values are not equal: - failure / + continue`,
-  and the handoff comment carrying no record of a repair attempt) and passing
-  after the fix
+  against the unfixed phase (`Values are not equal: - failure / + continue`, and
+  the handoff comment carrying no record of a repair attempt) and passing after
+  the fix
 - **regression test** —
   `worker/deno/tests/setup_milestone_create_block_test.ts::setupBranch - repairs the create-blocking ruleset and opens the milestone branch (Issue #2079)`
 
@@ -73,18 +73,20 @@ flowchart TD
     milestone branch becomes the base, and nothing is handed to a human;
   - a repair refused for want of `admin` still fails the run, still applies
     `needs-human`, and the comment names what the worker tried.
-- **New** `worker/deno/tests/milestone_create_block_repair_test.ts` — 8 tests
-  on the decision module: the observed refusal is classified as a ruleset
-  refusal while branch protection and a denied permission are not; a repair
-  plus retry recovers; a refused repair never retries the push; nothing
-  repairable is reported rather than called clean; a repair that did not
-  unblock the push is reported; and one attempt is made per repository per run.
-- Regression sweep: `deno test tests/issue_worker_test.ts
+- **New** `worker/deno/tests/milestone_create_block_repair_test.ts` — 8 tests on
+  the decision module: the observed refusal is classified as a ruleset refusal
+  while branch protection and a denied permission are not; a repair plus retry
+  recovers; a refused repair never retries the push; nothing repairable is
+  reported rather than called clean; a repair that did not unblock the push is
+  reported; and one attempt is made per repository per run.
+- Regression sweep:
+  `deno test tests/issue_worker_test.ts
   tests/issue_worker_wiring_test.ts tests/milestone_ruleset_check_test.ts
   tests/milestone_ruleset_create_block_repair_test.ts
   tests/milestone_branch_rejection_test.ts tests/repo_rulesets_test.ts
   tests/milestone_branch_ensure_test.ts
-  tests/milestone_branch_worktree_block_test.ts` → all pass.
+  tests/milestone_branch_worktree_block_test.ts`
+  → all pass.
 - Full gate: `./quality.sh` → every check PASSED except `deno tests`, which
   reports the **two pre-existing environment failures** this container image
   produces regardless of the change: `agent_provider_test.ts` and

@@ -42,17 +42,24 @@ subscription, CLI and observed quota failures stop external dispatch.
 - The main-loop integration test observes the selected executor and reviewer,
   recorded treatment, and repository rollback to native dispatch.
 - The full local gate passed completeness, type checking, lint and formatting.
-  Its parallel test pass had 29,241 passes and three host-related failures:
-  two process-tree cleanup assertions and PowerShell startup under the
-  sanitised test environment. The process-tree failures also reproduce on the
-  base; a cache-directory wrapper resolves PowerShell startup. A separate
-  serial pass was stopped after an existing signal fixture stalled.
-  All required CI and additional integration checks passed on PR #4007.
-  Local markdownlint and semgrep are unavailable; CI passed both. No live subscription-model turn
-  was purchased or used to claim host entitlement.
-- #3643: Configure manager, executor and reviewer independently per host and repository.
-- #3642: Implement external provider-neutral orchestration behind an opt-in feature flag.
-- Docs sweep — grep: "issue_executor_split", "external_orchestration", "provider-neutral"; updated `docs/CONFIGURATION.md`, `docs/MANAGER-WORKER-CONTRACT.md`, `docs/ROLE-CONFIGURATION.md`; section: CONFIGURATION issue-executor settings and MANAGER-WORKER-CONTRACT target contract; siblings: "issue_sub_agent_tier", "issue_reviewer_agents", "agent_providers" retain their native behaviour.
+  Its parallel test pass had 29,241 passes and three host-related failures: two
+  process-tree cleanup assertions and PowerShell startup under the sanitised
+  test environment. The process-tree failures also reproduce on the base; a
+  cache-directory wrapper resolves PowerShell startup. A separate serial pass
+  was stopped after an existing signal fixture stalled. All required CI and
+  additional integration checks passed on PR #4007. Local markdownlint and
+  semgrep are unavailable; CI passed both. No live subscription-model turn was
+  purchased or used to claim host entitlement.
+- #3643: Configure manager, executor and reviewer independently per host and
+  repository.
+- #3642: Implement external provider-neutral orchestration behind an opt-in
+  feature flag.
+- Docs sweep — grep: "issue_executor_split", "external_orchestration",
+  "provider-neutral"; updated `docs/CONFIGURATION.md`,
+  `docs/MANAGER-WORKER-CONTRACT.md`, `docs/ROLE-CONFIGURATION.md`; section:
+  CONFIGURATION issue-executor settings and MANAGER-WORKER-CONTRACT target
+  contract; siblings: "issue_sub_agent_tier", "issue_reviewer_agents",
+  "agent_providers" retain their native behaviour.
 
 ## Test Plan
 
@@ -67,16 +74,24 @@ subscription, CLI and observed quota failures stop external dispatch.
 
 ## Branch outcomes
 
-- Host defaults, repository field overrides, invalid settings and rollback — `worker/deno/tests/role_configuration_3643_test.ts`.
-- Same-provider and mixed-provider dispatch, independent reviewer and context separation — `worker/deno/tests/role_configuration_3643_test.ts`.
-- Native dispatch when external orchestration is off and refused missing external wiring when on — `worker/deno/tests/external_orchestration_3642_phase_test.ts`.
-- Missing CLI or unproved subscription refuses before paid work — `worker/deno/tests/role_configuration_3643_test.ts`.
-- Checkpoint absent, malformed, old-schema, resumed and completed states — `worker/deno/tests/orchestration_3642_contracts_test.ts`, `worker/deno/tests/orchestration_3642_orchestrator_test.ts`.
-- Authentication, exhausted quota, unsupported tools, cancellation, timeouts and bounded retries — `worker/deno/tests/orchestration_3642_orchestrator_test.ts`, `worker/deno/tests/orchestration_3642_gate_test.ts`.
+- Host defaults, repository field overrides, invalid settings and rollback —
+  `worker/deno/tests/role_configuration_3643_test.ts`.
+- Same-provider and mixed-provider dispatch, independent reviewer and context
+  separation — `worker/deno/tests/role_configuration_3643_test.ts`.
+- Native dispatch when external orchestration is off and refused missing
+  external wiring when on —
+  `worker/deno/tests/external_orchestration_3642_phase_test.ts`.
+- Missing CLI or unproved subscription refuses before paid work —
+  `worker/deno/tests/role_configuration_3643_test.ts`.
+- Checkpoint absent, malformed, old-schema, resumed and completed states —
+  `worker/deno/tests/orchestration_3642_contracts_test.ts`,
+  `worker/deno/tests/orchestration_3642_orchestrator_test.ts`.
+- Authentication, exhausted quota, unsupported tools, cancellation, timeouts and
+  bounded retries — `worker/deno/tests/orchestration_3642_orchestrator_test.ts`,
+  `worker/deno/tests/orchestration_3642_gate_test.ts`.
 
 ## Merge verification
 
-PR #4007 merged into the milestone branch with all CI checks successful.
-Live subscription entitlements and
-sandbox support require each operator-selected host; unavailable combinations
-fail closed.
+PR #4007 merged into the milestone branch with all CI checks successful. Live
+subscription entitlements and sandbox support require each operator-selected
+host; unavailable combinations fail closed.

@@ -15,20 +15,22 @@ Both artefacts now carry the figures:
 - the **worker log** line at `fireHardTimeout` states the deadline it actually
   armed, not just the budget it started with — a zero-grant kill now reads
   `base budget 3600s, no extension granted (deadline unchanged at 3600s); last
-  extension refused: …` instead of leaving the reader to infer it; and
+  extension refused: …`
+  instead of leaving the reader to infer it; and
 - the **release comment** carries one plain-words sentence —
   `Progress extension: base timeout 3600s, deadline armed at kill 5640s, agent
   elapsed 5645s, 4 extensions granted (+2040s); last check refused because …`.
 
-Zero grants is its own finding and reads differently (`no extensions granted —
-last check refused because …`), so the #732 shape is never mistaken for a run
-that was extended and still ran out. A run whose checks were never refused says
-so rather than falling silent, which would be indistinguishable from a message
-that lost the reason.
+Zero grants is its own finding and reads differently
+(`no extensions granted —
+last check refused because …`), so the #732 shape is
+never mistaken for a run that was extended and still ran out. A run whose checks
+were never refused says so rather than falling silent, which would be
+indistinguishable from a message that lost the reason.
 
 The extension **decision** is untouched — this is observability only. With the
-progress extension off no telemetry exists and every message keeps its
-pre-#764 wording byte for byte.
+progress extension off no telemetry exists and every message keeps its pre-#764
+wording byte for byte.
 
 Closes #768.
 
@@ -60,8 +62,8 @@ pre-existing environment failures in six files this change does not touch
 `setup_lockfile_test.ts`, `setup_workdir_reminder_test.ts`) — the container has
 `CONFIG_FILE` and `CONFIG_PATH` naming different files, and the GitHub API rate
 limit is exhausted. Every one of the 1009 tests across the 57 files that import
-a changed module passes. The independent Spec reviewer reproduced the same
-16544 passed / 56 failed split.
+a changed module passes. The independent Spec reviewer reproduced the same 16544
+passed / 56 failed split.
 
 ## Acceptance Criteria
 
@@ -77,26 +79,29 @@ a changed module passes. The independent Spec reviewer reproduced the same
 - **met** — a kill after zero grants reports the refusal reason rather than
   being indistinguishable from a run that was never eligible — evidence:
   `::renderRunOutcomeClause - a zero-grant kill is not mistaken for an ineligible run (Issue #768)`
-  and `::formatTimeoutExtensionSummary - zero grants is its own finding (Issue #768)`
+  and
+  `::formatTimeoutExtensionSummary - zero grants is its own finding (Issue #768)`
   — reviewer: met
 - **met** — the worker log line at `fireHardTimeout` carries the same figures —
   evidence:
   `::runClaudeWithTimeout - a kill after zero grants logs the armed deadline and the refusal (Issue #768)`
   drives a real subprocess to the kill; the granted case is
   `tests/timeout_extension_telemetry_4298_test.ts::buildTimeoutKillMessage - names the extensions, the elapsed time and the stalled signal`
-  — reviewer: met — reason: the reviewer noted this is largely pre-existing;
-  the new contribution is the armed deadline on the zero-grant branch, which is
-  the case the issue calls out.
+  — reviewer: met — reason: the reviewer noted this is largely pre-existing; the
+  new contribution is the armed deadline on the zero-grant branch, which is the
+  case the issue calls out.
 - **met** — a run with the progress extension off produces the pre-existing
   wording, covered by a test — evidence:
   `::getFailureDiagnosis - the extension off keeps the pre-existing wording (Issue #768)`,
   `::getFailureDiagnosisOneliner - the extension off keeps the pre-existing wording (Issue #768)`
-  (both byte-equality), `::renderRunOutcomeClause - with the extension off the clause is unchanged (Issue #768)`
-  and `::workOnIssue - with the extension off the release comment is unchanged (Issue #768)`
+  (both byte-equality),
+  `::renderRunOutcomeClause - with the extension off the clause is unchanged (Issue #768)`
+  and
+  `::workOnIssue - with the extension off the release comment is unchanged (Issue #768)`
   — reviewer: met
-- **met** — a scheduled release still does not say "ran out of time" —
-  evidence: `tests/execute_phase_scheduled_release_424_test.ts` (4 tests, run
-  and passing); the `scheduled_release` branches are untouched — reviewer: met
+- **met** — a scheduled release still does not say "ran out of time" — evidence:
+  `tests/execute_phase_scheduled_release_424_test.ts` (4 tests, run and
+  passing); the `scheduled_release` branches are untouched — reviewer: met
 - **met** — tests cover the comment text for extension off, on with grants, and
   on with zero grants — evidence:
   `worker/deno/tests/timeout_extension_report_768_test.ts` (20 tests, all three
@@ -116,24 +121,24 @@ a changed module passes. The independent Spec reviewer reproduced the same
   input. The multi-line diagnosis therefore carries the telemetry wherever the
   worker records one; it does not invent a second plumbing path, which is what
   the reviewer objected to.
-- **unrequested** — `docs/CONFIGURATION.md` and `docs/TROUBLESHOOTING.md` gain
-  a short section on the new wording — reviewer: unrequested — reason: the repo
+- **unrequested** — `docs/CONFIGURATION.md` and `docs/TROUBLESHOOTING.md` gain a
+  short section on the new wording — reviewer: unrequested — reason: the repo
   requires a docs change alongside a change to documented operator output.
 - **unrequested** — `timeout_extension_telemetry.ts`'s zero-grant wording change
   also flows into `buildTimeoutFailureReason` — reviewer: unrequested — reason:
   one shared renderer feeds both; splitting it to keep the failure reason on the
   old text would be a second rendering of the same fields.
-- **unrequested** — the "no extension check was refused" third state —
-  reviewer: unrequested — reason: without it a run that was never refused is
-  silent, and silence is indistinguishable from a message that lost the reason.
+- **unrequested** — the "no extension check was refused" third state — reviewer:
+  unrequested — reason: without it a run that was never refused is silent, and
+  silence is indistinguishable from a message that lost the reason.
 - **unrequested** — `execute_phase.ts` clears `state.extensionTelemetry` per
   attempt — reviewer: unrequested (raised as a defect, not a criterion) —
   reason: fixed here; without it a later attempt could report the previous
   kill's grants.
 
 Two items the reviewer raised were reverted rather than defended: the
-`label_failure.ts` one-liner change and the CLI `get-diagnosis-oneliner`
-change. Both reviewers read them as surfaces the issue did not name, and the
+`label_failure.ts` one-liner change and the CLI `get-diagnosis-oneliner` change.
+Both reviewers read them as surfaces the issue did not name, and the
 first-attempt comment already carries the same history inside its failure
 message.
 
@@ -165,21 +170,21 @@ message.
   `label_failure.ts` change is reverted, so no comment states the facts twice.
   `formatTimeoutExtensionSummary` stands: it is the plain-words sentence the
   issue asks for, which the compact log phrase is not.
-- **violation** — coverage: the singular grant branch and the modified
-  functions were untested — evidence:
-  `worker/deno/lib/timeout_extension_telemetry.ts:127` — reason: fixed;
+- **violation** — coverage: the singular grant branch and the modified functions
+  were untested — evidence: `worker/deno/lib/timeout_extension_telemetry.ts:127`
+  — reason: fixed;
   `::formatTimeoutExtensionSummary - a single grant reads in the singular (Issue #768)`
   added.
 - **violation** — KISS: reaching the telemetry parameter needed two inert
-  positional placeholders — evidence:
-  `worker/deno/lib/heartbeat_storage.ts:543` — reason: fixed; the one-liner now
-  takes the telemetry as its third parameter and the placeholders are gone.
+  positional placeholders — evidence: `worker/deno/lib/heartbeat_storage.ts:543`
+  — reason: fixed; the one-liner now takes the telemetry as its third parameter
+  and the placeholders are gone.
 - **violation** — Boy Scout: the zero-grant wording now differs between the
-  shared renderer and the context renderer in `failure_diagnosis.ts` —
-  evidence: `worker/deno/lib/failure_diagnosis.ts:475` — reason: stands. That
-  renderer serves the `zero_output` diagnosis, which names the hard timeout in
-  the same breath, so it states no armed deadline the reader lacks. Aligning it
-  would change a different failure category's wording for no operator gain.
+  shared renderer and the context renderer in `failure_diagnosis.ts` — evidence:
+  `worker/deno/lib/failure_diagnosis.ts:475` — reason: stands. That renderer
+  serves the `zero_output` diagnosis, which names the hard timeout in the same
+  breath, so it states no armed deadline the reader lacks. Aligning it would
+  change a different failure category's wording for no operator gain.
 - **violation** — comment noise: a punctuation choice was explained, and one
   sentence repeated across five files — evidence:
   `worker/deno/lib/timeout_extension_telemetry.ts:130` — reason: fixed; the

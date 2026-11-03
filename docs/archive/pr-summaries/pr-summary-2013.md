@@ -67,7 +67,8 @@ which is skipped on this host regardless of the change.
   pins and which this change deliberately leaves unchanged.
 - **regression test** —
   `worker/deno/tests/milestone_sync_conflict_resolution_test.ts::syncMilestoneBranchWithDefault - two appended ledger slices are unioned by value, not escalated (Issue #2013)`
-  (and `…::a .json the structural union refuses says why, alongside the parse failure (Issue #2013)`
+  (and
+  `…::a .json the structural union refuses says why, alongside the parse failure (Issue #2013)`
   for the fallback's error path) — both observed failing against the unfixed
   code and passing after the fix
 
@@ -86,8 +87,8 @@ which is skipped on this host regardless of the change.
   hand-formatted (`"entries": [\n  ]`) does not round-trip, so the structural
   union declines, the textual union still produces a document that does not
   parse, and the escalation names both the parse failure and why the by-value
-  merge was unavailable. Observed failing against the unfixed code (the
-  "it was not unioned as JSON first" clause absent) and passing after the fix.
+  merge was unavailable. Observed failing against the unfixed code (the "it was
+  not unioned as JSON first" clause absent) and passing after the fix.
 - **Unchanged and still green**
   `…::syncMilestoneBranchWithDefault - a JSON ledger whose union does not parse escalates rather than being written (Issue #1768)`
   — its merge base (`"entries": [\n  ]`) does not round-trip through
@@ -95,6 +96,6 @@ which is skipped on this host regardless of the change.
   still escalates. No existing test was modified or removed.
 - Related suites re-run: `both_inserted_conflict_rule_test.ts`,
   `json_insertion_union_test.ts`, `milestone_conflict_ladder_test.ts`,
-  `milestone_conflict_triage_test.ts`, `dependency_conflict_apply_test.ts` —
-  84 passed, 0 failed. The gate's own `deno tests` stage covers the rest.
+  `milestone_conflict_triage_test.ts`, `dependency_conflict_apply_test.ts` — 84
+  passed, 0 failed. The gate's own `deno tests` stage covers the rest.
 - Full gate: `./quality.sh` — PASSED.

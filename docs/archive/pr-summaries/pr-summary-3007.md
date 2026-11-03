@@ -24,33 +24,33 @@ flowchart LR
 - [x] `worker/deno/lib/rust_use_union.ts`: `mergeDuplicateRustUses`
 - [x] Hook it into the textual-union path of `unionMergeConflictedFile`
 - [x] Tests: the regression test from the logged input, negative cases, and a
-  real-git integration test
+      real-git integration test
 - [x] Docs: the `docs/INTERNALS.md` union paragraph and module table, and the
-  sweep ledger entry
+      sweep ledger entry
 
 ## Spec
 
 ### Intent and Rationale
 
 - The issue says to "fix the gate, not the conflict". The gate's refusal was
-  correct: the tree really did not compile. The defect is that the
-  deterministic union produced a tree that could not compile, so the fix
-  belongs in the union step.
+  correct: the tree really did not compile. The defect is that the deterministic
+  union produced a tree that could not compile, so the fix belongs in the union
+  step.
 - A fold that is wrong could silently drop an import. The fold is therefore
   conservative, and anything it cannot parse with confidence is left alone.
 
 ### Essential Design Decisions
 
-- **What is folded:** only top-level `use` declarations at column 0
-  (optionally `pub`/`pub(...)`) that share the visibility and the path prefix
-  and whose item sets overlap.
+- **What is folded:** only top-level `use` declarations at column 0 (optionally
+  `pub`/`pub(...)`) that share the visibility and the path prefix and whose item
+  sets overlap.
 - **What is skipped:**
   - non-overlapping groups;
   - nested braces and glob imports;
   - imports gated by an attribute (`#[cfg]` and the like);
   - indented imports inside a `mod`.
-- **No-change guarantee:** when nothing is folded, the input is returned
-  byte for byte, so the call is safe on every `.rs` union.
+- **No-change guarantee:** when nothing is folded, the input is returned byte
+  for byte, so the call is safe on every `.rs` union.
 - **Output format:** the folded line uses rustfmt order (`self` first, then
   sorted) only when every input group was already sorted. A line over 100
   characters becomes a rustfmt-style block. CRLF line endings and the trailing
@@ -60,8 +60,8 @@ flowchart LR
 
 ### Undiscoverable Facts
 
-- `verifyResolvedTree` (`milestone_resolution_gate.ts`) is correct as it
-  stands, and this PR does not change it.
+- `verifyResolvedTree` (`milestone_resolution_gate.ts`) is correct as it stands,
+  and this PR does not change it.
 - The issue says "No repair was attempted (Issue #1965)". That happens because
   `repairGatedResolution` needs an `agentFn`. `bindMilestoneConflictAgent`
   leaves `agentFn` undefined when the sync has no budget grant (Issue #2309).
@@ -94,7 +94,8 @@ flowchart LR
 
 - `./quality.sh`: **PASSED** (config integration skipped: no `.config.json` in
   the container).
-- The targeted tests pass: `deno task test:unit tests/rust_use_union_test.ts
+- The targeted tests pass:
+  `deno task test:unit tests/rust_use_union_test.ts
   tests/milestone_sync_conflict_test.ts tests/milestone_gate_wedge_test.ts`
   ran 47 tests, all passed.
 - **Docs sweep:** I grepped the non-archive Markdown for `merge-file --union`,
@@ -106,9 +107,9 @@ flowchart LR
 
 - [x] Regression test from the logged E0252 input
 - [x] Exact duplicates, a simple-path fold, a multi-line render, and
-  unsorted-order preservation
+      unsorted-order preservation
 - [x] Negative cases: the same leaf under different prefixes, `#[cfg]`-gated,
-  indented, non-overlapping, nested braces, and no duplicates (identical
-  output)
+      indented, non-overlapping, nested braces, and no duplicates (identical
+      output)
 - [x] Real-git integration test through `unionMergeConflictedFile`
 - [x] Full `./quality.sh`

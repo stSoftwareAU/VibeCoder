@@ -3,10 +3,10 @@
 ## Summary
 
 A sub-issue in milestone A may declare `Depends on #N` where #N belongs to
-milestone B. Closing #N was enough to release the dependant — but #N's code
-only reaches the default branch, and so A's milestone branch, once B's **final
-PR merges and B closes**. The dependant was therefore being built against work
-that was not there yet.
+milestone B. Closing #N was enough to release the dependant — but #N's code only
+reaches the default branch, and so A's milestone branch, once B's **final PR
+merges and B closes**. The dependant was therefore being built against work that
+was not there yet.
 
 `isDependencyBlocked` now takes an optional fifth argument, `milestoneScope`. A
 **CLOSED same-repo** dependency whose milestone is non-null, differs from the
@@ -18,8 +18,8 @@ behaviour.
 Cost is unchanged per candidate: `milestone` rides the existing per-dependency
 `gh issue view` (`number,state,title,milestone`), and the open-milestone set
 comes from the already-cached `fetchOpenMilestoneClosedCounts` listing —
-resolved lazily, once per repo, and never fetched when no dependency needs it.
-A failed lookup fails safe (blocked).
+resolved lazily, once per repo, and never fetched when no dependency needs it. A
+failed lookup fails safe (blocked).
 
 Closes #2173.
 
@@ -62,7 +62,7 @@ suite and the full quality gate.
   dependency is closed — is reported as `pending`/`assigned`, i.e. waiting, not
   stuck. No change was needed there.
 - **Known, recorded divergence:** `idle_decision_census.ts` cannot model this
-  hold — it needs the *closed* dependency's milestone, which its open-issue set
+  hold — it needs the _closed_ dependency's milestone, which its open-issue set
   does not carry. That is an under-count in the same bounded-harm direction as
   the parent/child gate the census already declines to model, and it is now
   documented at both surfaces (`idle_decision_census.ts`,
@@ -88,11 +88,11 @@ suite and the full quality gate.
   `issue view` and the cached open-milestone listing — evidence: no existing
   test file was modified; the reviewer ran the `collect_*`, `issue_finder*`,
   `new_work_eligibility*` and `*dependency*` suites (408 passed, 0 failed), and
-  `::a collector holds a candidate whose dependency's milestone is open`
-  asserts exactly one `milestones?state=open` call for the whole repo —
-  reviewer: met — reason: the reviewer noted a caveat, that a *failed* listing
-  is deliberately not cached and so can repeat on the error path; that is the
-  intended retry, covered by `::createOpenMilestoneLookup retries after a failed listing`
+  `::a collector holds a candidate whose dependency's milestone is open` asserts
+  exactly one `milestones?state=open` call for the whole repo — reviewer: met —
+  reason: the reviewer noted a caveat, that a _failed_ listing is deliberately
+  not cached and so can repeat on the error path; that is the intended retry,
+  covered by `::createOpenMilestoneLookup retries after a failed listing`
 - **met** — `docs/workflows/projects-and-dependencies.md` states the rule;
   `deno test`, `deno lint`, `deno fmt --check` pass — evidence:
   `docs/workflows/projects-and-dependencies.md:106-107`, plus the full
@@ -117,9 +117,9 @@ suite and the full quality gate.
 - **unrequested** — `ISSUE_STATE_CACHE_PREFIX` bumped to `v2`, with the three
   per-issue prefixes moved beside the cache in `issue_cache.ts` — reviewer:
   unrequested — reason: a `v1` entry carries no `milestone` and would silently
-  *release* a dependant this gate must hold; the prefix was spelled out a
-  second time in `issue_close_notifier.ts`, so bumping one spelling alone would
-  have left a close invalidating a key nothing writes
+  _release_ a dependant this gate must hold; the prefix was spelled out a second
+  time in `issue_close_notifier.ts`, so bumping one spelling alone would have
+  left a close invalidating a key nothing writes
 - **unrequested** — documentation of the rule at three further surfaces
   (`docs/INTERNALS.md`, `docs/workflows/README.md`, the forward-dependency
   definition in `projects-and-dependencies.md`) and of the census divergence —
@@ -146,18 +146,18 @@ suite and the full quality gate.
   stated explicitly there and in `docs/IDLE-TASK-FRAMEWORK.md`; modelling it
   needs the closed dependency's milestone, which the census's open-issue set
   does not carry, and the residual error is an under-count in the same
-  bounded-harm direction as the parent/child gate the census already declines
-  to model
+  bounded-harm direction as the parent/child gate the census already declines to
+  model
 - **violation** — test coverage: the "rejection is not cached" branch and the
   collector wiring were untested — evidence:
   `worker/deno/lib/issue_finder_common.ts:481` — reason: fixed here — added
   `::createOpenMilestoneLookup retries after a failed listing` and two
   end-to-end collector tests that hold then release a real candidate
-- **violation** — a docstring claimed the listing's keys are *exactly* the open
-  milestone titles, which a single unpaginated page cannot guarantee —
-  evidence: `worker/deno/lib/issue_finder_common.ts:457` — reason: wording
-  corrected to name the page size; paginating `fetchOpenMilestoneClosedCounts`
-  is pre-existing behaviour and out of scope here
+- **violation** — a docstring claimed the listing's keys are _exactly_ the open
+  milestone titles, which a single unpaginated page cannot guarantee — evidence:
+  `worker/deno/lib/issue_finder_common.ts:457` — reason: wording corrected to
+  name the page size; paginating `fetchOpenMilestoneClosedCounts` is
+  pre-existing behaviour and out of scope here
 - **violation** — the new `catch` reports a transient `gh` failure as an
   ordinary `dependency-blocked`, indistinguishable from a real block — evidence:
   `worker/deno/lib/issue_finder_common.ts:560` — reason: stands — it mirrors the
@@ -169,11 +169,11 @@ suite and the full quality gate.
   `fetchOpenMilestoneClosedCounts`, which already throws, and converting at this
   one call site would leave the module half-converted
 - **clean** — Australian English throughout; no hidden or credential paths
-  staged; commit messages carry the issue reference and the
-  `Vibe-Coder-Run-Id` trailer; no test removed or commented out; every test
-  calls real exported functions and asserts on decisions (no source-grepping);
-  the new tests are fast, hermetic and free of sleeps or polling; `IssueState`
-  and `isDependencyBlocked` changed additively so every existing caller still
+  staged; commit messages carry the issue reference and the `Vibe-Coder-Run-Id`
+  trailer; no test removed or commented out; every test calls real exported
+  functions and asserts on decisions (no source-grepping); the new tests are
+  fast, hermetic and free of sleeps or polling; `IssueState` and
+  `isDependencyBlocked` changed additively so every existing caller still
   compiles; `deno lint` and `deno fmt --check` clean.
 
 ## Test Plan

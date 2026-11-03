@@ -4,11 +4,11 @@
 
 The agent-side `gh` guard classified `gh auth login`, `gh auth switch` and
 `gh auth setup-git` as plain reads and allowed them unconditionally.
-`evaluateGhCommand` only enforces its controls when `classifyGhMutation`
-returns a mutation, and that classifier knows mutations made **on GitHub** —
-`auth`, `config`, `alias` and `extension` have no entry in `GH_MUTATING_VERBS`,
-and none of `login`, `logout`, `switch`, `setup-git`, `refresh` or `install`
-appears in `GH_GENERIC_MUTATING_VERBS`. `auth` *is* a recognised root, so the
+`evaluateGhCommand` only enforces its controls when `classifyGhMutation` returns
+a mutation, and that classifier knows mutations made **on GitHub** — `auth`,
+`config`, `alias` and `extension` have no entry in `GH_MUTATING_VERBS`, and none
+of `login`, `logout`, `switch`, `setup-git`, `refresh` or `install` appears in
+`GH_GENERIC_MUTATING_VERBS`. `auth` _is_ a recognised root, so the
 `GH_UNKNOWN_COMMAND` check passed it too, and the call reached the real binary.
 
 That is not a read. `gh_guard_shim.ts` pins `GH_CONFIG_DIR` to the worker's own
@@ -23,22 +23,22 @@ rewrites and `evaluateGhCommand` refuses them **unconditionally** — before the
 unknown-root check, and whether or not the write-repo allowlist is active — with
 `[SECURITY] [GH_LOCAL_STATE_REFUSED]`. This is the same unattended-operation
 invariant `interactive_login_scanner.ts` holds the worker's own source to,
-applied at the runtime guard: credentials are provisioned once, non-interactively,
-by `setup.sh` and consumed read-only. Read verbs (`gh auth status`,
-`gh config get`, `gh alias list`, `gh extension list`) are untouched — the
-worker's health checks depend on them — and ordinary GitHub writes are
-unaffected.
+applied at the runtime guard: credentials are provisioned once,
+non-interactively, by `setup.sh` and consumed read-only. Read verbs
+(`gh auth status`, `gh config get`, `gh alias list`, `gh extension list`) are
+untouched — the worker's health checks depend on them — and ordinary GitHub
+writes are unaffected.
 
 Closes #187.
 
 ### Refused verbs
 
-| Root | Refused | Still allowed |
-| --- | --- | --- |
-| `auth` | `login`, `logout`, `switch`, `refresh`, `setup-git` | `status`, `token` |
-| `config` | `set`, `clear-cache` | `get`, `list` |
-| `alias` | `set`, `delete`, `import` | `list` |
-| `extension` (also `ext`, `extensions`) | `install`, `upgrade`, `remove`, `exec` | `list`, `search` |
+| Root                                   | Refused                                             | Still allowed     |
+| -------------------------------------- | --------------------------------------------------- | ----------------- |
+| `auth`                                 | `login`, `logout`, `switch`, `refresh`, `setup-git` | `status`, `token` |
+| `config`                               | `set`, `clear-cache`                                | `get`, `list`     |
+| `alias`                                | `set`, `delete`, `import`                           | `list`            |
+| `extension` (also `ext`, `extensions`) | `install`, `upgrade`, `remove`, `exec`              | `list`, `search`  |
 
 ## Evidence
 
@@ -78,11 +78,13 @@ flowchart TD
 
 ### Regression test linkage
 
-Added `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #187 - refuses a
-credential login from the agent subprocess`, which reproduces the flaw: it
-drives `evaluateGhCommand(["auth", "login", "--with-token"], ACTIVE)` and asserts
-the verdict is refused with the `GH_LOCAL_STATE_REFUSED` marker. Verified it
-**fails against the unfixed code and passes after the fix** — with
+Added
+`worker/deno/tests/gh_guard_decision_test.ts::gh-guard #187 - refuses a
+credential login from the agent subprocess`,
+which reproduces the flaw: it drives
+`evaluateGhCommand(["auth", "login", "--with-token"], ACTIVE)` and asserts the
+verdict is refused with the `GH_LOCAL_STATE_REFUSED` marker. Verified it **fails
+against the unfixed code and passes after the fix** — with
 `worker/deno/lib/gh_guard_decision.ts` stashed back to its pre-fix state the run
 reported `FAILED | 54 passed | 3 failed`, the three failures being the new
 `#187` refusal tests (the old code returned `allowed: true`); with the fix

@@ -1,10 +1,10 @@
 ## Summary
 
 The summary correction turn reads the original file by path, refuses newly
-introduced prompt-scrubbing markers before writing, and leaves the original
-file and blocking finding in place after refusal. The same guard protects
-indexed manual/prompt sentence replacements, including summary sentences in
-a mixed block. Completion and the local summary checker also reject corrupted
+introduced prompt-scrubbing markers before writing, and leaves the original file
+and blocking finding in place after refusal. The same guard protects indexed
+manual/prompt sentence replacements, including summary sentences in a mixed
+block. Completion and the local summary checker also reject corrupted
 HTML/Mermaid delimiters. Closes #3710.
 
 This ships with [#3715](pr-summary-3715.md), [#3731](pr-summary-3731.md) and
@@ -23,15 +23,15 @@ This ships with [#3715](pr-summary-3715.md), [#3731](pr-summary-3731.md) and
   tools to read the original files. Summary-only replies use the existing
   delimiter protocol; manual/prompt findings use indexed replacements from
   #3865. Both keep the existing maximum size.
-- Both correction formats compare marker counts with the original, allowing existing
-  literal characters without accepting newly introduced copies. The backstop
-  rejects corrupted comment delimiters even in code and Mermaid blocks.
+- Both correction formats compare marker counts with the original, allowing
+  existing literal characters without accepting newly introduced copies. The
+  backstop rejects corrupted comment delimiters even in code and Mermaid blocks.
 
 ### Undiscoverable Facts
 
 - Shell networking cannot resolve GitHub or JSR in this environment. Exact
-  pinned dependencies were recovered through a separate GitHub Actions run;
-  no dependency versions or lock entries changed.
+  pinned dependencies were recovered through a separate GitHub Actions run; no
+  dependency versions or lock entries changed.
 
 ## Evidence
 
@@ -41,7 +41,11 @@ template braces. Before the fix it overwrites the file; after the fix it
 refuses, preserves the bytes after the preceding recovery, and raises no PR.
 This backend change has no UI screenshot.
 
-**Docs sweep** — grep: `summary_claim_correction`, `summary-only correction`, `prompt-scrubbed`; section: docs/workflows/issue-processing.md the summary claim-correction section; updated: docs/workflows/issue-processing.md, docs/INTERNALS.md; siblings: none — this changes the existing correction protocol and adds a corruption backstop, not a member of a runtime set.
+**Docs sweep** — grep: `summary_claim_correction`, `summary-only correction`,
+`prompt-scrubbed`; section: docs/workflows/issue-processing.md the summary
+claim-correction section; updated: docs/workflows/issue-processing.md,
+docs/INTERNALS.md; siblings: none — this changes the existing correction
+protocol and adds a corruption backstop, not a member of a runtime set.
 
 ## Acceptance Criteria
 
@@ -64,9 +68,9 @@ This backend change has no UI screenshot.
 ## Test Plan
 
 - After merging main `723d4d1`, all 680 scoped completion, summary, prose,
-  assertion and prompt-guidance tests passed with the frozen lock. This
-  includes both branches' correction and hold regressions plus the new
-  combination cases described below.
+  assertion and prompt-guidance tests passed with the frozen lock. This includes
+  both branches' correction and hold regressions plus the new combination cases
+  described below.
 - `worker/deno/tests/summary_claim_correction_test.ts`: original-path prompt,
   marker refusal and unchanged literals in both correction formats, retaining
   existing parser failures and indexed-replacement validation.
@@ -78,8 +82,8 @@ This backend change has no UI screenshot.
   even inside Mermaid/code; ordinary Markdown remains accepted.
 - The five integrated new regression tests for correction, both prose callers
   and the local checker failed against the previous implementation. The final
-  integrated scoped run passed 344 tests with the frozen lock. The manifest
-  gate passed 687 tests, with one existing ignored test.
+  integrated scoped run passed 344 tests with the frozen lock. The manifest gate
+  passed 687 tests, with one existing ignored test.
 - The full `./quality.sh < /dev/null` gate passed on implementation commit
   `93f03976833f2dffaa4effd39d344b6b2a3f3bc4` in the
   [hosted validation run](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39024074189/job/117371486836).
@@ -89,27 +93,35 @@ This backend change has no UI screenshot.
   Only configuration integration was skipped because no `.config.json` was
   supplied; the gate reported `PASSED (with skipped checks)`.
 - Merging main `723d4d1` adds #3865's indexed manual correction. Three new
-  combination regressions failed before the integration fixes (46 passed,
-  3 failed), then all 49 correction tests passed with the frozen lock. The
-  failures demonstrated manual corruption, a missing replacement guard and
-  an unnecessary Markdown-only retry for source comments. The hosted gate
-  above records the earlier implementation commit, before this merge.
+  combination regressions failed before the integration fixes (46 passed, 3
+  failed), then all 49 correction tests passed with the frozen lock. The
+  failures demonstrated manual corruption, a missing replacement guard and an
+  unnecessary Markdown-only retry for source comments. The hosted gate above
+  records the earlier implementation commit, before this merge.
 
-- Removed from `worker/deno/tests/summary_claim_correction_test.ts`: `assertStringIncludes(prompt, PROMPT_OPTS.summaryContent.trim());`
-  Required by: "Give the turn the summary by path"
-  Replaced by: ```assertStringIncludes(prompt, `Read the original summary from \`${SUMMARY_PATH}\``,);```
-- Removed from `worker/deno/tests/summary_claim_correction_test.ts`: `assertEquals(beginCount, 2);`
-  Required by: "Do not ask for a verbatim echo of scrubbed text."
-  Replaced by: `assertEquals(beginCount, 1);`
-- Removed from `worker/deno/tests/summary_claim_correction_test.ts`: `assertEquals(endCount, 2);`
-  Required by: "Do not ask for a verbatim echo of scrubbed text."
-  Replaced by: `assertEquals(endCount, 1);`
+- Removed from `worker/deno/tests/summary_claim_correction_test.ts`:
+  `assertStringIncludes(prompt, PROMPT_OPTS.summaryContent.trim());` Required
+  by: "Give the turn the summary by path" Replaced by:
+  ``assertStringIncludes(prompt, `Read the original summary from \`${SUMMARY_PATH}\``,);``
+- Removed from `worker/deno/tests/summary_claim_correction_test.ts`:
+  `assertEquals(beginCount, 2);` Required by: "Do not ask for a verbatim echo of
+  scrubbed text." Replaced by: `assertEquals(beginCount, 1);`
+- Removed from `worker/deno/tests/summary_claim_correction_test.ts`:
+  `assertEquals(endCount, 2);` Required by: "Do not ask for a verbatim echo of
+  scrubbed text." Replaced by: `assertEquals(endCount, 1);`
 
 The changed prompt expectations go red against the prior two-fence prompt.
 
 **Branch outcomes:**
 
-- New marker refused / existing literal preserved — `worker/deno/tests/summary_claim_correction_test.ts` — both inputs use the same marker and differ only in the original summary.
-- Corrupted reply blocks writing / successful correction proceeds — `worker/deno/tests/completion_phase_summary_claim_check_test.ts` — existing success tests and the new scrubbed-echo regression.
-- Indexed replacement refuses new markers / preserves pre-existing literals — `worker/deno/tests/summary_claim_correction_test.ts` — both manual and summary paths.
-- Corrupted committed delimiters rejected / ordinary delimiters accepted — `worker/deno/tests/pr_summary_check_test.ts`.
+- New marker refused / existing literal preserved —
+  `worker/deno/tests/summary_claim_correction_test.ts` — both inputs use the
+  same marker and differ only in the original summary.
+- Corrupted reply blocks writing / successful correction proceeds —
+  `worker/deno/tests/completion_phase_summary_claim_check_test.ts` — existing
+  success tests and the new scrubbed-echo regression.
+- Indexed replacement refuses new markers / preserves pre-existing literals —
+  `worker/deno/tests/summary_claim_correction_test.ts` — both manual and summary
+  paths.
+- Corrupted committed delimiters rejected / ordinary delimiters accepted —
+  `worker/deno/tests/pr_summary_check_test.ts`.

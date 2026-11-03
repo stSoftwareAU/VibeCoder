@@ -201,10 +201,9 @@ Modified (business-logic change, documented): the two fault-count assertions in
 rather than 8, and the "compliant in every other respect" fixture gained the two
 credential-handling behaviours. No test was removed or disabled.
 
-Extracted (no behaviour change): the `mkdir` observer shim that both
-credential suites use now lives in
-`worker/deno/tests/support/mkdir_observer.ts`, imported by
-`setup_ps1_test.ts` and `setup_credential_provisioning_test.ts` rather than
+Extracted (no behaviour change): the `mkdir` observer shim that both credential
+suites use now lives in `worker/deno/tests/support/mkdir_observer.ts`, imported
+by `setup_ps1_test.ts` and `setup_credential_provisioning_test.ts` rather than
 copied into each. All 28 shell-side cases still pass.
 
 Docs updated for the changed behaviour: `docs/SETUP.md` (both the file

@@ -25,7 +25,8 @@ either CLI's event shape:
   `logInvocation`.
 - **`credit_tracker.ts`** — `InvocationEntry.usageUnknown` is persisted; the
   daily summary gains `unknownUsageInvocations` / `unknownUsageProviders`, and
-  `formatSummary` ends with `WARNING: N invocation(s) reported no parseable
+  `formatSummary` ends with
+  `WARNING: N invocation(s) reported no parseable
   token usage (provider(s): codex, gemini) — their tokens and cost are UNKNOWN,
   not zero, and are NOT counted in the totals above.`
 - **Unpriced non-Claude ids** — `MODEL_PRICING` is Claude-only, so a Codex or

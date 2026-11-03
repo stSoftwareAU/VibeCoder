@@ -3,8 +3,8 @@
 ## Summary
 
 The per-run write-repo allowlist (#3311) contained egress in **code** only, and
-said so: *"No credential/token changes … per-run scoped GitHub App tokens are a
-deferred follow-up."* This change lands the deferred half. A GitHub App
+said so: _"No credential/token changes … per-run scoped GitHub App tokens are a
+deferred follow-up."_ This change lands the deferred half. A GitHub App
 installation token minted with no request body carries the App's permissions on
 **every repository the installation covers**, so any write that got past the two
 code chokepoints — a new direct `Deno.Command("gh", …)`, a mutation-classifier
@@ -27,7 +27,7 @@ have refused. Closes #1391.
   allowlist (the same fail-open-until-seeded rule the write checks follow).
 - `withTokenScopedRepo(repo, fn)` grants **read reach without write authority**:
   an App token is scoped per repository, not per verb, so a repo the worker only
-  reads must still be named in the scope. The repo is *not* added to `allowed`,
+  reads must still be named in the scope. The repo is _not_ added to `allowed`,
   the grant is refcounted and released even on a throw, and it logs
   `[SECURITY] [TOKEN_SCOPE_GRANT]`. Its one caller is the cross-repo
   dependency-PR bridge, whose probes (`repos/…/branches/…`, `gh pr list`) would
@@ -54,8 +54,8 @@ flowchart LR
 Backend/credential change — no web interface to screenshot. The evidence is the
 test suite plus the full quality gate.
 
-- New tests: `deno test tests/installation_token_scope_1391_test.ts` →
-  **13 passed, 0 failed**.
+- New tests: `deno test tests/installation_token_scope_1391_test.ts` → **13
+  passed, 0 failed**.
 - Adjacent suites re-run unchanged: `github_app_auth_test.ts`,
   `write_repo_allowlist_test.ts`, `write_repo_allowlist_slots_test.ts`,
   `gh_spawn_test.ts`, `cross_repo_pr_handoff_test.ts`,
@@ -67,13 +67,12 @@ test suite plus the full quality gate.
 
 Added
 `worker/deno/tests/installation_token_scope_1391_test.ts::installation token - scopes the exchange to the repos the run may write to`,
-which asserts the token exchange carries
-`{"repositories":["VibeCoder"]}` for a run allowed to write only
-`stSoftwareAU/VibeCoder`. It **fails against the unfixed code** — verified by
-stashing `worker/deno/lib` and re-running, which reports
-`TS2554 Expected 2-3 arguments, but got 4` on `getInstallationToken` plus
-`TS2305 … has no exported member 'installationTokenRepoScope'` — and **passes
-after the fix**. The sibling
+which asserts the token exchange carries `{"repositories":["VibeCoder"]}` for a
+run allowed to write only `stSoftwareAU/VibeCoder`. It **fails against the
+unfixed code** — verified by stashing `worker/deno/lib` and re-running, which
+reports `TS2554 Expected 2-3 arguments, but got 4` on `getInstallationToken`
+plus `TS2305 … has no exported member 'installationTokenRepoScope'` — and
+**passes after the fix**. The sibling
 `::installation token - a narrower run never reuses a wider cached token` covers
 the second half of the flaw: a scope-blind cache would have handed the narrow
 run the wide token even once the body was correct.
@@ -83,9 +82,9 @@ run the wide token even once the body was correct.
 The trigger is a GitHub write reaching a repo outside the run's allowlist. With
 the fix, the credential that subprocess holds is minted for exactly
 `installationTokenRepoScope()`, so GitHub itself refuses any call naming another
-repo — the write no longer depends on the code layer being correct. The
-bypasses that mattered are closed by construction rather than by a check that
-can be skipped:
+repo — the write no longer depends on the code layer being correct. The bypasses
+that mattered are closed by construction rather than by a check that can be
+skipped:
 
 - **Widen by asking for nothing.** An empty scope throws
   (`Refusing to mint an installation token for an empty repository scope`)
@@ -112,7 +111,8 @@ all driving real functions with an injected `fetch` and a generated RSA key:
 
 - `scopes the exchange to the repos the run may write to` — the regression test.
 - `sends bare repo names, de-duplicated and sorted`.
-- `stays unscoped when no scope is supplied` — back-compat for `undefined`/`null`.
+- `stays unscoped when no scope is supplied` — back-compat for
+  `undefined`/`null`.
 - `refuses an empty repository scope rather than widening`.
 - `fails loud on a slug that is not owner/repo` — five malformed shapes.
 - `a narrower run never reuses a wider cached token`.
@@ -125,5 +125,5 @@ all driving real functions with an injected `fetch` and a generated RSA key:
 - `releases the read grant when the call throws`.
 
 Documentation updated in the same change: SECURITY.md §6 (the "Code-level only"
-bullet replaced by the credential layer, plus the flowchart) and the module
-docs in `write_repo_allowlist.ts` that named the scoped token as deferred.
+bullet replaced by the credential layer, plus the flowchart) and the module docs
+in `write_repo_allowlist.ts` that named the scoped token as deferred.

@@ -11,12 +11,13 @@ Coverage now takes the same shape `## Failure Detection` took: a **published
 artefact** plus a **deterministic gate** at the single `closePlanningIssue()`
 chokepoint.
 
-- The publish turn (`prompts/planning_critique/v6.md`) posts a `## Plan Coverage`
-  table in its summary comment on the parent — one row per ask, the covering
-  sub-issue(s), and a note. A deliberately dropped ask stays as a row marked
-  `Out of scope` with its reason.
+- The publish turn (`prompts/planning_critique/v6.md`) posts a
+  `## Plan Coverage` table in its summary comment on the parent — one row per
+  ask, the covering sub-issue(s), and a note. A deliberately dropped ask stays
+  as a row marked `Out of scope` with its reason.
 - Each sub-issue's `## Context` carries a matching `Covers ask:` line
-  (`prompts/planning/v22.md`), so a reviewer can follow sub-issue → ask → parent.
+  (`prompts/planning/v22.md`), so a reviewer can follow sub-issue → ask →
+  parent.
 - `worker/deno/lib/plan_coverage_gate.ts` re-reads the parent at
   `closePlanningIssue()` and rejects a table that is missing, empty, or carries
   an ask with no covering sub-issue and no out-of-scope reason.
@@ -75,10 +76,11 @@ identically on a stashed (clean) tree — they exercise a real `gh` spawn and a
   `COVERAGE_TABLE_REQUIREMENT` interpolated into both in-code fallback publish
   prompts, and
   `worker/deno/tests/planning_coverage_prompts_test.ts::planning_critique v6 - the example table it teaches passes the real gate`
-  (the prompt's own example is fed to the gate, so prompt and gate cannot drift).
+  (the prompt's own example is fed to the gate, so prompt and gate cannot
+  drift).
 - **met** — A new gate function rejects a coverage table with an uncovered,
-  unexplained ask and accepts one where every ask is covered or explicitly out of
-  scope — evidence:
+  unexplained ask and accepts one where every ask is covered or explicitly out
+  of scope — evidence:
   `worker/deno/tests/plan_coverage_gate_test.ts::validateCoverageTable - an uncovered, unexplained ask is an offender`
   and `::validateCoverageTable - an out-of-scope ask with a reason passes`,
   calling `validateCoverageTable()` / `judgePlanCoverage()` with both shapes.
@@ -87,7 +89,8 @@ identically on a stashed (clean) tree — they exercise a real `gh` spawn and a
   `worker/deno/lib/planning_processor.ts` inside `closePlanningIssue()`
   (immediately after the Failure-Detection gate), verified behaviourally by
   `worker/deno/tests/planning_processor_test.ts::processIssuePlanning - an uncovered ask leaves the parent open and escalates (Issue #520)`
-  and `::processIssuePlanning - a fully covered plan closes the parent (Issue #520)`.
+  and
+  `::processIssuePlanning - a fully covered plan closes the parent (Issue #520)`.
 - **met** — `docs/workflows/planning-and-questions.md` documents the table and
   the gate — evidence: the new "🗂️ Plan-coverage table and gate (Issue #520)"
   section (artefact, gate rules, outcome, and a Mermaid flow).
@@ -118,7 +121,8 @@ Added:
 Modified (documented, no test removed or weakened): ten existing
 `processIssuePlanning` tests that publish sub-issues and assert the **close**
 path now serve a compliant `## Plan Coverage` table from the gate's
-`gh issue view --json body,comments` read, via the shared `coverageReadResponse()`
-/ `isCoverageRead()` helpers. That is exactly what the publish turn posts in
-production; without it the new gate correctly refuses to close a parent whose
-plan shows no coverage at all. Their assertions are unchanged.
+`gh issue view --json body,comments` read, via the shared
+`coverageReadResponse()` / `isCoverageRead()` helpers. That is exactly what the
+publish turn posts in production; without it the new gate correctly refuses to
+close a parent whose plan shows no coverage at all. Their assertions are
+unchanged.

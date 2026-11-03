@@ -58,12 +58,15 @@ flowchart LR
 ```
 
 **Test run.** `./quality.sh` passed in full (deno tests, lint, type check, fmt,
-markdownlint, semgrep, mermaid and the chokepoint gates all PASSED; `config
-integration` SKIPPED, as it is on `main` without a live config). The regression
-file was also run with `worker/deno/lib/milestone_branch_sync.ts` and
-`milestone_conflict_dedup.ts` checked out at `origin/main`: `FAILED | 1 passed |
-4 failed` — the four security cases fail against the unfixed code and the
-"#2214 still works" case passes, then all five pass after the fix.
+markdownlint, semgrep, mermaid and the chokepoint gates all PASSED;
+`config
+integration` SKIPPED, as it is on `main` without a live config). The
+regression file was also run with `worker/deno/lib/milestone_branch_sync.ts` and
+`milestone_conflict_dedup.ts` checked out at `origin/main`:
+`FAILED | 1 passed |
+4 failed` — the four security cases fail against the
+unfixed code and the "#2214 still works" case passes, then all five pass after
+the fix.
 
 ## Acceptance Criteria
 
@@ -77,15 +80,15 @@ file was also run with `worker/deno/lib/milestone_branch_sync.ts` and
   label, so #2214's behaviour is preserved — evidence:
   `worker/deno/tests/milestone_sync_escalation_author_2231_test.ts::escalateSyncConflict - a fleet-authored marker still clears the needs-human it applied (Issue #2231)`
   — reviewer: met
-- **met** — regression test in `worker/deno/tests/` drives `escalateSyncConflict`
-  / `clearEarlierSyncEscalation` through an injected `ghCommandFn`, asserts no
-  `--remove-label` call for the forged-author case, and fails against the current
-  code — evidence: the forged-author case above, observed failing with the lib
-  files at `origin/main` — reviewer: met — reason: the reviewer noted that as
-  committed the file also failed to *load* on `main`, because it imported a
-  symbol this branch adds; that import and its two unit cases moved to
-  `worker/deno/tests/alert_dedup_author_verification_test.ts`, so the red run now
-  shows four clean assertion failures rather than a load error.
+- **met** — regression test in `worker/deno/tests/` drives
+  `escalateSyncConflict` / `clearEarlierSyncEscalation` through an injected
+  `ghCommandFn`, asserts no `--remove-label` call for the forged-author case,
+  and fails against the current code — evidence: the forged-author case above,
+  observed failing with the lib files at `origin/main` — reviewer: met — reason:
+  the reviewer noted that as committed the file also failed to _load_ on `main`,
+  because it imported a symbol this branch adds; that import and its two unit
+  cases moved to `worker/deno/tests/alert_dedup_author_verification_test.ts`, so
+  the red run now shows four clean assertion failures rather than a load error.
 - **met** — `./quality.sh` passes — evidence: full gate run,
   `Result: PASSED (with skipped checks)` — reviewer: met
 - **unrequested** — two rows added to the marker-driven-actions table in
@@ -120,9 +123,9 @@ file was also run with `worker/deno/lib/milestone_branch_sync.ts` and
   ``gh issue view returned no `comments` array``, as its sibling already did.
 - **violation** — test coverage: the new exported projection had no test of its
   own — evidence: `worker/deno/lib/milestone_conflict_dedup.ts:129` (as first
-  written) — reason: fixed in this diff; both author shapes, a missing author, an
-  unreadable author, non-object entries and a non-array payload are covered in
-  `worker/deno/tests/alert_dedup_author_verification_test.ts`.
+  written) — reason: fixed in this diff; both author shapes, a missing author,
+  an unreadable author, non-object entries and a non-array payload are covered
+  in `worker/deno/tests/alert_dedup_author_verification_test.ts`.
 - **violation** — the PR summary file was absent when the review ran — evidence:
   `docs/archive/pr-summaries/pr-summary-2231.md` — reason: fixed; this is that
   file, and it states the regression-test linkage.
@@ -135,29 +138,29 @@ file was also run with `worker/deno/lib/milestone_branch_sync.ts` and
   change the issue did not ask for.
 - **clean** — Australian English throughout the added lines; tests call real
   exported functions through a `gh` stub and assert on the resulting label edits
-  and comment bodies, with no source-grepping; no existing test case or assertion
-  was removed, and each modified suite says why the commenter was named; the fail
-  direction is stated per site with its own `unverifiedOutcome` sentence, and the
-  unresolved-fleet path is logged and pinned by a test; every new export carries a
-  doc comment; `SECURITY.md` gains both sites in the author-check table; no hidden
-  paths staged; commits reference Issue #2231 and carry the run-id trailer; the
-  new helper went into the small dedup module rather than the 2,100-line sync
-  module.
+  and comment bodies, with no source-grepping; no existing test case or
+  assertion was removed, and each modified suite says why the commenter was
+  named; the fail direction is stated per site with its own `unverifiedOutcome`
+  sentence, and the unresolved-fleet path is logged and pinned by a test; every
+  new export carries a doc comment; `SECURITY.md` gains both sites in the
+  author-check table; no hidden paths staged; commits reference Issue #2231 and
+  carry the run-id trailer; the new helper went into the small dedup module
+  rather than the 2,100-line sync module.
 
 Two risks the reviewers raised, recorded rather than fixed here. On a repository
 with neither `service_accounts` nor `fleet_pr_authors` configured, the label
 clear now fails closed, so #2214's automatic `needs-human` clear no longer
 happens there — the harmless direction, named in the log every time. And
-`resolveAlertDedupAuthors` reads `CONFIG_PATH` only, never `CONFIG_FILE`: that is
-pre-existing behaviour shared with every other caller of the helper, not
+`resolveAlertDedupAuthors` reads `CONFIG_PATH` only, never `CONFIG_FILE`: that
+is pre-existing behaviour shared with every other caller of the helper, not
 something this diff introduces.
 
 ## Test Plan
 
 - Added `worker/deno/tests/milestone_sync_escalation_author_2231_test.ts`:
   - `escalateSyncConflict - a sync-conflict marker planted by a non-fleet commenter does not strip needs-human (Issue #2231)`
-    — the regression case: it reproduces the flaw, fails against the unfixed code
-    and passes after the fix.
+    — the regression case: it reproduces the flaw, fails against the unfixed
+    code and passes after the fix.
   - `escalateSyncConflict - a fleet-authored marker still clears the needs-human it applied (Issue #2231)`
     — #2214's behaviour is preserved.
   - `escalateSyncConflict - an unresolved fleet identity leaves the label alone (Issue #2231)`
@@ -168,7 +171,8 @@ something this diff introduces.
     — a planted marker no longer suppresses the analysis.
 - Added to `worker/deno/tests/alert_dedup_author_verification_test.ts`:
   `parseIssueViewCommentRows - keeps both author shapes and drops what cannot be read`
-  and `parseIssueViewCommentRows - a payload that is not an array yields no rows`.
+  and
+  `parseIssueViewCommentRows - a payload that is not an array yields no rows`.
 - Updated, with no case or assertion removed — each now names its commenter,
   because an unattributed marker is no longer evidence:
   `milestone_sync_success_notice_2214_test.ts`,

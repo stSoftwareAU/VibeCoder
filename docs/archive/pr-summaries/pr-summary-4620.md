@@ -64,11 +64,11 @@ one gap per not-`fixed` verdict, so a reply that leaves the defect out of
   (observed, then restored); the former input-only assertion was replaced.
 - `deno task test:unit` on both files: 37 passed, 0 failed after restoration.
 - The local quality gate passes formatter, linter, whole-tree type checking,
-  Markdown lint, Mermaid and completeness checks. Its full test suite crashes
-  in Deno with "pledge test permissions called before restoring previous
-  pledge"; a separate full unit-suite run reproduces that runtime panic.
-  Semgrep and Checkov cannot run: neither tool nor its container runtime/image
-  is available. Config integration is skipped because `.config.json` is absent.
+  Markdown lint, Mermaid and completeness checks. Its full test suite crashes in
+  Deno with "pledge test permissions called before restoring previous pledge"; a
+  separate full unit-suite run reproduces that runtime panic. Semgrep and
+  Checkov cannot run: neither tool nor its container runtime/image is available.
+  Config integration is skipped because `.config.json` is absent.
 - Twin copies: the wording appears only in SKILL.md
   (`git grep "leave it out of"`); the brief is unchanged.
 

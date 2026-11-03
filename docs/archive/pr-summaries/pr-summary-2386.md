@@ -24,8 +24,8 @@ already reads. Closes #2386.
 - `worker/deno/lib/issue_worker_types.ts`, `issue_worker.ts`,
   `run_core_production_deps.ts` — the hops between the phase state and the scan
   loop: `WorkOnIssueResult.rtk`, the one-line lift of `state.rtkOutput` beside
-  the `codegraph` lift, and the one-line copy onto the `processIssue` value
-  (not for an expected skip, exactly as `codegraph`).
+  the `codegraph` lift, and the one-line copy onto the `processIssue` value (not
+  for an expected skip, exactly as `codegraph`).
 - `docs/CALLBACKS.md` — the block in the example document, three rows after
   `VIBECODER_CODEGRAPH_QUERIES`, a paragraph beside the `graft`/`codegraph`
   ones, and a reference row. `docs/CONFIGURATION.md` — the three scalars added
@@ -47,8 +47,8 @@ Only the **issue (implementation) path** records an RTK outcome on this branch
 (#2383). The planning, question, PR-feedback and CI-fix processors do not call
 the RTK module until #2384 lands, so their runs — and any run that ended before
 the preparation — publish the default `{ "enabled": false, "status": "off" }`.
-`docs/CALLBACKS.md` says so: `off` means the switch was off *or nothing was
-recorded*. Unlike CodeGraph's `codegraphNotRun`, no switched-on fallback was
+`docs/CALLBACKS.md` says so: `off` means the switch was off _or nothing was
+recorded_. Unlike CodeGraph's `codegraphNotRun`, no switched-on fallback was
 added here: the issue's acceptance criterion asks for the plain `off` default,
 and until #2384 lands a `failed` fallback would mislabel every processor run on
 a switched-on host.
@@ -94,49 +94,62 @@ Added in review. As first written, an issue run on a **switched-on** host that
 ended before RTK was prepared (a refused claim, an early exit) published
 `{ enabled: false, status: "off" }`. The trial separates enabled runs from
 control runs by this block alone, so that archived an enabled host's run as a
-control run — the fabricated-`false` trap the `graft` block documents and
-avoids (#2104). `issue_worker.ts` now lifts
+control run — the fabricated-`false` trap the `graft` block documents and avoids
+(#2104). `issue_worker.ts` now lifts
 `state.rtkOutput ?? { status: "off", enabled: ctx.config.rtkOutput.enabled }`,
-exactly as it does for Graft. Pinned by `#2386 - a run that ended before RTK
-was prepared states the host's real switch`, for the switch on **and** off,
-through the real `workOnIssue`; both were red first.
+exactly as it does for Graft. Pinned by
+`#2386 - a run that ended before RTK
+was prepared states the host's real switch`,
+for the switch on **and** off, through the real `workOnIssue`; both were red
+first.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — the run callback document emits `rtk: { enabled, status[,
-  savedTokens] }` on every run, and `{ enabled: false, status: "off" }` when
-  nothing was recorded (the issue names the builder
-  `buildIssueRunCallbackDocument`; in the code it is
-  `buildCallbackContextDocument`) — evidence: `document.rtk =
+- **met** — the run callback document emits
+  `rtk: { enabled, status[,
+  savedTokens] }` on every run, and
+  `{ enabled: false, status: "off" }` when nothing was recorded (the issue names
+  the builder `buildIssueRunCallbackDocument`; in the code it is
+  `buildCallbackContextDocument`) — evidence:
+  `document.rtk =
   rtkBlock(context.rtk)` is unconditional
   (`worker/deno/lib/run_callbacks.ts:557`), `rtkBlock` defaults to `RTK_OFF` and
   adds `savedTokens` only when defined (`run_callbacks.ts:599-606`), and the
   context builder sets `rtk: run.rtk ?? RTK_OFF`
-  (`worker/deno/lib/run_callback_context.ts:226`); pinned by `#2386 - the rtk
+  (`worker/deno/lib/run_callback_context.ts:226`); pinned by
+  `#2386 - the rtk
   block carries enabled and status for every status, and savedTokens only when
-  read`, `#2386 - a run that reported no RTK preparation is explicitly off,
-  never absent` and `run_callback_context - the rtk block is on every context,
-  off when the run supplied nothing`. Only the issue path records an outcome
-  until #2384 lands; every other run kind publishes the `off` default —
-  reviewer: met
+  read`,
+  `#2386 - a run that reported no RTK preparation is explicitly off,
+  never absent`
+  and
+  `run_callback_context - the rtk block is on every context,
+  off when the run supplied nothing`.
+  Only the issue path records an outcome until #2384 lands; every other run kind
+  publishes the `off` default — reviewer: met
 - **met** — `VIBECODER_RTK_ENABLED` and `VIBECODER_RTK_STATUS` are always
   exported; `VIBECODER_RTK_SAVED_TOKENS` only when present — evidence:
   `worker/deno/lib/run_callbacks.ts:727-730`, where `put()` drops an undefined
-  value; pinned by `#2386 - the rtk scalars are exported, the saved-token figure
-  only when the run has it`, which asserts the key is **not in** the environment
-  for `ok`-without-figure, `failed`, `unsupported`, `off` and an absent block,
-  and is `"0"` for a measured zero; and end to end by `#2386 - a switched-on
-  host without rtk reports failed and no figure at all` — reviewer: met
+  value; pinned by
+  `#2386 - the rtk scalars are exported, the saved-token figure
+  only when the run has it`,
+  which asserts the key is **not in** the environment for `ok`-without-figure,
+  `failed`, `unsupported`, `off` and an absent block, and is `"0"` for a
+  measured zero; and end to end by
+  `#2386 - a switched-on
+  host without rtk reports failed and no figure at all`
+  — reviewer: met
 - **met** — `docs/CALLBACKS.md` documents all three;
   `callback_schema_compat_test.ts` passes without a schema version bump —
   evidence: rows at `docs/CALLBACKS.md:511-513`, paragraph at
   `docs/CALLBACKS.md:587`; `CALLBACK_SCHEMA_VERSION` is untouched in this diff
-  and `#2386 - the block is additive: the schema version and every earlier field
-  and scalar are untouched` asserts `assertEquals(CALLBACK_SCHEMA_VERSION, 2)`
-  beside the existing #2100, #2104 and #2162 assertions of the same, all passing
-  — reviewer: met
+  and
+  `#2386 - the block is additive: the schema version and every earlier field
+  and scalar are untouched`
+  asserts `assertEquals(CALLBACK_SCHEMA_VERSION, 2)` beside the existing #2100,
+  #2104 and #2162 assertions of the same, all passing — reviewer: met
 - **met** — the follow-up issue exists and is linked from the PR summary —
   evidence: #2413, filed after `gh issue list --search` found no open match
   other than #2386 itself; see "Follow-up" above — reviewer: met

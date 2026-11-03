@@ -14,8 +14,7 @@ internal MythOS-style security audits (idle trigger, finding-issue format), see
 
 Use this process whenever someone posts an upstream advisory link (GHSA, CVE,
 vendor bulletin) and asks whether the Vibe Coder needs to react. Example
-precedent: →
- →.
+precedent: → →.
 
 ## Process
 
@@ -41,11 +40,11 @@ promptly so the worker or a human triager can pick it up.
 
 ### Automatic intake for Deno dependencies
 
-Renovate's `deno` manager is deliberately disabled, so it never
-raises a security-remediation PR for a JSR / `deno.land/x` dependency. To close
-that detect→react gap, the scheduled `deno audit` job in
+Renovate's `deno` manager is deliberately disabled, so it never raises a
+security-remediation PR for a JSR / `deno.land/x` dependency. To close that
+detect→react gap, the scheduled `deno audit` job in
 [`.github/workflows/dependency-audit.yml`](../.github/workflows/dependency-audit.yml)
-files a single tracking issue (label `dependency-audit-failure`) when a *weekly*
+files a single tracking issue (label `dependency-audit-failure`) when a _weekly_
 run fails — i.e. a known advisory has landed against a package already pinned in
 `deno.lock`. The notifier (`notify-audit-failure` command, backed by
 `worker/deno/lib/audit_failure_notifier.ts`) is idempotent: one open tracking
@@ -54,15 +53,15 @@ exactly like a human-filed intake and run the triage checklist below; the
 [emergency dependency override](#emergency-dependency-override) covers the bump
 itself.
 
-The audit is **fail-closed**: it runs without
-`--ignore-registry-errors`, so an advisory service that does not answer fails
-the job instead of exiting 0 having checked nothing. Two tracking issues are
-therefore possible, and they need different responses:
+The audit is **fail-closed**: it runs without `--ignore-registry-errors`, so an
+advisory service that does not answer fails the job instead of exiting 0 having
+checked nothing. Two tracking issues are therefore possible, and they need
+different responses:
 
-| Tracking issue title | What happened | What to do |
-| --- | --- | --- |
-| `🔴 Scheduled dependency audit failed for the deno ecosystem` | The audit ran and a package pinned in `deno.lock` has a known advisory. | Triage the advisory and bump the dependency (checklist below). |
-| `🔴 Scheduled dependency audit could not run for the deno ecosystem` | The advisory service did not answer — **nothing was audited**. | Confirm the service is back, re-run `dependency-audit.yml` via `workflow_dispatch`, and investigate runner egress if it persists. Do **not** restore `--ignore-registry-errors`. |
+| Tracking issue title                                                 | What happened                                                           | What to do                                                                                                                                                                       |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `🔴 Scheduled dependency audit failed for the deno ecosystem`        | The audit ran and a package pinned in `deno.lock` has a known advisory. | Triage the advisory and bump the dependency (checklist below).                                                                                                                   |
+| `🔴 Scheduled dependency audit could not run for the deno ecosystem` | The advisory service did not answer — **nothing was audited**.          | Confirm the service is back, re-run `dependency-audit.yml` via `workflow_dispatch`, and investigate runner egress if it persists. Do **not** restore `--ignore-registry-errors`. |
 
 ## 2. Triage checklist
 
@@ -105,8 +104,8 @@ For each advisory, answer all of:
 The repo quarantines new dependency releases for **24 hours** before they may be
 adopted — `renovate.json` `minimumReleaseAge: "24 hours"` for the ecosystems
 Renovate owns (npm, GitHub Actions), `deno.json` `minimumDependencyAge`
-(`age: "P1D"`) for Deno deps, and `VIBE_BUMP_QUARANTINE_HOURS` (default `24`) for
-`bump-deps.sh`. This window blunts the "publish a malicious version, get
+(`age: "P1D"`) for Deno deps, and `VIBE_BUMP_QUARANTINE_HOURS` (default `24`)
+for `bump-deps.sh`. This window blunts the "publish a malicious version, get
 auto-merged within minutes" attack, and it is the correct default.
 
 The same window is **wrong** in one specific case: a CVE in a current dependency
@@ -147,41 +146,44 @@ is a deliberate, recorded exception, not a routine merge.
 
 **After the upgrade.** Record the bypass in the [SECURITY.md](../SECURITY.md)
 "Known upstream advisories" entry (CVE id, active-exploitation evidence,
-approving maintainer, date) and **revert** any temporary `minimumReleaseAge: "0"`
-rule or `exclude` glob so the full 24h quarantine is restored for the next
-release. The override is a fast-lane for one package on one occasion, never a
-standing change.
+approving maintainer, date) and **revert** any temporary
+`minimumReleaseAge: "0"` rule or `exclude` glob so the full 24h quarantine is
+restored for the next release. The override is a fast-lane for one package on
+one occasion, never a standing change.
 
-This emergency path is purely about *expediting a legitimate fix* — it does not
+This emergency path is purely about _expediting a legitimate fix_ — it does not
 weaken the quarantine for any other dependency.
 
 **The CI-fix agent applies the same publish-age bypass automatically, and only
 when every release that clears the advisory is inside the window.** When a
-dependency audit (`deno audit`, `cargo audit`, or any check whose log reports
-a `GHSA-` or `RUSTSEC-` advisory) is red on a pull request the worker maintains,
+dependency audit (`deno audit`, `cargo audit`, or any check whose log reports a
+`GHSA-` or `RUSTSEC-` advisory) is red on a pull request the worker maintains,
 the CI-fix prompt (`prompts/ci_fix/prompt.md`, "Dependency audit failures")
 tells the agent to apply the advisory-clearing change — a direct bump, a
 `deno.json` / `package.json` override for a transitive npm entry, or a
-`Cargo.toml` `[patch]` or parent-crate bump — to the newest release outside
-the 24h window that clears the advisory; it is applied regardless of publish
-age only when every release that clears the advisory is still inside the
-window, the one case the emergency path above exists for: a fixed release
-inside the quarantine window (stSoftwareAU/VibeCoder#4471). Its **trigger**
-is narrower than the maintainer path above rather than the same: no judgement
-about active exploitation is made, and no maintainer approval is sought — a red audit naming an advisory against
-the version currently in the lockfile is the whole condition.
+`Cargo.toml` `[patch]` or parent-crate bump — to the newest release outside the
+24h window that clears the advisory; it is applied regardless of publish age
+only when every release that clears the advisory is still inside the window, the
+one case the emergency path above exists for: a fixed release inside the
+quarantine window (stSoftwareAU/VibeCoder#4471). Its **trigger** is narrower
+than the maintainer path above rather than the same: no judgement about active
+exploitation is made, and no maintainer approval is sought — a red audit naming
+an advisory against the version currently in the lockfile is the whole
+condition.
 
 The limit is the same as a maintainer's. The agent passes an explicit zero age
 for the advisory-clearing version only, and only in that all-in-window case —
-the fixed package, or the parent crate's version that carries the fix (`deno outdated --update
---minimum-dependency-age=0 <pkg>`; on Cargo, `cargo update -p <parent>
---precise <version>` after raising its requirement) — and does **not** touch
-the repository's `minimumDependencyAge` config or its `exclude` globs, so there
-is no temporary rule to revert afterwards. Every other version the change moves
-in the lockfile, including the crates a parent bump pulls in, keeps the full
-24h floor: the agent reads the diff of every lockfile at any depth
-(`git diff -- '*Cargo.lock' '*deno.lock'` from the repository root, since a
-bare `Cargo.lock deno.lock` pathspec misses a nested lockfile such as
+the fixed package, or the parent crate's version that carries the fix
+(`deno outdated --update
+--minimum-dependency-age=0 <pkg>`; on Cargo,
+`cargo update -p <parent>
+--precise <version>` after raising its requirement) —
+and does **not** touch the repository's `minimumDependencyAge` config or its
+`exclude` globs, so there is no temporary rule to revert afterwards. Every other
+version the change moves in the lockfile, including the crates a parent bump
+pulls in, keeps the full 24h floor: the agent reads the diff of every lockfile
+at any depth (`git diff -- '*Cargo.lock' '*deno.lock'` from the repository root,
+since a bare `Cargo.lock deno.lock` pathspec misses a nested lockfile such as
 `worker/deno/deno.lock`) and holds each one at its newest release outside the
 window (`cargo update -p <crate> --precise <version>`)
 (stSoftwareAU/VibeCoder#4437). Only a version with an older release that
@@ -192,17 +194,16 @@ together, such as `arrow-*` with `parquet`, or `@aws-sdk/*`), is part of the
 advisory-clearing change: the agent takes the oldest release that satisfies the
 requirement and names it, with its age, in the `.pr_response_message` reply.
 
-The CI-fix prompt tells the agent that a red audit is fixed in the PR even
-when the base is red — the same advisory red on the base branch is never
-deferred on a `Depends on` line
+The CI-fix prompt tells the agent that a red audit is fixed in the PR even when
+the base is red — the same advisory red on the base branch is never deferred on
+a `Depends on` line
 ([Dependency audit failures](../prompts/ci_fix/prompt.md#dependency-audit-failures)).
-Removing or replacing the dependency edge that pulls the vulnerable package
-in also counts as a fix; an `--ignore` or allow-list entry, or an edit to the
-audit workflow or audit command, never does. The agent removes the
-dependency itself — replacing it with a maintained alternative, or vendoring
-the part the code uses with the fix applied — only when no edge can be
-upgraded, removed or replaced, and it never adds `needs-human`
-(stSoftwareAU/VibeCoder#4304).
+Removing or replacing the dependency edge that pulls the vulnerable package in
+also counts as a fix; an `--ignore` or allow-list entry, or an edit to the audit
+workflow or audit command, never does. The agent removes the dependency itself —
+replacing it with a maintained alternative, or vendoring the part the code uses
+with the fix applied — only when no edge can be upgraded, removed or replaced,
+and it never adds `needs-human` (stSoftwareAU/VibeCoder#4304).
 
 That is the prompt's instruction, not a worker guarantee. Until
 stSoftwareAU/VibeCoder#3141 lands, the worker does not enforce this exception:
@@ -226,6 +227,6 @@ advisory has a precedent format to follow.
 
 ## Examples
 
-| Advisory                                          | Intake                                                          | Audit                                                           | Documentation                                                   |
-| ------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------- |
-| CVE-2026-3854 (GitHub git push command injection) | |  | |
+| Advisory                                          | Intake | Audit | Documentation |
+| ------------------------------------------------- | ------ | ----- | ------------- |
+| CVE-2026-3854 (GitHub git push command injection) |        |       |               |

@@ -13,9 +13,8 @@ sub-issue of #5 can assume an already-trusted spec. Closes #69.
 - `worker/deno/lib/config_unknown_keys.ts` — `container_tools` registered in
   `KNOWN_CONFIG_KEYS`, so a valid config no longer warns about an unknown key
   and the near-miss suggester recognises typos of it.
-- `worker/deno/lib/container_tools_config.ts` (new) —
-  `parseContainerTools()` / `assertContainerTools()` reject, naming the
-  offending tool id and field:
+- `worker/deno/lib/container_tools_config.ts` (new) — `parseContainerTools()` /
+  `assertContainerTools()` reject, naming the offending tool id and field:
   - a malformed or duplicate `id` (same rule as a provider id in
     `container/install-providers.sh`);
   - a missing `version`;
@@ -58,26 +57,28 @@ failed**.
 pre-existing failures unrelated to this change**, all reproduced on the
 unmodified branch tip before any edit:
 
-- `tests/fleet_health_test.ts` — `buildFleetHealthConfig - container mode clones
+- `tests/fleet_health_test.ts` —
+  `buildFleetHealthConfig - container mode clones
   under the work-dir mount`
-- `tests/optional_feature_env_test.ts` — `applyOptionalFeatureEnv - reads the
+- `tests/optional_feature_env_test.ts` —
+  `applyOptionalFeatureEnv - reads the
   file and sets what is missing…`
-- `tests/setup_workdir_reminder_test.ts` — five
-  `remind_obsolete_host_work_dirs` cases
+- `tests/setup_workdir_reminder_test.ts` — five `remind_obsolete_host_work_dirs`
+  cases
 
-Totals with this change: `14356 passed | 7 failed | 32 ignored` — the same seven.
+Totals with this change: `14356 passed | 7 failed | 32 ignored` — the same
+seven.
 
 ## Test Plan
 
 New suite `worker/deno/tests/container_tools_config_test.ts` (27 cases), one per
 rejection rule plus the happy paths:
 
-- happy path: a full spec parses; optional fields default
-  (`stripComponents: 0`, `bin: []`, `env: {}`); a single-architecture and a
-  `noarch` deployment parse; `sha256` normalises to lower case; an absent key
-  yields `[]`.
-- rejections: non-array block; non-object entry; malformed `id`
-  (`Java`, `java_21`, `1java`, `""`, `../etc`, `java 21`); duplicate `id`;
+- happy path: a full spec parses; optional fields default (`stripComponents: 0`,
+  `bin: []`, `env: {}`); a single-architecture and a `noarch` deployment parse;
+  `sha256` normalises to lower case; an absent key yields `[]`.
+- rejections: non-array block; non-object entry; malformed `id` (`Java`,
+  `java_21`, `1java`, `""`, `../etc`, `java 21`); duplicate `id`;
   missing/empty/non-string `version`; unknown architecture key in `url` and in
   `sha256`; `url` without matching `sha256`; `sha256` without matching `url`;
   missing or empty `url`/`sha256` block; non-`https:` URL (`http:`, `file:`,

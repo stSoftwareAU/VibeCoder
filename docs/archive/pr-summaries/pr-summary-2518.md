@@ -2,16 +2,18 @@
 
 ## Summary
 
-`extractLabelValues` only ever read labels being *applied* — `--add-label`,
+`extractLabelValues` only ever read labels being _applied_ — `--add-label`,
 `--label`, `-l`, and `labels[]=` on `gh api`. Every `gh label` verb carries its
 target **positionally** (`gh label delete top-priority`), so the denylist saw an
-empty list and the call fell through to the `if (!info.repo) return { allowed:
-true }` tail. An agent could therefore delete, rename or redefine every reserved
-workflow label in the claimed repo — `top-priority`, `work-on`, `planning`,
-`refine-issue`, `question`, `best-model`, `quorum`, … — and, worse, destroy
-`needs-human` itself, withdrawing the escalation route from every later run. That
-is the classic CWE-184 incomplete-denylist shape: the guard enumerated one
-spelling of the capability and missed the others.
+empty list and the call fell through to the
+`if (!info.repo) return { allowed:
+true }` tail. An agent could therefore
+delete, rename or redefine every reserved workflow label in the claimed repo —
+`top-priority`, `work-on`, `planning`, `refine-issue`, `question`, `best-model`,
+`quorum`, … — and, worse, destroy `needs-human` itself, withdrawing the
+escalation route from every later run. That is the classic CWE-184
+incomplete-denylist shape: the guard enumerated one spelling of the capability
+and missed the others.
 
 Two new scanners feed the **same** `FORBIDDEN_LABELS` set through the same
 `normaliseLabelName` folding as the flag path, and share its single
@@ -21,14 +23,14 @@ Two new scanners feed the **same** `FORBIDDEN_LABELS` set through the same
   `gh label create|edit|delete` plus `gh label edit`'s `-n`/`--name` rename
   target in all five pflag spellings (`-n X`, `--name X`, `--name=X`, `-n=X`,
   `-nX`). Values of `-c`/`--color`, `-d`/`--description` and `-R`/`--repo` are
-  skipped, so a *description* that merely mentions a reserved label stays
+  skipped, so a _description_ that merely mentions a reserved label stays
   allowed; `--` is honoured as end-of-flags.
 - `apiLabelDefinitionNames` — the REST spelling of the identical capability.
   `gh api -X DELETE repos/o/r/labels/top-priority` is a one-line rewrite of the
   attack, so the guard reads `repos/{owner}/{repo}/labels[/{name}]` on
   POST/PATCH/PUT/DELETE: the `{name}` path segment (percent-decoded), `name=` on
   a create, and `new_name=` on a rename. The issue/PR sub-resource
-  (`…/issues/5/labels`) is deliberately excluded — that is label *application*,
+  (`…/issues/5/labels`) is deliberately excluded — that is label _application_,
   already covered by `extractLabelValues`.
 
 `isPermittedEscalation` is deliberately **not** extended to the definition path:
@@ -53,12 +55,13 @@ flowchart TD
 
 The issue asked for `create/edit/delete/clone`. `clone` is excluded on purpose,
 and `worker/deno/tests/label_denylist_union_test.ts` asserts
-`gh label clone owner/other-repo` stays allowed. Verified against `gh label
-clone --help`: its positional is a `<source-repository>`, never a label name, and
-it only creates labels the destination lacks — labels absent from the source are
-neither deleted nor modified. So `clone` can neither rename nor destroy a
-reserved label, and comparing a repo slug against the denylist would refuse
-legitimate clones while protecting nothing.
+`gh label clone owner/other-repo` stays allowed. Verified against
+`gh label
+clone --help`: its positional is a `<source-repository>`, never a
+label name, and it only creates labels the destination lacks — labels absent
+from the source are neither deleted nor modified. So `clone` can neither rename
+nor destroy a reserved label, and comparing a repo slug against the denylist
+would refuse legitimate clones while protecting nothing.
 
 ## Evidence
 
@@ -80,7 +83,7 @@ and passes after the fix.**
 - After the fix:
   `deno test --allow-read --allow-env --allow-write --allow-run tests/label_denylist_union_test.ts tests/gh_guard_decision_test.ts tests/gh_pflag_spellings_test.ts < /dev/null`
   → **`ok | 101 passed | 0 failed (149ms)`**.
-- In both directions the *permitted* tests passed with the fix reverted as well,
+- In both directions the _permitted_ tests passed with the fix reverted as well,
   so the new refusals introduce no false positives.
 
 Added the regression test
@@ -93,18 +96,20 @@ the fix. Both are declared in this branch's added lines.
 
 ### The original trigger is closed, with no trivial bypass
 
-`gh label edit any-label -n top-priority`, `gh label edit any-label
---name=top-priority` and `gh label delete top-priority` — the three vectors the
-issue named — are all refused with `WORKER_LABEL_REFUSED`, and so is every
-neighbouring spelling a one-line rewrite would reach:
+`gh label edit any-label -n top-priority`,
+`gh label edit any-label
+--name=top-priority` and `gh label delete top-priority`
+— the three vectors the issue named — are all refused with
+`WORKER_LABEL_REFUSED`, and so is every neighbouring spelling a one-line rewrite
+would reach:
 
 - all three positional verbs (`create`, `edit`, `delete`);
 - all five rename spellings (`-n X`, `--name X`, `--name=X`, `-n=X`, `-nX`);
 - case and zero-width folding (`TOP-PRIORITY`) via `normaliseLabelName`;
 - a flag placed before the positional, `--` end-of-flags, boolean `-f`/`--yes`
   (which must not swallow the positional), and attached `-Rowner/repo`;
-- **every** entry of `FORBIDDEN_LABELS`, asserted by sweeping the whole union and
-  requiring an empty list of survivors;
+- **every** entry of `FORBIDDEN_LABELS`, asserted by sweeping the whole union
+  and requiring an empty list of survivors;
 - the REST spelling: `DELETE …/labels/<name>`, `POST …/labels -f name=`,
   `PATCH …/labels/<n> -f new_name=`, percent-encoded names (`best%2Dmodel`),
   `gh api`'s own `{owner}/{repo}` placeholder form, and the attached-value

@@ -1,8 +1,8 @@
 ## Summary
 
 Added `retro`, the eighteenth idle-task template: a **suggestion-only**
-retrospective that reads a finished piece of work in the target repository —
-the most recent merged PR with enough evidence, its issue, its commits, and its
+retrospective that reads a finished piece of work in the target repository — the
+most recent merged PR with enough evidence, its issue, its commits, and its
 review and check feedback — and files **at most one** issue listing environment
 improvement candidates in severity order, each naming the surface it would
 change. It edits nothing and never raises a PR. Closes #664.
@@ -14,9 +14,9 @@ The idea comes from a review of the `retro` skill in
 note): navigation, automated checks, coding standards, steering-file size, and
 information access. **Tool economy** and **no-ops** are explicitly out of scope
 and the prompt says so — both need the session transcript, which merged
-artefacts do not carry, and the no-op test is already owned by the prompt
-rubric (#659, which landed first). The "reviewer, not implementer" argument in
-the issue was left alone: the issue itself says it deserves its own issue rather
+artefacts do not carry, and the no-op test is already owned by the prompt rubric
+(#659, which landed first). The "reviewer, not implementer" argument in the
+issue was left alone: the issue itself says it deserves its own issue rather
 than riding on this one.
 
 **Duplicate suppression** uses the framework's standard two-line contract, so
@@ -58,8 +58,8 @@ env -u PROMPTS_DIR -u VIBE_BASE_DIR deno test --allow-all tests/ < /dev/null
   veto, `runTask` happy path / scan failure / unexpected throw / empty diff, the
   repo-wide title lookup reaching the scan runner and degrading to `[]` on a
   `gh` failure, and claim-handler dispatch.
-- **Extended** `worker/deno/tests/idle_task_scan_dedup_conformance_test.ts` —
-  a `retro` harness, so the framework's dedup contract is enforced against it
+- **Extended** `worker/deno/tests/idle_task_scan_dedup_conformance_test.ts` — a
+  `retro` harness, so the framework's dedup contract is enforced against it
   rather than the template being implicitly skipped.
 - **Extended** `idle_task_cross_repo_body_refs_test.ts` (the prompt body is
   filed cross-repo, so it must carry no bare `#NNN` refs or internal paths),
@@ -76,6 +76,5 @@ env -u PROMPTS_DIR -u VIBE_BASE_DIR deno test --allow-all tests/ < /dev/null
 - Wiring: side-effect imports (claim handler, idle filer, wrapper seeder,
   freshness report), the backfill title map, `idle_task_template_names.ts`,
   `prompt_manager.ts` placeholders, and the `retro` content label.
-- Docs: framework registry row, README documentation table,
-  seventeen → eighteen counts in `DESIGN-PRINCIPLES.md` and
-  `docs/IDLE-TASK-FRAMEWORK.md`.
+- Docs: framework registry row, README documentation table, seventeen → eighteen
+  counts in `DESIGN-PRINCIPLES.md` and `docs/IDLE-TASK-FRAMEWORK.md`.

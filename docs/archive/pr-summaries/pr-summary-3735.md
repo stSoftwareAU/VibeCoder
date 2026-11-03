@@ -26,18 +26,18 @@ milestone.
 ### Essential Design Decisions
 
 - `workerGateCategoryOf` reads anchored raw prefixes; `isWorkerGateCategory`
-  narrows the existing category union. A new prefix is one registry entry;
-  a new category also extends the existing union.
+  narrows the existing category union. A new prefix is one registry entry; a new
+  category also extends the existing union.
 - Typed source categories remain authoritative. `classifyCodingFailure` and
   infrastructure retry use raw diagnosis only without a supplied category;
   `detectHostFault` preserves declared causes before consulting raw markers.
-- `isWorkerGateFailureRecord` recognises an anchored headed record whose
-  display category belongs to the registry. Both release sweeps also retain
+- `isWorkerGateFailureRecord` recognises an anchored headed record whose display
+  category belongs to the registry. Both release sweeps also retain
   `isSummaryOrQualityFailureRecord`, preserving substantive verifier records
   independently of the registry. A category quoted deeper in a record cannot
   forge its worker-written head.
-- `PRE_PUSH_LOOKUP_FAILED_MARKER` is not registered: failed branch-state
-  lookup remains infrastructure `push_failure`.
+- `PRE_PUSH_LOOKUP_FAILED_MARKER` is not registered: failed branch-state lookup
+  remains infrastructure `push_failure`.
 
 ### Undiscoverable Facts
 
@@ -53,11 +53,11 @@ label writers and release sweeps. Unmarked controls demonstrate that real
 infrastructure and repository refusals retain their original behaviour.
 
 The integration regressions cover declared source causes despite a quoted
-registered marker, and substantive verifier records through both release
-sweeps. A minimal headed-record fixture also exercises the refusal guard
-without the current writer's follow-up advice mentioning quality checks.
-Every earlier assertion remains; the existing raw-classifier call now supplies
-its explicit raw-provenance argument required by main.
+registered marker, and substantive verifier records through both release sweeps.
+A minimal headed-record fixture also exercises the refusal guard without the
+current writer's follow-up advice mentioning quality checks. Every earlier
+assertion remains; the existing raw-classifier call now supplies its explicit
+raw-provenance argument required by main.
 
 ```mermaid
 flowchart TD
@@ -74,11 +74,11 @@ flowchart TD
 `isSummaryOrQualityFailureRecord`; updated: `CODING-STANDARDS.md`,
 `docs/INTERNALS.md`, `docs/workflows/issue-processing.md` and
 `prompts/coding_guidelines/prompt.md`; section:
-`docs/INTERNALS.md#worker-gate-markers-are-one-registry-issue-3735`;
-siblings: `SUMMARY_RULE_GATE_MARKER`, `SECURITY_FIX_GATE_MARKER`,
-`PRE_PUSH_GATE_MARKER` remain the registered gate set; the separate
-`PRE_PUSH_LOOKUP_FAILED_MARKER` retains its infrastructure role.
-Existing source-category guidance and raw-diagnosis compatibility remain valid.
+`docs/INTERNALS.md#worker-gate-markers-are-one-registry-issue-3735`; siblings:
+`SUMMARY_RULE_GATE_MARKER`, `SECURITY_FIX_GATE_MARKER`, `PRE_PUSH_GATE_MARKER`
+remain the registered gate set; the separate `PRE_PUSH_LOOKUP_FAILED_MARKER`
+retains its infrastructure role. Existing source-category guidance and
+raw-diagnosis compatibility remain valid.
 
 ## Test Plan
 
@@ -98,10 +98,10 @@ Existing source-category guidance and raw-diagnosis compatibility remain valid.
   sources were restored before the final passing run.
 - PR #4003 CI integration also removes an overwritten empty map in the drift
   checker and aligns the adoption test fake with its two-argument callback
-  contract. The security
-  sweep baseline narrowly records the deliberate template-interpolation source
-  fixture in `failure_diagnosis_test.ts`; its literal text is parsed, never
-  evaluated. No assertion or scanner rule is removed.
+  contract. The security sweep baseline narrowly records the deliberate
+  template-interpolation source fixture in `failure_diagnosis_test.ts`; its
+  literal text is parsed, never evaluated. No assertion or scanner rule is
+  removed.
 - Adoption, drift-check and security-sweep regression suites pass: 150 tests.
   The baseline parser validates every citation; a distant same-rule control
   remains unbaselined. The module type check, changed-source lint and formatting

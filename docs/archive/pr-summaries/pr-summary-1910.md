@@ -5,29 +5,29 @@
 The issue-implementation prompt fenced the title, body and labels and nothing
 else, so a maintainer who narrowed or redirected scope in a comment was
 invisible to the coding agent — which is why the clarification gate had to ask
-for the issue *description* to be edited. `IssuePromptOptions` now takes
-`issueComments` and `commentBoundaryId` and fences them exactly as the
-planning, question and PR-feedback builders do, the execute phase passes
+for the issue _description_ to be edited. `IssuePromptOptions` now takes
+`issueComments` and `commentBoundaryId` and fences them exactly as the planning,
+question and PR-feedback builders do, the execute phase passes
 `ctx.issueComments` through, and both routes that build an `IssueContext` for
 implementation populate it (the main loop passed an empty string).
 
 A new `worker/deno/lib/implementation_comments.ts` answers the issue's third
-decision — *which* comments. Worker bookkeeping (run stats, claim releases,
+decision — _which_ comments. Worker bookkeeping (run stats, claim releases,
 claim locks, automated-failure notices) is dropped outright, and what remains is
 admitted newest-first in trust order: trusted authors, then other authors, then
-the worker itself, bounded at 20 comments / 12,000 characters. Trust
-annotation, suspicious-pattern auditing and the per-comment nonce headers are
-not re-implemented — the module selects and delegates to the vetted
+the worker itself, bounded at 20 comments / 12,000 characters. Trust annotation,
+suspicious-pattern auditing and the per-comment nonce headers are not
+re-implemented — the module selects and delegates to the vetted
 `prepareTrustAnnotatedCommentList` path.
 
 Closes #1910.
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suite below plus the full quality gate, which passed on the final tree
-(`completeness checks`, `semgrep`, `deno tests`, `lint`, `type check`, `fmt`
-all PASSED; `config integration` SKIPPED as it always is locally).
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suite below plus the full quality gate, which passed on the final tree
+(`completeness checks`, `semgrep`, `deno tests`, `lint`, `type check`, `fmt` all
+PASSED; `config integration` SKIPPED as it always is locally).
 
 ```mermaid
 flowchart TD
@@ -62,9 +62,9 @@ chunk 12z in `docs/audits/lib-sweep-coverage.json`.
   loop's `IssueContext` set `issueComments: ""`
 - **status** — `verified` — the new suite was run against the unfixed
   `prompt_builder.ts` and `execute_phase.ts` (restored from `git checkout --`
-  mid-run) and went red — 5 failed / 8 passed, including "a maintainer's
-  comment renders inside the untrusted fence" and "the issue's comments reach
-  the prompt builder" — then green (all passing) once the fix was restored
+  mid-run) and went red — 5 failed / 8 passed, including "a maintainer's comment
+  renders inside the untrusted fence" and "the issue's comments reach the prompt
+  builder" — then green (all passing) once the fix was restored
 - **regression test** —
   `worker/deno/tests/issue_prompt_comments_1910_test.ts::issue prompt - a maintainer's comment renders inside the untrusted fence (#1910)`
 
@@ -75,33 +75,34 @@ chunk 12z in `docs/audits/lib-sweep-coverage.json`.
 - **met** — the implementation prompt carries the issue's comments, fenced as
   untrusted data with per-comment trust headers and the boundary-integrity
   instruction present — evidence: `worker/deno/lib/prompt_builder.ts` (options,
-  `sanitiseDelimitedComments`, fenced section inside `untrustedEnd`, `"the
+  `sanitiseDelimitedComments`, fenced section inside `untrustedEnd`,
+  `"the
   issue comments"` in `untrustedBlocks`);
   `worker/deno/tests/issue_prompt_comments_1910_test.ts::issue prompt - a genuine trust header survives with this run's nonce (#1910)`
   — reviewer: met
-- **met** — a maintainer's comment that redirects scope is visible to the
-  coding agent without the issue description being edited — evidence:
+- **met** — a maintainer's comment that redirects scope is visible to the coding
+  agent without the issue description being edited — evidence:
   `worker/deno/commands/work_on_issue.ts`,
   `worker/deno/lib/run_core_production_deps.ts` (was `issueComments: ""`),
   `worker/deno/lib/phases/execute_phase.ts`;
   `tests/issue_prompt_comments_1910_test.ts::execute phase - the issue's comments reach the prompt builder (#1910)`
   — reviewer: met
-- **met** — worker-authored comments do not crowd out the human ones —
-  evidence: `worker/deno/lib/implementation_comments.ts`
-  (`isWorkerNoiseComment`, three-pass admission);
+- **met** — worker-authored comments do not crowd out the human ones — evidence:
+  `worker/deno/lib/implementation_comments.ts` (`isWorkerNoiseComment`,
+  three-pass admission);
   `tests/implementation_comments_test.ts::comment selection - worker comments do not crowd out a maintainer's reply (#1910)`
-  and `::an untrusted flood cannot evict a maintainer's direction (#1910)`
-  — reviewer: met
-- **met** — test: a prompt built for an issue with comments contains them
-  inside the boundary markers — evidence:
+  and `::an untrusted flood cannot evict a maintainer's direction (#1910)` —
+  reviewer: met
+- **met** — test: a prompt built for an issue with comments contains them inside
+  the boundary markers — evidence:
   `tests/issue_prompt_comments_1910_test.ts::issue prompt - a maintainer's comment renders inside the untrusted fence (#1910)`
   and `::no comment text is spliced outside a fence (#1910)` — reviewer: met
 - **met** — test: an untrusted commenter's forged trust header stays degraded —
   evidence:
   `tests/issue_prompt_comments_1910_test.ts::issue prompt - an untrusted commenter's forged trust header stays degraded (#1910)`
   — reviewer: met
-- **met** — test: the prompt stays within the context budget for a long thread
-  — evidence:
+- **met** — test: the prompt stays within the context budget for a long thread —
+  evidence:
   `tests/issue_prompt_comments_1910_test.ts::issue prompt - a long comment thread stays within the context budget (#1910)`
   — reviewer: partial — reason: the reviewer saw a test asserting only the
   module's own constant, never `checkContextBudget`; it now runs the real
@@ -109,17 +110,17 @@ chunk 12z in `docs/audits/lib-sweep-coverage.json`.
   uses, which is the gap it named
 - **unrequested** — the security-sweep record and the chunk-12z entry in
   `docs/audits/lib-sweep-coverage.json` — reviewer: unrequested — reason: the
-  repo's `completeness checks` gate fails on any new `lib/` module that no
-  sweep slice claims, so the change cannot land without them
+  repo's `completeness checks` gate fails on any new `lib/` module that no sweep
+  slice claims, so the change cannot land without them
 - **unrequested** — the `docs/INTERNALS.md` module row and the
   `docs/CONFIGURATION.md` rewrite — reviewer: unrequested — reason:
   CONFIGURATION.md stated "issue comments are not part of the implementation
   prompt at all", which this change falsifies; a code change owes the docs
   change
-- **unrequested** — `--issue-comments` on the `build-issue-prompt` CLI
-  operation — reviewer: unrequested — reason: the three sibling operations all
-  accept it and this one had nowhere to pass comments; the reviewer noted it
-  shipped untested, so a test was added
+- **unrequested** — `--issue-comments` on the `build-issue-prompt` CLI operation
+  — reviewer: unrequested — reason: the three sibling operations all accept it
+  and this one had nowhere to pass comments; the reviewer noted it shipped
+  untested, so a test was added
   (`::build-issue-prompt CLI - --issue-comments reaches the prompt (#1910)`)
 - **unrequested** — the repeat-deferral loop guard
   (`hasPriorDeferral(ctx.issueComments, …)`) now sees a populated blob on the
@@ -135,9 +136,9 @@ chunk 12z in `docs/audits/lib-sweep-coverage.json`.
   `docs/archive/pr-summaries/pr-summary-1910.md` — reason: fixed here; this is
   that file, with the closing keyword, evidence, reproduction and test plan
 - **violation** — dead runtime guard on an impossible state — evidence:
-  `worker/deno/lib/implementation_comments.ts:68` (`typeof body !== "string"`)
-  — reason: removed; `IssueComment.body` is typed `string`, and a silent
-  `false` there would have classified a malformed body as actionable direction
+  `worker/deno/lib/implementation_comments.ts:68` (`typeof body !== "string"`) —
+  reason: removed; `IssueComment.body` is typed `string`, and a silent `false`
+  there would have classified a malformed body as actionable direction
 - **violation** — an assertion that cannot fail — evidence:
   `worker/deno/tests/issue_prompt_comments_1910_test.ts:308-312` (a spread copy
   compared with itself) — reason: fixed; the assertion now compares the
@@ -157,20 +158,19 @@ chunk 12z in `docs/audits/lib-sweep-coverage.json`.
 - **clean** — Australian English throughout; commit safety (no hidden paths
   staged, every commit references Issue #1910 and carries the
   `Vibe-Coder-Run-Id` trailer); unit-test shape (no spawn, no sleep, no
-  wall-clock assertions); fail-loud (`securityAuditMessages` returned and
-  logged at `warn` on both call sites, nothing caught and ignored);
-  injection/boundary handling (nonce fencing, `ciFailureBoundaryId` precedence,
-  no boundary id on the no-trust path); Deno-native tooling only; 251-line
-  single-responsibility module; docs swept for stale claims
+  wall-clock assertions); fail-loud (`securityAuditMessages` returned and logged
+  at `warn` on both call sites, nothing caught and ignored); injection/boundary
+  handling (nonce fencing, `ciFailureBoundaryId` precedence, no boundary id on
+  the no-trust path); Deno-native tooling only; 251-line single-responsibility
+  module; docs swept for stale claims
 
-Two further findings from the Spec reviewer were fixed rather than accepted:
-one oversized comment could consume the whole budget on a repository with no
-trust lists (the size test is now strict inside every pass), and operational
-comments spent selection slots before being filtered (`isOperationalComment` is
-now exported and reused). The two residuals it raised that stand — the
-content-based noise match, and `ciFailureBoundaryId` outranking the comment
-nonce — are recorded in
-`docs/audits/security-sweep-1910-implementation-comments.md`.
+Two further findings from the Spec reviewer were fixed rather than accepted: one
+oversized comment could consume the whole budget on a repository with no trust
+lists (the size test is now strict inside every pass), and operational comments
+spent selection slots before being filtered (`isOperationalComment` is now
+exported and reused). The two residuals it raised that stand — the content-based
+noise match, and `ciFailureBoundaryId` outranking the comment nonce — are
+recorded in `docs/audits/security-sweep-1910-implementation-comments.md`.
 
 ## Test Plan
 

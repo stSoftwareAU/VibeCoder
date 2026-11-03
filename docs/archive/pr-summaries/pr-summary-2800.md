@@ -3,17 +3,18 @@
 ## Summary
 
 `stSoftwareAU/GRQ-AutoTrader` logged
-`work_on=2 stream_occupied=0 inversion_signal=true` on three consecutive
-cycles, yet the claim scan claimed nothing from that repository. The census
-did not model one gate the pool applies. While slot s2 held the repo's blank
-(no-milestone) stream on #1593, the host-local `BlankStreamLockRegistry`
-(Issue #2335) refused the idle slot every other no-milestone issue there, for
-**every** tier. The log line was `stream busy: … (blank) held by slot s2 on
-#1593`. The census exempts `top-priority` / `work-on` from `stream_occupied`
-(#2532), so it counted #1684 and #1659 as claimable.
+`work_on=2 stream_occupied=0 inversion_signal=true` on three consecutive cycles,
+yet the claim scan claimed nothing from that repository. The census did not
+model one gate the pool applies. While slot s2 held the repo's blank
+(no-milestone) stream on #1593, the host-local `BlankStreamLockRegistry` (Issue
+#2335) refused the idle slot every other no-milestone issue there, for **every**
+tier. The log line was `stream busy: … (blank) held by slot s2 on
+#1593`. The
+census exempts `top-priority` / `work-on` from `stream_occupied` (#2532), so it
+counted #1684 and #1659 as claimable.
 
-- `BlankStreamLockRegistry.heldRepos()` names the repos whose blank stream
-  this host holds.
+- `BlankStreamLockRegistry.heldRepos()` names the repos whose blank stream this
+  host holds.
 - The slot's idle hooks pass that list (`blankStreamHeldRepos`) to
   `runIdleDecisionCensus`. The end-of-cycle census passes `[]`, because every
   slot has drained by then.
@@ -33,8 +34,8 @@ flowchart LR
 
 ## Evidence
 
-This is a backend change with no UI. Each new test failed before its change
-and passed after it:
+This is a backend change with no UI. Each new test failed before its change and
+passed after it:
 
 - `tests/idle_decision_census_test.ts`: three #2800 tests.
   - A held blank stream moves `work_on` issues to `stream_occupied` and clears
@@ -52,9 +53,10 @@ and passed after it:
 
 ## Test Plan
 
-- [x] `deno task test:unit` on the touched suites — `idle_decision_census_test.ts`,
-      `run_core_idle_census_test.ts`, `stream_lock_blank_test.ts` (112 passed)
+- [x] `deno task test:unit` on the touched suites —
+      `idle_decision_census_test.ts`, `run_core_idle_census_test.ts`,
+      `stream_lock_blank_test.ts` (112 passed)
 - [x] `deno check` on the touched lib files — clean
-- [x] `./quality.sh < /dev/null` — **PASSED** (full gate: deno tests, lint,
-      type check, fmt, markdownlint, mermaid, semgrep, chokepoint scans)
+- [x] `./quality.sh < /dev/null` — **PASSED** (full gate: deno tests, lint, type
+      check, fmt, markdownlint, mermaid, semgrep, chokepoint scans)
 - [x] Docs updated: `docs/IDLE-TASK-FRAMEWORK.md`, `docs/INTERNALS.md`

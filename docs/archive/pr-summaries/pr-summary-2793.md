@@ -69,22 +69,18 @@ sequenceDiagram
    "acquireMaintenanceRepoLease - threads the reserve opt-in to the broker".
    reviewer: met
 2. Set the flag only at the five PR-servicing call sites; sync and self-heal
-   stay defer-only.
-   evidence: `{ reserve: true }` at the PR feedback, spelling,
+   stay defer-only. evidence: `{ reserve: true }` at the PR feedback, spelling,
    CI fix, merge conflict and custom PR sites in
-   `lib/run_core_production_deps.ts`; `leaseRepoFn` is unchanged.
-   reviewer: met
+   `lib/run_core_production_deps.ts`; `leaseRepoFn` is unchanged. reviewer: met
 3. A test proves that a refused sync-style lease leaves `reservedRepos()` empty.
    evidence: test "reservation opt-in - a refused sync-style lease (no reserve
-   flag) does not reserve (Issue #2793)".
-   reviewer: met
+   flag) does not reserve (Issue #2793)". reviewer: met
 4. Record the reserving ref; clear only when that ref wins or a full pass
    sequence is not refused there; TTL is the other exit. evidence:
    `#reservations` map of `{ sinceMs, ref }`; `releaseReservationsExcept` called
    from `runMaintenanceLane` only when the sequence completes; tests "a full
    pass sequence that never asks for a reserved repo again clears it" and "a
-   pass refused again in the sequence keeps its reservation".
-   reviewer: partial
+   pass refused again in the sequence keeps its reservation". reviewer: partial
    reason: implemented as the issue words it. The reviewer noted that a
    single-candidate pass which picked another repository that cycle also counts
    as "not refused". That can drop a reservation for a PR that is still broken.
@@ -92,13 +88,10 @@ sequenceDiagram
    plainly, and #2795 tracks the positive-signal alternative.
 5. A test covers the full scenario: a slot holds the repository, the lane is
    refused for 1631, the slot releases, ref 0 wins and releases, a slot is still
-   refused, then 1631 wins.
-   evidence: test "reservation owner - a sync win does
-   not spend a PR pass's reservation (Issue #2793)".
-   reviewer: met
+   refused, then 1631 wins. evidence: test "reservation owner - a sync win does
+   not spend a PR pass's reservation (Issue #2793)". reviewer: met
 6. The #2789 test helper `laneAcquire` now passes `reserve: true`. evidence:
-   `tests/maintenance_lane_reservation_2789_test.ts`.
-   reviewer: unrequested
+   `tests/maintenance_lane_reservation_2789_test.ts`. reviewer: unrequested
    reason: reserving is opt-in now, so the #2789 tests must opt in to keep
    testing a PR pass's reservation.
 
@@ -107,38 +100,28 @@ sequenceDiagram
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - violation: the docs said a full-sequence drop means the PR "was fixed or
-  closed elsewhere".
-  evidence: `docs/workflows/README.md` lane-reservation
-  bullets, `DESIGN-PRINCIPLES.md` F10a.
-  reason: fixed. Both now say "not refused
+  closed elsewhere". evidence: `docs/workflows/README.md` lane-reservation
+  bullets, `DESIGN-PRINCIPLES.md` F10a. reason: fixed. Both now say "not refused
   there" and note that the next refusal re-reserves. #2795 tracks the
   positive-signal release.
-- violation: the PR summary was missing.
-  evidence: `docs/archive/pr-summaries/`.
+- violation: the PR summary was missing. evidence: `docs/archive/pr-summaries/`.
   reason: fixed by this file.
 - violation: the new run-loop tests built the registry on the real clock.
-  evidence: `tests/run_core_maintenance_lane_test.ts`.
-  reason: fixed. Both use
+  evidence: `tests/run_core_maintenance_lane_test.ts`. reason: fixed. Both use
   `new InFlightRepoRegistry(() => 0)`.
 - violation: the broker-threading test is close to "asserts one function calls
-  another".
-  evidence: "acquireMaintenanceRepoLease - threads the reserve opt-in
-  to the broker".
-  reason: kept. It calls the real `acquireMaintenanceRepoLease`
+  another". evidence: "acquireMaintenanceRepoLease - threads the reserve opt-in
+  to the broker". reason: kept. It calls the real `acquireMaintenanceRepoLease`
   inside `runInMaintenanceLane` and asserts the observable options and return
   value at the broker seam. It does not inspect source.
 - violation: the PR feedback call-site object literal was formatted
-  inconsistently.
-  evidence: `lib/run_core_production_deps.ts`.
-  reason: fixed. It
+  inconsistently. evidence: `lib/run_core_production_deps.ts`. reason: fixed. It
   now uses the same `{ reserve: true }` one-liner as the other sites.
 - violation: the docs overstate the WARN wording for some deferrals. evidence:
-  custom PR check `detail` text.
-  reason: kept. This predates #2789 and is out of
+  custom PR check `detail` text. reason: kept. This predates #2789 and is out of
   scope.
 - violation: the WIP checkpoint commit message names another issue. evidence:
-  commit `27479566`.
-  reason: kept. The worker's automatic checkpoint wrote that
+  commit `27479566`. reason: kept. The worker's automatic checkpoint wrote that
   message. Rewriting pushed history would need a force-push.
 
 ## Test Plan

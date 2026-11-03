@@ -129,9 +129,8 @@ otherwise a cited test that could not be run makes the result `not_checked`,
 because it may be the one that discriminates. A `not_checked` result for several
 cited tests keeps a short summary `reason` and, per test, the completed outcomes
 in `runs` and each unrun test with its cause in `notRun`, so the stored record
-does not cut the combined text. The
-static `test-identifier-in-diff` check is unchanged and still accepts any whole
-token of a declaration line.
+does not cut the combined text. The static `test-identifier-in-diff` check is
+unchanged and still accepts any whole token of a declaration line.
 
 The base ref comes from the completion phase's `resolveComparableBaseRef`, which
 fetches `origin/<base>` when the shallow checkout lacks it (Issue #3494).
@@ -146,13 +145,13 @@ tests can be executed today. A cited test in another language is recorded as
 unrun, and blocks as not checked when no other cited test discriminates the fix,
 unless the repo sets `skip_security_fix_check`. Function-named pytest, Go and
 Java citations remain in that record; their names are read only in their own
-language's files, so JS/TS callback text cannot replace a Deno test's string name.
-For a single cited test that cannot be run, the reason says why: "the language
-of the cited test cannot be executed". When the summary cites none the worker
-can run, it says "cites no test the worker can execute". With several cited
-tests the reason is a summary ("N of M cited tests could not be run"); each
-unrun test and its cause, such as its unsupported language, sit in the record's
-`notRun` entries.
+language's files, so JS/TS callback text cannot replace a Deno test's string
+name. For a single cited test that cannot be run, the reason says why: "the
+language of the cited test cannot be executed". When the summary cites none the
+worker can run, it says "cites no test the worker can execute". With several
+cited tests the reason is a summary ("N of M cited tests could not be run");
+each unrun test and its cause, such as its unsupported language, sit in the
+record's `notRun` entries.
 
 Both outcomes are recorded on the block verdict in run state
 (`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`),
@@ -180,13 +179,13 @@ The sibling placement is the same reasoning as the content-approval baseline —
 `nukeWorkDir` and an agent-driven `rm` inside the work tree must not be able to
 erase the record. Each file holds the missing evidence kinds, the ISO timestamp
 of the last block, the test declarations the gate matched, the bounded
-discrimination record, and a running `blockCount` so a repeat loop is visible
-in the retry prompt and the worker log. Optional `notRun` entries (on a `checked` or a
-`not_checked` record) and `runs` (on a `not_checked` record) are capped at ten
-with 300-character file, test-name and reason fields. Older records without
-them still read. The discrimination record itself is an optional field in
-the version-1 file: a file written before it existed reads as having none, so
-the key is not bumped.
+discrimination record, and a running `blockCount` so a repeat loop is visible in
+the retry prompt and the worker log. Optional `notRun` entries (on a `checked`
+or a `not_checked` record) and `runs` (on a `not_checked` record) are capped at
+ten with 300-character file, test-name and reason fields. Older records without
+them still read. The discrimination record itself is an optional field in the
+version-1 file: a file written before it existed reads as having none, so the
+key is not bumped.
 
 Since Issue #1575, `blockCount` counts **blocked runs** — runs that ended in
 `failure` from the gate — not blocks. The first block inside a run is recovered

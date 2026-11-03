@@ -6,8 +6,8 @@
 **its own** label, which is how `github-actions-audit` re-filed a CODEOWNERS
 finding (NEAT-AI-Rebase #64) that had been open for days as #37 under another
 idle task's label. #535–#537 built the repo-wide open-issue list and wired every
-scan's `assemble*Prompt` to substitute it; this change is the prompt half —
-a new version of each of the 14 judgement-bearing scan prompts carrying the
+scan's `assemble*Prompt` to substitute it; this change is the prompt half — a
+new version of each of the 14 judgement-bearing scan prompts carrying the
 `{{OPEN_ISSUE_TITLES}}` block and the rule that goes with it. Closes #538.
 
 Each new version adds, immediately after its existing
@@ -39,9 +39,9 @@ flowchart LR
 
 `best_practices` v11 · `dead_code` v6 · `deprecated_api` v5 · `doc_coverage` v7
 · `documentation_audit` v8 · `duplicated_knowledge` v4 · `format_drift` v6 ·
-`github_actions_audit` v18 · `orphan_deps` v6 ·
-`private_repo_reference_audit` v4 · `security_scan` v31 ·
-`supply_chain_detection` v5 · `supply_chain_readiness` v8 · `test_audit` v11.
+`github_actions_audit` v18 · `orphan_deps` v6 · `private_repo_reference_audit`
+v4 · `security_scan` v31 · `supply_chain_detection` v5 ·
+`supply_chain_readiness` v8 · `test_audit` v11.
 
 No existing version file was touched — prompt templates are immutable once
 committed, and the `prompt immutability` gate confirms it. `loadPrompt` resolves
@@ -90,10 +90,10 @@ spawning or the service-account environment.
 
 ## Acceptance Criteria
 
-- **met** — a new `v<N+1>.md` exists for each of the 14 scan prompt
-  directories, and no existing version file is modified — evidence: the 14 files
-  listed under *Versions added*; `git status` shows adds only, and the
-  `prompt immutability` quality check PASSED
+- **met** — a new `v<N+1>.md` exists for each of the 14 scan prompt directories,
+  and no existing version file is modified — evidence: the 14 files listed under
+  _Versions added_; `git status` shows adds only, and the `prompt immutability`
+  quality check PASSED
 - **met** — every new version contains `{{OPEN_ISSUE_TITLES}}`, the
   skip-do-not-comment rule, the truncation caveat and the untrusted-data caveat
   — evidence:
@@ -118,9 +118,9 @@ spawning or the service-account environment.
 - **met** — update any doc that pins a prompt version number for these types —
   evidence: swept `AGENTS.md`, `CODING-STANDARDS.md`, `DESIGN-PRINCIPLES.md` and
   `docs/**` for `prompts/<type>/vN` references; the six that exist are all
-  already exempt (`<!-- pinned: … -->` audit records, or
-  "from `prompts/security_scan/v30.md` onward"), so none went stale and no edit
-  was needed
+  already exempt (`<!-- pinned: … -->` audit records, or "from
+  `prompts/security_scan/v30.md` onward"), so none went stale and no edit was
+  needed
 
 ## Test Plan
 

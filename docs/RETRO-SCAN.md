@@ -46,13 +46,13 @@ flowchart LR
 
 Each fires **only** when its trigger is present in the artefacts.
 
-| Category               | Trigger                                                                              | Surface it proposes                                    |
-| ---------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| **Navigation**         | The run visibly searched for where something lives — a reverted file, a wrong first guess, a change spread unpredictably | A README or docs pointer, a module doc comment          |
-| **Automated checks**   | The run made a mistake something mechanical could have caught — a check that went from red to green, a fix-up commit, a mechanical review comment | A named lint rule, type-check step, test, or CI job in the repo's **own** gate |
-| **Coding standards**   | Review asked for a change no documented standard covers, or one an existing rule already covered but nobody found | A new or clarified rule — or the removal of one the run followed into a worse outcome. When the rule already existed and was missed, a fix for the diagnosed cause (too verbose, buried, ambiguous, or effort; see the category 3 table in `prompts/retro/prompt.md`), with a new rule as the last option. A cause the artefacts do not evidence counts as ruled out, so the last option stays reachable when neither the phase prompt nor the repository's agent instructions show a cause |
-| **Steering-file size** | The agent instructions are large **and** a specific block inside them belongs elsewhere | The named block, its new home, and what enforces it there |
-| **Information access** | The run asserted something wrong and was corrected, or recorded a guess | Where the fact should be written down                   |
+| Category               | Trigger                                                                                                                                           | Surface it proposes                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Navigation**         | The run visibly searched for where something lives — a reverted file, a wrong first guess, a change spread unpredictably                          | A README or docs pointer, a module doc comment                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Automated checks**   | The run made a mistake something mechanical could have caught — a check that went from red to green, a fix-up commit, a mechanical review comment | A named lint rule, type-check step, test, or CI job in the repo's **own** gate                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Coding standards**   | Review asked for a change no documented standard covers, or one an existing rule already covered but nobody found                                 | A new or clarified rule — or the removal of one the run followed into a worse outcome. When the rule already existed and was missed, a fix for the diagnosed cause (too verbose, buried, ambiguous, or effort; see the category 3 table in `prompts/retro/prompt.md`), with a new rule as the last option. A cause the artefacts do not evidence counts as ruled out, so the last option stays reachable when neither the phase prompt nor the repository's agent instructions show a cause |
+| **Steering-file size** | The agent instructions are large **and** a specific block inside them belongs elsewhere                                                           | The named block, its new home, and what enforces it there                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Information access** | The run asserted something wrong and was corrected, or recorded a guess                                                                           | Where the fact should be written down                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 ### Deliberately out of scope
 
@@ -90,8 +90,8 @@ and its sections are ordered most severe first.
 
 ## Dedup
 
-Run over many finished runs, a retro would otherwise propose the same
-"the steering file is too big" candidate every week. Two lists prevent it, both
+Run over many finished runs, a retro would otherwise propose the same "the
+steering file is too big" candidate every week. Two lists prevent it, both
 fetched repo-wide (no `--label` scoping) and substituted into the prompt:
 
 - `{{KNOWN_OPEN_FINDING_IDS}}` — the deterministic first line. Each candidate
@@ -110,16 +110,16 @@ candidate yields the same id across runs.
 
 ## Contract summary
 
-| Property             | Value                                                             |
-| -------------------- | ----------------------------------------------------------------- |
-| Template name        | `retro`                                                            |
-| Wrapper title        | `Run a retro on a finished run`                                    |
-| Prompt               | `prompts/retro/prompt.md`                                          |
-| Output label         | `retro` + one `severity:<level>`                                   |
-| Issues per run       | **At most one**                                                    |
-| Cadence              | Once per repo per week (`cooldownHours: 168`)                      |
-| Raises a PR?         | Never — issue-only, suggestion-only                                |
-| Failure behaviour    | Fail loud: a prompt, Claude, or timeout failure returns `ok:false` and leaves the wrapper open |
+| Property          | Value                                                                                          |
+| ----------------- | ---------------------------------------------------------------------------------------------- |
+| Template name     | `retro`                                                                                        |
+| Wrapper title     | `Run a retro on a finished run`                                                                |
+| Prompt            | `prompts/retro/prompt.md`                                                                      |
+| Output label      | `retro` + one `severity:<level>`                                                               |
+| Issues per run    | **At most one**                                                                                |
+| Cadence           | Once per repo per week (`cooldownHours: 168`)                                                  |
+| Raises a PR?      | Never — issue-only, suggestion-only                                                            |
+| Failure behaviour | Fail loud: a prompt, Claude, or timeout failure returns `ok:false` and leaves the wrapper open |
 
 ## Suppression
 
@@ -129,8 +129,10 @@ options, in increasing permanence:
 1. **Leave the issue open** — an open issue's `BP-…` ids are in the known-open
    list, so the candidate is not re-filed.
 2. **Add an in-source suppression comment** whose id matches — e.g.
-   `<!-- best-practice-ignore: BP-… -->` in Markdown, `// best-practice-ignore:
-   BP-…` in code — beside the surface the candidate names.
+   `<!-- best-practice-ignore: BP-… -->` in Markdown,
+   `// best-practice-ignore:
+   BP-…` in code — beside the surface the candidate
+   names.
 3. **Set the template's weight to zero** in `idleTaskTemplateWeights`, or drop
    the repo's retro cadence, to stop the scan being drawn at all. See
    [Weighting the template draw](IDLE-TASK-FRAMEWORK.md#weighting-the-template-draw).

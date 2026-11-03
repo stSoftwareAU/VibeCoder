@@ -1,12 +1,23 @@
 # 🔗 Workflow: Projects and issue dependencies
 
-This page is part of the **user manual** for the Vibe Coder. It describes **milestones as projects**, how issues depend on each other (Depends on, Blocked by, parent/child), and how the appliance honours those relationships — including circular dependencies and branching rules. For internal details, see **Further reading** at the end.
+This page is part of the **user manual** for the Vibe Coder. It describes
+**milestones as projects**, how issues depend on each other (Depends on, Blocked
+by, parent/child), and how the appliance honours those relationships — including
+circular dependencies and branching rules. For internal details, see **Further
+reading** at the end.
 
 ---
 
 ## ⚡ TL;DR
 
-**Milestones = projects; dependencies = order.** A **milestone** is a group of issues that share a branch: at most **one PR (Pull Request) per target branch** (default + one per milestone), so more milestones = more concurrent PRs. Issues can **depend** on others (`Depends on `) or be **parents** of sub-issues (task list in body); the worker only picks **ready** issues (deps closed, children closed). **Circular deps** (A→B→C→A): detected, never picked, and **reported** on GitHub with a comment + label so you can fix them. All workflow labels are **auto-created** with consistent colours and descriptions.
+**Milestones = projects; dependencies = order.** A **milestone** is a group of
+issues that share a branch: at most **one PR (Pull Request) per target branch**
+(default + one per milestone), so more milestones = more concurrent PRs. Issues
+can **depend** on others (`Depends on`) or be **parents** of sub-issues (task
+list in body); the worker only picks **ready** issues (deps closed, children
+closed). **Circular deps** (A→B→C→A): detected, never picked, and **reported**
+on GitHub with a comment + label so you can fix them. All workflow labels are
+**auto-created** with consistent colours and descriptions.
 
 ```mermaid
 flowchart TD
@@ -35,79 +46,162 @@ flowchart TD
 
 ## 🎯 Purpose and scope
 
-- **Purpose:** Define how the worker treats a set of related issues as a "project" (via milestones), how dependency and parent/child relationships are expressed and honoured, and how corner cases (e.g. circular dependencies) are handled.
-- **Scope:** Milestones as projects; "Depends on" / "Blocked by"; parent/child (sub-issues); one PR per target branch; branching off the correct base; deadlock detection and handling. Dependencies are checked via the GitHub API (Application Programming Interface) during issue selection.
+- **Purpose:** Define how the worker treats a set of related issues as a
+  "project" (via milestones), how dependency and parent/child relationships are
+  expressed and honoured, and how corner cases (e.g. circular dependencies) are
+  handled.
+- **Scope:** Milestones as projects; "Depends on" / "Blocked by"; parent/child
+  (sub-issues); one PR per target branch; branching off the correct base;
+  deadlock detection and handling. Dependencies are checked via the GitHub API
+  (Application Programming Interface) during issue selection.
 
 ## 💡 Concepts
 
 ### 🎯 Pseudo-project: milestones
 
-A **milestone** on GitHub acts as a pseudo-project: a group of issues that belong together. The worker:
+A **milestone** on GitHub acts as a pseudo-project: a group of issues that
+belong together. The worker:
 
 - Creates one **milestone branch** per milestone (e.g. `milestone/oidc-auth`).
-- Bounds the fleet's open PRs per target branch in a repo — **one fleet PR per slot; multiple milestones mean multiple PRs** (Issue #2663). Target branches are: the **default branch** (for issues with no milestone) and **each milestone branch** (for issues in that milestone). So in one repo:
-  - Issues with **no milestone** → up to `fleet_pr_slots` fleet PRs (default `8`) targeting the default branch at once, one per slot.
+- Bounds the fleet's open PRs per target branch in a repo — **one fleet PR per
+  slot; multiple milestones mean multiple PRs** (Issue #2663). Target branches
+  are: the **default branch** (for issues with no milestone) and **each
+  milestone branch** (for issues in that milestone). So in one repo:
+  - Issues with **no milestone** → up to `fleet_pr_slots` fleet PRs (default
+    `8`) targeting the default branch at once, one per slot.
   - Issues in **milestone A** → one PR targeting `milestone/A` at a time.
   - Issues in **milestone B** → one PR targeting `milestone/B` at a time.
 - Human-authored PRs never count towards either limit.
-- **Enforced at issue selection:** The worker skips a milestone issue whose milestone branch already has an open fleet PR, and a non-milestone issue once the fleet's default-branch PRs reach the cap. This filtering happens at **issue selection** time, not at PR creation. Issues with `ignore-open-prs` (added by an allowed author) bypass this check. See [resilience-and-concurrency.md](resilience-and-concurrency.md#-one-pr-per-target-branch-open-pr-blocking).
-- **Implementation only:** This constraint applies only to implementation workflows. Planning, question, and refinement workflows are exempt — they never create branches or PRs. See [planning-and-questions.md](planning-and-questions.md#-open-pr-blocking-does-not-apply).
+- **Enforced at issue selection:** The worker skips a milestone issue whose
+  milestone branch already has an open fleet PR, and a non-milestone issue once
+  the fleet's default-branch PRs reach the cap. This filtering happens at
+  **issue selection** time, not at PR creation. Issues with `ignore-open-prs`
+  (added by an allowed author) bypass this check. See
+  [resilience-and-concurrency.md](resilience-and-concurrency.md#-one-pr-per-target-branch-open-pr-blocking).
+- **Implementation only:** This constraint applies only to implementation
+  workflows. Planning, question, and refinement workflows are exempt — they
+  never create branches or PRs. See
+  [planning-and-questions.md](planning-and-questions.md#-open-pr-blocking-does-not-apply).
 
-When **all** issues in a milestone are completed (each milestone-issue PR has auto-merged into the milestone branch — no human review per issue, so the worker can safely run 24/7), the worker raises **one final PR** from the milestone branch to the default branch. **No code reaches the default branch without your review:** that final PR is your single gate. You approve it when ready — many issues completed, all quality gates already run. See [milestones.md](milestones.md).
+When **all** issues in a milestone are completed (each milestone-issue PR has
+auto-merged into the milestone branch — no human review per issue, so the worker
+can safely run 24/7), the worker raises **one final PR** from the milestone
+branch to the default branch. **No code reaches the default branch without your
+review:** that final PR is your single gate. You approve it when ready — many
+issues completed, all quality gates already run. See
+[milestones.md](milestones.md).
 
 ### 🔗 Issue relationships the worker honours
 
-1. **Forward dependencies ("Depends on" / "Blocked by")**  
-   In the issue body, text such as `Depends on ` or `Blocked by ` (and cross-repo forms) declares that this issue must not be worked on until that issue is **closed** — and, when the dependency belongs to another milestone, until that milestone is closed too (see [Mixed dependencies and milestones](#-mixed-dependencies-and-milestones)). The worker skips any issue that has an open dependency.
+1. **Forward dependencies ("Depends on" / "Blocked by")**\
+   In the issue body, text such as `Depends on` or `Blocked by` (and cross-repo
+   forms) declares that this issue must not be worked on until that issue is
+   **closed** — and, when the dependency belongs to another milestone, until
+   that milestone is closed too (see
+   [Mixed dependencies and milestones](#-mixed-dependencies-and-milestones)).
+   The worker skips any issue that has an open dependency.
 
-2. **Parent/child (sub-issues)**  
+2. **Parent/child (sub-issues)**\
    A **parent** issue lists **children** (sub-issues) via:
-   - GitHub task list syntax in the body (e.g. `- [] `, `- [x] `), or
-   - Sub-issues detected via API.  
-   A task-list reference only counts as a child when the referenced issue **links back** to the parent in its own body — otherwise a plain checklist item such as `- [ ] #747 body updated` would block the parent. The accepted back-reference wording is `Part of #N`, `Child of #N`, `Parent: #N` or `Parent #N` (case-insensitive; text inside code blocks or code spans is ignored). A passing mention such as "the parent of #N is unclear" is not a back-reference. Children found via the sub-issues API need no back-reference.  
-   The worker does **not** select a parent for implementation until **all** of its child issues are closed. Children can be worked on independently (and in dependency order if they have "Depends on" among themselves).
+   - GitHub task list syntax in the body (e.g. `- []`, `- [x]`), or
+   - Sub-issues detected via API.\
+     A task-list reference only counts as a child when the referenced issue
+     **links back** to the parent in its own body — otherwise a plain checklist
+     item such as `- [ ] #747 body updated` would block the parent. The accepted
+     back-reference wording is `Part of #N`, `Child of #N`, `Parent: #N` or
+     `Parent #N` (case-insensitive; text inside code blocks or code spans is
+     ignored). A passing mention such as "the parent of #N is unclear" is not a
+     back-reference. Children found via the sub-issues API need no
+     back-reference.\
+     The worker does **not** select a parent for implementation until **all** of
+     its child issues are closed. Children can be worked on independently (and
+     in dependency order if they have "Depends on" among themselves).
 
-The worker uses both dependency checking and parent/child checking during issue selection so that only **ready** issues (no open dependencies, and not a parent with open children) are eligible. Dependency and parent/child checks are *suppression filters*: they remove a candidate from its tier but do not change the tier order itself. The overall order — the `top-priority` → `work-on` → `low-priority` → `idle-task` tiers, globally oldest-first within a tier — is documented in [issue-processing.md → Issue selection priority](issue-processing.md#-issue-selection-priority).
+The worker uses both dependency checking and parent/child checking during issue
+selection so that only **ready** issues (no open dependencies, and not a parent
+with open children) are eligible. Dependency and parent/child checks are
+_suppression filters_: they remove a candidate from its tier but do not change
+the tier order itself. The overall order — the `top-priority` → `work-on` →
+`low-priority` → `idle-task` tiers, globally oldest-first within a tier — is
+documented in
+[issue-processing.md → Issue selection priority](issue-processing.md#-issue-selection-priority).
 
 ## 🌿 Branching rule: milestone issues
 
-- **Issues with no milestone** — Feature branch is created from the **default** branch. PR targets the default branch.
-- **Issues in a milestone** — Feature branch is created from the **milestone branch** for that milestone (if it exists; otherwise the worker creates it from default). PR targets the **milestone branch**, not the default branch.
+- **Issues with no milestone** — Feature branch is created from the **default**
+  branch. PR targets the default branch.
+- **Issues in a milestone** — Feature branch is created from the **milestone
+  branch** for that milestone (if it exists; otherwise the worker creates it
+  from default). PR targets the **milestone branch**, not the default branch.
 
-So milestone issues always branch off the milestone branch when present, keeping the milestone branch as the single integration line for that project.
+So milestone issues always branch off the milestone branch when present, keeping
+the milestone branch as the single integration line for that project.
 
 ## ⚠️ Corner cases
 
 ### 🔄 Circular dependencies (deadlock)
 
-**Example:** A depends on B and C; C depends on A. No issue can become "ready" because each is waiting on another in the cycle.
+**Example:** A depends on B and C; C depends on A. No issue can become "ready"
+because each is waiting on another in the cycle.
 
 **Workflow behaviour:**
 
-1. **Detect** — The worker builds a dependency graph over the dependency-blocked `work-on` issues and detects cycles (DFS — Depth-First Search). Issues that participate in a cycle are classified as **circular**.
-2. **Break the cycle in issue-number order** — The lowest-numbered member of each cycle becomes a candidate and is worked; the other members wait on it as ordinary dependencies and are unblocked as it closes (Issue #4298). A member that also waits on an open issue *outside* its cycle is a real wait and stays blocked.
-3. **Never hand back** — No label or comment asks a human to fix the graph: an issue the worker cannot order itself is a Vibe Coder bug, not a human task.
+1. **Detect** — The worker builds a dependency graph over the dependency-blocked
+   `work-on` issues and detects cycles (DFS — Depth-First Search). Issues that
+   participate in a cycle are classified as **circular**.
+2. **Break the cycle in issue-number order** — The lowest-numbered member of
+   each cycle becomes a candidate and is worked; the other members wait on it as
+   ordinary dependencies and are unblocked as it closes (Issue #4298). A member
+   that also waits on an open issue _outside_ its cycle is a real wait and stays
+   blocked.
+3. **Never hand back** — No label or comment asks a human to fix the graph: an
+   issue the worker cannot order itself is a Vibe Coder bug, not a human task.
 
-**Summary:** Detect circular dependencies; work the lowest-numbered member first; let the rest follow as ordinary dependencies.
+**Summary:** Detect circular dependencies; work the lowest-numbered member
+first; let the rest follow as ordinary dependencies.
 
 ### 🏷️ Workflow labels
 
-All workflow labels (e.g. `failed-once`, `failed`, `needs-human`, `refine-issue`, `planning`, `question`, `needs-screenshot`, `circular-dependency`) must be **automatically created** when first needed, with **consistent colours and descriptions** across repositories. This applies to every label used by the workflow so that repo maintainers do not have to create them by hand and so the meaning is clear. The worker ensures each label exists (create if missing) with the same colour and description as defined in configuration or code.
+All workflow labels (e.g. `failed-once`, `failed`, `needs-human`,
+`refine-issue`, `planning`, `question`, `needs-screenshot`,
+`circular-dependency`) must be **automatically created** when first needed, with
+**consistent colours and descriptions** across repositories. This applies to
+every label used by the workflow so that repo maintainers do not have to create
+them by hand and so the meaning is clear. The worker ensures each label exists
+(create if missing) with the same colour and description as defined in
+configuration or code.
 
 ### 👪 Parent with open children
 
-- Parent is **blocked** until all children are closed. No special case: the parent is simply not eligible until every child issue is closed.
+- Parent is **blocked** until all children are closed. No special case: the
+  parent is simply not eligible until every child issue is closed.
 
 ### 🔀 Mixed dependencies and milestones
 
-- Dependencies can cross milestones (e.g. issue in milestone A depends on issue in milestone B). Closing the dependency is not enough when it belongs to **another milestone that is still open**: its merged code only reaches the default branch — and so the dependant's milestone branch — once that milestone's final PR merges. The dependant is therefore held until the dependency's milestone is closed (Issue #2173).
-- A dependency with **no milestone**, or one in the candidate's **own milestone**, is satisfied as soon as it closes — unchanged behaviour.
-- The **one PR per target branch** rule is independent: it limits how many concurrent PRs exist per base branch; dependency rules limit which **issue** is selected next.
-- The same cross-milestone rule also gates the milestone **summary PR**'s merge, not just issue selection: a pending dependency holds the summary PR open until it lands (Issue #3014). See [Pending dependencies hold the summary PR](milestones.md#%EF%B8%8F-pending-dependencies-hold-the-summary-pr-issue-3014) in the milestones workflow doc.
+- Dependencies can cross milestones (e.g. issue in milestone A depends on issue
+  in milestone B). Closing the dependency is not enough when it belongs to
+  **another milestone that is still open**: its merged code only reaches the
+  default branch — and so the dependant's milestone branch — once that
+  milestone's final PR merges. The dependant is therefore held until the
+  dependency's milestone is closed (Issue #2173).
+- A dependency with **no milestone**, or one in the candidate's **own
+  milestone**, is satisfied as soon as it closes — unchanged behaviour.
+- The **one PR per target branch** rule is independent: it limits how many
+  concurrent PRs exist per base branch; dependency rules limit which **issue**
+  is selected next.
+- The same cross-milestone rule also gates the milestone **summary PR**'s merge,
+  not just issue selection: a pending dependency holds the summary PR open until
+  it lands (Issue #3014). See
+  [Pending dependencies hold the summary PR](milestones.md#%EF%B8%8F-pending-dependencies-hold-the-summary-pr-issue-3014)
+  in the milestones workflow doc.
 
 ### 🚫 All issues in a milestone blocked
 
-- If every open issue in a milestone is either blocked by dependencies or is a parent with open children, the worker will not pick any of them. It may pick an issue in another milestone or an issue with no milestone (subject to one PR per target branch). When dependencies are later closed, milestone issues become eligible again.
+- If every open issue in a milestone is either blocked by dependencies or is a
+  parent with open children, the worker will not pick any of them. It may pick
+  an issue in another milestone or an issue with no milestone (subject to one PR
+  per target branch). When dependencies are later closed, milestone issues
+  become eligible again.
 
 ## 📊 Diagram: dependency and readiness
 
@@ -154,11 +248,14 @@ flowchart TD
   style M2 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
 ```
 
-So: **no milestone** → up to 1 PR (to default). **One milestone** → up to 2 PRs (default + milestone). **N milestones** → up to N+1 PRs.
+So: **no milestone** → up to 1 PR (to default). **One milestone** → up to 2 PRs
+(default + milestone). **N milestones** → up to N+1 PRs.
 
 ## 📊 Diagram: parallel milestone branches (gitGraph)
 
-The following `gitGraph` diagram shows how multiple milestones allow parallel work — each milestone has its own branch with independent PRs, while non-milestone issues target `Develop` directly:
+The following `gitGraph` diagram shows how multiple milestones allow parallel
+work — each milestone has its own branch with independent PRs, while
+non-milestone issues target `Develop` directly:
 
 ```mermaid
 gitGraph
@@ -180,10 +277,18 @@ gitGraph
     merge milestone/perf id: "Perf final PR"
 ```
 
-*The `main` line represents `Develop`. Each milestone has its own branch with sequential PRs. Non-milestone issues merge directly to `Develop`. Multiple milestones can have work in progress simultaneously — one PR per target branch.*
+_The `main` line represents `Develop`. Each milestone has its own branch with
+sequential PRs. Non-milestone issues merge directly to `Develop`. Multiple
+milestones can have work in progress simultaneously — one PR per target branch._
 
 ## 📚 Further reading
 
-- **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue selection, PR monitoring, milestone/dependency handling.
-- **Implementation details:** [worker/deno/lib/issue_dependencies.ts](../../worker/deno/lib/issue_dependencies.ts), [worker/deno/lib/issue_finder.ts](../../worker/deno/lib/issue_finder.ts), [worker/deno/lib/git_branch.ts](../../worker/deno/lib/git_branch.ts).
-- **User docs:** [milestones.md](milestones.md), [resilience-and-concurrency.md](resilience-and-concurrency.md), [issue-processing.md](issue-processing.md).
+- **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue
+  selection, PR monitoring, milestone/dependency handling.
+- **Implementation details:**
+  [worker/deno/lib/issue_dependencies.ts](../../worker/deno/lib/issue_dependencies.ts),
+  [worker/deno/lib/issue_finder.ts](../../worker/deno/lib/issue_finder.ts),
+  [worker/deno/lib/git_branch.ts](../../worker/deno/lib/git_branch.ts).
+- **User docs:** [milestones.md](milestones.md),
+  [resilience-and-concurrency.md](resilience-and-concurrency.md),
+  [issue-processing.md](issue-processing.md).

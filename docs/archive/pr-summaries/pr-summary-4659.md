@@ -48,12 +48,13 @@ flowchart TD
   and placed last in the child environment, as the quality gate does. A mint
   that fails stops the command with an error rather than running it without the
   credential. Commands with declared credentials use the logged worker fallback
-  until #4705 provides a credential channel through sudo; values never enter argv.
+  until #4705 provides a credential channel through sudo; values never enter
+  argv.
 - An unwritable cargo target keeps the account and uses
-  `cargoTargetDirForCheckout` with account `agent`. The configured cache root
-  is honoured; otherwise it lives under the checkout on the work volume,
-  outside memory-backed TMPDIR. Targets persist across commands for incremental
-  builds. The existing trim-refused target and explicit target settings remain
+  `cargoTargetDirForCheckout` with account `agent`. The configured cache root is
+  honoured; otherwise it lives under the checkout on the work volume, outside
+  memory-backed TMPDIR. Targets persist across commands for incremental builds.
+  The existing trim-refused target and explicit target settings remain
   authoritative, and the gates retain their heavy-build budget checks.
 
 ### Undiscoverable Facts
@@ -72,9 +73,9 @@ Backend-only change; no UI file is touched.
   only allowlisted names (positive control: the same command without `clearEnv`
   sees names outside the allowlist); a usable `agent` account runs under `sudo`
   after a probe, with `CARGO_TARGET_DIR` carried in argv; a failed, errored or
-  timed out probe leaves the command to CI without running repository code;
-  no account means no probe; the probe script embeds only plain manifest names
-  and checks `target` writability for cargo only; `manifestsFor`; declared
+  timed out probe leaves the command to CI without running repository code; no
+  account means no probe; the probe script embeds only plain manifest names and
+  checks `target` writability for cargo only; `manifestsFor`; declared
   credentials reach the child and a failing source stops the command; probe exit
   2 gives a private `CARGO_TARGET_DIR` and no `[SECURITY]` fallback; a symlinked
   manifest is refused. A bad manifest name is refused with no probe built; a
@@ -113,8 +114,8 @@ Backend-only change; no UI file is touched.
   allowlisted worker environment when sudo would discard them — evidence:
   `tests/untrusted_gate_spawn_test.ts::declared credentials survive an available agent account`
   runs a real child shell and checks its credential output, restricted
-  environment and credential-free argv. Credential mint failures still stop
-  the command before it runs.
+  environment and credential-free argv. Credential mint failures still stop the
+  command before it runs.
 
 ## Test Plan
 
@@ -130,8 +131,8 @@ Backend-only change; no UI file is touched.
   Real-scanner stdin controls accept both exact declarations and still detect
   the same value assigned to `OTHER_CREDENTIAL`. The workflow and action share
   this config; no second config copy was found.
-- `deno task test:unit` run from `worker/deno` over the four suites, 132 passed and 0
-  failed: `tests/untrusted_gate_spawn_test.ts` (24 tests at head),
+- `deno task test:unit` run from `worker/deno` over the four suites, 132 passed
+  and 0 failed: `tests/untrusted_gate_spawn_test.ts` (24 tests at head),
   `tests/milestone_merge_gate_test.ts` (41 tests at head),
   `tests/milestone_resolution_gate_test.ts` (34 tests at head) and
   `tests/run_core_production_deps_test.ts` (33 tests at head).
@@ -158,8 +159,8 @@ Backend-only change; no UI file is touched.
 - Review repair: the real-shell probe coverage remains, including readable,
   missing and unreadable manifests, read-only targets and checkout permissions.
   The real cargo merge-gate regression now uses a nested project with no
-  Cargo.lock and agent read-only access: it records the access gap as left to
-  CI and asserts no worker cargo command runs or creates a lockfile.
+  Cargo.lock and agent read-only access: it records the access gap as left to CI
+  and asserts no worker cargo command runs or creates a lockfile.
 - Removed assertions about worker execution after failed probes and temporary
   target cleanup described the two behaviours the review explicitly rejects.
   Their replacements assert no repository command runs after an access failure,
@@ -175,20 +176,20 @@ Backend-only change; no UI file is touched.
   working helper was never mutated during the full gate.
 - Final review verification: `./quality.sh < /dev/null` passes full-tree
   formatting, lint, type checking, completeness checks, Markdown, Mermaid,
-  static chokepoints and the release-tag ruleset (with a temporary
-  GH_CONFIG_DIR because the host's default config is sandbox-denied).
-  The full parallel unit suite aborts inside host Deno 2.9.5 with
-  "pledge test permissions called before restoring previous pledge".
-  All four affected suites pass through `deno task test:unit`: 132 passed,
-  zero failed. PowerShell is absent. Semgrep and Checkov have no installed
-  binary or cached container image. PR #4736 CI passes all unit shards,
-  Semgrep and Checkov; the base main commit's merged PR #4730 also passes
-  all four unit shards, its container validation and both scanners.
+  static chokepoints and the release-tag ruleset (with a temporary GH_CONFIG_DIR
+  because the host's default config is sandbox-denied). The full parallel unit
+  suite aborts inside host Deno 2.9.5 with "pledge test permissions called
+  before restoring previous pledge". All four affected suites pass through
+  `deno task test:unit`: 132 passed, zero failed. PowerShell is absent. Semgrep
+  and Checkov have no installed binary or cached container image. PR #4736 CI
+  passes all unit shards, Semgrep and Checkov; the base main commit's merged PR
+  #4730 also passes all four unit shards, its container validation and both
+  scanners.
 - Review regression red checks in isolated TMPDIR copies: the previous helper
   fails all three probe-failure cases, the retained-target case and the
   manifest-ownership case. The final helper passes all five. The isolated
-  runtime checks use `--no-check`, as the local gate does; the complete
-  working tree independently passes the full type check.
+  runtime checks use `--no-check`, as the local gate does; the complete working
+  tree independently passes the full type check.
 
 - `deno task check:manifests`: 847 passed, 0 failed, 1 existing ignored test.
   `deno task pr-summary-check --base main --labels work-on` with the issue body:
@@ -201,8 +202,8 @@ Backend-only change; no UI file is touched.
 - A host with no available agent account runs commands with the restricted
   worker environment, which retains access to worker credential files. Access
   probe failures never choose this fallback.
-- Declared credentials require the logged worker fallback until #4705 supplies
-  a credential channel to agent. This retains access to worker credential files.
+- Declared credentials require the logged worker fallback until #4705 supplies a
+  credential channel to agent. This retains access to worker credential files.
 - Credentials are matched to a checkout by the first path segment below the work
   directory, so two repositories with the same name under different owners get
   none.

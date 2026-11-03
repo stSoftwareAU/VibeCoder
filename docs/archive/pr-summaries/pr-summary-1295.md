@@ -69,24 +69,25 @@ now builds its delete list as
 reaches `gh label delete` with a stock label name — the guard sits on the single
 loop that issues the deletion, not on the data feeding it, so editing
 `DEPRECATED_LABELS` cannot reintroduce it, and `isProtectedStockLabel()`
-normalises case and surrounding whitespace so `"Help Wanted"` or `" help wanted "`
-match too. Under `dryRun`, `syncSingleLabel()` and `removeDeprecatedLabels()`
-return before any `runner([...])` call that mutates, and the only command the
-dry-run path can issue is `gh label list` (plus the pre-existing read-only
-`gh api .../languages` UI probe), so there is no mutating branch left to reach.
+normalises case and surrounding whitespace so `"Help Wanted"` or
+`" help wanted "` match too. Under `dryRun`, `syncSingleLabel()` and
+`removeDeprecatedLabels()` return before any `runner([...])` call that mutates,
+and the only command the dry-run path can issue is `gh label list` (plus the
+pre-existing read-only `gh api .../languages` UI probe), so there is no mutating
+branch left to reach.
 
-**Quality gate:** `./quality.sh` — `Result: PASSED (with skipped checks)`
-(skips are the pre-existing `config integration`, `pages-liquid` and
+**Quality gate:** `./quality.sh` — `Result: PASSED (with skipped checks)` (skips
+are the pre-existing `config integration`, `pages-liquid` and
 `mermaid built output` stages).
 
 ## Test Plan
 
 Added to `worker/deno/tests/setup_label_sync_test.ts`:
 
-- `removeDeprecatedLabels - never deletes GitHub's stock labels (Issue #1295)`
-  — the security regression test.
-- `removeDeprecatedLabels - dry run issues no gh label delete (Issue #1295)`
-  — the issue's named failure-detection test.
+- `removeDeprecatedLabels - never deletes GitHub's stock labels (Issue #1295)` —
+  the security regression test.
+- `removeDeprecatedLabels - dry run issues no gh label delete (Issue #1295)` —
+  the issue's named failure-detection test.
 - `syncLabelsForRepo - dry run issues no mutating gh call (Issue #1295)` — no
   create, edit or delete argv, and the plan still reports the real counts.
 - `syncLabelsForRepo - dry run fails loud when the label listing fails` —

@@ -32,7 +32,8 @@ Backend module with no web interface, so no screenshot applies. The evidence is
 the test suite and the gate:
 
 - `deno test worker/deno/tests/stream_identity_test.ts` — **26 passed, 0
-  failed**. The suite was red before the module existed (`TS2307: Cannot find
+  failed**. The suite was red before the module existed
+  (`TS2307: Cannot find
   module …/lib/stream_identity.ts`) and green after.
 - `./quality.sh` — **PASSED** (one pre-existing `SKIPPED`: config integration).
   The first run failed two checks, both because a new module under the sweep
@@ -61,12 +62,12 @@ the test suite and the gate:
   — reviewer: met
 - **met** — no existing module's behaviour changes — evidence: the diff adds two
   new `.ts` files and appends a data-only slice plus its record under
-  `docs/audits/`; no other TypeScript file is touched and nothing imports the new
-  module yet — reviewer: met
-- **met** — `./quality.sh` passes — evidence: full gate run after the final edit,
-  `Result: PASSED` — reviewer: partial — reason: the reviewer saw only the diff
-  and could not run the gate, noting the components it could check were green;
-  the gate was run here and passed.
+  `docs/audits/`; no other TypeScript file is touched and nothing imports the
+  new module yet — reviewer: met
+- **met** — `./quality.sh` passes — evidence: full gate run after the final
+  edit, `Result: PASSED` — reviewer: partial — reason: the reviewer saw only the
+  diff and could not run the gate, noting the components it could check were
+  green; the gate was run here and passed.
 - **unrequested** — `resolveStreamId` and `streamKey` throw when `repo` is not
   `owner/name` — reviewer: unrequested — reason: the key is a filesystem path
   segment, so a malformed slug would silently merge two conversations; the

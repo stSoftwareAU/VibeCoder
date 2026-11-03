@@ -102,40 +102,41 @@ $ deno test --allow-all tests/config_test.ts tests/config_defaults_test.ts \
 ok | 251 passed | 0 failed (883ms)
 ```
 
-**Full quality gate** (`./quality.sh`, host run): `deno type check` (1844 files),
-`deno lint`, `deno fmt`, markdownlint, mermaid and every static chokepoint gate
-PASSED. `deno tests` reports 12 failures, all pre-existing and none in the
-changed area — 11 × `setup.ps1` (`NotFound: Failed to spawn 'pwsh'`,
-environmental) and one process test (`runClaudeWithRetry - a SIGKILLed agent's
-surviving descendant …`) that is timing-sensitive and failed only under a host
-load average of 23.
+**Full quality gate** (`./quality.sh`, host run): `deno type check` (1844
+files), `deno lint`, `deno fmt`, markdownlint, mermaid and every static
+chokepoint gate PASSED. `deno tests` reports 12 failures, all pre-existing and
+none in the changed area — 11 × `setup.ps1` (`NotFound: Failed to spawn 'pwsh'`,
+environmental) and one process test
+(`runClaudeWithRetry - a SIGKILLed agent's
+surviving descendant …`) that is
+timing-sensitive and failed only under a host load average of 23.
 
 ## Test plan
 
 `worker/deno/tests/claim_runway_config_test.ts` — 8 new cases:
 
-| Case | Asserts |
-| --- | --- |
-| floor read from `.config.json` with the environment unset | The container path works: `min_claim_runway_seconds` resolves with no env var present |
-| full-budget gate read from `.config.json` with the environment unset | Same for `claim_require_full_execute_budget` |
-| absent keys and no environment | Falls back to `OPERATIONAL_DEFAULTS` — 300 and `false` |
-| environment still wins on a native run | `MIN_CLAIM_RUNWAY_SECONDS=900` / `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET=1` are honoured when no key is set |
-| a config key overrides the environment | Config precedence, in both directions including `false` over `=1` |
-| `0` disables the floor | `0` is not mistaken for absent — the bug a naive `??` on a falsy value would introduce |
-| junk environment value | `MIN_CLAIM_RUNWAY_SECONDS=soon` falls back to the default rather than `NaN` |
-| the #207 host settings refuse a late claim | End-to-end: `claude_timeout: 1800` + gate on + a 3600 s cycle gives `floorSeconds: 1800`, `fullBudgetGate: true`, and the 904 s runway #207 was claimed with is below it |
+| Case                                                                 | Asserts                                                                                                                                                                  |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| floor read from `.config.json` with the environment unset            | The container path works: `min_claim_runway_seconds` resolves with no env var present                                                                                    |
+| full-budget gate read from `.config.json` with the environment unset | Same for `claim_require_full_execute_budget`                                                                                                                             |
+| absent keys and no environment                                       | Falls back to `OPERATIONAL_DEFAULTS` — 300 and `false`                                                                                                                   |
+| environment still wins on a native run                               | `MIN_CLAIM_RUNWAY_SECONDS=900` / `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET=1` are honoured when no key is set                                                                   |
+| a config key overrides the environment                               | Config precedence, in both directions including `false` over `=1`                                                                                                        |
+| `0` disables the floor                                               | `0` is not mistaken for absent — the bug a naive `??` on a falsy value would introduce                                                                                   |
+| junk environment value                                               | `MIN_CLAIM_RUNWAY_SECONDS=soon` falls back to the default rather than `NaN`                                                                                              |
+| the #207 host settings refuse a late claim                           | End-to-end: `claude_timeout: 1800` + gate on + a 3600 s cycle gives `floorSeconds: 1800`, `fullBudgetGate: true`, and the 904 s runway #207 was claimed with is below it |
 
 Each env-touching case saves, clears and restores both variables so the suite is
 order-independent.
 
 Acceptance criteria from the issue:
 
-- *Honoured from `.config.json` inside the container, proven with the
-  environment unset* — the first three cases.
-- *The environment still wins on a native run when no config key is set* — the
+- _Honoured from `.config.json` inside the container, proven with the
+  environment unset_ — the first three cases.
+- _The environment still wins on a native run when no config key is set_ — the
   fourth case.
-- *A claim whose runway cannot fit a full execute is refused, attributed to the
-  full-budget gate* — the last case asserts `fullBudgetGate: true`.
-- *`docs/CONFIGURATION.md` documents the keys and the container caveat* — two new
-  rows and a note; `config_docs_consistency_test.ts` ties them back to
+- _A claim whose runway cannot fit a full execute is refused, attributed to the
+  full-budget gate_ — the last case asserts `fullBudgetGate: true`.
+- _`docs/CONFIGURATION.md` documents the keys and the container caveat_ — two
+  new rows and a note; `config_docs_consistency_test.ts` ties them back to
   `KNOWN_CONFIG_KEYS` and passes.

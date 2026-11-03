@@ -17,10 +17,10 @@ still no third title/body dedup helper (the duplication #1123 records).
 
 ### Manifest size
 
-| List | Before | After |
-| --- | --- | --- |
-| `MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES` | 6 | 0 |
-| `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` | 4 | 0 |
+| List                                       | Before | After |
+| ------------------------------------------ | ------ | ----- |
+| `MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES`     | 6      | 0     |
+| `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` | 4      | 0     |
 
 ### The fail direction was chosen per site, never copied
 
@@ -28,15 +28,15 @@ The harmless outcome differs by what the marker drives, so each site states and
 asserts its own direction. Copying one answer to all six is the mistake this
 table exists to prevent.
 
-| Site | What a planted marker did | Fail direction when the author set cannot be resolved |
-| --- | --- | --- |
-| `lib/issue_query.ts` (`fetchPRsForIssueByTitle`) | A fork PR titled `(#N)` read as "the fleet already has this issue in hand" | **Act** — the row is dropped, so the issue looks un-PR'd and the worker files |
-| `lib/idle_task_backfill.ts` | A planted wrapper title steered the `idle-task` label onto somebody else's issue | **Write nothing** — no label is applied; the sweep is idempotent and retries |
-| `lib/shared_cooldown.ts` (`cleanExpiredCooldownComments`) | An attacker-chosen timestamp made the worker delete a stranger's comment | **Delete nothing** — the worker tidies only its own cooldown markers |
-| `setup/best_practices_sync.ts` | A planted body marker redirected the findings comment into a stranger's issue | **File fresh, never comment** |
-| `lib/claim_pr_comment.ts` | A planted `PR_COMMENT_CLAIM:` sorted earliest and handed the PR to nobody | **Leave it claimable** — no competing claim is counted |
-| `lib/pr_branch_lock.ts` | A planted `BRANCH_UPDATE_LOCK` with a fresh timestamp never expires and stalls the branch | **Leave it claimable** — no competing lock is counted |
-| `lib/stale_workflow_detector.ts` (`hasExistingStaleComment`) | A planted diagnostic marker silenced the stale-issue diagnostic for good | **Do not suppress** — the diagnostic is posted |
+| Site                                                         | What a planted marker did                                                                 | Fail direction when the author set cannot be resolved                         |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `lib/issue_query.ts` (`fetchPRsForIssueByTitle`)             | A fork PR titled `(#N)` read as "the fleet already has this issue in hand"                | **Act** — the row is dropped, so the issue looks un-PR'd and the worker files |
+| `lib/idle_task_backfill.ts`                                  | A planted wrapper title steered the `idle-task` label onto somebody else's issue          | **Write nothing** — no label is applied; the sweep is idempotent and retries  |
+| `lib/shared_cooldown.ts` (`cleanExpiredCooldownComments`)    | An attacker-chosen timestamp made the worker delete a stranger's comment                  | **Delete nothing** — the worker tidies only its own cooldown markers          |
+| `setup/best_practices_sync.ts`                               | A planted body marker redirected the findings comment into a stranger's issue             | **File fresh, never comment**                                                 |
+| `lib/claim_pr_comment.ts`                                    | A planted `PR_COMMENT_CLAIM:` sorted earliest and handed the PR to nobody                 | **Leave it claimable** — no competing claim is counted                        |
+| `lib/pr_branch_lock.ts`                                      | A planted `BRANCH_UPDATE_LOCK` with a fresh timestamp never expires and stalls the branch | **Leave it claimable** — no competing lock is counted                         |
+| `lib/stale_workflow_detector.ts` (`hasExistingStaleComment`) | A planted diagnostic marker silenced the stale-issue diagnostic for good                  | **Do not suppress** — the diagnostic is posted                                |
 
 Every direction is logged when it is taken, and every one has a test asserting
 it. `lib/failure_detection_resume.ts` was already verified through
@@ -52,7 +52,7 @@ the log line.
 The head branch is the stronger evidence here: pushing a branch into the target
 repository needs write access there, so a same-repository head is something no
 unprivileged account can manufacture, while a fork head is a claim anybody can
-make. It is also the *right* boundary for this question — a human maintainer's
+make. It is also the _right_ boundary for this question — a human maintainer's
 PR for an issue legitimately means "already in hand", so a fleet-only author
 filter would have the worker duplicate it. `pr_issue_linking.ts`'s uncached
 fallback, which matches titles client-side and so is invisible to the scanner,
@@ -101,7 +101,8 @@ Added or modified:
   an outsider's expired marker is left alone; an unresolvable fleet deletes
   nothing.
 - `tests/setup_best_practices_sync_test.ts` — planted marker never redirects the
-  comment; a sibling's issue is still updated; an unresolvable fleet files fresh.
+  comment; a sibling's issue is still updated; an unresolvable fleet files
+  fresh.
 - `tests/claim_pr_comment_test.ts` — the re-read asks for the commenter; a
   planted claim does not cost this host the race; an unresolvable fleet leaves
   the work claimable.

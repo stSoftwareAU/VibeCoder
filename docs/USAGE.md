@@ -5,12 +5,11 @@ overview, see the [main README](../README.md).
 
 ## 🏷️ Start here: label flows
 
-Want the big picture of **which label to add when**, and what the worker
-does next (`grill-me` ↔ `needs-human`, `planning` vs work tiers,
-milestones, auto-merge)? Start with
-**[Label Flows](workflows/label-flows.md)** — coloured journey diagrams
-grounded in the real worker behaviour. Then come back here for the
-detailed usage patterns below.
+Want the big picture of **which label to add when**, and what the worker does
+next (`grill-me` ↔ `needs-human`, `planning` vs work tiers, milestones,
+auto-merge)? Start with **[Label Flows](workflows/label-flows.md)** — coloured
+journey diagrams grounded in the real worker behaviour. Then come back here for
+the detailed usage patterns below.
 
 ## 📋 Table of Contents
 
@@ -67,8 +66,9 @@ When creating a PR, the worker includes appropriate evidence based on the type
 of change:
 
 - **UI (User Interface) Changes**: Include a screenshot (see
-  [Screenshot Support](DEPLOYMENT.md#-screenshot-support-setup)). If a screenshot
-  cannot be generated, you must explicitly state why in the PR summary.
+  [Screenshot Support](DEPLOYMENT.md#-screenshot-support-setup)). If a
+  screenshot cannot be generated, you must explicitly state why in the PR
+  summary.
 - **Performance Changes**: Include benchmark results (before/after). If no
   measurable improvement, document this finding.
 - **Bugs/Enhancements**: Follow TDD (Test-Driven Development); test the
@@ -87,40 +87,40 @@ committed to the repository as permanent documentation and contains:
 - A test plan listing tests added or modified
 
 The worker reads this file and includes its contents in the PR body. If no PR
-summary file is created, a warning note is included in the PR body. PR
-creation records a SHA-256 digest of the summary's content in the PR body as
-a hidden marker (the digest is of the summary alone, Issue #4234), and the sub-agent tier the issue run resolved as a second
-one, `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`), so a later PR
-outcome can be attributed to that tier (Issue #3403); the fleet summary's
-per-tier PR-outcome figures do this (Issue #3404). A re-sync carries the
-tier marker over unchanged. A later CI-fix or merge-conflict run re-syncs the PR
-description from the summary, via `syncPrBodyFromSummary`
-(`worker/deno/lib/pr_body_sync.ts`), after a verified push to the PR's own
-head when the summary at the head differs from that recorded digest —
-whichever push changed it, this run's or an earlier one. A PR-feedback run
-re-syncs under the same condition, and also when it pushed nothing and has no
-commits left unpushed, so a feedback run that only answers a finding still
-refreshes a stale body. A body raised before this digest marker existed keeps
-the older rule: rebuilt only when this run's own push changed the summary
-file. So the description never drifts from a summary rewritten
-after creation, for as long as that run's conditions are met. Priority 1.64 also
-catches a push the worker did not make (Issue #3760), such as a review-fix
-commit pushed by hand: each cycle it re-syncs, in the repos due that cycle, an
-open fleet-authored PR whose recorded digest differs from the summary at its
-head (see [the PR feedback workflow](workflows/pr-feedback.md)). A PR body with no
-worker marker, such as one the agent raised itself with `gh pr create`, is
-left alone unless its head is the run's own `issue-<N>[-slug]` branch; then it
-is adopted (Issue #3804): rebuilt with the worker marker, digest and, when a
-criterion is `missing`, the withheld close (`Part of #N`). The issue run's
-completion phase adopts it at every exit, once the checkout's HEAD is the
-pushed head and the PR is open. The adopted body is built from the summary
-committed at that verified pushed head, never from uncommitted working-tree
-edits (Issue #4712). The adoption is skipped if the pushed head has moved since,
-or if that commit holds no summary. It preserves a recognised issue-reference
-title and rewrites other titles to `<issue title> (Issue #N)` (Issue #4621).
-A marker-less PR on any other branch is still left alone.
-A re-sync never files an issue: a criterion still `partial` or `missing` is
-named on the PR at completion instead (Issues #4146, #4234, see
+summary file is created, a warning note is included in the PR body. PR creation
+records a SHA-256 digest of the summary's content in the PR body as a hidden
+marker (the digest is of the summary alone, Issue #4234), and the sub-agent tier
+the issue run resolved as a second one,
+`<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`), so a later PR outcome
+can be attributed to that tier (Issue #3403); the fleet summary's per-tier
+PR-outcome figures do this (Issue #3404). A re-sync carries the tier marker over
+unchanged. A later CI-fix or merge-conflict run re-syncs the PR description from
+the summary, via `syncPrBodyFromSummary` (`worker/deno/lib/pr_body_sync.ts`),
+after a verified push to the PR's own head when the summary at the head differs
+from that recorded digest — whichever push changed it, this run's or an earlier
+one. A PR-feedback run re-syncs under the same condition, and also when it
+pushed nothing and has no commits left unpushed, so a feedback run that only
+answers a finding still refreshes a stale body. A body raised before this digest
+marker existed keeps the older rule: rebuilt only when this run's own push
+changed the summary file. So the description never drifts from a summary
+rewritten after creation, for as long as that run's conditions are met. Priority
+1.64 also catches a push the worker did not make (Issue #3760), such as a
+review-fix commit pushed by hand: each cycle it re-syncs, in the repos due that
+cycle, an open fleet-authored PR whose recorded digest differs from the summary
+at its head (see [the PR feedback workflow](workflows/pr-feedback.md)). A PR
+body with no worker marker, such as one the agent raised itself with
+`gh pr create`, is left alone unless its head is the run's own
+`issue-<N>[-slug]` branch; then it is adopted (Issue #3804): rebuilt with the
+worker marker, digest and, when a criterion is `missing`, the withheld close
+(`Part of #N`). The issue run's completion phase adopts it at every exit, once
+the checkout's HEAD is the pushed head and the PR is open. The adopted body is
+built from the summary committed at that verified pushed head, never from
+uncommitted working-tree edits (Issue #4712). The adoption is skipped if the
+pushed head has moved since, or if that commit holds no summary. It preserves a
+recognised issue-reference title and rewrites other titles to
+`<issue title> (Issue #N)` (Issue #4621). A marker-less PR on any other branch
+is still left alone. A re-sync never files an issue: a criterion still `partial`
+or `missing` is named on the PR at completion instead (Issues #4146, #4234, see
 [issue-processing.md](workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run)).
 
 The summary must describe the **final** state of the branch: it is rewritten,
@@ -128,19 +128,19 @@ not appended to, whenever a later commit changes what the PR does, so a stale
 record of an earlier iteration never reaches the archive (Issue #2879). Every
 file or behaviour it claims must appear in `git diff <base>...HEAD` — not merely
 exist at the head, since a merge from the base branch can supersede the change —
-and a summary that contradicts the diff is a blocking self-review finding
-(Issue #3015). The same appear-in-diff rule holds for every doc the diff adds
-or edits, for any claim that this PR changes something, and a claim whose
-subject a base-branch merge absorbed is dropped, while counts, line citations
-and run results true at the PR's last own commit stay as written when a base
-merge only moves them — but a test or file cited only as existing evidence
-needs merely to exist and have run on the final head, in the diff or already
-tracked (Issue #3058).
+and a summary that contradicts the diff is a blocking self-review finding (Issue
+#3015). The same appear-in-diff rule holds for every doc the diff adds or edits,
+for any claim that this PR changes something, and a claim whose subject a
+base-branch merge absorbed is dropped, while counts, line citations and run
+results true at the PR's last own commit stay as written when a base merge only
+moves them — but a test or file cited only as existing evidence needs merely to
+exist and have run on the final head, in the diff or already tracked (Issue
+#3058).
 
- moved every `pr-summary-*.md` file into `docs/archive/pr-summaries/`
-so `docs/` root remains a curated table of contents. The worker still checks the
-legacy `docs/pr-summary-{n}.md` location for older PRs (precedence order is
-documented in `worker/deno/lib/pr_summary_loader.ts`).
+moved every `pr-summary-*.md` file into `docs/archive/pr-summaries/` so `docs/`
+root remains a curated table of contents. The worker still checks the legacy
+`docs/pr-summary-{n}.md` location for older PRs (precedence order is documented
+in `worker/deno/lib/pr_summary_loader.ts`).
 
 For backwards compatibility, the worker also checks for a legacy `.pr_summary`
 file in the repository root.
@@ -194,12 +194,11 @@ To have the worker work on an issue **not** created by an allowed author:
 2. Add the `work-on` label (configurable via `work_on_label` in `.config.json`)
 3. Leave it unassigned
 
-> **🔒 Security:** Only a trusted author can add the `work-on` label to
-> trigger work — each monitored repo's write collaborators, minus the Vibe
-> Coder logins and bots. The worker verifies who added the label via the
-> GitHub timeline API (Application Programming Interface), and strips a
-> `work-on` applied by anyone else.
-> See [Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
+> **🔒 Security:** Only a trusted author can add the `work-on` label to trigger
+> work — each monitored repo's write collaborators, minus the Vibe Coder logins
+> and bots. The worker verifies who added the label via the GitHub timeline API
+> (Application Programming Interface), and strips a `work-on` applied by anyone
+> else. See [Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
 
 ## 🔓 Ignoring Open PRs (Working Despite Pending PRs)
 
@@ -218,13 +217,13 @@ label overrides this for specific issues.
 
 ## ❓ Clarification Phase (Handling Unclear or Complex Issues)
 
-The **clarification phase** runs before implementation. It routes an issue
-whose labels name another handler (`refine-issue`, `question`) and then runs a
-quick clarity check. An approved issue is never handed back to a human
-(Issue #4298): when the check finds it vague, the run proceeds and the agent
-states the assumptions it made in the PR summary. An issue too large for one PR
-goes to planning through the agent's `vibe-needs-planning` marker. The
-`documentation` label skips the check.
+The **clarification phase** runs before implementation. It routes an issue whose
+labels name another handler (`refine-issue`, `question`) and then runs a quick
+clarity check. An approved issue is never handed back to a human (Issue #4298):
+when the check finds it vague, the run proceeds and the agent states the
+assumptions it made in the PR summary. An issue too large for one PR goes to
+planning through the agent's `vibe-needs-planning` marker. The `documentation`
+label skips the check.
 
 For the full clarification workflow, including decision diagrams and
 configuration, see
@@ -252,8 +251,8 @@ The refinement phase lets you collaborate with Claude to improve an issue
 
 **To refine again:** Post new feedback comments and re-add the `refine-issue`
 label. `needs-human` alone is not a discovery trigger, so the worker will not
-pick the issue up until `refine-issue` is reapplied. (retired the
-legacy `refined` completion label.)
+pick the issue up until `refine-issue` is reapplied. (retired the legacy
+`refined` completion label.)
 
 **Protection mechanisms:** Atomic claiming prevents race conditions and eyes
 reactions prevent double-processing.
@@ -280,11 +279,10 @@ recorded on the issue and the worker tries again after a cooldown; it never
 applies `failed` and never hands the issue to a human.
 
 A repeat failure blocked by a worker gate (`summary-incomplete`,
-`quality-failure`, `pre-push-gate`, `security-fix-gate`, or another category
-in the worker gate registry) takes the same path: the evidence is written on
-the issue, `failed-once` stays, and the same issue is retried after the
-cooldown until it is done. Nothing is split, closed or deleted (Issue #4130
-removed).
+`quality-failure`, `pre-push-gate`, `security-fix-gate`, or another category in
+the worker gate registry) takes the same path: the evidence is written on the
+issue, `failed-once` stays, and the same issue is retried after the cooldown
+until it is done. Nothing is split, closed or deleted (Issue #4130 removed).
 
 ```mermaid
 flowchart TD
@@ -299,14 +297,14 @@ flowchart TD
     style D fill:#06d6a0,stroke:#05a77d,color:#000
 ```
 
-**Every failure**: Comment added (headed *First Attempt*, then *Repeat
-Attempt*), `failed-once` label kept as the record, stale remote branch deleted,
+**Every failure**: Comment added (headed _First Attempt_, then _Repeat
+Attempt_), `failed-once` label kept as the record, stale remote branch deleted,
 issue unassigned for automatic retry once its cooldown ends.
 
 **Which failures count (Issue #1949)**: a terminal coding-run failure the run
 reports enters the ladder unless it is transient infrastructure — a failed
 quality gate, a run that produced no changes and no useful output, an
-unexplained failure. A run that fails in 40 seconds is *stronger* evidence of a
+unexplained failure. A run that fails in 40 seconds is _stronger_ evidence of a
 stuck issue than one that fails slowly, so it climbs the same ladder.
 
 Three groups are exempt and consume no attempt, keeping the flat retry cooldown:
@@ -320,16 +318,16 @@ Three groups are exempt and consume no attempt, keeping the flat retry cooldown:
 - **Host capability** — the host's token lacks the `workflow` scope, so it
   cannot push a change under `.github/workflows/` (Issue #2689). The issue is
   released with no `failed-once`, `failed` or `needs-human` label, so a host
-  whose token has the scope claims it; the host logs the missing scope once
-  at WARN. Two bounds replace the ladder's cap: the refused host remembers
-  the issue (keyed on its install uuid, across relaunches) and never
-  re-claims it while its scope verdict stands; and after three consecutive
-  `token-scope` releases on the issue, one comment names the scope and the
-  fix, and every host whose token is not known to have the scope stops
-  claiming it. See [SETUP.md](SETUP.md#the-workflow-scope).
+  whose token has the scope claims it; the host logs the missing scope once at
+  WARN. Two bounds replace the ladder's cap: the refused host remembers the
+  issue (keyed on its install uuid, across relaunches) and never re-claims it
+  while its scope verdict stands; and after three consecutive `token-scope`
+  releases on the issue, one comment names the scope and the fix, and every host
+  whose token is not known to have the scope stops claiming it. See
+  [SETUP.md](SETUP.md#the-workflow-scope).
 
-Each ladder failure also steps an escalating re-claim cooldown (2 h → 6 h →
-24 h), so an issue that keeps failing is retried at most once a day rather than
+Each ladder failure also steps an escalating re-claim cooldown (2 h → 6 h → 24
+h), so an issue that keeps failing is retried at most once a day rather than
 every cycle. It stays queued: repeated failures are a Vibe Coder defect to fix,
 not a reason to give the issue back (Issue #4158).
 
@@ -373,15 +371,14 @@ failure.
 The current defaults, the per-phase timeouts, and the full explanation live in
 one place — see
 [How timeouts interact](CONFIGURATION.md#%EF%B8%8F-how-timeouts-interact) in the
-configuration reference (de-duplicated the numbers so they cannot
-drift apart).
+configuration reference (de-duplicated the numbers so they cannot drift apart).
 
 ### 💳 Rate Limit and Credit Exhaustion
 
-The worker handles rate limits intelligently: when it receives an
-HTTP (Hypertext Transfer Protocol) 429, it reads the `Retry-After` header and
-sleeps for exactly the right duration rather than burning retries. It retries up
-to `MAX_RATE_LIMIT_RETRIES` times with exponential backoff. If retries are
+The worker handles rate limits intelligently: when it receives an HTTP
+(Hypertext Transfer Protocol) 429, it reads the `Retry-After` header and sleeps
+for exactly the right duration rather than burning retries. It retries up to
+`MAX_RATE_LIMIT_RETRIES` times with exponential backoff. If retries are
 exhausted or total wait exceeds `MAX_RATE_LIMIT_WAIT` seconds, the issue counts
 as a failure (with a distinct exit code so the caller knows it was rate-limited,
 not a bug).
@@ -410,8 +407,8 @@ branch is created.
 
 ### 🔄 Retry with Exponential Backoff
 
-The `retry_with_backoff` utility wraps any command with automatic
-retry for transient errors.
+The `retry_with_backoff` utility wraps any command with automatic retry for
+transient errors.
 
 **Transient errors (retried):** HTTP 5xx, 429, network timeouts, connection
 refused, DNS (Domain Name System) failures, SSL/TLS (Secure Sockets Layer /
@@ -426,10 +423,10 @@ denied, authentication failures.
 ### ⏱️ Operation Timeouts
 
 All GitHub CLI (Command-Line Interface) and git operations are wrapped with
-configurable timeouts to prevent indefinite hangs. The default is
-60 seconds for most operations (120 seconds for merge/rebase). If an operation
-times out, the worker logs the failure distinctly and moves on rather than
-blocking the entire run.
+configurable timeouts to prevent indefinite hangs. The default is 60 seconds for
+most operations (120 seconds for merge/rebase). If an operation times out, the
+worker logs the failure distinctly and moves on rather than blocking the entire
+run.
 
 ## 🤝 Worker Escalation via `needs-human`
 
@@ -461,8 +458,8 @@ subsequent scan until a human removes the label.
 resolve itself. An analysis-only issue is closed with its analysis; a
 repository-admin finding is applied with the worker's token (or retried on the
 `failed-once` ladder when the token cannot); a dependency cycle is worked in
-issue-number order; a dead `work-on` label on a milestone tracker is stripped;
-a re-approved issue a merged PR already satisfies, and a worker diagnostic a
+issue-number order; a dead `work-on` label on a milestone tracker is stripped; a
+re-approved issue a merged PR already satisfies, and a worker diagnostic a
 merged PR fixed, are closed as completed.
 
 **To resume work:**
@@ -479,7 +476,7 @@ merged PR fixed, are closed as completed.
 > (Issue #1617) — the worker re-baselines its approval snapshot onto the current
 > content and proceeds, so the label is not re-added on the next scan. The
 > removal only counts when it is made by a trusted author (`allowed_authors`,
-> and not a fleet login) *after* the most recent edit; edit the issue again
+> and not a fleet login) _after_ the most recent edit; edit the issue again
 > afterwards and the gate blocks again with a fresh comment. See
 > [issue-processing.md — Content modified after approval](workflows/issue-processing.md#-issue-selection-priority).
 
@@ -492,9 +489,9 @@ merged PR fixed, are closed as completed.
 >> `idle-task`; the single label the Vibe Coder may self-apply is `idle-task`.
 >> Those labels are controlled by humans (and, for internal state labels, by the
 >> worker's non-Claude code paths). If you see the worker stop retrying an issue
->> with no `needs-human` label, check `worker.log` in the host log directory — it is probably in
->> its failure cooldown, not an escalation. The worker never parks an issue
->> behind `failed` (Issue #4158).
+>> with no `needs-human` label, check `worker.log` in the host log directory —
+>> it is probably in its failure cooldown, not an escalation. The worker never
+>> parks an issue behind `failed` (Issue #4158).
 
 ## ❓ Question Clarification
 
@@ -503,8 +500,8 @@ a useful answer, the worker detects a "Clarification Needed" marker in Claude's
 output and automatically:
 
 1. Posts a clarification request as a comment on the issue
-2. Removes the `question` label and adds the `needs-human` label (
-   the clarification handoff was consolidated onto `needs-human`)
+2. Removes the `question` label and adds the `needs-human` label ( the
+   clarification handoff was consolidated onto `needs-human`)
 3. Unassigns itself from the issue
 
 To continue, reply to the clarification comment with the requested information
@@ -527,9 +524,8 @@ appearing to silently fail.
 
 ## 🚦 Rate-Limit Circuit Breaker
 
-The worker includes a rate-limit circuit breaker that protects
-against excessive API calls when GitHub returns HTTP 429 (Too Many Requests)
-responses:
+The worker includes a rate-limit circuit breaker that protects against excessive
+API calls when GitHub returns HTTP 429 (Too Many Requests) responses:
 
 1. When a rate-limit response is detected, the circuit breaker trips and
    short-circuits all subsequent `gh` CLI calls for a cooldown period
@@ -544,8 +540,8 @@ operational constant (see [Configuration Reference](CONFIGURATION.md)).
 
 ## 🔒 One Issue per Repository/Milestone
 
-To prevent conflicts and ensure clean branches, the worker enforces
-one issue at a time **per work stream** — one pull request per merge target:
+To prevent conflicts and ensure clean branches, the worker enforces one issue at
+a time **per work stream** — one pull request per merge target:
 
 - **Per milestone**: Each open milestone is its own work stream with its own
   branch. Only one issue is worked on per milestone at a time; if a milestone
@@ -556,10 +552,10 @@ one issue at a time **per work stream** — one pull request per merge target:
   at a time.
 
 A repository therefore runs **as many issues concurrently as it has work
-streams** — its default branch plus each open milestone. Two issues in flight
-in one repository, one on a milestone branch and one on the default branch, is
-the intended behaviour, not a duplicate-work fault; opening a milestone is how
-an operator adds a parallel stream to a busy repository.
+streams** — its default branch plus each open milestone. Two issues in flight in
+one repository, one on a milestone branch and one on the default branch, is the
+intended behaviour, not a duplicate-work fault; opening a milestone is how an
+operator adds a parallel stream to a busy repository.
 
 This enforcement happens during issue selection and ensures that parallel
 workers do not create conflicting branches or overlapping changes on the same
@@ -568,8 +564,8 @@ target branch.
 ## 💾 Self-Healing Disk Space
 
 At startup, the worker checks disk usage of the `WORK_DIR` filesystem and
-applies a two-tier cleanup policy based on the cost of cleanup to
-subsequent issue processing:
+applies a two-tier cleanup policy based on the cost of cleanup to subsequent
+issue processing:
 
 - **Gentle cleanup at 80%** — When usage reaches `DISK_CLEANUP_GENTLE_THRESHOLD`
   (default 80%) but stays below the aggressive threshold, only the incremental
@@ -587,14 +583,14 @@ subsequent issue processing:
 | `DISK_CLEANUP_GENTLE_THRESHOLD` | `80`    | Gentle threshold — incremental reclaim only; cloned repos preserved   |
 | `DISK_CLEANUP_THRESHOLD`        | `90`    | Aggressive threshold — may nuke `WORK_DIR` if reclaim is insufficient |
 
-Both thresholds are whole percentages and **must be 1–100** (Issue #1268).
-There is no "disabled" spelling: `0` would mean "usage is always at or above
-the threshold", which nuked `WORK_DIR` — and every cloned repository in it —
-on each start. An out-of-range value is refused rather than applied:
+Both thresholds are whole percentages and **must be 1–100** (Issue #1268). There
+is no "disabled" spelling: `0` would mean "usage is always at or above the
+threshold", which nuked `WORK_DIR` — and every cloned repository in it — on each
+start. An out-of-range value is refused rather than applied:
 `mod.ts disk-space --threshold 0` fails with a named error and cleans nothing,
 and an unusable environment value is logged loud and the default is used
-instead. To hold the aggressive tier back until the volume is completely
-full, set `DISK_CLEANUP_THRESHOLD=100`.
+instead. To hold the aggressive tier back until the volume is completely full,
+set `DISK_CLEANUP_THRESHOLD=100`.
 
 ## 🔄 Claude CLI Auto-Update
 
@@ -642,12 +638,12 @@ repository applies to declared dependencies. A release published minutes ago is
 deferred until it ages past the window, which is the interval in which a
 hijacked upstream release is typically detected and yanked.
 
-| Variable                      | Default | Description                                                     |
-| ----------------------------- | ------- | --------------------------------------------------------------- |
-| `VIBE_BUMP_QUARANTINE_HOURS`  | `24`    | Release-age window; a non-positive value falls back to `24`      |
-| `SKIP_SOFTWARE_UPDATE`        | `false` | When `true`, skips the whole software-update step               |
-| `SKIP_GH_UPDATE`              | `false` | When `true`, skips `gh` binary and extension upgrades           |
-| `SKIP_DENO_UPDATE`            | `false` | When `true`, skips Deno upgrades                                |
+| Variable                     | Default | Description                                                 |
+| ---------------------------- | ------- | ----------------------------------------------------------- |
+| `VIBE_BUMP_QUARANTINE_HOURS` | `24`    | Release-age window; a non-positive value falls back to `24` |
+| `SKIP_SOFTWARE_UPDATE`       | `false` | When `true`, skips the whole software-update step           |
+| `SKIP_GH_UPDATE`             | `false` | When `true`, skips `gh` binary and extension upgrades       |
+| `SKIP_DENO_UPDATE`           | `false` | When `true`, skips Deno upgrades                            |
 
 Operational notes:
 
@@ -662,13 +658,12 @@ Operational notes:
   (`deno upgrade <version>`), so nothing published between the check and the
   upgrade can slip in.
 - **`gh` extensions are upgraded one at a time**, each gated on the ref its
-  upgrade would actually install — the latest release tag for a
-  binary/release extension, the default-branch HEAD commit for a git (script)
-  extension, which `gh` upgrades by pulling that branch. The upgrade is then a
-  pinned `gh extension install <repo> --pin <ref> --force`, so the ref that was
-  dated is the ref that lands. An extension whose ref cannot be dated is left
-  alone and reported. If `gh extension list` cannot be read, no extension is
-  upgraded.
+  upgrade would actually install — the latest release tag for a binary/release
+  extension, the default-branch HEAD commit for a git (script) extension, which
+  `gh` upgrades by pulling that branch. The upgrade is then a pinned
+  `gh extension install <repo> --pin <ref> --force`, so the ref that was dated
+  is the ref that lands. An extension whose ref cannot be dated is left alone
+  and reported. If `gh extension list` cannot be read, no extension is upgraded.
 
 ```mermaid
 flowchart TD
@@ -680,6 +675,7 @@ flowchart TD
     Q -- no --> S["skip + report"]
     Q -- yes --> I["gh extension install repo<br/>--pin ref --force"]
 ```
+
 - All the skip flags above are honoured on every entry point, including the
   `run-entrypoint` driver `run.sh` uses.
 
@@ -699,13 +695,13 @@ callback replacement — a stale setting is refused, never silently ignored.
 At startup, the worker checks which optional features are available and logs a
 summary.
 
-| Feature           | Check                                                  | Fallback when unavailable                     |
-| ----------------- | ------------------------------------------------------ | --------------------------------------------- |
-| `imgbb`           | `imgbb_api_key` in config or `VIBE_IMGBB_API_KEY` set  | Screenshots saved locally instead of uploaded |
-| `github-status`   | `update_gh_user_status` true and `user` scope on token | Status updates silently skipped               |
+| Feature         | Check                                                  | Fallback when unavailable                     |
+| --------------- | ------------------------------------------------------ | --------------------------------------------- |
+| `imgbb`         | `imgbb_api_key` in config or `VIBE_IMGBB_API_KEY` set  | Screenshots saved locally instead of uploaded |
+| `github-status` | `update_gh_user_status` true and `user` scope on token | Status updates silently skipped               |
 
-> **📝 Note:** Deno is a **required** dependency and is no longer
-> listed as an optional feature.
+> **📝 Note:** Deno is a **required** dependency and is no longer listed as an
+> optional feature.
 
 Core functionality (issue processing, PR feedback) is never blocked by missing
 optional features.
@@ -731,13 +727,13 @@ For other reviewers:
 2. Click "Review changes"
 3. Write your feedback and select "Request changes"
 
-The worker will process the feedback, push fixes, and dismiss the review once
-it has settled it — not at the moment it claims the review. The dismissal
-message says how it was settled (addressed, rebutted, handed off, or not
-addressed after two attempts — when the PR is closed and its issue redone,
-Issue #4304), so only a fixed review reads as addressed. A run that dies
-mid-flight leaves the review undismissed rather than silently answered, so it
-is picked up again (by this host or another) once its claim lapses.
+The worker will process the feedback, push fixes, and dismiss the review once it
+has settled it — not at the moment it claims the review. The dismissal message
+says how it was settled (addressed, rebutted, handed off, or not addressed after
+two attempts — when the PR is closed and its issue redone, Issue #4304), so only
+a fixed review reads as addressed. A run that dies mid-flight leaves the review
+undismissed rather than silently answered, so it is picked up again (by this
+host or another) once its claim lapses.
 
 **How the worker handles feedback:**
 
@@ -747,8 +743,8 @@ is picked up again (by this host or another) once its claim lapses.
 - Either fix the code or respond with an explanation
 - Always push unpushed commits
 - Mark feedback as processed (👀 reaction for comments; a review is dismissed
-  only once it has been fixed, rebutted, handed off or escalated — not at
-  claim time)
+  only once it has been fixed, rebutted, handed off or escalated — not at claim
+  time)
 
 ## 👍 Reaction System
 
@@ -857,11 +853,10 @@ flowchart TD
 ```
 
 Five rungs are skipped for a cycle when the previous cycle's GraphQL quota
-reading put the window at or below its reserve: Priorities 1.64, 1.67, 1.68,
-1.7 and 1.81 carry `budgetTier: "deferrable"`, so what is left of the window
-goes to issue work and the sweeps run a cycle later (Issue #2449). The cycle
-logs one `budget-pacing: in reserve — skipped deferrable sweeps: …` line naming
-them. See
+reading put the window at or below its reserve: Priorities 1.64, 1.67, 1.68, 1.7
+and 1.81 carry `budgetTier: "deferrable"`, so what is left of the window goes to
+issue work and the sweeps run a cycle later (Issue #2449). The cycle logs one
+`budget-pacing: in reserve — skipped deferrable sweeps: …` line naming them. See
 [The `deferrable` tier](GH-API-OPTIMISATION.md#the-deferrable-tier--the-sweeps-that-stand-down-in-the-reserve).
 
 The ladder is otherwise serial, with one exception: when `max_concurrent_issues`
@@ -888,10 +883,10 @@ higher-tier candidate exists in any scanned repo. The `idle-task` tier (priority
 2.9) sits strictly below `low-priority` and is the only label the Vibe Coder may
 self-apply. The dispatch table in `worker/deno/lib/run_core.ts` is the source of
 truth for the fractional priorities; the canonical documented ladder is the
-table in [Workflows](workflows/README.md#-lifecycle-overview) and a test keeps both
-diagrams in step with the code. The canonical pickup-priority order is `top-priority` > `work-on` >
-`low-priority` > `idle-task`. Repo order in `repos` affects scan order;
-selection is by issue age, not repo position. See
+table in [Workflows](workflows/README.md#-lifecycle-overview) and a test keeps
+both diagrams in step with the code. The canonical pickup-priority order is
+`top-priority` > `work-on` > `low-priority` > `idle-task`. Repo order in `repos`
+affects scan order; selection is by issue age, not repo position. See
 [Workflows](workflows/README.md) and
 [Issue Processing](workflows/issue-processing.md) for full detail.
 

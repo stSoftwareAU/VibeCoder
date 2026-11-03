@@ -25,9 +25,10 @@ Closes #1299.
 Backend/CLI change with no web interface to screenshot, so the evidence is the
 regression test, run red against the unfixed launcher and green after the fix.
 
-Red — `worker/deno/tests/run_sh_launcher_test.ts::run.sh - the stderr capture
-FIFO is private to this account (Issue #1299)` against the unfixed `mkfifo`
-line:
+Red —
+`worker/deno/tests/run_sh_launcher_test.ts::run.sh - the stderr capture
+FIFO is private to this account (Issue #1299)`
+against the unfixed `mkfifo` line:
 
 ```text
 error: AssertionError: Values are not equal: the capture FIFO must be owner-only
@@ -85,13 +86,14 @@ there is no second path to the same resource. The sibling `RUN_LOG` was already
 
 ## Test Plan
 
-- Added `worker/deno/tests/run_sh_launcher_test.ts::run.sh - the stderr capture
-  FIFO is private to this account (Issue #1299)` — reproduces the flaw
-  (observed failing at `644` against the unfixed code, passing at `600` after
-  the fix).
+- Added
+  `worker/deno/tests/run_sh_launcher_test.ts::run.sh - the stderr capture
+  FIFO is private to this account (Issue #1299)`
+  — reproduces the flaw (observed failing at `644` against the unfixed code,
+  passing at `600` after the fix).
 - Extended `worker/deno/tests/fixtures/launcher_harness.ts`: the runtime stub's
-  `run` branch records each capture FIFO's octal mode under
-  `run-err-fifo.mode`, and the new `runErrFifoModes()` accessor reads it. GNU
-  `stat -c '%a'` is tried first and BSD `stat -f '%Lp'` second, so the harness
-  reports the same thing on Linux and macOS hosts.
+  `run` branch records each capture FIFO's octal mode under `run-err-fifo.mode`,
+  and the new `runErrFifoModes()` accessor reads it. GNU `stat -c '%a'` is tried
+  first and BSD `stat -f '%Lp'` second, so the harness reports the same thing on
+  Linux and macOS hosts.
 - No existing test was modified or removed.

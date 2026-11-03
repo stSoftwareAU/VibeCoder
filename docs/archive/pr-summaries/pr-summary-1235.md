@@ -35,9 +35,9 @@ flowchart LR
 Backend/CLI change — no web interface to screenshot. The evidence is the
 regression tests below plus the full local gate.
 
-Observed red against the unfixed code (the two source files reverted to the
-base branch, the new tests unchanged) — this is the exact vulnerability the
-issue describes, the hostile manifest's coordinates being collected verbatim:
+Observed red against the unfixed code (the two source files reverted to the base
+branch, the new tests unchanged) — this is the exact vulnerability the issue
+describes, the hostile manifest's coordinates being collected verbatim:
 
 ```text
 [Diff] Actual / Expected
@@ -83,8 +83,8 @@ Added to `worker/deno/tests/repo_settings_harden_test.ts`:
   `*/*@*`, `../..@*`, `./local@*`) and passes after the fix.
 - `worker/deno/tests/repo_settings_harden_test.ts::parseAllowActionArg - an operator coordinate the pattern builder would drop is rejected loudly, not silently (Issue #1235)`
   — `--allow-action ../..` used to parse and would now be dropped by the
-  hardened pattern builder; it is rejected with the existing loud error
-  instead, so the fix introduces no silent drop.
+  hardened pattern builder; it is rejected with the existing loud error instead,
+  so the fix introduces no silent drop.
 - Extended the existing `allowListCovers` test with multi-wildcard and exact
   patterns, covering the glob matcher that replaced the constructed `RegExp`.
 

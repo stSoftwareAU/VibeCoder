@@ -20,16 +20,16 @@ The drain could then restart.
 
 A reservation now ends in one of three ways:
 
-- **Its own PR wins the repository.** This is the ref-owned spend from #2793
-  and is unchanged.
+- **Its own PR wins the repository.** This is the ref-owned spend from #2793 and
+  is unchanged.
 - **Positive signal.** After an uncut sequence, the lane asks the new optional
   `RunCoreDeps.isReservingPrClosed(repo, pr)` about each reservation. It drops
   the reservation only on `true`, meaning the PR is closed or merged, and logs
   `reservation released repo=… pr=…`. An open PR, an unknown state or a skipped
   pass keeps the reservation. An unreadable PR also keeps it, and that case is
-  logged as a WARNING, since the TTL still bounds it. A primary rate limit
-  stops the reads and is handed back as the lane's `rateLimitError`, as a
-  pass's own is (Issue #1921). A sequence cut short by shutdown, the deadline, an abandoned
+  logged as a WARNING, since the TTL still bounds it. A primary rate limit stops
+  the reads and is handed back as the lane's `rateLimitError`, as a pass's own
+  is (Issue #1921). A sequence cut short by shutdown, the deadline, an abandoned
   pass or a rate limit reads nothing.
 - **The two-hour TTL**, which is the backstop.
 

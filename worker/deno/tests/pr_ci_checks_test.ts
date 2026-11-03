@@ -12,6 +12,7 @@ import {
   isSpellingCheck,
   isSpellingStep,
   recordCiCheckRetry,
+  refundCiCheckRetry,
   resolveCheckFixRoute,
   sanitiseRepoName,
 } from "../lib/pr_ci_checks.ts";
@@ -283,3 +284,24 @@ function makeCapturingLogger(sink: string[]): Logger {
     workerSummary: noop,
   };
 }
+
+// --- refundCiCheckRetry (Issue #4625) ---
+
+Deno.test("pr_ci_checks - refundCiCheckRetry gives back one recorded retry and never goes below zero", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await recordCiCheckRetry(tmpDir, "owner/repo", "12345");
+    await recordCiCheckRetry(tmpDir, "owner/repo", "12345");
+    assertEquals(await refundCiCheckRetry(tmpDir, "owner/repo", "12345"), 1);
+    assertEquals(await getCiCheckRetryCount(tmpDir, "owner/repo", "12345"), 1);
+    assertEquals(await refundCiCheckRetry(tmpDir, "owner/repo", "12345"), 0);
+    assertEquals(await refundCiCheckRetry(tmpDir, "owner/repo", "12345"), 0);
+    assertEquals(await getCiCheckRetryCount(tmpDir, "owner/repo", "12345"), 0);
+    // A refund touches only its own check.
+    await recordCiCheckRetry(tmpDir, "owner/repo", "other");
+    await refundCiCheckRetry(tmpDir, "owner/repo", "12345");
+    assertEquals(await getCiCheckRetryCount(tmpDir, "owner/repo", "other"), 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

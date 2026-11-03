@@ -3,21 +3,21 @@
 Closes #2901
 
 Without `--search`, `gh pr list` orders results by creation date, not update
-recency. A long-lived PR (e.g. a milestone child) that merges or closes after
-30 newer-numbered PRs have already merged never enters the merged-PR sweeps'
-30-PR window (`fetchMergedPRsAnyAuthor` → `closeIssuesForMergedPrs`;
+recency. A long-lived PR (e.g. a milestone child) that merges or closes after 30
+newer-numbered PRs have already merged never enters the merged-PR sweeps' 30-PR
+window (`fetchMergedPRsAnyAuthor` → `closeIssuesForMergedPrs`;
 `fetchMergedPRsByUser` → `cleanupMergedPrBranches` and the issue lifecycle) or
 the 100-PR closed window (`fetchClosedPRsByUser` →
 `fetchRecentlyClosedPRsForFleet` → `sweepMergedPrIssues`). Its `Closes #N` is
 never honoured and its branch is never cleaned up.
 
 Fix: a new exported constant `RECENCY_ORDER_SEARCH = "sort:updated-desc"` in
-`worker/deno/lib/issue_query.ts`, passed as `--search` by those three
-fetchers, alongside the existing `--state`/`--author` flags (`gh` folds them
-all into the search query). A merge or close updates the PR, so it lands at
-the front of the window regardless of when it was created. The processed-set
-store's `pruneToWindow` already tolerates a PR leaving and re-entering the
-window. `fetchRecentMergedPRs` (prompt context) is deliberately unchanged.
+`worker/deno/lib/issue_query.ts`, passed as `--search` by those three fetchers,
+alongside the existing `--state`/`--author` flags (`gh` folds them all into the
+search query). A merge or close updates the PR, so it lands at the front of the
+window regardless of when it was created. The processed-set store's
+`pruneToWindow` already tolerates a PR leaving and re-entering the window.
+`fetchRecentMergedPRs` (prompt context) is deliberately unchanged.
 
 ```mermaid
 flowchart LR
@@ -29,16 +29,15 @@ flowchart LR
   end
 ```
 
-- [x] Red test: `merged_pr_window_order_2901_test.ts` against pre-fix
-      fetchers — 3 failed
+- [x] Red test: `merged_pr_window_order_2901_test.ts` against pre-fix fetchers —
+      3 failed
 - [x] Fix: `RECENCY_ORDER_SEARCH` added and passed by the three fetchers
 - [x] Docs updated: `docs/INTERNALS.md`, `docs/GH-API-OPTIMISATION.md`
 - [x] Quality gate run
 
 ## Evidence
 
-Backend-only change; no web interface to screenshot. Evidence is the test
-suite.
+Backend-only change; no web interface to screenshot. Evidence is the test suite.
 
 New `worker/deno/tests/merged_pr_window_order_2901_test.ts`:
 
@@ -78,8 +77,8 @@ Docs updated: `docs/INTERNALS.md` (merged-pr-issue-sweep section) and
 
 - No new external input — the fetchers' existing gh output is parsed as before.
 - No secrets touched.
-- The new `--search` argument is a fixed constant, never built from
-  interpolated or untrusted input.
+- The new `--search` argument is a fixed constant, never built from interpolated
+  or untrusted input.
 - No new dependencies.
 
 ## Test Plan

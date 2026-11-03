@@ -214,10 +214,10 @@ New — `worker/deno/tests/execute_phase_usage_limit_test.ts`:
 - `execute #1670 - a usage limit checkpoints the work and the resume pointer
   BEFORE switching credential`
   — asserts the exact call order (invoke → `wip:` commit carrying the handover
-  note → invoke with the same session and the pointer already on disk), that
-  the switch would carry `--resume` rather than re-declaring the id, that it
-  gets no more execute budget than the first invocation had, and that the
-  phase then runs to completion.
+  note → invoke with the same session and the pointer already on disk), that the
+  switch would carry `--resume` rather than re-declaring the id, that it gets no
+  more execute budget than the first invocation had, and that the phase then
+  runs to completion.
 - `execute #1670 - with no eligible credential the run parks on the branch and
   stops`
   — two invocations only, `status: "failure"`, `preservedWip.branch` set, the

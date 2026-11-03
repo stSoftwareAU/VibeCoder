@@ -30,9 +30,9 @@ flowchart TD
 What changed, concretely:
 
 - `worker/deno/lib/milestone_branch_sync.ts` — `findActiveMilestoneBranches`
-  returns every **open** milestone (idle-task milestones still filtered,
-  Issue #2125); the closed-issue query and the activity-gate observation path
-  are removed. `shouldSyncMilestone` now takes the branch's ledger entry and the
+  returns every **open** milestone (idle-task milestones still filtered, Issue
+  #2125); the closed-issue query and the activity-gate observation path are
+  removed. `shouldSyncMilestone` now takes the branch's ledger entry and the
   current tip. `cooldownSeconds` and `lastSyncTimes` are gone from
   `MilestoneBranchSyncDeps`, replaced by an optional `defaultTipShaFn`.
 - `worker/deno/lib/milestone_default_tip.ts` (new) — `readLocalDefaultTip`
@@ -85,28 +85,120 @@ diagram above is the visual evidence for the cadence change.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Default tip unchanged since the last successful sync → `syncBranchFn` not called, log `skipped: default tip unchanged` — evidence: `worker/deno/lib/milestone_branch_sync.ts` (the cadence guard in `syncMilestoneBranches`) and `worker/deno/tests/milestone_sync_cadence_test.ts::syncMilestoneBranches - an unchanged default tip syncs nothing (Issue #1776)` — reviewer: met
-- **met** — Tip moved → every open milestone's branch is synced on that cycle, including one with zero closed issues — evidence: `worker/deno/tests/milestone_sync_cadence_test.ts::syncMilestoneBranches - a moved tip syncs every open milestone, including one with no closed issues (Issue #1776)` — reviewer: met
-- **met** — A failed sync leaves `lastSyncedDefaultSha` unchanged so the next cycle retries — evidence: `worker/deno/tests/milestone_sync_cadence_test.ts::syncMilestoneBranches - a failed sync leaves the recorded tip alone so the next cycle retries (Issue #1776)`; only `recordSuccess` writes the field — reviewer: met
-- **met** — `milestone_sync_cadence_test.ts` and `milestone_branch_sync_test.ts` updated; cooldown tests removed — evidence: `worker/deno/tests/milestone_branch_sync_test.ts` (four ledger-based `shouldSyncMilestone` cases replace the four cooldown ones) and the rewritten `milestone_sync_cadence_test.ts` — reviewer: met
-- **met** — `./quality.sh < /dev/null` passes — evidence: full gate run after the final edit — reviewer: missing — reason: the reviewer ran against the first commit, where `lib_sweep_coverage_test.ts` was red (no slice claimed `milestone_default_tip.ts`, and the ledger still named the deleted `milestone_activity_gate.ts`); fixed in `4ed9dd0` with sweep slice 12q and its written record, and the gate re-run green here
-- **unrequested** — `worker/deno/lib/milestone_default_tip.ts` calls its own `ensureDefaultBranchCurrent`, so a repo fetches `origin/<default>` once more per cycle than before — reviewer: unrequested — reason: the issue says "after the existing `ensureDefaultBranchCurrent`", but the existing one lives *inside* `syncMilestoneBranchWithDefault`, i.e. after the decision the tip is needed for. A cheap local fetch is the price of reading a current tip before deciding; it is also what makes the stuck-local-ref check below possible
-- **unrequested** — the tip is the **local** `<default>` ref, and a disagreement with `origin/<default>` is a failure rather than a tip — evidence: `worker/deno/lib/milestone_default_tip.ts`, `worker/deno/tests/milestone_default_tip_test.ts::readLocalDefaultTip - a local ref that could not be moved is a loud failure, not the remote tip (Issue #1776)` — reviewer: unrequested — reason: the Spec reviewer found the first cut wrong here: the merge uses the local ref, `ensureDefaultBranchCurrent` can fail to move it and still report success (Issue #394), so recording the remote tip would claim a merge-down that never happened and park the branch until the next push
-- **unrequested** — ledger entries for milestone branches a repo's listing no longer returns are pruned — evidence: `worker/deno/lib/milestone_branch_sync.ts` (`live` set before the milestone loop), `worker/deno/tests/milestone_sync_cadence_test.ts::syncMilestoneBranches - a closed milestone's ledger entry does not outlive it (Issue #1776)` — reviewer: unrequested — reason: entries now outlive a success because they carry the tip, so without this `milestone_sync_failures.json` grows without bound, one entry per milestone branch ever synced
-- **unrequested** — `docs/GH-API-OPTIMISATION.md` rewritten (its Issue #1488 worked example and its cache-invalidation row both named the deleted module), and a new sweep record `docs/audits/security-sweep-1776-milestone-default-tip.md` with slice 12q in `docs/audits/lib-sweep-coverage.json` — reviewer: unrequested — reason: "A Code Change Owes a Docs Change" for the first, and `lib_sweep_coverage_test.ts` fails the build without the second
-- **unrequested** — the one-shot `sync-milestone-branches` command is given neither a tip reader nor a ledger, so it always syncs — evidence: `worker/deno/commands/milestone_branch_sync.ts` — reviewer: unrequested — reason: invoking that command by hand is a request to sync now; the self-pacing pass is the periodic one. The cost is one no-op merge attempt if the periodic pass follows it immediately
+- **met** — Default tip unchanged since the last successful sync →
+  `syncBranchFn` not called, log `skipped: default tip unchanged` — evidence:
+  `worker/deno/lib/milestone_branch_sync.ts` (the cadence guard in
+  `syncMilestoneBranches`) and
+  `worker/deno/tests/milestone_sync_cadence_test.ts::syncMilestoneBranches - an unchanged default tip syncs nothing (Issue #1776)`
+  — reviewer: met
+- **met** — Tip moved → every open milestone's branch is synced on that cycle,
+  including one with zero closed issues — evidence:
+  `worker/deno/tests/milestone_sync_cadence_test.ts::syncMilestoneBranches - a moved tip syncs every open milestone, including one with no closed issues (Issue #1776)`
+  — reviewer: met
+- **met** — A failed sync leaves `lastSyncedDefaultSha` unchanged so the next
+  cycle retries — evidence:
+  `worker/deno/tests/milestone_sync_cadence_test.ts::syncMilestoneBranches - a failed sync leaves the recorded tip alone so the next cycle retries (Issue #1776)`;
+  only `recordSuccess` writes the field — reviewer: met
+- **met** — `milestone_sync_cadence_test.ts` and `milestone_branch_sync_test.ts`
+  updated; cooldown tests removed — evidence:
+  `worker/deno/tests/milestone_branch_sync_test.ts` (four ledger-based
+  `shouldSyncMilestone` cases replace the four cooldown ones) and the rewritten
+  `milestone_sync_cadence_test.ts` — reviewer: met
+- **met** — `./quality.sh < /dev/null` passes — evidence: full gate run after
+  the final edit — reviewer: missing — reason: the reviewer ran against the
+  first commit, where `lib_sweep_coverage_test.ts` was red (no slice claimed
+  `milestone_default_tip.ts`, and the ledger still named the deleted
+  `milestone_activity_gate.ts`); fixed in `4ed9dd0` with sweep slice 12q and its
+  written record, and the gate re-run green here
+- **unrequested** — `worker/deno/lib/milestone_default_tip.ts` calls its own
+  `ensureDefaultBranchCurrent`, so a repo fetches `origin/<default>` once more
+  per cycle than before — reviewer: unrequested — reason: the issue says "after
+  the existing `ensureDefaultBranchCurrent`", but the existing one lives
+  _inside_ `syncMilestoneBranchWithDefault`, i.e. after the decision the tip is
+  needed for. A cheap local fetch is the price of reading a current tip before
+  deciding; it is also what makes the stuck-local-ref check below possible
+- **unrequested** — the tip is the **local** `<default>` ref, and a disagreement
+  with `origin/<default>` is a failure rather than a tip — evidence:
+  `worker/deno/lib/milestone_default_tip.ts`,
+  `worker/deno/tests/milestone_default_tip_test.ts::readLocalDefaultTip - a local ref that could not be moved is a loud failure, not the remote tip (Issue #1776)`
+  — reviewer: unrequested — reason: the Spec reviewer found the first cut wrong
+  here: the merge uses the local ref, `ensureDefaultBranchCurrent` can fail to
+  move it and still report success (Issue #394), so recording the remote tip
+  would claim a merge-down that never happened and park the branch until the
+  next push
+- **unrequested** — ledger entries for milestone branches a repo's listing no
+  longer returns are pruned — evidence:
+  `worker/deno/lib/milestone_branch_sync.ts` (`live` set before the milestone
+  loop),
+  `worker/deno/tests/milestone_sync_cadence_test.ts::syncMilestoneBranches - a closed milestone's ledger entry does not outlive it (Issue #1776)`
+  — reviewer: unrequested — reason: entries now outlive a success because they
+  carry the tip, so without this `milestone_sync_failures.json` grows without
+  bound, one entry per milestone branch ever synced
+- **unrequested** — `docs/GH-API-OPTIMISATION.md` rewritten (its Issue #1488
+  worked example and its cache-invalidation row both named the deleted module),
+  and a new sweep record
+  `docs/audits/security-sweep-1776-milestone-default-tip.md` with slice 12q in
+  `docs/audits/lib-sweep-coverage.json` — reviewer: unrequested — reason: "A
+  Code Change Owes a Docs Change" for the first, and
+  `lib_sweep_coverage_test.ts` fails the build without the second
+- **unrequested** — the one-shot `sync-milestone-branches` command is given
+  neither a tip reader nor a ledger, so it always syncs — evidence:
+  `worker/deno/commands/milestone_branch_sync.ts` — reviewer: unrequested —
+  reason: invoking that command by hand is a request to sync now; the
+  self-pacing pass is the periodic one. The cost is one no-op merge attempt if
+  the periodic pass follows it immediately
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — `docs/audits/lib-sweep-coverage.json` claimed the deleted `milestone_activity_gate.ts` and no slice claimed the new `milestone_default_tip.ts`, so `deno test tests/lib_sweep_coverage_test.ts` was red in the committed tree — evidence: `docs/audits/lib-sweep-coverage.json:267` (pre-fix) — reason: fixed in `4ed9dd0`; slice **12q** added with its written sweep record, and the dangling claim removed
-- **violation** — errors were swallowed: `readLocalDefaultTip` discarded `ensureDefaultBranchCurrent`'s `Result` error and `git rev-parse`'s exit code and stderr, so a failed fetch reached the operator as "git reported no commit" — evidence: `worker/deno/lib/milestone_default_tip.ts:39,45` (pre-fix) — reason: fixed in `4ed9dd0`; the function now returns `Result<string>` and every branch names the ref and what git said, which the sync logs verbatim. Asserted by `milestone_sync_cadence_test.ts::... a tip git cannot report is synced rather than silently skipped (Issue #1776)`
-- **violation** — DRY: `recordSuccess` redefined what a success does to the ledger instead of using `resetConflictLedgerOnSuccess`, silently dropping `rollbacks`, `lastAttempt` and the open-attempt marker that Issue #1766 documents as surviving — evidence: `worker/deno/lib/milestone_branch_sync.ts` (`recordSuccess`, pre-fix) — reason: fixed in `4ed9dd0`; the helper now composes the ledger's own writer and only clears the failure-streak and escalation flags, which a success has always cleared
-- **violation** — "A Code Change Owes a Docs Change": the section heading "The merge-down happens on closure" and its "Two behaviours … (Issue #1558)" lead-in still described the trigger this change removed — evidence: `docs/INTERNALS.md:3067,3071` (pre-fix) — reason: fixed in `4ed9dd0`
-- **violation** — comment accuracy: "an idle cycle costs no API call at all" overstated the saving — the REST milestone listing is still spent per repo — evidence: `worker/deno/lib/milestone_branch_sync.ts` (cadence-guard comment, pre-fix) — reason: fixed in `4ed9dd0`; the comment now says only the per-milestone branch probe is avoided
-- **violation** — the PR summary (`docs/archive/pr-summaries/pr-summary-1776.md`) did not exist when the reviewer read the tree, and with it the required documentation of the tests this change removes — evidence: absent file — reason: this file; the removed tests are listed under **Test Plan** with the reason each no longer describes the system
-- **clean** — Australian English throughout code, comments, tests and docs; Deno-native tooling only (`deno lint`, `deno fmt --check`, `deno check`, `deno test` — no Node tooling added); every test calls the real functions and asserts on returned state or persisted files, none greps source; no wall-clock sleep, poll loop or absolute timing threshold (the `Date.now()`-bracketed cooldown assertion is removed, not replaced); new public functions carry happy-path, error-path and edge cases; the branch name reaches git only after `assertSafeRefComponent`, with an argument-injection test; no hidden path staged; both commit messages name Issue #1776 and carry the `Vibe-Coder-Run-Id` trailer
+- **violation** — `docs/audits/lib-sweep-coverage.json` claimed the deleted
+  `milestone_activity_gate.ts` and no slice claimed the new
+  `milestone_default_tip.ts`, so `deno test tests/lib_sweep_coverage_test.ts`
+  was red in the committed tree — evidence:
+  `docs/audits/lib-sweep-coverage.json:267` (pre-fix) — reason: fixed in
+  `4ed9dd0`; slice **12q** added with its written sweep record, and the dangling
+  claim removed
+- **violation** — errors were swallowed: `readLocalDefaultTip` discarded
+  `ensureDefaultBranchCurrent`'s `Result` error and `git rev-parse`'s exit code
+  and stderr, so a failed fetch reached the operator as "git reported no commit"
+  — evidence: `worker/deno/lib/milestone_default_tip.ts:39,45` (pre-fix) —
+  reason: fixed in `4ed9dd0`; the function now returns `Result<string>` and
+  every branch names the ref and what git said, which the sync logs verbatim.
+  Asserted by
+  `milestone_sync_cadence_test.ts::... a tip git cannot report is synced rather than silently skipped (Issue #1776)`
+- **violation** — DRY: `recordSuccess` redefined what a success does to the
+  ledger instead of using `resetConflictLedgerOnSuccess`, silently dropping
+  `rollbacks`, `lastAttempt` and the open-attempt marker that Issue #1766
+  documents as surviving — evidence: `worker/deno/lib/milestone_branch_sync.ts`
+  (`recordSuccess`, pre-fix) — reason: fixed in `4ed9dd0`; the helper now
+  composes the ledger's own writer and only clears the failure-streak and
+  escalation flags, which a success has always cleared
+- **violation** — "A Code Change Owes a Docs Change": the section heading "The
+  merge-down happens on closure" and its "Two behaviours … (Issue #1558)"
+  lead-in still described the trigger this change removed — evidence:
+  `docs/INTERNALS.md:3067,3071` (pre-fix) — reason: fixed in `4ed9dd0`
+- **violation** — comment accuracy: "an idle cycle costs no API call at all"
+  overstated the saving — the REST milestone listing is still spent per repo —
+  evidence: `worker/deno/lib/milestone_branch_sync.ts` (cadence-guard comment,
+  pre-fix) — reason: fixed in `4ed9dd0`; the comment now says only the
+  per-milestone branch probe is avoided
+- **violation** — the PR summary
+  (`docs/archive/pr-summaries/pr-summary-1776.md`) did not exist when the
+  reviewer read the tree, and with it the required documentation of the tests
+  this change removes — evidence: absent file — reason: this file; the removed
+  tests are listed under **Test Plan** with the reason each no longer describes
+  the system
+- **clean** — Australian English throughout code, comments, tests and docs;
+  Deno-native tooling only (`deno lint`, `deno fmt --check`, `deno check`,
+  `deno test` — no Node tooling added); every test calls the real functions and
+  asserts on returned state or persisted files, none greps source; no wall-clock
+  sleep, poll loop or absolute timing threshold (the `Date.now()`-bracketed
+  cooldown assertion is removed, not replaced); new public functions carry
+  happy-path, error-path and edge cases; the branch name reaches git only after
+  `assertSafeRefComponent`, with an argument-injection test; no hidden path
+  staged; both commit messages name Issue #1776 and carry the
+  `Vibe-Coder-Run-Id` trailer
 
 ## Test Plan
 

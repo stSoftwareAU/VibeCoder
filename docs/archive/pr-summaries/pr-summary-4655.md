@@ -48,8 +48,8 @@ flowchart TD
 - Governing issues come from `closingIssuesReferences`, the `issue-<N>-…` branch
   of a fleet PR, or an anchored `Part of #N` line. The issue itself is fetched;
   it counts only if its author is trusted (`author_association`
-  OWNER/MEMBER/COLLABORATOR in the PR repository, or an explicitly trusted login in
-  `allowed_authors`/`authorized_commenters`/`pr_reviewers`). PR prose never
+  OWNER/MEMBER/COLLABORATOR in the PR repository, or an explicitly trusted login
+  in `allowed_authors`/`authorized_commenters`/`pr_reviewers`). PR prose never
   authorises anything. The five-word minimum is gone; a supplied quote must be
   verbatim in the issue and `expected-value` requires one.
 - Migration from #3397: the policy is on by default (no opt-in).
@@ -105,8 +105,8 @@ only when the earlier record says the skill added it.
 ## Test Plan
 
 - CI repair: aligned the removed-test fixture with its review note and supplied
-  the remaining behaviour for mixed coverage. The policy test file passes all
-  55 tests; the negative assertions remain in place.
+  the remaining behaviour for mixed coverage. The policy test file passes all 55
+  tests; the negative assertions remain in place.
 - Ran from `worker/deno`: `deno task test:unit` over the three new files plus
   every test importing the review-fleet-prs scripts (458 passed, 0 failed),
   `tests/review_fleet_prs_runner_test.ts` directly (70 passed), and 59
@@ -157,23 +157,24 @@ only when the earlier record says the skill added it.
   login; OWNER/MEMBER/COLLABORATOR associations authorise only within the PR
   repository. The policy test pairs cross-repository rejection with explicit
   login approval; existing same-repository approval remains covered.
-- The post.ts subprocess harness now runs a moving second head read and
-  asserts posted:false, the new head reason and no review or label mutation.
-  Policy-1 hold records replay through evidence assessment and actual posting,
-  approving justified test changes and removing only reviewer-owned holds.
+- The post.ts subprocess harness now runs a moving second head read and asserts
+  posted:false, the new head reason and no review or label mutation. Policy-1
+  hold records replay through evidence assessment and actual posting, approving
+  justified test changes and removing only reviewer-owned holds.
 - Babysitter repair prompts follow CODING-STANDARDS.md TDD rule 3 and require
-  obsolete behaviour, remaining behaviour and covering path::test evidence
-  for review-requested test replacements. All repair modes are checked.
+  obsolete behaviour, remaining behaviour and covering path::test evidence for
+  review-requested test replacements. All repair modes are checked.
 - Existing subprocess assertions remain; HEAD now uses a full commit SHA so
   coverage verification runs. The log assertion reads the newest JSONL record
   because replay retains the old hold record. No regression checks are removed.
 
-Validation for this repair: 181 targeted tests pass (172 policy/wiring/babysitter
-plus 9 posting subprocess tests). Removing the repository trust guard fails the
-cross-repository negative; removing the second live-head read fails the moved
-head subprocess test. Both guards were restored and the targeted suites passed.
-The full local gate passes formatter, lint, type checking, completeness,
-Markdown and Mermaid checks, but its parallel test process panics in Deno 2.9.5
-on macOS (`pledge test permissions called before restoring previous pledge`);
-the serial pass is consequently not run. Semgrep and Checkov are unavailable
-on this host; CI runs both.
+Validation for this repair: 181 targeted tests pass (172
+policy/wiring/babysitter plus 9 posting subprocess tests). Removing the
+repository trust guard fails the cross-repository negative; removing the second
+live-head read fails the moved head subprocess test. Both guards were restored
+and the targeted suites passed. The full local gate passes formatter, lint, type
+checking, completeness, Markdown and Mermaid checks, but its parallel test
+process panics in Deno 2.9.5 on macOS
+(`pledge test permissions called before restoring previous pledge`); the serial
+pass is consequently not run. Semgrep and Checkov are unavailable on this host;
+CI runs both.

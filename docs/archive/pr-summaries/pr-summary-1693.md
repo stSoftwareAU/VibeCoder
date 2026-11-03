@@ -10,7 +10,7 @@ a budget it never had.
 Two changes, both in the merge-conflict subsystem:
 
 - **The drain never starts a resolution on time the cycle does not have.** The
-  floor is sized for an AI-fallback resolution — 20 minutes of *agent* budget,
+  floor is sized for an AI-fallback resolution — 20 minutes of _agent_ budget,
   measured after a four-minute allowance for everything the attempt does outside
   the agent — and it is checked before the first resolution, not only between
   them. What the drain does start is granted
@@ -32,9 +32,10 @@ Closes #1693.
 Backend/CLI change with no web interface to screenshot. The evidence is the
 regression tests below, run against the unfixed code and after the fix, plus
 `./quality.sh` passing (`deno tests`, `deno lint`, `deno type check`,
-`deno fmt`, `semgrep`, `markdownlint`, `mermaid` — `Result: PASSED (with
-skipped checks)`; only the unrelated `config integration` check is skipped as it
-is on `main`).
+`deno fmt`, `semgrep`, `markdownlint`, `mermaid` —
+`Result: PASSED (with
+skipped checks)`; only the unrelated `config integration`
+check is skipped as it is on `main`).
 
 ```mermaid
 flowchart TD
@@ -54,14 +55,15 @@ flowchart TD
 ## Reproduction
 
 - **symptom** — a merge-conflict resolution started with 736 s of handler budget
-  was SIGTERMed mid-edit at the cycle end, and the kill was recorded as the
-  PR's own failed attempt (`attempt=1 maxAttempts=2`, "the agent left 6 path(s)
+  was SIGTERMed mid-edit at the cycle end, and the kill was recorded as the PR's
+  own failed attempt (`attempt=1 maxAttempts=2`, "the agent left 6 path(s)
   unmerged")
 - **status** — `verified` — with `worker/deno/lib/merge_conflict_drain.ts` and
   `worker/deno/lib/pr_merge_conflict_processor.ts` restored to `HEAD` and the
-  new tests in place, `deno test --no-check tests/merge_conflict_drain_test.ts
-  tests/pr_merge_conflict_processor_test.ts` reported
-  `refuses to start a resolution the cycle cannot cover ... FAILED`,
+  new tests in place,
+  `deno test --no-check tests/merge_conflict_drain_test.ts
+  tests/pr_merge_conflict_processor_test.ts`
+  reported `refuses to start a resolution the cycle cannot cover ... FAILED`,
   `never grants an agent more time than the budget left ... FAILED`,
   `grants the configured agent timeout when it fits ... FAILED` and
   `a watchdog SIGTERM withdraws the attempt instead of failing it ... FAILED`;
@@ -79,7 +81,8 @@ flowchart TD
 - **met** — a merge-conflict resolution is never started with less handler
   budget than the agent timeout it would be granted — evidence:
   `worker/deno/lib/merge_conflict_drain.ts` (the floor at the top of the loop
-  and `grantFor()`), `worker/deno/tests/merge_conflict_drain_test.ts::drainConflictingPrs - never grants an agent more time than the budget left`
+  and `grantFor()`),
+  `worker/deno/tests/merge_conflict_drain_test.ts::drainConflictingPrs - never grants an agent more time than the budget left`
   — reviewer: partial — reason: the reviewer read the grant as computed at the
   top of the loop, before `findNext`, the lease and the clone; the grant is now
   read immediately before the resolution starts and the reserve was widened from
@@ -90,19 +93,22 @@ flowchart TD
   is what covers that
 - **met** — an agent run ended by the watchdog does not increment the PR's
   attempt count; the next cycle retries it at the same attempt number —
-  evidence: `worker/deno/lib/pr_merge_conflict_processor.ts::withdrawCutShortAttempt`
-  (the attempt marker is deleted, and `pr_merge_conflict_scan.ts` derives both
-  the concluded and the disrupted counts from that marker) — reviewer: met
+  evidence:
+  `worker/deno/lib/pr_merge_conflict_processor.ts::withdrawCutShortAttempt` (the
+  attempt marker is deleted, and `pr_merge_conflict_scan.ts` derives both the
+  concluded and the disrupted counts from that marker) — reviewer: met
 - **met** — regression tests for both — evidence:
   `worker/deno/tests/merge_conflict_drain_test.ts` (four budget tests plus
   `an attempt the run ended stops the pass`),
   `worker/deno/tests/pr_merge_conflict_processor_test.ts` (the SIGTERM
-  withdrawal, its negative twin `an agent that finishes still spends its
-  attempt`, and the unwithdrawable-marker warning),
+  withdrawal, its negative twin
+  `an agent that finishes still spends its
+  attempt`, and the
+  unwithdrawable-marker warning),
   `worker/deno/tests/merge_conflict_drain_fairness_test.ts::an attempt the watchdog cut short keeps its streak`
   — reviewer: met
-- **unrequested** — the per-attempt agent-timeout grant (`ConflictAttemptBudget`,
-  `agentTimeoutMs`, the attempt overhead reserve, and
+- **unrequested** — the per-attempt agent-timeout grant
+  (`ConflictAttemptBudget`, `agentTimeoutMs`, the attempt overhead reserve, and
   `claudeTimeout: budget?.agentTimeoutSeconds ?? config.claudeTimeout` in the
   wiring) — reviewer: unrequested — reason: the issue asks only for a start-time
   floor check, but the criterion it states ("never started with less handler
@@ -120,7 +126,7 @@ flowchart TD
   reviewer: unrequested — reason: a code change owes a docs change; the bounds
   table stated the old 10-minute floor as operator-facing fact
 
-Known boundary, stated deliberately: an agent that exhausts a *truncated* grant
+Known boundary, stated deliberately: an agent that exhausts a _truncated_ grant
 still concludes as a timed-out attempt and spends one. The floor is what makes
 that fair — a resolution is only started when at least 20 minutes of agent
 budget exists — and treating a self-timeout as free would let a PR be retried
@@ -130,18 +136,18 @@ indefinitely without ever spending its budget.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — `deleteAttemptMarker`'s failure warning was hardcoded to "after
-  a clone fault", so the new withdrawal path reported the wrong cause —
-  evidence: `worker/deno/lib/pr_merge_conflict_processor.ts` (`deleteAttemptMarker`)
-  — reason: fixed here; the helper now takes the reason it was called with and
-  both call sites name theirs
-- **violation** — a null comment id returned silently while the docs promised the
-  case was said out loud (fail-loud gap) — evidence:
+- **violation** — `deleteAttemptMarker`'s failure warning was hardcoded to
+  "after a clone fault", so the new withdrawal path reported the wrong cause —
+  evidence: `worker/deno/lib/pr_merge_conflict_processor.ts`
+  (`deleteAttemptMarker`) — reason: fixed here; the helper now takes the reason
+  it was called with and both call sites name theirs
+- **violation** — a null comment id returned silently while the docs promised
+  the case was said out loud (fail-loud gap) — evidence:
   `worker/deno/lib/pr_merge_conflict_processor.ts` (`deleteAttemptMarker`) —
   reason: fixed here; it warns and the doc now names both failure shapes
 - **violation** — `withdrawCutShortAttempt` had only a happy-path test —
-  evidence: `worker/deno/lib/pr_merge_conflict_processor.ts` —
-  reason: fixed here by
+  evidence: `worker/deno/lib/pr_merge_conflict_processor.ts` — reason: fixed
+  here by
   `pr_merge_conflict_processor_test.ts::a marker that cannot be withdrawn is never silent`
 - **violation** — the docs claimed an agent that runs to its full grant "stops
   itself inside the handler's budget", which the pre-agent clone and merge can
@@ -153,8 +159,8 @@ indefinitely without ever spending its budget.
 - **violation** — the incident narrative was retold in full in six places —
   evidence: `worker/deno/lib/merge_conflict_drain.ts`,
   `worker/deno/lib/pr_merge_conflict_processor.ts` — reason: partly fixed; the
-  module doc and the helper doc now point at
-  `docs/workflows/merge-conflicts.md` instead of retelling it
+  module doc and the helper doc now point at `docs/workflows/merge-conflicts.md`
+  instead of retelling it
 - **violation** — the test harness took a `Record<string, unknown>` bag for the
   agent-result overrides, so a mis-keyed field would compile — evidence:
   `worker/deno/tests/pr_merge_conflict_processor_test.ts` — reason: fixed here;
@@ -170,8 +176,8 @@ indefinitely without ever spending its budget.
   deadline and an agent stub); tests call the real `drainConflictingPrs` and
   `processMergeConflict` and assert on outcomes, not source text; no
   `Deno.env`/`chdir`/module singletons; no hidden paths or credential-shaped
-  files staged; Deno-native tooling only; the one documented surface for the
-  10 → 20 minute default was updated in the same change
+  files staged; Deno-native tooling only; the one documented surface for the 10
+  → 20 minute default was updated in the same change
 
 ## Test Plan
 

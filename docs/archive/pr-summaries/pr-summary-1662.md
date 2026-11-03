@@ -10,11 +10,11 @@ the prune liveness check, both of which read the work root. The CI pass pointed
 `crashHandling.recordMilestone` at the clone for the same reason.
 
 Each processor's deps now carry a required `workRoot` — the same field name and
-shape the merge-conflict pass took in #1660 — and the heartbeat, marker and
-(CI) milestone calls use it. `workDir` stays the clone for every git and agent
-`cwd`. The `?? Deno.env.get("WORK_DIR") ?? "/tmp"` fallbacks that fed the
-heartbeat are gone: a missing root is now a type error at every construction
-site rather than state quietly landing in `/tmp`.
+shape the merge-conflict pass took in #1660 — and the heartbeat, marker and (CI)
+milestone calls use it. `workDir` stays the clone for every git and agent `cwd`.
+The `?? Deno.env.get("WORK_DIR") ?? "/tmp"` fallbacks that fed the heartbeat are
+gone: a missing root is now a type error at every construction site rather than
+state quietly landing in `/tmp`.
 
 Closes #1662.
 
@@ -53,10 +53,11 @@ plus the full gate:
 
 ## Reproduction
 
-- **symptom** — a PR-feedback, CI-fix or spelling run wrote `.heartbeat_<repo>_<pr>`
-  and `.heartbeat-marker_<repo>_<pr>` into the repo clone instead of the work
-  root, so the files dirtied the tree the pass commits and stuck recovery and
-  the prune liveness check — which read the root — never saw the heartbeat.
+- **symptom** — a PR-feedback, CI-fix or spelling run wrote
+  `.heartbeat_<repo>_<pr>` and `.heartbeat-marker_<repo>_<pr>` into the repo
+  clone instead of the work root, so the files dirtied the tree the pass commits
+  and stuck recovery and the prune liveness check — which read the root — never
+  saw the heartbeat.
 - **status** — `verified` — each regression test was observed failing against
   the unfixed processor (with the heartbeat pointed back at
   `processorDeps.workDir ?? "/tmp"`, the assertion reports the clone temp dir
@@ -74,7 +75,8 @@ plus the full gate:
 
 - **met** — PR-feedback and CI-fix runs call `recordHeartbeat`, `clearHeartbeat`
   and (CI) `recordMilestone` with the work root; the clone gains no
-  `.heartbeat_*` / `.heartbeat-marker_*` — evidence: `worker/deno/lib/pr_feedback_processor.ts:343`,
+  `.heartbeat_*` / `.heartbeat-marker_*` — evidence:
+  `worker/deno/lib/pr_feedback_processor.ts:343`,
   `worker/deno/lib/pr_ci_processor.ts:532` and `:588`,
   `worker/deno/lib/pr_spelling_processor.ts:216`, wired at
   `worker/deno/lib/run_core_production_deps.ts:1575,1680,1781` and
@@ -83,26 +85,27 @@ plus the full gate:
 - **met** — each new test fails against the unfixed processor and passes after;
   the PR summary states that linkage — evidence: the `## Reproduction` block
   above states it, per test — reviewer: partial — reason: the reviewer saw the
-  diff before this summary file existed and marked the linkage statement
-  absent; it is present here, and the fail-before behaviour was re-verified by
+  diff before this summary file existed and marked the linkage statement absent;
+  it is present here, and the fail-before behaviour was re-verified by
   hand-reverting each fix
 - **met** — gate, allowlist and `hidden_allowlist_drift_test.ts` untouched —
   evidence: `git diff --name-only` lists only the 7 source files, 17 test files
   and 2 new test modules; nothing matching `allowlist|gate|quality|hidden` —
   reviewer: met
-- **met** — `./quality.sh < /dev/null` passes — evidence: full gate run after the
-  final edit, `Result: PASSED` — reviewer: missing — reason: the reviewer had
-  the diff only and could not run the gate; it was run here and passed
+- **met** — `./quality.sh < /dev/null` passes — evidence: full gate run after
+  the final edit, `Result: PASSED` — reviewer: missing — reason: the reviewer
+  had the diff only and could not run the gate; it was run here and passed
 - **unrequested** — the spelling processor and its wiring
-  (`worker/deno/lib/pr_spelling_processor.ts`, `run_core_production_deps.ts:1680`,
-  `commands/pr_spelling_processor.ts`) — reviewer: unrequested — reason: the
-  issue made it conditional on production passing the clone there, which it
-  does (see above), so the condition is satisfied rather than exceeded
+  (`worker/deno/lib/pr_spelling_processor.ts`,
+  `run_core_production_deps.ts:1680`, `commands/pr_spelling_processor.ts`) —
+  reviewer: unrequested — reason: the issue made it conditional on production
+  passing the clone there, which it does (see above), so the condition is
+  satisfied rather than exceeded
 - **unrequested** — the three `worker/deno/commands/pr_*_processor.ts` entry
   points — reviewer: unrequested — reason: a second production path that also
   passes the clone as `workDir`; a required `workRoot` cannot compile without
-  them, and leaving them on the old fallback would keep the bug alive on the
-  CLI route
+  them, and leaving them on the old fallback would keep the bug alive on the CLI
+  route
 - **unrequested** — `worker/deno/tests/support/heartbeat_placement.ts` and its
   test — reviewer: unrequested — reason: the recorder stub and stray scan are
   needed by all three suites, so they are written once rather than three times;
@@ -127,9 +130,9 @@ plus the full gate:
 - **violation** — `heartbeatStrays`' non-empty branch was never exercised, so a
   helper that always returned `[]` would keep all three suites green — evidence:
   `worker/deno/tests/support/heartbeat_placement.ts:55` — reason: fixed in this
-  diff by `worker/deno/tests/heartbeat_placement_test.ts`, which asserts the scan
-  finds planted state, ignores unrelated files, and reports none when there is
-  none
+  diff by `worker/deno/tests/heartbeat_placement_test.ts`, which asserts the
+  scan finds planted state, ignores unrelated files, and reports none when there
+  is none
 - **clean** — Australian English throughout; fail-loud improved (a required
   `workRoot` replaces the `/tmp` fallback, and the awaited initial record still
   returns early on failure); tests drive the real processors and assert on
@@ -151,9 +154,9 @@ with the affected lines and a fail-loud note.
 Added:
 
 - `worker/deno/tests/pr_feedback_processor_test.ts` — "the heartbeat state lands
-  in the work root, not the clone (Issue #1662)": drives `processPrFeedback` with
-  separate clone and work-root temp dirs and a recorder that writes the same two
-  state files the real one does; asserts both `recordHeartbeat` and
+  in the work root, not the clone (Issue #1662)": drives `processPrFeedback`
+  with separate clone and work-root temp dirs and a recorder that writes the
+  same two state files the real one does; asserts both `recordHeartbeat` and
   `clearHeartbeat` were handed the root, the files exist under it, and the clone
   holds no stray state.
 - `worker/deno/tests/pr_ci_processor_test.ts` — the same for `processCiFailure`,

@@ -1,7 +1,7 @@
 ## Summary
 
-The CI-fix lane's two halves addressed **different state directories**, so a
-red check the fleet could repair was handed to a human instead. Closes #552.
+The CI-fix lane's two halves addressed **different state directories**, so a red
+check the fleet could repair was handed to a human instead. Closes #552.
 
 [Issue #580](https://github.com/stSoftwareAU/VibeCoder/issues/580) (PR #582)
 moved the **processor** — `processCiFailure` — onto the work volume via
@@ -19,14 +19,14 @@ checkout in container mode. Two consequences, both of which end with a human
 being asked to fix a check the fleet could have fixed:
 
 1. **The retry cap was never enforced.** The scan called
-   `getCiCheckRetryCount(".ci_check_state", …)` and always read `0`, because
-   the counters were written to `${WORK_DIR}/.ci_check_state`. The
-   "exceeded max retries — skipping" branch and its explanatory PR comment
-   could never fire, so an unfixable check was re-picked at priority 1.55 every
-   cycle, ahead of other maintenance work.
+   `getCiCheckRetryCount(".ci_check_state", …)` and always read `0`, because the
+   counters were written to `${WORK_DIR}/.ci_check_state`. The "exceeded max
+   retries — skipping" branch and its explanatory PR comment could never fire,
+   so an unfixable check was re-picked at priority 1.55 every cycle, ahead of
+   other maintenance work.
 2. **A green build never cleared the auto-fix budget.** On a PR with no failing
-   checks the scan calls `clearAutoFixAttemptsForLocus(stateDir, …)`. Pointed
-   at the wrong directory, `Deno.readDir` threw, the catch returned `0`, and
+   checks the scan calls `clearAutoFixAttemptsForLocus(stateDir, …)`. Pointed at
+   the wrong directory, `Deno.readDir` threw, the catch returned `0`, and
    nothing was cleared. The budgets recorded by the processor therefore
    accumulated permanently — and once a signature reached `maxAutoFixAttempts`,
    `processCiFailure` stopped fixing it and ran `escalateToHuman`. That is
@@ -42,17 +42,17 @@ being asked to fix a check the fleet could have fixed:
   not absolute is skipped, because a relative state directory is the fault the
   function exists to prevent.
 - **`worker/deno/lib/pr_ci_processor.ts`** re-exports `resolveCiCheckStateDir`
-  and `CI_CHECK_STATE_DIR_NAME` from that module instead of defining its own,
-  so there is one implementation and #582's import sites are unchanged.
+  and `CI_CHECK_STATE_DIR_NAME` from that module instead of defining its own, so
+  there is one implementation and #582's import sites are unchanged.
 - **`worker/deno/lib/run_core_production_deps.ts`** resolves the store **once**
   (`const ciCheckStateDir = resolveCiCheckStateDir(workDir)`) and passes the
   same value to `findFailedCiChecks` and `processCiFailure`. The scan had no
   `stateDir` at all before.
 - **`worker/deno/lib/pr_maintenance.ts`** and
   **`worker/deno/commands/pr_maintenance.ts`** default via the resolver rather
-  than the relative literal, so the trap cannot be reintroduced by a caller
-  that forgets to pass one. The CLI's explicit `--state-dir` /
-  `CI_CHECK_STATE_DIR` override is unchanged.
+  than the relative literal, so the trap cannot be reintroduced by a caller that
+  forgets to pass one. The CLI's explicit `--state-dir` / `CI_CHECK_STATE_DIR`
+  override is unchanged.
 
 `recordCiCheckRetry` keeps #582's **fail-open** behaviour — a lost counter is
 warned about, not fatal. This PR does not reintroduce a throw there.
@@ -60,8 +60,8 @@ warned about, not fatal. This PR does not reintroduce a throw there.
 ## Evidence
 
 Backend/worker change with no web interface to screenshot. The evidence is the
-worker log above, the regression tests below driving the real functions, and
-the flow:
+worker log above, the regression tests below driving the real functions, and the
+flow:
 
 ```mermaid
 flowchart TD
@@ -113,8 +113,8 @@ an unmodified `origin/main` worktree** (`FAILED | 31 passed | 4 failed`):
 - `gh_spawn_test.ts` ×3 — they run the real `gh --version`, which the agent
   container's guard wrapper refuses.
 - `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
-  config dir is restaged writable` — it reads the ambient `VIBE_STATE_DIR`,
-  which the container exports.
+  config dir is restaged writable`
+  — it reads the ambient `VIBE_STATE_DIR`, which the container exports.
 
 Neither touches the CI-check state directory or anything else in this change.
 
@@ -126,11 +126,11 @@ Neither touches the CI-check state directory or anything else in this change.
     observes a retry cap written by `recordCiCheckRetry` into the resolved
     store, and returns `null` instead of handing back a capped check. **The
     primary regression test** — it fails against the unfixed scanner.
-  - `findFailedCiChecks` on a **green** PR clears an auto-fix budget recorded
-    by `recordAutoFixAttempt` in the resolved store. **The second regression
-    test** — the path that ends in `escalateToHuman`.
-  - `findFailedCiChecks` still returns a failure whose budget is unspent, so
-    the fix does not over-skip.
+  - `findFailedCiChecks` on a **green** PR clears an auto-fix budget recorded by
+    `recordAutoFixAttempt` in the resolved store. **The second regression test**
+    — the path that ends in `escalateToHuman`.
+  - `findFailedCiChecks` still returns a failure whose budget is unspent, so the
+    fix does not over-skip.
   - `resolveCiCheckStateDir` — explicit work directory, trailing-slash
     normalisation, `WORK_DIR` fallback, `$HOME/auto-issue-work` fallback, a
     relative `WORK_DIR` ignored in favour of `HOME`, and the invariant that a
@@ -138,12 +138,14 @@ Neither touches the CI-check state directory or anything else in this change.
   - `recordCiCheckRetry` — the counter increments on disk in the state
     directory.
 - **Modified one existing test**, documented here as the business-logic change
-  requires it: `pr_ci_processor_test.ts::resolveCiCheckStateDir - lands on the
-  work volume, not the read-only CWD` asserted that a fully unconfigured
-  environment returns the bare relative `".ci_check_state"`. That is the shape
-  this PR removes, since a relative result is what let the scanner and the
-  processor diverge. The assertion now covers the two new absolute fallbacks
-  (`HOME`, then `/tmp/auto-issue-work`). No test was deleted or disabled.
+  requires it:
+  `pr_ci_processor_test.ts::resolveCiCheckStateDir - lands on the
+  work volume, not the read-only CWD`
+  asserted that a fully unconfigured environment returns the bare relative
+  `".ci_check_state"`. That is the shape this PR removes, since a relative
+  result is what let the scanner and the processor diverge. The assertion now
+  covers the two new absolute fallbacks (`HOME`, then `/tmp/auto-issue-work`).
+  No test was deleted or disabled.
 - Re-ran the CI-fix suites (`pr_ci_processor`, `pr_maintenance`,
   `pr_ci_processor_lock`, `pr_ci_processor_auto_fix_cap`,
   `auto_fix_attempt_tracker`, `pr_uninvited_action`) — 138 passed.

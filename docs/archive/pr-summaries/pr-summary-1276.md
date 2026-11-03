@@ -4,13 +4,12 @@
 worker applies passes its positive allowlist — but it was wired into two call
 sites only (`addLabelToIssue`, `escalateToHuman`), both of which label an issue
 that **already exists**. The scan and idle-task templates apply theirs at
-*creation* time, pushing `"--label", <value>` straight into the
-`gh issue create` argv, so none of them ever reached the guard. This closes
-that half and adds a build-failing check so it cannot reopen.
-Closes #1276.
+_creation_ time, pushing `"--label", <value>` straight into the
+`gh issue create` argv, so none of them ever reached the guard. This closes that
+half and adds a build-failing check so it cannot reopen. Closes #1276.
 
-- **`worker/deno/lib/guarded_issue_labels.ts`** (new) — `guardedLabelArgs()`
-  is the creation-time chokepoint. It asserts every label through
+- **`worker/deno/lib/guarded_issue_labels.ts`** (new) — `guardedLabelArgs()` is
+  the creation-time chokepoint. It asserts every label through
   `assertWorkerCanApplyLabel` and **throws** naming each refused label, rather
   than silently dropping it, then returns the flat `--label` argv.
 - **`worker/deno/lib/worker_label_guard.ts`** — new
@@ -18,8 +17,8 @@ Closes #1276.
   `alert-feed`, `enable-feed`, `bash-syntax-audit`, `workflow-annotation-scan`,
   `security-tree-sweep`, …) plus the `confidence:` prefix, so the allowlist
   describes what the worker actually does. `isWorkerAppliableLabel` accepts it;
-  `WORKER_FORBIDDEN_LABEL_LITERALS` is untouched and a test asserts the two
-  stay disjoint.
+  `WORKER_FORBIDDEN_LABEL_LITERALS` is untouched and a test asserts the two stay
+  disjoint.
 - **15 creation sites converted** — the six in-process templates, the two
   `extraLabels` sites the issue names (`workflow_scan_common.ts`,
   `runner_deprecation_filer.ts`), plus `alert_feed_enable_issue.ts`,
@@ -39,10 +38,10 @@ Closes #1276.
 Two files carry a documented allowlist entry rather than the guard, because
 their labels are not worker-curated constants:
 
-| File | Why |
-| --- | --- |
-| `lib/github.ts` | Labels come from the model's `suggest-improvements` output. Externally-derived labels cannot pass a positive allowlist that enumerates worker content — that path is guarded the other way round, by the reserved-label denylist in `filterReservedLabelsWithWarning` (#2825). |
-| `lib/escalate_as_work.ts` | Deliberately applies the configured pickup label (`work-on` by default) when the fleet files a stuck PR as work (#569) — a label the positive allowlist forbids by design. |
+| File                      | Why                                                                                                                                                                                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `lib/github.ts`           | Labels come from the model's `suggest-improvements` output. Externally-derived labels cannot pass a positive allowlist that enumerates worker content — that path is guarded the other way round, by the reserved-label denylist in `filterReservedLabelsWithWarning` (#2825). |
+| `lib/escalate_as_work.ts` | Deliberately applies the configured pickup label (`work-on` by default) when the fleet files a stuck PR as work (#569) — a label the positive allowlist forbids by design.                                                                                                     |
 
 ```mermaid
 flowchart LR
@@ -55,8 +54,8 @@ flowchart LR
 
 ## Evidence
 
-Backend/CLI only — no web interface to screenshot. The evidence is the
-scanner's own red→green run over the real tree, plus the unit tests.
+Backend/CLI only — no web interface to screenshot. The evidence is the scanner's
+own red→green run over the real tree, plus the unit tests.
 
 The check was run against the **unfixed** tree (`git archive HEAD~1`) and the
 fixed tree with the identical scanner:
@@ -68,7 +67,8 @@ post-fix (HEAD):  0 violations across 0 files  (909 scanned)
 
 The 26 pre-fix violations are exactly the sites the issue reports —
 `bash_syntax_audit_template.ts:413,415`, `bash_script_refs_template.ts:236,238`,
-`alert_feed_template.ts:464,466`, `workflow_annotation_scan_template.ts:246,248`,
+`alert_feed_template.ts:464,466`,
+`workflow_annotation_scan_template.ts:246,248`,
 `alert_feed_enable_issue.ts:334`, `workflow_scan_common.ts:365,367,371` and
 `runner_deprecation_filer.ts:220,224,226` — plus the eight further creation
 paths found while fixing the class. Line 286 of
@@ -82,7 +82,8 @@ and `gh spawn` chokepoint checks; `config integration`, `pages-liquid` and
 
 ## Security
 
-- **Regression test / linkage** — `worker/deno/tests/guarded_issue_labels_test.ts::guardedLabelArgs - refuses every reserved workflow label`
+- **Regression test / linkage** —
+  `worker/deno/tests/guarded_issue_labels_test.ts::guardedLabelArgs - refuses every reserved workflow label`
   reproduces the flaw: it drives the exact creation path the templates use and
   asserts every `WORKER_FORBIDDEN_LABEL_LITERALS` entry is refused. It **fails
   against the unfixed code** — `guarded_issue_labels.ts` does not exist there,
@@ -130,8 +131,8 @@ Modified:
   forbidden list). One existing assertion changed, deliberately and documented
   in-line: `isWorkerAppliableLabel("bug")` was asserted `false`, but `bug` is a
   label the run-failure filer genuinely applies at creation time, so it is now
-  on the allowlist and the "random unrelated label" case uses `wontfix`
-  instead. No test was removed or commented out.
+  on the allowlist and the "random unrelated label" case uses `wontfix` instead.
+  No test was removed or commented out.
 
 Re-run of the suites covering every converted call site (391 tests) plus the
 full `./quality.sh` gate: all passing.

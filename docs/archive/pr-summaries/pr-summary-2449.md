@@ -24,8 +24,8 @@ Closes #2449.
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suite and the full quality gate:
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suite and the full quality gate:
 
 - `deno test tests/run_core_test.ts tests/budget_pacing_test.ts` — **78 passed,
   0 failed**.
@@ -61,16 +61,16 @@ flowchart TD
   reason: the reviewer was told not to run the gate and recorded it as "not
   verified directly"; it was run here and passed.
 - **unrequested** — `isInReserve(limit, remaining)` exported from
-  `worker/deno/lib/budget_pacing.ts`, with `computePacedSleepSeconds`
-  delegating to it — reviewer: unrequested — reason: the cycle loop needs the
-  reserve verdict for the reading it just took, including the run's first
-  reading which has no previous reading to diff a spend against; extracting the
-  rule keeps one definition instead of copying `remaining ≤ limit·reserve`. The
-  reviewer called it "justified refactoring rather than true creep".
+  `worker/deno/lib/budget_pacing.ts`, with `computePacedSleepSeconds` delegating
+  to it — reviewer: unrequested — reason: the cycle loop needs the reserve
+  verdict for the reading it just took, including the run's first reading which
+  has no previous reading to diff a spend against; extracting the rule keeps one
+  definition instead of copying `remaining ≤ limit·reserve`. The reviewer called
+  it "justified refactoring rather than true creep".
 - **unrequested** — a paragraph on the tier in the priority-ladder section of
   `docs/USAGE.md` — reviewer: unrequested — reason: that section states the
-  ladder is serial and lists the rungs, which is now false for four of them;
-  "A Code Change Owes a Docs Change" requires the user-facing surface to match.
+  ladder is serial and lists the rungs, which is now false for four of them; "A
+  Code Change Owes a Docs Change" requires the user-facing surface to match.
 
 ## Standards Review
 
@@ -80,8 +80,8 @@ flowchart TD
   the flag was only cleared inside the probe and the circuit-breaker and
   rate-limit paths never probe — evidence: `worker/deno/lib/run_core.ts:5274` —
   reason: fixed here; the gate is now consumed by the cycle that reads it
-  (`run_core.ts:6160`), so only a fresh reading arms it again, and the doc
-  claim matches the code.
+  (`run_core.ts:6160`), so only a fresh reading arms it again, and the doc claim
+  matches the code.
 - **violation** — the user-facing priority ladder still said "the ladder is
   serial, with one exception" — evidence: `docs/USAGE.md:813` — reason: fixed
   here; the section now names the four deferrable rungs and links the tier
@@ -89,8 +89,8 @@ flowchart TD
 - **violation** — an uncited "≈ 80 GraphQL calls a cycle" figure in permanent
   operator docs — evidence: `docs/GH-API-OPTIMISATION.md:610` — reason: fixed
   here; the claim is now qualitative ("spend their GraphQL calls every cycle").
-- **violation** — the newly exported `isInReserve` had no direct test,
-  including at the `remaining === limit × reserve` boundary — evidence:
+- **violation** — the newly exported `isInReserve` had no direct test, including
+  at the `remaining === limit × reserve` boundary — evidence:
   `worker/deno/lib/budget_pacing.ts:23` — reason: fixed here, see
   `tests/budget_pacing_test.ts::isInReserve is inclusive at the reserve boundary (Issue #2449)`.
 - **violation** — comment economy: the same rationale was restated three times
@@ -107,16 +107,16 @@ flowchart TD
   `computePacedSleepSeconds`) with injected clock and `sleep` seams rather than
   grepping source or sleeping on the wall clock; fail-loud preserved (the skip
   is announced, the existing probe-throw warning is untouched); the tier check
-  sits after the resume cursor and before the lane deferral, so it cannot
-  bypass cursor persistence; markdownlint and `deno fmt`/`lint`/`check` clean;
-  commit messages reference Issue #2449 and carry the run-id trailer.
+  sits after the resume cursor and before the lane deferral, so it cannot bypass
+  cursor persistence; markdownlint and `deno fmt`/`lint`/`check` clean; commit
+  messages reference Issue #2449 and carry the run-id trailer.
 
 ## Test Plan
 
 Added to `worker/deno/tests/run_core_test.ts`:
 
-- `run_core - exactly four handlers carry budgetTier deferrable (Issue #2449)`
-  — asserts the tiered set by name against the dispatch table.
+- `run_core - exactly four handlers carry budgetTier deferrable (Issue #2449)` —
+  asserts the tiered set by name against the dispatch table.
 - `run_core - deferrable sweeps are skipped while the budget is in reserve (Issue #2449)`
   — drives two real cycles of `runCoreLoop` with a reading of 400/5,000; the
   four sweeps run in cycle 1 and are skipped in cycle 2, while PR Feedback, CI

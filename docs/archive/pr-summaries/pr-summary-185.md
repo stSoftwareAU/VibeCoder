@@ -2,7 +2,7 @@
 
 ## Summary
 
-The escape-hatch hand-off was accepted on the *existence* of the issue number
+The escape-hatch hand-off was accepted on the _existence_ of the issue number
 the model wrote, and nothing else. `verifyFollowUpIssueExists` returned
 `verified: true, reason: "exists"` the moment `getIssue` succeeded, so a
 `.pr_response_message` steered by an injected PR review comment ("tracked
@@ -19,8 +19,8 @@ forge:
    login, the fleet accounts (`fleet_pr_authors` / `service_accounts`), or an
    allowlisted human (`allowed_authors` / `authorised_commenters`), resolved by
    the new `lib/escape_hatch_trusted_authors.ts`. An untrusted or blank author
-   is rejected loudly (`untrusted-author`), and an empty trusted set — no gate to
-   apply — is rejected before the lookup (`author-unverifiable`) rather than
+   is rejected loudly (`untrusted-author`), and an empty trusted set — no gate
+   to apply — is rejected before the lookup (`author-unverifiable`) rather than
    silently degrading to bare existence. The documented #3661 asymmetry is
    unchanged: a definitive 404 still rejects, a transient API error still
    accepts.
@@ -85,11 +85,11 @@ author. Equivalent bypasses are closed on the same path: a blank or missing
 author fails closed rather than matching, comparison is case-insensitive so
 casing tricks do not help, an empty trusted set rejects instead of falling back
 to existence, and the pre-existing `not-found` rejection still covers a
-hallucinated number. The only remaining accept-on-doubt branch is the
-deliberate #3661 `lookup-failed` case (a transient network/rate-limit error,
-not attacker-selectable — GitHub answers an inaccessible or missing issue with
-404, which rejects). Upstream, the review body that produced the message must
-now come from an authorised commenter or a trusted review bot, so the
+hallucinated number. The only remaining accept-on-doubt branch is the deliberate
+#3661 `lookup-failed` case (a transient network/rate-limit error, not
+attacker-selectable — GitHub answers an inaccessible or missing issue with 404,
+which rejects). Upstream, the review body that produced the message must now
+come from an authorised commenter or a trusted review bot, so the
 drive-by-reviewer attacker of the issue's threat model no longer reaches the
 prompt at all.
 
@@ -126,7 +126,7 @@ changes stashed. All 14,786 other tests pass.
 - **Secrets** — none staged; no `.config*.json` or hidden files touched.
 - **Injection surface** — no new shell, SQL, or HTTP construction; the only new
   GitHub read is the existing `getIssue` call.
-- **Authorisation** — this change *adds* authorisation to two paths that had
+- **Authorisation** — this change _adds_ authorisation to two paths that had
   none, matching the check adjacent code already applies.
 - **Error handling** — rejections log a reason and a `[SECURITY]` event; no
   stack traces or internal state reach user-facing replies.

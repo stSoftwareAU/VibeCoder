@@ -22,18 +22,18 @@ it.
   Windows reads each process's `CommandLine` and `ExecutablePath` from
   `Win32_Process`. When lsof cannot be started, times out, or exits non-zero
   naming no file, the snapshot throws, so the reclaim removes nothing and logs
-  `[HOST_CACHE_RECLAIM] process table unreadable — removed nothing: …`, as for
-  a `ps` failure. That run still exits non-zero and still prints the
+  `[HOST_CACHE_RECLAIM] process table unreadable — removed nothing: …`, as for a
+  `ps` failure. That run still exits non-zero and still prints the
   `largest host directories:` line, which `run.sh` reads before it checks the
   exit status. The process table is not resolved, so each cache is looked for
-  under every spelling of its root: the root as given
-  (`/tmp`, `$TMPDIR`) as well as its real path (`/private/tmp`,
-  `/private/var/folders/...` on macOS). A `CACHEDIR.TAG` is read as at most its
-  first 512 bytes, so a huge or sparse file of that name in a shared scratch
-  directory is not loaded whole. Sizes come from `du -sk`, or from a bounded
-  Deno walk (`walkDirSizeBytes`, no symlinks followed) where `du` cannot run, so
-  the Windows `run.ps1` reclaim still stops at floor plus headroom and the
-  largest-directories line is size-ordered.
+  under every spelling of its root: the root as given (`/tmp`, `$TMPDIR`) as
+  well as its real path (`/private/tmp`, `/private/var/folders/...` on macOS). A
+  `CACHEDIR.TAG` is read as at most its first 512 bytes, so a huge or sparse
+  file of that name in a shared scratch directory is not loaded whole. Sizes
+  come from `du -sk`, or from a bounded Deno walk (`walkDirSizeBytes`, no
+  symlinks followed) where `du` cannot run, so the Windows `run.ps1` reclaim
+  still stops at floor plus headroom and the largest-directories line is
+  size-ordered.
 - Host config and removal safety (PR #4500 review): the launchers pass
   `--base-dir` and the command resolves the config with `resolveHostConfigPath`
   (`CONFIG_FILE`, else `CONFIG_PATH`, else `<checkout>/.config.json`), as
@@ -111,21 +111,22 @@ the mutation and watching a test go red:
   failures):
   - held open on Windows: a stand-in for `Get-CimInstance` whose CommandLine is
     relative (`target\release\server.exe`) and whose ExecutablePath is inside a
-    stale cache keeps the cache; with the query reading only `$_.CommandLine`
-    it goes red (`the cache is kept`). A positive control removes a cache that
+    stale cache keeps the cache; with the query reading only `$_.CommandLine` it
+    goes red (`the cache is kept`). A positive control removes a cache that
     neither names;
   - lsof failures: an lsof that is not installed, fails to spawn, times out, or
     exits 1 naming no file removes nothing, sets `processTableError`, and the
-    command logs `[HOST_CACHE_RECLAIM] process table unreadable — removed
-    nothing` with the reason. With the previous tolerant fallback all four go
-    red. An lsof that exits 1 but still names files is used: with a 2 GiB floor
-    the reclaim removes the idle cache and goes on to judge the held one, which
-    is kept and skipped as `held open`. A mutant that keeps the `n` lines only
-    when lsof exits 0 turns it red (the earlier 1 GiB fixture stopped before
-    judging the held cache and passed against that mutant). With lsof not
-    installed, the command still names the largest host directories, largest
-    first, and the run is still unsuccessful (red before the fix: no such
-    line);
+    command logs
+    `[HOST_CACHE_RECLAIM] process table unreadable — removed
+    nothing` with
+    the reason. With the previous tolerant fallback all four go red. An lsof
+    that exits 1 but still names files is used: with a 2 GiB floor the reclaim
+    removes the idle cache and goes on to judge the held one, which is kept and
+    skipped as `held open`. A mutant that keeps the `n` lines only when lsof
+    exits 0 turns it red (the earlier 1 GiB fixture stopped before judging the
+    held cache and passed against that mutant). With lsof not installed, the
+    command still names the largest host directories, largest first, and the run
+    is still unsuccessful (red before the fix: no such line);
   - held open through lsof: a stale cache whose only mention is an lsof `txt`
     line (a server started as `./target/release/server` from the repo, so ps
     shows a relative argv and the cwd is the repo) is kept on both macOS
@@ -264,21 +265,21 @@ cannot credit its removal and the largest-directories line shows it as
   `Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine; $_.ExecutablePath }`
   (`WINDOWS_PROCESS_QUERY`), so a relative command line no longer hides a
   running executable inside a cache.
-- POSIX: an lsof that cannot run, times out, or exits non-zero naming no file
-  no longer falls back silently to `ps` alone. The snapshot throws and the
-  reclaim removes nothing that launch, with the reason in the launch log.
+- POSIX: an lsof that cannot run, times out, or exits non-zero naming no file no
+  longer falls back silently to `ps` alone. The snapshot throws and the reclaim
+  removes nothing that launch, with the reason in the launch log.
   `docs/CONTAINER.md` says so and names the Windows properties read. A host
   without lsof therefore reclaims nothing until lsof is installed.
 
 ## Review fixes (PR #4500, sixth round)
 
-- The test `an lsof that exits 1 but still names files is used` now uses a
-  2 GiB floor, so the held cache is judged after the idle one is removed, and
-  asserts it is skipped as `held open`. It goes red against a mutant that drops
-  the lsof `n` lines when lsof exits non-zero.
+- The test `an lsof that exits 1 but still names files is used` now uses a 2 GiB
+  floor, so the held cache is judged after the idle one is removed, and asserts
+  it is skipped as `held open`. It goes red against a mutant that drops the lsof
+  `n` lines when lsof exits non-zero.
 - `reclaim-host-caches`: when the process table cannot be read, the command
   still sizes the roots and prints `largest host directories: …` after the
-  `process table unreadable` line, and still exits non-zero. A host without
-  lsof therefore still gets the list in `[WORK_VOLUME_UNRECOVERED]` and
+  `process table unreadable` line, and still exits non-zero. A host without lsof
+  therefore still gets the list in `[WORK_VOLUME_UNRECOVERED]` and
   `host-disk.json`. A new command test with a missing lsof covers it (red
   before, green after), and `docs/CONTAINER.md` says so.

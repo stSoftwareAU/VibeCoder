@@ -6,19 +6,20 @@
 claiming floor and the runtime refused to trim, judging the volume against a
 fixed 1 GB minimum. On a trim-refused runtime the image ratchets past 1 GB
 within a cycle or two, so the guard never spared anything: GRQ-23 recreated six
-times in 30 hours against a volume holding 364 MB (12.1 GB at its largest)
-while the host was 10–20 GB short because the Mac's *own* data had grown. Every
+times in 30 hours against a volume holding 364 MB (12.1 GB at its largest) while
+the host was 10–20 GB short because the Mac's _own_ data had grown. Every
 recreate wiped every clone, every lane worktree, both toolchain caches and every
 Graft graph, and cleared the floor not once.
 
 The decision is now made against the host's **shortfall**:
 
-- **The threshold is `floor − free`, not a fixed gigabyte.** `volume_reset_required_kb`
-  scales the shortfall by `VIBE_WORK_VOLUME_HEAL_SHORTFALL_PERCENT` (100 % by
-  default — the reset must be able to clear the floor on its own) and never
-  falls below the Issue #2117 per-volume minimum. Volumes that cannot cover it
-  are reported as `[WORK_VOLUME_UNRECOVERED]`, naming what they hold and what
-  was missing, and are **left intact**.
+- **The threshold is `floor − free`, not a fixed gigabyte.**
+  `volume_reset_required_kb` scales the shortfall by
+  `VIBE_WORK_VOLUME_HEAL_SHORTFALL_PERCENT` (100 % by default — the reset must
+  be able to clear the floor on its own) and never falls below the Issue #2117
+  per-volume minimum. Volumes that cannot cover it are reported as
+  `[WORK_VOLUME_UNRECOVERED]`, naming what they hold and what was missing, and
+  are **left intact**.
 - **A fruitless recreate is remembered.** When a recreate leaves the host below
   the floor, the re-measured free space is recorded in
   `~/.vibe-coder/work-volume-heal-unrecovered`. Until free space moves by more
@@ -99,9 +100,9 @@ Modified (business-logic change, documented in each test's comment):
   recorded. An 8 MB volume against a 32 MB shortfall is now the "reported, not
   destroyed" case above, which is the behaviour this issue asks for.
 - `a refused trim below the floor resets only volumes big enough to matter, never the approval store (Issue #2117)`
-  — the unreachable 999999 GB floor is replaced by a host 32 MB short of a
-  15 GB floor, because no volume can cover a shortfall that large. The
-  assertions (work volume reset, approval store spared) are unchanged.
+  — the unreachable 999999 GB floor is replaced by a host 32 MB short of a 15 GB
+  floor, because no volume can cover a shortfall that large. The assertions
+  (work volume reset, approval store spared) are unchanged.
 
 Unchanged and still passing: the Issue #478, #731, #734, #2077, #2092, #2216 and
 #2253 launcher cases, including the unmeasurable-store paths that must keep

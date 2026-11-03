@@ -127,11 +127,12 @@ without the operator configuration it needs.)
   silent-return implementation and passes with the warn-plus-one-comment path.
 - **regression test** —
   `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - finalisePr returns
-  the real outcome, not a constant ok:true (Issue #2457)` (scripts an HTTP 500
-  and asserts `result.value.result === AutoMergeResult.Failed`), and
+  the real outcome, not a constant ok:true (Issue #2457)`
+  (scripts an HTTP 500 and asserts
+  `result.value.result === AutoMergeResult.Failed`), and
   `worker/deno/tests/milestone_sync_pr_test.ts::raiseMilestoneSyncPr - a refused
-  --auto posts one reason comment and warns (Issue #2457)` (scripts a failing
-  `ghCommandFn` and asserts the warning and single comment).
+  --auto posts one reason comment and warns (Issue #2457)`
+  (scripts a failing `ghCommandFn` and asserts the warning and single comment).
 
 ## Acceptance Criteria
 
@@ -144,11 +145,12 @@ per criterion:
   scripted `Failed` result is no longer reported as `ok: true` — evidence:
   `pr_auto_merge.ts:1060-1088` returns `Result<EnableAutoMergeResult, Error>`;
   `pr_auto_merge_test.ts::finalisePr returns the real outcome, not a constant
-  ok:true` — reviewer: met.
+  ok:true`
+  — reviewer: met.
 - **met** — Armed PR (`Enabled`): warning log absent, no comment posted —
   evidence: `autoMergeOutcomeNeedsComment` returns `false` for `Enabled`
-  (`pr_auto_merge_test.ts` quiet array), `armAutoMergeAtCreation` logs at
-  `info` and skips the comment block (`completion_phase.ts:330-358`). The
+  (`pr_auto_merge_test.ts` quiet array), `armAutoMergeAtCreation` logs at `info`
+  and skips the comment block (`completion_phase.ts:330-358`). The
   `autoMergeRequest.enabledAt` half is unchanged `fleet_pr_search.ts` behaviour,
   not part of this arming path. — reviewer: met (that half N/A for this diff).
 - **met** — `Failed`, `Deferred`, `NotAllowed`: one `logger.warn` and exactly
@@ -156,20 +158,25 @@ per criterion:
   `completion_phase.ts:339-358`; completion-level tests for `Failed`
   (`a refused arming posts one reason comment and warns`), plain `Deferred`
   (`a route-gate Deferred outcome posts one reason comment`), and `NotAllowed`
-  (`a NotAllowed outcome posts one reason comment`) in `issue_worker_test.ts`.
-  — reviewer: met.
+  (`a NotAllowed outcome posts one reason comment`) in `issue_worker_test.ts`. —
+  reviewer: met.
 - **met** — Latched `gh` refusal: the comment names the latch and its reset
   time; no further `gh` call is made in that run — evidence: the
   `PRIMARY_QUOTA_SKIP_PREFIX` check returns `latched: true` before the retry
-  loop (`pr_auto_merge.ts:928-935`); `pr_auto_merge_test.ts::a latched gh
-  refusal never retries and is marked latched` asserts `mergeCalls === 1` and
-  the reset time in the message; `issue_worker_test.ts::a latched refusal posts
-  one comment naming the quota`. — reviewer: met.
+  loop (`pr_auto_merge.ts:928-935`);
+  `pr_auto_merge_test.ts::a latched gh
+  refusal never retries and is marked latched`
+  asserts `mergeCalls === 1` and the reset time in the message;
+  `issue_worker_test.ts::a latched refusal posts
+  one comment naming the quota`.
+  — reviewer: met.
 - **met** — `NotEnabledOnRepo`, `Draft`, #3909 withhold, #2005 deferral: no
   second comment — evidence: all fall through `autoMergeOutcomeNeedsComment` to
   `false` (`Draft`/`NotEnabledOnRepo`/`BlockedOpenChildren` in the quiet array;
-  `deferral === "milestone-behind"` → `false`); `issue_worker_test.ts::a
-  NotEnabledOnRepo outcome posts no second comment`. — reviewer: met.
+  `deferral === "milestone-behind"` → `false`);
+  `issue_worker_test.ts::a
+  NotEnabledOnRepo outcome posts no second comment`.
+  — reviewer: met.
 - **met** — Regression: `skipAutoMerge: true` yields `Skipped`, no comment;
   unprotected base (#4375) takes the gated direct merge with no `--auto` and no
   comment — evidence: the early `Skipped` return plus `!skipAutoMerge` guards;
@@ -178,9 +185,12 @@ per criterion:
   quiet array. — reviewer: met.
 - **met** — `armSyncPrAutoMerge` no longer returns silently on failure — unit
   test with a scripted failing `ghCommandFn` asserts the warning and single
-  comment — evidence: `milestone_sync_pr_test.ts::raiseMilestoneSyncPr - a
-  refused --auto posts one reason comment and warns` and `… a latched refusal
-  posts one comment and never retries`. — reviewer: met.
+  comment — evidence:
+  `milestone_sync_pr_test.ts::raiseMilestoneSyncPr - a
+  refused --auto posts one reason comment and warns`
+  and `… a latched refusal
+  posts one comment and never retries`. — reviewer:
+  met.
 - **met** — Unit tests use fake `ghCommandFn` / `commentFn` seams; no
   source-text assertions — evidence: every new test injects a fake command /
   comment seam and asserts on captured argv or observable output. — reviewer:
@@ -206,8 +216,8 @@ CODING-STANDARDS. Verdict per standard:
 - **PASS** — no spin-wait / sleep; the latch refusal returns before the retry
   loop; the pre-existing bounded `setTimeout` transient retry is unchanged.
 - **PASS** — fail loud: the comment-failure paths now warn (both
-  `completion_phase.ts` and `milestone_sync_pr.ts`), and the `armSyncPrAutoMerge`
-  comment-swallow found by the reviewer is fixed.
+  `completion_phase.ts` and `milestone_sync_pr.ts`), and the
+  `armSyncPrAutoMerge` comment-swallow found by the reviewer is fixed.
 - **PASS** — no cross-repo coupling.
 - **PASS** — Australian English throughout.
 - **PASS** — KISS: the unused `ARMING_REASON_MARKER` export was dropped to a
@@ -222,20 +232,35 @@ CODING-STANDARDS. Verdict per standard:
 
 Added (fakes via `ghCommandFn` / `commentFn` / `gh` / `runGhCommand` seams):
 
-- `worker/deno/tests/pr_auto_merge_test.ts` — `finalisePr returns the real
-  outcome, not a constant ok:true`; `finalisePr reports Skipped as a typed
-  outcome`; `finalisePr reports Enabled on success`; `a latched gh refusal never
-  retries and is marked latched` (asserts the reset time); `autoMergeOutcomeNeedsComment
-  covers Failed, NotAllowed, and unhandled Deferred`; `deliberate holds stay
-  silent` (directMergeDeferred and milestone-behind); `buildArmingReasonComment
+- `worker/deno/tests/pr_auto_merge_test.ts` —
+  `finalisePr returns the real
+  outcome, not a constant ok:true`;
+  `finalisePr reports Skipped as a typed
+  outcome`;
+  `finalisePr reports Enabled on success`;
+  `a latched gh refusal never
+  retries and is marked latched` (asserts the
+  reset time);
+  `autoMergeOutcomeNeedsComment
+  covers Failed, NotAllowed, and unhandled Deferred`;
+  `deliberate holds stay
+  silent` (directMergeDeferred and milestone-behind);
+  `buildArmingReasonComment
   names the reason and the sweep retry`.
-- `worker/deno/tests/milestone_sync_pr_test.ts` — `raiseMilestoneSyncPr - a
-  refused --auto posts one reason comment and warns`; `… a latched refusal posts
+- `worker/deno/tests/milestone_sync_pr_test.ts` —
+  `raiseMilestoneSyncPr - a
+  refused --auto posts one reason comment and warns`;
+  `… a latched refusal posts
   one comment and never retries`.
-- `worker/deno/tests/issue_worker_test.ts` — `a refused arming posts one reason
-  comment and warns`; `a latched refusal posts one comment naming the quota`; `a
-  route-gate Deferred outcome posts one reason comment`; `a NotAllowed outcome
-  posts one reason comment`; `a NotEnabledOnRepo outcome posts no second
+- `worker/deno/tests/issue_worker_test.ts` —
+  `a refused arming posts one reason
+  comment and warns`;
+  `a latched refusal posts one comment naming the quota`;
+  `a
+  route-gate Deferred outcome posts one reason comment`;
+  `a NotAllowed outcome
+  posts one reason comment`;
+  `a NotEnabledOnRepo outcome posts no second
   comment`.
 
 Modified:

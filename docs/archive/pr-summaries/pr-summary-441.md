@@ -8,11 +8,11 @@ routing chain unconditionally (`buildClaudeModelArgs(phase)`), with nothing in
 
 That was harmless while only Claude exposed a served model. DeepSeek broke it:
 it is carried on the Anthropic CLI with `--output-format stream-json`, so the
-served model *is* observable and *is* a DeepSeek id. A `planning` run under
-`agent_provider: deepseek` therefore compared served `deepseek-reasoner`
-against expected `fable`, found no match, and applied `degraded-model` to the
-parent issue and every published sub-issue — for a tier the operator never
-requested and a run routed exactly as designed.
+served model _is_ observable and _is_ a DeepSeek id. A `planning` run under
+`agent_provider: deepseek` therefore compared served `deepseek-reasoner` against
+expected `fable`, found no match, and applied `degraded-model` to the parent
+issue and every published sub-issue — for a tier the operator never requested
+and a run routed exactly as designed.
 
 The expected model is now derived from **the invocation's own provider
 descriptor** (`provider.resolveModel(phase)`), defaulting to the active
@@ -27,7 +27,7 @@ Closes #441.
 - `worker/deno/lib/planning_run_stats.ts`
   - New structural `ExpectedModelProvider` interface (`resolveModel(phase?)`
     only), mirroring `FableRoutingProvider` in `fable_routing.ts`, so this
-    module depends on a provider's *routing* rather than on the registry's
+    module depends on a provider's _routing_ rather than on the registry's
     shape.
   - `resolveExpectedPlanningModel(configuredBest?, phase?, provider?)` resolves
     through `(provider ?? activeAgentProvider()).resolveModel(phase)`, falling
@@ -55,8 +55,8 @@ Quorum's deliberate dropping of per-invocation provider attribution
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suite and the full quality gate.
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suite and the full quality gate.
 
 ```mermaid
 flowchart LR
@@ -104,8 +104,8 @@ New file `worker/deno/tests/planning_run_stats_provider_test.ts`:
   iterates `agentProviderIds()`, asserts each provider routes `planning` to a
   real model (not the unresolved sentinel), drives `buildDegradationReport()`
   with that model as the served model, and asserts `degraded: false`. A fifth
-  provider registered without a routing-aware expected model fails
-  `deno test` here rather than mislabelling live issues.
+  provider registered without a routing-aware expected model fails `deno test`
+  here rather than mislabelling live issues.
 - **Regression for the reported defect** — DeepSeek served `deepseek-reasoner`
   is healthy (fails against the unfixed code, which expected `fable`).
 - **The check still bites** — DeepSeek served `deepseek-chat` for `planning` is

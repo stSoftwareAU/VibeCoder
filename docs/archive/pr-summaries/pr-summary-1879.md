@@ -2,11 +2,11 @@
 
 ## Summary
 
-The CI-fix lane's 3-attempt auto-fix cap and its "one comment per failure"
-dedup both lived in each host's own `$HOME/auto-issue-work/.ci_check_state`
-volume. Nothing there is visible to another host, so two accounts working one
-pull request each spent their own three attempts and each posted their own copy
-of the same diagnosis — the stock text nine times in 76 minutes.
+The CI-fix lane's 3-attempt auto-fix cap and its "one comment per failure" dedup
+both lived in each host's own `$HOME/auto-issue-work/.ci_check_state` volume.
+Nothing there is visible to another host, so two accounts working one pull
+request each spent their own three attempts and each posted their own copy of
+the same diagnosis — the stock text nine times in 76 minutes.
 
 Both now read the pull request's own fleet-authored markers
 (`ci_fix_attempt_markers.ts`, #1877), so the fleet shares **one** budget and
@@ -20,8 +20,9 @@ Both now read the pull request's own fleet-authored markers
   the run: no agent, no comment — nothing has changed since the diagnosis
   already on the PR.
 - A repeat `no-change` diagnosis on a **new** head appends this run's own words
-  and its marker to the existing comment via the new `GitHubClient.updateComment`
-  (`PATCH repos/{repo}/issues/comments/{id}`) rather than posting a second copy.
+  and its marker to the existing comment via the new
+  `GitHubClient.updateComment` (`PATCH repos/{repo}/issues/comments/{id}`)
+  rather than posting a second copy.
 - `getAutoFixAttempts` / `recordAutoFixAttempt` / `clearAutoFixAttempts` /
   `clearAutoFixAttemptsForLocus` are deleted along with the green-build clear in
   `pr_maintenance.ts`; `auto_fix_attempt_tracker.ts` is now pure. No code path
@@ -31,11 +32,11 @@ Closes #1879.
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suite: `deno test worker/deno/tests/pr_ci_processor_auto_fix_cap_test.ts`
-(9 tests, all green) and the full `./quality.sh < /dev/null` gate after the
-final edit — `Result: PASSED (with skipped checks)`; `config integration` is the
-only skip, as it always is outside a configured host.
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suite: `deno test worker/deno/tests/pr_ci_processor_auto_fix_cap_test.ts` (9
+tests, all green) and the full `./quality.sh < /dev/null` gate after the final
+edit — `Result: PASSED (with skipped checks)`; `config integration` is the only
+skip, as it always is outside a configured host.
 
 ```mermaid
 flowchart LR
@@ -51,7 +52,7 @@ unknown get opposite answers:
 
 - **The comment read failed** — transient. The cycle stands down with an error
   and the next scan retries, rather than spending an attempt nothing could
-  count. This is the "treat `false` as *cannot decide*" contract
+  count. This is the "treat `false` as _cannot decide_" contract
   `ci_fix_attempt_markers.ts` states for its callers.
 - **The fleet login set is empty** — a configuration fault that would never
   resolve itself. The repair proceeds (standing down would stop every CI fix on
@@ -88,9 +89,10 @@ rather than losing the record.
   than posting a new one — evidence:
   `worker/deno/tests/pr_ci_processor_auto_fix_cap_test.ts::processCiFailure - a no-change marker on this very head runs no agent and posts nothing`,
   `…::a head answered by a later marker in the same comment still short-circuits`
-  and `…::the same failure on a new head edits the existing comment instead of posting again`
+  and
+  `…::the same failure on a new head edits the existing comment instead of posting again`
   — reviewer: partial — reason: the reviewer read the diff at commit `d0d30d4`,
-  where the short-circuit keyed on the *earliest* no-change record and so missed
+  where the short-circuit keyed on the _earliest_ no-change record and so missed
   a head answered by a later marker inside the same comment. That defect is
   real; commit `2ea796f` (before the review landed) fixes it and adds the third
   test named above.
@@ -121,11 +123,11 @@ rather than losing the record.
   unrelated test files (41 in `planning_processor_test.ts` alone), which is
   exactly the unrelated churn the Change Scope rule forbids; the guard keeps the
   fallback loud.
-- **unrequested** — `parseCommentIssueNumber` and the comment-cache
-  invalidation inside `updateComment` — reviewer: unrequested — reason: the
-  per-iteration comment cache (#1841) is keyed by issue, and the PATCH response
-  names the issue, so the edit cannot leave a stale body behind for the next
-  reader at no extra API call.
+- **unrequested** — `parseCommentIssueNumber` and the comment-cache invalidation
+  inside `updateComment` — reviewer: unrequested — reason: the per-iteration
+  comment cache (#1841) is keyed by issue, and the PATCH response names the
+  issue, so the edit cannot leave a stale body behind for the next reader at no
+  extra API call.
 - **unrequested** — `buildAutoFixCapSummary`'s table is now
   `| Attempt | Outcome | Diagnosed |` and `summariseChange` is deleted —
   reviewer: unrequested — reason: the issue specifies rows built from the
@@ -147,11 +149,13 @@ rather than losing the record.
   `worker/deno/lib/pr_ci_processor.ts:965` (as reviewed) — reason: fixed here.
   `PrCiFixMarkerState.readFailed` now separates the transient case from the
   configuration case; a failed read stands the cycle down
-  (`worker/deno/lib/pr_ci_processor.ts` + `…::an unreadable comment list stands
-  the cycle down rather than spending an uncounted attempt`), and the empty
-  `prefetchedComments` trap the Spec reviewer also found is closed with it.
+  (`worker/deno/lib/pr_ci_processor.ts` +
+  `…::an unreadable comment list stands
+  the cycle down rather than spending an uncounted attempt`),
+  and the empty `prefetchedComments` trap the Spec reviewer also found is closed
+  with it.
 - **violation** — the docs claimed a green build needs no reset while the
-  markers are in fact permanent, so an *identical* failure recurring after green
+  markers are in fact permanent, so an _identical_ failure recurring after green
   now resumes its spent tally — evidence: `docs/CONFIGURATION.md:3859` (as
   reviewed) — reason: fixed here. Both `docs/CONFIGURATION.md` and
   `docs/workflows/ci-fix.md` now state the consequence plainly rather than
@@ -161,10 +165,12 @@ rather than losing the record.
 - **violation** — four fail-loud fallback paths had no test, while the docs
   promise "the record is never silently dropped" — evidence:
   `worker/deno/lib/pr_ci_processor.ts:1665,1717,1737,1761` (as reviewed) —
-  reason: fixed here. `…::an edit that cannot be applied posts the diagnosis
-  instead of losing it` covers both the throwing `updateComment` and a client
-  without one, and `…::a pushed fix records a pushed marker in its own comment`
-  covers the previously unasserted `pushed` outcome.
+  reason: fixed here.
+  `…::an edit that cannot be applied posts the diagnosis
+  instead of losing it`
+  covers both the throwing `updateComment` and a client without one, and
+  `…::a pushed fix records a pushed marker in its own comment` covers the
+  previously unasserted `pushed` outcome.
 - **violation** — a test fixture took its timestamp from the host clock —
   evidence: `worker/deno/tests/pr_ci_processor_auto_fix_cap_test.ts:148` (as
   reviewed) — reason: fixed here; pinned to `FIXTURE_CREATED_AT`.
@@ -176,8 +182,8 @@ rather than losing the record.
 - **violation** — the `alreadyRebuilt` comment claimed only a rebuild can
   produce a `pushed` marker, which is untrue of an ordinary pushed fix —
   evidence: `worker/deno/lib/pr_ci_processor.ts:1309` (as reviewed) — reason:
-  fixed here; the comment now states the reading honestly and why erring
-  towards *not* force-pushing twice is the safe direction.
+  fixed here; the comment now states the reading honestly and why erring towards
+  _not_ force-pushing twice is the safe direction.
 - **clean** — Australian English throughout; secret redaction (the new
   `-f body=` sink is masked by the existing `spawnGh` chokepoint); commit safety
   (no hidden or credential-shaped paths staged) and the `Vibe-Coder-Run-Id`
@@ -194,7 +200,7 @@ Added:
 
 - `worker/deno/tests/ci_fix_pr_markers_test.ts` — 6 tests for the new reader:
   markers collected; a failed comment read reported as `readFailed` (not an
-  empty budget); an unresolved fleet reported as unenforceable but *not* a read
+  empty budget); an unresolved fleet reported as unenforceable but _not_ a read
   failure; the cap summary rows built from markers; outcome prose; the in-place
   append.
 - `worker/deno/tests/github_test.ts` — `updateComment` refuses a comment id that

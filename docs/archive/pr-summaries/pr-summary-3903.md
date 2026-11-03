@@ -5,16 +5,16 @@ Closes #3903.
 The only finding the baseline carryover tracker filed was a Mermaid label in
 `docs/archive/pr-summaries/pr-summary-3124.md:37`. That label mixed unquoted
 text with a quoted string. Commit 7d35a60d (#3870) on `main` already fixed it:
-the label is now fully quoted and the inner quotes are written as `#quot;`.
-This PR makes no code or documentation change. It records that the full gate
-is green at `main` HEAD 43904d6b.
+the label is now fully quoted and the inner quotes are written as `#quot;`. This
+PR makes no code or documentation change. It records that the full gate is green
+at `main` HEAD 43904d6b.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Close the carryover issue with evidence instead of re-editing a line that
-  is already fixed.
+- Close the carryover issue with evidence instead of re-editing a line that is
+  already fixed.
 
 ### Essential Design Decisions
 
@@ -34,11 +34,12 @@ is green at `main` HEAD 43904d6b.
 - `./quality.sh < /dev/null` at 43904d6b exited 0. Two lines from its output:
   - `mermaid: PASSED (1344 file(s), 1280 block(s) checked)`
   - `Result: PASSED (with skipped checks)`
-- Semgrep, release-tag ruleset, tests, lint, type check and fmt passed. The
-  only skip was `config integration: SKIPPED (deno or .config.json not available)`,
+- Semgrep, release-tag ruleset, tests, lint, type check and fmt passed. The only
+  skip was `config integration: SKIPPED (deno or .config.json not available)`,
   which comes from the environment.
 
-**Docs sweep** — grep: none — no code, flag or behaviour changed; section: none — no behaviour change; siblings: none — no existing set gained a member.
+**Docs sweep** — grep: none — no code, flag or behaviour changed; section: none
+— no behaviour change; siblings: none — no existing set gained a member.
 
 ## Test Plan
 

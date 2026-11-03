@@ -28,7 +28,7 @@ the content labels join the existing one:
   `ALL_LABEL_DEFINITIONS`, and the lookups `getLabelColour` /
   `getLabelDescription` (case-insensitive, as GitHub label names are).
 
-The split is by *role*, not by authority: `LABEL_DEFINITIONS` is what onboarding
+The split is by _role_, not by authority: `LABEL_DEFINITIONS` is what onboarding
 **seeds** onto every repo; content labels appear only when a scan files a
 finding, so seeding them would put 30 unused labels in every repo.
 `getApplicableLabels` is unchanged and a test pins that content labels never
@@ -39,18 +39,18 @@ now optional; omitted, they resolve from the canonical table instead of
 defaulting to red. All nine literals are gone, plus a tenth found on the way
 (`needs_human_escalation.ts`'s `DEFAULT_LABEL_COLOUR = "fbca04"`):
 
-| File | Was |
-| --- | --- |
-| `lib/audit_failure_notifier.ts` | `const LABEL_COLOUR = "d73a4a"` |
-| `lib/claim_issue.ts` | `"d73a4a"` |
-| `lib/label_failure.ts` | `"d73a4a"` |
-| `lib/label_question_failure.ts` | `"d73a4a"` |
-| `lib/pr_merge_conflict_scan.ts` | `MERGE_CONFLICT_LABEL_COLOUR = "b60205"` |
-| `lib/security_tree_sweep.ts` | `label === SWEEP_LABEL ? "5319e7" : "d73a4a"` |
-| `lib/work_on_content_integrity.ts` | `colour ?? "d73a4a"` |
-| `lib/work_on_content_integrity.ts` | `ensureLabelColour: "d73a4a"` |
-| `commands/label_manager.ts` | `args["colour"] ?? "d73a4a"` |
-| `lib/needs_human_escalation.ts` | `DEFAULT_LABEL_COLOUR = "fbca04"` |
+| File                               | Was                                           |
+| ---------------------------------- | --------------------------------------------- |
+| `lib/audit_failure_notifier.ts`    | `const LABEL_COLOUR = "d73a4a"`               |
+| `lib/claim_issue.ts`               | `"d73a4a"`                                    |
+| `lib/label_failure.ts`             | `"d73a4a"`                                    |
+| `lib/label_question_failure.ts`    | `"d73a4a"`                                    |
+| `lib/pr_merge_conflict_scan.ts`    | `MERGE_CONFLICT_LABEL_COLOUR = "b60205"`      |
+| `lib/security_tree_sweep.ts`       | `label === SWEEP_LABEL ? "5319e7" : "d73a4a"` |
+| `lib/work_on_content_integrity.ts` | `colour ?? "d73a4a"`                          |
+| `lib/work_on_content_integrity.ts` | `ensureLabelColour: "d73a4a"`                 |
+| `commands/label_manager.ts`        | `args["colour"] ?? "d73a4a"`                  |
+| `lib/needs_human_escalation.ts`    | `DEFAULT_LABEL_COLOUR = "fbca04"`             |
 
 `grep '"d73a4a"' lib/ commands/ setup/` now returns only the table itself.
 
@@ -62,7 +62,7 @@ reporting every `from → to`. Two boundaries hold:
 
 - It only touches labels the table names — a label a human created is left
   exactly as they set it.
-- It never *creates* a label. Seeding is `label-sync`'s job.
+- It never _creates_ a label. Seeding is `label-sync`'s job.
 
 It fails loud: an unreadable or unparseable label list returns `ok: false` with
 the cause, never a clean "0 drifted"; a failed edit is counted and reported, not
@@ -73,15 +73,15 @@ swallowed; and one failing repo does not stop the sweep.
 Backend/CLI change — no web interface to screenshot. The drift in the issue was
 reproduced against the live fleet before the change (`gh label list`):
 
-| Label | VibeCoder | GRQ | NEAT-AI | Canonical now |
-| --- | --- | --- | --- | --- |
-| `severity:critical` | `ededed` | `B60205` | `b60205` | `b60205` |
-| `severity:high` | `ededed` | `D93F0B` | `d93f0b` | `d93f0b` |
-| `severity:medium` | `d4a72c` | `FBCA04` | `fbca04` | `fbca04` |
-| `severity:low` | `ededed` | `0E8A16` | `0e8a16` | `0e8a16` |
-| `confidence:high` | `ededed` | `5319E7` | `0e8a16` | `0e8a16` |
-| `confidence:low` | `cfd3d7` | `5319E7` | `c2e0c6` | `c2e0c6` |
-| `security` | `ededed` | `B60205` | `ee0701` | `b60205` |
+| Label               | VibeCoder | GRQ      | NEAT-AI  | Canonical now |
+| ------------------- | --------- | -------- | -------- | ------------- |
+| `severity:critical` | `ededed`  | `B60205` | `b60205` | `b60205`      |
+| `severity:high`     | `ededed`  | `D93F0B` | `d93f0b` | `d93f0b`      |
+| `severity:medium`   | `d4a72c`  | `FBCA04` | `fbca04` | `fbca04`      |
+| `severity:low`      | `ededed`  | `0E8A16` | `0e8a16` | `0e8a16`      |
+| `confidence:high`   | `ededed`  | `5319E7` | `0e8a16` | `0e8a16`      |
+| `confidence:low`    | `cfd3d7`  | `5319E7` | `c2e0c6` | `c2e0c6`      |
+| `security`          | `ededed`  | `B60205` | `ee0701` | `b60205`      |
 
 And the reconcile pass was run against the live fleet in `--dry-run` (read-only
 — it issued no edits), reproducing exactly the drift the issue reported:
@@ -143,27 +143,28 @@ added here pass inside the full-suite run.
 
 ## Test Plan
 
-Added (all call real functions and assert on returned values / issued commands
-— no source-text inspection):
+Added (all call real functions and assert on returned values / issued commands —
+no source-text inspection):
 
 - `worker/deno/tests/setup_content_label_definitions_test.ts` (14 tests) — the
   table's shape (lower-case 6-char hex, non-empty descriptions, no duplicate
   names across the two halves), the severity ramp's four distinct colours in
-  order, the confidence ramp being a ramp rather than one flat colour, `security`
-  no longer grey, every `lang:` bucket named, case-insensitive lookup, the
-  unmanaged-label fallback, and a regression guard that content labels never
-  reach `getApplicableLabels` (onboarding).
+  order, the confidence ramp being a ramp rather than one flat colour,
+  `security` no longer grey, every `lang:` bucket named, case-insensitive
+  lookup, the unmanaged-label fallback, and a regression guard that content
+  labels never reach `getApplicableLabels` (onboarding).
 - `worker/deno/tests/setup_label_colour_reconcile_test.ts` (13 tests) — repaint
   of a drifted label with the correct target colour, the reported `from → to`,
-  no edit when already canonical, casing alone not counting as drift
-  (`B60205` == `b60205`), labels the table does not name never touched, never
-  creating an absent label, dry-run reporting without editing, fail-loud on an
-  unreadable list and on unparseable output, a failed edit counted rather than
-  swallowed, and a fleet sweep where one failing repo does not stop the rest.
-- `worker/deno/tests/label_colour_lookup_test.ts` (5 tests) — `ensureLabelExists`
-  resolving a content label's colour, a workflow label's colour *and*
-  description, two different labels no longer sharing one hard-coded red, the
-  default for an unmanaged label, and an explicit colour still winning.
+  no edit when already canonical, casing alone not counting as drift (`B60205`
+  == `b60205`), labels the table does not name never touched, never creating an
+  absent label, dry-run reporting without editing, fail-loud on an unreadable
+  list and on unparseable output, a failed edit counted rather than swallowed,
+  and a fleet sweep where one failing repo does not stop the rest.
+- `worker/deno/tests/label_colour_lookup_test.ts` (5 tests) —
+  `ensureLabelExists` resolving a content label's colour, a workflow label's
+  colour _and_ description, two different labels no longer sharing one
+  hard-coded red, the default for an unmanaged label, and an explicit colour
+  still winning.
 
 No existing test was modified or removed: `getApplicableLabels`, `getLabelCount`
 and `getAllLabels` keep their previous semantics and counts.

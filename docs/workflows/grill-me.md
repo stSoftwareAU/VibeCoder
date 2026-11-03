@@ -1,74 +1,68 @@
 # 🔥 Workflow: Grill-Me clarification
 
-This page is part of the **user manual** for the Vibe Coder. It describes
-the `grill-me` workflow — an iterative, comment-driven back-and-forth
-that converges an issue into a shared, well-scoped requirement
-**before** planning or implementation. Use it for vague briefs *and*
-whenever you want to know early where you and the worker are not seeing
-eye to eye. All interaction happens on the issue itself; no branches,
-commits, or pull requests (PRs) are created. For the journey map, see
-[Label Flows](label-flows.md). For internal details, see **Further
-reading** at the end.
+This page is part of the **user manual** for the Vibe Coder. It describes the
+`grill-me` workflow — an iterative, comment-driven back-and-forth that converges
+an issue into a shared, well-scoped requirement **before** planning or
+implementation. Use it for vague briefs _and_ whenever you want to know early
+where you and the worker are not seeing eye to eye. All interaction happens on
+the issue itself; no branches, commits, or pull requests (PRs) are created. For
+the journey map, see [Label Flows](label-flows.md). For internal details, see
+**Further reading** at the end.
 
 ---
 
 ## ⚡ TL;DR
 
-**Prefer `grill-me` before you hand the worker a plan or a work-tier
-label.** Default to grilling. Skip straight to `work-on` /
-`top-priority` only when the issue cannot possibly be misunderstood —
-a bar that almost never holds in practice. Grilling is the cheapest way
-to catch miscommunication while the issue is still text. Once
-implementation has started, changing direction is hard: the worker
-keeps anchoring on the code and understanding it already built. Align
-up front; disagree up front; then let it run.
+**Prefer `grill-me` before you hand the worker a plan or a work-tier label.**
+Default to grilling. Skip straight to `work-on` / `top-priority` only when the
+issue cannot possibly be misunderstood — a bar that almost never holds in
+practice. Grilling is the cheapest way to catch miscommunication while the issue
+is still text. Once implementation has started, changing direction is hard: the
+worker keeps anchoring on the code and understanding it already built. Align up
+front; disagree up front; then let it run.
 
 You add the `grill-me` label, the worker reads the issue and posts a short
-**Round 1** comment with a TL;DR, an `### Understanding` summary, and
-every question it can answer now — its
-[frontier](#-the-design-tree-and-its-frontier) — rendered as Markdown
-task list checkboxes (`- [ ] choice`, plus
+**Round 1** comment with a TL;DR, an `### Understanding` summary, and every
+question it can answer now — its [frontier](#-the-design-tree-and-its-frontier)
+— rendered as Markdown task list checkboxes (`- [ ] choice`, plus
 `- [ ] other — please describe in a reply`), each with the worker's
-[recommended answer already ticked](#-every-question-arrives-with-a-recommended-answer). Each
-round comment ends with a `**⏳ Awaiting your reply.**` footer so you
-know the worker is paused on your response. Each round also rewrites a
-`## Current Understanding` section between stable markers in the issue
-body, preserving the rest of the body. The worker keeps grilling until
-**it judges there are no more meaningful questions** — at which point
-it posts a single `## Grill-Me — Ready for Next Phase` comment with an
-**adaptive recommendation** of the next phase. Rather than always
-offering a flat `planning` vs `work-on` menu, the worker acts on the
-scope/viability judgement it formed while grilling and gives a short
-rationale for the call. It takes one of three shapes:
+[recommended answer already ticked](#-every-question-arrives-with-a-recommended-answer).
+Each round comment ends with a `**⏳ Awaiting your reply.**` footer so you know
+the worker is paused on your response. Each round also rewrites a
+`## Current Understanding` section between stable markers in the issue body,
+preserving the rest of the body. The worker keeps grilling until **it judges
+there are no more meaningful questions** — at which point it posts a single
+`## Grill-Me — Ready for Next Phase` comment with an **adaptive recommendation**
+of the next phase. Rather than always offering a flat `planning` vs `work-on`
+menu, the worker acts on the scope/viability judgement it formed while grilling
+and gives a short rationale for the call. It takes one of three shapes:
 
-1. **One viable phase** — only the sensible next phase is shown, ticked,
-   with a rationale (it "won't show a button you shouldn't press"). Most
-   often this is `planning` because the issue is too big for one PR.
-2. **Two viable, one preferred** — both options appear, the recommended
-   one is pre-ticked with a rationale, the other is left unticked.
-3. **Two genuinely balanced** — both options appear, nothing is ticked,
-   and the worker says there is no strong preference so **you** decide.
+1. **One viable phase** — only the sensible next phase is shown, ticked, with a
+   rationale (it "won't show a button you shouldn't press"). Most often this is
+   `planning` because the issue is too big for one PR.
+2. **Two viable, one preferred** — both options appear, the recommended one is
+   pre-ticked with a rationale, the other is left unticked.
+3. **Two genuinely balanced** — both options appear, nothing is ticked, and the
+   worker says there is no strong preference so **you** decide.
 
-When the call is genuinely uncertain the worker leans `planning` — most
-issues handed back from grilling are better broken up than worked as one
-PR. **You apply the chosen label yourself** from the GitHub mobile app or
-web UI — ticking the checkbox is only a signal — the worker never swaps
-labels for you.
+When the call is genuinely uncertain the worker leans `planning` — most issues
+handed back from grilling are better broken up than worked as one PR. **You
+apply the chosen label yourself** from the GitHub mobile app or web UI — ticking
+the checkbox is only a signal — the worker never swaps labels for you.
 
-**Whose turn is it? Read the labels.** Immediately after posting a
-round comment the worker adds the existing `needs-human` label. While
-the issue carries `grill-me` **plus** `needs-human` it is **your turn**
-— read the latest `## Grill-Me Round N` comment, reply, then remove
-`needs-human` from the **Labels** menu so the worker knows it is its
-turn again. An issue showing `grill-me` **alone** is one the worker
-will grill on the next scan. On Ready, the worker **removes `grill-me`
-and keeps / adds `needs-human`** so the issue still reads
-as your turn — apply the next-phase label (`planning`, `work-on`, or
-`top-priority`) and clear `needs-human` when the worker should pick up.
-The discovery filter already skips any issue carrying `needs-human`, so
-the label list at the top of the issue is the single source of truth
-for whose turn it is — alongside the `**⏳ Awaiting your reply.**`
-comment footer that already paired with each round.
+**Whose turn is it? Read the labels.** Immediately after posting a round comment
+the worker adds the existing `needs-human` label. While the issue carries
+`grill-me` **plus** `needs-human` it is **your turn** — read the latest
+`## Grill-Me Round N` comment, reply, then remove `needs-human` from the
+**Labels** menu so the worker knows it is its turn again. An issue showing
+`grill-me` **alone** is one the worker will grill on the next scan. On Ready,
+the worker **removes `grill-me` and keeps / adds `needs-human`** so the issue
+still reads as your turn — apply the next-phase label (`planning`, `work-on`, or
+`top-priority`) and clear `needs-human` when the worker should pick up. The
+discovery filter already skips any issue carrying `needs-human`, so the label
+list at the top of the issue is the single source of truth for whose turn it is
+— alongside the `**⏳ Awaiting your reply.**` comment footer that already paired
+with each round.
 
 ```mermaid
 flowchart TD
@@ -120,14 +114,14 @@ flowchart TD
 
 The two workflows do different jobs:
 
-| Workflow | Use when… | What the worker does |
-|----------|-----------|----------------------|
-| `planning` | The issue is **already well-scoped** but too big for one PR. The problem statement, scope, and acceptance criteria are clear — you just need it broken into smaller pieces. | Reads the issue and creates sub-issues directly, then closes the parent. |
+| Workflow   | Use when…                                                                                                                                                                    | What the worker does                                                                                                                                                                                                                                                                                                                                                      |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `planning` | The issue is **already well-scoped** but too big for one PR. The problem statement, scope, and acceptance criteria are clear — you just need it broken into smaller pieces.  | Reads the issue and creates sub-issues directly, then closes the parent.                                                                                                                                                                                                                                                                                                  |
 | `grill-me` | The issue is **vague, open-ended, or under-specified**. You know roughly what you want but cannot yet write a clean acceptance criteria list. You want a conversation first. | Asks one round of clarifying questions, waits for your reply, asks another round, and keeps refining the issue body until it judges there are no more meaningful questions. It then posts a Ready comment with an adaptive recommendation of the next phase (`planning` or `work-on`, leaning `planning` when uncertain) and waits for **you** to apply the chosen label. |
 
 **Rule of thumb:** if you would struggle to write `## Acceptance
-Criteria` yourself in two minutes, reach for `grill-me`. Otherwise reach
-for `planning`.
+Criteria`
+yourself in two minutes, reach for `grill-me`. Otherwise reach for `planning`.
 
 ## 🔁 Lifecycle in detail
 
@@ -159,62 +153,57 @@ sequenceDiagram
   Note over GH: Next worker scan picks up<br/>via planning OR implementation workflow
 ```
 
-Claude removes `grill-me` after posting the Ready comment and must
-never add `planning`, `work-on`, `top-priority`, or other next-phase
-labels — the developer applies those themselves. The processor
-ensures `needs-human` remains on the issue after Ready
-so the pause signal stays visible.
+Claude removes `grill-me` after posting the Ready comment and must never add
+`planning`, `work-on`, `top-priority`, or other next-phase labels — the
+developer applies those themselves. The processor ensures `needs-human` remains
+on the issue after Ready so the pause signal stays visible.
 
-The `needs-human` label additions and removals shown above are made by
-the **processor** (`worker/deno/lib/grill_me_processor.ts`), not by
-Claude — see [Reserved-label safety](#-reserved-label-safety) for the
-full split.
+The `needs-human` label additions and removals shown above are made by the
+**processor** (`worker/deno/lib/grill_me_processor.ts`), not by Claude — see
+[Reserved-label safety](#-reserved-label-safety) for the full split.
 
 ## 📱 What to expect on each round
 
-Every round comment follows the same mobile-friendly template so you
-always know where to look on a small screen:
+Every round comment follows the same mobile-friendly template so you always know
+where to look on a small screen:
 
-1. **TL;DR** — a single line at the top. If you only read this you still
-   know what the round is asking.
-2. **`### Understanding`** — two to four short sentences restating what
-   the worker believes you want. **Read this carefully** — if it is
-   wrong, your reply is the moment to correct it.
-3. **`### Questions`** — every question the worker can answer *now*
-   (its **frontier** — see below), not the smallest set it could get
-   away with. Each question is numbered and presents its options as
-   **GitHub Markdown task list checkboxes** — `- [ ] choice text`, one
-   per line — plus a final `- [ ] other — please describe in a reply`
-   row for anything outside the menu. **Exactly one option per question
-   arrives already ticked**: that is the worker's recommended answer.
-   The GitHub mobile app renders these as tappable checkboxes.
-4. **Reply line** — a one-line instruction telling you how to answer
-   (typically: "I have pre-ticked my recommendation on each question —
-   leave it to accept, or untick it and choose another. Add any
-   free-form notes in a reply.").
+1. **TL;DR** — a single line at the top. If you only read this you still know
+   what the round is asking.
+2. **`### Understanding`** — two to four short sentences restating what the
+   worker believes you want. **Read this carefully** — if it is wrong, your
+   reply is the moment to correct it.
+3. **`### Questions`** — every question the worker can answer _now_ (its
+   **frontier** — see below), not the smallest set it could get away with. Each
+   question is numbered and presents its options as **GitHub Markdown task list
+   checkboxes** — `- [ ] choice text`, one per line — plus a final
+   `- [ ] other — please describe in a reply` row for anything outside the menu.
+   **Exactly one option per question arrives already ticked**: that is the
+   worker's recommended answer. The GitHub mobile app renders these as tappable
+   checkboxes.
+4. **Reply line** — a one-line instruction telling you how to answer (typically:
+   "I have pre-ticked my recommendation on each question — leave it to accept,
+   or untick it and choose another. Add any free-form notes in a reply.").
 5. **Awaiting-reply footer** — every round comment ends with
    `**⏳ Awaiting your reply.** The Vibe Coder is waiting for your
-   response on this issue to continue grilling.` so you know the
-   worker is paused on you, not still thinking.
+   response on this issue to continue grilling.`
+   so you know the worker is paused on you, not still thinking.
 
-Comments are kept under ~1500 characters where possible and use plain
-markdown only (no tables, no images, no nested code blocks) so they
-render well in the GitHub mobile app.
+Comments are kept under ~1500 characters where possible and use plain markdown
+only (no tables, no images, no nested code blocks) so they render well in the
+GitHub mobile app.
 
 ### 🌳 The design tree and its frontier
 
-From v14 onwards the
-worker composes each round from the **frontier** of the design tree —
-borrowed, like the workflow itself, from
+From v14 onwards the worker composes each round from the **frontier** of the
+design tree — borrowed, like the workflow itself, from
 [mattpocock/skills](https://github.com/mattpocock/skills) (see
 [REFERENCES.md](../REFERENCES.md)).
 
-Decisions branch: each one opens the decisions that hang off it. The
-frontier is every decision whose prerequisites are already settled —
-the questions answerable now without guessing at an answer nobody has
-given yet. The worker asks the **whole frontier** in one round; a
-question that depends on another still-open question waits for a later
-round.
+Decisions branch: each one opens the decisions that hang off it. The frontier is
+every decision whose prerequisites are already settled — the questions
+answerable now without guessing at an answer nobody has given yet. The worker
+asks the **whole frontier** in one round; a question that depends on another
+still-open question waits for a later round.
 
 ```mermaid
 flowchart TD
@@ -234,52 +223,48 @@ flowchart TD
   style Fact fill:#adb5bd,stroke:#6c757d,color:#1a1a1a
 ```
 
-Green is this round's frontier — all three go in the **same** comment,
-so you answer them in one sitting rather than one round trip each.
-Purple waits for the round in which its prerequisite lands. Grey is
-never asked at all: see
+Green is this round's frontier — all three go in the **same** comment, so you
+answer them in one sitting rather than one round trip each. Purple waits for the
+round in which its prerequisite lands. Grey is never asked at all: see
 [Facts are the worker's job](#-facts-are-the-workers-job-decisions-are-yours).
 
-**When the frontier is wide, the frontier wins over the ~1500-character
-bound.** The worker compresses instead of dropping questions — one-line
-stems, at most four options each. Only past **eight** questions does it
-split the frontier, ask the eight that most change the plan, and say in
-the TL;DR how many remain.
+**When the frontier is wide, the frontier wins over the ~1500-character bound.**
+The worker compresses instead of dropping questions — one-line stems, at most
+four options each. Only past **eight** questions does it split the frontier, ask
+the eight that most change the plan, and say in the TL;DR how many remain.
 
 ### ✅ Every question arrives with a recommended answer
 
-The worker never hands you a blank menu. It pre-ticks the option it
-would implement if you never replied, so you can accept a whole round
-by doing nothing and only spend attention where you disagree.
+The worker never hands you a blank menu. It pre-ticks the option it would
+implement if you never replied, so you can accept a whole round by doing nothing
+and only spend attention where you disagree.
 
-- **Leave a tick as posted** → you accept the recommendation. It is
-  recorded in the body's `Assumptions` list as
-  `— accepted by default in Round N`, so nothing slips through
-  unexamined: an assumption you never actively chose is still visible
-  to whoever picks the issue up, and you can overturn it in any later
-  round.
-- **Untick it and tick another** (or tick `other`, or just reply in
-  words) → you disagree, and your answer wins. Free-form text always
-  beats a ticked box where the two conflict.
+- **Leave a tick as posted** → you accept the recommendation. It is recorded in
+  the body's `Assumptions` list as `— accepted by default in Round N`, so
+  nothing slips through unexamined: an assumption you never actively chose is
+  still visible to whoever picks the issue up, and you can overturn it in any
+  later round.
+- **Untick it and tick another** (or tick `other`, or just reply in words) → you
+  disagree, and your answer wins. Free-form text always beats a ticked box where
+  the two conflict.
 
-A round question with **no** tick at all is the only shape that still
-means "unanswered".
+A round question with **no** tick at all is the only shape that still means
+"unanswered".
 
 ### 🔎 Facts are the worker's job, decisions are yours
 
-The worker never asks you something a read of the repository, `gh`, or
-the filesystem would answer — which file holds the export path, whether
-a config key already exists, what the current default is. It looks
-those up itself and states them in `### Understanding` as settled.
-Questions are reserved for **decisions**: what you want, which
-trade-off you prefer, what "done" means.
+The worker never asks you something a read of the repository, `gh`, or the
+filesystem would answer — which file holds the export path, whether a config key
+already exists, what the current default is. It looks those up itself and states
+them in `### Understanding` as settled. Questions are reserved for
+**decisions**: what you want, which trade-off you prefer, what "done" means.
 
 ### Per-round body refinement
 
 In addition to the round comment, the worker rewrites a
-`## Current Understanding` section in the issue body on every round.
-The section is delimited by stable HTML-comment markers so it can be
-replaced idempotently without disturbing anything else you have written:
+`## Current Understanding` section in the issue body on every round. The section
+is delimited by stable HTML-comment markers so it can be replaced idempotently
+without disturbing anything else you have written:
 
 ```
 <!-- GRILL-ME-UNDERSTANDING-START -->
@@ -290,61 +275,57 @@ problem, accepted scope, out of scope, open questions.)
 <!-- GRILL-ME-UNDERSTANDING-END -->
 ```
 
-Everything outside the marker pair — your original problem statement,
-links, references, anything you have edited — is preserved unchanged.
-Only the content between the markers is replaced each round. This means
-the issue body always reflects the latest agreed understanding, and
-anyone arriving at the issue mid-grill can read the body for the current
-state without scrolling through every round comment.
+Everything outside the marker pair — your original problem statement, links,
+references, anything you have edited — is preserved unchanged. Only the content
+between the markers is replaced each round. This means the issue body always
+reflects the latest agreed understanding, and anyone arriving at the issue
+mid-grill can read the body for the current state without scrolling through
+every round comment.
 
-From v4 onwards the worker also keeps
-the **issue title** in sync with the converged understanding each round
-(skipping the edit when the existing title is already accurate), so a
-`work-on` or `top-priority` reader who only sees title + body still
-gets the latest state. See the latest `prompts/grill-me/` template for the exact
-title-refinement rules — the prompt is the single source of truth.
+From v4 onwards the worker also keeps the **issue title** in sync with the
+converged understanding each round (skipping the edit when the existing title is
+already accurate), so a `work-on` or `top-priority` reader who only sees title +
+body still gets the latest state. See the latest `prompts/grill-me/` template
+for the exact title-refinement rules — the prompt is the single source of truth.
 
 ### 🧪 Requirements-quality rubric
 
 Before a round decides it is done, the worker runs a **bounded
-requirements-quality self-check** over the `## Current Understanding` it
-has just written. Borrowed from GitHub spec-kit — which frames a
-checklist as **"unit tests for English"** — the rubric validates the
-*requirements text* and never the implementation. It never opens a
-source file.
+requirements-quality self-check** over the `## Current Understanding` it has
+just written. Borrowed from GitHub spec-kit — which frames a checklist as
+**"unit tests for English"** — the rubric validates the _requirements text_ and
+never the implementation. It never opens a source file.
 
 Two halves run each round. A deterministic pre-pass
-(`worker/deno/lib/requirements_rubric.ts`) scans the understanding
-already in the issue body and hands the round a named list of flagged
-items; the prompt then applies the same named classes to the
-understanding it writes this round:
+(`worker/deno/lib/requirements_rubric.ts`) scans the understanding already in
+the issue body and hands the round a named list of flagged items; the prompt
+then applies the same named classes to the understanding it writes this round:
 
-| Class | What it flags |
-| --- | --- |
-| `unquantified-adjective` | A qualifier with no measurable criterion beside it — "fast", "robust", "appropriate", "as needed". A number, unit, or named threshold in the same sentence clears it. |
-| `unresolved-placeholder` | `TODO`, `TBD`, `FIXME`, `???`, or a `<placeholder>` gap left in the block. |
-| `unobservable-scope-item` | An accepted-scope bullet naming an action ("improve the export path") with no observable result — no return value, exit code, log line, artefact, or failure. |
-| `terminology-drift` | A concept named one way in the title and another in the understanding, or a title term the understanding never mentions. |
-| `missing-understanding` | No `## Current Understanding` content at all — absence is never treated as a pass. |
+| Class                     | What it flags                                                                                                                                                         |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unquantified-adjective`  | A qualifier with no measurable criterion beside it — "fast", "robust", "appropriate", "as needed". A number, unit, or named threshold in the same sentence clears it. |
+| `unresolved-placeholder`  | `TODO`, `TBD`, `FIXME`, `???`, or a `<placeholder>` gap left in the block.                                                                                            |
+| `unobservable-scope-item` | An accepted-scope bullet naming an action ("improve the export path") with no observable result — no return value, exit code, log line, artefact, or failure.         |
+| `terminology-drift`       | A concept named one way in the title and another in the understanding, or a title term the understanding never mentions.                                              |
+| `missing-understanding`   | No `## Current Understanding` content at all — absence is never treated as a pass.                                                                                    |
 
-**Anything flagged becomes a question in the current round.** The worker
-does not post the `## Grill-Me — Ready for Next Phase` comment while a
-flagged item is outstanding, so a vague requirement costs one more
-five-line question instead of a rewrite after the PR is open. Where the
-worker can close a flag itself — renaming a drifted term to match the
-title — it rewrites the understanding instead of asking.
+**Anything flagged becomes a question in the current round.** The worker does
+not post the `## Grill-Me — Ready for Next Phase` comment while a flagged item
+is outstanding, so a vague requirement costs one more five-line question instead
+of a rewrite after the PR is open. Where the worker can close a flag itself —
+renaming a drifted term to match the title — it rewrites the understanding
+instead of asking.
 
-The check is deliberately cheap: a fixed class list capped at eight
-reported findings, not an open-ended audit, so it runs on every round
-without lengthening it. Only a **forced final round** (stall guard or
-runaway ceiling) can end grilling with a flag still open, and each one
-is then recorded as a named assumption in the body rather than
-dropped.
+The check is deliberately cheap: a fixed class list capped at eight reported
+findings, not an open-ended audit, so it runs on every round without lengthening
+it. Only a **forced final round** (stall guard or runaway ceiling) can end
+grilling with a flag still open, and each one is then recorded as a named
+assumption in the body rather than dropped.
 
 ### Worked example (mobile app)
 
-You open an issue titled **"add a way to export project data"** with a
-two-line body. After you add `grill-me`, the worker posts:
+You open an issue titled **"add a way to export project data"** with a two-line
+body. After you add `grill-me`, the worker posts:
 
 ```
 ## Grill-Me Round 1
@@ -386,27 +367,24 @@ reply.
 response on this issue to continue grilling.
 ```
 
-All three questions arrive in the **same** round because none of them
-depends on another — that is the frontier. The S3 filename pattern is
-not asked yet (it only exists if delivery turns out to be S3), and
-"which module owns the export writer" is never asked at all: the worker
-reads that from the repository itself.
+All three questions arrive in the **same** round because none of them depends on
+another — that is the frontier. The S3 filename pattern is not asked yet (it
+only exists if delivery turns out to be S3), and "which module owns the export
+writer" is never asked at all: the worker reads that from the repository itself.
 
-You agree with questions 1 and 3, so you leave them exactly as posted —
-both are recorded in the body as `accepted by default in Round 1`. You
-untick `Issues + comments + milestones + labels` on question 2, tick
-`Issues + comments`, and reply: `please include closed issues too.`
-Then you tap the issue header → **Labels** and remove `needs-human` so
-the worker knows it is its turn again.
+You agree with questions 1 and 3, so you leave them exactly as posted — both are
+recorded in the body as `accepted by default in Round 1`. You untick
+`Issues + comments + milestones + labels` on question 2, tick
+`Issues + comments`, and reply: `please include closed issues too.` Then you tap
+the issue header → **Labels** and remove `needs-human` so the worker knows it is
+its turn again.
 
-On the next scan the worker posts **Round 2** with a refined
-`### Understanding` (now mentioning JSON, issues + comments,
-label-driven, including closed issues) and the questions that just
-became answerable — the file location, naming, or whether to include
-attachments. The body's
-`## Current Understanding` section is also rewritten to reflect the new
-agreed scope. You reply again. This continues until Claude judges there
-are no more meaningful questions.
+On the next scan the worker posts **Round 2** with a refined `### Understanding`
+(now mentioning JSON, issues + comments, label-driven, including closed issues)
+and the questions that just became answerable — the file location, naming, or
+whether to include attachments. The body's `## Current Understanding` section is
+also rewritten to reflect the new agreed scope. You reply again. This continues
+until Claude judges there are no more meaningful questions.
 
 When Claude is satisfied, it posts a single Ready comment, for example:
 
@@ -444,148 +422,139 @@ then clear `needs-human` so the worker can pick the issue up — there
 is no rush.
 ```
 
-The worker then removes `grill-me`, **keeps / adds `needs-human`**
-, and stops. Nothing else happens until **you** apply
-`planning`, `work-on`, or `top-priority` and clear `needs-human`. The
-next worker scan after you do so picks the issue up via the matching
-workflow: `planning` creates sub-issues; `work-on` (or `top-priority`)
-queues the issue for implementation.
+The worker then removes `grill-me`, **keeps / adds `needs-human`** , and stops.
+Nothing else happens until **you** apply `planning`, `work-on`, or
+`top-priority` and clear `needs-human`. The next worker scan after you do so
+picks the issue up via the matching workflow: `planning` creates sub-issues;
+`work-on` (or `top-priority`) queues the issue for implementation.
 
 ### ↩️ Reopening grilling after Ready
 
-A Ready comment is the worker's judgement that grilling has converged —
-not a door that locks behind it. If you read the Ready comment and the
-requirement still is not settled, **re-add `grill-me` and clear
-`needs-human`**. The next scan starts a fresh round: the worker reads
-the existing `## Current Understanding` block, posts the next
-`## Grill-Me Round N` (numbering continues where the issue left off),
-and adds `needs-human` back so the turn signal still reads correctly.
+A Ready comment is the worker's judgement that grilling has converged — not a
+door that locks behind it. If you read the Ready comment and the requirement
+still is not settled, **re-add `grill-me` and clear `needs-human`**. The next
+scan starts a fresh round: the worker reads the existing
+`## Current Understanding` block, posts the next `## Grill-Me Round N`
+(numbering continues where the issue left off), and adds `needs-human` back so
+the turn signal still reads correctly.
 
 Three details worth knowing:
 
 - **The stop rule resets.** Both the stall guard and the runaway ceiling
-  (`maxGrillMeRounds`) see only the rounds posted *after* the latest Ready
+  (`maxGrillMeRounds`) see only the rounds posted _after_ the latest Ready
   comment, so a reopened grilling gets the full budget again even when the
   previous grilling used all of it.
-- **It must be your re-add.** The worker only reopens on a `grill-me`
-  label event made by a non-fleet account after the Ready comment. A
-  `grill-me` label left behind by a failed removal is cleaned up as
-  before — removed, with `needs-human` re-applied.
+- **It must be your re-add.** The worker only reopens on a `grill-me` label
+  event made by a non-fleet account after the Ready comment. A `grill-me` label
+  left behind by a failed removal is cleaned up as before — removed, with
+  `needs-human` re-applied.
 - **One round per re-add.** The re-add unblocks the next round only; the
-  reopened grilling then waits for your reply exactly like any other
-  round, so it cannot run to the cap unanswered.
+  reopened grilling then waits for your reply exactly like any other round, so
+  it cannot run to the cap unanswered.
 
 ## 📛 Whose turn is it? (read the labels)
 
-The label list at the top of the issue is the single source of truth
-for whose turn it is. Read it before scrolling through comments:
+The label list at the top of the issue is the single source of truth for whose
+turn it is. Read it before scrolling through comments:
 
-| Labels on the issue | Whose turn |
-| --- | --- |
-| `grill-me` only | Worker — will grill on the next scan |
-| `grill-me` + `needs-human` | You — read the latest `## Grill-Me Round N` comment, reply, then remove `needs-human` |
+| Labels on the issue                                                       | Whose turn                                                                                                               |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `grill-me` only                                                           | Worker — will grill on the next scan                                                                                     |
+| `grill-me` + `needs-human`                                                | You — read the latest `## Grill-Me Round N` comment, reply, then remove `needs-human`                                    |
 | `needs-human` only (after a `## Grill-Me — Ready for Next Phase` comment) | You — apply `planning`, `work-on`, or `top-priority`, then clear `needs-human` (or re-add `grill-me` to reopen grilling) |
-| `needs-human` (no `grill-me`, no Ready comment) | Human triager — workflow has escalated (two failures, or a forced final round that posted no Ready) |
+| `needs-human` (no `grill-me`, no Ready comment)                           | Human triager — workflow has escalated (two failures, or a forced final round that posted no Ready)                      |
 
-The `**⏳ Awaiting your reply.**` footer on each round comment carries
-the same meaning, but the label list is faster to scan on a small
-screen and is what the discovery filter actually uses to decide
-whether to pick the issue up on the next iteration.
+The `**⏳ Awaiting your reply.**` footer on each round comment carries the same
+meaning, but the label list is faster to scan on a small screen and is what the
+discovery filter actually uses to decide whether to pick the issue up on the
+next iteration.
 
 ## 📵 Mobile workflow — drive it from your phone
 
-Grill-me is designed for the GitHub mobile app on the train, in the
-queue, or on the couch. A typical interaction:
+Grill-me is designed for the GitHub mobile app on the train, in the queue, or on
+the couch. A typical interaction:
 
-1. **Open the GitHub mobile app.** Navigate to the issue (notifications
-   work — you get a ping when the worker posts each round).
-2. **Glance at the labels at the top of the issue.** If `needs-human`
-   sits next to `grill-me`, it is your turn — read on. If only
-   `grill-me` is present, the worker has not yet picked the issue up
-   on this scan, so there is nothing to reply to. See
-   [Whose turn is it?](#-whose-turn-is-it-read-the-labels) for the
+1. **Open the GitHub mobile app.** Navigate to the issue (notifications work —
+   you get a ping when the worker posts each round).
+2. **Glance at the labels at the top of the issue.** If `needs-human` sits next
+   to `grill-me`, it is your turn — read on. If only `grill-me` is present, the
+   worker has not yet picked the issue up on this scan, so there is nothing to
+   reply to. See [Whose turn is it?](#-whose-turn-is-it-read-the-labels) for the
    full table.
-3. **Read the TL;DR.** That single line tells you what the round is
-   asking. If it is obvious, you may not even need to read the
-   `### Understanding` section.
-4. **Skim `### Understanding`.** If something is wrong, that is the
-   thing to correct in your reply.
-5. **Change only the ticks you disagree with.** Each question arrives
-   with the worker's recommendation already ticked, so a round you are
-   happy with needs no taps at all — the recommendations are then
-   recorded as `accepted by default in Round N` assumptions in the
-   issue body. Where you disagree, untick the recommendation and tap
-   your choice — the GitHub mobile app turns `- [ ]` into a tappable
-   control, and tapping flips it to `- [x]`. You can also tap
-   "Add comment" and add any free-form notes (for example
-   "please use SQLite, only when CI passes"). Free-form text wins
-   where it conflicts with a ticked box.
-6. **After replying, tap the issue header → Labels and remove
-   `needs-human`** so the worker knows it is its turn again. Until
-   you remove `needs-human` the discovery filter will keep skipping
-   the issue.
-7. **Hit submit.** The next worker scan picks the issue up and posts
-   the next round (re-adding `needs-human` after Round N+1). The
-   `**⏳ Awaiting your reply.**` footer on each round comment, paired
-   with the `needs-human` label, is your cue that the worker is paused
-   waiting on you.
-8. **When the Ready comment arrives**, tap the issue header → Labels →
-   tick `planning`, `work-on`, or `top-priority`, clear `needs-human` →
-   Done. The worker has already removed `grill-me` and left
-   `needs-human` as your turn signal; clearing it lets the next scan
-   pick the issue up via the workflow you chose.
+3. **Read the TL;DR.** That single line tells you what the round is asking. If
+   it is obvious, you may not even need to read the `### Understanding` section.
+4. **Skim `### Understanding`.** If something is wrong, that is the thing to
+   correct in your reply.
+5. **Change only the ticks you disagree with.** Each question arrives with the
+   worker's recommendation already ticked, so a round you are happy with needs
+   no taps at all — the recommendations are then recorded as
+   `accepted by default in Round N` assumptions in the issue body. Where you
+   disagree, untick the recommendation and tap your choice — the GitHub mobile
+   app turns `- [ ]` into a tappable control, and tapping flips it to `- [x]`.
+   You can also tap "Add comment" and add any free-form notes (for example
+   "please use SQLite, only when CI passes"). Free-form text wins where it
+   conflicts with a ticked box.
+6. **After replying, tap the issue header → Labels and remove `needs-human`** so
+   the worker knows it is its turn again. Until you remove `needs-human` the
+   discovery filter will keep skipping the issue.
+7. **Hit submit.** The next worker scan picks the issue up and posts the next
+   round (re-adding `needs-human` after Round N+1). The
+   `**⏳ Awaiting your reply.**` footer on each round comment, paired with the
+   `needs-human` label, is your cue that the worker is paused waiting on you.
+8. **When the Ready comment arrives**, tap the issue header → Labels → tick
+   `planning`, `work-on`, or `top-priority`, clear `needs-human` → Done. The
+   worker has already removed `grill-me` and left `needs-human` as your turn
+   signal; clearing it lets the next scan pick the issue up via the workflow you
+   chose.
 
-Tip: turn on GitHub mobile notifications for the repo so each new round
-arrives as a push notification.
+Tip: turn on GitHub mobile notifications for the repo so each new round arrives
+as a push notification.
 
 ## 🔚 Stopping early — "good enough, go to planning now"
 
-You do not have to wait for the worker to decide it is done. There are
-two ways to short-circuit:
+You do not have to wait for the worker to decide it is done. There are two ways
+to short-circuit:
 
-- **Manually swap the label.** Remove `grill-me` and add `planning`
-  (or `work-on`). The next worker run picks the issue up via the
-  matching workflow and ignores any unfinished grilling. Use this when
-  the conversation has already given you a clean enough requirement.
-- **Reply with "approved" or similar consensus wording.** Claude
-  decides each round whether to ask another targeted question or post
-  the Ready comment. A clear "this is enough — please finalise" reply
-  pushes it toward posting Ready on the next scan.
+- **Manually swap the label.** Remove `grill-me` and add `planning` (or
+  `work-on`). The next worker run picks the issue up via the matching workflow
+  and ignores any unfinished grilling. Use this when the conversation has
+  already given you a clean enough requirement.
+- **Reply with "approved" or similar consensus wording.** Claude decides each
+  round whether to ask another targeted question or post the Ready comment. A
+  clear "this is enough — please finalise" reply pushes it toward posting Ready
+  on the next scan.
 
-In both cases the developer is the one who applies the next-phase
-label.
+In both cases the developer is the one who applies the next-phase label.
 
 ## 📊 When grilling stops
 
 A productive grilling is never halted by a round count
-([Issue #1933](https://github.com/stSoftwareAU/VibeCoder/issues/1933)).
-Two things stop it, and both make the **next** round a forced final
-round rather than ending it on the spot:
+([Issue #1933](https://github.com/stSoftwareAU/VibeCoder/issues/1933)). Two
+things stop it, and both make the **next** round a forced final round rather
+than ending it on the spot:
 
 - **Stall guard.** Before running a round the worker parses the numbered
-  question stems of every **fleet-authored** round posted since the latest
-  Ready comment. A round is *stalled* when every one of its stems —
-  lower-cased, whitespace collapsed, trailing punctuation and Markdown
-  emphasis stripped — already appeared in an earlier round of the same
-  grilling. One stalled round trips the guard; a round asking anything new
-  never does.
-- **Runaway ceiling.** `maxGrillMeRounds` bounds a grilling that keeps
-  finding new questions forever. The ceiling-th round is itself the forced
-  final round, so a grilling posts at most that many rounds since its latest
-  Ready comment. This count is **author-agnostic**: every round carrying the
-  marker counts, because a peer worker identity may have posted it.
+  question stems of every **fleet-authored** round posted since the latest Ready
+  comment. A round is _stalled_ when every one of its stems — lower-cased,
+  whitespace collapsed, trailing punctuation and Markdown emphasis stripped —
+  already appeared in an earlier round of the same grilling. One stalled round
+  trips the guard; a round asking anything new never does.
+- **Runaway ceiling.** `maxGrillMeRounds` bounds a grilling that keeps finding
+  new questions forever. The ceiling-th round is itself the forced final round,
+  so a grilling posts at most that many rounds since its latest Ready comment.
+  This count is **author-agnostic**: every round carrying the marker counts,
+  because a peer worker identity may have posted it.
 
 The stall guard reads only fleet-authored rounds
-([Issue #2237](https://github.com/stSoftwareAU/VibeCoder/issues/2237)).
-Round comments are matched by their `## Grill-Me Round N` heading with no
-author check, so anyone who can comment on the issue can post one; the count
-that reaches the converging ceiling is harmless, but the stall guard *acts*
-on the stems it reads, and one forged round repeating the worker's own
-published questions would otherwise end the clarification loop early. The
-comment author is the only authenticated part of a comment, so the stall
-decision sees a round only when a fleet account authored it, and an
-unresolved fleet identity leaves the grilling productive rather than forcing
-an early final round.
+([Issue #2237](https://github.com/stSoftwareAU/VibeCoder/issues/2237)). Round
+comments are matched by their `## Grill-Me Round N` heading with no author
+check, so anyone who can comment on the issue can post one; the count that
+reaches the converging ceiling is harmless, but the stall guard _acts_ on the
+stems it reads, and one forged round repeating the worker's own published
+questions would otherwise end the clarification loop early. The comment author
+is the only authenticated part of a comment, so the stall decision sees a round
+only when a fleet account authored it, and an unresolved fleet identity leaves
+the grilling productive rather than forcing an early final round.
 
 ```mermaid
 flowchart TD
@@ -602,77 +571,81 @@ flowchart TD
 
 A forced final round is told so explicitly: it must post
 `## Grill-Me — Ready for Next Phase`, record every still-open question as a
-named assumption in the issue body, and carry one line directly under the
-TL;DR naming what forced it — `Forced final round: stall guard tripped at
-Round N` or `Forced final round: round ceiling (20) reached`. It still runs
-only after the developer replies, so lifting the old cap cannot make the
-worker loop unattended.
+named assumption in the issue body, and carry one line directly under the TL;DR
+naming what forced it — `Forced final round: stall guard tripped at
+Round N` or
+`Forced final round: round ceiling (20) reached`. It still runs only after the
+developer replies, so lifting the old cap cannot make the worker loop
+unattended.
 
-| Setting | Default | Source | Behaviour |
-|---------|---------|--------|-----------|
-| `maxGrillMeRounds` | `20` | `worker/deno/lib/config_defaults.ts` | **Runaway ceiling.** The ceiling-th round of a grilling is the forced final round. Reaching it does **not** finalise the issue — the developer always applies the next-phase label. |
-| `grillMeTimeout` | `3600` (1 hour) | `worker/deno/lib/config_defaults.ts` | Per-round Claude timeout. Raised from 600s by — a round reasons at top-tier model and `max` effort, and the old ceiling killed heavy rounds. |
-| `grillMeKillAfter` | `10` | `worker/deno/lib/config_defaults.ts` | Grace period before forced termination after `grillMeTimeout`. |
+| Setting            | Default         | Source                               | Behaviour                                                                                                                                                                           |
+| ------------------ | --------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxGrillMeRounds` | `20`            | `worker/deno/lib/config_defaults.ts` | **Runaway ceiling.** The ceiling-th round of a grilling is the forced final round. Reaching it does **not** finalise the issue — the developer always applies the next-phase label. |
+| `grillMeTimeout`   | `3600` (1 hour) | `worker/deno/lib/config_defaults.ts` | Per-round Claude timeout. Raised from 600s by — a round reasons at top-tier model and `max` effort, and the old ceiling killed heavy rounds.                                        |
+| `grillMeKillAfter` | `10`            | `worker/deno/lib/config_defaults.ts` | Grace period before forced termination after `grillMeTimeout`.                                                                                                                      |
 
-**Only a failed forced round escalates.** If the forced final round posts
-an ordinary `## Grill-Me Round N` comment instead of Ready, posts nothing,
-times out, or errors, the worker posts a `## Grill-Me Escalation` comment
-naming which trigger forced the round and that no Ready comment followed,
-adds `needs-human`, and stops. A human takes over from there. There is no
-"final round forces finalisation" behaviour — the developer always drives
-the label transition.
+**Only a failed forced round escalates.** If the forced final round posts an
+ordinary `## Grill-Me Round N` comment instead of Ready, posts nothing, times
+out, or errors, the worker posts a `## Grill-Me Escalation` comment naming which
+trigger forced the round and that no Ready comment followed, adds `needs-human`,
+and stops. A human takes over from there. There is no "final round forces
+finalisation" behaviour — the developer always drives the label transition.
 
 ## ⚠️ Failure modes
 
-The worker is built for unattended operation. The grill-me processor
-recovers from each common failure as follows:
+The worker is built for unattended operation. The grill-me processor recovers
+from each common failure as follows:
 
-| Failure | What the worker does |
-|---------|----------------------|
-| **Claude times out** (per-round timeout exceeded) | Posts a `## Grill-Me Failed` comment with the reason. The label stays on the issue so the next worker scan retries the same round. |
-| **Claude errors / API failure** | Same as timeout — posts a `## Grill-Me Failed` comment and lets the next scan retry. |
-| **The provider refuses to serve** (model refused, quota or credit spent, credential rejected, outage — Issue #4035) | Posts **no** `## Grill-Me Failed` comment and releases the claim. Nothing about the issue failed, and the wait clears by itself, so the round cannot count toward escalation; the next scan retries it. |
-| **Claude does not post a round comment** | Posts a `## Grill-Me Failed` comment ("Claude did not post a Grill-Me round comment"); next scan retries. |
-| **Two consecutive rounds fail** | The worker adds the `needs-human` label, posts a `## Grill-Me Escalation` comment, and stops. A human takes over. |
-| **User has not replied yet** | The processor adds `needs-human` after each round, and the discovery filter skips any issue carrying `needs-human`. The worker therefore does not even consider the issue until the developer removes `needs-human` after replying. The `**⏳ Awaiting your reply.**` footer plus the `needs-human` label remain the visible cues; the labels stay on the issue indefinitely until either you reply and clear `needs-human`, you remove `grill-me`, or someone else intervenes. |
-| **Ready comment posted (this run or earlier)** | The processor removes `grill-me` and **ensures `needs-human` is present** whenever it sees a `## Grill-Me — Ready for Next Phase` marker — on the run that posts it and on subsequent scans if `grill-me` is still lingering. The developer applies the next-phase label (`planning`, `work-on`, or `top-priority`) and clears `needs-human` when the worker should pick up. |
-| **Stop rule tripped** (a stalled round, or the ceiling round) | Runs the round as a **forced final round** that must post the Ready comment, with open questions recorded as named assumptions and the trigger named under the TL;DR. |
-| **Forced final round posts no Ready** | Posts a `## Grill-Me Escalation` comment naming the trigger and that Ready was not posted, adds `needs-human`, and stops. The developer takes over. |
-| **Two workers race for the same issue** | The processor claims the issue atomically before doing any work. The loser exits cleanly with a "claimed by another worker" message. |
+| Failure                                                                                                             | What the worker does                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude times out** (per-round timeout exceeded)                                                                   | Posts a `## Grill-Me Failed` comment with the reason. The label stays on the issue so the next worker scan retries the same round.                                                                                                                                                                                                                                                                                                                                              |
+| **Claude errors / API failure**                                                                                     | Same as timeout — posts a `## Grill-Me Failed` comment and lets the next scan retry.                                                                                                                                                                                                                                                                                                                                                                                            |
+| **The provider refuses to serve** (model refused, quota or credit spent, credential rejected, outage — Issue #4035) | Posts **no** `## Grill-Me Failed` comment and releases the claim. Nothing about the issue failed, and the wait clears by itself, so the round cannot count toward escalation; the next scan retries it.                                                                                                                                                                                                                                                                         |
+| **Claude does not post a round comment**                                                                            | Posts a `## Grill-Me Failed` comment ("Claude did not post a Grill-Me round comment"); next scan retries.                                                                                                                                                                                                                                                                                                                                                                       |
+| **Two consecutive rounds fail**                                                                                     | The worker adds the `needs-human` label, posts a `## Grill-Me Escalation` comment, and stops. A human takes over.                                                                                                                                                                                                                                                                                                                                                               |
+| **User has not replied yet**                                                                                        | The processor adds `needs-human` after each round, and the discovery filter skips any issue carrying `needs-human`. The worker therefore does not even consider the issue until the developer removes `needs-human` after replying. The `**⏳ Awaiting your reply.**` footer plus the `needs-human` label remain the visible cues; the labels stay on the issue indefinitely until either you reply and clear `needs-human`, you remove `grill-me`, or someone else intervenes. |
+| **Ready comment posted (this run or earlier)**                                                                      | The processor removes `grill-me` and **ensures `needs-human` is present** whenever it sees a `## Grill-Me — Ready for Next Phase` marker — on the run that posts it and on subsequent scans if `grill-me` is still lingering. The developer applies the next-phase label (`planning`, `work-on`, or `top-priority`) and clears `needs-human` when the worker should pick up.                                                                                                    |
+| **Stop rule tripped** (a stalled round, or the ceiling round)                                                       | Runs the round as a **forced final round** that must post the Ready comment, with open questions recorded as named assumptions and the trigger named under the TL;DR.                                                                                                                                                                                                                                                                                                           |
+| **Forced final round posts no Ready**                                                                               | Posts a `## Grill-Me Escalation` comment naming the trigger and that Ready was not posted, adds `needs-human`, and stops. The developer takes over.                                                                                                                                                                                                                                                                                                                             |
+| **Two workers race for the same issue**                                                                             | The processor claims the issue atomically before doing any work. The loser exits cleanly with a "claimed by another worker" message.                                                                                                                                                                                                                                                                                                                                            |
 
 The `## Grill-Me Failed`, `## Grill-Me Escalation`, and
-`## Grill-Me — Ready for Next Phase` markers are permanent in the
-comment history — they are how the processor detects state across
-runs.
+`## Grill-Me — Ready for Next Phase` markers are permanent in the comment
+history — they are how the processor detects state across runs.
 
 ## 🤖 Reserved-label safety
 
-Grill-me mode follows the same [Worker Label
-Policy](../../README.md#%EF%B8%8F-supported-labels) as every other workflow.
-Two distinct actors touch labels on a grill-me issue, with strictly
+Grill-me mode follows the same
+[Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels) as every other
+workflow. Two distinct actors touch labels on a grill-me issue, with strictly
 separated permissions:
 
-- **Claude** (the language model invoked per round) may **remove
-  `grill-me` and add `needs-human`** after posting the Ready comment
- . Claude is forbidden from adding `planning`,
-  `work-on`, `top-priority`, or other next-phase / reserved workflow
-  labels that would queue work. This restriction is enforced by the
+- **Claude** (the language model invoked per round) may **remove `grill-me` and
+  add `needs-human`** after posting the Ready comment . Claude is forbidden from
+  adding `planning`, `work-on`, `top-priority`, or other next-phase / reserved
+  workflow labels that would queue work. This restriction is enforced by the
   prompt — see the latest [`prompts/grill-me/`](../../prompts/grill-me/)
   template.
-- **The processor** (`worker/deno/lib/grill_me_processor.ts`)
-  manages `needs-human` and `grill-me` directly: it adds
-  `needs-human` after every successful round comment to mark the
-  developer's turn, and on the Ready path removes `grill-me` while
-  **ensuring `needs-human` stays applied**. It also
-  adds `needs-human` on the escalation paths described above (two
-  consecutive failures, or a forced final round that posted no Ready
-  comment). The processor never applies `planning`, `work-on`,
-  `top-priority`, or any other next-phase label — that decision
-  always belongs to the developer.
+- **The processor** (`worker/deno/lib/grill_me_processor.ts`) manages
+  `needs-human` and `grill-me` directly: it adds `needs-human` after every
+  successful round comment to mark the developer's turn, and on the Ready path
+  removes `grill-me` while **ensuring `needs-human` stays applied**. It also
+  adds `needs-human` on the escalation paths described above (two consecutive
+  failures, or a forced final round that posted no Ready comment). The processor
+  never applies `planning`, `work-on`, `top-priority`, or any other next-phase
+  label — that decision always belongs to the developer.
 
 ## 📚 Further reading
 
-- **Sibling workflow:** [planning-and-questions.md](planning-and-questions.md) — what happens after the developer applies `planning` or `work-on`.
-- **Internals:** [Worker Internals](../INTERNALS.md) — run loop and dispatch order.
-- **Implementation details:** [worker/deno/lib/grill_me_processor.ts](../../worker/deno/lib/grill_me_processor.ts), [worker/deno/lib/requirements_rubric.ts](../../worker/deno/lib/requirements_rubric.ts), [worker/deno/commands/grill_me_processor.ts](../../worker/deno/commands/grill_me_processor.ts), [prompts/grill-me/](../../prompts/grill-me/).
-- **Config defaults:** [worker/deno/lib/config_defaults.ts](../../worker/deno/lib/config_defaults.ts) (`grillMeLabel`, `maxGrillMeRounds`, `grillMeTimeout`, `grillMeKillAfter`).
+- **Sibling workflow:** [planning-and-questions.md](planning-and-questions.md) —
+  what happens after the developer applies `planning` or `work-on`.
+- **Internals:** [Worker Internals](../INTERNALS.md) — run loop and dispatch
+  order.
+- **Implementation details:**
+  [worker/deno/lib/grill_me_processor.ts](../../worker/deno/lib/grill_me_processor.ts),
+  [worker/deno/lib/requirements_rubric.ts](../../worker/deno/lib/requirements_rubric.ts),
+  [worker/deno/commands/grill_me_processor.ts](../../worker/deno/commands/grill_me_processor.ts),
+  [prompts/grill-me/](../../prompts/grill-me/).
+- **Config defaults:**
+  [worker/deno/lib/config_defaults.ts](../../worker/deno/lib/config_defaults.ts)
+  (`grillMeLabel`, `maxGrillMeRounds`, `grillMeTimeout`, `grillMeKillAfter`).

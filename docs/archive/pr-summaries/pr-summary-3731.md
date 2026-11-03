@@ -2,9 +2,9 @@
 
 Prose checks now select bounded unchanged manual sections named in the Docs
 sweep or referencing a changed source path, basename or exported declaration.
-This includes untouched manuals outside the archive. The question checks
-whether this change makes the sentence false, preserving the existing claim
-classes and recovery path. Closes #3731.
+This includes untouched manuals outside the archive. The question checks whether
+this change makes the sentence false, preserving the existing claim classes and
+recovery path. Closes #3731.
 
 ## Spec
 
@@ -15,9 +15,9 @@ classes and recovery path. Closes #3731.
 
 ### Essential Design Decisions
 
-- One collector serves completion and review-fix callers. Named sections
-  include subsections up to the next peer heading; reference matches select
-  the local heading block. Archive manuals are excluded from this extra scope.
+- One collector serves completion and review-fix callers. Named sections include
+  subsections up to the next peer heading; reference matches select the local
+  heading block. Archive manuals are excluded from this extra scope.
 - The section cap is 40 and the shared file cap is 20. Overflow is reported as
   not checked, never passed. Selected ranges are nonce-fenced prompt data.
 - Existing changed-Markdown checking remains; extra unchanged prose is limited
@@ -31,23 +31,28 @@ classes and recovery path. Closes #3731.
 
 ## Evidence
 
-Reproduction status: reproduced. The caller tests select and report an
-unchanged counted claim while leaving an agreeing neighbouring sentence
-unreported. Scope tests also select an untouched manual by source basename
-and an exported function identifier, and record capped sections. No UI change.
+Reproduction status: reproduced. The caller tests select and report an unchanged
+counted claim while leaving an agreeing neighbouring sentence unreported. Scope
+tests also select an untouched manual by source basename and an exported
+function identifier, and record capped sections. No UI change.
 
-**Docs sweep** — grep: `docProseClaimInstruction`, `affected manual`, `changed manuals`; section: docs/workflows/pr-feedback.md The worker's drift check; updated: docs/workflows/issue-processing.md, docs/workflows/pr-feedback.md, CODING-STANDARDS.md, docs/INTERNALS.md; siblings: `runSummaryClaimCheck`, `runPrFeedbackDriftCheck` — both callers use the same bounded manual scope.
+**Docs sweep** — grep: `docProseClaimInstruction`, `affected manual`,
+`changed manuals`; section: docs/workflows/pr-feedback.md The worker's drift
+check; updated: docs/workflows/issue-processing.md,
+docs/workflows/pr-feedback.md, CODING-STANDARDS.md, docs/INTERNALS.md; siblings:
+`runSummaryClaimCheck`, `runPrFeedbackDriftCheck` — both callers use the same
+bounded manual scope.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Named and reference-matched sections include unchanged sentences
-  and untouched manuals; archive sections are excluded from this extra scope.
+- **met** — Named and reference-matched sections include unchanged sentences and
+  untouched manuals; archive sections are excluded from this extra scope.
 - **met** — Question asks only whether this change invalidates the sentence.
 - **met** — Both callers feed confirmed findings through existing recovery.
-- **met** — Counted stale claim, agreeing sentence, untouched manual and
-  section overflow scenarios are covered by regression tests.
+- **met** — Counted stale claim, agreeing sentence, untouched manual and section
+  overflow scenarios are covered by regression tests.
 
 ## Standards Review
 
@@ -59,9 +64,9 @@ and an exported function identifier, and record capped sections. No UI change.
 ## Test Plan
 
 - After merging main `723d4d1`, all 680 scoped completion, summary, prose,
-  assertion and prompt-guidance tests passed with the frozen lock. This
-  includes both branches' correction and hold regressions plus the new
-  combination cases recorded in [#3710](pr-summary-3710.md).
+  assertion and prompt-guidance tests passed with the frozen lock. This includes
+  both branches' correction and hold regressions plus the new combination cases
+  recorded in [#3710](pr-summary-3710.md).
 - `worker/deno/tests/doc_prose_claims_test.ts`: named section, basename and
   identifier references, archive exclusion, cap and exact issue syntax.
 - `worker/deno/tests/summary_claim_check_test.ts` and
@@ -77,16 +82,23 @@ and an exported function identifier, and record capped sections. No UI change.
   require exactly the UI patch read, permit a version-only bump and refuse a
   real UI edit without evidence. The initial CI failure reproduced locally;
   after the spy correction, all 330 completion and assertion-guidance tests
-  passed, including `worker/deno/tests/completion_phase_version_bump_2300_test.ts`.
-- Removed from `worker/deno/tests/completion_phase_summary_claim_check_test.ts`: `assertStringIncludes(prompt, "check only the lines this branch's diff adds or edits",);`
-  Required by: "add a second, bounded scope of **unchanged** sentences"
-  Replaced by: `assertStringIncludes(prompt, "check the lines this branch's diff adds or edits",);`
-- Removed from `worker/deno/tests/summary_claim_check_test.ts`: `assertStringIncludes(withDocs, "check only the lines this branch's diff adds or edits",);`
-  Required by: "add a second, bounded scope of **unchanged** sentences"
-  Replaced by: `assertStringIncludes(withDocs, "check the lines this branch's diff adds or edits",);`
-- Removed from `worker/deno/tests/summary_claim_check_test.ts`: `assertFalse(without.includes("check only the lines this branch's diff adds or edits"),);`
-  Required by: "add a second, bounded scope of **unchanged** sentences"
-  Replaced by: `assertFalse(without.includes("check the lines this branch's diff adds or edits"),);`
+  passed, including
+  `worker/deno/tests/completion_phase_version_bump_2300_test.ts`.
+- Removed from `worker/deno/tests/completion_phase_summary_claim_check_test.ts`:
+  `assertStringIncludes(prompt, "check only the lines this branch's diff adds or edits",);`
+  Required by: "add a second, bounded scope of **unchanged** sentences" Replaced
+  by:
+  `assertStringIncludes(prompt, "check the lines this branch's diff adds or edits",);`
+- Removed from `worker/deno/tests/summary_claim_check_test.ts`:
+  `assertStringIncludes(withDocs, "check only the lines this branch's diff adds or edits",);`
+  Required by: "add a second, bounded scope of **unchanged** sentences" Replaced
+  by:
+  `assertStringIncludes(withDocs, "check the lines this branch's diff adds or edits",);`
+- Removed from `worker/deno/tests/summary_claim_check_test.ts`:
+  `assertFalse(without.includes("check only the lines this branch's diff adds or edits"),);`
+  Required by: "add a second, bounded scope of **unchanged** sentences" Replaced
+  by:
+  `assertFalse(without.includes("check the lines this branch's diff adds or edits"),);`
 
 The old added-lines-only prompt expectation is incompatible with the requested
 extra scope. The updated presence/absence checks retain the same caller
@@ -94,7 +106,11 @@ conditions and go red against the original instruction.
 
 **Branch outcomes:**
 
-- Named section and source-reference section selected / unrelated sibling and archive excluded — `worker/deno/tests/doc_prose_claims_test.ts`.
-- Section cap allows selected scope / records omitted sections — `worker/deno/tests/doc_prose_claims_test.ts`.
-- Changed-source findings and selected unchanged manual findings reach completion — `worker/deno/tests/summary_claim_check_test.ts`.
-- Same selected scope reaches review-fix recovery — `worker/deno/tests/pr_feedback_drift_check_3347_test.ts`.
+- Named section and source-reference section selected / unrelated sibling and
+  archive excluded — `worker/deno/tests/doc_prose_claims_test.ts`.
+- Section cap allows selected scope / records omitted sections —
+  `worker/deno/tests/doc_prose_claims_test.ts`.
+- Changed-source findings and selected unchanged manual findings reach
+  completion — `worker/deno/tests/summary_claim_check_test.ts`.
+- Same selected scope reaches review-fix recovery —
+  `worker/deno/tests/pr_feedback_drift_check_3347_test.ts`.

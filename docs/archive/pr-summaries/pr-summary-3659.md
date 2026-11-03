@@ -28,11 +28,11 @@ run. The prose `regression-test` requirement is removed. Closes #3659.
 
 - A run counts as pass or fail only when the runner prints the named test's own
   line: deno's unindented `<name> ... ok` or `<name> ... FAILED`, or cargo's
-  `test <path> ... ok` or `... FAILED` for a Rust test. Several broken runs
-  exit cleanly or print nothing for the test: a filter that matches nothing
-  (exit 0, `0 passed`), a missing import, a timeout, a git failure, an exhausted
-  budget. All of them return `not_checked`, so a runner fault can never read as
-  "fails before the fix" (the #3615 shape).
+  `test <path> ... ok` or `... FAILED` for a Rust test. Several broken runs exit
+  cleanly or print nothing for the test: a filter that matches nothing (exit 0,
+  `0 passed`), a missing import, a timeout, a git failure, an exhausted budget.
+  All of them return `not_checked`, so a runner fault can never read as "fails
+  before the fix" (the #3615 shape).
 - Base versions come from the merge base, matching the `<base>...HEAD` diff the
   gate reads. A production file the branch added has no base version, so it
   stays at its head version. The disposable checkout is a `git clone --shared`
@@ -44,13 +44,13 @@ run. The prose `regression-test` requirement is removed. Closes #3659.
   Rust test is a `#[test] fn` in a `.rs` file under a `Cargo.toml` package, run
   with `cargo test --no-fail-fast [--test <stem>] <name>` in the nearest
   `[package]` directory and read from the named `test <path> ... ok|FAILED` line
-  (PR #3921 review). A cited test in another language is retained with its
-  cause in `notRun` when another cited test discriminates the fix. Without a
+  (PR #3921 review). A cited test in another language is retained with its cause
+  in `notRun` when another cited test discriminates the fix. Without a
   red-to-green result it blocks as `discrimination-not-checked`. For one cited
-  test the reason names the unsupported language and the cited file; for
-  several it is a summary ("N of M cited tests could not be run") and each
-  test's cause is in the `notRun` entries (PR #3921: keep a combined
-  not_checked record whole). The block is lifted only when the repository sets
+  test the reason names the unsupported language and the cited file; for several
+  it is a summary ("N of M cited tests could not be run") and each test's cause
+  is in the `notRun` entries (PR #3921: keep a combined not_checked record
+  whole). The block is lifted only when the repository sets
   `skip_security_fix_check`. A test that could not run never counts as
   red-to-green evidence.
 - The record travels on the block verdict in run state
@@ -59,12 +59,11 @@ run. The prose `regression-test` requirement is removed. Closes #3659.
   code-fenced). It is also persisted in the verdict store
   (`SecurityFixGateBlock.discrimination`, bounded on write and on read), so the
   in-run retry and the next run replay it with a note on what each outcome
-  means; the retry prompt no longer calls the code "very likely already
-  correct" or offers "commit nothing" for a discrimination block (PR #3921
-  review). The field is optional in the version-1 file: an older file reads as
-  having none, so the store key is not bumped. A passing run is logged at info
-  and is not written to run state, because the gate writes run state only when
-  it blocks.
+  means; the retry prompt no longer calls the code "very likely already correct"
+  or offers "commit nothing" for a discrimination block (PR #3921 review). The
+  field is optional in the version-1 file: an older file reads as having none,
+  so the store key is not bumped. A passing run is logged at info and is not
+  written to run state, because the gate writes run state only when it blocks.
 
 ### Undiscoverable Facts
 
@@ -130,8 +129,9 @@ flowchart TD
 and `#the-verdict-store`; siblings: `declarations`, `blockCount`; updated:
 `docs/security-fix-gate-feedback.md`, `docs/CONFIGURATION.md`,
 `docs/INTERNALS.md`, `docs/security/vulnhunter-methodology-evaluation.md`; no
-other hit — the `only Deno` text in `docs/archive/pr-summaries/pr-summary-870.md:77`
-and `-2344.md:83` is about Deno source and the Deno seed, unrelated to the gate.
+other hit — the `only Deno` text in
+`docs/archive/pr-summaries/pr-summary-870.md:77` and `-2344.md:83` is about Deno
+source and the Deno seed, unrelated to the gate.
 
 **Docs sweep** — grep: `regression-test`, `REGRESSION_TEST_REFERENCE`,
 `BEFORE_AFTER_LINKAGE`, "No execution is required", "fail-before/pass-after",
@@ -196,10 +196,10 @@ is a verb there, unrelated to the gate.
 The Spec reviewer also rated two proposal items `partial`. These are not
 acceptance criteria. (a) "Record both outcomes in run state": a passing run is
 logged but not written to run state, because the gate's verdict is carried in
-run state and the verdict store only on a block today. (b) "Reuse its runner where it fits": the seams
-and config-dir lookup are reused, but the named-test invocation and output
-parsing are new, since `runMutationCheck` mutates lines rather than running one
-test.
+run state and the verdict store only on a block today. (b) "Reuse its runner
+where it fits": the seams and config-dir lookup are reused, but the named-test
+invocation and output parsing are new, since `runMutationCheck` mutates lines
+rather than running one test.
 
 ## Standards Review
 
@@ -239,10 +239,10 @@ test.
   - `namedTestOutcome` cases built from observed deno output, and
     `namedRustTestOutcome` cases in the shape `cargo test` prints
     (`test <path> ... ok|FAILED`).
-  - Rust scenarios with a fake cargo over a real git repository: red→green,
-    red at the head, a build failure quoting rustc's cause, no package
-    manifest, a virtual workspace manifest, a root package reached by climbing,
-    a name that is not a function name, and a test outside `tests/`.
+  - Rust scenarios with a fake cargo over a real git repository: red→green, red
+    at the head, a build failure quoting rustc's cause, no package manifest, a
+    virtual workspace manifest, a root package reached by climbing, a name that
+    is not a function name, and a test outside `tests/`.
   - Real-git scenario tests for red→green, green→green, red→red, could-not-run,
     a missing base ref, a timeout, no Deno marker, empty or branch-added
     production files, an exhausted budget, and an unexpected throw.
@@ -300,23 +300,27 @@ test.
   - The `productionFiles` filter.
   - The `citedTestIdentifierInDiff` operand.
   - Every runner branch listed in the facts file.
-- Earlier PR #3921 review: the branches that fix added were flipped on their own and the
-  named test went red, including each operand of the compound conditions (the
-  runnable-test predicate, the cargo name match, `sanitiseDiscrimination`'s checked
-  guard and `blocksOnDiscrimination`); the entries are in the facts file.
+- Earlier PR #3921 review: the branches that fix added were flipped on their own
+  and the named test went red, including each operand of the compound conditions
+  (the runnable-test predicate, the cargo name match, `sanitiseDiscrimination`'s
+  checked guard and `blocksOnDiscrimination`); the entries are in the facts
+  file.
 - Edited expectations: the gate-block `missing` list in
   `completion_phase_security_gate_test.ts` still goes red when the identifier
   guard is removed.
-- `./quality.sh < /dev/null` on the earlier PR #3921 review-fix tree: passed — every stage passed (parallel and serial Deno test passes included) except `config integration`, which skipped because the checkout has no `.config.json`.
+- `./quality.sh < /dev/null` on the earlier PR #3921 review-fix tree: passed —
+  every stage passed (parallel and serial Deno test passes included) except
+  `config integration`, which skipped because the checkout has no
+  `.config.json`.
 
 ### PR #3921: retain every cited test outcome
 
 The published tree still discarded unsupported citations before running tests
-and omitted unrun attempts when another test passed red-to-green. The runner
-now keeps those citations in the optional `notRun` field of a checked record,
-with the test and reason; a `not_checked` record keeps them too, beside its
-completed `runs` (see the next section). Without a red-to-green result, any unrun citation makes
-the result `not_checked`. The existing exact-name matching and Rust
+and omitted unrun attempts when another test passed red-to-green. The runner now
+keeps those citations in the optional `notRun` field of a checked record, with
+the test and reason; a `not_checked` record keeps them too, beside its completed
+`runs` (see the next section). Without a red-to-green result, any unrun citation
+makes the result `not_checked`. The existing exact-name matching and Rust
 `should_panic` handling remain intact.
 
 - `security_fix_discrimination_test.ts`: the existing red-to-green-plus-unrun
@@ -328,61 +332,63 @@ the result `not_checked`. The existing exact-name matching and Rust
   remain cited so the runner can record their unsupported-language cause.
   Function parsing is restricted to `.py`, `.go` and `.java`; Java method
   parsing is anchored. Deno declarations retain their string name when a
-  one-line callback contains `void check()`, `def test_other(` or `func
+  one-line callback contains `void check()`, `def test_other(` or
+  `func
   TestOther(`. Existing full-name and Rust controls still pass.
-- Edited expectation in `citedSecurityTests - a Rust helper yields nothing
-  while a pytest declaration remains cited`: the pytest result changes from
-  `[]` to its file/name; the Rust helper assertion remains `[]`. Required by:
-  "A test run that cannot execute blocks as not checked, never as red."
-  Replaced by: ``assertEquals(citedSecurityTests("`tests/test_db.py::test_rejects_injection`", py), [{ file: "tests/test_db.py", name: "test_rejects_injection" }]);``.
-  Dropping the Python declaration would hide the unrun security test; the
-  new mixed-language runner tests enforce the resulting not-checked verdict.
+- Edited expectation in
+  `citedSecurityTests - a Rust helper yields nothing
+  while a pytest declaration remains cited`:
+  the pytest result changes from `[]` to its file/name; the Rust helper
+  assertion remains `[]`. Required by: "A test run that cannot execute blocks as
+  not checked, never as red." Replaced by:
+  ``assertEquals(citedSecurityTests("`tests/test_db.py::test_rejects_injection`", py), [{ file: "tests/test_db.py", name: "test_rejects_injection" }]);``.
+  Dropping the Python declaration would hide the unrun security test; the new
+  mixed-language runner tests enforce the resulting not-checked verdict.
 - `security_fix_gate_feedback_test.ts`: `notRun` survives a persisted verdict
   and renders its test and scrubbed cause. Malformed entries are discarded
-  individually; arrays are capped at ten and each file, name and reason at
-  300 characters. Existing old-record tests still pass without `notRun`, so
-  the version-1 store remains readable and its key stays unchanged.
-- `completion_phase_security_gate_test.ts`: a successful live completion
-  retains `notRun` in the information log alongside the deciding test's base
-  and head outcomes. No prior log or PR-creation assertion was removed.
+  individually; arrays are capped at ten and each file, name and reason at 300
+  characters. Existing old-record tests still pass without `notRun`, so the
+  version-1 store remains readable and its key stays unchanged.
+- `completion_phase_security_gate_test.ts`: a successful live completion retains
+  `notRun` in the information log alongside the deciding test's base and head
+  outcomes. No prior log or PR-creation assertion was removed.
 - Red proof: before the implementation, the updated gate and runner suites
-  reported 110 passes and five failures, including the missing not-run
-  record and the unsupported-citation verdict. This behavioural run used
-  `--no-check` while the new record field did not yet exist in the type.
-- Mutation proof: removing `notRun` from aggregation, persistence, rendering
-  or the pass log each made its regression fail. Restoring the unpublished
-  broad function-name regex also made the Deno callback regression fail.
-  Every mutation was restored; final type-checking is enabled.
-- Validation: 227 focused security gate, runner, feedback, retry, completion
-  and wiring tests passed. The manifest gate passed with 687 tests and one
-  existing ignored test. These are this review fix's checks; the full-gate
-  result above belongs to the earlier implementation. Required CI remains
-  the full validation for the new head.
-- Docs sweep: updated `docs/security-fix-gate-feedback.md`'s discrimination
-  and persisted-state sections plus the `citedSecurityTests` and result-type
-  comments. Corrected the facts file's line references against this tree.
-  The old empty-name/Python mutation entry was retired because Python names
-  are now deliberately retained; the new extraction regression replaces it.
-  Independent read-only review found no actionable findings.
+  reported 110 passes and five failures, including the missing not-run record
+  and the unsupported-citation verdict. This behavioural run used `--no-check`
+  while the new record field did not yet exist in the type.
+- Mutation proof: removing `notRun` from aggregation, persistence, rendering or
+  the pass log each made its regression fail. Restoring the unpublished broad
+  function-name regex also made the Deno callback regression fail. Every
+  mutation was restored; final type-checking is enabled.
+- Validation: 227 focused security gate, runner, feedback, retry, completion and
+  wiring tests passed. The manifest gate passed with 687 tests and one existing
+  ignored test. These are this review fix's checks; the full-gate result above
+  belongs to the earlier implementation. Required CI remains the full validation
+  for the new head.
+- Docs sweep: updated `docs/security-fix-gate-feedback.md`'s discrimination and
+  persisted-state sections plus the `citedSecurityTests` and result-type
+  comments. Corrected the facts file's line references against this tree. The
+  old empty-name/Python mutation entry was retired because Python names are now
+  deliberately retained; the new extraction regression replaces it. Independent
+  read-only review found no actionable findings.
 
 ### PR #3921: keep a combined not_checked record whole
 
-The stored record cut a `not_checked` `reason` to 300 characters, yet the
-runner packed every cited test's outcome and cause into it, so a retry prompt
-could lose an unrun test and its cause. A `not_checked` result for several
-cited tests now carries a short summary `reason` plus structured `runs`
-(completed base/head outcomes) and `notRun` (test and cause) entries. They are
-sanitised by the same helpers as the checked record (ten entries, 300
-characters per field), rendered by `formatDiscriminationRecord` and replayed
-by the retry prompt.
+The stored record cut a `not_checked` `reason` to 300 characters, yet the runner
+packed every cited test's outcome and cause into it, so a retry prompt could
+lose an unrun test and its cause. A `not_checked` result for several cited tests
+now carries a short summary `reason` plus structured `runs` (completed base/head
+outcomes) and `notRun` (test and cause) entries. They are sanitised by the same
+helpers as the checked record (ten entries, 300 characters per field), rendered
+by `formatDiscriminationRecord` and replayed by the retry prompt.
 
 - `security_fix_discrimination_test.ts`: the three combined-reason assertions
   now check the structured `runs` and `notRun` entries.
 - `security_fix_gate_retry_test.ts`: two tests pass a `not_checked` result
-  through the real persistence and the retry prompt. One cites three
-  unsupported tests (a combined cause far over 300 characters) and asserts
-  every test and its language cause reaches the prompt; with the previous
-  packed reason it failed on the stored record. The other adds a completed run.
+  through the real persistence and the retry prompt. One cites three unsupported
+  tests (a combined cause far over 300 characters) and asserts every test and
+  its language cause reaches the prompt; with the previous packed reason it
+  failed on the stored record. The other adds a completed run.
 - Flips (each restored): dropping `runs` or `notRun` from the sanitised
   `not_checked` record, or the `runs` rendering, turns a retry test red.
 - Docs sweep: `docs/security-fix-gate-feedback.md` (discrimination and

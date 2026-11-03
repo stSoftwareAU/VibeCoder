@@ -43,8 +43,10 @@ flowchart LR
 ## Evidence
 
 - `deno test --allow-read tests/codeowners_test.ts`: 9 passed.
-  - The test named `committed CODEOWNERS - privileged paths have human owners,
-    no bots` reads the real `.github/CODEOWNERS`.
+  - The test named
+    `committed CODEOWNERS - privileged paths have human owners,
+    no bots`
+    reads the real `.github/CODEOWNERS`.
   - Before this change the file did not exist, so that test failed.
 - `./quality.sh` result: see the Test Plan below.
 

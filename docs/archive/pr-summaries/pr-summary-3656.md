@@ -12,8 +12,8 @@ itself and at a device width just past it, and the changed side just inside it.
 - `prompts/issue/prompt.md`: new paragraph **Check both sides of a breakpoint
   the issue names.** under Instructions rule 2, directly after **Measure
   overlays and pinned bars open.**
-- `CODING-STANDARDS.md`: the same rule at the end of the **Choosing assertions
-  → UI / PWA** bullet.
+- `CODING-STANDARDS.md`: the same rule at the end of the **Choosing assertions →
+  UI / PWA** bullet.
 - `prompts/best_practices/buckets/html.md`: new visual anti-pattern check 15,
   **Change leaking past its breakpoint.**, next to check 14. The old checks 15,
   16 and 17 become 16, 17 and 18.
@@ -82,11 +82,11 @@ not a rule.
 
 - `worker/deno/tests/breakpoint_sides_3656_docs_test.ts` (new) pins the rule in
   `prompts/issue/prompt.md` § Instructions, in `CODING-STANDARDS.md` § Choosing
-  assertions, and the new check in `prompts/best_practices/buckets/html.md`
-  § Visual design anti-patterns.
+  assertions, and the new check in `prompts/best_practices/buckets/html.md` §
+  Visual design anti-patterns.
   - `deno task drift-pins-on-base origin/milestone/fleet-guidance-ui-breakpoints-and-tap-targets …`
-    reported `absent on base` for all 12 pinned phrases in their sections:
-    six in Instructions, four in Choosing assertions, two in Visual design
+    reported `absent on base` for all 12 pinned phrases in their sections: six
+    in Instructions, four in Choosing assertions, two in Visual design
     anti-patterns.
 - `worker/deno/tests/front_end_design_anti_patterns_2636_test.ts`: `MAX_CHECKS`
   goes from 8 to 9. The issue asks to "add a matching visual check next to check
@@ -96,8 +96,8 @@ not a rule.
 - `deno task test:unit tests/breakpoint_sides_3656_docs_test.ts tests/open_state_viewport_3335_docs_test.ts tests/front_end_design_anti_patterns_2636_test.ts tests/bucket_check_numbering_test.ts`
   ran in `worker/deno`: 21 passed, 0 failed.
 - `markdownlint-cli2` on the three edited Markdown files reported 0 issues.
-- `./quality.sh` ran on head `c566dcc2`, which holds every code, prompt and
-  test change in this PR: `Result: PASSED (with skipped checks)`. Only
+- `./quality.sh` ran on head `c566dcc2`, which holds every code, prompt and test
+  change in this PR: `Result: PASSED (with skipped checks)`. Only
   `config integration` was skipped; deno tests, lint, type check, fmt,
   markdownlint and semgrep all passed.
 

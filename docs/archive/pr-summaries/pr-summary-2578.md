@@ -4,12 +4,12 @@
 
 Closes #2578.
 
-The weekly GitHub Actions audit never raised CI cost or speed on
-GRQ-AutoTrader. The owner's direct question on 2026-09-24 turned up roughly
-half the Actions spend, and cargo caching (#451), parallel deploy jobs (#453)
-and reusing the Rust build (#531) had each been found by hand. The prompt had
-three gaps: no checks for those levers, a 6-finding cap that security findings
-fill first, and no way to see what a workflow costs.
+The weekly GitHub Actions audit never raised CI cost or speed on GRQ-AutoTrader.
+The owner's direct question on 2026-09-24 turned up roughly half the Actions
+spend, and cargo caching (#451), parallel deploy jobs (#453) and reusing the
+Rust build (#531) had each been found by hand. The prompt had three gaps: no
+checks for those levers, a 6-finding cap that security findings fill first, and
+no way to see what a workflow costs.
 
 This PR adds a compact **Cost and speed** group (checks 37–41), a read-only
 run-time cost signal, and at least 2 of the 6 slots kept for the group, always
@@ -42,20 +42,20 @@ before merge. It is left for the operator.
   - It adds a `<cost_candidates>{{COST_CANDIDATES}}</cost_candidates>` input
     block.
 - `worker/deno/lib/workflow_cost_scanner.ts` (new) is a pure pre-pass. It gives
-  leads for 37 (no `paths:` and no change detection on push/pull_request) and
-  39 (cargo without a cache, `setup-*` installing with no `cache:`, run-unique
-  keys with no `restore-keys`, Docker with no `cache-from`). It also gives leads
-  for 40 (one job that lints, tests and builds) and 41 (a deploy rebuilding
-  what a push/PR workflow builds without downloading that run's artefact).
+  leads for 37 (no `paths:` and no change detection on push/pull_request) and 39
+  (cargo without a cache, `setup-*` installing with no `cache:`, run-unique keys
+  with no `restore-keys`, Docker with no `cache-from`). It also gives leads for
+  40 (one job that lints, tests and builds) and 41 (a deploy rebuilding what a
+  push/PR workflow builds without downloading that run's artefact).
 - `worker/deno/lib/idle_task_templates/github_actions_audit_template.ts` runs
   the pre-pass over the workflow files it already read and passes the rendered
   leads to the scan. A scanner failure is logged and leaves `(none)`.
-- `worker/deno/lib/prompt_manager.ts` registers `COST_CANDIDATES` as an
-  optional placeholder.
+- `worker/deno/lib/prompt_manager.ts` registers `COST_CANDIDATES` as an optional
+  placeholder.
 - `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` gains a new "Cost and speed (#37–#41)"
   section. It covers the checks, the cost signal, severity, the reserved slots
-  and the pre-pass. The doc also updates severity guidance, the id table and
-  the cap section.
+  and the pre-pass. The doc also updates severity guidance, the id table and the
+  cap section.
 - `docs/audits/lib-sweep-coverage.json` and
   `docs/audits/security-sweep-2578-workflow-cost-scanner.md` hold the top-up
   sweep record for the new module.
@@ -70,31 +70,41 @@ The prompt forbids them, but the guard does not refuse them per template.
 
 - **met**: the prompt carries checks 37–41, each with a stable id recipe,
   severity rules and a no-false-positive note, and the sweep band lists include
-  them. Evidence: `github_actions_audit_cost_group_test.ts` (`cost group -
-  checks 37–41 each carry a stable id…`, `sweep bands - every cost check is in
-  a severity band`, `stable-id recipe list names the cost-group prefix`).
+  them. Evidence: `github_actions_audit_cost_group_test.ts`
+  (`cost group -
+  checks 37–41 each carry a stable id…`,
+  `sweep bands - every cost check is in
+  a severity band`,
+  `stable-id recipe list names the cost-group prefix`).
 - **met**: Phase 3 keeps at least 2 of the 6 slots for cost findings, below
-  `severity:high` security findings. Evidence: `Phase 3 - at least 2 of the 6
+  `severity:high` security findings. Evidence:
+  `Phase 3 - at least 2 of the 6
   slots are kept for the cost group, below severity:high`.
-- **met**: read-only `gh run list` and the optional `timing` call are allowed
-  by the hard constraints and the guard, with nothing that writes. Each cost
+- **met**: read-only `gh run list` and the optional `timing` call are allowed by
+  the hard constraints and the guard, with nothing that writes. Each cost
   finding states its duration, runs per week and saving, or "unmeasured".
-  Evidence: `Hard Constraints - only the read-only cost-signal calls are
-  added, nothing that writes`, `gh_guard_actions_cost_signal_2578_test.ts`
-  (both directions), and `cost group - each finding states duration, runs per
+  Evidence:
+  `Hard Constraints - only the read-only cost-signal calls are
+  added, nothing that writes`,
+  `gh_guard_actions_cost_signal_2578_test.ts` (both directions), and
+  `cost group - each finding states duration, runs per
   week and saving, or 'unmeasured'`.
-- **met**: `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` documents the group, the
-  reserved slots and the cost signal. Evidence: `operator manual documents the
+- **met**: `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` documents the group, the reserved
+  slots and the cost signal. Evidence:
+  `operator manual documents the
   group, the reserved slots and the cost signal`.
 - **met**: the regression check passes. A fixture modelled on GRQ-AutoTrader's
   workflows before #451, #453 and #531 gives leads for 37, 39, 40 and 41, and
   the optimised repo gives none. Existing security-check tests are unchanged.
-  Evidence: `workflow_cost_scanner_test.ts` (`GRQ-AutoTrader before
-  #451/#453/#531 yields 37, 39, 40 and 41`, `the GRQ candidates cite the jobs
-  the hand-filed fixes changed`, `a repo already caching, path-gating and
-  running in parallel yields nothing`). The fixture was taken from
-  GRQ-AutoTrader at `e8b506c1`, the parent of #451's merge. No existing test
-  was modified apart from two additions to
+  Evidence: `workflow_cost_scanner_test.ts`
+  (`GRQ-AutoTrader before
+  #451/#453/#531 yields 37, 39, 40 and 41`,
+  `the GRQ candidates cite the jobs
+  the hand-filed fixes changed`,
+  `a repo already caching, path-gating and
+  running in parallel yields nothing`).
+  The fixture was taken from GRQ-AutoTrader at `e8b506c1`, the parent of #451's
+  merge. No existing test was modified apart from two additions to
   `github_actions_audit_template_test.ts`.
 - **missing**: raising the scan on every monitored repo straight away and
   linking the findings here is an operator step. It can only run after merge,

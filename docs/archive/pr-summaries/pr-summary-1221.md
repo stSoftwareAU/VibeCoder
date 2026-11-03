@@ -13,13 +13,15 @@ host — and Apple `container`, the runtime that probe exists for, is macOS-only
 So on a stock fleet host every one of those four calls was a `command not found`
 with its stderr sent to `/dev/null`: `container ls` never ran, the probe
 concluded there was no container, the failure counter reset every cycle, and the
-recovery could never fire. All four now go through a `bounded <seconds>
-<command>` helper matching the one `run.sh:196-204` already carries — bounded
-where the host has a timeout, unbounded where it has not, never silently not run
-at all.
+recovery could never fire. All four now go through a
+`bounded <seconds>
+<command>` helper matching the one `run.sh:196-204` already
+carries — bounded where the host has a timeout, unbounded where it has not,
+never silently not run at all.
 
-**The review record** is `docs/audits/security-sweep-1221-shell-entry-points.md`,
-in the shape of the six sibling chunk records already in `docs/audits/`.
+**The review record** is
+`docs/audits/security-sweep-1221-shell-entry-points.md`, in the shape of the six
+sibling chunk records already in `docs/audits/`.
 
 ## Evidence
 
@@ -40,17 +42,17 @@ flowchart TD
 
 ### The five findings
 
-| # | Where | Class | Severity | Status |
-| - | ----- | ----- | -------- | ------ |
-| 1 | `loop.sh` control-plane probe | a guard that cannot run | medium | fixed in this PR |
-| 2 | `setup.sh:1120` | non-atomic write of a credential-bearing file (CWE-755) | medium | #1298 |
-| 3 | `run.sh:1536` | incorrect permission on a critical resource (CWE-732) | low | #1299 |
-| 4 | `setup.sh:811-833` | incomplete cleanup of a secret temp file (CWE-459) | low | #1300 |
-| 5 | `setup.sh:351`, `:784` | code injection via an unquoted assignment (CWE-94) | low | #1301 |
+| # | Where                         | Class                                                   | Severity | Status           |
+| - | ----------------------------- | ------------------------------------------------------- | -------- | ---------------- |
+| 1 | `loop.sh` control-plane probe | a guard that cannot run                                 | medium   | fixed in this PR |
+| 2 | `setup.sh:1120`               | non-atomic write of a credential-bearing file (CWE-755) | medium   | #1298            |
+| 3 | `run.sh:1536`                 | incorrect permission on a critical resource (CWE-732)   | low      | #1299            |
+| 4 | `setup.sh:811-833`            | incomplete cleanup of a secret temp file (CWE-459)      | low      | #1300            |
+| 5 | `setup.sh:351`, `:784`        | code injection via an unquoted assignment (CWE-94)      | low      | #1301            |
 
-Each filed issue carries a `<!-- finding-id: SEC-1221-0n -->` marker, a `<!-- cwe: … -->`
-marker, and the `security` + `severity:*` + `confidence:*` labels
-`docs/SECURITY-SCAN.md` prescribes.
+Each filed issue carries a `<!-- finding-id: SEC-1221-0n -->` marker, a
+`<!-- cwe: … -->` marker, and the `security` + `severity:*` + `confidence:*`
+labels `docs/SECURITY-SCAN.md` prescribes.
 
 ### `shellcheck` triage — no finding came from the linter
 
@@ -67,25 +69,29 @@ already covers these files**: `.github/workflows/validate-scripts.yml` runs a
 pinned, SHA-256-verified `shellcheck` 0.11.0 over `find . -name "*.sh"` in the
 `validate` job, which is a required status check for `Develop`, `main` and
 `milestone/*`. No new gate was added — adding one would have been redundant.
-With every optional check on, the three files produce 205 SC2250, 48 SC2310,
-4 SC2312 and 2 SC2249, all triaged as style in the record. **All five findings
+With every optional check on, the three files produce 205 SC2250, 48 SC2310, 4
+SC2312 and 2 SC2249, all triaged as style in the record. **All five findings
 came from the read**, because each is semantic: a bound that resolves to a
 missing binary, a truncation window, a file mode, a quoting contract between a
 writer and a reader.
 
 ### Security-fix evidence contract
 
-- **Test file in this branch's diff:** `worker/deno/tests/loop_supervisor_test.ts`.
+- **Test file in this branch's diff:**
+  `worker/deno/tests/loop_supervisor_test.ts`.
 - **Test identifier:**
   `worker/deno/tests/loop_supervisor_test.ts::loop.sh #1221 - the control-plane probe recovers a wedged container on a host with no timeout binary`.
 - **Fail direction, observed both ways.** Against the pre-fix `loop.sh`
   (`git show origin/milestone/…:loop.sh`) it fails with
-  `AssertionError: the probe must actually run \`container ls\` on a host with no timeout binary; container calls were:` and an empty log — the stub recorded
-  nothing at all, because `container ls` never ran. Against this branch it passes
-  in 3s. The test builds a `PATH` holding only the tools `loop.sh` needs and
-  neither `timeout` nor `gtimeout` (the premise checked with a real `command -v`
-  under that PATH), runs the real `loop.sh` against a `container` stub whose
-  `exec` always fails, and asserts the stub recorded `kill vibe-coder-999`.
+  `AssertionError: the probe must actually run \`container ls\` on a host with
+  no timeout binary; container calls
+  were:`and an empty log — the stub recorded
+  nothing at all, because`container
+  ls`never ran. Against this branch it passes
+  in 3s. The test builds a`PATH`holding only the tools`loop.sh`needs and
+  neither`timeout`nor`gtimeout`(the premise checked with a real`command
+  -v`under that PATH), runs the real`loop.sh`against a`container`stub whose`exec`always fails, and asserts the stub recorded`kill
+  vibe-coder-999`.
 - **Original trigger closed, no trivial bypass.** The trigger was a literal
   `timeout` in the argv position of four calls. `grep -n timeout loop.sh` now
   returns only comments, the resolution loop, and `run_under_deadline`'s
@@ -112,13 +118,13 @@ The issue states its criteria under `## Definition of done` and
 `## Failure Detection`.
 
 - **met** — All three files read end to end; the chunk closes completely —
-  evidence: `docs/audits/security-sweep-1221-shell-entry-points.md` —
-  reviewer: met — reason: the reviewer spot-verified ~20 cited line references
-  across `run.sh` and `setup.sh` and found every one exact.
+  evidence: `docs/audits/security-sweep-1221-shell-entry-points.md` — reviewer:
+  met — reason: the reviewer spot-verified ~20 cited line references across
+  `run.sh` and `setup.sh` and found every one exact.
 - **met** — `shellcheck` run over all three and triaged, stating which findings
-  came from the linter and which from the read — evidence: the
-  "`shellcheck` triage" section of the audit record — reviewer: met — reason:
-  the reviewer reproduced both passes and matched the per-file counts exactly.
+  came from the linter and which from the read — evidence: the "`shellcheck`
+  triage" section of the audit record — reviewer: met — reason: the reviewer
+  reproduced both passes and matched the per-file counts exactly.
 - **met** — Surviving findings filed one per finding as `security` issues with a
   `finding-id` marker and `severity:*` / `confidence:*` labels — evidence:
   #1298, #1299, #1300, #1301 — reviewer: partial — reason: the reviewer could
@@ -170,9 +176,9 @@ entry is not a behaviour change: it is what the repo's own
 - **violation** — documentation kept in step with code: the record's `loop.sh`
   line anchors were pre-change offsets — evidence:
   `docs/audits/security-sweep-1221-shell-entry-points.md:224` — reason: fixed
-  here; every `loop.sh` anchor renumbered against the shipped file
-  (`:458-462`, `:464`, `:167-199`, `:155`) and the line-count table marked as
-  counted at the base commit.
+  here; every `loop.sh` anchor renumbered against the shipped file (`:458-462`,
+  `:464`, `:167-199`, `:155`) and the line-count table marked as counted at the
+  base commit.
 - **violation** — a stated guard must be accurate: the record claimed a
   containment regression would fail "the required `Validate Scripts` check" —
   evidence: `docs/audits/security-sweep-1221-shell-entry-points.md:213-216` —
@@ -213,12 +219,13 @@ entry is not a behaviour change: it is what the repo's own
 
 ## Test Plan
 
-- **Added** `worker/deno/tests/loop_supervisor_test.ts::loop.sh #1221 - the control-plane probe recovers a wedged container on a host with no timeout binary`
+- **Added**
+  `worker/deno/tests/loop_supervisor_test.ts::loop.sh #1221 - the control-plane probe recovers a wedged container on a host with no timeout binary`
   — the regression test for the fix, verified red against the pre-fix `loop.sh`
   and green against this branch.
-- **Re-ran** the whole of `worker/deno/tests/loop_supervisor_test.ts`: 16 passed,
-  0 failed — the existing `#323`, `#399`, `#342`, `#1836` and `#26` cases are
-  unaffected by the `TIMEOUT_PREFIX` removal.
+- **Re-ran** the whole of `worker/deno/tests/loop_supervisor_test.ts`: 16
+  passed, 0 failed — the existing `#323`, `#399`, `#342`, `#1836` and `#26`
+  cases are unaffected by the `TIMEOUT_PREFIX` removal.
 - **Re-ran** `worker/deno/tests/launcher_parity_test.ts` and
   `launcher_source_test.ts`: 21 passed, 0 failed.
 - **`shellcheck -e SC1091 -e SC2034 run.sh setup.sh loop.sh`** and

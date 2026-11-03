@@ -89,8 +89,8 @@ existing `github_app_auth_test.ts` is unchanged and passes.
   red at its `GH_TOKEN` assertion).
 - Changed call sites: `fix()` calls `startBabysitterAgent`, which mints the
   token and calls `spawnBabysitterAgent`; `pass()` and `main` thread `app`
-  through as a required parameter. The launch test exercises that helper with
-  a fake token exchange and spawn, in an isolated process.
+  through as a required parameter. The launch test exercises that helper with a
+  fake token exchange and spawn, in an isolated process.
 - Mutation check: the spawn test asserts the full codex argument list (`-c`,
   `--output-last-message` and the rest, in order) and the `stdin`, `stdout` and
   `stderr` options. The `fix()` call needs a real clone and PR lock; `dir` is a
@@ -103,8 +103,8 @@ existing `github_app_auth_test.ts` is unchanged and passes.
 - No assertion was removed from any existing test; `github_app_auth_test.ts` is
   untouched.
 - On the earlier implementation, `./quality.sh < /dev/null`: every stage passed
-  (semgrep, lint, type check, fmt, markdownlint, mermaid) except `deno tests`, whose only
-  2 failures are
+  (semgrep, lint, type check, fmt, markdownlint, mermaid) except `deno tests`,
+  whose only 2 failures are
   `completion - an unformatted Rust change is formatted and committed, then passes the gate`
   and
   `completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit`
@@ -118,8 +118,8 @@ existing `github_app_auth_test.ts` is unchanged and passes.
   lint, type checking and completeness checks, but its parallel test pass
   panicked in Deno 2.9.0 while restoring test permissions; the serial pass did
   not run. Semgrep, Checkov and config integration lacked local prerequisites.
-- Latest push (prompt sentence removed, ordering tests added): the two new launch
-  tests in `fleet_babysitter_app_test.ts` pin that a mint failure leaves the
-  attempt unrecorded (`guarded` and `spawned` stay false) and that an attempted
-  head is not spawned. The summary no longer claims a prompt change, matching
-  `git diff main...HEAD` for `fleet_pr_babysitter.ts`.
+- Latest push (prompt sentence removed, ordering tests added): the two new
+  launch tests in `fleet_babysitter_app_test.ts` pin that a mint failure leaves
+  the attempt unrecorded (`guarded` and `spawned` stay false) and that an
+  attempted head is not spawned. The summary no longer claims a prompt change,
+  matching `git diff main...HEAD` for `fleet_pr_babysitter.ts`.

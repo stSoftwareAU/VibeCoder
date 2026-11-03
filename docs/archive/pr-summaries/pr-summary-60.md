@@ -3,10 +3,10 @@
 ## Summary
 
 A partially-repaired planning run leaves its parent labelled
-`needs-failure-detection-repair` instead of `failed-once` (Issue #59). That state
-was inert: nothing ever revisited it, so sub-issues stayed published without a
-`## Failure Detection` section. This adds the pass that finishes the job.
-Closes #60.
+`needs-failure-detection-repair` instead of `failed-once` (Issue #59). That
+state was inert: nothing ever revisited it, so sub-issues stayed published
+without a `## Failure Detection` section. This adds the pass that finishes the
+job. Closes #60.
 
 **Priority 1.81 — `Failure-Detection Repair Resume`** (`agentBacked: true`, sits
 straight after Planning Mode because it consumes the state Planning produces):
@@ -22,8 +22,8 @@ straight after Planning Mode because it consumes the state Planning produces):
    offending.
 3. A clean set removes the label and posts a confirmation comment.
 
-Re-gating first is what makes the pass idempotent and self-healing: a sub-issue a
-human fixed by hand is no longer an offender, so an already-clean parent costs
+Re-gating first is what makes the pass idempotent and self-healing: a sub-issue
+a human fixed by hand is no longer an offender, so an already-clean parent costs
 **zero Claude calls** and simply loses its label.
 
 **Retries are bounded.** A cycle that genuinely attempted a repair and still
@@ -31,8 +31,8 @@ failed records `<!-- failure-detection-resume-attempt: N -->` in its parent
 comment — the count lives in the comments so it survives a restart and reads the
 same for every worker in the fleet. After
 `MAX_FAILURE_DETECTION_RESUME_ATTEMPTS` (3) the parent goes through the existing
-`escalateToHuman()` chokepoint (`needs-human` + explanation, always together) and
-the resume label is dropped so the pass stops re-picking it. Offenders the
+`escalateToHuman()` chokepoint (`needs-human` + explanation, always together)
+and the resume label is dropped so the pass stops re-picking it. Offenders the
 handler budget merely **deferred** (Issue #58 — never attempted) do not spend an
 attempt: a budget shortfall is no evidence that a repair is impossible. A parent
 whose native sub-issues cannot be enumerated is treated exactly like a failed
@@ -50,8 +50,8 @@ milestone branch because of it (four in
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot — the evidence is the test
-suite below plus the ladder-documentation gate.
+Backend/CLI change with no web interface to screenshot — the evidence is the
+test suite below plus the ladder-documentation gate.
 
 ```mermaid
 flowchart TD
@@ -70,13 +70,13 @@ flowchart TD
 `./quality.sh` output (this branch):
 
 ```
-  deno lint                      PASSED
-  deno type check                PASSED
-  deno fmt                       PASSED
-  mermaid                        PASSED
-  markdownlint                   PASSED
-  needs-human chokepoint         PASSED
-  deno tests                     FAILED
+deno lint                      PASSED
+deno type check                PASSED
+deno fmt                       PASSED
+mermaid                        PASSED
+markdownlint                   PASSED
+needs-human chokepoint         PASSED
+deno tests                     FAILED
 ```
 
 The `deno tests` failure is **seven pre-existing, environment-dependent tests**
@@ -84,8 +84,8 @@ that fail identically on a clean checkout of this branch (verified with
 `git stash`): `buildFleetHealthConfig - container mode …`,
 `applyOptionalFeatureEnv - reads the file …`, and five
 `remind_obsolete_host_work_dirs - …` cases. They exercise host work-dir and
-container-mount paths that do not exist in this sandbox and are untouched by this
-change. Every test in the modules this change touches passes.
+container-mount paths that do not exist in this sandbox and are untouched by
+this change. Every test in the modules this change touches passes.
 
 ## Test Plan
 
@@ -99,8 +99,8 @@ New — `worker/deno/tests/failure_detection_resume_test.ts` (13 tests):
   hand makes **no** Claude call, loses the label, and gets a confirmation
   comment.
 - **Repair + label removal** — with one of two sub-issues offending, only the
-  offender is edited (`gh issue edit 843`), the label is removed, and the comment
-  names it.
+  offender is edited (`gh issue edit 843`), the label is removed, and the
+  comment names it.
 - **Outstanding** — an un-repairable sub-issue keeps the label and records
   attempt 1 in the parent comment.
 - **Bounded escalation** — a parent whose comments already carry three attempt
@@ -123,6 +123,7 @@ Existing gates re-run:
   cases now pass with the label-guard allowlist fix.
 
 Documentation updated in the same change:
-`docs/workflows/planning-and-questions.md` (new "Resume pass finishes outstanding
-repairs" section with a flow diagram), `docs/workflows/label-flows.md` (the label
-row now states who clears it), and both ladder restatements.
+`docs/workflows/planning-and-questions.md` (new "Resume pass finishes
+outstanding repairs" section with a flow diagram),
+`docs/workflows/label-flows.md` (the label row now states who clears it), and
+both ladder restatements.

@@ -3,11 +3,11 @@
 Closes #3974.
 
 The batched timeline wrapper repeated its prefetched 100-event label-add tail
-for every REST-shaped page request. A full batch therefore made the trust
-reader reach its page cap and throw. The wrapper now serves that tail on page
-1 (or without a page parameter) and returns an empty array on page 2 and later,
-so the reader terminates. The four discovery collectors catch a throwing
-label-author read per issue and follow their existing untrusted-result paths.
+for every REST-shaped page request. A full batch therefore made the trust reader
+reach its page cap and throw. The wrapper now serves that tail on page 1 (or
+without a page parameter) and returns an empty array on page 2 and later, so the
+reader terminates. The four discovery collectors catch a throwing label-author
+read per issue and follow their existing untrusted-result paths.
 
 ## Spec
 
@@ -28,8 +28,8 @@ label-author read per issue and follow their existing untrusted-result paths.
 - A file-cache entry may deny trust, never grant it alone. A grant requires
   API-backed data, which can be the current iteration's GraphQL batch rather
   than a new REST call. The registry resets between iterations.
-- Work-on, configured-label and low-priority collectors substitute `false` on
-  a throwing trust read and take their blocked/skip paths. Work-on retains its
+- Work-on, configured-label and low-priority collectors substitute `false` on a
+  throwing trust read and take their blocked/skip paths. Work-on retains its
   existing guarded hand-off for a positively confirmed untrusted adder.
   Idle-task collection substitutes `false` too, but retains its independent
   trusted-author origin exception; its regression uses an untrusted author.
@@ -43,24 +43,23 @@ label-author read per issue and follow their existing untrusted-result paths.
 ## Evidence
 
 - `worker/deno/lib/timeline_batch.ts` supplies the terminating page behaviour.
-  Its regression reads a 100-event batch through the real trust reader and
-  still asserts a trusted decision with no base REST calls.
+  Its regression reads a 100-event batch through the real trust reader and still
+  asserts a trusted decision with no base REST calls.
 - The four collector regressions cover throwing trust reads. The work-on
   regression also retains every no-label-change/no-comment assertion.
-- Commit `095c80f8` removed overwritten false initialisers from those collectors.
-  This follow-up rechecked the five branch citations and their named tests;
-  the existing false-on-error assignments and assertions remain intact.
+- Commit `095c80f8` removed overwritten false initialisers from those
+  collectors. This follow-up rechecked the five branch citations and their named
+  tests; the existing false-on-error assignments and assertions remain intact.
 - The old summary's unconditional REST-confirmation claim and the API manual's
-  planned-batching wording did not describe the current head. The API manual
-  and internal trust explanation now distinguish a live iteration batch from
+  planned-batching wording did not describe the current head. The API manual and
+  internal trust explanation now distinguish a live iteration batch from
   file-backed cache data and exhaustive REST fallback.
 
 **Docs sweep** — grep: `wrapGhWithBatchedTimeline`, `paginateTimeline`,
-`wasLabelAddedByAllowedAuthor`, `Batch path`, `freshly paginated`;
-section: updated `docs/GH-API-OPTIMISATION.md#batch-path-graphql` and
-`docs/INTERNALS.md` label priority/cache explanation; siblings: none — no
-existing registry gained a member. The remaining advisory hits are still true
-for these reasons:
+`wasLabelAddedByAllowedAuthor`, `Batch path`, `freshly paginated`; section:
+updated `docs/GH-API-OPTIMISATION.md#batch-path-graphql` and `docs/INTERNALS.md`
+label priority/cache explanation; siblings: none — no existing registry gained a
+member. The remaining advisory hits are still true for these reasons:
 
 - `docs/audits/security-sweep-1218-commands-cli.md:306`: the seed route still
   checks the same label-author gate; this change does not remove that gate.
@@ -73,8 +72,8 @@ for these reasons:
   shared label-author consumer; the added catch changes error handling only.
 - `worker/deno/lib/timeline_batch.ts:78`, `:124` and `:284`: tail selection,
   REST-shaped conversion and the named wrapper consumers remain unchanged.
-- The API manual's former `:322` and internal manual's former `:1714` hits
-  are in the corrected batch/trust explanations above.
+- The API manual's former `:322` and internal manual's former `:1714` hits are
+  in the corrected batch/trust explanations above.
 
 ## Test Plan
 
@@ -90,8 +89,8 @@ for these reasons:
 - Repository Markdown lint reports no issues across 230 files; the restricted
   Mermaid command passes across 1,392 files and 1,305 blocks. Facts formatting,
   branch line references and named tests were checked against the current tree.
-- The exact hosted `pr-summary-ci` command reproduced the stale-summary block
-  at `095c80f8`; it is re-run on the refreshed commit. A not-checked gate is
+- The exact hosted `pr-summary-ci` command reproduced the stale-summary block at
+  `095c80f8`; it is re-run on the refreshed commit. A not-checked gate is
   reported as such, and no full local quality-gate result is claimed here.
 
 <!-- vibe-branch-outcomes -->

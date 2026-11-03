@@ -11,16 +11,16 @@ the next launch installs exactly what the pins name. Closes #691.
 The upgrade itself is the Deno `upgrade` command
 (`worker/deno/commands/upgrade.ts`, registered in `worker/deno/mod.ts`); the
 shell keeps no upgrade logic of its own, the same delegation shape
-`worker-checkout-update` uses. It composes the two pieces this milestone
-already landed: `latestRelease()` / `compareToPin()` / `releaseToolVersions()`
-from the release-check library (#689) over the release manifest (#688).
+`worker-checkout-update` uses. It composes the two pieces this milestone already
+landed: `latestRelease()` / `compareToPin()` / `releaseToolVersions()` from the
+release-check library (#689) over the release manifest (#688).
 
 Boundaries, all fail-loud and all leaving `.config.json` byte-identical:
 
 - **Already up to date** — prints `Vibe Coder is already up to date (1.0.5).`
   and writes nothing.
-- **Dynamic host** — says the host already tracks the latest at every launch
-  and that `update_mode` decides this, then exits 0 without touching the file.
+- **Dynamic host** — says the host already tracks the latest at every launch and
+  that `update_mode` decides this, then exits 0 without touching the file.
 - **Release with no manifest** — refused, naming the release: a fresh
   `pinned_ref` beside stale tool versions is exactly the partial pin
   `pinned_tool_versions` is all-or-nothing to prevent.
@@ -28,7 +28,7 @@ Boundaries, all fail-loud and all leaving `.config.json` byte-identical:
   config path named.
 
 The resulting settings are validated through `validateUpdateModeSettings()` —
-the validator config load itself runs — *before* the write, so an invalid pin
+the validator config load itself runs — _before_ the write, so an invalid pin
 never reaches the file, and the write goes through the existing setup writer
 (`setup/config_writer.ts`), which now uses the shared `atomicWrite()` helper so
 the ref and all three versions land together or not at all.
@@ -74,9 +74,10 @@ Written to /path/to/.config.json — the next launch installs exactly these vers
 `bash -n run.sh` and `shellcheck run.sh` both pass. `./quality.sh` passes every
 check except `deno tests`, whose only failure is
 `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
-dir is restaged writable` — a pre-existing, environmental failure of this
-container: stashing this change and re-running that file reproduces it
-unchanged. Every test touching this change passes.
+dir is restaged writable`
+— a pre-existing, environmental failure of this container: stashing this change
+and re-running that file reproduces it unchanged. Every test touching this
+change passes.
 
 The real command was also run end to end at the exact permission set `run.sh`
 uses (`--allow-env --allow-read --allow-write --allow-run`): a dynamic host
@@ -91,8 +92,8 @@ byte-identical.
   rewrites `pinned_ref` and all three `pinned_tool_versions` in one write,
   leaving all other config keys untouched — evidence:
   `worker/deno/tests/upgrade_command_test.ts::upgrade - moves pinned_ref and all three tool versions in one write`
-- **met** — the output names the old and new ref and each old → new tool
-  version — evidence:
+- **met** — the output names the old and new ref and each old → new tool version
+  — evidence:
   `worker/deno/tests/upgrade_command_test.ts::upgrade - names the old and new ref and every old → new version`
 - **met** — running it again prints the already-up-to-date line and leaves the
   file byte-identical — evidence:
@@ -107,23 +108,23 @@ byte-identical.
   reports an actionable error — evidence:
   `worker/deno/tests/upgrade_command_test.ts::upgrade - a failed release resolution leaves the config unchanged`
   and `…::upgrade - a manifest download failure leaves the config unchanged`
-- **met** — the written config passes the config validator and the frozen
-  launch path reads it back — evidence:
+- **met** — the written config passes the config validator and the frozen launch
+  path reads it back — evidence:
   `worker/deno/tests/upgrade_command_test.ts::upgrade - the written config validates and the launch path reads it back`
   (asserts `validateUpdateModeSettings()` returns no errors and
   `readCheckoutUpdateMode()` resolves `frozen` at the new ref)
-- **met** — unit tests cover each path with injected deps and a temporary
-  config file; `bash -n`/shellcheck pass over the `run.sh` change; `./quality.sh`
+- **met** — unit tests cover each path with injected deps and a temporary config
+  file; `bash -n`/shellcheck pass over the `run.sh` change; `./quality.sh`
   passes — evidence: `worker/deno/tests/upgrade_command_test.ts` (15 tests),
   `worker/deno/tests/run_sh_upgrade_test.ts` (3 tests), plus the quality-gate
   note above on the pre-existing environmental test failures
-- **unrequested** — `writeUpdateModeConfig()` now writes through
-  `atomicWrite()` rather than `Deno.writeTextFile()` — reason: the issue
-  requires the upgrade to be a single atomic write through this writer; the
-  setup path that shares it gets the same crash safety.
+- **unrequested** — `writeUpdateModeConfig()` now writes through `atomicWrite()`
+  rather than `Deno.writeTextFile()` — reason: the issue requires the upgrade to
+  be a single atomic write through this writer; the setup path that shares it
+  gets the same crash safety.
 - **unrequested** — `UPGRADE_COMMAND_NAME` / `UPGRADE_COMMAND` are exported —
-  reason: #690 must assert its notice against the real command name rather
-  than a second hard-coded string.
+  reason: #690 must assert its notice against the real command name rather than
+  a second hard-coded string.
 
 ## Test Plan
 
@@ -133,10 +134,10 @@ Added:
   with injected release-check deps and a temporary `.config.json`: the happy
   path (ref + all three versions, other keys preserved), the printed old → new
   report, validator + frozen-launch read-back, the byte-identical no-op re-run,
-  dynamic and absent `update_mode`, a release with no manifest, a failed
-  release list, a failed manifest download, a repository with no releases, a
-  commit-SHA pin, an unreadable `update_mode`, a missing `.config.json`, a
-  missing `--base-dir`, and the registered command name.
+  dynamic and absent `update_mode`, a release with no manifest, a failed release
+  list, a failed manifest download, a repository with no releases, a commit-SHA
+  pin, an unreadable `update_mode`, a missing `.config.json`, a missing
+  `--base-dir`, and the registered command name.
 - `worker/deno/tests/run_sh_upgrade_test.ts` — 3 tests running the real
   `run.sh upgrade` under the launcher harness: it delegates to the Deno
   `upgrade` command pointed at this checkout, starts no container and launches

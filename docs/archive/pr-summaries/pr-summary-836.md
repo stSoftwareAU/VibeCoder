@@ -7,15 +7,15 @@ siblings. This bumps each directory once, applying the house vocabulary from
 #794 — names and casing only, no scan logic, thresholds, phase content or
 worked-example findings changed. Closes #836.
 
-| Directory | Base | New |
-| --- | --- | --- |
-| `prompts/github_actions_audit/` | `v20.md` | `v21.md` |
-| `prompts/orphan_deps/` | `v7.md` | `v8.md` |
-| `prompts/private_repo_reference_audit/` | `v5.md` | `v6.md` |
-| `prompts/retro/` | `v2.md` | `v3.md` |
-| `prompts/supply_chain_detection/` | `v6.md` | `v7.md` |
-| `prompts/supply_chain_readiness/` | `v9.md` | `v10.md` |
-| `prompts/test_audit/` | `v13.md` | `v14.md` |
+| Directory                               | Base     | New      |
+| --------------------------------------- | -------- | -------- |
+| `prompts/github_actions_audit/`         | `v20.md` | `v21.md` |
+| `prompts/orphan_deps/`                  | `v7.md`  | `v8.md`  |
+| `prompts/private_repo_reference_audit/` | `v5.md`  | `v6.md`  |
+| `prompts/retro/`                        | `v2.md`  | `v3.md`  |
+| `prompts/supply_chain_detection/`       | `v6.md`  | `v7.md`  |
+| `prompts/supply_chain_readiness/`       | `v9.md`  | `v10.md` |
+| `prompts/test_audit/`                   | `v13.md` | `v14.md` |
 
 The bases are one version higher than the issue's table in four directories —
 #790 and #792 bumped them after filing — so each directory takes exactly one
@@ -87,13 +87,14 @@ setup.sh - a Codex-only host with no claude CLI reaches the configuration-writin
 FAILED | 16999 passed (4 steps) | 2 failed | 55 ignored
 ```
 
-The second dies on the container's own prerequisite probe — *"the running
+The second dies on the container's own prerequisite probe — _"the running
 container image did not install the `codex` coding-agent provider. Installed:
-claude"* — so it is bound to the image build, not to the code under test. The
+claude"_ — so it is bound to the image build, not to the code under test. The
 container also exports `CONFIG_PATH`, which trips a further 33 setup tests on
-their `CONFIG_FILE`/`CONFIG_PATH` conflict guard; `env -u CONFIG_PATH
-./quality.sh` clears those and leaves the two above. Filed as
-stSoftwareAU/VibeCoder#891 with the reproduction. This PR's diff is seven
+their `CONFIG_FILE`/`CONFIG_PATH` conflict guard;
+`env -u CONFIG_PATH
+./quality.sh` clears those and leaves the two above. Filed
+as stSoftwareAU/VibeCoder#891 with the reproduction. This PR's diff is seven
 `prompts/**/*.md` additions and one PR summary, which cannot reach any of it.
 
 All other stages — prompt immutability, markdownlint, `docs prompt versions`,
@@ -106,18 +107,17 @@ mermaid, semgrep, deno lint, deno type check, deno fmt — PASSED.
 - **met** — Seven new `vN.md` files exist, one per directory; no existing
   `vN.md` is modified or deleted — evidence: `git diff --name-status` shows
   seven `A` entries and zero `M`/`D` — reviewer: met
-- **partial** — Each new file's H1 states its own new version number —
-  evidence: `prompts/orphan_deps/v8.md:1` — reviewer: partial — reason:
-  `orphan_deps` has never carried a `(vN)` suffix, and #792's rule (and
-  `worker/deno/tests/prompt_h1_version_agreement_test.ts`) makes no suffix
-  legal while forbidding one on `supply_chain_detection` and
-  `supply_chain_readiness`; the four templates that do carry a suffix were
-  bumped, and adding one to `orphan_deps` alone would reintroduce the churn
-  #792 removed
-- **met** — No `the executor`, no `VibeCoder` in prose, no bare `quality.sh`,
-  no `idle task`, no lowercase `markdown` in prose — evidence: the greps above;
-  the six lowercase `markdown` hits are fence infostrings, the one `VibeCoder`
-  is `stSoftwareAU/VibeCoder` at `prompts/supply_chain_detection/v7.md:30` —
+- **partial** — Each new file's H1 states its own new version number — evidence:
+  `prompts/orphan_deps/v8.md:1` — reviewer: partial — reason: `orphan_deps` has
+  never carried a `(vN)` suffix, and #792's rule (and
+  `worker/deno/tests/prompt_h1_version_agreement_test.ts`) makes no suffix legal
+  while forbidding one on `supply_chain_detection` and `supply_chain_readiness`;
+  the four templates that do carry a suffix were bumped, and adding one to
+  `orphan_deps` alone would reintroduce the churn #792 removed
+- **met** — No `the executor`, no `VibeCoder` in prose, no bare `quality.sh`, no
+  `idle task`, no lowercase `markdown` in prose — evidence: the greps above; the
+  six lowercase `markdown` hits are fence infostrings, the one `VibeCoder` is
+  `stSoftwareAU/VibeCoder` at `prompts/supply_chain_detection/v7.md:30` —
   reviewer: met
 - **met** — Exactly one spelling of each shared heading; the finding ID recipe
   is H2 everywhere — evidence: `## Hard Constraints (apply to every phase)` ×7,
@@ -137,8 +137,8 @@ mermaid, semgrep, deno lint, deno type check, deno fmt — PASSED.
   `(outcome-only)` suffix on Phase 5; Phase 4 is still Triage — reviewer: met
 - **partial** — `./quality.sh` passes — evidence: the gate run recorded above;
   every stage PASSED except `deno tests`, which carries 2 pre-existing
-  container-environment failures out of 17,001 — reviewer: partial — reason:
-  the two failures reproduce identically on the base commit `37503a4` with no
+  container-environment failures out of 17,001 — reviewer: partial — reason: the
+  two failures reproduce identically on the base commit `37503a4` with no
   changes applied and are filed as stSoftwareAU/VibeCoder#891, so nothing in
   this diff causes them, but the gate's overall verdict is still FAILED
 
@@ -150,15 +150,15 @@ equal to deletions.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — no violations found. Areas checked and found compliant:
-  Australian English throughout the changed lines (no American variants added,
-  existing `behaviour`/`colour`/`honouring` preserved); markdownlint scope
+- **clean** — no violations found. Areas checked and found compliant: Australian
+  English throughout the changed lines (no American variants added, existing
+  `behaviour`/`colour`/`honouring` preserved); markdownlint scope
   (`.markdownlint-cli2.jsonc` does not glob `prompts/**`, and the gate's
-  markdownlint stage passes); commit safety (seven additions under
-  `prompts/`, no hidden or credential paths staged); prompt immutability (no
-  existing `vN.md` modified or deleted, matching the versioning rule in
-  `CODING-STANDARDS.md`); scope (changes confined to the issue's terminology
-  and heading tables, no logic, thresholds or worked-example findings touched).
+  markdownlint stage passes); commit safety (seven additions under `prompts/`,
+  no hidden or credential paths staged); prompt immutability (no existing
+  `vN.md` modified or deleted, matching the versioning rule in
+  `CODING-STANDARDS.md`); scope (changes confined to the issue's terminology and
+  heading tables, no logic, thresholds or worked-example findings touched).
 - **clean** — the suppression-prose rewrite was checked specifically and is
   correct: it changes only the wording, never which keyword a template
   recognises — evidence: `prompts/orphan_deps/v8.md:363` still names

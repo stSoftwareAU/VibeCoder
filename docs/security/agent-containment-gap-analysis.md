@@ -5,9 +5,9 @@ are recorded and follow-ups #3698–#3703 are filed.
 
 **Owner correction, 19 October 2026:** VibeCoder runs fully automatically on
 unattended machines and must self-heal without human intervention. The G1
-supervised-test recommendation was rejected and #3703 closed as not planned.
-The correction below supersedes that recommendation; the other observations
-remain a record of the original audit, not current implementation status. See
+supervised-test recommendation was rejected and #3703 closed as not planned. The
+correction below supersedes that recommendation; the other observations remain a
+record of the original audit, not current implementation status. See
 [the operating intent](../../DESIGN-PRINCIPLES.md#fully-unattended-operation-and-self-healing).
 
 **Comparison axis:** _containment of the running agent_ — sandbox, network,
@@ -39,20 +39,20 @@ flowchart LR
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-The diagram is the Docker and Podman path after G2. Apple container uses
-the same proxy with measured partial containment and a host/LAN gap (#4051).
+The diagram is the Docker and Podman path after G2. Apple container uses the
+same proxy with measured partial containment and a host/LAN gap (#4051).
 
 ## Mapping
 
-| Harness capability                                                 | VibeCoder status                                                                                        | Where                                                           |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Hardware-virtualised sandbox, one microVM per agent                | Partial: hardened container on Docker/Podman; own VM only on Apple `container`. No escape test recorded | `container_runtime.ts`, `container_launch.ts`, THREAT-MODEL C22 |
-| Egress denied by default, with an allowlist                        | Delivered on Docker and Podman. Apple container has measured partial containment and a host/LAN gap (#4051)                            | `container_runtime.ts`, `container_launch.ts`, `egress_proxy.ts` |
-| No credential-bearing mounts; credential added by an outside proxy | Gap: credentials are readable in the container                                                          | THREAT-MODEL R9, R11                                            |
-| Auto permission mode as an extra check                             | Skipped: the container is the permission boundary                                                       | `agent_provider.ts:604`                                         |
-| Turn and run-time limits                                           | Partial: run-time limit only                                                                            | `config.ts:604-605`                                             |
-| Transcript per stage, kept 30+ days, scanned on a schedule         | Gap: 3-day retention, no scan                                                                           | `agent_transcript.ts`, `worker_log_cleanup.ts`                  |
-| Incident process                                                   | Gap: no agent-incident runbook                                                                          | `SECURITY.md`                                                   |
+| Harness capability                                                 | VibeCoder status                                                                                            | Where                                                            |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Hardware-virtualised sandbox, one microVM per agent                | Partial: hardened container on Docker/Podman; own VM only on Apple `container`. No escape test recorded     | `container_runtime.ts`, `container_launch.ts`, THREAT-MODEL C22  |
+| Egress denied by default, with an allowlist                        | Delivered on Docker and Podman. Apple container has measured partial containment and a host/LAN gap (#4051) | `container_runtime.ts`, `container_launch.ts`, `egress_proxy.ts` |
+| No credential-bearing mounts; credential added by an outside proxy | Gap: credentials are readable in the container                                                              | THREAT-MODEL R9, R11                                             |
+| Auto permission mode as an extra check                             | Skipped: the container is the permission boundary                                                           | `agent_provider.ts:604`                                          |
+| Turn and run-time limits                                           | Partial: run-time limit only                                                                                | `config.ts:604-605`                                              |
+| Transcript per stage, kept 30+ days, scanned on a schedule         | Gap: 3-day retention, no scan                                                                               | `agent_transcript.ts`, `worker_log_cleanup.ts`                   |
+| Incident process                                                   | Gap: no agent-incident runbook                                                                              | `SECURITY.md`                                                    |
 
 ## Gaps and recommendations
 
@@ -93,11 +93,11 @@ the same proxy with measured partial containment and a host/LAN gap (#4051).
   A check whose result differs from the expected column is a failed check;
   retain evidence and reconcile an existing actionable defect before filing
   another issue. An unavailable runtime is not checked, not passed. A runtime
-  whose dialect cannot take a flag (Apple
-  `container`: `supportsCapDrop`, `supportsSecurityOpt` and `supportsReadOnly`
-  are all `false`) records what it observed instead of failing; its own VM is
-  the compensating control named in `container_runtime.ts:400-415`. These
-  observations do not assert that an automated harness has been implemented.
+  whose dialect cannot take a flag (Apple `container`: `supportsCapDrop`,
+  `supportsSecurityOpt` and `supportsReadOnly` are all `false`) records what it
+  observed instead of failing; its own VM is the compensating control named in
+  `container_runtime.ts:400-415`. These observations do not assert that an
+  automated harness has been implemented.
 
 ### G2 — Network — **DELIVERED** (Docker and Podman)
 
@@ -105,27 +105,29 @@ the same proxy with measured partial containment and a host/LAN gap (#4051).
 - **Audit finding:** the container launched on the runtime bridge with no
   allowlist. C12 and C13 govern `gh` writes only; they do not control general
   egress.
-- **Delivered:** Docker and Podman attach the worker to an internal network
-  and route it through the allowlist proxy (`container_launch.ts`,
+- **Delivered:** Docker and Podman attach the worker to an internal network and
+  route it through the allowlist proxy (`container_launch.ts`,
   `container_runtime.ts`, `egress_proxy.ts`, `egress_selfcheck.ts`; Issues
-  #4045, #4046, #4047 and #4048). Apple container has measured partial containment and a host/LAN gap (#4051).
-- **Verdict:** delivered for Docker and Podman. Apple partial containment is delivered with measured residual gaps (#4051); it is not complete default-deny enforcement.
-  The parent follow-up was #3698.
+  #4045, #4046, #4047 and #4048). Apple container has measured partial
+  containment and a host/LAN gap (#4051).
+- **Verdict:** delivered for Docker and Podman. Apple partial containment is
+  delivered with measured residual gaps (#4051); it is not complete default-deny
+  enforcement. The parent follow-up was #3698.
 
 ### G3 — Credentials — **ADOPT**
 
 - **Article claim:** no credential-bearing mounts; the model credential is added
   by a proxy outside the sandbox.
 - **VibeCoder today:** the provider credential mount is readable in the
-  container (THREAT-MODEL R9). The staged `gh` `hosts.yml` is readable
-  (R11; `worker/deno/lib/gh_credential_stage.ts`; #1440, closed). The
-  model credential is not added by an outside proxy.
+  container (THREAT-MODEL R9). The staged `gh` `hosts.yml` is readable (R11;
+  `worker/deno/lib/gh_credential_stage.ts`; #1440, closed). The model credential
+  is not added by an outside proxy.
 - **Gap:** the agent subprocess can read the credential. General egress on
-  Docker and Podman is now default-deny (G2), and a stolen token can still
-  leave through an allowed destination (see R9 and R11).
+  Docker and Podman is now default-deny (G2), and a stolen token can still leave
+  through an allowed destination (see R9 and R11).
 - **Verdict:** ADOPT; the credential is still readable. → **follow-up filed:
-  #3699.** #3699 is closed on GitHub; the readable mounts are still in the
-  tree, so this gap stays open until that removal is present.
+  #3699.** #3699 is closed on GitHub; the readable mounts are still in the tree,
+  so this gap stays open until that removal is present.
 
 ### G4 — Permissions — **SKIP**
 
@@ -172,15 +174,15 @@ the same proxy with measured partial containment and a host/LAN gap (#4051).
 
 ### Skipped gaps (recorded, not adopted)
 
-| Gap                                                                           | Harness origin               | Why skip                                                                                                                                                                       |
-| ----------------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Anthropic-account items (escape-classifier score; notifying the account team) | Anthropic account feature    | The fleet runs the Claude Code CLI, where the score is not available                                                                                                           |
-| Auto permission mode (G4)                                                     | Auto permission mode         | The container is the permission boundary; depends on Anthropic-side classifier features                                                                                        |
+| Gap                                                                           | Harness origin               | Why skip                                                                                                                                                                                       |
+| ----------------------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anthropic-account items (escape-classifier score; notifying the account team) | Anthropic account feature    | The fleet runs the Claude Code CLI, where the score is not available                                                                                                                           |
+| Auto permission mode (G4)                                                     | Auto permission mode         | The container is the permission boundary; depends on Anthropic-side classifier features                                                                                                        |
 | microVM for every agent on Linux                                              | Hardware-virtualised sandbox | C22 already gives cap-dropped, read-only, non-privileged containers; a VM runtime per host is a platform migration larger than the gap; closing #3703 supplies no additional boundary evidence |
 
 **Related claims.** R6 and R13 name C12 and C13 as GitHub-write controls. They
-do not control general egress. General egress on Docker and Podman is C35.
-Both risks stay related to G2, and R9 and R11 stay open until #3699.
+do not control general egress. General egress on Docker and Podman is C35. Both
+risks stay related to G2, and R9 and R11 stay open until #3699.
 
 ## Summary
 
@@ -189,8 +191,9 @@ Both risks stay related to G2, and R9 and R11 stay open until #3699.
 2. G1 Sandbox — SKIP supervised testing: #3703 closed as not planned. Any
    containment validation must be automated and unattended; coverage remains
    unproven until actual evidence is recorded.
-3. G2 Network — DELIVERED for Docker and Podman: default-deny egress through
-   the allowlist proxy. Apple container has measured partial containment and a host/LAN gap (#4051).
+3. G2 Network — DELIVERED for Docker and Podman: default-deny egress through the
+   allowlist proxy. Apple container has measured partial containment and a
+   host/LAN gap (#4051).
 4. G3 Credentials — ADOPT: keep credentials out of the agent's reach (#3699).
 5. G4 Permissions — SKIP: the container is the permission boundary.
 6. G5 Run limits — ADOPT: per-run turn cap (#3701).

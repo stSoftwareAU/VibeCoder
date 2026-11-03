@@ -2,11 +2,12 @@
 
 ## Summary
 
-The Failure-Detection self-repair (`worker/deno/lib/failure_detection_repair.ts`)
-invoked Claude **once per offending sub-issue, sequentially**. Observed on
-GRQ-validation#835: 8 offenders × ~18 s ≈ 2.5 min of repair tail appended to a
-planning run that had already spent ~5 min — a cost that grew linearly with a
-plan's fan-out and did not fit the Planning handler's budget.
+The Failure-Detection self-repair
+(`worker/deno/lib/failure_detection_repair.ts`) invoked Claude **once per
+offending sub-issue, sequentially**. Observed on GRQ-validation#835: 8 offenders
+× ~18 s ≈ 2.5 min of repair tail appended to a planning run that had already
+spent ~5 min — a cost that grew linearly with a plan's fan-out and did not fit
+the Planning handler's budget.
 
 The repair now drafts **every** readable offender in a **single** Claude call:
 
@@ -53,10 +54,9 @@ issue names; wall-clock is a fixed multiple of it at ~18 s per call):
 | 3             | 3      | 1     |
 | 1             | 1      | 1     |
 
-Asserted directly in
-`worker/deno/tests/failure_detection_repair_test.ts` — the N=8 case asserts the
-injected runner was called exactly once, so a silent return to the sequential
-loop fails CI.
+Asserted directly in `worker/deno/tests/failure_detection_repair_test.ts` — the
+N=8 case asserts the injected runner was called exactly once, so a silent return
+to the sequential loop fails CI.
 
 ```mermaid
 flowchart TD
@@ -75,9 +75,9 @@ flowchart TD
     I -->|yes| K[handlePlanningFailure — loud, labelled hard-block]
 ```
 
-`./quality.sh` result: every check passes except `deno tests`, which reports
-**7 pre-existing failures unrelated to this change** —
-`tests/fleet_health_test.ts` (1), `tests/optional_feature_env_test.ts` (1) and
+`./quality.sh` result: every check passes except `deno tests`, which reports **7
+pre-existing failures unrelated to this change** — `tests/fleet_health_test.ts`
+(1), `tests/optional_feature_env_test.ts` (1) and
 `tests/setup_workdir_reminder_test.ts` (5). They fail identically on the
 milestone branch with this change stashed (verified by
 `git stash && deno test … && git stash pop`), and touch no code in this diff.
@@ -120,8 +120,8 @@ protections preserved on the batched builder):
 sequential per-offender calls via a call counter. Under batching that shape no
 longer exists, so the case is now expressed as **one** batched output carrying a
 good block and a placeholder block. Its intent — mixed outcome, one repaired,
-one still offending, no edit for the failure — is unchanged. No test was
-removed or commented out.
+one still offending, no edit for the failure — is unchanged. No test was removed
+or commented out.
 
 Docs: `docs/workflows/planning-and-questions.md` — the self-repair section now
 describes the batched call, the fallback, and the updated flow diagram.

@@ -5,38 +5,38 @@
 Closes #2575.
 
 Every criteria-bearing `issue` run dispatches two reviewer sub-agents before it
-writes the PR summary. Neither had a definition, so both inherited the
-advisor's model and effort: Opus 5.5 at `high` for two extra contexts on
-nearly every run. This PR defines them as named `--agents` entries on a cheaper
-tier, scopes the Standards reviewer as Anthropic advises, and sets Claude
-Code's deterministic sub-agent spawn caps on every Claude child.
+writes the PR summary. Neither had a definition, so both inherited the advisor's
+model and effort: Opus 5.5 at `high` for two extra contexts on nearly every run.
+This PR defines them as named `--agents` entries on a cheaper tier, scopes the
+Standards reviewer as Anthropic advises, and sets Claude Code's deterministic
+sub-agent spawn caps on every Claude child.
 
-| Agent | Model | Effort | Tools |
-| --- | --- | --- | --- |
-| `spec-reviewer` | `sonnet` | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied |
-| `standards-reviewer` | `sonnet` | `low` | `Read`, `Grep`, `Glob`; `Agent` denied |
+| Agent                | Model    | Effort   | Tools                                  |
+| -------------------- | -------- | -------- | -------------------------------------- |
+| `spec-reviewer`      | `sonnet` | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied |
+| `standards-reviewer` | `sonnet` | `low`    | `Read`, `Grep`, `Glob`; `Agent` denied |
 
 **Behind a key, off by default.** The issue's last criterion says the pilot
-figures are recorded *before the change becomes the default*, and the pilot
+figures are recorded _before the change becomes the default_, and the pilot
 compares the two arms. So the reviewer definitions ride a new host-wide
-`issue_reviewer_agents` key (default `false`), measured with the existing
-pilot method in `docs/MODEL-AND-CACHING.md`. With the key and the executor
-split both off, the argv is unchanged byte for byte. The spawn caps are not
-behind the key: the issue asks for them on every Claude spawn.
+`issue_reviewer_agents` key (default `false`), measured with the existing pilot
+method in `docs/MODEL-AND-CACHING.md`. With the key and the executor split both
+off, the argv is unchanged byte for byte. The spawn caps are not behind the key:
+the issue asks for them on every Claude spawn.
 
 **Expected cost effect (key on).** Two review contexts move from Opus 5.5 at
 `high` ($4/$20 per MTok) to Sonnet ($2/$10) at `medium` and `low`. That halves
-the per-token price and also cuts thinking tokens. There is also a small
-saving on the advisor side: it hands each reviewer a diff-file path instead of
-pasting the diff. No fleet figure is claimed; the pilot produces it.
+the per-token price and also cuts thinking tokens. There is also a small saving
+on the advisor side: it hands each reviewer a diff-file path instead of pasting
+the diff. No fleet figure is claimed; the pilot produces it.
 
 **Spawn caps (verified against the docs).** The Agent SDK page
 [Cap subagent depth, concurrency, and spend](https://code.claude.com/docs/en/agent-sdk/subagents#cap-subagent-depth-concurrency-and-spend)
 and the Opus 5 prompting guide name `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`
 (default 3; `1` stops sub-agents from spawning their own) and
 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` (default 20; a spawn past the cap is
-refused with `Concurrent subagent limit reached`). Both are honoured from
-Claude Code 2.1.217. The image pins 2.1.281 (`container/tools.json`) and
+refused with `Concurrent subagent limit reached`). Both are honoured from Claude
+Code 2.1.217. The image pins 2.1.281 (`container/tools.json`) and
 `softwareMinVersions.claude` is 2.1.280. The worker sets depth `1` and
 concurrency `4` in `buildClaudeChildEnv`. A value already in the parent
 environment wins. There is no `.config.json` key for them.
@@ -66,9 +66,9 @@ environment wins. There is no `.config.json` key for them.
 - `worker/deno/lib/deepseek_executor.ts`: the `--agents` drop warning no longer
   assumes the split.
 - Docs: a new `issue_reviewer_agents` row in `docs/CONFIGURATION.md`. A new
-  *Reviewer sub-agents (issue phase)* section in `docs/MODEL-AND-CACHING.md`,
-  covering the pilot, the cost effect and the spawn caps, plus its TOC entry
-  and provider-matrix row.
+  _Reviewer sub-agents (issue phase)_ section in `docs/MODEL-AND-CACHING.md`,
+  covering the pilot, the cost effect and the spawn caps, plus its TOC entry and
+  provider-matrix row.
 
 ```mermaid
 flowchart LR
@@ -99,9 +99,9 @@ flowchart LR
   unchanged.
 - `independent_review_gate_test.ts` and
   `issue_prompt_v39_independent_review_test.ts` pass unchanged.
-- The targeted runs of every test file that references a touched module or
-  doc all pass. `deno fmt`, `deno lint` and `deno check` are clean on the
-  changed `.ts` files, and `markdownlint-cli2` is clean on the changed docs.
+- The targeted runs of every test file that references a touched module or doc
+  all pass. `deno fmt`, `deno lint` and `deno check` are clean on the changed
+  `.ts` files, and `markdownlint-cli2` is clean on the changed docs.
 
 ## Acceptance Criteria
 
@@ -129,15 +129,14 @@ flowchart LR
 - **missing**: no pilot figures yet. This PR cannot produce the pilot figures
   for success rate, first-attempt gate pass rate and missed-criterion
   reopen/`needs-revision` share. They need a 30-run or 4-week fleet window. The
-  change therefore ships off by default (`issue_reviewer_agents: false`), so
-  it does not become the default before those figures are recorded on #2575.
+  change therefore ships off by default (`issue_reviewer_agents: false`), so it
+  does not become the default before those figures are recorded on #2575.
 
 ## Standards Review
 
-- **clean**: Australian English, TDD (a failing test first, and both
-  directions: key off leaves no `--agents`, key on sends the definitions),
-  KISS (no new module, reusing `issue_executor_agents.ts`), and no host env
-  var for an operator setting (the key is in `.config.json`; the caps are
-  spawn env).
+- **clean**: Australian English, TDD (a failing test first, and both directions:
+  key off leaves no `--agents`, key on sends the definitions), KISS (no new
+  module, reusing `issue_executor_agents.ts`), and no host env var for an
+  operator setting (the key is in `.config.json`; the caps are spawn env).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

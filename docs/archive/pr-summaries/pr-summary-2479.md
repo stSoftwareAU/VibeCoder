@@ -70,10 +70,10 @@ flowchart TD
 
 Files changed:
 
-- `worker/deno/lib/pr_auto_merge.ts` — `OPEN_CHILDREN_LOOKUP_MARKER`, the
-  per-PR registry, `postOpenChildrenLookupReason`,
-  `resetOpenChildrenLookupComments`, `blockCommented` on
-  `EnableAutoMergeResult`, both branches of `refuseMilestoneMerge`.
+- `worker/deno/lib/pr_auto_merge.ts` — `OPEN_CHILDREN_LOOKUP_MARKER`, the per-PR
+  registry, `postOpenChildrenLookupReason`, `resetOpenChildrenLookupComments`,
+  `blockCommented` on `EnableAutoMergeResult`, both branches of
+  `refuseMilestoneMerge`.
 - `worker/deno/lib/milestone_children_gate.ts` — `postOpenChildrenBlockComment`
   returns `OpenChildrenCommentOutcome`.
 - `worker/deno/tests/pr_auto_merge_test.ts` — five new tests.
@@ -155,7 +155,8 @@ Reproduced verbatim from the spec reviewer.
 ```
 
 The one `partial` — criterion 5, which the reviewer could not run — is answered
-by the gate output in the Test Plan below: `Result: PASSED (with skipped
+by the gate output in the Test Plan below:
+`Result: PASSED (with skipped
 checks)`.
 
 ## Standards Review
@@ -230,17 +231,20 @@ Reproduced verbatim from the standards reviewer.
 - **Unscrubbed attacker-writable title / raw error** (`pr_auto_merge.ts:299`) —
   the body now builds from `scrubUntrustedText(milestoneTitle)`, so a milestone
   titled with `OPEN_CHILDREN_BLOCK_MARKER` cannot forge a fleet marker.
-  Regression test: `pr_auto_merge - a marker-shaped milestone title cannot forge
+  Regression test:
+  `pr_auto_merge - a marker-shaped milestone title cannot forge
   a marker`.
 - **Unredacted outbound sink** (`pr_auto_merge.ts:309`) — the detail is now
   `scrubUntrustedText(redactSecrets(detail))` before it reaches the public PR
   thread.
 - **Stale docs** (`docs/INTERNALS.md:2158`) — the Mermaid node and both bullets
   now describe the second comment and its in-memory per-PR de-duplication.
-- **Missing genuine-block error-path test**
-  (`tests/pr_auto_merge_test.ts:262`) — added `pr_auto_merge - a failed
-  genuine-block comment post is reported too`, which fails the comment post with
-  `HTTP 403 Forbidden` and asserts `blockCommented === false`.
+- **Missing genuine-block error-path test** (`tests/pr_auto_merge_test.ts:262`)
+  — added
+  `pr_auto_merge - a failed
+  genuine-block comment post is reported too`, which
+  fails the comment post with `HTTP 403 Forbidden` and asserts
+  `blockCommented === false`.
 
 **Disclosed, deliberately not fixed:**
 
@@ -265,13 +269,13 @@ real `enableAutoMerge` through a scripted fake `ghCommandFn`
 (`createUnreadableChildrenStub` throws `HTTP 502 Bad Gateway` on
 `/issues?milestone=`):
 
-| Test | Asserts |
-| --- | --- |
+| Test                                                         | Asserts                                                                |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------- |
 | blocks the merge when the open-children count cannot be read | one comment, carrying the marker, the failed-read detail and "retries" |
-| repeated sweeps over an unreadable count post one comment | three sweeps, still one comment |
-| a failed lookup comment post is reported, not swallowed | zero comments, `blockCommented === false` |
-| a failed genuine-block comment post is reported too | zero comments, `blockCommented === false` |
-| a marker-shaped milestone title cannot forge a marker | the forged `OPEN_CHILDREN_BLOCK_MARKER` is absent from the posted body |
+| repeated sweeps over an unreadable count post one comment    | three sweeps, still one comment                                        |
+| a failed lookup comment post is reported, not swallowed      | zero comments, `blockCommented === false`                              |
+| a failed genuine-block comment post is reported too          | zero comments, `blockCommented === false`                              |
+| a marker-shaped milestone title cannot forge a marker        | the forged `OPEN_CHILDREN_BLOCK_MARKER` is absent from the posted body |
 
 Touched test files:
 

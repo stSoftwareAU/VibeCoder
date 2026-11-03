@@ -15,8 +15,8 @@ Answer and escalated it with `needs-human`, so a human had to relabel it.
   `detectDescribedCodeChange(output)`. It reports a described change when a line
   both:
   - names a file (a path with a `/`, or a backticked `name.ext`), and
-  - says to change it: an imperative verb, `regression test` or
-    `failing test`, or `(RED)` / `(GREEN)`.
+  - says to change it: an imperative verb, `regression test` or `failing test`,
+    or `(RED)` / `(GREEN)`.
 
   Negated lines ("no need to modify …"), URLs and un-fenced dotted words
   (`Node.js`) do not count. The file list is deduped and capped at 10.
@@ -25,8 +25,8 @@ Answer and escalated it with `needs-human`, so a human had to relabel it.
   maps to the `no_changes` category, so the retry uses the normal failed-once →
   failed budget. The phase also posts a `## Retry: make the code change` nudge
   that names the files, which the next run's prompt carries. An issue whose body
-  has the `<!-- analysis-only -->` / `<!-- no-pr -->` marker, meaning it does not
-  ask for a code change, is still handed off.
+  has the `<!-- analysis-only -->` / `<!-- no-pr -->` marker, meaning it does
+  not ask for a code change, is still handed off.
 - **Docs**: `docs/workflows/issue-processing.md` documents the exception, and
   the `analysis_only_handoff.ts` docstring notes it. The new module is listed in
   `docs/audits/lib-sweep-coverage.json`.

@@ -5,21 +5,22 @@
 `git` had a spawn chokepoint but no redaction at it, and the agent subprocess
 had no `git` wrapper at all — so `git commit -m "$GH_TOKEN" && git push` reached
 a public branch with no control anywhere in the path. Unlike a comment, pushed
-history is permanent and mirrored by every clone. Both halves are closed.
-Closes #1284.
+history is permanent and mirrored by every clone. Both halves are closed. Closes
+#1284.
 
-- **`redactGitMessageArgs()`** (`worker/deno/lib/git_message_redaction.ts`) masks
-  `-m` / `--message` / `--message=` / `-m<text>` / `-am <text>` and the contents
-  of `-F` / `--file`, following `redactGhBodyArgs`'s rule exactly: only
+- **`redactGitMessageArgs()`** (`worker/deno/lib/git_message_redaction.ts`)
+  masks `-m` / `--message` / `--message=` / `-m<text>` / `-am <text>` and the
+  contents of `-F` / `--file`, following `redactGhBodyArgs`'s rule exactly: only
   text-carrying arguments are rewritten, the argument count never changes, and
   routing arguments stay byte-for-byte. Scoping is **per subcommand**, because
   `-m` is a message only in `commit`/`tag`/`merge`/`notes`/`stash` — it is a
   mainline number in `revert`/`cherry-pick`, a rename in `branch`, and `--merge`
   (taking no argument) in `rebase`, so consuming the next argument on the
   strength of the letter alone would corrupt those commands. `git`'s own leading
-  global options (`-C <path>`, `-c <k=v>`, `--git-dir …`) are stepped over first.
-- **Wired into `runGitCommand`** (`worker/deno/lib/git_timeout.ts`), the worker's
-  single `git` spawn point, so `git_push.ts`, `pr_ci_processor.ts`,
+  global options (`-C <path>`, `-c <k=v>`, `--git-dir …`) are stepped over
+  first.
+- **Wired into `runGitCommand`** (`worker/deno/lib/git_timeout.ts`), the
+  worker's single `git` spawn point, so `git_push.ts`, `pr_ci_processor.ts`,
   `branch_history_rewrite.ts` and `bump_deps_phase.ts` all inherit it. A message
   that cannot be scanned (`-F -`, an unreadable path) fails the call with
   `[SECURITY] [GIT_MESSAGE_UNREDACTABLE]` rather than being committed unscanned;
@@ -30,8 +31,8 @@ Closes #1284.
   binaries and one cleanup removes both. A message-carrying `git` re-enters
   `worker/deno/lib/git_guard_cli.ts`, which returns the redacted argv as
   NUL-terminated fields; the wrapper `exec`s that argv, and fails closed on a
-  missing `VIBE_GIT_GUARD_ALLOW` marker exactly as the `gh` wrapper does.
-  A command with no option *containing* an `m` or an `F`, and no long `--f…`
+  missing `VIBE_GIT_GUARD_ALLOW` marker exactly as the `gh` wrapper does. A
+  command with no option _containing_ an `m` or an `F`, and no long `--f…`
   option, skips the guard child entirely. The test is on the whole option rather
   than its first letter because `git` clusters short options —
   `git commit -am "$GH_TOKEN"` is the same exploit as `-m` — and it deliberately
@@ -47,8 +48,8 @@ Closes #1284.
 
 ## Evidence
 
-Backend/CLI change — no web interface to screenshot. The evidence is the argv the
-chokepoint finally spawned, asserted in both new test files, plus a live
+Backend/CLI change — no web interface to screenshot. The evidence is the argv
+the chokepoint finally spawned, asserted in both new test files, plus a live
 end-to-end run of the installed wrapper against a real repository:
 
 ```text
@@ -98,20 +99,19 @@ flowchart LR
   matches the fast-path test) and `exec`s the argv the guard returned, in which
   `redactSecrets` has replaced the token. The equivalent spellings are closed by
   construction rather than by pattern-matching one shape: the attached form
-  (`-m$GH_TOKEN`), the cluster (`-am $GH_TOKEN`), the long forms
-  (`--message`, `--message=`), every abbreviation `git` would expand
-  (`--m` … `--messag`, and `--fil`) and the file form (`-F msg.txt`, whose
-  contents are scanned and inlined) all reach the same redaction, and
-  `git -C /repo commit -m` is scoped identically because the global options are
-  stepped over first; `git commit-tree -m` is covered too. The
-  worker's own path is closed at `runGitCommand`, which the
-  `git spawn chokepoint` quality gate already proves is the only `git` spawn in
-  `worker/deno/`. Two residual bypasses are stated rather than closed, in
-  `git_guard_shim.ts` and in SECURITY.md §6b: an agent that invokes the real
-  binary by absolute path or edits `PATH` is outside this boundary (this is a
-  containment control, not a sandbox), and the wrapper rides on the `gh`
-  install, so a run with no `gh` on `PATH` — or an operator opt-in to
-  `VIBE_ALLOW_UNGUARDED_AGENT_GH=1` — has no `git` wrapper either.
+  (`-m$GH_TOKEN`), the cluster (`-am $GH_TOKEN`), the long forms (`--message`,
+  `--message=`), every abbreviation `git` would expand (`--m` … `--messag`, and
+  `--fil`) and the file form (`-F msg.txt`, whose contents are scanned and
+  inlined) all reach the same redaction, and `git -C /repo commit -m` is scoped
+  identically because the global options are stepped over first;
+  `git commit-tree -m` is covered too. The worker's own path is closed at
+  `runGitCommand`, which the `git spawn chokepoint` quality gate already proves
+  is the only `git` spawn in `worker/deno/`. Two residual bypasses are stated
+  rather than closed, in `git_guard_shim.ts` and in SECURITY.md §6b: an agent
+  that invokes the real binary by absolute path or edits `PATH` is outside this
+  boundary (this is a containment control, not a sandbox), and the wrapper rides
+  on the `gh` install, so a run with no `gh` on `PATH` — or an operator opt-in
+  to `VIBE_ALLOW_UNGUARDED_AGENT_GH=1` — has no `git` wrapper either.
 
 ## Test Plan
 
@@ -162,13 +162,12 @@ fixed in this branch.
 
 - **met** — apply message-argument redaction inside `runGitCommand` for `-m` /
   `--message` / `-F <path>`, mirroring `redactGhBodyArgs`'s routing-arguments-
-  untouched rule — evidence:
-  `worker/deno/lib/git_timeout.ts:174-200` and
+  untouched rule — evidence: `worker/deno/lib/git_timeout.ts:174-200` and
   `worker/deno/tests/git_message_redaction_test.ts::runGitCommand masks a token in the commit message it spawns (Issue #1284)`
   — reviewer: met
-- **met** — install a `git` PATH shim beside the `gh` one in
-  `gh_guard_shim.ts`, so the agent's own commits pass the same redaction —
-  evidence: `worker/deno/lib/gh_guard_shim.ts:476-494` and
+- **met** — install a `git` PATH shim beside the `gh` one in `gh_guard_shim.ts`,
+  so the agent's own commits pass the same redaction — evidence:
+  `worker/deno/lib/gh_guard_shim.ts:476-494` and
   `worker/deno/tests/git_guard_shim_test.ts::git-guard-shim - a token spelled -am <text> (cluster) never reaches git (Issue #1284)`
   — reviewer: partial — reason: the reviewer found the wrapper's fast path
   (`-m*|--message*|-F*|--file*`) did not match a short cluster, so
@@ -187,9 +186,9 @@ fixed in this branch.
   is part of "no trivial bypass" rather than new scope; the `--file` floor of
   three characters keeps `git commit --fixup <ref>` untouched.
 - **unrequested** — fail-closed refusal on an unscannable message (`-F -`, an
-  unreadable path) rather than redaction alone — reviewer: unrequested —
-  reason: the repo's fail-loud standard forbids treating "could not scan" as
-  "nothing to mask"; it mirrors `UnredactableBodyError` at the `gh` chokepoint.
+  unreadable path) rather than redaction alone — reviewer: unrequested — reason:
+  the repo's fail-loud standard forbids treating "could not scan" as "nothing to
+  mask"; it mirrors `UnredactableBodyError` at the `gh` chokepoint.
 - **unrequested** — `-F <path>` rewritten to an inline masked `-m` — reviewer:
   unrequested — reason: this is exactly how `redactGhBodyArgs` handles
   `--body-file`, and it is what keeps the agent's own file from being rewritten;
@@ -207,9 +206,9 @@ fixed in this branch.
   modules left unclaimed by earlier merges on this milestone branch, and four
   unused imports were dropped from
   `worker/deno/tests/collect_self_diagnostic_candidates_test.ts` — reviewer:
-  unrequested — reason: both were pre-existing failures of `./quality.sh` on
-  the base commit (`lib_sweep_coverage_test.ts` and `deno lint`); the gate must
-  be green before a PR exists, and each is a one-line correction rather than a
+  unrequested — reason: both were pre-existing failures of `./quality.sh` on the
+  base commit (`lib_sweep_coverage_test.ts` and `deno lint`); the gate must be
+  green before a PR exists, and each is a one-line correction rather than a
   refactor.
 
 ## Standards Review
@@ -222,10 +221,9 @@ fixed in this branch.
   patterns are now `-*m*|-*F*|--f*` and eight message spellings are driven
   through the installed wrapper.
 - **violation** — the "strict superset" claim in the module comment and in
-  `SECURITY.md` was false — evidence:
-  `worker/deno/lib/git_guard_shim.ts:86` (as reviewed) — reason: fixed here;
-  both the comment and SECURITY.md §6b now state the whole-option test and say
-  why it over-matches.
+  `SECURITY.md` was false — evidence: `worker/deno/lib/git_guard_shim.ts:86` (as
+  reviewed) — reason: fixed here; both the comment and SECURITY.md §6b now state
+  the whole-option test and say why it over-matches.
 - **violation** — the shim was exercised end to end only with `commit -m`, which
   is why the `-am` gap shipped green — evidence:
   `worker/deno/tests/git_guard_shim_test.ts:158` (as reviewed) — reason: fixed
@@ -243,9 +241,9 @@ fixed in this branch.
   reason: fixed here; added `tests/guard_field_encoding_test.ts` and
   `tests/git_guard_cli_test.ts`, matching the `gh_guard_cli_test.ts` precedent.
 - **violation** — unrelated churn in `docs/audits/lib-sweep-coverage.json` (an
-  em dash re-encoded as `—`) — evidence:
-  `docs/audits/lib-sweep-coverage.json:4` — reason: fixed here; the em dash is
-  restored, leaving only the added path entries in that file's diff.
+  em dash re-encoded as `—`) — evidence: `docs/audits/lib-sweep-coverage.json:4`
+  — reason: fixed here; the em dash is restored, leaving only the added path
+  entries in that file's diff.
 - **violation** — the PR summary was missing — evidence:
   `docs/archive/pr-summaries/pr-summary-1284.md` — reason: it did not exist when
   the reviewer ran; this file is it.
@@ -253,14 +251,15 @@ fixed in this branch.
   red before the wiring and green after); no test removed or commented out;
   fail-loud error handling (`Result` error tagged
   `[SECURITY] [GIT_MESSAGE_UNREDACTABLE]`, positive-marker-only wrapper, exit
-  126 on a garbled verdict or an argv-count mismatch, non-`UnredactableMessageError`
-  re-thrown); KISS/DRY (one `MESSAGE_SUBCOMMANDS` table, one NUL framing); file
-  sizes 24–360 lines with one job each; commit safety (no hidden or
-  credential-shaped path staged, no `git add -f`, no `--no-verify`); commit
-  messages reference `#1284` and carry the run-id trailer; docs updated with the
-  code (SECURITY.md §6b and its redaction-sink list, THREAT-MODEL C24, the
-  chunk-12d audit ledger, the sweep-coverage ledger, the `VIBE_` registry);
-  secure coding (routing arguments provably untouched and tested, argv-count
-  invariant re-checked before `exec`, guard child runs `--allow-read` only,
-  paths shell-quoted, `#!/bin/bash` not `env bash`, the caller's `-F` file never
-  rewritten in place, the log line names the source and never the text).
+  126 on a garbled verdict or an argv-count mismatch,
+  non-`UnredactableMessageError` re-thrown); KISS/DRY (one `MESSAGE_SUBCOMMANDS`
+  table, one NUL framing); file sizes 24–360 lines with one job each; commit
+  safety (no hidden or credential-shaped path staged, no `git add -f`, no
+  `--no-verify`); commit messages reference `#1284` and carry the run-id
+  trailer; docs updated with the code (SECURITY.md §6b and its redaction-sink
+  list, THREAT-MODEL C24, the chunk-12d audit ledger, the sweep-coverage ledger,
+  the `VIBE_` registry); secure coding (routing arguments provably untouched and
+  tested, argv-count invariant re-checked before `exec`, guard child runs
+  `--allow-read` only, paths shell-quoted, `#!/bin/bash` not `env bash`, the
+  caller's `-F` file never rewritten in place, the log line names the source and
+  never the text).

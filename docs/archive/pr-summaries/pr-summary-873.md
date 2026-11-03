@@ -8,18 +8,18 @@ any system-service layout nominates, and it drops fleet state — rotated
 into the operator's home directory beside their own files. The default now
 follows the platform. Closes #873.
 
-| Platform | Default                                                                 |
-| -------- | ----------------------------------------------------------------------- |
+| Platform | Default                                                                   |
+| -------- | ------------------------------------------------------------------------- |
 | Linux    | `$XDG_STATE_HOME/vibe-coder`, falling back to `~/.local/state/vibe-coder` |
 | macOS    | `~/Library/Logs/vibe-coder` — the directory Console.app reads             |
-| Windows  | `%LOCALAPPDATA%\vibe-coder\logs`                                         |
+| Windows  | `%LOCALAPPDATA%\vibe-coder\logs`                                          |
 
 `LAUNCH_LOG_DIR` then `LOG_DIR` still outrank it, so a system service keeps
 naming `/var/log/vibe-coder`. **Nothing is migrated**: a host that still has
 `~/logs` and does not yet have the new directory is told once, at launch, with
 both paths and the exact move — and its old directory is left untouched.
 
-Issue #872 unified the *overrides* and left the *default* spelled in three
+Issue #872 unified the _overrides_ and left the _default_ spelled in three
 places. This change puts the whole resolution in one module,
 `worker/deno/lib/log_dir.ts`, and gives the shell launchers a way to ask for it
 rather than re-spell it — a new `log-dir` command. Without that, moving the
@@ -72,8 +72,9 @@ LOG_DIR=/tmp/op-log           → /tmp/op-log
 Gate status: `./quality.sh` passes every check except `deno tests`, which fails
 on **one pre-existing test**,
 `run_core_production_deps_test.ts::static trust refresh succeeds and does not
-throw`. That failure is **not from this change**: the same gate run on the
-target branch's tip (`HEAD~1`, no changes of mine) fails on that test too. The
+throw`.
+That failure is **not from this change**: the same gate run on the target
+branch's tip (`HEAD~1`, no changes of mine) fails on that test too. The
 integration suites the gate excludes were run by hand and are green:
 `run_sh_launcher_test.ts` (69 passed), `first_run_script_test.ts` (12),
 `log_dir_launcher_test.ts` (2), plus `launcher_parity`, `loop_supervisor`,
@@ -101,20 +102,19 @@ integration suites the gate excludes were run by hand and are green:
   `loop.sh:105`, `run.ps1:295`, `infra/verify/first-run.sh:128` and
   `container_launch.ts::resolveContainerLaunchHostPaths` all reach it, and
   `worker/deno/tests/log_dir_launcher_test.ts::loop.sh - an operator's LAUNCH_LOG_DIR reaches the resolver and is used`
-  drives the shell end of it — reviewer: partial — reason: the reviewer read
-  the first commit, where `loop.sh` blanked `LAUNCH_LOG_DIR` before resolving
-  and silently dropped the override; that defect is fixed in `2cd81aa` and the
+  drives the shell end of it — reviewer: partial — reason: the reviewer read the
+  first commit, where `loop.sh` blanked `LAUNCH_LOG_DIR` before resolving and
+  silently dropped the override; that defect is fixed in `2cd81aa` and the
   regression test above fails against the blanking version
 - **met** — On startup, a host with the legacy `~/logs` and no new directory is
   told once, with the exact path, and the old directory is left alone — nothing
   migrated, nothing deleted — evidence:
-  `worker/deno/lib/log_dir.ts::legacyLogDirNotice` (the notice is text only —
-  no filesystem write anywhere in the module) and the four
-  `log dir - … notice …` cases in
-  `worker/deno/tests/log_dir_default_test.ts` — reviewer: partial — reason: the
-  reviewer found the printed `mv` could not run as printed because the
-  destination does not exist; the notice now prints `mkdir -p … && mv …`, pinned
-  by
+  `worker/deno/lib/log_dir.ts::legacyLogDirNotice` (the notice is text only — no
+  filesystem write anywhere in the module) and the four `log dir - … notice …`
+  cases in `worker/deno/tests/log_dir_default_test.ts` — reviewer: partial —
+  reason: the reviewer found the printed `mv` could not run as printed because
+  the destination does not exist; the notice now prints `mkdir -p … && mv …`,
+  pinned by
   `log dir - the legacy location is named, never migrated (Issue #873)`
 - **met** — Documented in the release notes as breaking, with the one-line move
   — evidence: `docs/RELEASE-NOTES.md` "1.4.0 — the log directory follows the
@@ -126,10 +126,10 @@ integration suites the gate excludes were run by hand and are green:
   choosing 2.0.0 instead is a one-line floor edit if a human prefers it
 - **met** — Sequencing: the `LOG_DIR` consistency fix lands first — evidence:
   #872 is closed and on the target branch; this change additionally folds the
-  five remaining host-side resolutions
-  (`container_restart_backoff.ts`, `worker_checkout_update.ts`,
-  `green_gate_report.ts`, `setup/update_mode_setup.ts`,
-  `setup/launchagent.ts`) onto the shared resolver — reviewer: met
+  five remaining host-side resolutions (`container_restart_backoff.ts`,
+  `worker_checkout_update.ts`, `green_gate_report.ts`,
+  `setup/update_mode_setup.ts`, `setup/launchagent.ts`) onto the shared resolver
+  — reviewer: met
 - **unrequested** — Windows default `%LOCALAPPDATA%\vibe-coder\logs` — reason:
   the issue names Linux, macOS and a system service. `run.ps1` is a supported
   launcher that resolved `$HOME/logs` too; leaving Windows behind would have
@@ -140,10 +140,10 @@ integration suites the gate excludes were run by hand and are green:
   sequencing note requires "a single resolution point exists to change". Shell
   cannot import TypeScript, so asking the worker is the only way the default
   moves in one place rather than four
-- **unrequested** — host-side `~/logs` references updated across
-  `README.md`, `SECURITY.md` and seven `docs/` pages — reason: those pages tell
-  operators where to read the logs; leaving them naming `~/logs` would document
-  a directory the worker no longer writes to. The in-container `/home/vibe/logs`
+- **unrequested** — host-side `~/logs` references updated across `README.md`,
+  `SECURITY.md` and seven `docs/` pages — reason: those pages tell operators
+  where to read the logs; leaving them naming `~/logs` would document a
+  directory the worker no longer writes to. The in-container `/home/vibe/logs`
   references are deliberately untouched — that mount target has not moved
 
 ## Standards Review
@@ -170,14 +170,13 @@ integration suites the gate excludes were run by hand and are green:
   swallowed — evidence: `infra/verify/first-run.sh:119` — reason: fixed here;
   stderr is passed through and the message points at it
 - **violation** — Docs accuracy: the cron examples were rewritten to a
-  hard-coded `/home/USER/.local/state/…` inside blocks labelled *macOS /
-  Linux* — evidence: `README.md:293`, `docs/DEPLOYMENT.md:601`,
+  hard-coded `/home/USER/.local/state/…` inside blocks labelled _macOS / Linux_
+  — evidence: `README.md:293`, `docs/DEPLOYMENT.md:601`,
   `docs/TROUBLESHOOTING.md:429` — reason: fixed here; each names
   `~/.local/state/vibe-coder/cron.log` with the macOS path called out beside it
 - **violation** — Docs accuracy: `docs/TROUBLESHOOTING.md` used `${LOG_DIR}`
-  before the block that defines it — evidence:
-  `docs/TROUBLESHOOTING.md:96` — reason: fixed here; that snippet now resolves
-  the variable itself
+  before the block that defines it — evidence: `docs/TROUBLESHOOTING.md:96` —
+  reason: fixed here; that snippet now resolves the variable itself
 - **violation** — Docs accuracy: `log-rotation` and `worker-log-cleanup` still
   documented `default: ~/logs` — evidence:
   `worker/deno/commands/log_rotation.ts:24`,
@@ -200,8 +199,7 @@ integration suites the gate excludes were run by hand and are green:
   reason: stands, deliberately. The supervisor must never exit, so it needs an
   answer when Deno cannot give one; the overrides are the operator's own words
   and are still honoured, only the last resort is the old path, it is announced
-  loudly on stderr, and reaching it means `run.sh` will refuse the launch
-  anyway
+  loudly on stderr, and reaching it means `run.sh` will refuse the launch anyway
 - **clean** — Australian English throughout; no hidden or secret path staged
   (the one hidden file, `.release-floor`, is tracked and is the documented
   release mechanism); tests call real functions and real scripts rather than
@@ -223,13 +221,13 @@ Added:
   written there; `LOG_DIR` alone behaves the same. Verified red against the
   version that blanked the variable.
 - `worker/deno/tests/run_sh_launcher_test.ts::run.sh - LOG_DIR moves the
-  writable host mount with it` — the override reaches the container mount and
-  the run-core log.
+  writable host mount with it`
+  — the override reaches the container mount and the run-core log.
 
 Modified (business-logic change, stated explicitly):
 
-- `worker/deno/tests/log_dir_resolution_test.ts` (#872's suite) — the
-  "defaults to `$HOME/logs`" case now asserts the precedence *chain* ends at
+- `worker/deno/tests/log_dir_resolution_test.ts` (#872's suite) — the "defaults
+  to `$HOME/logs`" case now asserts the precedence _chain_ ends at
   `defaultLogDir`, and the platform is stated so the expectation is
   host-independent. No case was removed.
 - `worker/deno/tests/container_launch_test.ts`,

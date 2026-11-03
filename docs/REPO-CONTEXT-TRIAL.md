@@ -14,27 +14,27 @@ window closes — this page records the rules that judgement follows, and the
 per-candidate result sections below are templates to fill in when each window
 ends.
 
-|              |                                                                                                                                  |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| Trial host   | **GRQ-23** — one host, both candidates, sequential windows                                                                       |
+|              |                                                                                                                                                                                                             |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Trial host   | **GRQ-23** — one host, both candidates, sequential windows                                                                                                                                                  |
 | Switches     | `codegraph_context.enabled` ([Configuration](CONFIGURATION.md)) and Graft's own `graft_context.enabled`, which ships with milestone #2060 and is not on every build — both host-level, both default `false` |
-| Bar          | ≥ 10% lower tokens **or** cost per completed implementation run, no worse success rate                                           |
-| First judged | after **2 days** or **20** completed GRQ-23 runs, whichever is later                                                             |
-| Status       | 🟡 protocol recorded, windows not yet run                                                                                        |
+| Bar          | ≥ 10% lower tokens **or** cost per completed implementation run, no worse success rate                                                                                                                      |
+| First judged | after **2 days** or **20** completed GRQ-23 runs, whichever is later                                                                                                                                        |
+| Status       | 🟡 protocol recorded, windows not yet run                                                                                                                                                                   |
 
 ---
 
 ## 1. 🥊 The candidates
 
-|                          | **Graft**                                                                                    | **CodeGraph**                                                                                |
-| ------------------------ | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Milestone                | #2060                                                                                        | #2145                                                                                        |
-| Install                  | npm `@nanonets/graft@0.25.0`, 7 native modules compiled at image build                       | pinned GitHub-release tarball, checksum-verified (`container/toolchains/codegraph.sh`)       |
+|                          | **Graft**                                                                                                                                                                                                        | **CodeGraph**                                                                                |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Milestone                | #2060                                                                                                                                                                                                            | #2145                                                                                        |
+| Install                  | npm `@nanonets/graft@0.25.0`, 7 native modules compiled at image build                                                                                                                                           | pinned GitHub-release tarball, checksum-verified (`container/toolchains/codegraph.sh`)       |
 | How the agent reaches it | a `graft ask --source` bundle (about 1,900 tokens) **injected into the prompt** at run start, **and** the `graft` **MCP server** (`graft_find_code`, `graft_file_api`, …) the agent queries itself (Issue #2314) | an **MCP server** beside Playwright — the agent calls `codegraph_explore` itself             |
-| Index                    | built per run, about 47 s on this repository, about 132 MB under `graft/`                    | `codegraph init`/`sync` on the checkout, kept in `.codegraph/` between runs, capped at 300 s |
-| Model calls to index     | none                                                                                         | none                                                                                         |
-| Host switch              | `graft_context.enabled`                                                                      | `codegraph_context.enabled`                                                                  |
-| Failure marker           | `[GRAFT_UNAVAILABLE]`                                                                        | `[CODEGRAPH_UNAVAILABLE]`                                                                    |
+| Index                    | built per run, about 47 s on this repository, about 132 MB under `graft/`                                                                                                                                        | `codegraph init`/`sync` on the checkout, kept in `.codegraph/` between runs, capped at 300 s |
+| Model calls to index     | none                                                                                                                                                                                                             | none                                                                                         |
+| Host switch              | `graft_context.enabled`                                                                                                                                                                                          | `codegraph_context.enabled`                                                                  |
+| Failure marker           | `[GRAFT_UNAVAILABLE]`                                                                                                                                                                                            | `[CODEGRAPH_UNAVAILABLE]`                                                                    |
 
 The Graft column is as milestone #2060 specifies that trial; the CodeGraph
 column is what `worker/deno/lib/codegraph_context.ts` does today.
@@ -74,11 +74,11 @@ clarification-family runs — refinement
 (`worker/deno/lib/refinement_processor.ts`), revision
 (`worker/deno/lib/revision_processor.ts`) and quorum
 (`worker/deno/lib/quorum_processor.ts`), all through
-`worker/deno/lib/phase_accelerators.ts` (Issue #2569). Planning makes several invocations in
-one round (draft, critique, the explicit retry, the Failure-Detection
-self-repair), a quorum plan-off makes three (two drafts and the judge), and a
-CI fix makes a second when the post-quality gate asks for one; they share one
-index and their `codegraph_explore` calls are summed into a
+`worker/deno/lib/phase_accelerators.ts` (Issue #2569). Planning makes several
+invocations in one round (draft, critique, the explicit retry, the
+Failure-Detection self-repair), a quorum plan-off makes three (two drafts and
+the judge), and a CI fix makes a second when the post-quality gate asks for one;
+they share one index and their `codegraph_explore` calls are summed into a
 single figure for the run.
 
 The server is **rooted at the checkout that was indexed**, by
@@ -86,18 +86,18 @@ The server is **rooted at the checkout that was indexed**, by
 rather than letting it inherit the agent's working directory is what makes the
 ten paths behave alike: the planning and question processors run the agent with
 `cwd` set to `config.workDir`, the **parent** of every clone, so an unrooted
-server would resolve a directory with no `.codegraph/` in it while the run
-still reported `status: ok` with real counts. The path rides in the arguments
-because Codex's translation of an MCP entry keeps `command`, `args` and `env`
-and drops `cwd`.
+server would resolve a directory with no `.codegraph/` in it while the run still
+reported `status: ok` with real counts. The path rides in the arguments because
+Codex's translation of an MCP entry keeps `command`, `args` and `env` and drops
+`cwd`.
 
 The MCP entry and the prompt line are handed over **together or not at all**:
-the line without the server tells the agent to call a tool that does not
-exist, and the server without the line leaves an indexed repository the agent
-never queries. The line is appended in code rather than written into
-`prompts/<type>/prompt.md`, because it is run-conditional — the same reason
-the codebase map is injected rather than templated — and appending it after
-the built prompt leaves the cached static half untouched.
+the line without the server tells the agent to call a tool that does not exist,
+and the server without the line leaves an indexed repository the agent never
+queries. The line is appended in code rather than written into
+`prompts/<type>/prompt.md`, because it is run-conditional — the same reason the
+codebase map is injected rather than templated — and appending it after the
+built prompt leaves the cached static half untouched.
 
 ```mermaid
 sequenceDiagram
@@ -202,9 +202,9 @@ part of either candidate's figures.
 
 ## 6. 📥 Where each figure is read from
 
-Each window's figures are read from two per-run surfaces rather than from
-ad-hoc logs. Both surfaces are still being built — the sub-issue that lands each
-is named in its cell, and a window cannot open before its own two have landed:
+Each window's figures are read from two per-run surfaces rather than from ad-hoc
+logs. Both surfaces are still being built — the sub-issue that lands each is
+named in its cell, and a window cannot open before its own two have landed:
 
 | Surface                     | Graft                     | CodeGraph                     |
 | --------------------------- | ------------------------- | ----------------------------- |
@@ -233,9 +233,9 @@ figures the step reached:
 It is a status line, never a cost line: the issue cost tally parses only the
 `Estimated cost` shape, so these figures never move the published total.
 
-A run that prepared RTK (the separate output trial, Issue #2328) adds one
-`RTK:` status line directly beneath it, still above the cumulative issue total
-(#2385) — see `rtk_output.enabled` in [Configuration](CONFIGURATION.md).
+A run that prepared RTK (the separate output trial, Issue #2328) adds one `RTK:`
+status line directly beneath it, still above the cumulative issue total (#2385)
+— see `rtk_output.enabled` in [Configuration](CONFIGURATION.md).
 
 ## 7. 📊 Results — Graft window
 
@@ -284,5 +284,5 @@ _Template — fill in when the CodeGraph window closes._
   `codegraph`/`graft` blocks are carried on.
 - **[RTK output trial](RTK-OUTPUT-TRIAL.md)** — the sibling protocol for the
   `rtk_output.enabled` switch: same shape, a different candidate.
-- **[brief trial](BRIEF-TRIAL.md)** — the sibling protocol for brief, removed
-  on analysis before its window opened (Issue #2699).
+- **[brief trial](BRIEF-TRIAL.md)** — the sibling protocol for brief, removed on
+  analysis before its window opened (Issue #2699).

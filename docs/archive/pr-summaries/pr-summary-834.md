@@ -54,14 +54,14 @@ two defects. Both are fixed here:
   and the placement are swept together, and scopes out the four lightweight
   audits that have no `## Inputs` section at all (a presence gap, Issue #841).
 
-Chasing the first one surfaced a separate root cause, filed as
-**#894**: `canRunBinary()` in `worker/deno/lib/markdownlint_check.ts:162`
-probes with `markdownlint-cli2 --version`, which that tool treats as a glob —
-it lints the repo and exits 1 on any violation. The local markdownlint stage
-therefore reports `SKIPPED` **exactly when the repo is dirty**. Reproduced both
-ways on this branch: with the MD018 error present the probe exited 1 and the
-stage skipped; with it fixed the probe exits 0 and the stage runs. Out of scope
-for #834, so filed rather than folded in.
+Chasing the first one surfaced a separate root cause, filed as **#894**:
+`canRunBinary()` in `worker/deno/lib/markdownlint_check.ts:162` probes with
+`markdownlint-cli2 --version`, which that tool treats as a glob — it lints the
+repo and exits 1 on any violation. The local markdownlint stage therefore
+reports `SKIPPED` **exactly when the repo is dirty**. Reproduced both ways on
+this branch: with the MD018 error present the probe exited 1 and the stage
+skipped; with it fixed the probe exits 0 and the stage runs. Out of scope for
+#834, so filed rather than folded in.
 
 ## Acceptance Criteria
 
@@ -70,17 +70,22 @@ for #834, so filed rather than folded in.
 - **met** — `docs/PROMPT-HOUSE-VOCABULARY.md` exists and records every row with
   house form, banned variants and rationale — evidence:
   `worker/deno/tests/prompt_house_vocabulary_doc_test.ts::terminology table
-  records every drifted term`, `::scan-family headings record house form and
-  banned variants`, `::interactive-family headings record house form and banned
-  variants` — reviewer: met
+  records every drifted term`,
+  `::scan-family headings record house form and
+  banned variants`,
+  `::interactive-family headings record house form and banned
+  variants` —
+  reviewer: met
 - **met** — the deliberate-exceptions section names the checklist's `Optimize`
   and `Minimizing` rows explicitly — evidence:
   `worker/deno/tests/prompt_house_vocabulary_doc_test.ts::the deliberate
-  exceptions name the checklist's American spellings` — reviewer: met
+  exceptions name the checklist's American spellings`
+  — reviewer: met
 - **met** — `docs/PROMPTS.md` and `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` each
   link to it — evidence:
   `worker/deno/tests/prompt_house_vocabulary_doc_test.ts::the pointer documents
-  link to the vocabulary` — reviewer: met
+  link to the vocabulary`
+  — reviewer: met
 - **met** — every `prompts/<type>/vN` reference satisfies the docs
   prompt-version freshness check — evidence: the page cites directories only
   (`prompts/best_practices/`), so `docs_prompt_version_check.ts` has zero
@@ -96,7 +101,7 @@ for #834, so filed rather than folded in.
   on every non-merge commit of this branch lists zero `prompts/` paths —
   reviewer: met
 - **unrequested** — `worker/deno/tests/prompt_house_vocabulary_doc_test.ts` —
-  reviewer: unrequested — reason: the issue defers the *drift* test to #840;
+  reviewer: unrequested — reason: the issue defers the _drift_ test to #840;
   this one pins the document's own completeness instead (every row has a
   rationale, the family lists partition the directories on disk, the recorded
   suppression keywords really parse to the families claimed), which is what the
@@ -114,20 +119,21 @@ for #834, so filed rather than folded in.
   index for a published `docs/` page and `readme_docs_reachability_test.ts`
   covers it.
 - **unrequested** — `_data/page_titles.yml` entry — reviewer: unrequested —
-  reason: the reviewer's own words were "required — `page_titles_completeness_test.ts`
-  fails without it — so that one is traceable, not creep"; recorded here only
-  because it is a diff change the issue does not name.
-- **unrequested** — removal of `docs/archive/handover/issue-834.md` —
-  reviewer: unrequested — reason: the worker-authored resume note carried in by
-  the preserved-WIP commit `d98ee10`. The Spec reviewer asked for it to be
-  deleted before merge as a stale artefact and noted the `issue-770` precedent
-  was likewise not merged; done in `af2b80c`.
+  reason: the reviewer's own words were "required —
+  `page_titles_completeness_test.ts` fails without it — so that one is
+  traceable, not creep"; recorded here only because it is a diff change the
+  issue does not name.
+- **unrequested** — removal of `docs/archive/handover/issue-834.md` — reviewer:
+  unrequested — reason: the worker-authored resume note carried in by the
+  preserved-WIP commit `d98ee10`. The Spec reviewer asked for it to be deleted
+  before merge as a stale artefact and noted the `issue-770` precedent was
+  likewise not merged; done in `af2b80c`.
 
 The reviewers also found three factual errors in the page, all fixed in
 `af2b80c`: it cited Issue #842 as pending work when #842 has closed; it said the
 product picked up "three names" when only two are prose drift (the third is the
 `Vibe-Coder-Run-Id` commit trailer, an identifier the page's own row exempts);
-and the scan-family test compared only the *count* of directories against disk,
+and the scan-family test compared only the _count_ of directories against disk,
 so one directory gaining the section while another lost it would have passed
 green with the table wrong. It now compares the names.
 
@@ -167,16 +173,16 @@ green with the table wrong. It now compares the names.
 - **violation** — the canon literals are restated in `TERMINOLOGY`,
   `SCAN_HEADINGS` and `INTERACTIVE_HEADINGS`, so the test cannot disagree with
   the page's author (DRY, and the doc-test precedents validate against code
-  truth) — evidence:
-  `worker/deno/tests/prompt_house_vocabulary_doc_test.ts:153` — reason: stands,
-  deliberately. The reviewer's suggested fix — assert the page's per-template
-  citations against `latestTemplates()` — would be wrong here: those citations
-  are *baseline* evidence pinned to `4051c6d`, and the sweeps are actively
-  removing the very strings they name, so such a test would go red as the canon
-  succeeded. The checks that *can* be live are live: the Families partition and
-  the scan-family membership are derived from disk, `findSuppressions()` is
-  really called for all three keywords, and `getLatestVersion()`/`loadPrompt()`
-  resolve every template rather than hard-coding a `vN`.
+  truth) — evidence: `worker/deno/tests/prompt_house_vocabulary_doc_test.ts:153`
+  — reason: stands, deliberately. The reviewer's suggested fix — assert the
+  page's per-template citations against `latestTemplates()` — would be wrong
+  here: those citations are _baseline_ evidence pinned to `4051c6d`, and the
+  sweeps are actively removing the very strings they name, so such a test would
+  go red as the canon succeeded. The checks that _can_ be live are live: the
+  Families partition and the scan-family membership are derived from disk,
+  `findSuppressions()` is really called for all three keywords, and
+  `getLatestVersion()`/`loadPrompt()` resolve every template rather than
+  hard-coding a `vN`.
 - **violation** — ragged reflow breaking the file's ~80-column wrapping —
   evidence: `docs/PROMPT-HOUSE-VOCABULARY.md:158` — reason: fixed in `af2b80c`
   by the same reflow as the MD018 fix.
@@ -202,19 +208,19 @@ green with the table wrong. It now compares the names.
 
 Added `worker/deno/tests/prompt_house_vocabulary_doc_test.ts` — 16 tests:
 
-- terminology, scan-heading and interactive-heading tables each record every
-  row with its banned variants, and every row carries a rationale;
+- terminology, scan-heading and interactive-heading tables each record every row
+  with its banned variants, and every row carries a rationale;
 - the product-name row records the repo-slug exemption;
 - `## Why this scan exists` is recorded as a prompt-level section that stays;
 - the four family lists partition every `prompts/<type>/` directory on disk, and
-  the Families table's Scan row equals — **by name, not just by count** — the set
-  of directories whose latest template carries `Stable finding ID recipe`,
+  the Families table's Scan row equals — **by name, not just by count** — the
+  set of directories whose latest template carries `Stable finding ID recipe`,
   resolved through `getLatestVersion()` and `loadPrompt()`, never a hard-coded
   `vN`;
 - the attribution-footer citation and the finding-id placeholder forms are
   recorded;
 - all three suppression keywords are recorded, and each parses through
   `findSuppressions()` to the family and id prefix the page claims;
-- the `Optimize`/`Minimizing` exception is recorded *and* still true of
+- the `Optimize`/`Minimizing` exception is recorded _and_ still true of
   `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md`, so the exception cannot go stale;
 - both pointer documents link the page.

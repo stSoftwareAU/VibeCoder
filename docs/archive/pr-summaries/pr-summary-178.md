@@ -10,8 +10,8 @@ later. In the pool it retired the slot entirely: `runIssueScanPool` only
 re-enters the outer loop after `drainSlots`, so the slot idled until **every**
 sibling finished. With one slot inside a ~55 min execute, the other sat silent
 for the rest of the cycle — `max_concurrent_issues: 2` gave two slots only until
-the first success. Perversely, a slot that *failed* stayed busier than one that
-*succeeded*, because the failure path `continue`s.
+the first success. Perversely, a slot that _failed_ stayed busier than one that
+_succeeded_, because the failure path `continue`s.
 
 A successful slot now sleeps the normal `sleepInterval` and claims again,
 re-gated by `slotShouldStop` (deadline / runway / drain / shutdown) and the
@@ -83,20 +83,22 @@ flowchart TD
 Added to `worker/deno/tests/run_core_slot_pool_test.ts`:
 
 - **`slot pool - a success is followed by the normal sleep and another claim in
-  the SAME slot, not a pool drain (Issue #178)`** — two issues in one repository
-  (so only the slot holding it can take the next one) and a pool of 2. Asserts
-  the ordered trace is `process o/a#1 → sleep 30 000 ms → process o/a#2`, and
-  that `Issue scan pool:` was logged exactly once, proving the second claim came
-  from the same pool invocation rather than a fresh one after a drain.
+  the SAME slot, not a pool drain (Issue #178)`**
+  — two issues in one repository (so only the slot holding it can take the next
+  one) and a pool of 2. Asserts the ordered trace is
+  `process o/a#1 → sleep 30 000 ms → process o/a#2`, and that `Issue scan pool:`
+  was logged exactly once, proving the second claim came from the same pool
+  invocation rather than a fresh one after a drain.
 - **`slot pool - two slots, one long execute: the other slot completes issue
-  after issue throughout (Issue #178)`** — the acceptance criterion from the
-  issue: slot A runs one long execute while slot B works a queue. Asserts B
-  completes all four short issues during A's run (`issues_processed` = N + 1),
-  and that A's long run still completes. The long run's wait is bounded, so a
-  regression fails the assertion instead of hanging the suite.
+  after issue throughout (Issue #178)`**
+  — the acceptance criterion from the issue: slot A runs one long execute while
+  slot B works a queue. Asserts B completes all four short issues during A's run
+  (`issues_processed` = N + 1), and that A's long run still completes. The long
+  run's wait is bounded, so a regression fails the assertion instead of hanging
+  the suite.
 
-Both tests were written first and confirmed failing against the unfixed code.
-No existing test was modified, commented out, or removed; all 21 pre-existing
+Both tests were written first and confirmed failing against the unfixed code. No
+existing test was modified, commented out, or removed; all 21 pre-existing
 slot-pool tests still pass.
 
 ## Documentation

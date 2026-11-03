@@ -5,12 +5,12 @@
 `coding_guidelines` forbids bypassing the pre-commit gate, categorically:
 
 > Bypassing either safeguard (e.g. `git commit --no-verify`, `git add -f`) is
-> **forbidden**. If a safeguard is producing a false positive, fix the
-> allowlist via PR — do not bypass.
+> **forbidden**. If a safeguard is producing a false positive, fix the allowlist
+> via PR — do not bypass.
 
 restated in its worked example and in `CODING-STANDARDS.md`. But `issue` and
 `pr_feedback` — which render that block in the same prompt — listed
-`git commit --no-verify` among the *justify-then-run* actions:
+`git commit --no-verify` among the _justify-then-run_ actions:
 
 > … are not routine steps. If one of them genuinely is the only way forward,
 > **do it** and state the justification.
@@ -29,8 +29,8 @@ Closes #783.
 
 ## Evidence
 
-Prompt-content change with no runtime surface to screenshot. The evidence is
-the guard.
+Prompt-content change with no runtime surface to screenshot. The evidence is the
+guard.
 
 ```mermaid
 flowchart LR
@@ -95,26 +95,27 @@ reviewer sub-agents.
   which enumerates `prompts/` at run time, so a **new** family is covered
   without editing the test
 - **met** — the guard criterion is the literal string, not a classification of
-  permissive wording — evidence: the test matches `--no-verify` exactly; the
-  two new versions therefore refer to "the pre-commit gate" and cite the
-  guidelines rather than restating the flag, which is the escape route the
-  issue anticipated
+  permissive wording — evidence: the test matches `--no-verify` exactly; the two
+  new versions therefore refer to "the pre-commit gate" and cite the guidelines
+  rather than restating the flag, which is the escape route the issue
+  anticipated
 - **met** — no code change — evidence: the diff contains only prompts, the test
   and this summary
-- **met** — version numbers taken at implementation time — evidence: `issue`
-  v41 → v42 and `pr_feedback` v15 → v16, both later than the numbers the issue
+- **met** — version numbers taken at implementation time — evidence: `issue` v41
+  → v42 and `pr_feedback` v15 → v16, both later than the numbers the issue
   recorded (v39/v13), because #778, #780 and #781 minted versions in between
 
-- **unrequested** — each new version states *why* the bypass is not on the list
+- **unrequested** — each new version states _why_ the bypass is not on the list
   — reason: the accepted scope is a deletion, and a deletion alone leaves a
   reader who remembers the old bullet wondering whether the omission is
   deliberate. One sentence naming the reason — a bypass is what lets a staged
   secret through, and the remedy is to fix the allowlist by PR — makes the
   removal legible, and is the wording the guidelines already use
-- **unrequested** — `::the guidelines still forbid it, categorically (Issue #783)`
-  — reason: the guard defers to a ban stated elsewhere. If that ban were ever
-  softened, every other template would be silently free of a rule nothing
-  states, and the guard would still pass
+- **unrequested** —
+  `::the guidelines still forbid it, categorically (Issue #783)` — reason: the
+  guard defers to a ban stated elsewhere. If that ban were ever softened, every
+  other template would be silently free of a rule nothing states, and the guard
+  would still pass
 
 ## Standards Review
 

@@ -5,9 +5,9 @@ be recorded "before the PR is raised". Since Issue #4234 the reproduction gate
 is advice: the verdict is reported once in the session, and whatever remains is
 posted on the raised PR under "They did not block this pull request". The
 comment and its JSDoc now describe that flow, matching the sibling closure-gate
-comment (#4513) and the unmet-criteria note (#4469). An integration-test
-helper also waits for the fake supervisor to start and become an orphan before
-the reaper tests inspect it. Closes #4578.
+comment (#4513) and the unmet-criteria note (#4469). An integration-test helper
+also waits for the fake supervisor to start and become an orphan before the
+reaper tests inspect it. Closes #4578.
 
 ## Spec
 
@@ -19,9 +19,8 @@ the reaper tests inspect it. Closes #4578.
 
 ### Essential Design Decisions
 
-- The gate's verdict logic and the
-  `Reproduction status missing` heading (asserted by
-  `completion_phase_summary_rule_retry_test.ts`) are untouched.
+- The gate's verdict logic and the `Reproduction status missing` heading
+  (asserted by `completion_phase_summary_rule_retry_test.ts`) are untouched.
 - The module header's "gated at the same PR-creation chokepoint" line was left
   as it is: it names where the gate runs, not that it withholds the PR.
 
@@ -52,8 +51,8 @@ make no withheld-PR claim.
     and again when only the old opening string was restored; it passes with the
     fix.
 - The existing `loop_supervisor_test.ts` orphan helper captures the spawned PID
-  and waits for its command line and reparenting, avoiding a startup race in
-  the reaper tests. No existing assertion was removed.
+  and waits for its command line and reparenting, avoiding a startup race in the
+  reaper tests. No existing assertion was removed.
   - A local `deno test` run filtered to `#4568` was interrupted during type
     checking; the integration tests remain for CI to verify.
 - Existing callers checked: `completion_phase.ts` (`reproductionVerdict`) passes

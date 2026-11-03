@@ -5,17 +5,17 @@ Closes #3011
 ## Summary
 
 Worker PRs shipped a regression test that was named but never existed
-(GRQ#5135), and a stub that was more permissive than the binary it stood in
-for (GRQ#5137). This PR adds two rules to every surface a run or reviewer reads:
+(GRQ#5135), and a stub that was more permissive than the binary it stood in for
+(GRQ#5137). This PR adds two rules to every surface a run or reviewer reads:
 
 - **A named test must exist.** Every test named in Evidence or Test Plan, and
   every code anchor or comment that points at a test, must exist at the head.
   The run checks this with `git ls-files <path>`. A named-but-absent test is a
   blocking self-review finding.
-- **A stub mirrors the real callee's contract.** A stub of another repo's
-  binary must read the same inputs and fail with the same exit codes. A stub
-  more permissive than the real callee is a finding. The fix is to run against a
-  real checkout, or to name the contract with a source link.
+- **A stub mirrors the real callee's contract.** A stub of another repo's binary
+  must read the same inputs and fail with the same exit codes. A stub more
+  permissive than the real callee is a finding. The fix is to run against a real
+  checkout, or to name the contract with a source link.
 
 Checklist:
 
@@ -56,8 +56,9 @@ Checklist:
 ## Evidence
 
 - Base check: none of the four surfaces contained `named-but-absent` or
-  `more permissive than the` at base 3bad99d5 (`git show 3bad99d5:<file> | grep -c` → 0).
-  The new test therefore fails on base and passes with this change.
+  `more permissive than the` at base 3bad99d5
+  (`git show 3bad99d5:<file> | grep -c` → 0). The new test therefore fails on
+  base and passes with this change.
 - **Docs sweep:** grepped `standards-reviewer`, `Standards reviewer`,
   `Test Plan`, `named test` and `test stub` across `README.md`, `docs/`
   (excluding `docs/archive/`) and `*/README.md`.

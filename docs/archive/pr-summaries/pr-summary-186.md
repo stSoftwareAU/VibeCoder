@@ -82,8 +82,8 @@ outlive the cycle (Issue #186)
 (`fleet_health_test.ts`, `host_workdir_guard_test.ts`,
 `optional_feature_env_test.ts`, `setup_workdir_reminder_test.ts`). Confirmed
 pre-existing: the same 10 fail on the unmodified tree (`git stash`, re-run →
-`FAILED | 63 passed | 10 failed`). Every other test passes
-(`14727 passed`), including all new ones.
+`FAILED | 63 passed | 10 failed`). Every other test passes (`14727 passed`),
+including all new ones.
 
 ## Test Plan
 
@@ -116,5 +116,5 @@ pre-existing: the same 10 fail on the unmodified tree (`git stash`, re-run →
 - forwards the cycle deadline to the claim handler
 - omits the key entirely when the caller has no deadline
 
-Existing suites re-run unchanged: `idle_task_template_budget_3657_test.ts`
-(the #3657 budget guard) and `security_scanner_test.ts`.
+Existing suites re-run unchanged: `idle_task_template_budget_3657_test.ts` (the
+#3657 budget guard) and `security_scanner_test.ts`.

@@ -80,18 +80,17 @@ flowchart TD
 - **met** — `./quality.sh` passes — evidence: full gate run after the final
   edit, `Result: PASSED (with skipped checks)`; the only skip is
   `config integration`, which the gate skips in normal mode on every run —
-  reviewer: missing — reason: the reviewer was given the diff only and was
-  told not to run the gate, so it could not confirm a run it cannot see. The
-  gate was run here, twice: it failed the first time (four tests) and passes
-  after the fixes recorded above.
-- **unrequested** — `docs/archive/pr-summaries/pr-summary-2339.md` —
-  reviewer: unrequested — reason: the repository's mandatory PR-summary
-  artifact, required of every PR by the house standards rather than by this
-  issue's own text.
+  reviewer: missing — reason: the reviewer was given the diff only and was told
+  not to run the gate, so it could not confirm a run it cannot see. The gate was
+  run here, twice: it failed the first time (four tests) and passes after the
+  fixes recorded above.
+- **unrequested** — `docs/archive/pr-summaries/pr-summary-2339.md` — reviewer:
+  unrequested — reason: the repository's mandatory PR-summary artifact, required
+  of every PR by the house standards rather than by this issue's own text.
 - **unrequested** — `worker/deno/lib/run_core.ts:1543` comment, and the
-  `docs/INTERNALS.md` / `run_core_slot_pool_test.ts` edits —
-  reviewer: unrequested — reason: surfaces the flip falsified. The comment and
-  the INTERNALS paragraph described the flag as off; the slot-pool test stopped
+  `docs/INTERNALS.md` / `run_core_slot_pool_test.ts` edits — reviewer:
+  unrequested — reason: surfaces the flip falsified. The comment and the
+  INTERNALS paragraph described the flag as off; the slot-pool test stopped
   exercising the acquire race it exists for, because under the new default its
   blank-stream issue is refused earlier by the #2335 lock. Each is the
   docs-or-test half the issue's own "verify no other site hardcodes the old
@@ -124,25 +123,24 @@ flowchart TD
   docs-drift check this issue's Failure Detection asks for; it asserts against
   `OPERATIONAL_DEFAULTS`, so it cannot pass while the docs disagree with the
   code.
-- **violation** — DRY: the shipped-default pin is duplicated inside a
-  pushed-WIP test — evidence:
-  `worker/deno/tests/resume_branch_by_issue_test.ts:120` — reason: stands. The
-  issue asks that this file assert the new default "deliberately, not
-  incidentally", and the line next to the fixture's explicit `false` is what
-  makes the distinction visible at the point it matters.
+- **violation** — DRY: the shipped-default pin is duplicated inside a pushed-WIP
+  test — evidence: `worker/deno/tests/resume_branch_by_issue_test.ts:120` —
+  reason: stands. The issue asks that this file assert the new default
+  "deliberately, not incidentally", and the line next to the fixture's explicit
+  `false` is what makes the distinction visible at the point it matters.
 - **clean** — Australian English throughout; the four `config_defaults_test.ts`
   additions drive `buildDefaultWorkerConfig()` and `loadConfig()` against real
-  temp config files rather than inspecting source; no hidden or credential
-  paths staged; the commit carries the `Vibe-Coder-Run-Id` trailer; the new
-  Mermaid block validates; the default lives only in `OPERATIONAL_DEFAULTS`,
-  with `config.ts:868`, `run_core.ts:1545` and
-  `run_core_production_deps.ts:1210` all reading through it.
+  temp config files rather than inspecting source; no hidden or credential paths
+  staged; the commit carries the `Vibe-Coder-Run-Id` trailer; the new Mermaid
+  block validates; the default lives only in `OPERATIONAL_DEFAULTS`, with
+  `config.ts:868`, `run_core.ts:1545` and `run_core_production_deps.ts:1210` all
+  reading through it.
 
 A working-tree slip is worth flagging to the reviewer: an earlier
-`deno fmt docs/ worker/deno/` in this run reformatted 712 unrelated files
-(the repo formats from `worker/deno/` and excludes `docs/`). It was reverted
-with `git checkout -- .` before anything was staged, and the four intended
-edits were reapplied by hand — the diff contains no reformatting.
+`deno fmt docs/ worker/deno/` in this run reformatted 712 unrelated files (the
+repo formats from `worker/deno/` and excludes `docs/`). It was reverted with
+`git checkout -- .` before anything was staged, and the four intended edits were
+reapplied by hand — the diff contains no reformatting.
 
 ## Test Plan
 

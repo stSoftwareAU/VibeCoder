@@ -64,24 +64,26 @@ That digest is the one committed to `container/tools.json` and restated as
 
 `./quality.sh` passes (`Result: PASSED (with skipped checks)`); the container
 image itself is built and version-checked by
-`.github/workflows/container-build.yml`, whose "Verify the
-monitored-repository toolchains" step runs `npm --version` against the built
-image and fails when it does not report the pinned `12.0.2`.
+`.github/workflows/container-build.yml`, whose "Verify the monitored-repository
+toolchains" step runs `npm --version` against the built image and fails when it
+does not report the pinned `12.0.2`.
 
 ## Test Plan
 
 Added to `worker/deno/tests/container_manifest_test.ts`:
 
 - `container/ - npm is pinned at 12.x and owned by exactly one toolchain
-  (Issue #475)` — parses the committed `container/tools.json` and asserts a
-  single toolchain installs the `npm` command, that it is on the 12.x line with
-  a 64-hex noarch digest, and that `findMissingRuntimeTools` reports neither
-  `node` nor `npm` missing. Fails against the unfixed manifest, where `node`
-  owned `npm` and no 12.x pin existed.
+  (Issue #475)`
+  — parses the committed `container/tools.json` and asserts a single toolchain
+  installs the `npm` command, that it is on the 12.x line with a 64-hex noarch
+  digest, and that `findMissingRuntimeTools` reports neither `node` nor `npm`
+  missing. Fails against the unfixed manifest, where `node` owned `npm` and no
+  12.x pin existed.
 - `container/Containerfile - installs the pinned npm from a checksum-verified
-  tarball (Issue #475)` — asserts the build steps (comments and `ARG` lines
-  excluded) fetch `npm-${NPM_VERSION}.tgz` and verify `${NPM_SHA256_NOARCH}`,
-  so a pin declared in the manifest but never applied by the build is caught.
+  tarball (Issue #475)`
+  — asserts the build steps (comments and `ARG` lines excluded) fetch
+  `npm-${NPM_VERSION}.tgz` and verify `${NPM_SHA256_NOARCH}`, so a pin declared
+  in the manifest but never applied by the build is caught.
 
 Existing coverage that now exercises the new pin:
 
@@ -89,5 +91,5 @@ Existing coverage that now exercises the new pin:
   `ARG NPM_VERSION` and `ARG NPM_SHA256_NOARCH` to restate the manifest
   verbatim, and rejects any download without a checksum.
 - `Containerfile - the copy the image is built from stays under Apple
-  container's cap (Issue #4393)` — the stripped file is 12,592 bytes against
-  the 15,000-byte limit.
+  container's cap (Issue #4393)`
+  — the stripped file is 12,592 bytes against the 15,000-byte limit.

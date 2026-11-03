@@ -9,16 +9,17 @@ in `docs/audits/security-sweep-2179-container-toolchains.md`.
 Three root causes survived triage, all in `install-tools.sh`, and all three are
 fixed here with regression tests rather than filed:
 
-1. **Line injection into the environment hand-off.** `/opt/vibe-tools/environment`
-   is one `KEY=value` per line and `container/entrypoint.sh` reads it that way,
-   but nothing checked the pieces that become a line for a newline. A `bin`
-   entry, an `env` name or an `env` value carrying one wrote a *second* line —
-   a well-formed `PATH=` the entrypoint prepends, aimed anywhere on the host.
-   Refused now for the whole set before anything downloads, and refused at the
-   Deno trust boundary by `isConfinedRelativePath`.
+1. **Line injection into the environment hand-off.**
+   `/opt/vibe-tools/environment` is one `KEY=value` per line and
+   `container/entrypoint.sh` reads it that way, but nothing checked the pieces
+   that become a line for a newline. A `bin` entry, an `env` name or an `env`
+   value carrying one wrote a _second_ line — a well-formed `PATH=` the
+   entrypoint prepends, aimed anywhere on the host. Refused now for the whole
+   set before anything downloads, and refused at the Deno trust boundary by
+   `isConfinedRelativePath`.
 2. **`extract_zip` descended a symlinked strip level.** `[[ -d "${src}" ]]`
    follows a symlink, so a zip whose single top-level name is a link copied the
-   *target's* tree into the install prefix. A strip level must now be a real
+   _target's_ tree into the install prefix. A strip level must now be a real
    directory, which is what `tar --strip-components` already did.
 3. **A `jq` failure was reported as a successful install.** The
    environment-recording loops read `jq` through a process substitution whose
@@ -115,15 +116,14 @@ flowchart LR
   also tightens `container_extension_config.ts`, which is outside this sweep.
 - **unrequested** — the `container_tools` row in `docs/CONFIGURATION.md` —
   reviewer: unrequested — reason: it states the confinement rule the fix
-  changes, and a code change owes a docs change on **every** surface that
-  states it, not only the two the issue happened to name.
+  changes, and a code change owes a docs change on **every** surface that states
+  it, not only the two the issue happened to name.
 - **unrequested** — three findings fixed in-change, and no `security` issue
   filed, against the issue's "one one-line defect" allowance — reviewer:
   unrequested — reason: findings 2 and 3 are one-line/no-line (finding 3 is
-  closed by finding 1's check), and finding 1's guard is a single `jq`
-  assertion in the existing validation loop; filing an issue for a defect
-  already fixed and tested would be a suggestion left behind rather than work
-  done.
+  closed by finding 1's check), and finding 1's guard is a single `jq` assertion
+  in the existing validation loop; filing an issue for a defect already fixed
+  and tested would be a suggestion left behind rather than work done.
 
 ## Standards Review
 
@@ -137,15 +137,15 @@ flowchart LR
   that reach a line, with
   `install_tools_test.ts::install-tools - a newline in an env NAME is refused before any download`
   observed failing against the value-only guard.
-- **violation** — Boy Scout Rule: the header reflow left a 117-character
-  comment line where the file wraps at ~80 — evidence:
-  `container/install-tools.sh:30` — reason: rewrapped in this diff, and the new
-  `fail` message shortened to the length of its neighbours.
+- **violation** — Boy Scout Rule: the header reflow left a 117-character comment
+  line where the file wraps at ~80 — evidence: `container/install-tools.sh:30` —
+  reason: rewrapped in this diff, and the new `fail` message shortened to the
+  length of its neighbours.
 - **violation** — no `docs/archive/pr-summaries/pr-summary-2179.md` — evidence:
   commit `cf339149` — reason: this file, added before the PR is raised.
-- **clean** — Australian English throughout the added lines; the four (now
-  five) installer tests spawn the real script and assert exit code, stderr and
-  side effects rather than grepping source; `zipSymlinkEntry`/`crc32` build the
+- **clean** — Australian English throughout the added lines; the four (now five)
+  installer tests spawn the real script and assert exit code, stderr and side
+  effects rather than grepping source; `zipSymlinkEntry`/`crc32` build the
   fixture in-process because the image carries no `zip`; fail-loud handling
   (`extract_zip`'s guard returns into the existing `|| { … fail … }`, and the
   `jq` read is an assignment so `set -e` catches it); KISS/DRY (one predicate at
@@ -171,8 +171,8 @@ Added to `worker/deno/tests/host_path_style_test.ts`:
 
 `install_tools_test.ts` is listed in
 `worker/deno/lib/integration_test_manifest.ts`, so these five run in the
-`integration tests (not a required check)` job rather than the merge gate —
-the existing classification for a suite that spawns a repository script, not a
+`integration tests (not a required check)` job rather than the merge gate — the
+existing classification for a suite that spawns a repository script, not a
 choice made here. The `host_path_style_test.ts` case is a pure unit test and
 runs in the gate.
 

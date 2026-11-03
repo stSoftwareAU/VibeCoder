@@ -15,18 +15,22 @@ from that file's `repo_config`, never from a checked-out repository. An example:
   "agent_providers": ["claude", "codex"],
   "external_orchestration": true,
   "external_orchestration_settings": {
-    "manager": {"provider": "claude", "model": "sonnet", "effort": "high"},
-    "executor": {"provider": "codex", "model": "gpt-6.1-sol", "cli_adapter": "codex"},
-    "reviewer": {"provider": "claude", "model": "opus", "effort": "high"},
+    "manager": { "provider": "claude", "model": "sonnet", "effort": "high" },
+    "executor": {
+      "provider": "codex",
+      "model": "gpt-6.1-sol",
+      "cli_adapter": "codex"
+    },
+    "reviewer": { "provider": "claude", "model": "opus", "effort": "high" },
     "max_retries": 1,
     "max_concurrency": 1,
     "max_invocations": 6
   },
   "repo_config": {
-    "org/legacy": {"external_orchestration": false},
+    "org/legacy": { "external_orchestration": false },
     "org/other": {
       "external_orchestration_settings": {
-        "executor": {"provider": "claude", "model": "haiku", "effort": "high"}
+        "executor": { "provider": "claude", "model": "haiku", "effort": "high" }
       }
     }
   }
@@ -46,11 +50,11 @@ decision 2026-10-22), so the reviewer is never the manager reviewing its own
 work. This reviewer checks the issue implementation; post-PR review and required
 CI retain their existing gates.
 
-| Role | Claude default | Codex default (role moved to `codex`) |
-| --- | --- | --- |
-| manager | `sonnet` / `high` | `gpt-6.1-sol` / `high` |
-| executor | `haiku` / `high` | `gpt-6-luna` / `high` |
-| reviewer | `opus` / `high` | `gpt-6-astra` / `high` |
+| Role     | Claude default    | Codex default (role moved to `codex`) |
+| -------- | ----------------- | ------------------------------------- |
+| manager  | `sonnet` / `high` | `gpt-6.1-sol` / `high`                |
+| executor | `haiku` / `high`  | `gpt-6-luna` / `high`                 |
+| reviewer | `opus` / `high`   | `gpt-6-astra` / `high`                |
 
 A model or effort named beside the provider still wins. A provider with no row
 (Gemini, DeepSeek) leaves the role's model to that provider's phase routing.
@@ -78,17 +82,16 @@ flowchart LR
 ```
 
 External dispatch is sequential. `max_concurrency` above one is refused. Claude
-roles use CLI tool denials. Codex roles run with the container as their
-sandbox, approval prompts disabled and multi-agent delegation disabled; the
-worker holds a Codex manager or reviewer to read-only by recording the checkout
-before the call and putting back anything the call changed (Issue #4356).
-Codex's own `--sandbox` is not used: it needs bubblewrap and a fresh procfs
-mount, which the agent container cannot provide. Gemini cannot enforce the required
-tool restrictions; DeepSeek has no proved fixed-price subscription. Those
-combinations fail closed. A host without the requested CLI or subscription
-fails before paid work. Observed exhausted or unavailable quota also refuses;
-unknown quota remains unknown and the runner handles a provider's actual quota
-response.
+roles use CLI tool denials. Codex roles run with the container as their sandbox,
+approval prompts disabled and multi-agent delegation disabled; the worker holds
+a Codex manager or reviewer to read-only by recording the checkout before the
+call and putting back anything the call changed (Issue #4356). Codex's own
+`--sandbox` is not used: it needs bubblewrap and a fresh procfs mount, which the
+agent container cannot provide. Gemini cannot enforce the required tool
+restrictions; DeepSeek has no proved fixed-price subscription. Those
+combinations fail closed. A host without the requested CLI or subscription fails
+before paid work. Observed exhausted or unavailable quota also refuses; unknown
+quota remains unknown and the runner handles a provider's actual quota response.
 
 Each role invokes the existing provider adapter and its credential-isolation
 path. No session transcript is resumed across roles, model fallback is disabled,
@@ -102,10 +105,11 @@ call. No code purchases subscriptions or changes billing.
 
 ## Rollback and verification
 
-Set `external_orchestration` to `false` on the host or repository and restart the
-worker. The native path resumes with the existing configuration keys. Different
-hosts can choose different providers without changing repository or issue
-selection. This configuration does not select or rebalance experiment cohorts.
+Set `external_orchestration` to `false` on the host or repository and restart
+the worker. The native path resumes with the existing configuration keys.
+Different hosts can choose different providers without changing repository or
+issue selection. This configuration does not select or rebalance experiment
+cohorts.
 
 Behavioural tests cover configuration layering, malformed overrides, adapter
 validation, same-provider and cross-provider handoffs, independent review,

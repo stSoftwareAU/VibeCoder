@@ -92,8 +92,8 @@ this lock — which is exactly what the new behaviour adds.
   lock; the next scan can claim the stream — evidence:
   `worker/deno/tests/stream_lock_blank_test.ts::blank stream lock - a run that throws releases the host-local lock`
   and `worker/deno/lib/run_core.ts` (the release sits in the `finally` beside
-  `pool.registry.release`) — reviewer: met — reason: the reviewer noted a kill is
-  moot for an in-process registry and that the timeout path is not separately
+  `pool.registry.release`) — reviewer: met — reason: the reviewer noted a kill
+  is moot for an in-process registry and that the timeout path is not separately
   tested; it runs through the same `finally`.
 - **met** — The blank-stream path makes no `gh` call for locking — evidence:
   `worker/deno/tests/stream_lock_blank_test.ts::blank stream lock - locking a blank stream makes no gh call at all`
@@ -106,12 +106,12 @@ this lock — which is exactly what the new behaviour adds.
   for the operator flag actually arriving in `RunCoreConfig` — reviewer: met
 - **met** — `./quality.sh` passes — evidence: full gate run after the final
   edit, `Result: PASSED (with skipped checks)` — reviewer: met
-- **partial** — "Applies only … to runs that join a stream" (from *What Needs to
-  Be Done*) — evidence: `worker/deno/lib/run_core.ts` gates on
-  `config.enableSessionResume` alone — reviewer: partial — reason: the claim scan
-  also serves the `idle-task` run kind, which `STREAM_JOIN_POLICY` keeps on a
-  per-issue session, and `DiscoveredIssue` carries no labels, so the run kind is
-  not knowable at the lock site without a `gh` read this lock must not make.
+- **partial** — "Applies only … to runs that join a stream" (from _What Needs to
+  Be Done_) — evidence: `worker/deno/lib/run_core.ts` gates on
+  `config.enableSessionResume` alone — reviewer: partial — reason: the claim
+  scan also serves the `idle-task` run kind, which `STREAM_JOIN_POLICY` keeps on
+  a per-issue session, and `DiscoveredIssue` carries no labels, so the run kind
+  is not knowable at the lock site without a `gh` read this lock must not make.
   Left as-is deliberately and documented at the call site: an idle-task issue
   carries no milestone, so the slot registry already occupies the same
   `(repo, blank)` stream and excludes the sibling either way — the hold is
@@ -136,8 +136,8 @@ this lock — which is exactly what the new behaviour adds.
   direction.
 - **unrequested** — the refusal line carries `on #<issue>` and a trailing clause
   beyond the `stream busy: <streamLabel> held by slot <n>` the issue specified —
-  reviewer: unrequested — reason: the specified stem is intact and greppable; the
-  issue number names which run holds the stream, which is the first thing an
+  reviewer: unrequested — reason: the specified stem is intact and greppable;
+  the issue number names which run holds the stream, which is the first thing an
   operator reading the line needs.
 - **unrequested** — the `docs/CONFIGURATION.md` block and its Mermaid flowchart
   — reviewer: unrequested — reason: `CODING-STANDARDS.md` requires a docs change
@@ -162,15 +162,15 @@ this lock — which is exactly what the new behaviour adds.
   set and `scanExcludedIssues`.
 - **violation** — the pool test held a claim open with a fixed real-clock poll,
   breaching "Rendezvous, never sleep, to prove concurrency" and the unit-test
-  shape rule — evidence:
-  `worker/deno/tests/stream_lock_blank_test.ts:376` (as it was) — reason:
-  **fixed here** — now `waitUntil` from `tests/support/rendezvous.ts` (#1098).
+  shape rule — evidence: `worker/deno/tests/stream_lock_blank_test.ts:376` (as
+  it was) — reason: **fixed here** — now `waitUntil` from
+  `tests/support/rendezvous.ts` (#1098).
 - **violation** — `BlankStreamLockRegistry.holds()` had no caller and no test,
   breaching "avoid over-engineering" and the test-coverage rule — evidence:
   `worker/deno/lib/stream_lock.ts:515` (as it was) — reason: **fixed here** —
   method removed.
-- **violation** — the operator flag → pool wiring was untested, so nothing proved
-  `enable_session_resume` reaches the lock — evidence:
+- **violation** — the operator flag → pool wiring was untested, so nothing
+  proved `enable_session_resume` reaches the lock — evidence:
   `worker/deno/lib/run_core_production_deps.ts:1207` — reason: **fixed here** —
   `run_core_production_deps_test.ts` now asserts the flag arrives in
   `RunCoreConfig` both on and off.
@@ -180,14 +180,15 @@ this lock — which is exactly what the new behaviour adds.
   the issue.
 - **clean** — Australian English throughout; no hidden path, key or credential
   file staged; every test drives real code (the real registry, the real refusal
-  wording, the real `checkMilestoneStreamBusy`, the real `runCoreLoop` pool) with
-  no source grepping; DRY — one `blankStreamOf` helper shared by
+  wording, the real `checkMilestoneStreamBusy`, the real `runCoreLoop` pool)
+  with no source grepping; DRY — one `blankStreamOf` helper shared by
   `tryAcquire`/`release`/`holder`, the refusal wording exported so pool, tests
-  and log-grep share one spelling, and `OPERATIONAL_DEFAULTS.enableSessionResume`
-  left as the only default; fail-loud error handling with nothing swallowed;
-  doc comments on every new export; the refusal logged at INFO, which is the
-  right level for a condition the code goes on to handle; `deno fmt`, `deno lint`
-  and the manifest classification check all clean.
+  and log-grep share one spelling, and
+  `OPERATIONAL_DEFAULTS.enableSessionResume` left as the only default; fail-loud
+  error handling with nothing swallowed; doc comments on every new export; the
+  refusal logged at INFO, which is the right level for a condition the code goes
+  on to handle; `deno fmt`, `deno lint` and the manifest classification check
+  all clean.
 
 ## Test Plan
 

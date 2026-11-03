@@ -57,9 +57,9 @@ Tests (`deno test -A`, 96 passed across the five touched suites):
   - fakes: success, a non-warning error, an unrelated ref, a retry that fails
     again, a failed `rev-parse`, and a failed removal.
 - `tests/milestone_presync_git_test.ts`: "#2824 - a broken origin/main ref is
-  repaired in place and the presync still measures the branch". It uses real
-  git through `presyncMilestoneBranchForIssueRun` and checks for exactly one
-  warning line.
+  repaired in place and the presync still measures the branch". It uses real git
+  through `presyncMilestoneBranchForIssueRun` and checks for exactly one warning
+  line.
 - `tests/milestone_presync_test.ts`:
   - an unreadable count defers fail-closed with `unmeasured` set;
   - a measured result leaves `unmeasured` undefined;
@@ -80,17 +80,16 @@ Tests (`deno test -A`, 96 passed across the five touched suites):
   line** — reviewer: met
 - **Retry still failing keeps the fail-closed deferral (no branch cut,
   auto-merge armed)** — reviewer: partial. The only test was at unit level.
-  Fixed after review: added the caller-level test in
-  `milestone_presync_test.ts` (repair attempted, count tried twice, run still
-  deferred, `synced === 0`).
-- **`postBehindSyncReason` says "could not be measured" and quotes git's
-  reason, not "still behind"** — reviewer: met
-- **Regression tests (1) real-git repair, (2) retry-fails deferral via
-  `deps()`, (3) comment wording** — reviewer: partial. (1) and (3) were met;
-  (2) is now covered at caller level by the fix above.
+  Fixed after review: added the caller-level test in `milestone_presync_test.ts`
+  (repair attempted, count tried twice, run still deferred, `synced === 0`).
+- **`postBehindSyncReason` says "could not be measured" and quotes git's reason,
+  not "still behind"** — reviewer: met
+- **Regression tests (1) real-git repair, (2) retry-fails deferral via `deps()`,
+  (3) comment wording** — reviewer: partial. (1) and (3) were met; (2) is now
+  covered at caller level by the fix above.
 - **`docs/INTERNALS.md` update and the extra linked-worktree real-git test** —
-  reviewer: unrequested. Both were kept because they document and cover the
-  new behaviour.
+  reviewer: unrequested. Both were kept because they document and cover the new
+  behaviour.
 
 ## Standards Review
 
@@ -116,6 +115,6 @@ Tests (`deno test -A`, 96 passed across the five touched suites):
 ## Test Plan
 
 - `./quality.sh < /dev/null` — passed.
-- `deno test -A` on the five touched suites after the review fixes: 96 passed,
-  0 failed.
+- `deno test -A` on the five touched suites after the review fixes: 96 passed, 0
+  failed.
 - `deno check`, `deno lint` and `deno fmt --check` on the touched files — clean.

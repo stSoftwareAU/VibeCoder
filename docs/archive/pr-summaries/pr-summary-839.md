@@ -9,15 +9,15 @@ lightweight audits, `issue` and `workflow_setup`. Five carried drift;
 the house form and are untouched. Names and casing only: no instruction, gate,
 output contract or worked-example body changed. Closes #839.
 
-| Change | Files |
-| --- | --- |
-| Mode heading → `## <X> Mode` | `issue` (had none), `workflow_setup` (was `## System Context`) |
-| Repo-standards section → `## Project Guidelines` | `issue` (was `## Coding Guidelines`) |
-| Worked examples → `### Worked Examples` | `issue`, `coding_guidelines` (both were H2) |
-| Persona → `senior engineer` | `coding_guidelines` (was "an experienced software engineer") |
-| Bare `quality.sh` → `./quality.sh` | `issue:465`, `coding_guidelines:943` |
-| Prose `markdown` → `Markdown` | `issue` (×3) |
-| `the executor` → `the worker` | `workflow_annotation_scan` (×2) |
+| Change                                           | Files                                                          |
+| ------------------------------------------------ | -------------------------------------------------------------- |
+| Mode heading → `## <X> Mode`                     | `issue` (had none), `workflow_setup` (was `## System Context`) |
+| Repo-standards section → `## Project Guidelines` | `issue` (was `## Coding Guidelines`)                           |
+| Worked examples → `### Worked Examples`          | `issue`, `coding_guidelines` (both were H2)                    |
+| Persona → `senior engineer`                      | `coding_guidelines` (was "an experienced software engineer")   |
+| Bare `quality.sh` → `./quality.sh`               | `issue:465`, `coding_guidelines:943`                           |
+| Prose `markdown` → `Markdown`                    | `issue` (×3)                                                   |
+| `the executor` → `the worker`                    | `workflow_annotation_scan` (×2)                                |
 
 **The issue's mechanism no longer exists.** It asked for one new `vN.md` per
 directory. Issue #844 (commit `c97783b`) removed prompt versioning: every
@@ -41,7 +41,7 @@ Evidence is the gate, the new regression test, and the post-change sweep.
 
 Post-change sweep over the eight templates — every banned form is gone:
 
-```text
+````text
 $ grep -inE 'the executor|VibeCoder|idle task|experienced software engineer' <the eight>
 (no output)
 $ grep -nE '(^|[^./`a-zA-Z-])quality\.sh' <the eight>
@@ -54,7 +54,7 @@ $ grep -n './quality.sh < /dev/null' prompts/coding_guidelines/prompt.md
 362:./quality.sh < /dev/null                                # preserved verbatim
 $ grep -rn 'System Context|## Coding Guidelines|Worked Examples' worker/deno/ --include=*.ts
 worker/deno/tests/prompt_house_vocabulary_doc_test.ts:224-230                     # asserts on the canon doc, not on templates
-```
+````
 
 No renamed heading was a code anchor.
 
@@ -67,13 +67,13 @@ No renamed heading was a code anchor.
   files anywhere — reviewer: met — reason: the literal mechanism was removed by
   #844 before this run, so the equivalent landed instead: one edit per directory
   that carried drift, three no-ops where there was none.
-- **missing** — Each new file's H1 states its own new version number —
-  reviewer: missing — reason: no version files exist post-#844, so there is no
-  version H1 to state.
+- **missing** — Each new file's H1 states its own new version number — reviewer:
+  missing — reason: no version files exist post-#844, so there is no version H1
+  to state.
 - **met** — `prompts/issue/` opens with `## Issue Implementation Mode`;
   `prompts/workflow_setup/` with `## Workflow Setup Mode` — evidence:
-  `prompts/issue/prompt.md:2`, `prompts/workflow_setup/prompt.md:2` —
-  reviewer: met.
+  `prompts/issue/prompt.md:2`, `prompts/workflow_setup/prompt.md:2` — reviewer:
+  met.
 - **partial** — `issue` uses `## Project Guidelines`; worked-examples sections
   are `### Worked Examples` — evidence: `prompts/issue/prompt.md:158`,
   `prompts/issue/prompt.md:393`, `prompts/coding_guidelines/prompt.md:1006` —
@@ -86,16 +86,16 @@ No renamed heading was a code anchor.
   literal the canon bans.
 - **partial** — `coding_guidelines` and `coding_guidelines_claude` both state
   the `senior engineer` persona and stay consistent — evidence:
-  `prompts/coding_guidelines/prompt.md:1` — reviewer: met — reason: the criterion
-  is unsatisfiable as written. `coding_guidelines_claude` is a *Working Style*
-  overlay appended to the base block (`coding_guidelines_overlay.ts`), not a
-  byte-twin, and carries no persona line; adding one is a presence gap the issue
-  puts out of scope. The composed block states the persona once.
+  `prompts/coding_guidelines/prompt.md:1` — reviewer: met — reason: the
+  criterion is unsatisfiable as written. `coding_guidelines_claude` is a
+  _Working Style_ overlay appended to the base block
+  (`coding_guidelines_overlay.ts`), not a byte-twin, and carries no persona
+  line; adding one is a presence gap the issue puts out of scope. The composed
+  block states the persona once.
 - **met** — No `the executor`, `VibeCoder` in prose, bare `quality.sh`,
   `idle task` or lowercase prose `markdown` across the eight;
-  `./quality.sh < /dev/null` preserved — evidence: the greps under
-  **Evidence**; `prompts/coding_guidelines/prompt.md:362` unchanged —
-  reviewer: met.
+  `./quality.sh < /dev/null` preserved — evidence: the greps under **Evidence**;
+  `prompts/coding_guidelines/prompt.md:362` unchanged — reviewer: met.
 - **met** — No persona line and no section added beyond the two mode headings —
   evidence: the diff adds exactly two heading lines; the four persona-less
   audits are untouched — reviewer: met.
@@ -103,7 +103,7 @@ No renamed heading was a code anchor.
   anchor; no worker source file is modified — evidence: the grep under
   **Evidence** for the first half; `worker/deno/lib/prompt_leak_redaction.ts:88`
   for the second — reviewer: partial — reason: the heading half holds. The
-  persona sentence, not a heading, *was* a code anchor: it is a literal in
+  persona sentence, not a heading, _was_ a code anchor: it is a literal in
   `RAW_LEAK_PHRASES`, so the rename required that one-line update or the leak
   fallback would have gone silently stale.
 - **met** — `./quality.sh` passes — evidence: full gate run in the foreground
@@ -151,23 +151,23 @@ No renamed heading was a code anchor.
 - **clean** — No code anchors broken; mode-heading placement matches the
   `{{VERBOSITY_INSTRUCTIONS}}` + H2 shape of the interactive batch.
 - **clean** — TDD linkage verified by hand (red with the old phrase restored,
-  green as committed); the test exercises real code, not a source grep; fail-loud
-  `assert` before dereferencing the loaded template.
+  green as committed); the test exercises real code, not a source grep;
+  fail-loud `assert` before dereferencing the loaded template.
 
 ## Test Plan
 
-- Added `worker/deno/tests/prompt_leak_redaction_test.ts::prompt leak - masks
-  the injected guidelines' own opening line (Issue #839)`. It reads the first
-  paragraph of `prompts/coding_guidelines/prompt.md`, feeds it to
-  `detectPromptLeakage()` / `redactPromptLeakage()` as if a model had echoed it,
-  and asserts the paragraph is masked. Observed failing with the pre-rename
-  phrase restored in `prompt_leak_redaction.ts` (`0 passed | 1 failed`) and
-  passing as committed (`16 passed | 0 failed`).
+- Added
+  `worker/deno/tests/prompt_leak_redaction_test.ts::prompt leak - masks
+  the injected guidelines' own opening line (Issue #839)`.
+  It reads the first paragraph of `prompts/coding_guidelines/prompt.md`, feeds
+  it to `detectPromptLeakage()` / `redactPromptLeakage()` as if a model had
+  echoed it, and asserts the paragraph is masked. Observed failing with the
+  pre-rename phrase restored in `prompt_leak_redaction.ts`
+  (`0 passed | 1 failed`) and passing as committed (`16 passed | 0 failed`).
 - Re-ran the template-reading suites that could have anchored on a renamed
   heading: `workflow_setup_prompt_test.ts`, `workflow_setup_prompt_v5_test.ts`,
   `workflow_setup_prompt_v8_test.ts`,
   `workflow_annotation_scan_template_test.ts` (30 passed),
-  `coding_guidelines_twin_drift_test.ts`,
-  `prompt_house_vocabulary_doc_test.ts`, `coding_guidelines_overlay_test.ts`,
-  `prompt_builder_test.ts` (101 passed).
+  `coding_guidelines_twin_drift_test.ts`, `prompt_house_vocabulary_doc_test.ts`,
+  `coding_guidelines_overlay_test.ts`, `prompt_builder_test.ts` (101 passed).
 - `./quality.sh < /dev/null` run in the foreground after the final edit.

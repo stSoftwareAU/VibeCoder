@@ -86,15 +86,17 @@ exit=1 elapsed=60s
 ### Quality gate
 
 `./quality.sh` passes every stage except `deno tests`, which fails on 42
-`setup_credential_provisioning` / `setup_lockfile` / `setup_provider_credential_flow`
-/ `provider_auto_runtime` / `setup_workdir_reminder` cases. Those are
-environmental in this container (`CONFIG_FILE and CONFIG_PATH are both set and
-name different files`, an image without the `codex` provider, a missing
-credential directory) and reproduce unchanged on the base commit `e8b82c03` in
-a clean worktree — none of them imports anything this diff touches. Every
-git-guard test passes: `git_stdin_message_test.ts`,
-`git_message_redaction_test.ts`, `git_guard_cli_test.ts` and
-`git_guard_shim_test.ts` — 61 + 13 cases, 0 failures.
+`setup_credential_provisioning` / `setup_lockfile` /
+`setup_provider_credential_flow` / `provider_auto_runtime` /
+`setup_workdir_reminder` cases. Those are environmental in this container
+(`CONFIG_FILE and CONFIG_PATH are both set and
+name different files`, an image
+without the `codex` provider, a missing credential directory) and reproduce
+unchanged on the base commit `e8b82c03` in a clean worktree — none of them
+imports anything this diff touches. Every git-guard test passes:
+`git_stdin_message_test.ts`, `git_message_redaction_test.ts`,
+`git_guard_cli_test.ts` and `git_guard_shim_test.ts` — 61 + 13 cases, 0
+failures.
 
 ## Reproduction
 
@@ -119,20 +121,21 @@ git-guard test passes: `git_stdin_message_test.ts`,
   `git_message_redaction.ts::maskedStdinMessage`,
   `worker/deno/tests/git_stdin_message_test.ts` — reviewer: met — reason: the
   reviewer noted the bound is not literally "the same size limit as the file
-  path", because the `-F <path>` reader has none; the stdin path is
-  deliberately tighter because its text becomes a single argv element
+  path", because the `-F <path>` reader has none; the stdin path is deliberately
+  tighter because its text becomes a single argv element
 - **met** — the shim runs the real `git` with stdin closed — evidence:
   `worker/deno/lib/git_guard_shim.ts` (the `</dev/null` exec, gated on
-  `VIBE_GIT_GUARD_ALLOW_STDIN`), verified by the reviewer by hand against a
-  real `git` — reviewer: met
+  `VIBE_GIT_GUARD_ALLOW_STDIN`), verified by the reviewer by hand against a real
+  `git` — reviewer: met
 - **partial** — "refuse only when stdin is a TTY or exceeds the bound" —
-  evidence: `worker/deno/lib/git_stdin_message.ts` — reviewer: partial —
-  reason: the literal "only" is departed from, deliberately and in this diff.
-  The reviewer demonstrated that an open-but-idle pipe (`mkfifo f;
-  sleep 1000 > f`) satisfies neither condition and blocked the guard — and the
-  agent's `git` with it — indefinitely, where the old code refused instantly.
-  The read now also refuses on a 60-second deadline, on a NUL byte the verdict
-  framing cannot carry, and on a command naming stdin twice
+  evidence: `worker/deno/lib/git_stdin_message.ts` — reviewer: partial — reason:
+  the literal "only" is departed from, deliberately and in this diff. The
+  reviewer demonstrated that an open-but-idle pipe
+  (`mkfifo f;
+  sleep 1000 > f`) satisfies neither condition and blocked the
+  guard — and the agent's `git` with it — indefinitely, where the old code
+  refused instantly. The read now also refuses on a 60-second deadline, on a NUL
+  byte the verdict framing cannot carry, and on a command naming stdin twice
 - **met** — the `[GIT_MESSAGE_REDACTED]` marker still fires for a masked
   message, and only for one — evidence:
   `git_guard_cli_test.ts::masks a secret in a stdin message and says so` and
@@ -146,25 +149,27 @@ git-guard test passes: `git_stdin_message_test.ts`,
 - **met** — `printf 'subject\n\nbody' | git commit -F -` commits with the
   message intact, no refusal, no retry — evidence:
   `git_guard_shim_test.ts::a clean message piped on stdin reaches git
-  byte-for-byte` and the real-`git` test named under Evidence; the reviewer
-  also ran it by hand — reviewer: met
+  byte-for-byte`
+  and the real-`git` test named under Evidence; the reviewer also ran it by hand
+  — reviewer: met
 - **met** — a secret-shaped token on stdin is committed masked with the marker,
   exactly as `-F <path>` behaves — evidence:
   `git_guard_shim_test.ts::a token in a message piped on stdin never reaches
-  git (Issue #1953)` and the real-`git` test — reviewer: met
+  git (Issue #1953)`
+  and the real-`git` test — reviewer: met
 - **met** — existing `-F <path>`, `-m`, `-C` and `--` pathspec tests are
   unchanged — evidence: the only test deletions are the two stdin-refusal
   assertions documented under Test Plan — reviewer: met — reason: the reviewer
-  noted `runShim` now defaults to `stdin: "null"` instead of inheriting the
-  test process's stdin, which changes the environment of the older shim tests
-  without moving any assertion; that is hermetic, and kept
+  noted `runShim` now defaults to `stdin: "null"` instead of inheriting the test
+  process's stdin, which changes the environment of the older shim tests without
+  moving any assertion; that is hermetic, and kept
 - **unrequested** — `SECURITY.md` and `docs/THREAT-MODEL.md` rewritten —
-  reviewer: unrequested — reason: both described the old refusal as the
-  guard's behaviour, and a code change owes the docs change
+  reviewer: unrequested — reason: both described the old refusal as the guard's
+  behaviour, and a code change owes the docs change
 - **unrequested** — `docs/audits/lib-sweep-coverage.json` slice `12ac` and
-  `docs/audits/security-sweep-1953-git-stdin-message.md` — reviewer:
-  unrequested — reason: the repo's completeness gate claims every new `lib/`
-  module for a sweep slice; the alternative is a false record in an old slice
+  `docs/audits/security-sweep-1953-git-stdin-message.md` — reviewer: unrequested
+  — reason: the repo's completeness gate claims every new `lib/` module for a
+  sweep slice; the alternative is a false record in an old slice
 - **unrequested** — `worker/deno/lib/vibe_env_registry.ts` entry for
   `VIBE_GIT_GUARD_ALLOW_STDIN` — reviewer: unrequested — reason: the registry
   gate requires every `VIBE_` name in the source to declare its role
@@ -186,9 +191,9 @@ git-guard test passes: `git_stdin_message_test.ts`,
 - **unrequested** — `const realGit = shellQuote(...)` hoisted in
   `git_guard_shim.ts`, and the test helpers `pinGuardToThisCheckout` /
   `resolveRealGit` — reviewer: unrequested — reason: the formatter wrapped the
-  new `exec` line mid-command without the hoist, and without the pinning the
-  new tests exercise whatever guard the `VIBE_BASE_DIR` mount carries instead
-  of the code under test
+  new `exec` line mid-command without the hoist, and without the pinning the new
+  tests exercise whatever guard the `VIBE_BASE_DIR` mount carries instead of the
+  code under test
 
 ## Standards Review
 
@@ -197,9 +202,9 @@ git-guard test passes: `git_stdin_message_test.ts`,
 - **violation** — the real-`git` test inherited the host's signing and hook
   configuration, so a host with `commit.gpgsign=true` would wedge it — a commit
   now running with stdin closed — evidence:
-  `worker/deno/tests/git_guard_shim_test.ts:450` — reason: fixed here; the
-  repo bootstrap now sets `commit.gpgsign false` and `core.hooksPath`, matching
-  the sibling helper in `git_message_redaction_test.ts`
+  `worker/deno/tests/git_guard_shim_test.ts:450` — reason: fixed here; the repo
+  bootstrap now sets `commit.gpgsign false` and `core.hooksPath`, matching the
+  sibling helper in `git_message_redaction_test.ts`
 - **violation** — `docs/archive/pr-summaries/pr-summary-1953.md` was untracked,
   so the required PR summary would not have shipped — evidence:
   `docs/archive/pr-summaries/pr-summary-1953.md` — reason: fixed here; it is
@@ -210,24 +215,23 @@ git-guard test passes: `git_stdin_message_test.ts`,
   here; it is replaced by a test that drives the default bound, refusing one
   byte over it and accepting the byte on it
 - **violation** — KISS: `redactGitMessageArgs` accepts two argument shapes and
-  needs `normaliseSources` to reconcile them, for a single unmigrated
-  production caller — evidence: `worker/deno/lib/git_message_redaction.ts:240`
-  — reason: it stands. Migrating `git_timeout.ts` is one line, but the union
-  is what keeps roughly forty existing `-F <path>` / `-m` test call sites
-  byte-for-byte, and "existing tests unchanged" is one of this issue's stated
-  acceptance criteria. The reconciler is three lines and has no branch beyond
-  the shape test
+  needs `normaliseSources` to reconcile them, for a single unmigrated production
+  caller — evidence: `worker/deno/lib/git_message_redaction.ts:240` — reason: it
+  stands. Migrating `git_timeout.ts` is one line, but the union is what keeps
+  roughly forty existing `-F <path>` / `-m` test call sites byte-for-byte, and
+  "existing tests unchanged" is one of this issue's stated acceptance criteria.
+  The reconciler is three lines and has no branch beyond the shape test
 - **clean** — Australian English throughout; fail-loud on every new path (every
   refusal is an `UnredactableMessageError` surfaced as
   `[SECURITY] [GIT_MESSAGE_UNREDACTABLE]`, the wrapper stays positive-marker
   only, the oversized message refuses rather than truncating); the worker
   chokepoint still fails closed on `-F -`; tests call real code and assert on
   results (the shim tests read the argv a stub `git` logged, and the headline
-  test reads the message back out of real `git log`) with no source-text
-  greps; no wall-clock sleeps, polling loops or absolute timing budgets; no
-  hidden or credential-shaped file staged; Deno-native tooling only; new module
-  and test both around 200 lines with comments that explain why; every gate
-  registration (sweep slice, `VIBE_` name, matching test file) present.
+  test reads the message back out of real `git log`) with no source-text greps;
+  no wall-clock sleeps, polling loops or absolute timing budgets; no hidden or
+  credential-shaped file staged; Deno-native tooling only; new module and test
+  both around 200 lines with comments that explain why; every gate registration
+  (sweep slice, `VIBE_` name, matching test file) present.
 
 ## Test Plan
 

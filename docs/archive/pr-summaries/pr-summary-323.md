@@ -15,12 +15,12 @@ $ container kill vibe-coder-7150      # no effect, container still running
 ```
 
 `container ls` reported the container healthy and `running` throughout. The
-host-side client had to be SIGKILLed by hand — and doing so **orphaned the
-VM**, which kept running at **705% CPU** with nothing supervising it.
+host-side client had to be SIGKILLed by hand — and doing so **orphaned the VM**,
+which kept running at **705% CPU** with nothing supervising it.
 
-Liveness was being *inferred* from the worker writing logs. That is a symptom
-of health rather than a check, and a wedged worker stops writing at precisely
-the moment a check is needed.
+Liveness was being _inferred_ from the worker writing logs. That is a symptom of
+health rather than a check, and a wedged worker stops writing at precisely the
+moment a check is needed.
 
 ### Probe, do not infer
 
@@ -34,12 +34,12 @@ container, and is stopped when the run ends.
 
 `force_stop_container` tries `container kill` first — it costs a second and
 works when the plane is merely slow rather than gone — then **verifies**,
-because `container stop` returning 0 while the container kept running is
-exactly what happened. Only if the container is still listed does it terminate
-the host-side client, and then the VM.
+because `container stop` returning 0 while the container kept running is exactly
+what happened. Only if the container is still listed does it terminate the
+host-side client, and then the VM.
 
 The VM step matters on its own: killing the client alone is what left a VM at
-705% CPU, and a leaked VM makes the *next* cycle fail the same way. Only VMs
+705% CPU, and a leaked VM makes the _next_ cycle fail the same way. Only VMs
 reparented to init (`PPID 1`) are touched, so a VM owned by a live client is
 never killed.
 
@@ -73,14 +73,14 @@ ok | 2 passed | 0 failed
 
 ## Test plan
 
-`worker/deno/tests/loop_supervisor_test.ts` — 2 new cases. `setupHarness`
-gains an optional `containerStub`, so the probe can be driven without a real
-container runtime:
+`worker/deno/tests/loop_supervisor_test.ts` — 2 new cases. `setupHarness` gains
+an optional `containerStub`, so the probe can be driven without a real container
+runtime:
 
-| Case | Asserts |
-| --- | --- |
+| Case                                                               | Asserts                                                                                                                                                                 |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | a container whose `exec` keeps failing is recovered, not waited on | The stub reports `ls` as **running** throughout while every `exec` fails — the exact 2026-08-22 contradiction. Two failed probes must escalate to `kill vibe-coder-999` |
-| a healthy container is probed and left alone | `exec` succeeds; the probe must run but must never kill. Without this the fix could become a periodic killer of working containers |
+| a healthy container is probed and left alone                       | `exec` succeeds; the probe must run but must never kill. Without this the fix could become a periodic killer of working containers                                      |
 
 The stub logs every `container` invocation, so both tests assert on the
 observable command sequence rather than on internal state.
@@ -94,14 +94,13 @@ never killed — is a `PPID == 1` guard stated in one line, matching the reaper
 
 ## Relationship to the other fixes from this incident
 
-Four failure modes were filed from one wedge, and they are layered
-deliberately:
+Four failure modes were filed from one wedge, and they are layered deliberately:
 
 - **#324** stops an agent saturating the VM in the first place — the trigger.
-- **#325** stops an unkillable descendant holding a pool slot — the first
-  thing that failed.
-- **This issue** detects and recovers a container whose control plane has died
-  — the state the saturation left behind.
+- **#325** stops an unkillable descendant holding a pool slot — the first thing
+  that failed.
+- **This issue** detects and recovers a container whose control plane has died —
+  the state the saturation left behind.
 - **#322** is the outermost net: the supervisor ends any run that outlives its
   wall clock, whatever else has failed.
 

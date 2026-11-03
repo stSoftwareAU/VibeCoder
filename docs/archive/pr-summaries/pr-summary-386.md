@@ -33,8 +33,8 @@ Closes #386.
 
 ## Evidence
 
-Backend/CLI change with no web interface, so there is nothing to screenshot;
-the evidence is the test suite below plus the quality gate.
+Backend/CLI change with no web interface, so there is nothing to screenshot; the
+evidence is the test suite below plus the quality gate.
 
 ```mermaid
 flowchart TD
@@ -70,8 +70,8 @@ tests), all driving the real `executePrBranchUpdates` with injected deps:
   whitespace-insensitive) and falls back to `UNKNOWN` for anything else.
 - `makeGhPrStateFetcher` asks `gh` for the PR's state with the PR number and
   repo it was given.
-- A PR merged between scan and push is `mergedCount`, at INFO, with **no**
-  push and **no** repository clone.
+- A PR merged between scan and push is `mergedCount`, at INFO, with **no** push
+  and **no** repository clone.
 - A PR closed between scan and push is the same no-op.
 - The distributed lock is released when the PR merged mid-cycle.
 - **Regression for the reported bug:** a `(stale info)` rejection on a
@@ -81,8 +81,8 @@ tests), all driving the real `executePrBranchUpdates` with injected deps:
 - The same rejection on a **still-open** PR stays `failedCount=1` with the
   WARNING.
 - With no `getPrState` wired, a rejection is still counted as a failure.
-- A state lookup that throws warns and leaves the failure loud — `UNKNOWN`
-  never excuses anything.
+- A state lookup that throws warns and leaves the failure loud — `UNKNOWN` never
+  excuses anything.
 - A conflict reported for a since-merged PR is `mergedCount`, not
   `conflictCount`; a conflict on a still-open PR still reaches the
   merge-conflict pass.

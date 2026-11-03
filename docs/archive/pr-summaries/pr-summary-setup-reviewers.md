@@ -3,9 +3,9 @@
 ## Summary
 
 The Bash and PowerShell setup wizards still prompted for allowed authors after
-that key stopped granting worker trust. Replace the prompt and saved answer
-with optional pr_reviewers. Removing allowed_authors from a host config now
-survives interactive setup, without changing repository or service-account lists.
+that key stopped granting worker trust. Replace the prompt and saved answer with
+optional pr_reviewers. Removing allowed_authors from a host config now survives
+interactive setup, without changing repository or service-account lists.
 
 ## Spec
 
@@ -26,7 +26,8 @@ survives interactive setup, without changing repository or service-account lists
 
 ### Undiscoverable Facts
 
-- No access to the operator's Mac was used; terminal tests used temporary configs.
+- No access to the operator's Mac was used; terminal tests used temporary
+  configs.
 
 ## Evidence
 
@@ -44,7 +45,8 @@ survives interactive setup, without changing repository or service-account lists
   supplemental validation, not a pinned-dependency CI pass.
 - Full quality gate attempted; completeness and tests failed fetching JSR
   dependencies. Source guards, formatting and Mermaid passed; unavailable
-  optional tools were reported as skipped. Full CI verification remains required.
+  optional tools were reported as skipped. Full CI verification remains
+  required.
 - No UI screenshots apply to this terminal configuration change.
 
 ## Test Plan

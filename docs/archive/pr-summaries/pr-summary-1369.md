@@ -2,22 +2,24 @@
 
 ## Summary
 
-`./setup.sh`'s removal prompt read `Remove the installed LaunchAgent now?
-[Y/n]`, so an operator re-running setup for an unrelated reason (a credential,
-a repo, a pin) uninstalled the worker by walking the wizard with Enter — twice
-on GRQ-25, the second time leaving the host dead until someone noticed the next
-day. Both LaunchAgent prompts now obey the rule the install prompt already
-states in its own comment: the safe answer is the one that changes nothing, so
-it is the one Enter gives you. Only an explicit `y` removes.
+`./setup.sh`'s removal prompt read
+`Remove the installed LaunchAgent now?
+[Y/n]`, so an operator re-running setup
+for an unrelated reason (a credential, a repo, a pin) uninstalled the worker by
+walking the wizard with Enter — twice on GRQ-25, the second time leaving the
+host dead until someone noticed the next day. Both LaunchAgent prompts now obey
+the rule the install prompt already states in its own comment: the safe answer
+is the one that changes nothing, so it is the one Enter gives you. Only an
+explicit `y` removes.
 
 The second half of the issue is why the host could not be recovered by
-re-running setup. `launchagent --status` and the prompt both `stat`'d the
-plist, which survives a `launchctl bootout`, so a host with no service running
-reported `installed`; and `setupLaunchAgent()` compared plist *content* and
-stopped at "already up to date" without ever bootstrapping. Status now asks
-launchd (`launchctl print gui/<uid>/<label>`) and reports the third state it was
-hiding, `plist-not-loaded`; setup reloads such a plist instead of calling it up
-to date; and the prompt offers that repair rather than an uninstall.
+re-running setup. `launchagent --status` and the prompt both `stat`'d the plist,
+which survives a `launchctl bootout`, so a host with no service running reported
+`installed`; and `setupLaunchAgent()` compared plist _content_ and stopped at
+"already up to date" without ever bootstrapping. Status now asks launchd
+(`launchctl print gui/<uid>/<label>`) and reports the third state it was hiding,
+`plist-not-loaded`; setup reloads such a plist instead of calling it up to date;
+and the prompt offers that repair rather than an uninstall.
 
 Closes #1369.
 
@@ -38,8 +40,8 @@ flowchart TD
 
 ## Evidence
 
-Backend/CLI change — no web interface to screenshot. The behaviour is driven
-end to end by tests instead: the shell prompts run in a bash subprocess with
+Backend/CLI change — no web interface to screenshot. The behaviour is driven end
+to end by tests instead: the shell prompts run in a bash subprocess with
 `run_setup_cli` stubbed, and the launchd interaction runs through an injected
 `LaunchctlDriver`, so both are exercised on Linux without touching a host's
 agents.
@@ -74,18 +76,18 @@ Result: PASSED (with skipped checks)   # 18 checks, only "config integration" sk
   `worker/deno/tests/setup_launchagent_prompt_test.ts::setup.sh - only an explicit yes removes the LaunchAgent (Issue #1369)`
   — reviewer: met
 - **met** — status tells the truth about "installed": it asks
-  `launchctl print gui/<uid>/<label>` and reports `plist-not-loaded` —
-  evidence: `worker/deno/setup/launchagent.ts::getLaunchAgentStatus`,
+  `launchctl print gui/<uid>/<label>` and reports `plist-not-loaded` — evidence:
+  `worker/deno/setup/launchagent.ts::getLaunchAgentStatus`,
   `worker/deno/tests/setup_launchagent_state_test.ts::getLaunchAgentStatus - a plist launchd has forgotten is not 'installed' (Issue #1369)`
-  — reviewer: partial — reason: the reviewer saw the first commit, where the
-  new status had no consumer and `prompt_launchagent_setup` still used
+  — reviewer: partial — reason: the reviewer saw the first commit, where the new
+  status had no consumer and `prompt_launchagent_setup` still used
   `[[ -f …plist ]]`; commit `aba8f94` moved the prompt onto
   `launchagent --status`, so an unloaded plist is now described honestly and
   offered the repair. `isLaunchAgentInstalled()` is deliberately left as the
   directory-scoped plist test — it answers "is there a plist to remove", which
   is the question `removeLaunchAgent` needs.
-- **met** — an unloaded-but-present plist is reloaded rather than reported as
-  up to date — evidence: `worker/deno/setup/launchagent.ts::reloadIfUnloaded`,
+- **met** — an unloaded-but-present plist is reloaded rather than reported as up
+  to date — evidence: `worker/deno/setup/launchagent.ts::reloadIfUnloaded`,
   `worker/deno/tests/setup_launchagent_state_test.ts::reloadIfUnloaded - an unloaded plist is bootstrapped and enabled (Issue #1369)`
   — reviewer: met
 - **met** — item 3, `.config.json` keys another tool added
@@ -111,16 +113,16 @@ Result: PASSED (with skipped checks)   # 18 checks, only "config integration" sk
   it, with the closing keyword, the evidence and the test plan.
 - **violation** — Never Fail Silently: `launchctl enable`'s result was
   discarded, so a job that bootstrapped but stayed disabled reported a
-  successful reload — evidence: `worker/deno/setup/launchagent.ts:493` —
-  reason: fixed in `aba8f94`; `bootstrapAgent` checks it and fails loud, covered
-  by `reloadIfUnloaded - a job launchd refuses to enable fails loud (Issue #1369)`.
+  successful reload — evidence: `worker/deno/setup/launchagent.ts:493` — reason:
+  fixed in `aba8f94`; `bootstrapAgent` checks it and fails loud, covered by
+  `reloadIfUnloaded - a job launchd refuses to enable fails loud (Issue #1369)`.
 - **violation** — Never Fail Silently: the fresh-install path still returned
   `ok: true` ("could not load automatically") for the same fault the new reload
   path failed on — evidence: `worker/deno/setup/launchagent.ts:297` — reason:
   fixed; both paths now go through `bootstrapAgent` and both fail loud with the
   same manual-load instruction. This is a deliberate behaviour change: a plist
-  written but never loaded is a host with no worker, which is the silent
-  failure this issue is about.
+  written but never loaded is a host with no worker, which is the silent failure
+  this issue is about.
 - **violation** — DRY: the bootstrap → legacy `load` → `enable` sequence existed
   twice with divergent error handling — evidence:
   `worker/deno/setup/launchagent.ts:467` — reason: fixed; `bootstrapAgent` is
@@ -137,16 +139,16 @@ Result: PASSED (with skipped checks)   # 18 checks, only "config integration" sk
   source rather than running them — evidence:
   `worker/deno/tests/setup_launchagent_prompt_test.ts:227` — reason: stands, and
   it is one test beside four behavioural ones. The marker shown to the operator
-  *is* the contract being pinned (prior art at the Issue #26 install-prompt
-  test directly above it), the `setup.sh` branch behaviour is covered by real
+  _is_ the contract being pinned (prior art at the Issue #26 install-prompt test
+  directly above it), the `setup.sh` branch behaviour is covered by real
   subprocess runs, and there is no PowerShell host in the container to execute
   `setup.ps1` against.
 - **clean** — Australian English throughout the added lines; no hidden or
   credential-shaped path staged; both commits carry `Issue #1369` and a
   `Vibe-Coder-Run-Id` trailer; launchd logic in Deno TypeScript with the shell
   limited to prompt orchestration; doc comments with `@param`/`@returns` on
-  every new export; new state tests call real functions through an injected
-  seam with no sleeps, no ambient `$HOME` and no host mutation; `deno fmt`,
+  every new export; new state tests call real functions through an injected seam
+  with no sleeps, no ambient `$HOME` and no host mutation; `deno fmt`,
   `deno lint` and the full `./quality.sh` gate pass.
 
 ## Test Plan
@@ -159,9 +161,9 @@ Result: PASSED (with skipped checks)   # 18 checks, only "config integration" sk
 - Extended `worker/deno/tests/setup_launchagent_prompt_test.ts` — the removal
   prompt now has the same coverage the install prompt had (Enter keeps, only
   `y`/`Y`/`yes`/`YES` removes, `-` and typos keep), plus three tests for the
-  `plist-not-loaded` host: the repair is offered instead of the uninstall,
-  Enter changes nothing, and the warning never describes an unloaded agent as a
-  worker running every 5 minutes.
+  `plist-not-loaded` host: the repair is offered instead of the uninstall, Enter
+  changes nothing, and the warning never describes an unloaded agent as a worker
+  running every 5 minutes.
 - Added
   `worker/deno/tests/setup_config_preservation_test.ts::runConfigSetup - preserves agent_transcript_enabled and log_dir (Issue #1369)`
   for the issue's third, unconfirmed item.

@@ -2,10 +2,9 @@
 
 ## Summary
 
-Adds a **House additions** section to
-`docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` carrying the three levers the
-Anthropic guide does not cover — positive framing, the no-op test, and leading
-words — as rows `H1`–`H3`. Closes #659.
+Adds a **House additions** section to `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md`
+carrying the three levers the Anthropic guide does not cover — positive framing,
+the no-op test, and leading words — as rows `H1`–`H3`. Closes #659.
 
 The rows are numbered outside the guide's 1–22 range and live in their own
 section, so the row-to-guide-heading mapping every audit under `docs/audits/`
@@ -33,8 +32,7 @@ Credit for the three levers belongs to
 ## Evidence
 
 Documentation and rubric change with no web interface to screenshot. The rubric
-is machine-checked, so the evidence is the test run over the committed
-Markdown:
+is machine-checked, so the evidence is the test run over the committed Markdown:
 
 ```text
 running 14 tests from ./tests/prompt_best_practices_checklist_test.ts
@@ -56,10 +54,11 @@ three environment-bound cases unrelated to this change:
 `tests/run_core_rate_limit_resume_test.ts` and `tests/run_core_test.ts` abort
 with `GraphQL: API rate limit already exceeded`, and
 `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
-dir is restaged writable` expects a `/tmp` staging path but sees the
-container's `.container-state/gh-config`. Both reproduce unchanged at the base
-commit (`HEAD~2`) in a clean worktree, so they are pre-existing and not caused
-by this PR.
+dir is restaged writable`
+expects a `/tmp` staging path but sees the container's
+`.container-state/gh-config`. Both reproduce unchanged at the base commit
+(`HEAD~2`) in a clean worktree, so they are pre-existing and not caused by this
+PR.
 
 ```mermaid
 flowchart LR
@@ -77,18 +76,17 @@ Added to `worker/deno/tests/prompt_best_practices_checklist_test.ts`:
 
 - `house additions score the three house techniques` — the section scores
   exactly positive framing, no-ops and leading words, in order.
-- `house rows are numbered outside the guide's 1-22 range` — ids are `H1`,
-  `H2`, `H3`, so no guide row is renumbered.
-- `each house row defines pass, gap and n/a` — every house row carries all
-  three verdict definitions.
+- `house rows are numbered outside the guide's 1-22 range` — ids are `H1`, `H2`,
+  `H3`, so no guide row is renumbered.
+- `each house row defines pass, gap and n/a` — every house row carries all three
+  verdict definitions.
 - `house additions leave the guide rows untouched` — the numbered checklist
   still holds exactly the 22 guide techniques and none of the house ones.
 - `house additions settle the model-relative and guardrail rules` — the section
   states the candidate rule, the guardrail carve-out, and how existing
   `docs/audits/` records are treated.
 - `verdict table template carries the house rows` — the copy-paste template
-  lists the same house rows as the section, so audits cannot silently drop
-  them.
+  lists the same house rows as the section, so audits cannot silently drop them.
 
 Existing tests in the same file (guide-row coverage, contiguous numbering,
 out-of-scope table, templates) are unchanged and still pass, which is what

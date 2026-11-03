@@ -61,11 +61,11 @@ flowchart TD
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-| Criterion | reviewer: | Evidence |
-| --------- | --------- | -------- |
+| Criterion                                                                       | reviewer:   | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | AC1 — a 402 during the conflict ladder files no fallback and changes no counter | **partial** | `milestone_conflict_ladder_test.ts`, `milestone_branch_sync_test.ts`, `milestone_rollback_test.ts` and `pr_merge_conflict_processor_test.ts` show `disrupted` or withdrawn: no fallback, no roll-back and no conflict attempt spent. The failed-once, fast-failure-streak and back-off counters are not changed by new code. They rely on the existing usage-limit parking, which a 402 now enters through `claude_executor.ts` (`usage_limit_detection_test.ts`). |
-| AC2 — exactly one alert open during an outage, closed on recovery | **met** | `provider_outage_alert_test.ts`: the second failure updates the same issue, concurrent failures are serialised into one alert, and a success closes every open alert. |
-| AC3 — stale-info rejection is retried after a refetch, and the report says so | **met** | `milestone_sync_pr_test.ts` asserts the "refetched and retried — accepted" log. `milestone_rollback_test.ts` asserts that a stale-info refusal is not worded as a repository rule. |
+| AC2 — exactly one alert open during an outage, closed on recovery               | **met**     | `provider_outage_alert_test.ts`: the second failure updates the same issue, concurrent failures are serialised into one alert, and a success closes every open alert.                                                                                                                                                                                                                                                                                              |
+| AC3 — stale-info rejection is retried after a refetch, and the report says so   | **met**     | `milestone_sync_pr_test.ts` asserts the "refetched and retried — accepted" log. `milestone_rollback_test.ts` asserts that a stale-info refusal is not worded as a repository rule.                                                                                                                                                                                                                                                                                 |
 
 ## Standards Review
 
@@ -100,12 +100,12 @@ flowchart TD
 ## Notes
 
 - **Runner-test stubs changed:** "Credit balance is too low" now counts as a
-  spent balance, which takes the terminal usage-limit pause. Stubs in
-  three suites (`claude_runner_rate_limit_fallback_test.ts`,
+  spent balance, which takes the terminal usage-limit pause. Stubs in three
+  suites (`claude_runner_rate_limit_fallback_test.ts`,
   `claude_runner_invocation_budget_3648_test.ts` and
   `run_core_watchdog_test.ts`) used that text to mean "rate limited", so they
-  now use "API rate limit exceeded - too many requests". The
-  behaviour those tests check is unchanged.
+  now use "API rate limit exceeded - too many requests". The behaviour those
+  tests check is unchanged.
 - **Why the alerter is a singleton:** the alert is raised from
   `claude_runner.ts`, deep in every agent call path. Threading a dependency
   through every caller would touch dozens of signatures. `mod.ts` installs one
@@ -114,8 +114,8 @@ flowchart TD
 - **Cross-host duplicate alerts:** serialisation is per process. Two hosts
   failing at the same moment can each file an alert. Recovery closes every open
   fleet-authored alert for the provider, so duplicates never outlive the outage.
-- **Follow-up from nleck (not in scope):** serialise `update-branch` so that only
-  the next-in-line PR (green but BEHIND) is updated. This is a separate change
-  to the merge queue.
+- **Follow-up from nleck (not in scope):** serialise `update-branch` so that
+  only the next-in-line PR (green but BEHIND) is updated. This is a separate
+  change to the merge queue.
 - **Config integration skipped:** there is no `.config.json` in this worktree.
   The quality gate skips that stage on purpose.

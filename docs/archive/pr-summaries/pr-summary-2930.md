@@ -4,13 +4,13 @@
 
 Closes #2930
 
-A measurement run sees only the host that claimed it, so its verdict could
-only ever be partial. This PR adds an operator-configured `fleet_run_archive`
-key (an `owner/repo` slug). When set, the issue prompt carries a
-`<fleet_data_source>` block naming the archive, with read-only `gh api`
-guidance; the slug is fenced inside the run's untrusted boundary and the
-archive's contents are declared untrusted data. When unset, the issue prompt
-tells the run to label its verdict **single-host** and name the gaps.
+A measurement run sees only the host that claimed it, so its verdict could only
+ever be partial. This PR adds an operator-configured `fleet_run_archive` key (an
+`owner/repo` slug). When set, the issue prompt carries a `<fleet_data_source>`
+block naming the archive, with read-only `gh api` guidance; the slug is fenced
+inside the run's untrusted boundary and the archive's contents are declared
+untrusted data. When unset, the issue prompt tells the run to label its verdict
+**single-host** and name the gaps.
 
 ```mermaid
 flowchart LR
@@ -23,11 +23,10 @@ flowchart LR
 ```
 
 - [x] Config key: types, validation (canonical slug check, fail loud), loader,
-  known-keys list
+      known-keys list
 - [x] Prompt block + wiring through both execute paths
 - [x] Issue template guidance for the no-archive case
-- [x] Docs: CONFIGURATION (section + Mermaid), THREAT-MODEL, SECURITY,
-  INTERNALS
+- [x] Docs: CONFIGURATION (section + Mermaid), THREAT-MODEL, SECURITY, INTERNALS
 - [x] Tests
 
 ## Spec
@@ -37,8 +36,8 @@ flowchart LR
 - The verdict of a measurement issue must not depend on which host claimed it.
 - VibeCoder is generic, so the archive is operator configuration, not a
   hardcoded private repo name.
-- Without an archive, an honest single-host verdict beats an implied
-  fleet-wide one.
+- Without an archive, an honest single-host verdict beats an implied fleet-wide
+  one.
 
 ### Essential Design Decisions
 
@@ -55,15 +54,14 @@ flowchart LR
 
 - Each host's `fleet_telemetry_*.json` and `.credit_log_*.json` describe only
   that host's runs.
-- The archive's layout is owned by the operator hook that writes it, so the
-  run is told to read its README first rather than VibeCoder hardcoding paths.
+- The archive's layout is owned by the operator hook that writes it, so the run
+  is told to read its README first rather than VibeCoder hardcoding paths.
 
 ## Evidence
 
-- `tests/config_fleet_run_archive_2930_test.ts` covers: a valid slug
-  accepted; non-string and path-traversal values rejected; a hostile value
-  never echoed raw; the loader mapping and absent key; and the key being
-  known.
+- `tests/config_fleet_run_archive_2930_test.ts` covers: a valid slug accepted;
+  non-string and path-traversal values rejected; a hostile value never echoed
+  raw; the loader mapping and absent key; and the key being known.
 - `tests/prompt_builder_fleet_run_archive_2930_test.ts` covers:
   - the slug fenced inside the untrusted boundary;
   - read-only and untrusted framing;
@@ -72,19 +70,19 @@ flowchart LR
   - the cached system prompt unchanged;
   - `config.fleetRunArchive` reaching the prompt via `execute_phase`;
   - the issue template guidance.
-- `tests/coding_guidelines_layers_2574_test.ts`: the new issue-template
-  heading has been added to the allowlist.
+- `tests/coding_guidelines_layers_2574_test.ts`: the new issue-template heading
+  has been added to the allowlist.
 
 ## Acceptance Criteria
 
-| Criterion | Verdict |
-| --- | --- |
-| Measurement runs get a fleet-wide data source | MET |
-| Covers the credit/cost-log gap (archive carries token and cost telemetry) | MET |
-| No hardcoded private repo; operator-configured | MET |
-| Read-only access | MET (instruction + existing `gh` write guard) |
-| Source contents kept as untrusted data | PARTIAL — the slug is fenced; contents are fetched at runtime by `gh api`, so they are covered by an explicit untrusted-data instruction rather than a build-time fence |
-| Graceful single-host / partial verdict when unset | MET |
+| Criterion                                                                 | Verdict                                                                                                                                                                 |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Measurement runs get a fleet-wide data source                             | MET                                                                                                                                                                     |
+| Covers the credit/cost-log gap (archive carries token and cost telemetry) | MET                                                                                                                                                                     |
+| No hardcoded private repo; operator-configured                            | MET                                                                                                                                                                     |
+| Read-only access                                                          | MET (instruction + existing `gh` write guard)                                                                                                                           |
+| Source contents kept as untrusted data                                    | PARTIAL — the slug is fenced; contents are fetched at runtime by `gh api`, so they are covered by an explicit untrusted-data instruction rather than a build-time fence |
+| Graceful single-host / partial verdict when unset                         | MET                                                                                                                                                                     |
 
 ## Standards Review
 
@@ -98,13 +96,13 @@ No material departures. Optional: `fleet_run_archive` is trimmed in both
 
 ## Pre-PR Security Self-Check
 
-- [x] Input validation: the slug is validated with an allowlist at config
-  load and again in the builder.
+- [x] Input validation: the slug is validated with an allowlist at config load
+      and again in the builder.
 - [x] Secrets: no hidden or credential files are staged.
 - [x] Injection surface: the slug is fenced and delimiter-sanitised; archive
-  contents are declared untrusted data.
-- [x] Authorisation: read-only by instruction, and the `gh` guard limits
-  writes to the claim repo.
+      contents are declared untrusted data.
+- [x] Authorisation: read-only by instruction, and the `gh` guard limits writes
+      to the claim repo.
 - [x] Error handling: an invalid value is rendered inert in the error.
 - [x] Dependencies: none added.
 - [x] Path confinement: not applicable (no new path guards).

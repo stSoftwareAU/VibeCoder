@@ -2,11 +2,11 @@
 
 ## Summary
 
-A stream owns one agent conversation across every issue that runs on it
-(#2333), so that conversation only grows — left alone it is the *next* issue
-that dies of a full context window. This adds
-`worker/deno/lib/stream_compaction.ts`, called from both stream-join sites
-immediately after a session is adopted and before the issue's first phase run.
+A stream owns one agent conversation across every issue that runs on it (#2333),
+so that conversation only grows — left alone it is the _next_ issue that dies of
+a full context window. This adds `worker/deno/lib/stream_compaction.ts`, called
+from both stream-join sites immediately after a session is adopted and before
+the issue's first phase run.
 
 Claude and DeepSeek (one CLI, so one pair of levers) send `/compact` as the
 prompt of a `--resume <sessionId>` print run, then **measure** the session's
@@ -22,8 +22,8 @@ Closes #2337.
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suite below plus the full quality gate.
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suite below plus the full quality gate.
 
 ```mermaid
 flowchart TD
@@ -49,10 +49,10 @@ Verified behaviour worth a reviewer's attention:
   `<CLAUDE_CONFIG_DIR>/projects` does not exist yet falls back rather than
   throwing out of a module documented never to throw.
 - **Known limitation, inherited from the issue's own stated assumption.**
-  Whether `/compact` on a `--resume` print run shrinks the durable transcript
-  is unverified — Claude transcripts are append-only JSONL, so the measured
-  size may never fall and the fallback may be the path production always takes.
-  That is exactly why the outcome is measured rather than assumed and why the
+  Whether `/compact` on a `--resume` print run shrinks the durable transcript is
+  unverified — Claude transcripts are append-only JSONL, so the measured size
+  may never fall and the fallback may be the path production always takes. That
+  is exactly why the outcome is measured rather than assumed and why the
   fallback exists; the run says which path it took either way. Changing the
   proof (a compact-boundary marker, or resumed context tokens) is a separate
   decision for the issue author, not a silent substitution here.
@@ -72,10 +72,10 @@ Verified behaviour worth a reviewer's attention:
   `worker/deno/lib/planning_processor.ts:1646,1801` — reviewer: met — reason:
   the reviewer noted "every phase run" is in practice the agent runs that carry
   the stream session; the other agent calls in an issue pass no
-  `sessionResumeState`, are not on the stream conversation, and correctly get
-  no flag
-- **met** — `/compact` exiting non-zero → the fallback runs, the exit is
-  logged, and the issue is not failed — evidence:
+  `sessionResumeState`, are not on the stream conversation, and correctly get no
+  flag
+- **met** — `/compact` exiting non-zero → the fallback runs, the exit is logged,
+  and the issue is not failed — evidence:
   `worker/deno/tests/stream_compaction_test.ts::compactStreamSession - a non-zero /compact run falls back and never fails the issue`
   (asserts `compactExitCode` on the log fields) — reviewer: met
 - **met** — Codex and Gemini log `compaction unavailable` and invoke neither
@@ -83,7 +83,7 @@ Verified behaviour worth a reviewer's attention:
   `worker/deno/tests/stream_compaction_test.ts::compactStreamSession - codex exposes no compaction lever`
   (and the gemini case) plus
   `::--autocompact is never passed to a provider without the lever` — reviewer:
-  met — reason: the reviewer flagged that a Codex run on a *new* stream logs
+  met — reason: the reviewer flagged that a Codex run on a _new_ stream logs
   `compaction skipped` rather than `compaction unavailable`, since only one line
   may be logged; that precedence is now deliberate and covered by
   `::compactStreamSession - a new stream session is skipped whatever the provider`
@@ -101,8 +101,8 @@ Verified behaviour worth a reviewer's attention:
   edit, `Result: PASSED (with skipped checks)` (`config integration` is the
   usual environment skip) — reviewer: met
 - **unrequested** — operator documentation in `docs/CONFIGURATION.md` and
-  `docs/PROVIDER-PARITY.md` — reviewer: unrequested — reason: repo standard —
-  a code change owes a docs change, and the four log lines are operator-facing
+  `docs/PROVIDER-PARITY.md` — reviewer: unrequested — reason: repo standard — a
+  code change owes a docs change, and the four log lines are operator-facing
 - **unrequested** — the `top-up-2337` sweep slice and its written record
   (`docs/audits/`) — reviewer: unrequested — reason: forced by the gate —
   `lib_sweep_coverage_test.ts` fails closed on any new `worker/deno/lib/`
@@ -129,8 +129,8 @@ Verified behaviour worth a reviewer's attention:
   `::primeStreamCompaction - the fallback is a warning, a verified compaction is not`
 - **violation** — the `try` around `Deno.readDir` never fired, so a missing
   `projects/` directory threw out of a module whose contract says it never
-  throws — evidence: `worker/deno/lib/stream_compaction.ts:184` (before the
-  fix) — reason: fixed here — the iteration is inside the guard, proven by
+  throws — evidence: `worker/deno/lib/stream_compaction.ts:184` (before the fix)
+  — reason: fixed here — the iteration is inside the guard, proven by
   `::compactStreamSession - a transcript directory that does not exist yet is not a fault`
 - **violation** — a test passed for a reason other than the one it named: the
   directory fault fired before the throwing runner was ever called — evidence:
@@ -147,10 +147,11 @@ Verified behaviour worth a reviewer's attention:
   phase (`stream_compaction.ts:230`) so it is not another `phase=unknown` line
 - **violation** — no `docs/archive/pr-summaries/pr-summary-2337.md` — evidence:
   the file was absent from the diff — reason: fixed here — this file
-- **clean** — Australian English throughout both new files and the docs; `deno
-  fmt`, `deno lint`, `deno check` and `markdownlint` clean; the new `lib/`
-  module registered in the sweep ledger with a real written record rather than
-  appended to an older slice; genuine unit tests (temp dir only, no env
+- **clean** — Australian English throughout both new files and the docs;
+  `deno
+  fmt`, `deno lint`, `deno check` and `markdownlint` clean; the new
+  `lib/` module registered in the sweep ledger with a real written record rather
+  than appended to an older slice; genuine unit tests (temp dir only, no env
   mutation, no sleeps, no absolute-millisecond assertions, ~24 ms for 19 cases)
   calling real exported functions; one test file per module; every new field
   (`autocompactTokens` on `AgentInvocationRequest`, `RunClaudeOptions`,
@@ -167,7 +168,8 @@ and a temp transcript file):
 - a shrinking transcript is a real compaction (`compaction: /compact`, no flag)
 - an unchanged transcript, and a grown one, fall back to `autocompact 100000`
 - a non-zero `/compact` run falls back, records the exit code, and does not fail
-- a runner that throws falls back rather than propagating (spawn branch asserted)
+- a runner that throws falls back rather than propagating (spawn branch
+  asserted)
 - a transcript that cannot be measured is never claimed as compacted
 - a transcript directory that does not exist yet is not a fault
 - the transcript root is derived from the provider's own child environment

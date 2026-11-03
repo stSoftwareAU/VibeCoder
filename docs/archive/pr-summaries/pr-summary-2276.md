@@ -45,23 +45,24 @@ deno task test tests/conflict_verdict_ladder_test.ts
 ok | 20 passed | 0 failed (33ms)
 ```
 
-`deno lint` (2692 files), `deno fmt --check` (2704 files), `deno task check`
-and `deno task check:manifests` (656 tests) all pass from `worker/deno`.
-`tests/pr_merge_conflict_scan_test.ts` and `tests/conflict_abandon_restart_test.ts`
-were re-run beside the new file (114 passed).
+`deno lint` (2692 files), `deno fmt --check` (2704 files), `deno task check` and
+`deno task check:manifests` (656 tests) all pass from `worker/deno`.
+`tests/pr_merge_conflict_scan_test.ts` and
+`tests/conflict_abandon_restart_test.ts` were re-run beside the new file (114
+passed).
 
 <!-- vibe-quality-gate-skipped reason="budget" detail="./quality.sh runs sequentially in this container and was still running at the 900s bound with ~13 minutes of run budget left; lint, fmt --check, deno check, check:manifests, markdownlint on the new audit doc and the three merge-conflict test files were run individually and pass. CI runs the same checks on this PR." -->
 
 ## Reproduction
 
-- **symptom** — a rung read its own marker back as a reason to run again, so
-  the resolver looped on a stale `CONFLICTING` verdict at an unchanged head
+- **symptom** — a rung read its own marker back as a reason to run again, so the
+  resolver looped on a stale `CONFLICTING` verdict at an unchanged head
   (NEAT-AI-Lamarck#239: 46 attempt/resolved pairs at head `094a66ad`)
-- **status** — `partial` — reason: the looping resolver path is not in this
-  diff (it is a sibling issue of parent #2272), so there was no unfixed code
-  here to drive red; what is reproduced is the state-model half — the
-  decide → append the rung's marker → decide sequence that must not return the
-  same rung twice, which is asserted directly
+- **status** — `partial` — reason: the looping resolver path is not in this diff
+  (it is a sibling issue of parent #2272), so there was no unfixed code here to
+  drive red; what is reproduced is the state-model half — the decide → append
+  the rung's marker → decide sequence that must not return the same rung twice,
+  which is asserted directly
 - **regression test** —
   `worker/deno/tests/conflict_verdict_ladder_test.ts::decideLadderRung - the ladder climbs one rung per head sha`
 
@@ -73,8 +74,7 @@ were re-run beside the new file (114 passed).
   heads and returns an empty state after a `CONFLICT_RESOLVED_MARKER` —
   evidence:
   `worker/deno/tests/conflict_verdict_ladder_test.ts::parseLadderState - the latest marker of each kind wins`
-  and `::parseLadderState - a resolved marker resets the ladder` — reviewer:
-  met
+  and `::parseLadderState - a resolved marker resets the ladder` — reviewer: met
 - **met** — `decideLadderRung` returns exactly one rung per (state, head,
   verdict); after a rung's marker names the head, the same head never returns
   that rung again — evidence:
@@ -107,20 +107,19 @@ were re-run beside the new file (114 passed).
   validation makes that unreachable
 - **unrequested** — `docs/audits/security-sweep-2276-conflict-verdict-ladder.md`
   and the `top-up-2276` ledger slice — evidence:
-  `docs/audits/lib-sweep-coverage.json` — reviewer: unrequested — reason:
-  repo gate, not choice: `lib_sweep_coverage_test.ts` fails until every new
-  `lib/` module is claimed by a slice with its written record
-- **unrequested** — `parseLadderState` takes an optional
-  `{ logger }` second argument — evidence:
-  `worker/deno/lib/conflict_verdict_ladder.ts:126` — reviewer: unrequested —
-  reason: the issue requires the malformed-attribute warning; a pure function
-  needs the logger passed in to emit one
+  `docs/audits/lib-sweep-coverage.json` — reviewer: unrequested — reason: repo
+  gate, not choice: `lib_sweep_coverage_test.ts` fails until every new `lib/`
+  module is claimed by a slice with its written record
+- **unrequested** — `parseLadderState` takes an optional `{ logger }` second
+  argument — evidence: `worker/deno/lib/conflict_verdict_ladder.ts:126` —
+  reviewer: unrequested — reason: the issue requires the malformed-attribute
+  warning; a pure function needs the logger passed in to emit one
 
 The spec reviewer's other two findings were acted on rather than recorded:
 prefix-tolerant sha matching is gone (exact `===`, as specified — its failure
-direction was to *skip* a rung, and skipping ends at the PR close), and the
-verdict/head normalisation it flagged is kept only as `trim()` plus case
-folding on values GitHub renders in fixed case.
+direction was to _skip_ a rung, and skipping ends at the PR close), and the
+verdict/head normalisation it flagged is kept only as `trim()` plus case folding
+on values GitHub renders in fixed case.
 
 ## Standards Review
 
@@ -139,26 +138,25 @@ folding on values GitHub renders in fixed case.
   here; the prefix match is gone entirely and the comment with it
 - **violation** — an unusable `currentHead` was swallowed as
   `wait: verdict-unknown` with no log — evidence:
-  `worker/deno/lib/conflict_verdict_ladder.ts:215` (as reviewed) — reason:
-  fixed here; it throws naming the head
-- **violation** — the rebase marker writes `old="…"`, which no reader consumes
-  — evidence: `worker/deno/lib/merge_conflict_markers.ts:110` — reason: stands;
+  `worker/deno/lib/conflict_verdict_ladder.ts:215` (as reviewed) — reason: fixed
+  here; it throws naming the head
+- **violation** — the rebase marker writes `old="…"`, which no reader consumes —
+  evidence: `worker/deno/lib/merge_conflict_markers.ts:110` — reason: stands;
   the issue specifies both attributes, and the replaced head is the audit trail
   a human needs to find the pre-rebase commits
 - **violation** — no `worker/deno/tests/merge_conflict_markers_test.ts` for the
   new builders — evidence: `worker/deno/lib/merge_conflict_markers.ts:105` —
   reason: stands; the issue names
   `worker/deno/tests/conflict_verdict_ladder_test.ts` as the home for these
-  tests, and splitting the round-trip between writer and reader across two
-  files would weaken it
+  tests, and splitting the round-trip between writer and reader across two files
+  would weaken it
 - **violation** — `logger?.warn?.()` rather than `logger?.warn()` on a required
-  interface method — evidence:
-  `worker/deno/lib/conflict_verdict_ladder.ts:136` — reason: stands; it is the
-  spelling every sibling in this subsystem uses
-  (`conflict_abandon_restart.ts:1114`), and diverging in one module is the
-  drift the convention exists to stop
-- **violation** — no PR summary file — evidence: this file — reason: fixed
-  here; it is written last by design
+  interface method — evidence: `worker/deno/lib/conflict_verdict_ladder.ts:136`
+  — reason: stands; it is the spelling every sibling in this subsystem uses
+  (`conflict_abandon_restart.ts:1114`), and diverging in one module is the drift
+  the convention exists to stop
+- **violation** — no PR summary file — evidence: this file — reason: fixed here;
+  it is written last by design
 - **clean** — Australian English throughout; `deno fmt`/`lint`/`check`/
   `check:manifests` clean; every test calls the real functions with no sleeps,
   polling or spawned processes; no `Deno.Command`, filesystem or network use;

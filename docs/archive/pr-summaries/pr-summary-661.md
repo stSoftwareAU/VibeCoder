@@ -3,9 +3,9 @@
 ## Summary
 
 `prompts/ci_fix/v13.md:78` held the whole of our diagnosis guidance — "read the
-failing test, CI config, and relevant source to find the root cause, then apply a
-minimal, targeted fix". That is straight to hypothesis: nothing stood between a
-plausible theory and a pushed commit, and nothing distinguished "the check is
+failing test, CI config, and relevant source to find the root cause, then apply
+a minimal, targeted fix". That is straight to hypothesis: nothing stood between
+a plausible theory and a pushed commit, and nothing distinguished "the check is
 green now" from "the check is green because the cause is gone". The `unknown`
 triage branch said "reproduce locally if you can" — permission, not a gate, with
 no definition of a good reproduction.
@@ -20,9 +20,9 @@ give-up path are ours, because these runs are unattended and budgeted. Closes
 
 **What v14 adds:**
 
-- **A reproduction gate before any fix** — one named, already-run **red-capable**
-  command that drives the failing path and reproduces the check's own symptom.
-  "No red command, no hypothesis." Its output is quoted in
+- **A reproduction gate before any fix** — one named, already-run
+  **red-capable** command that drives the failing path and reproduces the
+  check's own symptom. "No red command, no hypothesis." Its output is quoted in
   `.pr_response_message`.
 - **A bounded attempt with an honest give-up path** — roughly three shapes of
   command; if none goes red, the run records which it tried, what each did
@@ -37,28 +37,29 @@ give-up path are ours, because these runs are unattended and budgeted. Closes
 - **Tagged instrumentation** — a unique `[DEBUG-…]` prefix on every temporary
   debug log, with `grep -rn "\[DEBUG-" .` required to come back empty before the
   commit. This joins the existing scratch-file rule rather than replacing it:
-  scratch files sit *beside* the source, instrumentation hides *inside* it.
+  scratch files sit _beside_ the source, instrumentation hides _inside_ it.
 - **Both reply skeletons carry a `**Reproduction:**` line**, so a reviewer sees
   the command and its symptom — or the commands tried and why none went red.
 
 **The vetting notes from the issue are honoured, not ignored:**
 
-- *"Most CI failures are not hard bugs."* The gate is explicitly cheap where the
+- _"Most CI failures are not hard bugs."_ The gate is explicitly cheap where the
   failure is mechanical: a lint violation, a formatting drift, a type error or a
   `semgrep` finding is **already reproduced by the tool that reported it**, so
-  running that tool *is* the loop — one line, no ceremony. The three steps earn
+  running that tool _is_ the loop — one line, no ceremony. The three steps earn
   their keep only on failures the log does not explain.
-- *"Six phases is a lot of prompt."* Condensed to **three numbered steps** plus a
-  tagging rule, in one section. v14 is 154 lines against v13's 138 — sixteen
+- _"Six phases is a lot of prompt."_ Condensed to **three numbered steps** plus
+  a tagging rule, in one section. v14 is 154 lines against v13's 138 — sixteen
   lines of net growth, not a second template.
-- *"Open-ended 'refuse to give up' could burn a run."* Replaced with an explicit
+- _"Open-ended 'refuse to give up' could burn a run."_ Replaced with an explicit
   bound and a reportable give-up outcome.
 
 ## Evidence
 
-This is a prompt- and docs-only change with no web interface, so there is nothing
-to screenshot. The evidence is the test suite below, run against the prompt tree
-through the worker's real `loadPrompt` / `getLatestVersion` functions.
+This is a prompt- and docs-only change with no web interface, so there is
+nothing to screenshot. The evidence is the test suite below, run against the
+prompt tree through the worker's real `loadPrompt` / `getLatestVersion`
+functions.
 
 ```
 $ deno test --allow-read tests/ci_fix_reproduction_loop_v14_test.ts \
@@ -113,17 +114,17 @@ flowchart TD
 
 ## Files changed
 
-| File | Change |
-| ---- | ------ |
-| `prompts/ci_fix/v14.md` | New version — the reproduction-loop gate, minimisation, ranked hypotheses, `[DEBUG-…]` tagging, and a `**Reproduction:**` line in both reply skeletons. v13 untouched. |
-| `prompts/issue/v38.md` | New version — the `## Reproduction` block's `verified` status gains the method behind it, with the same bound and the same honest bottom rung. v37 untouched. |
-| `worker/deno/tests/ci_fix_reproduction_loop_v14_test.ts` | 11 tests, each new rule paired with a v13 negative control. |
-| `worker/deno/tests/issue_prompt_v38_reproduction_method_test.ts` | 4 tests, each paired with a v37 negative control. |
-| `docs/workflows/ci-fix.md` | New "🔁 The reproduction loop before the fix" section with the flowchart above; the stale "currently `v4`" prompt pin replaced with a pointer to the directory. |
-| `docs/workflows/issue-processing.md` | "How a run climbs to `verified`" added beside the three status definitions; version-pinned prose de-pinned. |
-| `docs/PROMPTS.md` | `ci_fix` and `issue` rows record the new behaviour. |
-| `docs/REFERENCES.md` | mattpocock/skills row credits the reproduction-loop discipline alongside grill-me. |
-| `docs/SPEC-KIT-COMPARISON.md` | Version-pinned `prompts/issue/v37.md` references de-pinned. |
+| File                                                             | Change                                                                                                                                                                 |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompts/ci_fix/v14.md`                                          | New version — the reproduction-loop gate, minimisation, ranked hypotheses, `[DEBUG-…]` tagging, and a `**Reproduction:**` line in both reply skeletons. v13 untouched. |
+| `prompts/issue/v38.md`                                           | New version — the `## Reproduction` block's `verified` status gains the method behind it, with the same bound and the same honest bottom rung. v37 untouched.          |
+| `worker/deno/tests/ci_fix_reproduction_loop_v14_test.ts`         | 11 tests, each new rule paired with a v13 negative control.                                                                                                            |
+| `worker/deno/tests/issue_prompt_v38_reproduction_method_test.ts` | 4 tests, each paired with a v37 negative control.                                                                                                                      |
+| `docs/workflows/ci-fix.md`                                       | New "🔁 The reproduction loop before the fix" section with the flowchart above; the stale "currently `v4`" prompt pin replaced with a pointer to the directory.        |
+| `docs/workflows/issue-processing.md`                             | "How a run climbs to `verified`" added beside the three status definitions; version-pinned prose de-pinned.                                                            |
+| `docs/PROMPTS.md`                                                | `ci_fix` and `issue` rows record the new behaviour.                                                                                                                    |
+| `docs/REFERENCES.md`                                             | mattpocock/skills row credits the reproduction-loop discipline alongside grill-me.                                                                                     |
+| `docs/SPEC-KIT-COMPARISON.md`                                    | Version-pinned `prompts/issue/v37.md` references de-pinned.                                                                                                            |
 
 ## Test Plan
 

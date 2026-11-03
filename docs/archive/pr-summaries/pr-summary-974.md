@@ -56,20 +56,23 @@ tests/milestone_branch_sync_test.ts + milestone_sync_streak_test.ts
 ```
 
 **Full gate:** every check passes except `deno tests`, which fails on
-`run_core_production_deps_test.ts:185` (`static trust refresh succeeds and does
-not throw`). That failure is **pre-existing on the base branch**, not caused by
-this change: I ran `./quality.sh` in a clean detached worktree at the base commit
-`b7b88c3` with no change applied and it failed on the same single test. It passes
-in isolation (22 passed) and fails only under the full suite — exactly the
-symptom recorded in open issue #1098.
+`run_core_production_deps_test.ts:185`
+(`static trust refresh succeeds and does
+not throw`). That failure is
+**pre-existing on the base branch**, not caused by this change: I ran
+`./quality.sh` in a clean detached worktree at the base commit `b7b88c3` with no
+change applied and it failed on the same single test. It passes in isolation (22
+passed) and fails only under the full suite — exactly the symptom recorded in
+open issue #1098.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — refuse to push a merge whose resulting tree fails the repo's own gate
-  — evidence: `worker/deno/lib/git_pull.ts` `gateThenPushMilestoneBranch`, all
-  three push sites routed through it; `worker/deno/tests/milestone_sync_merge_gate_test.ts::syncMilestoneBranchWithDefault - a merged tree that fails the type check is not pushed (Issue #974)`
+- **met** — refuse to push a merge whose resulting tree fails the repo's own
+  gate — evidence: `worker/deno/lib/git_pull.ts` `gateThenPushMilestoneBranch`,
+  all three push sites routed through it;
+  `worker/deno/tests/milestone_sync_merge_gate_test.ts::syncMilestoneBranchWithDefault - a merged tree that fails the type check is not pushed (Issue #974)`
   — reviewer: partial — reason: the reviewer found the gate resolved to
   `container/deno-seed` on this filesystem, making it a no-op for `worker/deno`;
   fixed in the second commit (every project is checked, deterministically
@@ -89,23 +92,23 @@ symptom recorded in open issue #1098.
   `milestone_branch_sync.ts::escalateMergeGateFailure`,
   `milestone_merge_gate.ts::buildMergeGateEscalationComment`; tests
   `milestone_sync_merge_gate_test.ts` (remote SHA and local HEAD unchanged) and
-  `milestone_sync_gate_escalation_test.ts` (first-cycle comment, posted once)
-  — reviewer: met — reason: the reviewer's two dedup edge cases (a prior
-  ordinary escalation suppressing this one; re-posting every cycle without a
-  streak file) are fixed by the separate `gateEscalated` flag and by requiring a
-  streak entry, both covered by new tests. The comment is headed "needs a human"
-  rather than applying the `needs-human` label — the same shape as the existing
-  sibling escalation, and the label chokepoint takes a `GitHubClient` this code
-  path does not hold.
+  `milestone_sync_gate_escalation_test.ts` (first-cycle comment, posted once) —
+  reviewer: met — reason: the reviewer's two dedup edge cases (a prior ordinary
+  escalation suppressing this one; re-posting every cycle without a streak file)
+  are fixed by the separate `gateEscalated` flag and by requiring a streak
+  entry, both covered by new tests. The comment is headed "needs a human" rather
+  than applying the `needs-human` label — the same shape as the existing sibling
+  escalation, and the label chokepoint takes a `GitHubClient` this code path
+  does not hold.
 - **met** — on success: push as today — evidence: unchanged
   `pushSyncedMilestoneBranch` call, Issue #589 sync-PR fallback intact;
   `milestone_sync_merge_gate_test.ts::a merged tree that passes is pushed as before`
   — reviewer: met.
 - **unrequested** — a repo with no Deno project is still pushed, with an
   `UNGATED:` note — reviewer: unrequested — reason: the issue only governs repos
-  that have a gate; blocking every non-Deno repo's sync would be a regression, so
-  the outcome says plainly that nothing verified the tree. An unreadable tree is
-  *not* in this branch — it reports `failed` and refuses.
+  that have a gate; blocking every non-Deno repo's sync would be a regression,
+  so the outcome says plainly that nothing verified the tree. An unreadable tree
+  is _not_ in this branch — it reports `failed` and refuses.
 - **unrequested** — escalation on the first cycle instead of at
   `MILESTONE_SYNC_ESCALATION_THRESHOLD` — reviewer: unrequested — reason: the
   issue asks for escalation "instead of pushing"; a tree the check rejects does
@@ -114,13 +117,13 @@ symptom recorded in open issue #1098.
   a failure — reviewer: unrequested — reason: an unbounded check could wedge the
   maintenance cycle, and a tree nobody verified must not be pushed.
 - **unrequested** — `stripJsonc` moved to `lib/jsonc.ts` and re-exported from
-  `orphan_deps_scanner.ts` — reviewer: unrequested — reason: the gate needs it to
-  read a commented `deno.jsonc`; importing it from the scanner dragged that
-  module's `@std/yaml` graph into the gate, so the pure function moved to its own
-  file with callers unchanged.
-- **unrequested** — `docs/INTERNALS.md` section, Mermaid diagram and module-table
-  row — reviewer: unrequested — reason: repo convention for a behaviour change in
-  the maintenance cycle.
+  `orphan_deps_scanner.ts` — reviewer: unrequested — reason: the gate needs it
+  to read a commented `deno.jsonc`; importing it from the scanner dragged that
+  module's `@std/yaml` graph into the gate, so the pure function moved to its
+  own file with callers unchanged.
+- **unrequested** — `docs/INTERNALS.md` section, Mermaid diagram and
+  module-table row — reviewer: unrequested — reason: repo convention for a
+  behaviour change in the maintenance cycle.
 
 ## Standards Review
 
@@ -128,18 +131,19 @@ symptom recorded in open issue #1098.
 
 - **violation** — escalation comment re-posted every cycle when `streakPath` is
   unset, contradicting the documented "posted once" — evidence:
-  `worker/deno/lib/milestone_branch_sync.ts:470` — reason: fixed here; escalation
-  now requires a streak entry to record it, and the loud WARNING log stands alone
-  otherwise. Covered by
+  `worker/deno/lib/milestone_branch_sync.ts:470` — reason: fixed here;
+  escalation now requires a streak entry to record it, and the loud WARNING log
+  stands alone otherwise. Covered by
   `milestone_sync_gate_escalation_test.ts::without a streak file the refusal is logged, not re-commented every cycle`.
 - **violation** — a test asserted `skipped` (the push-anyway branch) for a tree
-  the gate cannot read, contradicting the module's own fail-loud rule — evidence:
-  `worker/deno/tests/milestone_merge_gate_test.ts:173` (pre-fix) — reason: fixed
-  here; `checkMergedTree` stats the tree first and reports `failed`, and the test
-  now asserts that.
-- **violation** — a failed `rev-parse HEAD` was swallowed and the merge proceeded
-  with no rollback point — evidence: `worker/deno/lib/git_pull.ts:560` (pre-fix)
-  — reason: fixed here; the sync refuses to merge at all without a pre-merge SHA.
+  the gate cannot read, contradicting the module's own fail-loud rule —
+  evidence: `worker/deno/tests/milestone_merge_gate_test.ts:173` (pre-fix) —
+  reason: fixed here; `checkMergedTree` stats the tree first and reports
+  `failed`, and the test now asserts that.
+- **violation** — a failed `rev-parse HEAD` was swallowed and the merge
+  proceeded with no rollback point — evidence: `worker/deno/lib/git_pull.ts:560`
+  (pre-fix) — reason: fixed here; the sync refuses to merge at all without a
+  pre-merge SHA.
 - **violation** — DRY: `escalateMergeGateFailure` duplicated ~30 lines of
   `escalateSyncFailure` — evidence:
   `worker/deno/lib/milestone_branch_sync.ts:566` — reason: fixed here; both post
@@ -155,13 +159,14 @@ symptom recorded in open issue #1098.
   every project is checked in sorted order and the `detail` names each one.
 - **violation** — no `docs/archive/pr-summaries/pr-summary-974.md` — evidence:
   the branch at commit `1c8b067` — reason: fixed here; this file.
-- **clean** — Australian English throughout the added code, comments and docs; no
-  grep-of-source tests (real git fixtures with real remotes, real `deno check`
-  runs, injected gate seam); no wall-clock threshold assertions and every suite
-  well inside the 120 s budget; `Result<T>` and typed `err.name` conventions
-  preserved; `runWithTimeout` reused rather than a hand-rolled `Deno.Command`;
-  escalation body reaches GitHub through the existing `ghCommandFn` redaction
-  chokepoint; no hidden paths staged; Deno-native tooling only.
+- **clean** — Australian English throughout the added code, comments and docs;
+  no grep-of-source tests (real git fixtures with real remotes, real
+  `deno check` runs, injected gate seam); no wall-clock threshold assertions and
+  every suite well inside the 120 s budget; `Result<T>` and typed `err.name`
+  conventions preserved; `runWithTimeout` reused rather than a hand-rolled
+  `Deno.Command`; escalation body reaches GitHub through the existing
+  `ghCommandFn` redaction chokepoint; no hidden paths staged; Deno-native
+  tooling only.
 
 ## Test Plan
 

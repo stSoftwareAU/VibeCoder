@@ -2,19 +2,19 @@
 
 ## Summary
 
-Secret scanning and push protection are free on a public repository but need
-the paid GitHub Secret Protection add-on on a private or internal one. The
-weekly `github-actions-audit` filed `BP-REPO-SECRET-SCANNING-OFF` and
+Secret scanning and push protection are free on a public repository but need the
+paid GitHub Secret Protection add-on on a private or internal one. The weekly
+`github-actions-audit` filed `BP-REPO-SECRET-SCANNING-OFF` and
 `BP-REPO-PUSH-PROTECTION-OFF` regardless, so on every private repo the finding
 only asked an admin to spend money and was closed by hand
 (`stSoftwareAU/GRQ-AutoTrader#507`).
 
 The scanner now reads the repository's visibility from the same
 `repos/{owner}/{repo}` response it already fetches for the security settings
-and, on a `private` or `internal` repository, files neither finding. The skip
-is recorded rather than silent: it travels through a new `onCheckSkipped`
-callback (not `onLookupFailure`, which logs a fault), the audit records it in
-its existing `skippedChecks` list, and the close-comment summary names it under
+and, on a `private` or `internal` repository, files neither finding. The skip is
+recorded rather than silent: it travels through a new `onCheckSkipped` callback
+(not `onLookupFailure`, which logs a fault), the audit records it in its
+existing `skippedChecks` list, and the close-comment summary names it under
 "Checks skipped — NOT covered by this audit". One log line at `WARNING` — never
 `ERROR` — says the same. The write-side twin, `repo-settings-harden`, plans no
 `secret-scanning` step there and prints the skip instead of attempting a write
@@ -39,7 +39,8 @@ Backend/CLI change with no web interface to screenshot. Evidence is the test
 suite and the quality gate:
 
 - `deno test tests/repo_settings_scanner_test.ts tests/repo_settings_harden_test.ts
-  tests/github_actions_audit_template_test.ts` — 98 passed, 0 failed.
+  tests/github_actions_audit_template_test.ts`
+  — 98 passed, 0 failed.
 - `./quality.sh` — PASSED (deno tests, lint, type check, fmt, semgrep,
   markdownlint, mermaid and the chokepoint gates all green; only the
   `config integration` check skipped, as it is on this host).
@@ -54,8 +55,8 @@ suite and the quality gate:
   `worker/deno/tests/repo_settings_scanner_test.ts::scanRepoSettings - a private repository files neither secret-scanning finding and records one skip (Issue #2225)`
   — reviewer: met
 - **met** — the skip is recorded in `skippedChecks` and named in the audit
-  summary as "secret scanning / push protection (private repository — needs
-  paid GitHub Secret Protection)" — evidence:
+  summary as "secret scanning / push protection (private repository — needs paid
+  GitHub Secret Protection)" — evidence:
   `worker/deno/tests/github_actions_audit_template_test.ts::runTask - a deliberately skipped settings check is named in the summary and logged as a warning, not an error (Issue #2225)`
   — reviewer: met
 - **met** — one log line at warning level, not error — evidence: the same
@@ -77,7 +78,7 @@ suite and the quality gate:
   `worker/deno/commands/repo_settings_harden.ts` appends
   `SECRET_PROTECTION_SKIP_NOTE`; with no planned step `applyRepoSettingsPlan`
   issues no write — reviewer: partial — reason: the reviewer noted the note is
-  not printed on a private repo whose settings are *already* enabled; that is
+  not printed on a private repo whose settings are _already_ enabled; that is
   deliberate — the note reports a step that would otherwise have been planned,
   so the plan and its note cannot disagree
   (`repo_settings_harden_test.ts::isSecretScanningSkipped - no skip when the settings already hold…`)
@@ -120,15 +121,15 @@ suite and the quality gate:
   test, only transitive coverage — evidence:
   `worker/deno/lib/repo_settings_harden.ts:357` — reason: fixed here; added
   `repo_settings_harden_test.ts::needsPaidSecretProtection - private and
-  internal cost money…` covering case normalisation, the `public`-beats-`private`
-  precedence, the boolean fallback and the unknown-visibility default.
-- **violation** — the command's changed message assembly has no test —
-  evidence: `worker/deno/commands/repo_settings_harden.ts:250` — reason: stands.
-  `execute` binds `runGhCommand` directly and has no injection seam, so a test
-  would need live `gh` calls; adding that seam is a refactor outside this
-  issue. Both units it composes are tested directly
-  (`isSecretScanningSkipped`, and `SECRET_PROTECTION_SKIP_NOTE` is the literal
-  the docs quote).
+  internal cost money…`
+  covering case normalisation, the `public`-beats-`private` precedence, the
+  boolean fallback and the unknown-visibility default.
+- **violation** — the command's changed message assembly has no test — evidence:
+  `worker/deno/commands/repo_settings_harden.ts:250` — reason: stands. `execute`
+  binds `runGhCommand` directly and has no injection seam, so a test would need
+  live `gh` calls; adding that seam is a refactor outside this issue. Both units
+  it composes are tested directly (`isSecretScanningSkipped`, and
+  `SECRET_PROTECTION_SKIP_NOTE` is the literal the docs quote).
 - **violation** — `onCheckSkipped` is optional, so a caller that omits it would
   suppress two findings with no record — evidence:
   `worker/deno/lib/repo_settings_scanner.ts:70` — reason: stands. It mirrors the

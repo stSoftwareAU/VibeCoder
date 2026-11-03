@@ -2,11 +2,11 @@
 
 ## Summary
 
-Treat a partial acceptance criterion as unmet when deciding whether a PR
-closes its issue. PR assembly, later body synchronisation, closure recovery,
-and merged-PR discovery share the same guard, so the original issue remains
-queued until the remaining work is delivered. The issue and repair prompts and
-operator guidance now describe the same rule.
+Treat a partial acceptance criterion as unmet when deciding whether a PR closes
+its issue. PR assembly, later body synchronisation, closure recovery, and
+merged-PR discovery share the same guard, so the original issue remains queued
+until the remaining work is delivered. The issue and repair prompts and operator
+guidance now describe the same rule.
 
 Closes #4644
 
@@ -19,11 +19,11 @@ remaining work. No new gate or follow-up issue is introduced.
 
 ### Essential Design Decisions
 
-The existing closure-block parser detects both partial and missing entries.
-The existing body and merged-PR paths consume that signal, preserving the
-current continuation mechanism and labels. Qualified references are reconciled
-only against a trusted governing repository; the PR repository may differ.
-The existing issue-repository lookup does not discover foreign PRs.
+The existing closure-block parser detects both partial and missing entries. The
+existing body and merged-PR paths consume that signal, preserving the current
+continuation mechanism and labels. Qualified references are reconciled only
+against a trusted governing repository; the PR repository may differ. The
+existing issue-repository lookup does not discover foreign PRs.
 
 ### Undiscoverable Facts
 
@@ -39,7 +39,7 @@ unrelated references, and missing identity.
 
 ## Test Plan
 
-- `deno test -A tests/pr_body_sync_test.ts tests/missing_criterion_close_guard_3177_test.ts`: 74 passed on the original head; the closure, body-sync and recovery
-  suite passes 88 tests with the qualified-reference fix.
+- `deno test -A tests/pr_body_sync_test.ts tests/missing_criterion_close_guard_3177_test.ts`:
+  74 passed on the original head; the closure, body-sync and recovery suite
+  passes 88 tests with the qualified-reference fix.
 - Full quality gate: see PR checks.
-

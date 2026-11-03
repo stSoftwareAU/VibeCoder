@@ -12,19 +12,21 @@ output format.
 
 - **`hardenRepo`** handles the whole run: the settings snapshot, the default
   branch, `collectUsesReferences`, transitive action resolution, planning and
-  apply. It returns `{results, skipNote, coordinates, referenceCount,
-  unreadable}` and never throws; every fault becomes a `failed` result.
-  `requireReviews` stays off unless the caller passes it.
+  apply. It returns
+  `{results, skipNote, coordinates, referenceCount,
+  unreadable}` and never
+  throws; every fault becomes a `failed` result. `requireReviews` stays off
+  unless the caller passes it.
 - **Ruleset lookup:** `applyRulesetReviews` prefers the active
   `VIBE_RULESET_NAME` ruleset (`Vibe Coder default branch`) over the one named
   after the branch. If neither exists, it fails and names both. A matched
   ruleset with no `pull_request` rule also fails; it is never silently skipped.
-- **No checkout:** when `workDir` has no `.git`, the allow-list step is
-  recorded as `skipped` with the reason `no local checkout`, and nothing is
-  written. Any other probe fault (for example, `ENOTDIR`) is `failed`.
-- **Fail-loud reads:** a settings read that fails with anything other than a
-  404 gives a `failed` result naming the endpoint, and nothing is planned from
-  it. A 404 still means the surface is absent.
+- **No checkout:** when `workDir` has no `.git`, the allow-list step is recorded
+  as `skipped` with the reason `no local checkout`, and nothing is written. Any
+  other probe fault (for example, `ENOTDIR`) is `failed`.
+- **Fail-loud reads:** a settings read that fails with anything other than a 404
+  gives a `failed` result naming the endpoint, and nothing is planned from it. A
+  404 still means the surface is absent.
 - **`findCodeownersOnDefaultBranch(repo, gh)`** checks `.github/CODEOWNERS`,
   `CODEOWNERS` and `docs/CODEOWNERS`. It returns `present` with the path,
   `absent` when all three are 404, or `error` for any other failure.
@@ -58,9 +60,9 @@ flowchart TD
   Slug validation reuses `isValidRepoSlug` from `repo_rulesets.ts`.
 - `worker/deno/commands/repo_settings_harden.ts` is now a thin wrapper around
   `hardenRepo`.
-- `worker/deno/tests/repo_settings_harden_test.ts` has 20 new test
-  declarations (22 runs, counting the three-path loop) using a routing stub
-  `gh`. Temp paths are removed on unload.
+- `worker/deno/tests/repo_settings_harden_test.ts` has 20 new test declarations
+  (22 runs, counting the three-path loop) using a routing stub `gh`. Temp paths
+  are removed on unload.
 - `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` covers the ruleset preference, the
   `hardenRepo` contract, the checkout skip and failure, and
   `findCodeownersOnDefaultBranch`.
@@ -85,26 +87,26 @@ Run from `worker/deno`:
 - The same file with `tests/codeowners_test.ts`, `tests/repo_rulesets_test.ts`,
   `tests/workflow_hardening_test.ts` and
   `tests/state_write_symlink_hardening_test.ts`: **87 passed, 0 failed**.
-- `deno fmt`, `deno lint` and `deno check mod.ts`: clean. `markdownlint-cli2`:
-  0 issues.
-- `./quality.sh`: **PASSED (with skipped checks)**. Only the config
-  integration check was skipped, because there is no host config.
+- `deno fmt`, `deno lint` and `deno check mod.ts`: clean. `markdownlint-cli2`: 0
+  issues.
+- `./quality.sh`: **PASSED (with skipped checks)**. Only the config integration
+  check was skipped, because there is no host config.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-| # | Criterion | Status | Evidence |
-|---|-----------|--------|----------|
-| 1 | Tests written first with a stub gh | met | The new tests and the `makeGh` routing stub landed alone in WIP checkpoint `55596c7f` (test file only, 426 lines), before any library or command change |
-| 2 | Existing tests pass | met | The original 22 tests in `repo_settings_harden_test.ts` are unchanged and pass, as do the related suites (87 in total) |
-| 3 | A Vibe-only ruleset with `requireCodeOwnerReview` → exactly one ruleset write | met | "a Vibe-only ruleset gets exactly one write turning on code-owner review" asserts one `PUT repos/<repo>/rulesets/7` with the full rule body |
-| 4 | No matching ruleset → `failed`, naming both | met | "no matching ruleset fails naming both the branch and the Vibe ruleset" |
-| 5 | No checkout → no allow-list write; the skip is recorded | met | "without a local checkout the allow-list is skipped, never written" and "a missing checkout records the skip even when nothing else is planned" |
-| 6 | CODEOWNERS: 3 locations, absent, non-404 error | met | `findCodeownersOnDefaultBranch` tests: present at each of the 3 paths, absent after 3 reads, error on HTTP 500, and an invalid repo |
-| 7 | A failed workflow read → `failed` naming the endpoint, no write | met | "a failed workflow-permissions read is a failure naming the endpoint, with no write". The 404 counterpart is asserted as absent |
-| 8 | An already-hardened repo makes zero writes under `apply` | met | "an already-hardened repo makes zero writes under apply": no writes, no results, no skip note |
-| 9 | The quality gate passes | met | `./quality.sh` passed; see Evidence |
+| # | Criterion                                                                     | Status | Evidence                                                                                                                                                |
+| - | ----------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 | Tests written first with a stub gh                                            | met    | The new tests and the `makeGh` routing stub landed alone in WIP checkpoint `55596c7f` (test file only, 426 lines), before any library or command change |
+| 2 | Existing tests pass                                                           | met    | The original 22 tests in `repo_settings_harden_test.ts` are unchanged and pass, as do the related suites (87 in total)                                  |
+| 3 | A Vibe-only ruleset with `requireCodeOwnerReview` → exactly one ruleset write | met    | "a Vibe-only ruleset gets exactly one write turning on code-owner review" asserts one `PUT repos/<repo>/rulesets/7` with the full rule body             |
+| 4 | No matching ruleset → `failed`, naming both                                   | met    | "no matching ruleset fails naming both the branch and the Vibe ruleset"                                                                                 |
+| 5 | No checkout → no allow-list write; the skip is recorded                       | met    | "without a local checkout the allow-list is skipped, never written" and "a missing checkout records the skip even when nothing else is planned"         |
+| 6 | CODEOWNERS: 3 locations, absent, non-404 error                                | met    | `findCodeownersOnDefaultBranch` tests: present at each of the 3 paths, absent after 3 reads, error on HTTP 500, and an invalid repo                     |
+| 7 | A failed workflow read → `failed` naming the endpoint, no write               | met    | "a failed workflow-permissions read is a failure naming the endpoint, with no write". The 404 counterpart is asserted as absent                         |
+| 8 | An already-hardened repo makes zero writes under `apply`                      | met    | "an already-hardened repo makes zero writes under apply": no writes, no results, no skip note                                                           |
+| 9 | The quality gate passes                                                       | met    | `./quality.sh` passed; see Evidence                                                                                                                     |
 
 ## Standards Review
 
@@ -119,8 +121,7 @@ Verdict: **pass with notes**. Notes applied:
   any other `stat` fault is `failed`, with a regression test.
 - **Missing tests:** added tests for an invalid repo, a ruleset with no
   `pull_request` rule, and the non-NotFound probe fault.
-- **Temp cleanup:** temp directories and the branch cache are removed on
-  unload.
+- **Temp cleanup:** temp directories and the branch cache are removed on unload.
 
 The notes not taken, and why, are under **Review notes not taken** above. The
 code, comments and docs use Australian English. No new dependencies were added,

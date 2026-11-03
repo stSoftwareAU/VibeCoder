@@ -34,11 +34,10 @@ flowchart LR
   `readTextFileNoFollow`), `writeExchangeFile` (`createNew`, 0600).
 - `readTextFileNoFollow` gains optional `maxBytes`, `openTimeoutMs` and an
   `open` seam, a descriptor regular-file check, and a `dev` check beside `ino`.
-  The descriptor must have at most one hard link and match both the pre-open
-  and post-open path identities (inode and device).
-  With `openTimeoutMs`, it opens read-write and requires write permission; a
-  raced FIFO does not block on Unix. One-argument callers behave as before,
-  apart from the extra descriptor checks.
+  The descriptor must have at most one hard link and match both the pre-open and
+  post-open path identities (inode and device). With `openTimeoutMs`, it opens
+  read-write and requires write permission; a raced FIFO does not block on Unix.
+  One-argument callers behave as before, apart from the extra descriptor checks.
 - A non-watch CLI pass calls `Deno.exit(Deno.exitCode)` after cleanup so a
   different stalled open cannot keep the process alive.
 - `spawnBabysitterAgent` and `startBabysitterAgent` take a required
@@ -53,20 +52,20 @@ flowchart LR
 - That Codex writes `--output-last-message` from outside the agent's permissions
   profile is taken from the issue comments and was not checked against an
   installed Codex; the docs say to confirm it per host.
-- With `openTimeoutMs` set, the reader opens read-write, preventing a FIFO
-  raced in before the open from blocking on Unix; the descriptor check refuses
-  it. This requires write permission. Other stalled opens are abandoned after
-  the timeout and their descriptors are closed if they later complete. A
-  pending open can keep a process alive; non-watch passes explicitly exit after
-  cleanup, while watch mode continues with the open pending.
+- With `openTimeoutMs` set, the reader opens read-write, preventing a FIFO raced
+  in before the open from blocking on Unix; the descriptor check refuses it.
+  This requires write permission. Other stalled opens are abandoned after the
+  timeout and their descriptors are closed if they later complete. A pending
+  open can keep a process alive; non-watch passes explicitly exit after cleanup,
+  while watch mode continues with the open pending.
 
 ## Evidence
 
 Backend only. The retry session named in the issue is not on `main`; the only
 response read is the initial one in `fix`, now `readAgentResponse`.
 
-Merge conflict resolution retains the base's merged-base push log and stages
-the PR description in the runner-owned exchange directory on that path too.
+Merge conflict resolution retains the base's merged-base push log and stages the
+PR description in the runner-owned exchange directory on that path too.
 
 Call sites changed: `takePrBodyProposal` (`.babysitter-pr-body`), `applyPrBody`
 (both callers in `fix`), `readAgentResponse` (`fix`),
@@ -79,26 +78,27 @@ below.
 Docs: `docs/workflows/fleet-pr-babysitter.md` (exchange directory paragraph and
 the write-grants sentence).
 
-The sweep top-up records merge base
-`0a4d803ab862753bd35fcf39f5df4b3c91545504` as `sweptAt`, following the
-workflow's default-branch ancestry requirement. The previous feature-branch
-commit failed `Sweep ledger sweptAt ancestry` in PR #4752 and in the local
-reproduction. After repointing, the exact workflow command passes:
+The sweep top-up records merge base `0a4d803ab862753bd35fcf39f5df4b3c91545504`
+as `sweptAt`, following the workflow's default-branch ancestry requirement. The
+previous feature-branch commit failed `Sweep ledger sweptAt ancestry` in PR
+#4752 and in the local reproduction. After repointing, the exact workflow
+command passes:
 `deno run --frozen --lock=deno.lock --allow-read --allow-env --allow-run mod.ts sweep-drift --repo ../.. --default-branch origin/main`
 from `worker/deno`. No runtime code or tests changed in this CI repair.
 
 CI repair validation: 39 `lib_sweep_coverage_test.ts` tests and 13
-`sweep_drift_command_test.ts` tests pass. `deno task pr-summary-ci --base main
+`sweep_drift_command_test.ts` tests pass.
+`deno task pr-summary-ci --base main
 --head-branch issue-4731-babysitter-runner-follows-agent-planted-symlinks-w`
-reports no blocked gates (closure, independent review and reproduction are
-not checked without issue context). The local quality gate passes completeness,
+reports no blocked gates (closure, independent review and reproduction are not
+checked without issue context). The local quality gate passes completeness,
 markdownlint, Mermaid, lint, type checking, formatting and its static checks.
 Semgrep and Checkov are unavailable locally; config integration has no local
 configuration. The full parallel unit pass cannot finish: host Deno 2.9.5 on
 macOS panics in `cli/ops/testing.rs` with "pledge test permissions called before
 restoring previous pledge"; the repository pins 2.9.8. The serial pass therefore
-does not run. All four CI test shards passed on the latest merged main PR
-#4742 (Actions run 41550561600), confirmed through `gh`.
+does not run. All four CI test shards passed on the latest merged main PR #4742
+(Actions run 41550561600), confirmed through `gh`.
 
 ## Test Plan
 
@@ -123,63 +123,63 @@ symlink test red; `--output-last-message` back inside the clone → spawn-args
 test red; responseFile guard removed → refusal test red; `applyPrBody` writing
 with `Deno.writeTextFile` → planted-symlink test red; `maxBytes` pre-check
 removed and the open-timeout race removed → their `file_utils_test.ts` cases
-red. Review repair adds an open-seam device-stat test with the same inode and
-a different device; removing the device comparisons makes it fail.
+red. Review repair adds an open-seam device-stat test with the same inode and a
+different device; removing the device comparisons makes it fail.
 
 Review repair for PR #4752 also adds real hard-link and regular-file rename
 races between lstat and open. Both tests fail before the fix. The reader now
 refuses multiple links on the opened descriptor and checks it against the
 original lstat as well as the fresh one. The production CLI repair fixture
-writes a PR body proposal and records the actual `gh pr edit --body-file`
-path and contents. It asserts that staging is outside both write grants
-(clone and scratch). Changing `fix()` back to scratch staging makes this
-end-to-end test fail. Existing assertions remain intact; no tests were removed.
+writes a PR body proposal and records the actual `gh pr edit --body-file` path
+and contents. It asserts that staging is outside both write grants (clone and
+scratch). Changing `fix()` back to scratch staging makes this end-to-end test
+fail. Existing assertions remain intact; no tests were removed.
 
 The latest review repair exercises the real non-watch CLI with a FIFO swapped
 into a read-only open, leaving a genuine pending open after the timeout. The
 child exits with the failure after cleanup; without the explicit exit it times
-out. The operator documentation and reader JSDoc describe the residual open.
-The four affected suites pass (135 tests), as do whole-tree Deno formatting,
-lint and type checking. No existing assertions were removed.
-The local full gate passed its static checks but the parallel unit pass hit
-the host Deno permission-pledge panic; the serial pass did not run. Base CI
-run 41550561600 passed all four test shards. Semgrep and the pinned Checkov
-version were unavailable locally; config integration had no configuration.
+out. The operator documentation and reader JSDoc describe the residual open. The
+four affected suites pass (135 tests), as do whole-tree Deno formatting, lint
+and type checking. No existing assertions were removed. The local full gate
+passed its static checks but the parallel unit pass hit the host Deno
+permission-pledge panic; the serial pass did not run. Base CI run 41550561600
+passed all four test shards. Semgrep and the pinned Checkov version were
+unavailable locally; config integration had no configuration.
 
 The subsequent review repair tests a real FIFO swapped into the open in a child
 Deno process and requires the child to refuse it and exit. The test failed with
-the prior read-only open; the bounded reader now opens read-write on Unix.
-The file-utils and exchange suites pass (47 tests); formatter, lint, whole-tree
-type check and Markdown checks pass. The full gate's parallel tests hit the
-host Deno 2.9.5 permission-pledge panic described below; the serial pass did not
-run. Base CI run 41550561600 passed all four test shards. Semgrep is absent and
-the installed Checkov does not match the CI pin, so those local scans skipped.
+the prior read-only open; the bounded reader now opens read-write on Unix. The
+file-utils and exchange suites pass (47 tests); formatter, lint, whole-tree type
+check and Markdown checks pass. The full gate's parallel tests hit the host Deno
+2.9.5 permission-pledge panic described below; the serial pass did not run. Base
+CI run 41550561600 passed all four test shards. Semgrep is absent and the
+installed Checkov does not match the CI pin, so those local scans skipped.
 
 Review-repair validation: the four targeted babysitter and file-utils suites
 pass (134 tests), as do the shared reader's gh-wrapper and gitignore-enforcer
-callers (52 tests). `deno task check:manifests` passes (847 tests).
-The full `./quality.sh < /dev/null` passes completeness,
-formatting, lint, whole-tree type checking, Markdown, Mermaid and static
-checks. Its parallel unit pass crashes in host Deno 2.9.5 on macOS with
+callers (52 tests). `deno task check:manifests` passes (847 tests). The full
+`./quality.sh < /dev/null` passes completeness, formatting, lint, whole-tree
+type checking, Markdown, Mermaid and static checks. Its parallel unit pass
+crashes in host Deno 2.9.5 on macOS with
 `pledge test permissions called before restoring previous pledge`; the serial
 pass consequently does not run. Semgrep and Checkov are not installed, and
-config integration has no local configuration. All four test shards pass in
-base PR #4742's CI run 41550561600, verified with `gh`; all current PR #4752
-checks are also green. The summary CI command reports zero blocked gates
-(three issue-context gates not checked). No tests or checks were weakened.
+config integration has no local configuration. All four test shards pass in base
+PR #4742's CI run 41550561600, verified with `gh`; all current PR #4752 checks
+are also green. The summary CI command reports zero blocked gates (three
+issue-context gates not checked). No tests or checks were weakened.
 
-Implementation-session results before the CI repair: `deno task test:unit` for `file_utils_test.ts` (30
-passed), `fleet_babysitter_exchange_test.ts` (13 passed),
-`fleet_babysitter_app_test.ts` and `fleet_pr_babysitter_test.ts` (69 passed, 1
-failed: `babysitter default heartbeat resolves its checkout revision`, which
-fails the same way on base `0a4d803a` because `jsr.io/@std/crypto` cannot be
-fetched in the sandbox), `gh_wrapper_test.ts` and `gitignore_enforcer_test.ts`
-(52 passed). `deno fmt --check`, `deno lint`, `deno check` pass on the touched
-files.
+Implementation-session results before the CI repair: `deno task test:unit` for
+`file_utils_test.ts` (30 passed), `fleet_babysitter_exchange_test.ts` (13
+passed), `fleet_babysitter_app_test.ts` and `fleet_pr_babysitter_test.ts` (69
+passed, 1 failed: `babysitter default heartbeat resolves its checkout revision`,
+which fails the same way on base `0a4d803a` because `jsr.io/@std/crypto` cannot
+be fetched in the sandbox), `gh_wrapper_test.ts` and
+`gitignore_enforcer_test.ts` (52 passed). `deno fmt --check`, `deno lint`,
+`deno check` pass on the touched files.
 
-Implementation-session `./quality.sh`: every stage passes (completeness checks, lint,
-type check, fmt, semgrep, markdownlint) except `deno tests` (parallel pass),
-which fails two tests in files this change does not touch:
+Implementation-session `./quality.sh`: every stage passes (completeness checks,
+lint, type check, fmt, semgrep, markdownlint) except `deno tests` (parallel
+pass), which fails two tests in files this change does not touch:
 `fleet_pr_babysitter_test.ts` "babysitter default heartbeat resolves its
 checkout revision" (cannot fetch `jsr.io/@std/crypto`; it fails the same way on
 base `0a4d803a`) and `milestone_resolution_gate_test.ts` "verifyResolvedTree -

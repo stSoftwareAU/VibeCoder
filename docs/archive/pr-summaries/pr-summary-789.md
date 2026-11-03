@@ -4,16 +4,16 @@
 
 `retro/v1` triage rule 6 honoured a **bare** suppression marker: an id match
 alone dropped the candidate. The deterministic check
-(`worker/deno/lib/suppression_comments.ts`) and twelve sibling scans refuse
-that — a marker suppresses only when it records:
+(`worker/deno/lib/suppression_comments.ts`) and twelve sibling scans refuse that
+— a marker suppresses only when it records:
 
 - `author=<github-login>` — who waived the finding;
 - `expires=<YYYY-MM-DD>` — until when, today or later;
 - reason text — why.
 
 …and an ungoverned marker is kept and reported as
-`Rejected suppression: <file>:<line> <id> — <failed check>` rather than
-silently obeyed.
+`Rejected suppression: <file>:<line> <id> — <failed check>` rather than silently
+obeyed.
 
 So a one-line `// best-practice-ignore: BP-abc123def456` with no author, no
 expiry and no reason was an **ungoverned, never-expiring waiver** on the retro
@@ -26,7 +26,7 @@ written to prevent.
 > only path that reads these markers — there is no second triage path for it to
 > drift from**.
 
-Retro *was* that second path.
+Retro _was_ that second path.
 
 `prompts/retro/v2.md` carries the governed check and the reporting line, in the
 siblings' own words. `prompts/bash_syntax_audit/v5.md` replaces the sole-reader
@@ -37,8 +37,8 @@ Closes #789.
 
 ## Evidence
 
-Prompt-content change with no runtime surface to screenshot. The evidence is
-the guard, which reads every prompt rather than the one that was wrong.
+Prompt-content change with no runtime surface to screenshot. The evidence is the
+guard, which reads every prompt rather than the one that was wrong.
 
 ```mermaid
 flowchart TD
@@ -79,8 +79,8 @@ quality check all pass.
 
 ## Reproduction
 
-- **symptom** — a bare `// best-practice-ignore: BP-…` with no author, expiry
-  or reason silences a retro candidate, while the same marker is refused (and
+- **symptom** — a bare `// best-practice-ignore: BP-…` with no author, expiry or
+  reason silences a retro candidate, while the same marker is refused (and
   reported) by the deterministic check and by twelve sibling scans
 - **status** — `verified` — the guard reads every latest prompt that names the
   grammar and was watched failing against v1, naming all three missing fields
@@ -98,19 +98,19 @@ reviewer sub-agents.
   `Rejected suppression:` line into the filing — evidence: the new version;
   `::retro no longer drops on an id match alone (Issue #789)` asserts the old
   wording is gone and both halves of the new rule are present
-- **met** — the governed rule text copied into retro/v2, matching how the
-  twelve siblings carry it — evidence: the wording is `best_practices/v12`'s,
-  adapted only where retro says "candidate" for "finding"
-- **met** — `prompts/bash_syntax_audit/v5.md` rewording the sole-reader
-  sentence — evidence: the one-hunk diff;
+- **met** — the governed rule text copied into retro/v2, matching how the twelve
+  siblings carry it — evidence: the wording is `best_practices/v12`'s, adapted
+  only where retro says "candidate" for "finding"
+- **met** — `prompts/bash_syntax_audit/v5.md` rewording the sole-reader sentence
+  — evidence: the one-hunk diff;
   `::no prompt claims to be the only marker reader (Issue #789)` asserts no
   prompt makes that claim any more
 - **met** — a Deno test asserting every latest prompt that recognises the
   grammar carries the three-field check and the reporting line, failing when a
   prompt honours a bare marker — evidence:
-  `::every marker reader states all three fields (Issue #789)`, which
-  enumerates `prompts/` at run time, so a **new** scan is covered without
-  editing the test (16 readers today)
+  `::every marker reader states all three fields (Issue #789)`, which enumerates
+  `prompts/` at run time, so a **new** scan is covered without editing the test
+  (16 readers today)
 - **met** — `retro/v1` and `bash_syntax_audit/v4` untouched — evidence: not in
   the diff; `::the retired versions stay immutable (Issue #789)` asserts both
   still carry the wording their successors replace
@@ -119,11 +119,13 @@ reviewer sub-agents.
   reason: both families carry the version there, so a straight copy ships the
   predecessor's number — the defect class #792 sweeps. Corrected in the two
   files this change adds rather than leaving two fresh instances behind
-- **unrequested** — `::the deterministic check requires the same fields
-  (Issue #789)` reads `suppression_comments.ts` — reason: every one of these
-  prompts justifies its rule by saying it mirrors the code. Asserting only
-  that the prompts agree with each other would leave all sixteen free to drift
-  from the thing they claim to mirror
+- **unrequested** —
+  `::the deterministic check requires the same fields
+  (Issue #789)` reads
+  `suppression_comments.ts` — reason: every one of these prompts justifies its
+  rule by saying it mirrors the code. Asserting only that the prompts agree with
+  each other would leave all sixteen free to drift from the thing they claim to
+  mirror
 
 ## Standards Review
 

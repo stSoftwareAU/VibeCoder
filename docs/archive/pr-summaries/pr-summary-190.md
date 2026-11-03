@@ -32,11 +32,11 @@ comment, because the empty trust lists make `classifyCommentAuthor` return
 `UNTRUSTED` unconditionally: there is no author value that can classify as
 trusted on this path, so no author-spoofing bypass exists. Detection is not
 author-conditional and not sampled, so no comment reaches the prompt unscanned.
-The `[SECURITY]` events are collected *before* `capFormattedComments` applies
-the total-character budget, so padding the blob past the cap drops the attacker's
-text but never the audit signal. The duplicate formatter that skipped these
-controls is deleted, not merely bypassed, so there is no remaining code path that
-formats a comment without classification.
+The `[SECURITY]` events are collected _before_ `capFormattedComments` applies
+the total-character budget, so padding the blob past the cap drops the
+attacker's text but never the audit signal. The duplicate formatter that skipped
+these controls is deleted, not merely bypassed, so there is no remaining code
+path that formats a comment without classification.
 
 **Deliberate behaviour change:** output on this path is now
 `[UNTRUSTED - alice]: hello` rather than `[alice]: hello`. Two pre-existing
@@ -44,7 +44,8 @@ assertions encoded the old unlabelled format and were updated (not removed or
 disabled) to expect the trust label:
 
 - `worker/deno/tests/comment_filter_test.ts` — "preserves user comments in full"
-- `worker/deno/tests/security_scan_overflow_3648_test.ts` — "prepareQuestionComments preserves small input"
+- `worker/deno/tests/security_scan_overflow_3648_test.ts` —
+  "prepareQuestionComments preserves small input"
 
 Downstream consumers do not parse this format — `prompt_builder.ts` passes the
 blob through `sanitiseDelimitedComments` and fences it with the per-run nonce
@@ -112,14 +113,14 @@ Supporting tests in the same file:
 
 - `SEC-c48e0d76a1f2 - legacy path raises no audit event for a benign comment` —
   no false positives on ordinary questions.
-- `SEC-c48e0d76a1f2 - legacy path labels every author UNTRUSTED with no trust config` —
-  the missing trust label is now present for every author.
-- `SEC-c48e0d76a1f2 - legacy path sanitises delimiter-shaped patterns in comment bodies` —
-  `<<<…>>>` markers in a comment body are neutralised on this path.
+- `SEC-c48e0d76a1f2 - legacy path labels every author UNTRUSTED with no trust config`
+  — the missing trust label is now present for every author.
+- `SEC-c48e0d76a1f2 - legacy path sanitises delimiter-shaped patterns in comment bodies`
+  — `<<<…>>>` markers in a comment body are neutralised on this path.
 - `SEC-c48e0d76a1f2 - audit events survive the total-character cap` — a
   suspicious comment pushed past the character budget still surfaces its event.
-- `SEC-c48e0d76a1f2 - empty and malformed input yield no comments and no audit events` —
-  edge cases: empty string, `{}`, invalid JSON, empty comments array.
+- `SEC-c48e0d76a1f2 - empty and malformed input yield no comments and no audit events`
+  — edge cases: empty string, `{}`, invalid JSON, empty comments array.
 
 Modified (assertions updated for the new trust label, none removed or disabled):
 
@@ -132,7 +133,7 @@ Modified (assertions updated for the new trust label, none removed or disabled):
   suspicious-pattern set on both paths; malformed JSON returns empty rather than
   throwing.
 - **Secrets** — no credentials or hidden files staged.
-- **Injection surface** — this change *reduces* the prompt-injection surface; no
+- **Injection surface** — this change _reduces_ the prompt-injection surface; no
   new shell, SQL, filesystem or HTTP calls.
 - **Output encoding** — delimiter-shaped markers in comment bodies are rewritten
   to inert fullwidth forms via `sanitiseDelimiterPatterns`.

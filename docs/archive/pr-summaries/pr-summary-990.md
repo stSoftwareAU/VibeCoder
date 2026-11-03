@@ -10,16 +10,17 @@ worker container. The two tests the issue named
 they described had simply moved to a different pair:
 
 - `run_core_production_deps_test.ts::createProductionRunCoreDeps - static trust
-  refresh succeeds and does not throw` left `resolveTrustedAuthors` unset, so it
-  drove the **real** resolver: a live `gh` call against whatever repositories the
-  host's own `.config.json` names, plus `derived_authors.ts`'s process-wide
-  per-cycle cache shared with every other test file in the same worker. Green on
-  its own (6s of network), red inside the gate.
+  refresh succeeds and does not throw`
+  left `resolveTrustedAuthors` unset, so it drove the **real** resolver: a live
+  `gh` call against whatever repositories the host's own `.config.json` names,
+  plus `derived_authors.ts`'s process-wide per-cycle cache shared with every
+  other test file in the same worker. Green on its own (6s of network), red
+  inside the gate.
 - `run_core_slot_pool_test.ts::slot pool - a success is followed by the normal
-  sleep and another claim in the SAME slot …` asserted an exact global ordering
-  over an event trace **two concurrent slots** wrote. The idle sibling's rescan
-  sleeps interleaved between the working slot's settle sleep and its next claim,
-  in whatever order the event loop chose.
+  sleep and another claim in the SAME slot …`
+  asserted an exact global ordering over an event trace **two concurrent slots**
+  wrote. The idle sibling's rescan sleeps interleaved between the working slot's
+  settle sleep and its next claim, in whatever order the event loop chose.
 
 Both are now decided by the behaviour they name and nothing else. Closes #990.
 
@@ -88,7 +89,8 @@ flowchart LR
 - **regression test** —
   `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a success is
   followed by the normal sleep and another claim in the SAME slot, not a pool
-  drain (Issue #178)` and
+  drain (Issue #178)`
+  and
   `worker/deno/tests/run_core_production_deps_test.ts::createProductionRunCoreDeps
   - static trust refresh succeeds and does not throw`
 

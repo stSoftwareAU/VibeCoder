@@ -5,18 +5,17 @@
 The same named artefact — "the only hidden paths that may ever be
 staged/tracked" — had three memberships:
 
-| Surface | Entries |
-| --- | --- |
+| Surface                                               | Entries                                                                                  |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `gitignore_enforcer.ts` `REQUIRED_GITIGNORE_PATTERNS` | **5** — `.gitignore`, `.github`, `.vscode`, `.markdownlint-cli2.jsonc`, `.gitattributes` |
-| `CODING-STANDARDS.md` | 4 — no `.vscode/` |
-| `prompts/coding_guidelines/` | 3 — no `.vscode/`, no `.gitattributes` |
+| `CODING-STANDARDS.md`                                 | 4 — no `.vscode/`                                                                        |
+| `prompts/coding_guidelines/`                          | 3 — no `.vscode/`, no `.gitattributes`                                                   |
 
-The enforcer is what actually writes every monitored repository's
-`.gitignore`, so `.gitattributes` was written in as tracked-and-allowed while
-the injected block told the agent — under "Everything below is **always
-forbidden**: … any other hidden file not on the allowlist above" — that staging
-it was forbidden. `.vscode/` was re-allowed by the enforcer and named in
-neither document.
+The enforcer is what actually writes every monitored repository's `.gitignore`,
+so `.gitattributes` was written in as tracked-and-allowed while the injected
+block told the agent — under "Everything below is **always forbidden**: … any
+other hidden file not on the allowlist above" — that staging it was forbidden.
+`.vscode/` was re-allowed by the enforcer and named in neither document.
 
 Both documents now restate the enforcer's five entries, and say that they are
 restatements of it. The enforcer itself is untouched: dropping a re-allow would
@@ -25,8 +24,8 @@ change behaviour in every monitored repository.
 The guidelines also gain the private-key class the standards already carried
 (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `credentials.json`,
 `service-account*.json`). None of those begins with a dot, so the hidden-file
-rule never covered them, and an agent running on the injected block alone had
-no rule against staging a `.pem`.
+rule never covered them, and an agent running on the injected block alone had no
+rule against staging a `.pem`.
 
 Closes #784.
 
@@ -77,9 +76,9 @@ every file in `worker/deno/tests` (0 errors), markdownlint and the
   repository's `.gitignore` as tracked-and-allowed, while the injected
   guidelines tell the agent that any hidden file not on their three-entry
   allowlist is always forbidden — and neither document mentions `.vscode/`
-- **status** — `verified` — the drift test reads
-  `REQUIRED_GITIGNORE_PATTERNS` and was watched failing on four of six cases,
-  naming `.vscode` as the missing entry in both documents
+- **status** — `verified` — the drift test reads `REQUIRED_GITIGNORE_PATTERNS`
+  and was watched failing on four of six cases, naming `.vscode` as the missing
+  entry in both documents
 - **regression test** —
   `worker/deno/tests/hidden_allowlist_drift_test.ts::hidden allowlist - the guidelines state every entry the enforcer re-allows (Issue #784)`
 
@@ -91,21 +90,21 @@ reviewer sub-agents.
 
 - **met** — both documents align to the enforcer's five re-allowed entries,
   entry-for-entry; the enforcer file is not modified — evidence:
-  `prompts/coding_guidelines/v45.md`, `CODING-STANDARDS.md`, and the two
-  "states every entry the enforcer re-allows" cases, which derive the expected
-  set from `REQUIRED_GITIGNORE_PATTERNS` rather than restating it
+  `prompts/coding_guidelines/v45.md`, `CODING-STANDARDS.md`, and the two "states
+  every entry the enforcer re-allows" cases, which derive the expected set from
+  `REQUIRED_GITIGNORE_PATTERNS` rather than restating it
 - **met** — the guidelines fix lands as a new immutable version;
   `CODING-STANDARDS.md` is edited in place — evidence: v44 → v45, with
   `::the retired guidelines version stays immutable (Issue #784)`
 - **met** — the new guidelines version gains the private-key/credential class
   matching `CODING-STANDARDS.md` — evidence:
-  `::both surfaces state the private-key class (Issue #784)`, which also
-  asserts the enforcer really ignores each pattern, so the documents cannot
-  forbid something the tooling permits
-- **met** — a Deno test asserts every re-allow entry is stated in both
-  documents and fails if any surface drifts — evidence: the six cases; the
-  membership is read at run time, so a **sixth** re-allow fails the test until
-  both documents name it
+  `::both surfaces state the private-key class (Issue #784)`, which also asserts
+  the enforcer really ignores each pattern, so the documents cannot forbid
+  something the tooling permits
+- **met** — a Deno test asserts every re-allow entry is stated in both documents
+  and fails if any surface drifts — evidence: the six cases; the membership is
+  read at run time, so a **sixth** re-allow fails the test until both documents
+  name it
 - **met** — `.vscode` stays in the enforcer and is added to both documents —
   evidence: the five-entry pin in
   `::the enforcer re-allows exactly the five documented entries (Issue #784)`
@@ -114,15 +113,17 @@ reviewer sub-agents.
   — reason: there is no H1 version declaration to keep in step here, the same
   finding as #781 and #782. Adding one is #792's sweep
 
-- **unrequested** — both surfaces now *name* `REQUIRED_GITIGNORE_PATTERNS` as
+- **unrequested** — both surfaces now _name_ `REQUIRED_GITIGNORE_PATTERNS` as
   the source, and a test asserts they do — reason: the lists are restatements,
   and this defect happened because each read as a definition. Saying so is what
   stops the next editor changing one list on its own; without it the alignment
   is a snapshot rather than a rule
-- **unrequested** — `::the enforcer re-allows exactly the five documented
-  entries` pins the enforcer's own membership — reason: the other cases derive
-  from it, so without this an entry silently *removed* from the enforcer would
-  leave both documents over-permissive and every case still green
+- **unrequested** —
+  `::the enforcer re-allows exactly the five documented
+  entries` pins the
+  enforcer's own membership — reason: the other cases derive from it, so without
+  this an entry silently _removed_ from the enforcer would leave both documents
+  over-permissive and every case still green
 
 ## Standards Review
 

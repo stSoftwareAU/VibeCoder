@@ -8,7 +8,7 @@ logged reason, plus `applyResolvedPins()` which rewrites a rendered template's
 `uses:` lines only. Closes #1823.
 
 Highest, not newest: a backport patch cut on an older major yesterday is more
-recently *published* than last month's newer major, so choosing by publish date
+recently _published_ than last month's newer major, so choosing by publish date
 would walk the pin backwards and trip audit check 16 — the very finding this
 exists to remove. `selectNewestAged` picks by date and is deliberately unused.
 
@@ -19,10 +19,10 @@ issue's first bullet names — the two branch-HEAD entries, **plus
 `dtolnay/rust-toolchain`**, taken under the issue's Context clause that permits
 a third "only with a source comment stating why, recorded in the PR summary".
 The reason: upstream has published exactly one release ever, the rolling `v1`
-tag from 2022-07-15, and no `MAJOR.MINOR.PATCH` release at all — so the
-resolver has nothing to select and would emit a fallback line on every sync,
-training operators to ignore the one signal that matters. The justification is
-recorded in a source comment at `worker/deno/lib/pinned_actions.ts:107-112`.
+tag from 2022-07-15, and no `MAJOR.MINOR.PATCH` release at all — so the resolver
+has nothing to select and would emit a fallback line on every sync, training
+operators to ignore the one signal that matters. The justification is recorded
+in a source comment at `worker/deno/lib/pinned_actions.ts:107-112`.
 
 Per the issue, the resolver is **not** wired into the bump phase (#1775) and
 `workflow-sync`'s call site is not part of this change; the module is a library
@@ -96,14 +96,14 @@ and the captured log lines — no source-text inspection anywhere.
 - **met** — `./quality.sh` passes — evidence: full gate run on this tree,
   `Result: PASSED`, 21 checks (`config integration` SKIPPED on the default
   branch too) — reviewer: met
-- **unrequested** — `dtolnay/rust-toolchain` marked `resolution: "catalogue"`,
-  a third entry where the issue's first bullet says "exactly the two" —
-  reviewer: unrequested — reason: taken under the issue's own Context clause
-  permitting a third "only with a source comment stating why, recorded in the
-  PR summary"; upstream cuts no `MAJOR.MINOR.PATCH` release, and the comment
-  sits at `worker/deno/lib/pinned_actions.ts:107-112`. The reviewer noted the
-  claim is asserted rather than tested — a resolver test cannot verify a live
-  upstream without network access, so it stands as a documented assumption.
+- **unrequested** — `dtolnay/rust-toolchain` marked `resolution: "catalogue"`, a
+  third entry where the issue's first bullet says "exactly the two" — reviewer:
+  unrequested — reason: taken under the issue's own Context clause permitting a
+  third "only with a source comment stating why, recorded in the PR summary";
+  upstream cuts no `MAJOR.MINOR.PATCH` release, and the comment sits at
+  `worker/deno/lib/pinned_actions.ts:107-112`. The reviewer noted the claim is
+  asserted rather than tested — a resolver test cannot verify a live upstream
+  without network access, so it stands as a documented assumption.
 - **unrequested** — `resolveGitHubReleaseHistory` widened from
   `Promise<ReleaseCandidate[]>` to `Promise<Result<ReleaseCandidate[]>>` in
   `worker/deno/lib/tool_release_age.ts:606` — reviewer: unrequested — reason:
@@ -113,12 +113,12 @@ and the captured log lines — no source-text inspection anywhere.
   preserved at `:770` (`listing.ok ? listing.value : []`).
 - **unrequested** — the injected `log` sink is also passed to
   `normaliseQuarantineHours` — evidence:
-  `worker/deno/lib/action_pin_resolver.ts:212` — reviewer: unrequested —
-  reason: without it `VIBE_BUMP_QUARANTINE_HOURS=0` silently becomes 24h,
-  which is the embargo switching itself off quietly. The reviewer correctly
-  notes the sink can therefore carry a line that is not a
-  `pin resolution failed:` line; that is a second, distinct loud signal, and
-  the per-fallback "exactly one" guarantee is unaffected.
+  `worker/deno/lib/action_pin_resolver.ts:212` — reviewer: unrequested — reason:
+  without it `VIBE_BUMP_QUARANTINE_HOURS=0` silently becomes 24h, which is the
+  embargo switching itself off quietly. The reviewer correctly notes the sink
+  can therefore carry a line that is not a `pin resolution failed:` line; that
+  is a second, distinct loud signal, and the per-fallback "exactly one"
+  guarantee is unaffected.
 - **unrequested** — new sweep slice `12o` in
   `docs/audits/lib-sweep-coverage.json` plus its written record
   `docs/audits/security-sweep-1823-action-pin-resolver.md` — reviewer:
@@ -129,9 +129,10 @@ and the captured log lines — no source-text inspection anywhere.
   slice — evidence: `docs/audits/lib-sweep-coverage.json` — reviewer:
   unrequested — reason: the ledger parser makes `sweptAt` mandatory, #1822
   landed without one, and `check:manifests` was therefore **already red on the
-  milestone branch** before this change (`git show
-  a74f4a5:docs/audits/lib-sweep-coverage.json` confirms). AC5 could not be met
-  without repairing it.
+  milestone branch** before this change
+  (`git show
+  a74f4a5:docs/audits/lib-sweep-coverage.json` confirms). AC5 could
+  not be met without repairing it.
 - **unrequested** — `docs/EXTENDING.md` "Pinning third-party actions in
   templates" gains two bullets — reviewer: unrequested — reason: the repo
   standard "A Code Change Owes a Docs Change"; that section told contributors
@@ -139,10 +140,10 @@ and the captured log lines — no source-text inspection anywhere.
 - **unrequested** — tests beyond the issue's enumerated list (non-zero exit,
   whole-catalogue coverage, a bare tag with no `v`, a wider window, a rejecting
   runner, an unusable window, extra `applyResolvedPins` cases) and the exported
-  constants `PIN_RESOLUTION_FAILURE_PREFIX` / `QUARANTINE_HOURS_ENV` —
-  reviewer: unrequested — reason: additive coverage of the error paths the
-  acceptance criteria assert over, and two names the tests assert against
-  rather than duplicating literals.
+  constants `PIN_RESOLUTION_FAILURE_PREFIX` / `QUARANTINE_HOURS_ENV` — reviewer:
+  unrequested — reason: additive coverage of the error paths the acceptance
+  criteria assert over, and two names the tests assert against rather than
+  duplicating literals.
 
 ### Reviewer caveats recorded rather than fixed
 
@@ -155,10 +156,10 @@ behaviour, recorded here rather than silently dropped:
   behaviour (no malformed tag in an API path) holds on both layers; the
   in-module check is documented as defence in depth at
   `worker/deno/lib/action_pin_resolver.ts:54-59`.
-- If a chosen tag ever failed `RELEASE_TAG_PATTERN` the action falls back
-  rather than trying the next-highest eligible release. Unreachable today for
-  the same reason, and the issue does not prescribe next-best behaviour, so it
-  is left as specified rather than widened.
+- If a chosen tag ever failed `RELEASE_TAG_PATTERN` the action falls back rather
+  than trying the next-highest eligible release. Unreachable today for the same
+  reason, and the issue does not prescribe next-best behaviour, so it is left as
+  specified rather than widened.
 
 ## Standards Review
 
@@ -170,8 +171,8 @@ behaviour, recorded here rather than silently dropped:
   evidence: `worker/deno/lib/action_pin_resolver.ts:280` — reason: **fixed
   here**. A malformed SHA now throws with the action and the rejected value
   named, before anything is returned, covered by
-  `::applyResolvedPins - a malformed SHA throws rather than being skipped`.
-  The ledger row was corrected to match.
+  `::applyResolvedPins - a malformed SHA throws rather than being skipped`. The
+  ledger row was corrected to match.
 - **violation** — the PR summary file was absent — evidence:
   `docs/archive/pr-summaries/pr-summary-1823.md` — reason: **fixed here**; this
   file.
@@ -181,29 +182,29 @@ behaviour, recorded here rather than silently dropped:
   `worker/deno/lib/action_pin_resolver.ts:213` — reason: **stands**. The issue
   specifies this exact source ("Quarantine hours come from
   `normaliseQuarantineHours(Deno.env.get("VIBE_BUMP_QUARANTINE_HOURS"))` …
-  `deps.quarantineHours` overrides for tests"). The standard's actual hazard —
-  a test inheriting host state — cannot occur: `deps.quarantineHours`
+  `deps.quarantineHours` overrides for tests"). The standard's actual hazard — a
+  test inheriting host state — cannot occur: `deps.quarantineHours`
   short-circuits the read and every test names its own window, so no test
   evaluates `Deno.env.get`.
-- **violation** — the module ships with no production caller, against "only
-  make changes that are directly requested or clearly necessary" — evidence:
+- **violation** — the module ships with no production caller, against "only make
+  changes that are directly requested or clearly necessary" — evidence:
   `worker/deno/lib/action_pin_resolver.ts:205,275` — reason: **stands, by
   instruction**. The issue's Context says explicitly "Do not wire this resolver
   into the worker's bump phase (#1775) … it is called by `workflow-sync` only",
-  and that call site is #1755. Wiring it here would be the scope creep. The
-  diff discloses the state in both `docs/EXTENDING.md` and the
-  `pinned_actions.ts` header rather than describing a call that does not exist.
+  and that call site is #1755. Wiring it here would be the scope creep. The diff
+  discloses the state in both `docs/EXTENDING.md` and the `pinned_actions.ts`
+  header rather than describing a call that does not exist.
 - **clean** — Australian English throughout (`behaviour`, `normalise`,
-  `honouring`, `catalogue`, `defence`); no hidden paths staged; tests drive
-  real code over an injected runner and clock with no `Deno.env.set`, no
-  sleeps, no spawns; `Result<T, E>` used for control flow rather than throwing;
-  `gh` commands built as `string[]` argv with the action and tag validated
-  before interpolation; DRY — `evaluateReleaseAge`, `normaliseQuarantineHours`,
+  `honouring`, `catalogue`, `defence`); no hidden paths staged; tests drive real
+  code over an injected runner and clock with no `Deno.env.set`, no sleeps, no
+  spawns; `Result<T, E>` used for control flow rather than throwing; `gh`
+  commands built as `string[]` argv with the action and tag validated before
+  interpolation; DRY — `evaluateReleaseAge`, `normaliseQuarantineHours`,
   `parseGhCommitLine`, `RELEASE_LOOKUP_TIMEOUT_SECONDS` and the shared
   `parseSemver`/`compareSemver` are reused rather than reimplemented; docs
   updated alongside the code; the new `lib/` module registered in the
-  sweep-coverage ledger with its own written record; every commit references
-  the issue and carries a `Vibe-Coder-Run-Id` trailer.
+  sweep-coverage ledger with its own written record; every commit references the
+  issue and carries a `Vibe-Coder-Run-Id` trailer.
 
 ## Test Plan
 
@@ -221,8 +222,8 @@ Added `worker/deno/tests/action_pin_resolver_test.ts` (21 tests):
 - an unusable quarantine window is reported rather than silently defaulted;
 - `"catalogue"` entries produce no runner call, no failure and no log;
 - a malformed tag never reaches the runner (no command path carries it);
-- `applyResolvedPins` rewrites `uses:` lines only, leaves `image:`, floating
-  tag refs, unpinned actions and unrelated lines untouched, and **throws** on a
+- `applyResolvedPins` rewrites `uses:` lines only, leaves `image:`, floating tag
+  refs, unpinned actions and unrelated lines untouched, and **throws** on a
   malformed resolved SHA rather than silently keeping the stale line.
 
 Extended `worker/deno/tests/tool_release_age_test.ts` (5 tests) for the

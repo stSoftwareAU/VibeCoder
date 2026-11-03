@@ -5,8 +5,8 @@
 Closes #3335
 
 Worker guidance now says to measure popovers, menus, in-place confirm panels and
-sticky or fixed bars **in their open state**, at both a phone portrait size and a
-short landscape size, against all four viewport edges and every fixed bar.
+sticky or fixed bars **in their open state**, at both a phone portrait size and
+a short landscape size, against all four viewport edges and every fixed bar.
 
 - `prompts/issue/prompt.md` — new paragraph **Measure overlays and pinned bars
   open.** under Instructions item 2 (testing rule 2, the headless-browser
@@ -30,10 +30,9 @@ would have caught those faults.
 
 - One paragraph in the existing testing rule 2, not a new rule — it narrows how
   that rule's browser check is run, so it belongs beside it.
-- The html bucket stays at the anti-pattern cap of 8 checks
-  (`MAX_CHECKS` in `front_end_design_anti_patterns_2636_test.ts`), so the new
-  check follows the reflow check and later checks are renumbered rather than
-  added past the cap.
+- The html bucket stays at the anti-pattern cap of 8 checks (`MAX_CHECKS` in
+  `front_end_design_anti_patterns_2636_test.ts`), so the new check follows the
+  reflow check and later checks are renumbered rather than added past the cap.
 - WCAG 2.2 Reflow (1.4.10) and Focus Not Obscured (Minimum) (2.4.11) are cited
   as the bar, so the rule rests on a public standard, not on taste.
 
@@ -53,18 +52,19 @@ Docs sweep: grepped `rendered boxes`, `visually-hidden`, `Reflow`, `reflow` and
 `checks 10` across `prompts/`, `docs/`, `CODING-STANDARDS.md` and `README.md`.
 Remaining hits stay true: `CODING-STANDARDS.md:695` (Choosing assertions —
 headless-browser check of rendered boxes, consistent with the new paragraph);
-`prompts/test_audit/prompt.md:368` (layout assertions belong in a browser check —
-consistent); `docs/archive/pr-summaries/pr-summary-2636.md` ("checks 10–16" is a
-historical archive and true for its time).
+`prompts/test_audit/prompt.md:368` (layout assertions belong in a browser check
+— consistent); `docs/archive/pr-summaries/pr-summary-2636.md` ("checks 10–16" is
+a historical archive and true for its time).
 
 ## Test Plan
 
 - [x] `deno task test:unit tests/open_state_viewport_3335_docs_test.ts
-  tests/front_end_design_anti_patterns_2636_test.ts` plus the 3247 and
-  bucket-check-numbering tests — 22 passed, 0 failed.
+  tests/front_end_design_anti_patterns_2636_test.ts`
+      plus the 3247 and bucket-check-numbering tests — 22 passed, 0 failed.
 - [x] Each pinned phrase is absent from the base section
-  (`deno task drift-pins-on-base origin/main <doc> <section> <phrases…>`, all
-  reported "absent on base"), so the new test goes red without the change:
+      (`deno task drift-pins-on-base origin/main <doc> <section> <phrases…>`,
+      all reported "absent on base"), so the new test goes red without the
+      change:
   - `prompts/issue/prompt.md` § Instructions: "Measure overlays and pinned bars
     open", "at a short landscape height", "on all four edges", "clear of every
     fixed bar", "must unpin while open".

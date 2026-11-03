@@ -18,7 +18,7 @@ records versions a host may install today.
 
 The embargo itself is untouched. A release inside the window is still never
 recorded, an unreadable upstream is still indeterminate rather than eligible,
-and a tool with *no* release past the window still fails the step naming that
+and a tool with _no_ release past the window still fails the step naming that
 tool. Only stable `MAJOR.MINOR.PATCH` releases are candidates — pre-releases,
 drafts, and unpublished npm versions are not part of the series a host installs
 from. The upgrade path (`updateClaudeCli`, `updateGhCli`, `updateDeno`) is
@@ -28,8 +28,8 @@ Closes #726.
 
 ## Evidence
 
-Backend/CLI change — no web interface to screenshot. The evidence is the
-failing command going green.
+Backend/CLI change — no web interface to screenshot. The evidence is the failing
+command going green.
 
 **The failure, from the workflow log** (run
 [33521630265](https://github.com/stSoftwareAU/VibeCoder/actions/runs/33521630265)):
@@ -93,12 +93,12 @@ applyServiceAccountEnv - an unwritable gh config dir is restaged writable
 FAILED | 16529 passed (4 steps) | 33 failed | 48 ignored (8m52s)
 ```
 
-The first two exhaust the host's GitHub API rate limit; the third reads the
-live worker's own `gh` config staging (the same host state that logged
+The first two exhaust the host's GitHub API rate limit; the third reads the live
+worker's own `gh` config staging (the same host state that logged
 `[SECURITY] cannot re-stage the gh credential` during this run). None of the
 three files import `software_updates.ts`, `tool_release_age.ts` or
-`release_manifest.ts`, and `Validate Scripts` is green on `main` and on the
-PRs merged either side of this one.
+`release_manifest.ts`, and `Validate Scripts` is green on `main` and on the PRs
+merged either side of this one.
 
 The tests this change touches pass under the gate's exact flags:
 
@@ -154,8 +154,8 @@ interface requires it, so a double that lacks it no longer type-checks), and the
   before either reaches a URL or a `gh api` path, and a malformed value never
   reaches the API (covered by
   `checkNewestAged - a malformed repo never reaches the API`).
-- The quarantine window is not widened, and no new opt-out is introduced.
-  Every failure path — unreachable registry, failed listing, empty history — is
+- The quarantine window is not widened, and no new opt-out is introduced. Every
+  failure path — unreachable registry, failed listing, empty history — is
   ineligible, never eligible.
 - No secrets, credentials, or hidden files are staged.
 

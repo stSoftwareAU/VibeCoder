@@ -4,8 +4,8 @@
 
 A milestone stream's conversation lives on **one host's disk**, so a sibling
 host claiming that stream's next issue cannot resume it — it opens the
-conversation again from nothing and the context every sub-issue was
-accumulating is lost. This change gives the holder a head start.
+conversation again from nothing and the context every sub-issue was accumulating
+is lost. This change gives the holder a head start.
 
 New `worker/deno/lib/stream_holder.ts`:
 
@@ -68,8 +68,8 @@ sequenceDiagram
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Holder host claims its stream's next issue immediately; a
-  non-holder defers and logs the countdown — evidence:
+- **met** — Holder host claims its stream's next issue immediately; a non-holder
+  defers and logs the countdown — evidence:
   `worker/deno/tests/stream_holder_test.ts::checkStreamAffinity - the holder host claims immediately`,
   `::checkStreamAffinity - a non-holder defers and logs the countdown once`,
   `::claim issue - the holder host claims its own stream immediately (Issue #2336)`
@@ -96,13 +96,13 @@ sequenceDiagram
   `worker/deno/tests/stream_holder_test.ts::checkStreamAffinity - a blank-stream issue is never deferred and costs no call`
   — reviewer: met
 - **met** — `./quality.sh` passes — evidence: full gate run after the final
-  edit, `Result: PASSED` — reviewer: partial — reason: the reviewer saw only
-  the diff and could not run the gate; it was run here and passed, after the
+  edit, `Result: PASSED` — reviewer: partial — reason: the reviewer saw only the
+  diff and could not run the gate; it was run here and passed, after the
   sweep-coverage ledger entry the first run showed missing was added.
 - **unrequested** — `docs/CONFIGURATION.md` gains a bullet, a Mermaid sequence
   diagram and two reference lines — reviewer: unrequested — reason: the repo
-  standard is that a behaviour change owes a docs change, and the sibling
-  stream issues (#2331–#2334) each documented themselves in this same section.
+  standard is that a behaviour change owes a docs change, and the sibling stream
+  issues (#2331–#2334) each documented themselves in this same section.
 - **unrequested** — `stream_affinity` added to `route_claim.ts`'s `UNAVAILABLE`
   set and `describeRefusal` — reviewer: unrequested — reason: the refusal type
   is shared, so without it `describeRefusal` falls through to the raw code and
@@ -144,8 +144,9 @@ sequenceDiagram
   `worker/deno/lib/phases/execute_phase.ts:1437` — reason: fixed here; the phase
   passes both sinks.
 - **violation** — `stream_affinity` was added to `route_claim.ts`'s
-  `UNAVAILABLE` set with no test — evidence: `worker/deno/lib/route_claim.ts:174`
-  — reason: fixed here; added to the enumeration in
+  `UNAVAILABLE` set with no test — evidence:
+  `worker/deno/lib/route_claim.ts:174` — reason: fixed here; added to the
+  enumeration in
   `tests/route_claim_test.ts::isRouteClaimUnavailable - held-or-unclaimable versus fault`.
 - **violation** — `recordStreamHolderForRun` was a new exported function with no
   test — evidence: `worker/deno/lib/stream_holder.ts:604` — reason: fixed here;

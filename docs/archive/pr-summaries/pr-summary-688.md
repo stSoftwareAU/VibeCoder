@@ -3,15 +3,15 @@
 ## Summary
 
 Every release now records the exact Claude CLI, `gh` and Deno versions it was
-cut against, published as a `tool-versions.json` asset on the GitHub Release
-for the tag — so a host pinning to a release can pin to the same tools instead
-of drifting onto whatever is newest. Closes #688.
+cut against, published as a `tool-versions.json` asset on the GitHub Release for
+the tag — so a host pinning to a release can pin to the same tools instead of
+drifting onto whatever is newest. Closes #688.
 
 - `worker/deno/lib/release_manifest.ts` — the shared definition: the
   `ReleaseManifest` shape, `buildReleaseManifest()` (all-or-nothing),
   `formatReleaseManifest()` and `parseReleaseManifest()` (strict). Readers on
-  the #675 side validate the asset through this parser rather than re-parsing
-  it by hand.
+  the #675 side validate the asset through this parser rather than re-parsing it
+  by hand.
 - `worker/deno/commands/release_manifest.ts` — the `release-manifest` command,
   registered in `mod.ts`. Prints the manifest on stdout; versions come from
   `resolveDynamicVersions()` (Issue #623), so a release records exactly what
@@ -80,32 +80,35 @@ flowchart TD
 
 ## Acceptance Criteria
 
-- **met** — a merge to `main` mints the tag as today **and** publishes a
-  release with a `tool-versions.json` asset naming the release and all three
-  tool versions — evidence: `.github/workflows/release-tag.yml` (the tag step
-  is unchanged; the publish steps follow it),
+- **met** — a merge to `main` mints the tag as today **and** publishes a release
+  with a `tool-versions.json` asset naming the release and all three tool
+  versions — evidence: `.github/workflows/release-tag.yml` (the tag step is
+  unchanged; the publish steps follow it),
   `worker/deno/tests/release_tag_workflow_test.ts::release-tag.yml - the
-  manifest is published for the commit's release tag` and `::release-tag.yml -
-  the tag is created before anything is published`. The workflow itself only
-  runs post-merge, so the run on `main` is the final confirmation.
+  manifest is published for the commit's release tag`
+  and `::release-tag.yml -
+  the tag is created before anything is published`.
+  The workflow itself only runs post-merge, so the run on `main` is the final
+  confirmation.
 - **met** — the generator prints valid JSON matching the documented schema and
   its output parses through the shared parser — evidence:
   `worker/deno/tests/release_manifest_command_test.ts::release-manifest -
-  prints the manifest for the release on stdout`, plus the live run in
-  **Evidence** above.
+  prints the manifest for the release on stdout`,
+  plus the live run in **Evidence** above.
 - **met** — a tool that cannot be resolved (or is ineligible under the
   release-age gate) fails the step naming that tool, and no manifest is
   published — evidence:
   `worker/deno/tests/release_manifest_command_test.ts::release-manifest - an
-  unresolved tool fails the command, naming it` and
+  unresolved tool fails the command, naming it`
+  and
   `worker/deno/tests/release_manifest_test.ts::buildReleaseManifest - an
   ineligible tool fails, naming it, with no manifest`.
 - **met** — re-running against a commit whose tag already carries the manifest
   is a no-op and exits green — evidence: the asset check in the publish step,
   asserted by `worker/deno/tests/release_tag_workflow_test.ts::release-tag.yml
-  - a release already carrying the asset is left alone`, and
-  `worker/deno/tests/next_release_tag_test.ts::next-release-tag - a commit that
-  already carries a release tag is not tagged again`.
+  - a release already carrying the asset is left
+    alone`, and`worker/deno/tests/next_release_tag_test.ts::next-release-tag - a
+    commit that already carries a release tag is not tagged again`.
 - **met** — `docs/RELEASE-TAGGING.md` documents the asset name, the schema and
   where the versions come from — evidence: `docs/RELEASE-TAGGING.md` §"The
   tool-version manifest".
@@ -128,11 +131,11 @@ flowchart TD
 
 ## Test Plan
 
-- Added `worker/deno/tests/release_manifest_test.ts` — the all-or-nothing
-  build (ineligible tool, unreported tool, several unresolved tools at once, a
-  junk version) and the parser (non-JSON, non-object, missing `release`,
-  missing/extra/mistyped tools, non-semver versions), plus a
-  format→parse round trip.
+- Added `worker/deno/tests/release_manifest_test.ts` — the all-or-nothing build
+  (ineligible tool, unreported tool, several unresolved tools at once, a junk
+  version) and the parser (non-JSON, non-object, missing `release`,
+  missing/extra/mistyped tools, non-semver versions), plus a format→parse round
+  trip.
 - Added `worker/deno/tests/release_manifest_command_test.ts` — the command over
   a stubbed release-age gate: the manifest on stdout, the resolver actually
   being consulted, a failing tool rejecting the whole run, a missing or
@@ -141,16 +144,16 @@ flowchart TD
   gating, environment-passed values, tag-before-publish order, idempotent asset
   check and SHA-pinned Deno toolchain.
 - Extended `worker/deno/tests/next_release_tag_test.ts` — the already-tagged
-  path now reports the tag, including the newest when a commit carries more
-  than one. **Modified test:** the existing "already carries a release tag"
-  assertion changed from `tag: ""` to `tag: "1.0.1"` (and the same expectation
-  in `release_tag_workflow_test.ts`), matching the deliberate output change
-  above.
+  path now reports the tag, including the newest when a commit carries more than
+  one. **Modified test:** the existing "already carries a release tag" assertion
+  changed from `tag: ""` to `tag: "1.0.1"` (and the same expectation in
+  `release_tag_workflow_test.ts`), matching the deliberate output change above.
 - Updated `worker/deno/tests/mod_test.ts` — registry count 142 → 143 with
   `release-manifest` registered.
-- Refreshed `docs/audits/dependency-inventory.md` (`supply-chain-gate
-  --write-inventory`) for the `denoland/setup-deno` reference the publish step
-  adds; `supply_chain_gate_test.ts` is green again.
+- Refreshed `docs/audits/dependency-inventory.md`
+  (`supply-chain-gate
+  --write-inventory`) for the `denoland/setup-deno`
+  reference the publish step adds; `supply_chain_gate_test.ts` is green again.
 
 ### Quality gate
 
@@ -161,8 +164,8 @@ container, not caused by the change:
 - `tests/run_core_test.ts` and `tests/run_core_rate_limit_resume_test.ts` —
   `GraphQL: API rate limit already exceeded` from a live `gh` call.
 - `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
-  config dir is restaged writable` — the container's `.container-state/gh-config`
-  staging path.
+  config dir is restaged writable`
+  — the container's `.container-state/gh-config` staging path.
 
 Verified by running those files in a worktree at the commit before this branch
 (`HEAD~4`): they fail identically there. The 19 tests added here, and every

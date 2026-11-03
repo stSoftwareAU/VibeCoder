@@ -24,13 +24,13 @@ lever does nothing under Gemini. Closes #364.
   replaced — never merged — on a repo switch.
 - **Fail loud on the missing effort lever (Issue #3234).** When an effort is
   resolved for a Gemini invocation — explicitly on the request, or from the
-  worker's phase effort design — `buildGeminiArgs` emits **one**
-  `console.warn` naming the provider, the phase and the requested effort, and
-  adds **no** argv element. The warning is de-duplicated **once per phase per
-  worker process** (stated in the code comment on `_effortWarnedPhases`), so a
-  multi-phase run states the gap for each phase it routes and a retried phase
-  states it once. No flag the CLI does not have is invented and the run is not
-  failed: the warning is the fix.
+  worker's phase effort design — `buildGeminiArgs` emits **one** `console.warn`
+  naming the provider, the phase and the requested effort, and adds **no** argv
+  element. The warning is de-duplicated **once per phase per worker process**
+  (stated in the code comment on `_effortWarnedPhases`), so a multi-phase run
+  states the gap for each phase it routes and a retried phase states it once. No
+  flag the CLI does not have is invented and the run is not failed: the warning
+  is the fix.
 - **No dead configuration.** There is deliberately no
   `GEMINI_PHASE_EFFORT_DEFAULTS` and no `gemini_phase_effort_overrides` key —
   effort configuration the CLI could never apply would be surface that lies.
@@ -54,7 +54,8 @@ flowchart LR
     E -->|any effort| V["⚠️ warn once per phase<br/>no argv element"]
 ```
 
-Targeted run (`deno test --allow-all tests/gemini_phase_routing_test.ts
+Targeted run
+(`deno test --allow-all tests/gemini_phase_routing_test.ts
 tests/agent_provider_gemini_test.ts tests/agent_provider_routing_seam_test.ts
 tests/agent_provider_per_invocation_test.ts tests/codex_phase_routing_test.ts`):
 **79 passed, 0 failed**.

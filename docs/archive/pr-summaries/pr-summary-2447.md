@@ -3,8 +3,8 @@
 ## Summary
 
 The end-of-cycle sleep on the `scanHadSuccess` branch was a fixed
-`sleepWithJitter(config.sleepInterval)` however much of the hour's GraphQL
-quota was left, so a busy launch could spend its way down to
+`sleepWithJitter(config.sleepInterval)` however much of the hour's GraphQL quota
+was left, so a busy launch could spend its way down to
 `DEFAULT_PREFLIGHT_THRESHOLD` long before the window reopened — the only guard
 fires once the budget is already gone.
 
@@ -20,8 +20,8 @@ Closes #2447.
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suites below, plus the full quality gate.
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suites below, plus the full quality gate.
 
 `./quality.sh < /dev/null` — **PASSED** (21 checks; `config integration` skipped
 by the gate itself, not by this run).
@@ -63,7 +63,8 @@ budget-pacing: remaining=1500 affordable/cycle=31 spent=270 sleep=259s (last cyc
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — `computePacedSleepSeconds` is pure and covered for plenty of budget,
-  overspend, the cap, reserve reached, a window about to reset, `spentLastCycle
+  overspend, the cap, reserve reached, a window about to reset,
+  `spentLastCycle
   = 0`, and a future/negative `reset` clamp — evidence:
   `worker/deno/tests/budget_pacing_test.ts` (10 tests) — reviewer: partial —
   reason: the reviewer found the invariants broke at `baseSleepSeconds = 0`
@@ -75,11 +76,13 @@ budget-pacing: remaining=1500 affordable/cycle=31 spent=270 sleep=259s (last cyc
 - **met** — `run_core_test.ts` covers the wiring: paced sleep on a reading, the
   previous fixed sleep on `null` or an absent dep — evidence:
   `worker/deno/tests/run_core_test.ts::run_core - end-of-cycle sleep is paced
-  when the quota dep returns a reading (Issue #2447)` and the two fixed-sleep
-  cases beside it — reviewer: met.
-- **partial** — with `remaining=1,500, limit=5,000, 40 min to reset,
-  spentLastCycle=270` the sleep is stretched (not 30 s) and the log line names
-  the reason — evidence: the stretch to 259.2 s is asserted at
+  when the quota dep returns a reading (Issue #2447)`
+  and the two fixed-sleep cases beside it — reviewer: met.
+- **partial** — with
+  `remaining=1,500, limit=5,000, 40 min to reset,
+  spentLastCycle=270` the
+  sleep is stretched (not 30 s) and the log line names the reason — evidence:
+  the stretch to 259.2 s is asserted at
   `budget_pacing_test.ts::overspend stretches the sleep proportionally`; the log
   line and its reason are asserted at `run_core_test.ts:1561-1564` — reviewer:
   partial — reason: the two halves are asserted in separate tests, and the
@@ -94,8 +97,8 @@ budget-pacing: remaining=1500 affordable/cycle=31 spent=270 sleep=259s (last cyc
 Scope creep, named:
 
 - **unrequested** — `affordablePerCycle` added to `PacedSleepResult`, which the
-  issue specified as `{sleepSeconds, reason, inReserve}` — reviewer:
-  unrequested — reason: the mandated `budget-pacing:` log line has to print
+  issue specified as `{sleepSeconds, reason, inReserve}` — reviewer: unrequested
+  — reason: the mandated `budget-pacing:` log line has to print
   `affordable/cycle=…`, so the value has to leave the pure function.
 - **unrequested** — `docs/audits/security-sweep-2447-graphql-budget-pacing.md`
   and the `top-up-2447` slice in `docs/audits/lib-sweep-coverage.json` —
@@ -118,35 +121,35 @@ Scope creep, named:
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — catch-and-ignore: the probe's exception was swallowed into an
-  unchanged sleep, against *Never Fail Silently — Fail Loud* — evidence:
+  unchanged sleep, against _Never Fail Silently — Fail Loud_ — evidence:
   `worker/deno/lib/run_core.ts:5317` — reason: fixed here; the catch now logs a
   WARNING naming the error via `warnOf(deps)`, covered by
   `run_core_test.ts::run_core - a throwing quota probe keeps the fixed sleep and
   says so (Issue #2447)`.
 - **violation** — the reserve-exhausted case logged at INFO alongside the
-  ordinary stretch, against *Log Levels Are a Promise About What the Reader Must
-  Do* — evidence: `worker/deno/lib/run_core.ts:5353-5358` — reason: fixed here;
+  ordinary stretch, against _Log Levels Are a Promise About What the Reader Must
+  Do_ — evidence: `worker/deno/lib/run_core.ts:5353-5358` — reason: fixed here;
   `decision.inReserve` now selects WARNING for a window down to its reserve and
   INFO for an ordinary stretch.
 - **violation** — `inReserve` was computed and tested but never read in
-  production, against *avoid over-engineering* — evidence:
+  production, against _avoid over-engineering_ — evidence:
   `worker/deno/lib/budget_pacing.ts:40` — reason: fixed here by the same change
   as above; `inReserve` now drives the log level, so the field the issue
   mandated has a real consumer.
 - **violation** — the error path of the wiring helper was untested, against
-  *Test Coverage Expectations* — evidence:
+  _Test Coverage Expectations_ — evidence:
   `worker/deno/tests/run_core_test.ts:1568-1590` — reason: fixed here; a
   throwing-dep case was added through the existing `runPacedCycle` helper.
 - **violation** — the dep-guard / try-await-catch prologue duplicates
-  `quotaWindowReopened`'s, against *DRY* — evidence:
+  `quotaWindowReopened`'s, against _DRY_ — evidence:
   `worker/deno/lib/run_core.ts:5313-5320` vs `:5045-5051` — reason: stands. The
   two now have deliberately different failure semantics — `quotaWindowReopened`
   is silent by design under Issue #1888, where a failed probe must leave the
   existing pause standing, while this one must report a throw — so a shared
-  helper would have to carry both, which is more indirection than the six
-  shared lines are worth.
+  helper would have to carry both, which is more indirection than the six shared
+  lines are worth.
 - **violation** — 53 new lines inside an already 6,600-line `run_core.ts`,
-  against *Single Responsibility / Smaller Files* — evidence:
+  against _Single Responsibility / Smaller Files_ — evidence:
   `worker/deno/lib/run_core.ts:5308-5360` — reason: stands. The pure decision
   was extracted to `budget_pacing.ts`; what remains is the I/O wrapper, which
   needs the per-loop `lastGraphqlQuotaReading` cursor and sits beside the

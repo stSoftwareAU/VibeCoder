@@ -1,11 +1,11 @@
 ## Summary
 
-Audited the latest version of every prompt surface for contradictions **between**
-prompts, in the spirit of #759 (which recorded a contradiction *within* one
-rendered prompt). Sixteen confirmed conflicts are filed one per root cause
-(#778–#793), terminology and structural drift is batched into #794, and a summary
-comment on the issue lists every surface compared including those with no
-findings. Closes #762.
+Audited the latest version of every prompt surface for contradictions
+**between** prompts, in the spirit of #759 (which recorded a contradiction
+_within_ one rendered prompt). Sixteen confirmed conflicts are filed one per
+root cause (#778–#793), terminology and structural drift is batched into #794,
+and a summary comment on the issue lists every surface compared including those
+with no findings. Closes #762.
 
 The only file this PR adds is the committed audit record — the deliverable of an
 audit is the issues it files and the record of what was compared, not a prompt
@@ -24,16 +24,17 @@ new version under its own issue.
 
 ## Evidence
 
-Backend/documentation change with no web interface to screenshot. The evidence is
-the verification behind each finding and the two tests that gate the new page.
+Backend/documentation change with no web interface to screenshot. The evidence
+is the verification behind each finding and the two tests that gate the new
+page.
 
-**Every finding was verified by reading both quoted passages at their cited lines
-before it was filed.** Six axes were swept in parallel (lifecycle/labels, the
-idle-task scan family, testing and thresholds, output shape and evidence,
-security and dependency policy, terminology drift); the sweep produced candidates,
-and verification decided them. Two candidates were refuted at that step and are
-recorded in the audit page as "recorded, not filed" rather than filed — a false
-finding costs more than a missed one.
+**Every finding was verified by reading both quoted passages at their cited
+lines before it was filed.** Six axes were swept in parallel (lifecycle/labels,
+the idle-task scan family, testing and thresholds, output shape and evidence,
+security and dependency policy, terminology drift); the sweep produced
+candidates, and verification decided them. Two candidates were refuted at that
+step and are recorded in the audit page as "recorded, not filed" rather than
+filed — a false finding costs more than a missed one.
 
 Verification commands whose output is quoted in the filed issues:
 
@@ -83,8 +84,8 @@ flowchart LR
 
 ### The headline result
 
-Answering the issue's question as asked — *does coding best practices say one
-thing and security best practices say another?* — **yes, three times**: #783
+Answering the issue's question as asked — _does coding best practices say one
+thing and security best practices say another?_ — **yes, three times**: #783
 (`git commit --no-verify` categorically forbidden vs conditionally permitted),
 #784 (the secret-staging allowlist has three different memberships across the
 guidelines, the standards and the enforcer), and #785 (a 3-attempt cap that
@@ -92,23 +93,23 @@ licenses raising a PR past a failing semgrep stage).
 
 Eight of the sixteen share one shape: a phase prompt and the
 `<coding_guidelines>` block injected beneath it issue opposite mandates, and
-nothing says which wins. `coding_guidelines/v42.md:5-8` states a precedence rule,
-but it resolves *specificity*, not *opposition* — it does not reach a phase
-prompt that forbids what the block mandates. The audit record names a
+nothing says which wins. `coding_guidelines/v42.md:5-8` states a precedence
+rule, but it resolves _specificity_, not _opposition_ — it does not reach a
+phase prompt that forbids what the block mandates. The audit record names a
 rendered-prompt consistency check as the fix for that class, because sixteen
 wording changes will not stop the seventeenth.
 
 #778 is the sharpest single result: #759's defect survives verbatim in
-`ci_fix/v14`, `pr_feedback/v13` and `planning/v23`, and the audit also found that
-`resolveVerbosity()` is only ever called with `"issue"`, so `PHASE_VERBOSITY_DEFAULTS`
-is unreachable for every other phase and all of them render the `standard` text
-regardless of what the config declares.
+`ci_fix/v14`, `pr_feedback/v13` and `planning/v23`, and the audit also found
+that `resolveVerbosity()` is only ever called with `"issue"`, so
+`PHASE_VERBOSITY_DEFAULTS` is unreachable for every other phase and all of them
+render the `standard` text regardless of what the config declares.
 
 ## Test Plan
 
-No new tests: the diff adds a documentation page and its metadata entry, and both
-are already covered by existing tests that fail closed on a missing or mismatched
-entry.
+No new tests: the diff adds a documentation page and its metadata entry, and
+both are already covered by existing tests that fail closed on a missing or
+mismatched entry.
 
 - `worker/deno/tests/page_titles_completeness_test.ts` — fails if the new page
   has no `_data/page_titles.yml` entry with a `page_icon`. Run, passes.
@@ -116,5 +117,5 @@ entry.
   page's H1 emoji does not match its `page_icon`. Run, passes.
 - `./quality.sh < /dev/null` — run in the foreground before the PR.
 
-Tests the audit *recommends* (in #792 and #794) are deliberately not in this
+Tests the audit _recommends_ (in #792 and #794) are deliberately not in this
 diff: they belong with the fixes they gate, in the issues that own them.

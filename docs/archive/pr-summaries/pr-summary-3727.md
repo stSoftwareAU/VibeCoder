@@ -35,8 +35,8 @@ Undiscoverable Facts.
 - It runs through `runPreFlightGate`, so it gets pre-flight's filtered
   environment and timeout.
 - The script's `SKIPPED (needs Docker)` result passes the gate. That is the
-  script's documented local contract. The skip is printed by the script, and
-  CI, which has a Docker socket, still deploys the template.
+  script's documented local contract. The skip is printed by the script, and CI,
+  which has a Docker socket, still deploys the template.
 
 ### Undiscoverable Facts
 
@@ -57,8 +57,8 @@ Undiscoverable Facts.
 - Through the real `runPreFlightGate` runner, a temporary copy of the script
   with a non-instance template (`AWS::SQS::Queue`) blocked with exit 1 and
   `::error::aws CLI not found — the worker image does not ship it; install AWS CLI v2`.
-  In the worker container, then, a deployable template blocks the push until
-  the image ships the `aws` CLI.
+  In the worker container, then, a deployable template blocks the push until the
+  image ships the `aws` CLI.
 
 ## Evidence
 
@@ -77,7 +77,19 @@ flowchart TD
     X -->|no / timeout / not started| B["push refused"]
 ```
 
-**Docs sweep** — grep: `test-floci`, "pre-push gate", `sweptAt` ancestry, "not a gate", "never skipped", "No pre-PR stage runs it"; section: `docs/CONFIGURATION.md#agent-pre-push-hook-and-the-changed-files-check`; siblings: `cspell`, `markdownlint-cli2` — the stage-1 list and the parenthetical in that section, the fail-closed paragraph, the module doc of `worker/deno/lib/pre_push_gate.ts` and the `runPrePushGate` doc comment now name the Floci check; updated: `docs/CONFIGURATION.md`, `docs/CONTAINER.md`, `docs/EC2-LINUX-VERIFICATION.md`, `docs/pre-pr-ci-audit.md`, `infra/cloudformation/test-floci.sh` (header comment), `worker/deno/lib/pre_push_gate.ts` (doc comments); `docs/pre-pr-ci-audit.md:110` — the "Pre-PR equivalent ran?" cell stays `No`, because it records the 2026-10 run; `docs/BEST-PRACTICES-SCAN.md:266` — still true, because test scripts still start `floci` on demand and print the Docker skip.
+**Docs sweep** — grep: `test-floci`, "pre-push gate", `sweptAt` ancestry, "not a
+gate", "never skipped", "No pre-PR stage runs it"; section:
+`docs/CONFIGURATION.md#agent-pre-push-hook-and-the-changed-files-check`;
+siblings: `cspell`, `markdownlint-cli2` — the stage-1 list and the parenthetical
+in that section, the fail-closed paragraph, the module doc of
+`worker/deno/lib/pre_push_gate.ts` and the `runPrePushGate` doc comment now name
+the Floci check; updated: `docs/CONFIGURATION.md`, `docs/CONTAINER.md`,
+`docs/EC2-LINUX-VERIFICATION.md`, `docs/pre-pr-ci-audit.md`,
+`infra/cloudformation/test-floci.sh` (header comment),
+`worker/deno/lib/pre_push_gate.ts` (doc comments); `docs/pre-pr-ci-audit.md:110`
+— the "Pre-PR equivalent ran?" cell stays `No`, because it records the 2026-10
+run; `docs/BEST-PRACTICES-SCAN.md:266` — still true, because test scripts still
+start `floci` on demand and print the Docker skip.
 
 Related existing rules checked: none changed. No prompt, `CODING-STANDARDS.md`
 rule or shared prompt constant is added or edited.
@@ -103,8 +115,8 @@ Version bump: none, because this repository has no `VERSION` file.
     the not-tracked test.
   - Dropping the prefix's trailing slash turned red the outside-directory test.
 - `deno task test:unit tests/pre_push_gate_test.ts` (from `worker/deno`) passed:
-  52 passed, 0 failed. No existing test was edited or lost an assertion. The
-  new check is appended after the existing ones and adds no precondition before
+  52 passed, 0 failed. No existing test was edited or lost an assertion. The new
+  check is appended after the existing ones and adds no precondition before
   them.
 - Changed call site: `runPrePushGate` reaches the new plan entry through
   `planChangedFileChecks`, and the `runPrePushGate` test above goes red when the

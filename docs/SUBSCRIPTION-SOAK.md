@@ -19,12 +19,12 @@ flowchart TD
 
 ## What the automated coverage proves
 
-`worker/deno/tests/subscription_soak_test.ts` drives the real production
-modules through `worker/deno/lib/subscription_soak_status.ts` — the
-operator-facing observability surface added by this issue — and asserts:
+`worker/deno/tests/subscription_soak_test.ts` drives the real production modules
+through `worker/deno/lib/subscription_soak_status.ts` — the operator-facing
+observability surface added by this issue — and asserts:
 
-- **Restart determinism.** Two identical worker/container generations produce
-  an identical status snapshot, so a Claude-only baseline cannot drift across
+- **Restart determinism.** Two identical worker/container generations produce an
+  identical status snapshot, so a Claude-only baseline cannot drift across
   restarts, and no new files or settings are required to keep it identical.
 - **Codex auth persistence.** A refreshed `auth.json` under the persistent
   agent-state directory survives disposable container replacement and both
@@ -65,7 +65,8 @@ log sink. The line carries, for an unattended operator:
   `no-eligible-fixed-subscription`, …);
 - `all-eligible-exhausted` — whether every fixed-price subscription is spent;
 - `auth-required` — providers needing initial/re-authentication;
-- `billing-guard` — `holds`/`failed`, cross-checking the winner is never metered;
+- `billing-guard` — `holds`/`failed`, cross-checking the winner is never
+  metered;
 - `retryAt` — earliest known reset among exhausted providers, or `none`;
 - `last-quota-probe` — `<provider>:<availability>@<observedAt>` per provider.
 
@@ -81,9 +82,9 @@ the release notes.
 
 ### 1. One-time login
 
-Perform the single allowed ChatGPT subscription login (device auth on a
-headless host), then confirm the credential lives only under the persistent
-agent-state directory — never in the image, logs or repository:
+Perform the single allowed ChatGPT subscription login (device auth on a headless
+host), then confirm the credential lives only under the persistent agent-state
+directory — never in the image, logs or repository:
 
 ```bash
 codex login --device-auth
@@ -125,8 +126,8 @@ On a mixed host with `agent_provider_mode: "auto"`,
    work moves to Codex unattended.
 2. Exhaust Codex too and confirm work defers — the host waits, and never runs a
    metered credential.
-3. Wait past the reset and confirm the exhausted provider becomes eligible
-   again automatically.
+3. Wait past the reset and confirm the exhausted provider becomes eligible again
+   automatically.
 
 ### 6. Billing guard
 

@@ -22,8 +22,9 @@ repositories remain in the shared configuration.
 - Discover runtime access with a metadata-only token each pass, then scope the
   runner's write token to accessible configured repositories. Never pass the
   discovery credential to gh or Codex.
-- Preserve explicit failure for inaccessible targeted repositories, no accessible
-  configured repositories, incomplete discovery, and API/authentication errors.
+- Preserve explicit failure for inaccessible targeted repositories, no
+  accessible configured repositories, incomplete discovery, and
+  API/authentication errors.
 - Retain existing App metadata format and fleet configuration. Access changes
   within a pass remain errors and are rediscovered on the next pass.
 

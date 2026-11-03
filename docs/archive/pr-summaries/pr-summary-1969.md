@@ -57,24 +57,32 @@ flowchart LR
   unfixed code (the shim exited 0 and the probe above shows the token in the
   commit it created) and passing after the fix
 - **regression test** —
-  `worker/deno/tests/git_guard_shim_test.ts::git-guard-shim - `git commit-tree <tree>` writes no commit object for an unscanned stdin message (Issue #1969)`
+  `worker/deno/tests/git_guard_shim_test.ts::git-guard-shim -`git commit-tree
+  <tree>`writes no commit object for an unscanned stdin message (Issue #1969)`
 
 ## Test Plan
 
 Added:
 
-- `git_guard_shim_test.ts::git-guard-shim - `git commit-tree <tree>` writes no
-  commit object for an unscanned stdin message (Issue #1969)` — real `git`, real
-  tree, token on stdin: the wrapper refuses with `GIT_MESSAGE_UNREDACTABLE`,
-  prints no commit id, and the object store holds no commit.
-- `git_guard_shim_test.ts::git-guard-shim - `git commit-tree -m` still commits,
-  with the secret masked (Issue #1969)` — the flagged spelling still writes a
-  commit, and its message in the store is masked.
+- `git_guard_shim_test.ts::git-guard-shim -`git commit-tree
+  <tree>`writes no
+  commit object for an unscanned stdin message (Issue #1969)`
+  — real `git`, real tree, token on stdin: the wrapper refuses with
+  `GIT_MESSAGE_UNREDACTABLE`, prints no commit id, and the object store holds no
+  commit.
+- `git_guard_shim_test.ts::git-guard-shim -`git commit-tree
+  -m`still commits,
+  with the secret masked (Issue #1969)` — the flagged
+  spelling still writes a commit, and its message in the store is masked.
 - `git_guard_cli_test.ts::refuses commit-tree with no message option (Issue
-  #1969)` and `::a flagged commit-tree message is scanned, not refused`.
+  #1969)`
+  and `::a flagged commit-tree message is scanned, not refused`.
 - `git_message_redaction_test.ts::refuses commit-tree with no message option
-  (Issue #1969)` (bare and `-p`-routing spellings) and `::a flagged commit-tree
-  message is still scanned` (`-m`, `-F -`, `--file <path>`).
+  (Issue #1969)`
+  (bare and `-p`-routing spellings) and
+  `::a flagged commit-tree
+  message is still scanned` (`-m`, `-F -`,
+  `--file <path>`).
 - `usesStdinMessage` now answers `false` for `["commit-tree", "abc123"]` — it
   reads no stdin for a command the real pass refuses.
 
@@ -95,8 +103,8 @@ only failures are environmental and unrelated to this change:
 - `tests/provider_auto_runtime_test.ts` (2 tests) — "The running container image
   did not install the `codex` coding-agent provider. Installed: claude."
 - `tests/setup_provider_credential_flow_test.ts` and its siblings (40 tests) —
-  the worker's own `CONFIG_PATH` leaks into the test environment
-  ("CONFIG_FILE and CONFIG_PATH are both set and name different files"). Run as
+  the worker's own `CONFIG_PATH` leaks into the test environment ("CONFIG_FILE
+  and CONFIG_PATH are both set and name different files"). Run as
   `env -u CONFIG_PATH deno test tests/setup_provider_credential_flow_test.ts`
   they pass 11/11.
 

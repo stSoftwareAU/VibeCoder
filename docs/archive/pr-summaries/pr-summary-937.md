@@ -12,18 +12,18 @@ on it, and cycle N+1 re-ran the whole implementation pipeline against the still
 open PR. Each repeat cost a full agent run. Closes #937.
 
 `planning`, `question`, `grill-me` and `refine-issue` are unaffected because
-they *answer* an issue and remove their own label — re-dispatch stops itself.
+they _answer_ an issue and remove their own label — re-dispatch stops itself.
 
 ### The shape chosen, and why
 
 The issue offered two shapes: teach `findIssuesByLabel` an opt-in gating mode,
-or route custom labels through the candidate collectors. This takes the **first**
-— an opt-in `gateNewWork` on `findIssuesByLabel` — because the second does not
-fit the collectors as they are:
+or route custom labels through the candidate collectors. This takes the
+**first** — an opt-in `gateNewWork` on `findIssuesByLabel` — because the second
+does not fit the collectors as they are:
 
 - `collectWorkOnCandidates` is not label-parameterised. It reads
   `config.workOnLabel` in five places and carries behaviour that is specific to
-  that label: it *strips* an untrusted `work-on` label
+  that label: it _strips_ an untrusted `work-on` label
   (`stripUntrustedWorkOnLabel`), escalates milestone-tracking issues carrying
   `work-on` as dead labels, and computes the `hasSuppressingWorkOn` signal that
   suppresses the low-priority and idle-task tiers. Running a custom label
@@ -37,7 +37,7 @@ fit the collectors as they are:
 
 So the gates are **factored out rather than reimplemented**. The new
 `worker/deno/lib/new_work_eligibility.ts` holds the sequence
-`collectWorkOnCandidates` runs and calls the *same helpers* it calls —
+`collectWorkOnCandidates` runs and calls the _same helpers_ it calls —
 `cleanStaleLabels`, `filterAndSort`, `isMilestoneOccupied`,
 `isBlockedByRecentlyClosedPR` with its `wasLabelReappliedAfterClosedPR` escape
 hatch, `getBlockingPRForIssue` with `hasIgnoreOpenPRsLabel`, and
@@ -65,14 +65,14 @@ flowchart TD
 ### The pr-phase question (#1009/#1011, #1008)
 
 The issue asked that the change not conflict with a label whose target phase is
-the PR phase — such a label is *supposed* to run against an open PR — and to
+the PR phase — such a label is _supposed_ to run against an open PR — and to
 respect a `custom_label_prompts` target-phase distinction if #1008 had already
 added one.
 
 **It has not.** `CustomLabelPromptMapping` carries `label`, `promptPath` and
 `overridesPhase` only, and `overridesPhase` is #849's built-in-template
-override, not a target phase. Every mapping `customDispatchMappings()` returns
-— the ones this change gates — has no `overridesPhase` and runs the generic
+override, not a target phase. Every mapping `customDispatchMappings()` returns —
+the ones this change gates — has no `overridesPhase` and runs the generic
 implementation phase, which raises a PR. So **only the implementation-phase
 custom labels are gated**, which today is all of them, and the gating is
 switched at one call site:
@@ -92,7 +92,7 @@ the open-PR gate that would otherwise refuse it never runs. Overrides
 (`overridesPhase !== undefined`) are already outside this row entirely: they
 replace a built-in phase's template and are worked by that phase's own handler.
 
-### What is deliberately *not* gated
+### What is deliberately _not_ gated
 
 The `work-on` content-integrity check (`verifyWorkOnContentIntegrityDetailed`,
 #1341) stays with `work-on`. It verifies an issue's body against an approval
@@ -106,15 +106,16 @@ defect from the one #937 reports.
   `buildNewWorkGateContext()` gathers the per-repo facts (fleet open PRs, fleet
   closed/merged PRs, all open issues, a memoised issue fetcher, the fleet author
   sets), and `filterNewWorkEligible()` runs the gate sequence, returning the
-  eligible issues plus one `BlockedCandidateInfo` per refusal. Every fetch is one
-  the claim scan already makes in the same iteration under the same
-  `IssueCache` key, so on a warm cache the gating costs no additional `gh` calls.
+  eligible issues plus one `BlockedCandidateInfo` per refusal. Every fetch is
+  one the claim scan already makes in the same iteration under the same
+  `IssueCache` key, so on a warm cache the gating costs no additional `gh`
+  calls.
 - **`worker/deno/lib/find_issues_by_label.ts`** — new
   `FindIssuesByLabelOptions.gateNewWork`. When set, the timeline batch covers
   every candidate (the closed-PR and `ignore-open-prs` checks read it), the
   trust-checked issues go through the gate sequence before becoming candidates,
   and the refusals ride out on `result.blockedDetails`. The `filterFailed`
-  pre-filter is skipped under gating so `cleanStaleLabels` runs *first* — a
+  pre-filter is skipped under gating so `cleanStaleLabels` runs _first_ — a
   reopened issue sheds its stale `failed` label rather than being stranded by
   the failure gate this route now honours.
 - **`worker/deno/lib/run_core_production_deps.ts`** — `findAndProcessByLabel`
@@ -134,8 +135,8 @@ No UI and no performance change, so there is no screenshot or benchmark. The
 evidence is the red-to-green test linkage below: with the gate call disabled
 (`if (false && options.gateNewWork …)`) and the `filterFailed` ordering
 restored, 6 of the 13 new gating tests fail; with the change in place all 13
-pass, and the 7 guard tests pass in both states — the fix is not "never
-dispatch anything".
+pass, and the 7 guard tests pass in both states — the fix is not "never dispatch
+anything".
 
 ```text
 # Gate disabled (the pre-change behaviour)
@@ -162,8 +163,8 @@ reaches, never on the request text:
 - an **ungated** scan with the same fixture still dispatches it — the gating is
   opt-in and the label-removing routes are untouched;
 - `ignore-open-prs` from an allowlisted account lifts the open-PR block;
-- an issue whose PR **closed inside the cooldown** is held (`closed-pr-cooldown`)
-  and is released once the window expires;
+- an issue whose PR **closed inside the cooldown** is held
+  (`closed-pr-cooldown`) and is released once the window expires;
 - an issue whose fleet PR **merged** is held permanently
   (`merged-pr-permanent`), and a trusted re-label dated after the merge reopens
   it;

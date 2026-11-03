@@ -36,10 +36,10 @@ operator's computer** ([Containment](CONTAINMENT.md)).
 
 **GitHub is the sole normal remote control plane.** Issues, comments, labels,
 repositories, commits and pull requests are how humans steer the worker and how
-the worker reports back — including escalations and crash notifications.
-**SSH, Remote Desktop, screen sharing, a management UI and terminal access to
-the host are not required for normal operation**, and no inbound port is
-opened. Local logs (the host log directory) stay useful for diagnosis, but a recoverable
+the worker reports back — including escalations and crash notifications. **SSH,
+Remote Desktop, screen sharing, a management UI and terminal access to the host
+are not required for normal operation**, and no inbound port is opened. Local
+logs (the host log directory) stay useful for diagnosis, but a recoverable
 failure is surfaced through GitHub rather than left in a host log.
 
 ---
@@ -139,11 +139,11 @@ Details: [Issue processing](workflows/issue-processing.md),
 The Vibe Coder is designed to run in parallel with other developers and with
 other Vibe Coders. Coordination is through GitHub only:
 
-- **One PR per target branch, one per slot on default** — In a repo, the
-  worker does not start a second issue for a milestone branch while the fleet
-  already has an open PR for that branch. The default branch holds one fleet PR
-  per slot: a non-milestone issue waits only once the fleet's open PRs there
-  reach `fleet_pr_slots` (default `8`, Issue #2663). Human PRs never count.
+- **One PR per target branch, one per slot on default** — In a repo, the worker
+  does not start a second issue for a milestone branch while the fleet already
+  has an open PR for that branch. The default branch holds one fleet PR per
+  slot: a non-milestone issue waits only once the fleet's open PRs there reach
+  `fleet_pr_slots` (default `8`, Issue #2663). Human PRs never count.
 - **One issue per work stream** — A work stream is a merge target: the default
   branch, plus each open milestone. The worker enforces one in-flight issue per
   work stream, so a repository runs as many issues concurrently as it has
@@ -209,8 +209,8 @@ iteration, then sleep and repeat:
 ### Workflow modes
 
 - **Quorum mode:** Add the `quorum` label → two agents draft a plan for the
-  issue independently, a third judges the two drafts blind (Plan A vs Plan B,
-  no vendor names), and the worker posts the winner with the runner-up and the
+  issue independently, a third judges the two drafts blind (Plan A vs Plan B, no
+  vendor names), and the worker posts the winner with the runner-up and the
   judge's reasoning attached. Human-applied only, and it hands the issue back
   with `needs-human` rather than picking the next phase itself. It costs roughly
   three agent invocations per plan, so it is for issues where the approach is
@@ -219,12 +219,12 @@ iteration, then sleep and repeat:
   sub-issues and closes the parent. No code is written until you add labels to
   the sub-issues.
 - **Question mode:** Add the `question` label → the worker answers in a comment,
-  removes `question`, and adds `needs-human` to mark the user's turn (re-add `question` to ask a follow-up). No branch or PR. If the
-  question is too broad or
-  ambiguous, the worker posts a **clarification request** instead — it adds
-  `needs-human` so you can provide more context and retry. If question
-  answering **times out**, any partial answer produced is posted with a
-  disclaimer rather than being discarded — useful content is not lost.
+  removes `question`, and adds `needs-human` to mark the user's turn (re-add
+  `question` to ask a follow-up). No branch or PR. If the question is too broad
+  or ambiguous, the worker posts a **clarification request** instead — it adds
+  `needs-human` so you can provide more context and retry. If question answering
+  **times out**, any partial answer produced is posted with a disclaimer rather
+  than being discarded — useful content is not lost.
 - **Refinement:** Add the `refine-issue` label and comment → the worker updates
   the issue body/title from your feedback.
 - **Worker escalation (`needs-human`):** When the worker cannot complete an
@@ -238,11 +238,11 @@ iteration, then sleep and repeat:
   [USAGE.md — Worker escalation via `needs-human`](USAGE.md#-worker-escalation-via-needs-human).
 - **Clarification (important):** Before implementing, the worker runs a
   **clarification phase** that does two things: **(1)** Is the issue clear? If
-  not, it posts questions and adds `needs-human`; you respond and remove
-  the label. **(2)** Is it small enough for a single PR / one run? If the issue
-  is too large, the worker adds the `planning` label so it gets broken into
-  smaller sub-issues. No code is written until the issue is clear and
-  appropriately scoped. Details:
+  not, it posts questions and adds `needs-human`; you respond and remove the
+  label. **(2)** Is it small enough for a single PR / one run? If the issue is
+  too large, the worker adds the `planning` label so it gets broken into smaller
+  sub-issues. No code is written until the issue is clear and appropriately
+  scoped. Details:
   [Planning, questions, refinement, clarification](workflows/planning-and-questions.md).
 - **CI fix workflow:** The worker automatically diagnoses and fixes CI check
   failures on open PRs (priority 1.55). It extracts failure annotations, sends
@@ -285,18 +285,18 @@ The worker has multiple layers of resilience:
   heartbeat (defence-in-depth for crashes between claiming and recording
   heartbeat); multi-worker stale assignment recovery scans GitHub for stale
   assignments from other machines.
-- **Cross-account stale-assignment recovery:** the recovery
-  scans may auto-unassign a stale assignee from *any* account when that
-  account has posted worker claim/heartbeat markers on the issue —
-  evidence-based, no configured allowlist — so an assignment leaked by one
-  worker account (e.g. `Vibecoderbot`) is recoverable by workers running as
-  another account (e.g. `stsvcbot`). Assignees with no marker evidence
-  (e.g. human teammates) are never auto-unassigned. Every existing safeguard
-  is preserved (local heartbeat → skip; open linked PR → skip; live marker →
-  skip; own-machine marker → skip; cleared marker within the 1h grace →
-  skip), the recovering machine and reason are recorded as an audit note on
-  the issue, and `[recovery-decision]` telemetry carries a `crossAccount`
-  flag distinguishing cross-account from own-account recoveries.
+- **Cross-account stale-assignment recovery:** the recovery scans may
+  auto-unassign a stale assignee from _any_ account when that account has posted
+  worker claim/heartbeat markers on the issue — evidence-based, no configured
+  allowlist — so an assignment leaked by one worker account (e.g.
+  `Vibecoderbot`) is recoverable by workers running as another account (e.g.
+  `stsvcbot`). Assignees with no marker evidence (e.g. human teammates) are
+  never auto-unassigned. Every existing safeguard is preserved (local heartbeat
+  → skip; open linked PR → skip; live marker → skip; own-machine marker → skip;
+  cleared marker within the 1h grace → skip), the recovering machine and reason
+  are recorded as an audit note on the issue, and `[recovery-decision]`
+  telemetry carries a `crossAccount` flag distinguishing cross-account from
+  own-account recoveries.
 - **Crash notifications:** alerts operators when the worker exits unexpectedly
   via GitHub issue comments and optional webhooks (e.g. Slack, PagerDuty), with
   rate limiting to prevent notification spam.
@@ -317,9 +317,8 @@ The worker follows the same standards you'd want from your team: **TDD**
 Repeat Yourself), and the rest. Every PR runs the full quality gate
 (`./quality.sh`: `deno test`, `deno lint`, `deno check`, `deno fmt --check`).
 Shell-script linting is handled by each repo's own CI, not the worker gate. So
-you get
-the productivity boost without dropping the bar — have your cake and eat it too.
-Full playbook: [AGENTS.md](../AGENTS.md).
+you get the productivity boost without dropping the bar — have your cake and eat
+it too. Full playbook: [AGENTS.md](../AGENTS.md).
 
 ```mermaid
 flowchart LR
@@ -378,18 +377,18 @@ your phone to one final PR to review.
 
 ## 8. 📚 Where to Go Deeper
 
-| Topic                                                                              | Document                                    |
-| ---------------------------------------------------------------------------------- | ------------------------------------------- |
-| **User-facing usage**                                                              | [Usage Guide](USAGE.md)                     |
-| **Workflows (issue → PR, PR feedback, CI fix, planning, milestones, concurrency)** | [Workflows](workflows/README.md)            |
-| **Configuration**                                                                  | [Configuration Reference](CONFIGURATION.md) |
-| **Deployment (cron, launchd, systemd)**                                            | [Deployment Guide](DEPLOYMENT.md)           |
-| **Containment (what the worker can and cannot reach)**                             | [Containment](CONTAINMENT.md)               |
-| **Lessons learnt (unattended, concurrent, self-healing)**                          | [Lessons learnt](LESSONS-LEARNT.md)         |
-| **Security controls, configuration, deployment security**                          | [SECURITY.md](../SECURITY.md)               |
-| **Threat model (assets, attacker capabilities, attack paths, residual risks)**      | [Threat Model](THREAT-MODEL.md)             |
+| Topic                                                                                                 | Document                                        |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| **User-facing usage**                                                                                 | [Usage Guide](USAGE.md)                         |
+| **Workflows (issue → PR, PR feedback, CI fix, planning, milestones, concurrency)**                    | [Workflows](workflows/README.md)                |
+| **Configuration**                                                                                     | [Configuration Reference](CONFIGURATION.md)     |
+| **Deployment (cron, launchd, systemd)**                                                               | [Deployment Guide](DEPLOYMENT.md)               |
+| **Containment (what the worker can and cannot reach)**                                                | [Containment](CONTAINMENT.md)                   |
+| **Lessons learnt (unattended, concurrent, self-healing)**                                             | [Lessons learnt](LESSONS-LEARNT.md)             |
+| **Security controls, configuration, deployment security**                                             | [SECURITY.md](../SECURITY.md)                   |
+| **Threat model (assets, attacker capabilities, attack paths, residual risks)**                        | [Threat Model](THREAT-MODEL.md)                 |
 | **Agent accountability (tamper-evident GitHub-mutation audit log, identity delegation, Rule of Two)** | [Agent Accountability](AGENT-ACCOUNTABILITY.md) |
-| **Project overview**                                                               | [README](../README.md)                      |
+| **Project overview**                                                                                  | [README](../README.md)                          |
 
 All of the above are linked from the main [README](../README.md#-documentation).
 
@@ -401,10 +400,10 @@ Making the Vibe Coder run **unattended**, **concurrent**, and **self-healing**
 has been surprisingly hard. If you're building something similar — an automated
 agent that turns issues into PRs and runs 24/7 — you'll need to handle the same
 kinds of issues: no blocking on UI, claim-before-work under concurrency, one PR
-per target branch, a module snapshot and repo reset so updates don't break a live run,
-and exit on repeated failure so the next cron run gets fresh code. We've
-documented what we did and why in [Lessons learnt](LESSONS-LEARNT.md); it links
-to the resilience, issue-processing, and deployment docs.
+per target branch, a module snapshot and repo reset so updates don't break a
+live run, and exit on repeated failure so the next cron run gets fresh code.
+We've documented what we did and why in [Lessons learnt](LESSONS-LEARNT.md); it
+links to the resilience, issue-processing, and deployment docs.
 
 ---
 
@@ -428,8 +427,8 @@ threat model, defence-in-depth, and resolved issues.
 **Important for managers:** Making the _code_ public does **not** give bad
 actors in other countries (or anywhere else) a way to run code on _your_
 machines behind _your_ firewall. Your deployment is protected by design: only
-your config, your token, and who holds write access on a repo you monitor,
-can trigger work. See
+your config, your token, and who holds write access on a repo you monitor, can
+trigger work. See
 [SECURITY.md § For managers: public code vs your deployment](../SECURITY.md#-for-managers-public-code-vs-your-deployment)
 for the full explanation. The points below are about other risks (e.g.
 trusted-author compromise), not "remote attackers reaching your worker."
@@ -458,9 +457,9 @@ the outstanding work below.
 ### What's outstanding
 
 - **Known limitations** in
-  [SECURITY.md § Known limitations](../SECURITY.md#%EF%B8%8F-known-limitations): Claude
-  Code permissions, prompt injection mitigations (audit, not block), input
-  length limits, repository write access. These are documented; further
+  [SECURITY.md § Known limitations](../SECURITY.md#%EF%B8%8F-known-limitations):
+  Claude Code permissions, prompt injection mitigations (audit, not block),
+  input length limits, repository write access. These are documented; further
   hardening is possible (e.g. stricter sandboxing, blocking on suspicious
   patterns for some deployments).
 - **Open security issues** in the repository (e.g. bot account behaviour, token

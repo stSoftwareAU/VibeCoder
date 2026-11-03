@@ -35,34 +35,36 @@ flowchart LR
 ## Evidence
 
 Documentation-only change; there is no web interface to screenshot. The
-guarantees documented were verified against the live repository, and the prose is
-pinned to real code by tests.
+guarantees documented were verified against the live repository, and the prose
+is pinned to real code by tests.
 
-**Immutability boundary** — `gh api repos/stSoftwareAU/VibeCoder/releases
---paginate --jq '.[] | [.tag_name, (.immutable|tostring)] | @tsv'`: `1.0.50`
-onward is `true`, and exactly 31 earlier releases are `false`.
+**Immutability boundary** —
+`gh api repos/stSoftwareAU/VibeCoder/releases
+--paginate --jq '.[] | [.tag_name, (.immutable|tostring)] | @tsv'`:
+`1.0.50` onward is `true`, and exactly 31 earlier releases are `false`.
 
 **Live ruleset** — `gh api repos/stSoftwareAU/VibeCoder/rulesets/22264472`
 returns `rules: ["deletion","non_fast_forward"]`. The checked-in payload also
 carries `update`, which still needs an admin `PUT` (escalated on #869). The
 section says so explicitly rather than describing the payload as if it were
-live: *"A rule the payload carries and command 2 does not print is not
-enforced."*
+live: _"A rule the payload carries and command 2 does not print is not
+enforced."_
 
-**Tests** — `deno test tests/release_integrity_docs_test.ts
-tests/update_mode_docs_test.ts tests/release_tag_ruleset_test.ts` → 38 passed,
-0 failed.
+**Tests** —
+`deno test tests/release_integrity_docs_test.ts
+tests/update_mode_docs_test.ts tests/release_tag_ruleset_test.ts`
+→ 38 passed, 0 failed.
 
 **Quality gate** — re-run after merging the current milestone tip (`ffcb98b`)
 into the branch: every stage PASSED except `deno tests`, at
 `16104 passed | 1 failed`. That one failure is red on the **base branch** for an
 unrelated reason: the milestone branch resurrects
 `worker/deno/tests/fleet_health_test.ts`, a file `main` deleted in 1.2.0, and it
-mutates `Deno.env` without a manifest entry, so
-`parallel_safety_cap_test.ts` reports it as new debt. Reproduced on the
-untouched milestone tips `d5e0389` and `ffcb98b`, and #1039 (Issue #870) was
-merged into this branch with the same shard red. Raised as **#1042** with the
-root cause and the fix; nothing in this diff touches it.
+mutates `Deno.env` without a manifest entry, so `parallel_safety_cap_test.ts`
+reports it as new debt. Reproduced on the untouched milestone tips `d5e0389` and
+`ffcb98b`, and #1039 (Issue #870) was merged into this branch with the same
+shard red. Raised as **#1042** with the root cause and the fix; nothing in this
+diff touches it.
 
 ## Acceptance Criteria
 
@@ -148,7 +150,7 @@ root cause and the fix; nothing in this diff touches it.
   `docs/CONFIGURATION.md:690` — reason: fixed here — the guarantee now rests on
   the tag ruleset, with immutability scoped to `1.0.50` onward
 - **violation** — a destructive `git push origin :refs/tags/…` was recommended
-  as a checklist step with its failure mode described only for the *move* case —
+  as a checklist step with its failure mode described only for the _move_ case —
   evidence: `docs/RELEASE-TAGGING.md:305` — reason: fixed here — read the rule
   list first, and both destructive proofs now carry the warning
 - **violation** — a duplicated assertion of the setup default already covered by
@@ -169,7 +171,7 @@ root cause and the fix; nothing in this diff touches it.
   `holdAtPinnedRef` has an injectable `fetchOrigin` seam — evidence:
   `worker/deno/tests/release_integrity_docs_test.ts:166` — reason: stands. The
   behaviour is already covered by the checkout-update suite; this assertion
-  exists to stop the *documentation* losing it, which is what #871 asked for
+  exists to stop the _documentation_ losing it, which is what #871 asked for
 - **clean** — Australian English throughout; no hidden or credential-shaped
   paths staged; fail-loud helpers (a missing heading throws rather than
   asserting against an empty string); cross-links and anchors resolve; the
@@ -190,6 +192,7 @@ root cause and the fix; nothing in this diff touches it.
   `update_mode_docs_test.ts` onto it — 19 tests still pass, now against the
   fence-aware section reader.
 - `deno test tests/release_integrity_docs_test.ts tests/update_mode_docs_test.ts
-  tests/release_tag_ruleset_test.ts` → 38 passed, 0 failed.
+  tests/release_tag_ruleset_test.ts`
+  → 38 passed, 0 failed.
 - `./quality.sh` → every stage PASSED except the pre-existing `deno tests`
   failure described under Evidence and raised as #1042.

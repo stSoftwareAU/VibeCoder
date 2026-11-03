@@ -51,15 +51,15 @@ ok | 37 passed | 0 failed (5ms)
 
 Every acceptance criterion in the issue has a named test:
 
-| Acceptance criterion                                  | Test                                                                       |
-| ----------------------------------------------------- | -------------------------------------------------------------------------- |
-| `Cargo.toml` short form `"1.0.195"` vs `"1.0.200"`    | `cargoTomlRule - short-form conflict resolves to the higher version`         |
-| Table form, version only → resolves                   | `cargoTomlRule - table-form conflict differing only in version resolves`     |
-| Table form, `features` also differs → `unresolved`    | `cargoTomlRule - table-form conflict changing features defers`               |
-| `go.mod` `v1.2.3` vs `v1.10.0`, numeric ordering      | `goModRule - require-block conflict resolves numerically, not lexically`     |
-| Pseudo-version / `+incompatible` → `unresolved`       | `goModRule - a pseudo-version on either side defers`, `… +incompatible …`    |
-| `[features]` block / `replace` directive              | `cargoTomlRule - a conflict in a features block defers`, `goModRule - … replace block defers` |
-| No conflict markers, only resolved lines differ       | `resolvedText` helper asserts marker-free output; every equality assertion compares the whole file |
+| Acceptance criterion                               | Test                                                                                               |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `Cargo.toml` short form `"1.0.195"` vs `"1.0.200"` | `cargoTomlRule - short-form conflict resolves to the higher version`                               |
+| Table form, version only → resolves                | `cargoTomlRule - table-form conflict differing only in version resolves`                           |
+| Table form, `features` also differs → `unresolved` | `cargoTomlRule - table-form conflict changing features defers`                                     |
+| `go.mod` `v1.2.3` vs `v1.10.0`, numeric ordering   | `goModRule - require-block conflict resolves numerically, not lexically`                           |
+| Pseudo-version / `+incompatible` → `unresolved`    | `goModRule - a pseudo-version on either side defers`, `… +incompatible …`                          |
+| `[features]` block / `replace` directive           | `cargoTomlRule - a conflict in a features block defers`, `goModRule - … replace block defers`      |
+| No conflict markers, only resolved lines differ    | `resolvedText` helper asserts marker-free output; every equality assertion compares the whole file |
 
 Where a conflicted file flows through the new module:
 
@@ -108,5 +108,5 @@ merged text or the defer reason:
 Also updated `docs/workflows/merge-conflicts.md` "Further reading" so the new
 module is documented alongside the #462 seam and the #463 JSON rules.
 
-`deno task test`, `deno task lint` and `deno task check` all pass; `./quality.sh`
-was run in full before raising the PR.
+`deno task test`, `deno task lint` and `deno task check` all pass;
+`./quality.sh` was run in full before raising the PR.

@@ -75,19 +75,19 @@ Six new behavioural tests in
 `worker/deno/tests/action_advisory_scanner_test.ts`, all calling the real
 `scanActionAdvisories` with a stubbed `gh`:
 
-| Scenario | Expected |
-| --- | --- |
-| Pin at `v0.36.0`, tag resolves to the pinned SHA (the #2523 case) | no finding; tag resolved exactly once |
-| Pin annotated `v0.34.0`, below the patched `0.35.0` | finding filed |
-| Pin with no version comment | finding filed |
-| Comment claims `v0.36.0` but the tag resolves elsewhere, or cannot be resolved | finding filed |
-| Advisory with no `first_patched_version` | finding filed |
-| Two call sites, one lagging | finding filed, evidence names the lagging site |
+| Scenario                                                                       | Expected                                       |
+| ------------------------------------------------------------------------------ | ---------------------------------------------- |
+| Pin at `v0.36.0`, tag resolves to the pinned SHA (the #2523 case)              | no finding; tag resolved exactly once          |
+| Pin annotated `v0.34.0`, below the patched `0.35.0`                            | finding filed                                  |
+| Pin with no version comment                                                    | finding filed                                  |
+| Comment claims `v0.36.0` but the tag resolves elsewhere, or cannot be resolved | finding filed                                  |
+| Advisory with no `first_patched_version`                                       | finding filed                                  |
+| Two call sites, one lagging                                                    | finding filed, evidence names the lagging site |
 
 Regression linkage: the first test fails against the unfixed scanner
 (`expected [] , actual [ … one finding … ]`) and passes with the fix. The other
-five are guards — they pass both before and after, and would catch a
-suppression that reached too far.
+five are guards — they pass both before and after, and would catch a suppression
+that reached too far.
 
 ## Evidence
 

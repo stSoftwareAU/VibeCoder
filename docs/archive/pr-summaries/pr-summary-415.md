@@ -3,7 +3,7 @@
 ## Summary
 
 `AGENT_PROVIDERS="claude,deepseek"` failed the build at
-`container/install-providers.sh` — *"Unsupported coding-agent provider"* —
+`container/install-providers.sh` — _"Unsupported coding-agent provider"_ —
 because no `container/providers/deepseek.sh` existed. This adds that fragment
 and its `container/tools.json` pin. Closes #415.
 
@@ -19,16 +19,16 @@ floating `latest` is resolved.
 Two things are deliberately **not** copies of the `claude` entry, and the code
 now defends both:
 
-- **It installs `/usr/local/bin/deepseek`**, from the manifest's `binary`
-  field. Both fragments run in one `claude,deepseek` image, so a shared command
-  name would mean one provider silently overwriting the other.
+- **It installs `/usr/local/bin/deepseek`**, from the manifest's `binary` field.
+  Both fragments run in one `claude,deepseek` image, so a shared command name
+  would mean one provider silently overwriting the other.
   `parseContainerManifest` now rejects two `providers[]` entries sharing a
   `binary`, so a later "de-duplicating" edit that sets `"binary": "claude"`
   fails the gate instead of producing that image.
 - **The version is pinned independently.** DeepSeek's endpoint is a third party
   tracking Anthropic's API surface; holding `deepseek` on a known-good CLI
-  version while `claude` moves ahead is the point of the second pin. The
-  `notes` field records that so the next reader does not collapse the two.
+  version while `claude` moves ahead is the point of the second pin. The `notes`
+  field records that so the next reader does not collapse the two.
 
 `deepseek` is pinned but stays out of `installedProviders`: a default image is
 Claude-only, exactly as `codex` and `gemini` are. The fragment is enumerated in
@@ -52,12 +52,12 @@ flowchart LR
     G --> H["assertImageInstalledProvider('deepseek')<br/>passes here, throws in a Claude-only image"]
 ```
 
-`./quality.sh` passes: 16165 Deno tests, lint, type check, fmt, markdownlint
-and mermaid all green. `shellcheck container/providers/deepseek.sh` is clean.
+`./quality.sh` passes: 16165 Deno tests, lint, type check, fmt, markdownlint and
+mermaid all green. `shellcheck container/providers/deepseek.sh` is clean.
 
-The regenerated `docs/audits/dependency-inventory.md` now records the
-`deepseek` provider pin — the supply-chain gate fails on a stale inventory, so
-that row is part of the change rather than a follow-up.
+The regenerated `docs/audits/dependency-inventory.md` now records the `deepseek`
+provider pin — the supply-chain gate fails on a stale inventory, so that row is
+part of the change rather than a follow-up.
 
 ## Test Plan
 
@@ -70,8 +70,8 @@ are executed against the real fragment, not read:
 - the fragment is an enumerated container-image input;
 - the fragment aborts (non-zero) when the manifest is missing, when only the
   `claude` entry is present, and when the pin carries no checksum;
-- `install-providers.sh "claude,deepseek"` validates the set and dispatches
-  both fragments — no "Unsupported coding-agent provider" — while a typo
+- `install-providers.sh "claude,deepseek"` validates the set and dispatches both
+  fragments — no "Unsupported coding-agent provider" — while a typo
   (`deepseekk`) is still rejected;
 - `imageAgentProviderIds` reads `claude,deepseek` from the image stamp,
   `assertImageInstalledProvider("deepseek")` passes there, and a Claude-only

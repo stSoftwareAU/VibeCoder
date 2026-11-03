@@ -27,9 +27,9 @@ and recognise enabled branch protection with an empty, disabled checks contract.
 The merge manual table retains both milestone rows.
 
 The current review fix preserves earlier live records when the same PR retries;
-a failed duplicate attempt releases only its own record. Base transactions use
-a separate lock-comment namespace, so their shorter TTL cannot expire a live
-PR repair lock. The babysitter releases its PR lock before refreshing. Reviewer
+a failed duplicate attempt releases only its own record. Base transactions use a
+separate lock-comment namespace, so their shorter TTL cannot expire a live PR
+repair lock. The babysitter releases its PR lock before refreshing. Reviewer
 identity lookup failure now reports a skipped refresh and still writes the
 posted review's log and summary; the documented post command supplies both
 reviewer and config explicitly.
@@ -52,8 +52,8 @@ reviewer and config explicitly.
 - The required-check contract combines rulesets and classic protection,
   publisher pins and the verified test merge. Any effective strict ruleset
   requires readiness. An explicitly absent classic required-check contract adds
-  no classic restriction, including GitHub’s empty summary with checks enforcement off, whether or not
-  other branch protection is enabled. For other
+  no classic restriction, including GitHub’s empty summary with checks
+  enforcement off, whether or not other branch protection is enabled. For other
   summaries that omit strictness, the classic endpoint supplies it; recognised
   404 absence is accepted while other read errors remain blocking.
 - A ready PR remains the owner while refreshed checks are pending. Only terminal
@@ -131,8 +131,8 @@ duplicate PUT and a competing PR, a 90-second-old live PR lock on the base
 anchor, the babysitter's real fix path for unreviewed and approved behind PRs,
 and a post subprocess without `--reviewer` whose `/user` lookup fails. Existing
 assertions remain intact; the post subprocess now uses its isolated temporary
-directory for child temporary files. No twinned ownership rule was found:
-all callers still use the shared ownership implementation.
+directory for child temporary files. No twinned ownership rule was found: all
+callers still use the shared ownership implementation.
 
 Focused validation passed: 149 tests across ownership, required checks, branch
 locks, babysitter and post-claim suites (the ownership suite was rerun after
@@ -143,28 +143,30 @@ files. `deno task check:manifests` passed: 847 passed, 0 failed, 1 ignored.
 The current full `./quality.sh --sequential < /dev/null` run passed repository
 lint, type checking, formatting, markdownlint, Mermaid, completeness and all
 other available non-test checks. Its parallel test pass stopped with a Deno
-2.9.5 runtime panic: `pledge test permissions called before restoring previous
-pledge`; the serial pass consequently did not run. This host runs 2.9.5 while
-the repository pins 2.9.8. Config integration was unavailable without a local
-`.config.json`; Semgrep and Checkov were unavailable without their executables
-or container images. Current PR CI had 22 passed checks, none failed. These
-host limitations do not replace the focused passing regressions above.
+2.9.5 runtime panic:
+`pledge test permissions called before restoring previous
+pledge`; the serial
+pass consequently did not run. This host runs 2.9.5 while the repository pins
+2.9.8. Config integration was unavailable without a local `.config.json`;
+Semgrep and Checkov were unavailable without their executables or container
+images. Current PR CI had 22 passed checks, none failed. These host limitations
+do not replace the focused passing regressions above.
 
 Latest review validation: the required-check, reviewer-permission, backlog and
-Dependabot suites passed (72 tests), including strict ownership, missing reviewer
-identity and the arm-before-refresh sequence. `deno fmt --check`, `deno lint`,
-and `deno task check` passed. The runner integration suite also passed (70
-tests), as did the reviewer App suite (12 tests). The reviewer identity is checked against the
-existing fleet-author set in both gate and post; no second ownership rule was
-added.
+Dependabot suites passed (72 tests), including strict ownership, missing
+reviewer identity and the arm-before-refresh sequence. `deno fmt --check`,
+`deno lint`, and `deno task check` passed. The runner integration suite also
+passed (70 tests), as did the reviewer App suite (12 tests). The reviewer
+identity is checked against the existing fleet-author set in both gate and post;
+no second ownership rule was added.
 
-Earlier review-fix validation: the five focused ownership, required-check, backlog,
-auto-merge and Dependabot suites passed (75 tests). The local formatter, lint,
-type check and markdownlint passed. The full parallel suite could not finish:
-this host's Deno 2.9.7 panicked while restoring test permissions. Semgrep and
-the pinned Checkov version were unavailable locally; CI runs those checks. The
-summary freshness check reads commit history and will see this update after the
-babysitter commits it.
+Earlier review-fix validation: the five focused ownership, required-check,
+backlog, auto-merge and Dependabot suites passed (75 tests). The local
+formatter, lint, type check and markdownlint passed. The full parallel suite
+could not finish: this host's Deno 2.9.7 panicked while restoring test
+permissions. Semgrep and the pinned Checkov version were unavailable locally; CI
+runs those checks. The summary freshness check reads commit history and will see
+this update after the babysitter commits it.
 
 Commands below run from `worker/deno` unless another directory is stated.
 

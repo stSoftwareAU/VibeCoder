@@ -7,16 +7,16 @@ the `container_extension` extension point, and makes its example checkable so
 documentation and implementation cannot drift. The page covers when to reach for
 the extension point rather than its three siblings, the validated `.config.json`
 shape (never a `VIBE_*` variable), distribution — the operator syncs their own
-private repository, the Vibe Coder clones nothing — the
-`ARG VIBE_BASE_IMAGE` / `FROM ${VIBE_BASE_IMAGE}` layering contract, the
-content-hash rebuild rule, start-script supervision and its exit-76 abort,
-containment, and every failure mode's exact symptom. It closes with a
-genericised worked example an operator can follow verbatim: a pinned Postgres
-with three databases loaded from dumps at image build time, a Jenkins whose
-pipeline job is defined in `casc.yaml` and reads the project's own
-`Jenkinsfile`, two LTS JDKs and Maven installed through `container_tools`, and
-the `start.sh` that brings the services up. No repository, host or deployment is
-named anywhere; every download resolves to a reserved documentation domain.
+private repository, the Vibe Coder clones nothing — the `ARG VIBE_BASE_IMAGE` /
+`FROM ${VIBE_BASE_IMAGE}` layering contract, the content-hash rebuild rule,
+start-script supervision and its exit-76 abort, containment, and every failure
+mode's exact symptom. It closes with a genericised worked example an operator
+can follow verbatim: a pinned Postgres with three databases loaded from dumps at
+image build time, a Jenkins whose pipeline job is defined in `casc.yaml` and
+reads the project's own `Jenkinsfile`, two LTS JDKs and Maven installed through
+`container_tools`, and the `start.sh` that brings the services up. No
+repository, host or deployment is named anywhere; every download resolves to a
+reserved documentation domain.
 
 Cross-linked from `docs/EXTENDING.md`, `docs/CONFIGURATION.md`,
 `docs/CONTAINER-IMAGE.md`, `docs/CONTAINER.md` and the README documentation
@@ -25,16 +25,16 @@ table, and registered in `_data/page_titles.yml`.
 Three defects the branch already carried are fixed here because the quality gate
 had to pass: the launch plan reported the standard image as the image it runs
 (so a layered deployment would have run the unlayered image, pruned its own
-layer, and tripped `attemptRunArgs`), the container-image-hash suite still called
-a helper the injected-env migration removed, and two tests decided their verdict
-from the network or from cross-slot scheduling.
+layer, and tripped `attemptRunArgs`), the container-image-hash suite still
+called a helper the injected-env migration removed, and two tests decided their
+verdict from the network or from cross-slot scheduling.
 
 Closes #984.
 
 ## Evidence
 
-Documentation and CLI change with no web interface to screenshot. The evidence is
-the new test suite, which drives the published example through the real code
+Documentation and CLI change with no web interface to screenshot. The evidence
+is the new test suite, which drives the published example through the real code
 rather than re-reading the prose:
 
 ```
@@ -69,13 +69,14 @@ flowchart LR
 
 - **met** — `docs/CONTAINER-EXTENSION.md` exists and covers every bullet,
   including a worked example an operator can follow verbatim — evidence:
-  `docs/CONTAINER-EXTENSION.md`; `worker/deno/tests/container_extension_example_docs_test.ts`
-  — reviewer: partial — reason: the reviewer found three real shortfalls in the
-  example (unpinned Postgres against a hardcoded cluster number, Maven never
-  named, and services that could not run under the read-only root); all three
-  are fixed in commit `dfeccec` — the build now leaves a seed the start script
-  copies into `VIBE_SCRATCH_DIR`, the major version is one `ARG` both the
-  install and the PATH derive from, and Maven has its own id and prefix.
+  `docs/CONTAINER-EXTENSION.md`;
+  `worker/deno/tests/container_extension_example_docs_test.ts` — reviewer:
+  partial — reason: the reviewer found three real shortfalls in the example
+  (unpinned Postgres against a hardcoded cluster number, Maven never named, and
+  services that could not run under the read-only root); all three are fixed in
+  commit `dfeccec` — the build now leaves a seed the start script copies into
+  `VIBE_SCRATCH_DIR`, the major version is one `ARG` both the install and the
+  PATH derive from, and Maven has its own id and prefix.
 - **met** — the example is genericised: no private repository, project or host
   is named — evidence:
   `worker/deno/tests/container_extension_example_docs_test.ts::container_extension example - every download points at a placeholder host (Issue #986)`
@@ -98,7 +99,8 @@ flowchart LR
   unrequested — reason: the gate was red at the branch base; two Issue #980
   tests failed there, and `attemptRunArgs` throws when `plan.image` disagrees
   with the last run argument, so a layered deployment could not launch. Covered
-  by `container_launch_test.ts::buildContainerLaunchPlan - the keep chain
+  by
+  `container_launch_test.ts::buildContainerLaunchPlan - the keep chain
   carries the layer and its base (Issues #980, #1059)`.
 - **unrequested** — `worker/deno/tests/container_image_hash_test.ts` swaps the
   removed `withoutProviderEnv` for an injected environment — reviewer:
@@ -140,7 +142,8 @@ flowchart LR
 - **violation** — the new `keepImages` behaviour shipped untested — evidence:
   `worker/deno/lib/container_launch.ts:1277` — reason: fixed in `732b563` with
   `container_launch_test.ts::buildContainerLaunchPlan - the keep chain carries
-  the layer and its base`, which is red against the previous one-element chain.
+  the layer and its base`,
+  which is red against the previous one-element chain.
 - **violation** — the example's `curl -o /opt/ci/server.war` had no
   `mkdir -p /opt/ci`, so a verbatim build failed on that `RUN` — evidence:
   `docs/CONTAINER-EXTENSION.md:354` — reason: fixed in `732b563`.
@@ -149,17 +152,17 @@ flowchart LR
   `docs/CONTAINER-EXTENSION.md:410` — reason: fixed in `732b563`; the header now
   says each service is started and then proved to be answering.
 - **violation** — the failure table restates ten error strings already tabulated
-  in `docs/CONTAINER.md` — evidence: `docs/CONTAINER-EXTENSION.md:221` —
-  reason: stands. The issue asks this page for "failure modes and their exact
-  symptoms, quoted from the implementation", and the quotations are now pinned
-  to the real messages by the docs test, so the two copies cannot drift
-  silently.
+  in `docs/CONTAINER.md` — evidence: `docs/CONTAINER-EXTENSION.md:221` — reason:
+  stands. The issue asks this page for "failure modes and their exact symptoms,
+  quoted from the implementation", and the quotations are now pinned to the real
+  messages by the docs test, so the two copies cannot drift silently.
 - **violation** — `docs/archive/pr-summaries/pr-summary-984.md` absent —
   evidence: `docs/archive/pr-summaries/` — reason: this file.
 - **clean** — Australian English throughout; no hidden path staged; every commit
   references #984 and carries the run-id trailer; the new page cross-linked from
-  every surface in the same change; no test removed or commented out; `@std/assert`
-  only; no wall-clock thresholds; fail-loud behaviour documented as implemented.
+  every surface in the same change; no test removed or commented out;
+  `@std/assert` only; no wall-clock thresholds; fail-loud behaviour documented
+  as implemented.
 
 ## Test Plan
 
@@ -170,9 +173,11 @@ flowchart LR
   restated; the config-load, preflight and layering symptoms produced by the
   real functions; a placeholder-host rule over every URL on the page; and each
   cross-link.
-- Added `worker/deno/tests/config_docs_consistency_test.ts::config docs - every
+- Added
+  `worker/deno/tests/config_docs_consistency_test.ts::config docs - every
   image-shaping key has a reference row (Issue #984)`.
-- Added `worker/deno/tests/container_launch_test.ts::buildContainerLaunchPlan -
+- Added
+  `worker/deno/tests/container_launch_test.ts::buildContainerLaunchPlan -
   the keep chain carries the layer and its base (Issues #980, #1059)`.
 - Repaired, not removed: `container_image_hash_test.ts` (two extension cases now
   state their environment), `run_core_production_deps_test.ts` (resolver stubbed

@@ -22,9 +22,9 @@ now made possible:
 ```
 
 The path rides in the **arguments** rather than a `cwd` key because
-`buildCodexMcpConfigArgs` translates `command`, `args` and `env` and drops
-`cwd` — one entry has to serve Claude and Codex alike. A call with an empty
-checkout throws instead of silently re-rooting at the working directory.
+`buildCodexMcpConfigArgs` translates `command`, `args` and `env` and drops `cwd`
+— one entry has to serve Claude and Codex alike. A call with an empty checkout
+throws instead of silently re-rooting at the working directory.
 
 Closes #2200.
 
@@ -80,26 +80,26 @@ change.)
 
 ## Test Plan
 
-- `worker/deno/tests/support/codegraph_mcp_root.ts` — new: reads the root out
-  of a run's `mcpConfig` through `CODEGRAPH_ROOT_FLAG`, so the one invariant is
+- `worker/deno/tests/support/codegraph_mcp_root.ts` — new: reads the root out of
+  a run's `mcpConfig` through `CODEGRAPH_ROOT_FLAG`, so the one invariant is
   asserted through one helper rather than six copies.
 - `worker/deno/tests/codegraph_context_test.ts` — `codegraphMcpServer` roots the
   server at the checkout it is given (two different checkouts, read back through
   the flag rather than by position), and a checkout-less call fails loudly.
-- `worker/deno/tests/codegraph_run_test.ts` — `prepareCodegraphRun - the server
-  follows the checkout that was indexed (Issue #2200)`, plus the root assertion
-  on the existing indexed-run test.
+- `worker/deno/tests/codegraph_run_test.ts` —
+  `prepareCodegraphRun - the server
+  follows the checkout that was indexed (Issue #2200)`,
+  plus the root assertion on the existing indexed-run test.
 - The six wired paths each assert the server's root equals the `repoDir` handed
   to `prepareCodegraphContext`, which is the check the issue's Failure Detection
-  section asks for:
-  `execute_phase_codegraph_2159_test.ts`,
+  section asks for: `execute_phase_codegraph_2159_test.ts`,
   `execute_claude_phase_codegraph_2159_test.ts`,
   `planning_processor_codegraph_2159_test.ts`,
   `question_processor_codegraph_2159_test.ts`,
   `pr_feedback_processor_codegraph_2160_test.ts`,
   `pr_ci_processor_codegraph_2160_test.ts` (both its invocations). The planning
-  and question tests additionally pin `cwd` to the work volume, so the two
-  facts that made the mismatch invisible are asserted side by side.
+  and question tests additionally pin `cwd` to the work volume, so the two facts
+  that made the mismatch invisible are asserted side by side.
 - `agent_mcp_config_test.ts` and `agent_provider_codex_test.ts` pin the rooted
   argument list through both the Claude config file and the Codex `-c`
   translation, proving the path survives the translation that drops `cwd`.
@@ -109,6 +109,6 @@ change.)
 - **Scope** — `docs/REPO-CONTEXT-TRIAL.md` §1.2 is updated because it documents
   where CodeGraph is wired in and the sequence diagram now shows the rooted
   invocation; no other behaviour was touched.
-- **Option 2 was not taken.** Giving the two processors the checkout as `cwd`
-  is the wider behaviour change the issue itself flags as needing its own
+- **Option 2 was not taken.** Giving the two processors the checkout as `cwd` is
+  the wider behaviour change the issue itself flags as needing its own
   assessment — it would move where planning and question runs write.

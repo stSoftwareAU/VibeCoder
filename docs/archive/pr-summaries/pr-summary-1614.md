@@ -10,11 +10,12 @@ over trees that already have audit records.
 
 Four edits close that loop, all in the prompt plus its operator manual:
 
-1. **Phase 1 inventories prior sweep records** — `docs/audits/security-sweep-*.md`,
-   a sweep coverage ledger, and closed `security-scan-overflow` issues. Each
-   record is dated with `git log -1 --format=%H -- <record>` and compared with
+1. **Phase 1 inventories prior sweep records** —
+   `docs/audits/security-sweep-*.md`, a sweep coverage ledger, and closed
+   `security-scan-overflow` issues. Each record is dated with
+   `git log -1 --format=%H -- <record>` and compared with
    `git diff --name-only <commit> HEAD -- <tree>`; a module a record names and
-   that diff does not is *previously swept*. Phase 1 also confirms every path
+   that diff does not is _previously swept_. Phase 1 also confirms every path
    the chunk plan names with `ls`, because #1608 planned
    `worker/deno/lib/pr_manager.ts`, which does not exist.
 2. **The "No code execution" rule names `git log` and `git diff`** as read-only
@@ -31,17 +32,18 @@ Four edits close that loop, all in the prompt plus its operator manual:
 The shallow-clone case fails loud rather than clean: the worker's clones are
 `--depth=1`, so `git log -1` on a record can return empty and the diff can fail
 with `fatal: bad object`. Either outcome falls to **never recorded**, never to
-"recorded, unchanged" — an unanswerable history must not book an unswept tree
-as audited.
+"recorded, unchanged" — an unanswerable history must not book an unswept tree as
+audited.
 
 Closes #1614.
 
 ## Evidence
 
 Backend/prompt-template change with no web interface to screenshot. The
-verification is the test suite: `worker/deno/tests/security_scan_house_vocabulary_test.ts`
-loads the template through the real `loadPrompt` (not by reading the file
-directly), so an edit that drops any of these clauses fails in CI.
+verification is the test suite:
+`worker/deno/tests/security_scan_house_vocabulary_test.ts` loads the template
+through the real `loadPrompt` (not by reading the file directly), so an edit
+that drops any of these clauses fails in CI.
 
 ```
 $ deno test --allow-read --allow-env tests/security_scan_house_vocabulary_test.ts
@@ -81,14 +83,14 @@ flowchart TD
   playbook row — evidence: `docs/SECURITY-SCAN.md:697-699` (shapes), `:912`
   (playbook row) — reviewer: partial — reason: the reviewer saw the diff before
   commit `784c7481` and correctly flagged that the paragraph above the new one
-  still promised a tracker for *any* unswept chunk and described the section as
+  still promised a tracker for _any_ unswept chunk and described the section as
   number/name/band only; that paragraph was reconciled in `784c7481`, which is
   why the status differs from its verdict
 - **met** — the new assertions pass, and `deno test`, `deno lint`,
   `deno fmt --check` and markdown lint pass — evidence:
   `worker/deno/tests/security_scan_house_vocabulary_test.ts::security_scan - Phase 1 inventories prior sweep records (Issue #1614)`
-  plus three siblings; full `./quality.sh` run after the final edit —
-  reviewer: met
+  plus three siblings; full `./quality.sh` run after the final edit — reviewer:
+  met
 - **unrequested** — the tracker is not filed at all when every unswept chunk is
   recorded (`N` is zero) — evidence: `prompts/security_scan/prompt.md:1836` —
   reviewer: unrequested — reason: the issue asks only that `N` count
@@ -97,9 +99,8 @@ flowchart TD
   to stop; kept, and stated explicitly so the boundary is visible
 - **unrequested** — two extra prompt assertions beyond the two the issue names
   (`git log`/`git diff` permitted-tool wording, and the stopping-rule ordering)
-  — evidence:
-  `worker/deno/tests/security_scan_house_vocabulary_test.ts:395-420` —
-  reviewer: unrequested — reason: acceptance criterion 1 governs four clauses,
+  — evidence: `worker/deno/tests/security_scan_house_vocabulary_test.ts:395-420`
+  — reviewer: unrequested — reason: acceptance criterion 1 governs four clauses,
   so pinning only two of them would leave half the criterion untested
 - **unrequested** — the shallow-clone fail-loud rule and its assertion —
   evidence: `prompts/security_scan/prompt.md:243-249` — reviewer: unrequested —
@@ -124,8 +125,8 @@ flowchart TD
   failures now fall to never-recorded, pinned by the
   `cannot answer means never recorded` assertion
 - **violation** — vague qualitative wording where a concrete path exists: "a
-  sweep coverage ledger (whatever file the repo keeps its swept-module list
-  in)" — evidence: `prompts/security_scan/prompt.md:233` — reason: fixed in
+  sweep coverage ledger (whatever file the repo keeps its swept-module list in)"
+  — evidence: `prompts/security_scan/prompt.md:233` — reason: fixed in
   `88e6667e`; the prompt now names `docs/audits/lib-sweep-coverage.json` for
   this repository while keeping the generic clause, because the template runs
   against every monitored repo and most have no ledger
@@ -144,7 +145,7 @@ flowchart TD
 - **violation** — tests assert on prose phrases, which TDD guidance discourages
   — evidence:
   `worker/deno/tests/security_scan_house_vocabulary_test.ts:376, 397, 401` —
-  reason: stands. The artefact under test *is* a prompt template: there is no
+  reason: stands. The artefact under test _is_ a prompt template: there is no
   executable surface behind it, the assertions run through the real `loadPrompt`
   rather than reading the file, and the issue's own Failure Detection section
   requires exactly this check. This matches the established Issue #837 pattern
@@ -162,9 +163,9 @@ All four tests are new in
 observed failing against the unedited prompt before the template was changed:
 
 - `security_scan - Phase 1 inventories prior sweep records (Issue #1614)` — the
-  inventory item, all three record sources, both git commands, the
-  "previously swept" definition, the repo-agnostic escape clause, the
-  shallow-clone fail-loud rule, and the `ls` path confirmation.
+  inventory item, all three record sources, both git commands, the "previously
+  swept" definition, the repo-agnostic escape clause, the shallow-clone
+  fail-loud rule, and the `ls` path confirmation.
 - `security_scan - permits git log and git diff as read-only inspection (Issue #1614)`
   — the Hard Constraint 2 permitted-tool list names both commands and says why.
 - `security_scan - the stopping rule drops previously swept chunks first (Issue #1614)`

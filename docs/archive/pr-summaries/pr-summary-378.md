@@ -2,26 +2,26 @@
 
 ## Summary
 
-Ten tests across four files stubbed *some* of the environment their code path
+Ten tests across four files stubbed _some_ of the environment their code path
 reads and inherited the rest from whichever machine ran the suite. Inside the
 worker container `WORK_DIR`, `VIBE_IMAGE_AGENT_PROVIDERS`, `FLEET_HEALTH_REPO`
 and `UPDATE_GH_USER_STATUS` are all exported, so `./quality.sh` reported
 `deno tests FAILED` on every in-container run and the gate could not tell a
 genuine regression from the noise.
 
-The fix is a shared stubbing helper — `worker/deno/tests/support/env.ts` —
-that snapshots, replaces and restores an environment as a whole rather than
-one variable at a time, plus the subprocess equivalent (`clearEnv: true`) for
-the tests that shell out. No production code changed. Closes #378.
+The fix is a shared stubbing helper — `worker/deno/tests/support/env.ts` — that
+snapshots, replaces and restores an environment as a whole rather than one
+variable at a time, plus the subprocess equivalent (`clearEnv: true`) for the
+tests that shell out. No production code changed. Closes #378.
 
-- `withEnv(values, body)` — replace the named variables, restore them
-  afterwards (including deleting one that was previously unset), even on throw.
-- `withCleanEnv(values, body)` — the same, and *every other* variable the
+- `withEnv(values, body)` — replace the named variables, restore them afterwards
+  (including deleting one that was previously unset), even on throw.
+- `withCleanEnv(values, body)` — the same, and _every other_ variable the
   process carries is hidden for the duration. A code path can only see what the
-  test declared, so the result no longer depends on the host.
-  `RUNTIME_ENV_KEEP` / `RUNTIME_ENV_KEEP_PREFIXES` keep `PATH`, `HOME`,
-  `TMPDIR`, `DENO_*` and friends so subprocess- and tempdir-based tests still
-  work; none of them configure the worker.
+  test declared, so the result no longer depends on the host. `RUNTIME_ENV_KEEP`
+  / `RUNTIME_ENV_KEEP_PREFIXES` keep `PATH`, `HOME`, `TMPDIR`, `DENO_*` and
+  friends so subprocess- and tempdir-based tests still work; none of them
+  configure the worker.
 
 The seven `remind_obsolete_host_work_dirs` cases failed for the subprocess
 variant of the same bug: `Deno.Command`'s `env` option **merges** into the
@@ -31,8 +31,8 @@ child exactly the listed variables.
 
 Three further test files (`default_branch_cache_test.ts`, `run_mode_test.ts`,
 `worker_cache_dir_test.ts`) each carried their own private copy of a `withEnv`
-helper; they now import the shared one. Behaviour is unchanged — this is the
-DRY half of "a shared helper rather than per-variable save/restore".
+helper; they now import the shared one. Behaviour is unchanged — this is the DRY
+half of "a shared helper rather than per-variable save/restore".
 
 ```mermaid
 flowchart LR
@@ -100,24 +100,24 @@ Result: PASSED (with skipped checks)
 
 New — `worker/deno/tests/env_stub_test.ts` (6 cases) covers the helper itself:
 
-- `withEnv` sets, deletes and restores the named variables — happy path plus
-  the "was unset, must go back to unset" edge case.
+- `withEnv` sets, deletes and restores the named variables — happy path plus the
+  "was unset, must go back to unset" edge case.
 - `withEnv` returns the body's value, sync and async.
 - `withEnv` restores the environment when the body throws.
 - `withCleanEnv` hides an ambient variable the caller did not name — the
   regression case for this issue.
-- `withCleanEnv` keeps the runtime variables (`HOME`, non-empty `PATH`) the
-  test process itself needs.
-- `withCleanEnv` restores the *entire* environment it cleared, even after a
+- `withCleanEnv` keeps the runtime variables (`HOME`, non-empty `PATH`) the test
+  process itself needs.
+- `withCleanEnv` restores the _entire_ environment it cleared, even after a
   throw (asserted against a full `Deno.env.toObject()` snapshot).
 
 Modified — the ten failing cases, which now assert the same behaviour under a
 declared environment. Two of them were strengthened rather than merely made to
 pass: `fleet_health_test.ts` and `optional_feature_env_test.ts` wrap the
-`withCleanEnv` call in an outer `withEnv` that pins a *hostile* ambient
+`withCleanEnv` call in an outer `withEnv` that pins a _hostile_ ambient
 `FLEET_HEALTH_REPO` / `UPDATE_GH_USER_STATUS`, so the assertion fails if the
-hiding ever regresses instead of quietly passing on a bare developer host.
-No test was removed, skipped, or had its assertions weakened.
+hiding ever regresses instead of quietly passing on a bare developer host. No
+test was removed, skipped, or had its assertions weakened.
 
 Docs — `docs/EXTENDING.md` gains a "Stubbing the environment" section under the
 testing guidance: use `tests/support/env.ts`, never hand-roll a per-variable

@@ -2,17 +2,17 @@
 
 ## What went wrong
 
-PR #419 gated the fleet-health clone on "is the host below its disk floor",
-and computed that by running `df` on `WORK_DIR`:
+PR #419 gated the fleet-health clone on "is the host below its disk floor", and
+computed that by running `df` on `WORK_DIR`:
 
 ```ts
-const reading = await probeDiskReading(workDir);   // df -kP inside the guest
+const reading = await probeDiskReading(workDir); // df -kP inside the guest
 ```
 
 In container mode `WORK_DIR` is the **work volume** — a thin-provisioned image
 that reports plenty of free space while the host it lives on is full. So the
-gate answered a different question from the one the reclaimer acts on, and
-never fired.
+gate answered a different question from the one the reclaimer acts on, and never
+fired.
 
 That is precisely the guest-versus-host category error Issue #384 was filed
 about. I wrote the issue and then made the mistake in the fix for it.
@@ -28,16 +28,16 @@ health re-clones since restart               5
 
 The livelock was untouched. Meanwhile #419's other half worked: zero
 `did not match any file(s) known to git` since the restart, and the new
-`Failed to position … on its remote head` message appears — so #411 is fixed
-and only this gate was wrong.
+`Failed to position … on its remote head` message appears — so #411 is fixed and
+only this gate was wrong.
 
 ## The correction
 
 The predicate is now **injected** from the run's `HostDiskMonitor`, the one
-component that knows the host figure — the launcher's launch-time `df`
-baseline minus the volume's growth since (`estimateHostFree`, Issue #226) —
-and the same monitor whose verdict the reclaimer acts on. The two sides can no
-longer disagree, because there is only one signal.
+component that knows the host figure — the launcher's launch-time `df` baseline
+minus the volume's growth since (`estimateHostFree`, Issue #226) — and the same
+monitor whose verdict the reclaimer acts on. The two sides can no longer
+disagree, because there is only one signal.
 
 ```ts
 const fleetHealthDeps = createProductionFleetHealthDeps(

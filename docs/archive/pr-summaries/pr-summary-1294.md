@@ -16,7 +16,8 @@ The loader now distinguishes the cases, matching `readConfigRecord` in
 - `Deno.errors.NotFound` → `{}` (first setup writes a fresh file).
 - Any other read failure → throws `Cannot read <path>: <cause>`.
 - Invalid JSON → throws `<path> contains invalid JSON — fix it by hand …`.
-- A JSON array or scalar → throws `<path> is not a JSON object — fix it by hand …`.
+- A JSON array or scalar → throws
+  `<path> is not a JSON object — fix it by hand …`.
 
 Every caller already runs the loader inside a `try` that prints the error and
 stops setup (`setup_cli.ts:311`, and the nine `run*Sync` helpers), and
@@ -66,7 +67,8 @@ loader.
 - **status** — `verified` — the regression tests were observed failing against
   the unfixed loader (`Expected function to reject`, 4 failed) and passing after
   the fix
-- **regression test** — `worker/deno/tests/setup_config_load_failloud_test.ts::loadExistingConfig - throws on truncated JSON rather than resetting to defaults`
+- **regression test** —
+  `worker/deno/tests/setup_config_load_failloud_test.ts::loadExistingConfig - throws on truncated JSON rather than resetting to defaults`
 
 ## Test Plan
 
@@ -78,8 +80,8 @@ calls the real loader and asserts on its result:
   are named. **Fails against the unfixed code** (returned `{}`), passes after.
 - `loadExistingConfig - throws on a hand-edited file that is not JSON at all`
 - `loadExistingConfig - throws when the file is a JSON array, not an object`
-- `loadExistingConfig - throws on an unreadable file rather than returning {}`
-  — mode `0o000`; asserts the refusal only when the read really is denied, so a
+- `loadExistingConfig - throws on an unreadable file rather than returning {}` —
+  mode `0o000`; asserts the refusal only when the read really is denied, so a
   root-run container does not produce a false failure.
 - `loadExistingConfig - a missing file is still {}` — the one legitimate `{}`.
 - `loadExistingConfig - a valid config still loads, security lists intact` —

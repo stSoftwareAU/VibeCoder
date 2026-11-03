@@ -37,8 +37,8 @@ flowchart LR
   `--reference`/`--dissociate` was not used because it contacts GitHub on every
   repair.
 - `origin` is reset to the GitHub URL after the local clone (ssh when
-  `gh config get git_protocol -h github.com` says `ssh`, otherwise https), so the existing
-  fetch and push steps in `fix` are unchanged.
+  `gh config get git_protocol -h github.com` says `ssh`, otherwise https), so
+  the existing fetch and push steps in `fix` are unchanged.
 - Each mirror refresh fetches from that currently resolved URL, so a mirror
   created with an older protocol picks up a host configuration change.
 - The mirror fetches `refs/heads/*` and `refs/tags/*` only, not the thousands of
@@ -62,11 +62,12 @@ Backend-only change; no UI file is touched. The mirror integration tests run
 real git in temporary directories against a local bare upstream, substituting
 that local path for the GitHub remote URL. The tests
 `failed clone is attempted once and preserves its original error` and
-`a repository name that is not owner/name is refused before any git runs`
-stub git. The tests `defaultRemoteUrl follows gh's git_protocol, falling back
-to https with a warning` and
-`host-specific gh protocol takes precedence over the global protocol` stub gh.
-The application test
+`a repository name that is not owner/name is refused before any git runs` stub
+git. The tests
+`defaultRemoteUrl follows gh's git_protocol, falling back
+to https with a warning`
+and `host-specific gh protocol takes precedence over the global protocol` stub
+gh. The application test
 `production repair forwards CONFIG_PATH and denies canonical credential targets`
 runs the real CLI with git and gh calls faked by
 `worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts`.
@@ -105,12 +106,13 @@ runs the real CLI with git and gh calls faked by
 ## Test Plan
 
 - `deno task test:unit tests/fleet_pr_babysitter_test.ts
-  tests/fleet_babysitter_app_test.ts` (from `worker/deno`): 66 passed,
-  0 failed (49 and 17 respectively). The host-specific protocol and stale
-  mirror origin tests failed before the fix; the latter uses real git to check
-  fetched history and the repair clone's origin. The application fixture
-  requires the host-qualified gh arguments. No duplicate protocol resolver or
-  mirror fetch rule was found among the babysitter's callers.
+  tests/fleet_babysitter_app_test.ts`
+  (from `worker/deno`): 66 passed, 0 failed (49 and 17 respectively). The
+  host-specific protocol and stale mirror origin tests failed before the fix;
+  the latter uses real git to check fetched history and the repair clone's
+  origin. The application fixture requires the host-qualified gh arguments. No
+  duplicate protocol resolver or mirror fetch rule was found among the
+  babysitter's callers.
 - The real-git fetch test pins the foreground maintenance commands and their
   order before the clone. Deferred work tests the mirror queue without sleeps;
   the concurrent real-git test records the order through each origin reset.
@@ -142,13 +144,13 @@ runs the real CLI with git and gh calls faked by
   dropping `timeoutSeconds` from the bare clone or the local clone each turned a
   test red. `defaultRemoteUrl` now takes a gh seam (default `runGhCommand`) and
   is exported for its test.
-- Fixture mutations: the `gh config get git_protocol -h github.com` branch answers `ssh`
-  and the `clone` branch records its argv (`clone-calls.log`) and the `set-url`
-  branch records the URL it is given (`origin-url`), which the app test asserts,
-  so replacing the return value or the matcher goes red. Mutation-check
-  follow-up (PR #4730): the fixture's `mkdirSync` no longer passes
-  `{ recursive: true }` (the code under test creates the mirror root first, so
-  the flag was inert) and the `set-url` branch is one comparison,
+- Fixture mutations: the `gh config get git_protocol -h github.com` branch
+  answers `ssh` and the `clone` branch records its argv (`clone-calls.log`) and
+  the `set-url` branch records the URL it is given (`origin-url`), which the app
+  test asserts, so replacing the return value or the matcher goes red.
+  Mutation-check follow-up (PR #4730): the fixture's `mkdirSync` no longer
+  passes `{ recursive: true }` (the code under test creates the mirror root
+  first, so the flag was inert) and the `set-url` branch is one comparison,
   `args.slice(0, 3).join(" ") === "remote set-url origin"`, so no operand is
   droppable without turning the app test red (it reads `origin-url`). The
   `args.includes("--bare")` → true mutant remains exempt (untestable): it only
@@ -156,21 +158,20 @@ runs the real CLI with git and gh calls faked by
   no observable behaviour distinguishes.
 - Failure-reason test: the failed-fetch test asserts git's real stderr text
   (observed from real git) appears in the error.
-- `./quality.sh < /dev/null`: formatter, linter, whole-tree type check,
-  Markdown lint, Mermaid and completeness checks passed. The unit-test stage
-  failed locally; a standalone `deno task test:unit` reproduced a Deno 2.9.5
-  runtime panic at `cli/ops/testing.rs:94:5`:
-  `pledge test permissions called before restoring previous pledge`.
-  The release-tag ruleset check passed. Config integration, Semgrep and Checkov
-  were skipped because the local configuration or pinned tools were unavailable.
-  CI is green for
-  PR #4730 and for PR #4718, which produced the current base commit
+- `./quality.sh < /dev/null`: formatter, linter, whole-tree type check, Markdown
+  lint, Mermaid and completeness checks passed. The unit-test stage failed
+  locally; a standalone `deno task test:unit` reproduced a Deno 2.9.5 runtime
+  panic at `cli/ops/testing.rs:94:5`:
+  `pledge test permissions called before restoring previous pledge`. The
+  release-tag ruleset check passed. Config integration, Semgrep and Checkov were
+  skipped because the local configuration or pinned tools were unavailable. CI
+  is green for PR #4730 and for PR #4718, which produced the current base commit
   `9afa408d5a30e545831964d2b7563eab2a1c2417`.
 - `deno task check:manifests`: 847 passed, 0 failed, 1 ignored.
 - `deno task pr-summary-check --base origin/main
-  ../../docs/archive/pr-summaries/pr-summary-4727.md`: 0 blocked; acceptance
-  closure, independent review and reproduction status were not checked because
-  issue-body and label inputs were not supplied.
+  ../../docs/archive/pr-summaries/pr-summary-4727.md`:
+  0 blocked; acceptance closure, independent review and reproduction status were
+  not checked because issue-body and label inputs were not supplied.
 
 <!-- vibe-quality-gate-skipped: local unit runner panics in Deno 2.9.5; config integration, Semgrep and Checkov unavailable; touched suites, fmt, lint and type check pass; CI runs the full gate -->
 

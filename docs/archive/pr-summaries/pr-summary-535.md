@@ -18,8 +18,8 @@ rewired. Closes #535.
     labelled failure instead of being swallowed.
   - A `ghCommandFn` throw returns `[]` — a transient lookup hiccup never aborts
     a scan.
-  - Bounded at 300 by default. Reaching the bound emits a `console.error`
-    naming the repo and the limit and the word `TRUNCATED`, because a silently
+  - Bounded at 300 by default. Reaching the bound emits a `console.error` naming
+    the repo and the limit and the word `TRUNCATED`, because a silently
     truncated skip-list reads to the model exactly like "no duplicate found".
 - `renderOpenIssueTitles(issues, opts?)` is a pure formatter producing one
   `#<number> — <title>` line per issue, `(none)` when empty (matching the

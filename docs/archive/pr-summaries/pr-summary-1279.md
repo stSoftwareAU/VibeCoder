@@ -3,8 +3,8 @@
 ## Summary
 
 The security-fix gate's one machine-checkable evidence item —
-`test-identifier-in-diff`, the check the module header calls *"the coupling that
-prose alone cannot fake"* — was satisfiable by the four-character token `test`.
+`test-identifier-in-diff`, the check the module header calls _"the coupling that
+prose alone cannot fake"_ — was satisfiable by the four-character token `test`.
 `TEST_IDENTIFIER_PATTERNS[0]` extracted `test` from a summary citing
 `tests/foo_test.ts::test`, that cleared the `>= 4` floor, and the match was a
 **substring** test over the whole normalised added-line blob — which any added
@@ -21,7 +21,7 @@ Three independent changes in `worker/deno/lib/security_fix_gate.ts` close it:
    `todo`) plus a six-character normalised floor; an identifier built only from
    generic tokens (`test_case`) cites nothing and is dropped.
 3. **Declaration lines only** — the cited identifier must appear in an added
-   line that *declares* a test (`Deno.test(`, the object form's `name:` field,
+   line that _declares_ a test (`Deno.test(`, the object form's `name:` field,
    `it("…"`/`test("…"`, `@test "…"` for BATS, `def test_…(` for pytest, and the
    line following a bare `@Test` annotation for JUnit), so citing a token
    borrowed from an assertion body no longer counts.
@@ -45,8 +45,8 @@ flowchart TD
 
 ## Evidence
 
-Backend/CLI change with no web interface, so there is nothing to screenshot.
-The evidence is the test suite.
+Backend/CLI change with no web interface, so there is nothing to screenshot. The
+evidence is the test suite.
 
 Added
 `worker/deno/tests/security_fix_gate_test.ts::citedTestIdentifierInDiff - rejects the generic token test cited against an unrelated test`

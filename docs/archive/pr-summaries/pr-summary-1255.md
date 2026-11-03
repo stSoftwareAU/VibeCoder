@@ -60,9 +60,9 @@ flowchart LR
 `finding.file`; both are now passed through `redactSecrets()` inside the
 builder, and every SARIF field that carries issue-derived text is derived from
 those two values (`shortDescription`, `fullDescription`, `message`,
-`artifactLocation.uri`). The remaining fields are either constants
-(`$schema`, tool name/URI), enumerated values (`level`, `security-severity`,
-CWE tag built from a `CWE-\d+` match), a numeric line, or the regex-constrained
+`artifactLocation.uri`). The remaining fields are either constants (`$schema`,
+tool name/URI), enumerated values (`level`, `security-severity`, CWE tag built
+from a `CWE-\d+` match), a numeric line, or the regex-constrained
 `SEC-<alphanumeric>` id — none can carry a secret. Because the redaction is
 inside the builder rather than at the upload sink, it cannot be bypassed by the
 gzip step that made the original finding unfixable downstream: every caller of
@@ -85,16 +85,16 @@ builder with fixtures and assert on the produced document:
   — the same token inside the parsed file path is masked in
   `artifactLocation.uri`. Also fails against the unfixed code.
 - `worker/deno/tests/security_sarif_test.ts::buildSecuritySarif - leaves ordinary finding text unchanged`
-  — guards against over-redaction: an ordinary message and path are byte-identical.
+  — guards against over-redaction: an ordinary message and path are
+  byte-identical.
 
 Quality gate: `./quality.sh` run in full. Every check passes except
 `deno tests`, which fails on
 `tests/plan_coverage_gate_bounds_1245_test.ts::runPlanCoverageGate - an oversized comment is skipped loudly and a real table still decides (Issue #1245)`.
 That failure is **pre-existing on the milestone base branch** — confirmed by
 running the same test in a clean worktree at `HEAD~1` (commit `f52d457`), where
-it fails identically — and is already tracked by
-stSoftwareAU/VibeCoder#1358. It is unrelated to this change: the test does not
-touch any SARIF module.
+it fails identically — and is already tracked by stSoftwareAU/VibeCoder#1358. It
+is unrelated to this change: the test does not touch any SARIF module.
 
 ## Documentation
 

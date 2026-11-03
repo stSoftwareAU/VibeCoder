@@ -12,11 +12,11 @@ non-merge commits onto the base (`git rebase --no-rebase-merges origin/BASE`)
 and pushes the result **only once `git diff --quiet OLD NEW` exits 0** — the new
 head's tree is byte-identical to the head GitHub judged, so the push replaces a
 commit graph and no file content at all. That guard is the whole licence for the
-force-push: the resolver's contract forbids a *destructive* force-push
-(Issues #1076, #4373) because a rebase once destroyed a PR's own changes, and a
-push that provably changes no file is not that. The lease is pinned
-(`--force-with-lease=BRANCH:OLD`), never a bare `--force`, so a branch that moved
-on the remote refuses the push rather than being overwritten.
+force-push: the resolver's contract forbids a _destructive_ force-push (Issues
+#1076, #4373) because a rebase once destroyed a PR's own changes, and a push
+that provably changes no file is not that. The lease is pinned
+(`--force-with-lease=BRANCH:OLD`), never a bare `--force`, so a branch that
+moved on the remote refuses the push rather than being overwritten.
 
 A replay that conflicts, or lands on a different tree, falls back to one commit
 carrying the old head's tree on top of the base
@@ -70,9 +70,9 @@ flowchart TD
 ## Reproduction
 
 - **symptom** — a PR whose `CONFLICTING` verdict survived the nudge stopped
-  climbing: `decideLadderRung` returned `rebase` and the processor logged
-  "not wired yet", pushed nothing and posted nothing, so the ladder never
-  reached the abandon rung and the PR sat conflicting for ever.
+  climbing: `decideLadderRung` returned `rebase` and the processor logged "not
+  wired yet", pushed nothing and posted nothing, so the ladder never reached the
+  abandon rung and the PR sat conflicting for ever.
 - **status** — `verified` — with the `case "rebase"` wiring temporarily reverted
   to the #2278 placeholder, the six new processor tests were observed failing
   (`FAILED | 5 passed | 6 failed`), and all pass once the rung is wired.
@@ -113,18 +113,19 @@ flowchart TD
   `worker/deno/tests/pr_merge_conflict_processor_test.ts::processMergeConflict - the rebase rung leaves the next real attempt's number unchanged (Issue #2279)`
   — reviewer: met
 - **met** — `deno test`, `deno lint` and `deno fmt --check` pass — evidence:
-  `./quality.sh` run after the final edit: every stage PASSED except `deno
-  tests`, which reports **three pre-existing failures unrelated to this diff**
-  (`ephemeral_build_cache_test.ts:237`, `:260`,
-  `quality_gate_phase_test.ts:744`). Reproduced on the milestone base
-  `517412fb` with none of this change present — `FAILED | 68 passed | 3 failed`
-  — so they are the host-environment failures Issue #2247 / PR #2281 record.
-  The touched suites are green: rung 14/14, processor 78/78, `git_ref_args`
-  29/29, `lib_sweep_coverage` via `check:manifests` 656/656 — reviewer: partial
-  — reason: the reviewer could not confirm a green full suite because its run
+  `./quality.sh` run after the final edit: every stage PASSED except
+  `deno
+  tests`, which reports **three pre-existing failures unrelated to this
+  diff** (`ephemeral_build_cache_test.ts:237`, `:260`,
+  `quality_gate_phase_test.ts:744`). Reproduced on the milestone base `517412fb`
+  with none of this change present — `FAILED | 68 passed | 3 failed` — so they
+  are the host-environment failures Issue #2247 / PR #2281 record. The touched
+  suites are green: rung 14/14, processor 78/78, `git_ref_args` 29/29,
+  `lib_sweep_coverage` via `check:manifests` 656/656 — reviewer: partial —
+  reason: the reviewer could not confirm a green full suite because its run
   collided with the gate's own run on the audit-journal lock; the gate was run
-  here afterwards with nothing else running, and the only failures are the
-  three reproduced on the base.
+  here afterwards with nothing else running, and the only failures are the three
+  reproduced on the base.
 - **unrequested** — `buildRebaseArgs` gains a `RebaseArgsOptions`
   (`noRebaseMerges`) parameter — reviewer: unrequested — reason: the
   `git_ref_argv_check` gate forbids an inline `["rebase", …]` literal, so
@@ -134,9 +135,9 @@ flowchart TD
   reviewer: unrequested — reason: the human-author bail-out needs the same
   placeholder the abandon rung returns, and two copies of it would drift.
 - **unrequested** — `assertPushTargetAllowed(branchName)` before the rung —
-  reviewer: unrequested — reason: this rung force-pushes, and the default
-  branch is read-only for the worker (Issue #2584); the nudge rung takes the
-  same guard.
+  reviewer: unrequested — reason: this rung force-pushes, and the default branch
+  is read-only for the worker (Issue #2584); the nudge rung takes the same
+  guard.
 - **unrequested** — `head-moved` carries a `localHead` field — reviewer:
   unrequested — reason: the rung-failed comment names where the clone actually
   is, which is the whole diagnostic value of that outcome.
@@ -155,26 +156,26 @@ flowchart TD
   unmerged paths**", which is the only way to ask that question.
 - **unrequested** — a no-op replay takes the fallback rather than pushing `OLD`
   back — reviewer: unrequested — reason: found by the same review; pushing OLD
-  back gives GitHub nothing to re-judge while the comment claims a
-  linearisation that never happened.
+  back gives GitHub nothing to re-judge while the comment claims a linearisation
+  that never happened.
 - **unrequested** — the rung-failed body renders its quoted git output inert
   (`neutraliseAgentMarkers`) — reviewer: unrequested — reason: git's stderr can
   carry a fork-chosen branch name, and a marker-shaped string in a
-  fleet-authored body is read back as the fleet's own ladder memory
-  (Issue #2260).
+  fleet-authored body is read back as the fleet's own ladder memory (Issue
+  #2260).
 - **unrequested** — `buildSquashCommitMessage` is exported — reviewer:
   unrequested — reason: the commit message must carry Issue #2272, the old head
-  and the run-id trailer, and a test that cannot call it can only assert that
-  by matching the argv string.
+  and the run-id trailer, and a test that cannot call it can only assert that by
+  matching the argv string.
 - **unrequested** — the mermaid diagram, the reworded "a rung that cannot be
   recorded" bullet and the new entry in the file index of
   `docs/workflows/merge-conflicts.md` — reviewer: unrequested — reason: the
   diagram and the file index both stated rung 2 was unwired; leaving either
   would make the doc false.
-- **unrequested** — `docs/audits/lib-sweep-coverage.json` + the
-  `top-up-2279` sweep record — reviewer: unrequested (not seen; added after the
-  review) — reason: the repo's own completeness gate fails until every module
-  under `worker/deno/lib` is claimed by a slice that read it; this mirrors
+- **unrequested** — `docs/audits/lib-sweep-coverage.json` + the `top-up-2279`
+  sweep record — reviewer: unrequested (not seen; added after the review) —
+  reason: the repo's own completeness gate fails until every module under
+  `worker/deno/lib` is claimed by a slice that read it; this mirrors
   `top-up-2276` from the sibling issue.
 
 ## Standards Review
@@ -209,19 +210,18 @@ flowchart TD
   `assertSafeGitRef`/`--end-of-options`, shas through `isConflictHeadSha`,
   always a pinned lease and never a bare `--force`, `assertPushTargetAllowed`
   before the push, bodies through the `gh` redaction chokepoint; KISS/DRY — the
-  git work in its own focused module, the duplicated placeholder collapsed;
-  docs updated in the same change with no surface left claiming rung 2 is
-  unwired.
+  git work in its own focused module, the duplicated placeholder collapsed; docs
+  updated in the same change with no surface left claiming rung 2 is unwired.
 
 ## Test Plan
 
 New — `worker/deno/tests/conflict_rebase_rung_test.ts` (12 tests, scripted git
 runner):
 
-- an identical tree pushes the replay with the pinned lease, `--no-rebase-merges`
-  and no bare force
+- an identical tree pushes the replay with the pinned lease,
+  `--no-rebase-merges` and no bare force
 - a differing tree is reset to `OLD` and the old tree squashed onto the base
-- a replay conflict aborts (reading the unmerged paths *before* the abort) and
+- a replay conflict aborts (reading the unmerged paths _before_ the abort) and
   pushes the squash
 - a clone that is not at the judged head issues only the head read
 - a refused push restores `OLD`
@@ -258,8 +258,9 @@ Added to `worker/deno/tests/pr_merge_conflict_processor_test.ts` (76 total):
   is unchanged
 - `buildRebaseComment` / `buildRungFailedComment` direct tests
 
-Modified — `processMergeConflict - a nudge marker naming the current head is not
-nudged again (Issue #2278)`. It asserted the unwired placeholder
-(`processed: false`, nothing pushed); the rung is wired now, so it asserts the
-ladder *climbing* instead — still no second nudge at that head, and
-`rung === "rebase"`. Renamed to say so.
+Modified —
+`processMergeConflict - a nudge marker naming the current head is not
+nudged again (Issue #2278)`.
+It asserted the unwired placeholder (`processed: false`, nothing pushed); the
+rung is wired now, so it asserts the ladder _climbing_ instead — still no second
+nudge at that head, and `rung === "rebase"`. Renamed to say so.

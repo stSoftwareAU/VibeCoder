@@ -17,8 +17,8 @@ The behaviour, per lock file:
   against an unmerged manifest would describe the wrong dependency set.
 - **Probe the toolchain first.** The binary must be on `PATH` before anything
   runs. `container/tools.json` registers `deno`, `node`/`npm` and `rust`/`cargo`
-  but has **no Go entry**, so `go.sum` falls through the probe today; that is the
-  probe working, and the rule starts working the day the image ships Go.
+  but has **no Go entry**, so `go.sum` falls through the probe today; that is
+  the probe working, and the rule starts working the day the image ships Go.
 - **Regenerate with the ecosystem tool** — `deno install`,
   `npm install --package-lock-only`, `cargo update --workspace --offline`
   (falling back to a network-permitted refresh), `go mod tidy`.
@@ -43,8 +43,8 @@ tool.
 (`dependency_conflict_rules.ts`, Issue #462), so the "manifest was resolved"
 seam cannot drift.
 
-The command runner, toolchain probe and lock-file reader are all injected, so
-no test shells out or touches the filesystem.
+The command runner, toolchain probe and lock-file reader are all injected, so no
+test shells out or touches the filesystem.
 
 Like the manifest-rule modules from #462 and #463, this module is not yet wired
 into the resolution pass — the wiring lands with the rest of milestone #456.

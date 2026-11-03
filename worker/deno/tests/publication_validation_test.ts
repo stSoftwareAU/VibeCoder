@@ -793,3 +793,64 @@ Deno.test("the guard does not validate a branch in sync with its remote", async 
     }
   });
 });
+
+/** A `quality.sh` that runs the repository's Deno tests, as CI compiles them. */
+const DENO_QUALITY_SH = "#!/bin/sh\nset -e\ndeno test --no-lock --quiet .\n";
+
+const PASSING_DENO_TEST =
+  'Deno.test("ok", () => { if (1 + 1 !== 2) throw new Error("math"); });\n';
+
+Deno.test("the real quality gate: a test module that does not compile is a failed verdict, naming the compile error", async () => {
+  await withRepo(
+    {
+      "quality.sh": DENO_QUALITY_SH,
+      "broken_test.ts":
+        'const count: number = "not a number";\nDeno.test("never runs", () => { console.log(count); });\n',
+    },
+    async (dir) => {
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: realGate },
+        ),
+        "failed",
+      );
+      assertStringIncludes(v.output, "TS2322");
+    },
+  );
+});
+
+Deno.test("the real quality gate: Deno tests run in the initial run and again in the repair", async () => {
+  await withRepo(
+    {
+      "quality.sh": DENO_QUALITY_SH,
+      "fix_test.ts":
+        'Deno.test("needs the fix", () => { throw new Error("SENTINEL-INITIAL-FAILURE"); });\n',
+    },
+    async (dir) => {
+      // The initial run executes the test and reports its failure.
+      const initial = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: realGate },
+        ),
+        "failed",
+      );
+      assertStringIncludes(initial.output, "SENTINEL-INITIAL-FAILURE");
+
+      // The repair commits a fix, and the same entry point runs the tests
+      // again on the new head.
+      await Deno.writeTextFile(`${dir}/fix_test.ts`, PASSING_DENO_TEST);
+      await git(dir, "commit", "--quiet", "-am", "repair");
+      const repaired = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO },
+          { runGate: realGate },
+        ),
+        "passed",
+      );
+      assertEquals(repaired.gate, "ran");
+      assertEquals(repaired.head, await git(dir, "rev-parse", "HEAD"));
+    },
+  );
+});

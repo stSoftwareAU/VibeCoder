@@ -52,16 +52,16 @@ changed, so no docs needed updating. The section is `none`.
 
 - Each positive pin reads `readRepoDoc` + `section()` + `flat()` scoped to the
   heading that states its rule — reviewer: met
-- The `first-party` and tag carve-out absence checks stay whole-file —
-  reviewer: met
+- The `first-party` and tag carve-out absence checks stay whole-file — reviewer:
+  met
 - Each pin maps to its own section (audit Definitions, audit Supply-chain
-  hardening, setup CI Hardening Defaults, guidelines Dependency Bumps and
-  Supply Chain) — reviewer: met
+  hardening, setup CI Hardening Defaults, guidelines Dependency Bumps and Supply
+  Chain) — reviewer: met
 - Reuse the shared `worker/deno/tests/support/markdown_docs.ts` helpers, as in
   #3242 — reviewer: met
-- Optional lint for `.replace(/\s+/g, " ")` in doc-reading tests — reviewer:
-  met — reason: the issue marks it optional; skipped as out of scope (33 test
-  files still use the call)
+- Optional lint for `.replace(/\s+/g, " ")` in doc-reading tests — reviewer: met
+  — reason: the issue marks it optional; skipped as out of scope (33 test files
+  still use the call)
 - Unrequested changes: none — reviewer: met
 
 ## Standards Review
@@ -70,12 +70,13 @@ changed, so no docs needed updating. The section is `none`.
 
 - § Documentation-drift tests, condition 1 (section-scoped positive pins;
   absence checks whole-file) — reviewer: met
-- Every re-scoped phrase sits inside its named heading's bounds in the prompt
-  — reviewer: met
-- Condition 4 (new pin absent from base) — reviewer: met — reason: no new pin
-  is added; existing #787 pins are narrowed
+- Every re-scoped phrase sits inside its named heading's bounds in the prompt —
+  reviewer: met
+- Condition 4 (new pin absent from base) — reviewer: met — reason: no new pin is
+  added; existing #787 pins are narrowed
 - Removed assertions each keep an equivalent or stricter check — reviewer: met
-- A named test must exist (`worker/deno/tests/action_sha_pinning_policy_test.ts`,
+- A named test must exist
+  (`worker/deno/tests/action_sha_pinning_policy_test.ts`,
   `worker/deno/tests/support/markdown_docs.ts`) — reviewer: met
 
 ## Test Plan
@@ -90,15 +91,15 @@ changed, so no docs needed updating. The section is `none`.
   whole-file.
 - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
   `assertEquals( /first-party/i.test(collapsed), false, "the guidelines never used the term and must not gain it", );`
-  — `collapsed` is now section-scoped, so the absence check reads the whole
-  file as `/first-party/i.test(text)`.
+  — `collapsed` is now section-scoped, so the absence check reads the whole file
+  as `/first-party/i.test(text)`.
 - Every other assertion line is unchanged; only the bindings it reads
   (`collapsed`, `audit.collapsed`, `setup.collapsed`) are now section-scoped.
 - `deno task test:unit tests/action_sha_pinning_policy_test.ts`: 6 passed, 0
   failed.
 - Red checks (scratch prompt edits, restored afterwards): moving "**Container
-  images** are the one carve-out" out of the audit's Definitions, "this check
-  is about _who wrote the code a privileged trigger runs_" out of Supply-chain
+  images** are the one carve-out" out of the audit's Definitions, "this check is
+  about _who wrote the code a privileged trigger runs_" out of Supply-chain
   hardening, "No owner is exempt" out of the setup prompt's CI Hardening
   Defaults, and "Pin GitHub Actions to commit SHAs" out of the guidelines'
   Dependency Bumps and Supply Chain section each failed its case. The base
@@ -107,8 +108,8 @@ changed, so no docs needed updating. The section is `none`.
   `ALREADY ON BASE` for the sampled pins — expected green on base, because this
   refactor adds no new pinned phrase; it narrows the existing #787 pins.
 - `./quality.sh < /dev/null`: exit 0, `Result: PASSED (with skipped checks)` —
-  only `config integration` skipped (`deno or .config.json not available`);
-  deno tests, lint, type check, fmt, markdownlint and semgrep passed.
+  only `config integration` skipped (`deno or .config.json not available`); deno
+  tests, lint, type check, fmt, markdownlint and semgrep passed.
 
 Branch outcomes: none added
 

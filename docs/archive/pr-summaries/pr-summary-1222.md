@@ -21,7 +21,7 @@ too, so a future sync merge cannot silently drop it.
 
 `claimNotHeld` (Issue #1139) does not apply on the throw path: every stand-down
 — the pipeline's setup-phase claim refusal and all three pre-pipeline routes
-through `routeRunResult` — *returns* a result rather than throwing, so a throw
+through `routeRunResult` — _returns_ a result rather than throwing, so a throw
 reaching the catch never carries one. This is stated in the code comment and in
 `docs/INTERNALS.md` rather than left implicit.
 

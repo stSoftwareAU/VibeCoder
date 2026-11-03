@@ -42,8 +42,8 @@ flowchart TD
   maximum never holds itself, and four hosts at the default two slots fill it
   exactly.
 - Operators should set it to the sum of every host's `max_concurrent_issues`.
-- A value that is not a positive integer falls back a level (per-repo → global
-  → `8`). The gate is never disabled.
+- A value that is not a positive integer falls back a level (per-repo → global →
+  `8`). The gate is never disabled.
 
 The key is documented in the `docs/CONFIGURATION.md` defaults table and the
 `repo_config` table, and is listed in `config_unknown_keys.ts`.
@@ -51,21 +51,22 @@ The key is documented in the `docs/CONFIGURATION.md` defaults table and the
 ### Fleet author set
 
 `loadConfig` already folds `service_accounts` into `fleetPrAuthors` (#209). The
-gate's push-capable set is therefore `github_user ∪ fleet_pr_authors ∪
-service_accounts` on every host. New tests pin that a PR by either fleet
-account counts.
+gate's push-capable set is therefore
+`github_user ∪ fleet_pr_authors ∪
+service_accounts` on every host. New tests pin
+that a PR by either fleet account counts.
 
-There is one addition. The census and the idle audit read
-`fetchAllOpenPRs`, whose rows carry the listing author as `authorLogin` and no
-fetch-login `author`. Until now they classified nothing, so every open PR
-counted, human PRs included. The gate now falls back to `authorLogin` when no
-fetch login was stamped. As a result those readers classify each PR's owner the
-same way the scan does.
+There is one addition. The census and the idle audit read `fetchAllOpenPRs`,
+whose rows carry the listing author as `authorLogin` and no fetch-login
+`author`. Until now they classified nothing, so every open PR counted, human PRs
+included. The gate now falls back to `authorLogin` when no fetch login was
+stamped. As a result those readers classify each PR's owner the same way the
+scan does.
 
 ### Everything that asks the question uses the same call and cap
 
-- **Claim scan:** all five collectors, `new_work_eligibility`,
-  `diagnose-issue` and `diagnose-repo`.
+- **Claim scan:** all five collectors, `new_work_eligibility`, `diagnose-issue`
+  and `diagnose-repo`.
 - **Claim-time live re-check:** `claimIssue` takes a `fleetPrSlots` option,
   passed by the setup-branch phase.
 - **Idle-decision census:** `RepoCensusInput.fleetPrSlots`. The census now
@@ -98,15 +99,15 @@ stream" in these files:
 
 ## Acceptance Criteria
 
-| Criterion | Status | Evidence |
-|-----------|--------|----------|
-| A non-milestone issue is held only while the fleet's open PRs on the repo's non-milestone branches number at least the slot count. The count is a documented config value. Milestone issues keep their behaviour. | met | `getBlockingPRForIssue` plus `resolveFleetPrSlots` / `DEFAULT_FLEET_PR_SLOTS` (`issue_query.ts`). `fleet_pr_slots` is in the CONFIGURATION.md tables. Tests: `fleet_pr_slots_test.ts` "below the cap…", "at the cap…", "milestone PRs do not count…", "milestone issues keep one PR per milestone branch". |
-| Human-authored PRs never count. | met | "a human PR never counts towards the cap" in `fleet_pr_slots_test.ts`. The existing #4133 tests are kept. |
-| The fleet author set is the union of `service_accounts` and `fleet_pr_authors` on every host. A test covers a PR by either fleet account. | met | `loadConfig` union (#209). Tests: "a PR by either fleet account counts" (`fleet_pr_slots_test.ts`), and `fleet_service_accounts_test.ts`, which now sets `fleet_pr_slots: 1` through `loadConfig`. |
-| The held-issue gate comment states the count against the cap. | met | `fleet-pr-cap` gate in `held_issue_gate_comment.ts`, recorded as `BlockedCandidateInfo.fleetPrCap` by the work-on and configured-label collectors. Test: "the gate comment names the count against the cap". |
-| The idle census counts the same gate the claim scan applies. | met | The census, the audit and the filer's gate all call `getBlockingPRForIssue` with the scan's author set and per-repo cap. Tests: "census and scan agree in both directions" (`fleet_pr_slots_test.ts`); `dependency_blocked_top_priority_parks_nothing_2563_test.ts` and `idle_filing_composition_1050_test.ts` now pass the scan's cap to every instrument. |
-| Tests cover both directions: below cap claims, at cap holds, human never counts, other fleet account counts, milestones unaffected. | met | `worker/deno/tests/fleet_pr_slots_test.ts` (12 tests). |
-| `docs/workflows/issue-processing.md` is updated to the per-slot rule. | met | "Open PR blocking" and the guard stack are rewritten. |
+| Criterion                                                                                                                                                                                                         | Status | Evidence                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A non-milestone issue is held only while the fleet's open PRs on the repo's non-milestone branches number at least the slot count. The count is a documented config value. Milestone issues keep their behaviour. | met    | `getBlockingPRForIssue` plus `resolveFleetPrSlots` / `DEFAULT_FLEET_PR_SLOTS` (`issue_query.ts`). `fleet_pr_slots` is in the CONFIGURATION.md tables. Tests: `fleet_pr_slots_test.ts` "below the cap…", "at the cap…", "milestone PRs do not count…", "milestone issues keep one PR per milestone branch".                                                  |
+| Human-authored PRs never count.                                                                                                                                                                                   | met    | "a human PR never counts towards the cap" in `fleet_pr_slots_test.ts`. The existing #4133 tests are kept.                                                                                                                                                                                                                                                   |
+| The fleet author set is the union of `service_accounts` and `fleet_pr_authors` on every host. A test covers a PR by either fleet account.                                                                         | met    | `loadConfig` union (#209). Tests: "a PR by either fleet account counts" (`fleet_pr_slots_test.ts`), and `fleet_service_accounts_test.ts`, which now sets `fleet_pr_slots: 1` through `loadConfig`.                                                                                                                                                          |
+| The held-issue gate comment states the count against the cap.                                                                                                                                                     | met    | `fleet-pr-cap` gate in `held_issue_gate_comment.ts`, recorded as `BlockedCandidateInfo.fleetPrCap` by the work-on and configured-label collectors. Test: "the gate comment names the count against the cap".                                                                                                                                                |
+| The idle census counts the same gate the claim scan applies.                                                                                                                                                      | met    | The census, the audit and the filer's gate all call `getBlockingPRForIssue` with the scan's author set and per-repo cap. Tests: "census and scan agree in both directions" (`fleet_pr_slots_test.ts`); `dependency_blocked_top_priority_parks_nothing_2563_test.ts` and `idle_filing_composition_1050_test.ts` now pass the scan's cap to every instrument. |
+| Tests cover both directions: below cap claims, at cap holds, human never counts, other fleet account counts, milestones unaffected.                                                                               | met    | `worker/deno/tests/fleet_pr_slots_test.ts` (12 tests).                                                                                                                                                                                                                                                                                                      |
+| `docs/workflows/issue-processing.md` is updated to the per-slot rule.                                                                                                                                             | met    | "Open PR blocking" and the guard stack are rewritten.                                                                                                                                                                                                                                                                                                       |
 
 Self-scheduled diagnostics (tier 2b) follow the same per-slot cap on purpose.
 They are work on the same default-branch stream as `work-on`.

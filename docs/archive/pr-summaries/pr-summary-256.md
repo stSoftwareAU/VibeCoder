@@ -35,21 +35,21 @@ in `.config.json`, which is the failure mode the sub-issue exists to prevent.
 inspection.** The construction-time snapshot seed in
 `createProductionRunCoreDeps` copied `config.allowedAuthors` regardless of
 source. That seed is live until the first refresh lands, so under `"github"` a
-populated local list was *genuinely trusted* for that window — the acceptance
-criterion "a populated local `allowed_authors` has no effect under `github`"
-was false as originally wired. The seed is now empty under `"github"`: trust
-starts closed and is opened only by a successful resolve. If the first resolve
-fails, the cycle is skipped with nobody trusted, which is the correct end state.
+populated local list was _genuinely trusted_ for that window — the acceptance
+criterion "a populated local `allowed_authors` has no effect under `github`" was
+false as originally wired. The seed is now empty under `"github"`: trust starts
+closed and is opened only by a successful resolve. If the first resolve fails,
+the cycle is skipped with nobody trusted, which is the correct end state.
 
 ### Question 2 — one repo does not confer fleet-wide trust
 
 The resolver returns trust per repo; the snapshot is fleet-wide. The issue
 requires that choice be explicit, so `intersectDerivedAuthors` is an
 **intersection** and says why in its contract: a login is fleet-wide trusted
-only when it holds write/maintain/admin on *every* monitored repo. A union
-would mean a contractor added to one low-stakes repo becomes an authorised
-author across all fifteen. Nothing about "can push to repo A" implies "the
-worker should act on their issue in repo B".
+only when it holds write/maintain/admin on _every_ monitored repo. A union would
+mean a contractor added to one low-stakes repo becomes an authorised author
+across all fifteen. Nothing about "can push to repo A" implies "the worker
+should act on their issue in repo B".
 
 The cost is understood and accepted: the fleet-wide set is the smallest of the
 per-repo sets, so someone with write on fourteen of fifteen repos is not
@@ -57,9 +57,8 @@ fleet-wide trusted. That is the fail-closed direction, and the remedy — grant
 the access, or narrow `repos` — is visible and deliberate. The per-repo map is
 left on `DerivedAuthorsResult` so a repo-scoped call site can use that repo's
 exact set rather than this floor. `formatDerivedAuthorsFoldSummary` logs the
-fleet-wide size next to each repo's, because a login dropped by the
-intersection is otherwise indistinguishable from one that was never a
-collaborator.
+fleet-wide size next to each repo's, because a login dropped by the intersection
+is otherwise indistinguishable from one that was never a collaborator.
 
 ### Start-up visibility and validation
 
@@ -77,10 +76,10 @@ collaborator.
   `trustHolder.read().authorisedCommenters`, so it receives the derived set
   automatically. A test pins it rather than leaving it to inspection.
 
-`ProductionDepsOptions.resolveTrustedAuthors` is a test-only injection seam.
-The no-fallback rule is this sub-issue's security guarantee, and a test that
-proved it by letting a real `gh` call fail would prove nothing on a host where
-`gh` works.
+`ProductionDepsOptions.resolveTrustedAuthors` is a test-only injection seam. The
+no-fallback rule is this sub-issue's security guarantee, and a test that proved
+it by letting a real `gh` call fail would prove nothing on a host where `gh`
+works.
 
 Per the issue's rollout note, `author_source` still defaults to `"config"`.
 Switch one host to `"github"`, confirm from its `[trust-source]` and
@@ -93,11 +92,11 @@ Closes #256.
 
 Backend change with no web interface, so there is no screenshot to capture.
 
-**The new tests fail against the unfixed tree.** On
-`origin/milestone/234-…`, `intersectDerivedAuthors` and
-`formatDerivedAuthorsFoldSummary` do not exist, `ProductionDepsOptions` has no
-`resolveTrustedAuthors`, and `FleetConfigInput` has no `authorSource` — the
-file does not type-check, and under `--no-check` every case fails.
+**The new tests fail against the unfixed tree.** On `origin/milestone/234-…`,
+`intersectDerivedAuthors` and `formatDerivedAuthorsFoldSummary` do not exist,
+`ProductionDepsOptions` has no `resolveTrustedAuthors`, and `FleetConfigInput`
+has no `authorSource` — the file does not type-check, and under `--no-check`
+every case fails.
 
 **They pass on this branch:**
 
@@ -136,7 +135,7 @@ $ deno test --allow-all tests/derived_trust_source_test.ts tests/trust_snapshot_
 ok | 69 passed | 0 failed (240ms)
 ```
 
-### How the snapshot's *contents* are asserted
+### How the snapshot's _contents_ are asserted
 
 The trusted set lives in closures inside the deps factory, so the tests observe
 it from outside through a real consumer. `applyTrustSnapshot` pushes the set
@@ -146,11 +145,11 @@ that is honoured therefore names a login the snapshot trusts. With the resolver
 returning `org/a: [alice, bob]`, `org/b: [alice]` and
 `allowed_authors: ["ignored-human"]`:
 
-| Login | Honoured? | Why |
-| --- | --- | --- |
-| `alice` | yes | write on every monitored repo — the derived set reached the snapshot |
-| `ignored-human` | **no** | populated in `allowed_authors`, and it has no effect under `"github"` |
-| `bob` | **no** | write on `org/a` only — the fold is an intersection |
+| Login           | Honoured? | Why                                                                   |
+| --------------- | --------- | --------------------------------------------------------------------- |
+| `alice`         | yes       | write on every monitored repo — the derived set reached the snapshot  |
+| `ignored-human` | **no**    | populated in `allowed_authors`, and it has no effect under `"github"` |
+| `bob`           | **no**    | write on `org/a` only — the fold is an intersection                   |
 
 That is one assertion covering three acceptance criteria, on behaviour rather
 than on a return value.
@@ -159,22 +158,22 @@ than on a return value.
 
 `worker/deno/tests/derived_trust_source_test.ts` — 19 new cases:
 
-| Group | Covers |
-| --- | --- |
-| Intersection (7) | Every-repo logins survive; a one-repo login does not; a login missing from one of four is dropped; disjoint repos trust nobody; no repos yields empty, never open; a single repo passes through; the result is deduplicated and order-stable |
-| Fold summary (1) | Per-repo sizes appear next to the fleet-wide size so a narrowing is visible |
-| No-fallback (4) | A resolver failure returns `ok:false` naming the failed source and saying the fallback was refused; the stale local array is not trusted as a side effect; `"config"` never calls the resolver; an exclusion-team failure is a failure, not an empty success |
-| Snapshot contents (3) | The derived set reaches the snapshot; a populated `allowed_authors` has no effect under `"github"`; `"config"` still applies the static arrays |
-| Fail-closed seed (2) | Under `"github"` nobody is trusted before the first refresh; `"config"` keeps its construction-time behaviour |
-| Start-up validation (3) | Empty `allowed_authors` is not a warning under `"github"`, still is under `"config"`, and an absent source behaves as `"config"` |
+| Group                   | Covers                                                                                                                                                                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Intersection (7)        | Every-repo logins survive; a one-repo login does not; a login missing from one of four is dropped; disjoint repos trust nobody; no repos yields empty, never open; a single repo passes through; the result is deduplicated and order-stable                 |
+| Fold summary (1)        | Per-repo sizes appear next to the fleet-wide size so a narrowing is visible                                                                                                                                                                                  |
+| No-fallback (4)         | A resolver failure returns `ok:false` naming the failed source and saying the fallback was refused; the stale local array is not trusted as a side effect; `"config"` never calls the resolver; an exclusion-team failure is a failure, not an empty success |
+| Snapshot contents (3)   | The derived set reaches the snapshot; a populated `allowed_authors` has no effect under `"github"`; `"config"` still applies the static arrays                                                                                                               |
+| Fail-closed seed (2)    | Under `"github"` nobody is trusted before the first refresh; `"config"` keeps its construction-time behaviour                                                                                                                                                |
+| Start-up validation (3) | Empty `allowed_authors` is not a warning under `"github"`, still is under `"config"`, and an absent source behaves as `"config"`                                                                                                                             |
 
 Acceptance criteria from the issue:
 
 - [x] With `author_source: "github"`, trusted authors come from repo
       collaborators minus exclusions, refreshed each cycle.
 - [x] A populated local `allowed_authors` has **no** effect under `"github"` —
-      asserted by a test, and the construction-time seed bug that broke this
-      is fixed.
+      asserted by a test, and the construction-time seed bug that broke this is
+      fixed.
 - [x] A resolver failure never falls back to local arrays; the cycle is skipped.
 - [x] The active trust source is stated in the start-up log.
 - [x] The empty-`allowed_authors` fleet-config warning does not fire spuriously

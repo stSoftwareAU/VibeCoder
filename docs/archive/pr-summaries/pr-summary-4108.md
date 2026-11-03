@@ -41,10 +41,11 @@ to every parser of an external response.
 
 - `git diff origin/main --stat`: `CODING-STANDARDS.md` +6/−1,
   `prompts/coding_guidelines/prompt.md` +6/−1 (plus the worker's handover note).
-- The layout/drift test `worker/deno/tests/coding_guidelines_layers_2574_test.ts`
-  passes.
-- Twinned copies: `CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md`
-  carry the same clause; only line wrapping differs.
+- The layout/drift test
+  `worker/deno/tests/coding_guidelines_layers_2574_test.ts` passes.
+- Twinned copies: `CODING-STANDARDS.md` and
+  `prompts/coding_guidelines/prompt.md` carry the same clause; only line
+  wrapping differs.
 - Overlapping rules checked: "Surface every failure", "Do not swallow errors",
   "Prefer loud, early failure", "No silent fallback that masks a fault", and "A
   failure reason names the cause, not just the failure". None contradicts the

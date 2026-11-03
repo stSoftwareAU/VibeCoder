@@ -12,8 +12,8 @@ agents wrote the same shape and neither could know until CI told them.
 This adds a `semgrep` stage to the quality gate
 (`worker/deno/lib/semgrep_check.ts`, wired into `quality_gate.ts`) that runs the
 **same ruleset** over the branch's **changed files** only, and names the
-standard `detect-non-literal-regexp` remedy in both the gate output and the CI-fix
-prompt (`prompts/ci_fix/v13.md`). Closes #559.
+standard `detect-non-literal-regexp` remedy in both the gate output and the
+CI-fix prompt (`prompts/ci_fix/v13.md`). Closes #559.
 
 Design points, each mapped to the issue's suggested shape:
 
@@ -24,8 +24,8 @@ Design points, each mapped to the issue's suggested shape:
   for the tool.
 - **Pinned the way CI pins it** — where a container runtime already holds
   `SEMGREP_IMAGE` (the tag+digest reference from `pinned_actions.ts` that
-  `semgrep.yml` uses) the scan runs inside that image, so a local pass predicts a
-  CI pass. A `semgrep` binary on PATH is used first; when its version differs
+  `semgrep.yml` uses) the scan runs inside that image, so a local pass predicts
+  a CI pass. A `semgrep` binary on PATH is used first; when its version differs
   from the CI pin the drift is named in the output rather than being fatal. The
   image is **never pulled** by the gate — a mid-run download is exactly the
   critical-path cost this stage must not add.
@@ -33,7 +33,7 @@ Design points, each mapped to the issue's suggested shape:
   unreachable rule registry, or a scan past the 300s deadline each return
   `SKIPPED` with the reason spelled out, exactly as the gate's other optional
   tools behave; `./quality.sh --strict` promotes every one of them to FAILED. A
-  non-zero exit that is *none* of those is FAILED: an unreadable or empty report
+  non-zero exit that is _none_ of those is FAILED: an unreadable or empty report
   is never read as "clean".
 - **The remedy is named where it is met** — a `detect-non-literal-regexp`
   finding prints the standard fix (build the regex from a literal, or escape the
@@ -90,15 +90,15 @@ ok | 22 passed | 0 failed (548ms)
 failures are **pre-existing and environmental**, not from this change:
 
 ```text
-  workflow hygiene               PASSED
-  markdownlint                   PASSED
-  mermaid                        PASSED
-  docs prompt versions           PASSED
-  semgrep                        SKIPPED
-  deno tests                     FAILED
-  deno lint                      PASSED
-  deno type check                PASSED
-  deno fmt                       PASSED
+workflow hygiene               PASSED
+markdownlint                   PASSED
+mermaid                        PASSED
+docs prompt versions           PASSED
+semgrep                        SKIPPED
+deno tests                     FAILED
+deno lint                      PASSED
+deno type check                PASSED
+deno fmt                       PASSED
 ```
 
 The full suite reports `15925 passed | 36 failed`, and every named failure is
@@ -135,8 +135,8 @@ records that the installed version should match `SEMGREP_IMAGE_TAG` in
 
 Added `worker/deno/tests/semgrep_check_test.ts` (22 tests):
 
-- **Changed-file selection** — `isScannablePath` / `selectScannableFiles`
-  accept source extensions and reject prose, images and extensionless files;
+- **Changed-file selection** — `isScannablePath` / `selectScannableFiles` accept
+  source extensions and reject prose, images and extensionless files;
   `collectChangedFiles` unions the merge-base diff with untracked files, falls
   back to `HEAD` when the remote default branch cannot be resolved, and returns
   null outside a git work tree.
@@ -157,6 +157,6 @@ Added `worker/deno/tests/semgrep_check_test.ts` (22 tests):
   so a dash-leading filename cannot be parsed as an option (CWE-88).
 - **Gate wiring** — the real `runQualityGate` records a `semgrep` check.
 
-Docs updated in the same change: `CONTRIBUTING.md` (new *Semgrep (SAST) before
-the push* section with a Mermaid flow), `CODING-STANDARDS.md`, `README.md`, and
+Docs updated in the same change: `CONTRIBUTING.md` (new _Semgrep (SAST) before
+the push_ section with a Mermaid flow), `CODING-STANDARDS.md`, `README.md`, and
 `docs/INTERNALS.md` § Quality gate.

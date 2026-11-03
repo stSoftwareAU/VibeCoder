@@ -1,18 +1,18 @@
 # Coverage carry-over check
 
-The coverage carry-over check is an advisory PR-raise gate (Issue #3795,
-Issue #4234). It checks that the production lines a removed or rewritten test
-used to execute are still executed by some test on the branch. A carried line
-that remains uncovered is one in-session note, then one comment on the pull
-request, which is still raised.
+The coverage carry-over check is an advisory PR-raise gate (Issue #3795, Issue
+#4234). It checks that the production lines a removed or rewritten test used to
+execute are still executed by some test on the branch. A carried line that
+remains uncovered is one in-session note, then one comment on the pull request,
+which is still raised.
 
 ## Why
 
 A fleet PR that rewrites or deletes a test the linked issue retires sometimes
 leaves a branch whose only test was that test. The mutation check mutates only
 the lines a PR adds or changes. The orphaned lines are unchanged, so that check
-does not look at them, and the branch can ship with no test reaching them. The target
-pattern is `rewritten-test-drops-live-branch`.
+does not look at them, and the branch can ship with no test reaching them. The
+target pattern is `rewritten-test-drops-live-branch`.
 
 ## When it runs
 
@@ -22,6 +22,7 @@ summary gates and feeds the same single in-session note, which may change tests.
 
 Unless `skip_coverage_carryover_check` is set (or the runner is not wired), the
 worker first collects the PR diff with `git diff --unified=0 --no-renames
+
 <base>...HEAD`. A base ref that cannot be resolved, or a diff that cannot be
 collected, is an `error` and is noted on the pull request, which is still raised, whatever the PR touches. Then the
 repository's `quality_credentials` are resolved; if they cannot be, the check is
@@ -76,13 +77,13 @@ flowchart TD
    project the head tests that import that file directly (the edited tests are
    not run again), with coverage. Importers run one carried file at a time, in
    its own batch, and what is still unexecuted is recomputed after each batch,
-   so a module an earlier batch's importer already reaches (directly, or
-   through that importer's own imports) is skipped. When every carried line is
-   already executed, this step runs nothing.
-6. Block when a carried line is not executed at head and not exempted. The
-   block lists the first 40 such `file:line` locations, then `… and N more`, and
-   asks for a test that reaches each one, removal if it is dead code, or an
-   exemption in the PR summary.
+   so a module an earlier batch's importer already reaches (directly, or through
+   that importer's own imports) is skipped. When every carried line is already
+   executed, this step runs nothing.
+6. Block when a carried line is not executed at head and not exempted. The block
+   lists the first 40 such `file:line` locations, then `… and N more`, and asks
+   for a test that reaches each one, removal if it is dead code, or an exemption
+   in the PR summary.
 
 The temporary worktree is removed afterwards with `git worktree remove --force`.
 If that fails, the directory is deleted and `git worktree prune` runs.
@@ -91,20 +92,21 @@ If that fails, the directory is deleted and `git worktree prune` runs.
 
 Only Deno is checked; Rust repositories are not checked yet. When the diff
 removes lines from no Deno test file but does remove lines from a `.rs` file
-under a `tests/` directory, the check is not applicable and logs `Rust coverage
+under a `tests/` directory, the check is not applicable and logs
+`Rust coverage
 carry-over needs cargo-llvm-cov, which the worker container does not install`.
 Any other Rust change, including removing a `#[cfg(test)]` unit test in `src/`,
 logs `the diff removes no lines from an existing Deno test file`.
 
 ## Outcomes
 
-| Outcome                  | Meaning                                                                                 | Blocks the PR? |
-| ------------------------ | --------------------------------------------------------------------------------------- | -------------- |
-| Not applicable           | Skipped by `skip_coverage_carryover_check`; runner not wired; `quality_credentials` could not be resolved; the diff removes no line from a Deno test file (the Rust reason when it removes lines from a `.rs` file under a `tests/` directory); or no Deno project sits above the edited tests. Logged | No |
-| Completed, no uncovered  | Every carried line is executed at head, or is exempted                                  | No             |
-| Completed, uncovered     | At least one carried line is not executed at head and is not exempted                   | Yes            |
-| Budget exhausted         | The fixed 600 s budget ran out; a warning, never a pass                                 | No             |
-| Error                    | PR diff not collected (including an unresolvable base ref), or the runner failed: merge-base, worktree, base or head tests failing, or coverage export | Yes (fail closed) |
+| Outcome                 | Meaning                                                                                                                                                                                                                                                                                                | Blocks the PR?    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- |
+| Not applicable          | Skipped by `skip_coverage_carryover_check`; runner not wired; `quality_credentials` could not be resolved; the diff removes no line from a Deno test file (the Rust reason when it removes lines from a `.rs` file under a `tests/` directory); or no Deno project sits above the edited tests. Logged | No                |
+| Completed, no uncovered | Every carried line is executed at head, or is exempted                                                                                                                                                                                                                                                 | No                |
+| Completed, uncovered    | At least one carried line is not executed at head and is not exempted                                                                                                                                                                                                                                  | Yes               |
+| Budget exhausted        | The fixed 600 s budget ran out; a warning, never a pass                                                                                                                                                                                                                                                | No                |
+| Error                   | PR diff not collected (including an unresolvable base ref), or the runner failed: merge-base, worktree, base or head tests failing, or coverage export                                                                                                                                                 | Yes (fail closed) |
 
 ## Exemption
 

@@ -1,9 +1,9 @@
 # 👯 Duplicated-Knowledge Scan — Operator Manual
 
 The duplicated-knowledge scan is the seventeenth registered
-[idle-task](IDLE-TASK-FRAMEWORK.md) template. When the worker has
-no claimable work it may pick this template, clone one monitored repository, and
-run a static, evidence-backed scan for **copy-pasted blocks that encode the same
+[idle-task](IDLE-TASK-FRAMEWORK.md) template. When the worker has no claimable
+work it may pick this template, clone one monitored repository, and run a
+static, evidence-backed scan for **copy-pasted blocks that encode the same
 knowledge** — blocks of five or more lines appearing in two or more places where
 one call to an existing helper would serve them all. It files a small,
 logically-grouped set of `duplicated-knowledge` issues (most important first)
@@ -30,7 +30,8 @@ helper.
 None of the sibling templates sees it. `dead-code` finds code nothing calls;
 `orphan-deps` finds declared-but-unimported packages; `format-drift` measures
 formatter and lint drift. A block pasted into three files — every copy live,
-every copy called, every copy needing the same fix — is invisible to all of them.
+every copy called, every copy needing the same fix — is invisible to all of
+them.
 
 ## Biased towards silence — the rule that makes the scan safe
 
@@ -40,8 +41,8 @@ to share a helper produces a parameterised tangle that is harder to change than
 the copies were, so the prompt is explicitly biased towards silence. It stays
 quiet on:
 
-- **structural or boilerplate similarity** — test scaffolding, imports,
-  switch arms, config literals, generated or vendored code;
+- **structural or boilerplate similarity** — test scaffolding, imports, switch
+  arms, config literals, generated or vendored code;
 - **coincidental resemblance** — copies that would diverge under the next
   requirement change;
 - **an abstraction that has already gone wrong** — an existing shared helper
@@ -52,7 +53,7 @@ quiet on:
 - **duplication a documented project convention sanctions** (Phase 0).
 
 The scan prefers "call the existing helper at `<path>`" over "introduce a new
-abstraction"; a finding that proposes a *new* helper is only filed when it has
+abstraction"; a finding that proposes a _new_ helper is only filed when it has
 **three or more** call sites.
 
 ## The one question that decides a finding
@@ -108,21 +109,21 @@ cross-language copies, prose).
 
 ## Severity
 
-| Severity          | When                                                                                       |
-| ----------------- | ------------------------------------------------------------------------------------------ |
-| `severity:high`   | The copies have already **diverged** — one carries a fix or guard the others lack. A latent bug. |
-| `severity:medium` | The default. The copies still agree, but each is an edit the next rule change must remember. |
+| Severity          | When                                                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------------------- |
+| `severity:high`   | The copies have already **diverged** — one carries a fix or guard the others lack. A latent bug.        |
+| `severity:medium` | The default. The copies still agree, but each is an edit the next rule change must remember.            |
 | `severity:low`    | Small or peripheral duplication where the helper already exists and the fix is a one-line substitution. |
 
 ## Relationship to sibling scans
 
-| Concern                                          | Owned by                                             |
-| ------------------------------------------------ | ---------------------------------------------------- |
-| Copy-pasted blocks encoding one rule             | **this scan** (`duplicated-knowledge`)               |
-| Code nothing calls                               | [`dead-code`](IDLE-TASK-FRAMEWORK.md)                |
-| Declared-but-unimported packages                 | [`orphan-deps`](ORPHAN-DEPS-SCAN.md)                 |
-| Formatter / lint drift                           | [`format-drift`](IDLE-TASK-FRAMEWORK.md)             |
-| Test quality (WHAT-vs-HOW, coverage gaps)        | [`test-audit`](TEST-AUDIT-SCAN.md)                   |
+| Concern                                   | Owned by                                 |
+| ----------------------------------------- | ---------------------------------------- |
+| Copy-pasted blocks encoding one rule      | **this scan** (`duplicated-knowledge`)   |
+| Code nothing calls                        | [`dead-code`](IDLE-TASK-FRAMEWORK.md)    |
+| Declared-but-unimported packages          | [`orphan-deps`](ORPHAN-DEPS-SCAN.md)     |
+| Formatter / lint drift                    | [`format-drift`](IDLE-TASK-FRAMEWORK.md) |
+| Test quality (WHAT-vs-HOW, coverage gaps) | [`test-audit`](TEST-AUDIT-SCAN.md)       |
 
 A candidate that belongs to a sibling scan is left to that scan. The shared
 `BP-` id prefix (with a `"duplicated-knowledge"` discriminator) keeps the
@@ -130,26 +131,27 @@ families from double-filing the same root cause.
 
 ## Contract summary
 
-| Property       | Value                                                     |
-| -------------- | --------------------------------------------------------- |
-| Template name  | `duplicated-knowledge`                                    |
-| Wrapper title  | `Run a duplicated-knowledge scan`                         |
-| Findings label | `duplicated-knowledge` + one `severity:*`                 |
-| Prompt         | `prompts/duplicated_knowledge/prompt.md`                  |
-| Pre-pass       | `lib/duplicate_block_scanner.ts` → `{{DUPLICATE_BLOCKS}}` |
+| Property       | Value                                                                                                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Template name  | `duplicated-knowledge`                                                                                                                                                         |
+| Wrapper title  | `Run a duplicated-knowledge scan`                                                                                                                                              |
+| Findings label | `duplicated-knowledge` + one `severity:*`                                                                                                                                      |
+| Prompt         | `prompts/duplicated_knowledge/prompt.md`                                                                                                                                       |
+| Pre-pass       | `lib/duplicate_block_scanner.ts` → `{{DUPLICATE_BLOCKS}}`                                                                                                                      |
 | Dedup          | `{{KNOWN_OPEN_FINDING_IDS}}` + `{{OPEN_ISSUE_TITLES}}` — both repo-wide, `(none)` when empty ([contract](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)) |
-| Raises a PR?   | No — issue-only (`skipMilestone: true`)                   |
-| Applies to     | Every monitored repo, language-agnostic                   |
-| Cadence        | Once per repo per week (`cooldownHours: 168`)             |
-| Per-run cap    | 6 findings                                                |
+| Raises a PR?   | No — issue-only (`skipMilestone: true`)                                                                                                                                        |
+| Applies to     | Every monitored repo, language-agnostic                                                                                                                                        |
+| Cadence        | Once per repo per week (`cooldownHours: 168`)                                                                                                                                  |
+| Per-run cap    | 6 findings                                                                                                                                                                     |
 
 ## Suppression
 
 A finding is suppressed the same way as every sibling scan: add the shared
-suppression comment carrying its stable id to the cited file — `<!--
-best-practice-ignore: BP-… -->` in Markdown, `// best-practice-ignore: BP-…` in
-code. Closing a filed issue without fixing it also keeps it from being re-filed
-only until the next scan re-detects it, so prefer the in-source suppression when
-the duplication is deliberate — and, better still, write the reason down as a
-project convention, which Phase 0 then honours across every judgement-bearing
-scan.
+suppression comment carrying its stable id to the cited file —
+`<!--
+best-practice-ignore: BP-… -->` in Markdown,
+`// best-practice-ignore: BP-…` in code. Closing a filed issue without fixing it
+also keeps it from being re-filed only until the next scan re-detects it, so
+prefer the in-source suppression when the duplication is deliberate — and,
+better still, write the reason down as a project convention, which Phase 0 then
+honours across every judgement-bearing scan.

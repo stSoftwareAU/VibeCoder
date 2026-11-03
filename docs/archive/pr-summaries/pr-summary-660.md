@@ -12,7 +12,7 @@ refactor. Closes #660.
 The check is a **new numbered check, not a fifth bullet on check 5**, for two
 reasons:
 
-- Check 5 is entirely about *literals* — which value was written down and where
+- Check 5 is entirely about _literals_ — which value was written down and where
   it came from — and opens by stating that a hard-coded literal is not itself a
   smell. A tautological test has no literal at all.
 - The stable finding id derives from the audit-check slug. A shared slug would
@@ -46,8 +46,8 @@ still said "Seven audit checks … six smells", never updated when v7 added chec
 
 Backend/prompt-only change with no web interface to screenshot. The evidence is
 the test run below, which loads the real prompt files through
-`loadPrompt`/`getLatestVersion` and asserts on the resolved template, with v11 as
-the negative control:
+`loadPrompt`/`getLatestVersion` and asserts on the resolved template, with v11
+as the negative control:
 
 ```text
 running 10 tests from ./tests/test_audit_prompt_v12_test.ts
@@ -65,8 +65,8 @@ test_audit v12 - severity guidance covers a tautological finding ... ok
 ok | 10 passed | 0 failed
 ```
 
-All ten failed before `prompts/test_audit/v12.md` existed (TDD: the test file was
-committed against the v11-only tree first and every case failed).
+All ten failed before `prompts/test_audit/v12.md` existed (TDD: the test file
+was committed against the v11-only tree first and every case failed).
 
 ```mermaid
 flowchart TD
@@ -98,6 +98,7 @@ flowchart TD
   with `GraphQL: API rate limit already exceeded` from the container's `gh`
   credentials, and
   `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
-  dir is restaged writable` asserts a host-specific config path. All three were
-  reproduced on the base commit `daf1c1b` in a clean worktree with this change
-  absent, so they are pre-existing. The remaining 16,178 cases pass.
+  dir is restaged writable`
+  asserts a host-specific config path. All three were reproduced on the base
+  commit `daf1c1b` in a clean worktree with this change absent, so they are
+  pre-existing. The remaining 16,178 cases pass.

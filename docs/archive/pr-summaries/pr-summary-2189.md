@@ -19,12 +19,13 @@ run fails exactly as before. Closes #2189.
   second and fails. The recovery never re-enters itself.
 - **All three summary gates** — closure (#518), independent review (#663) and
   reproduction status (#521) route through `reportSummaryRuleBlock`, so all
-  three recover. The security-fix and changed-workflow gates are unchanged:
-  they report defects in the change, not documentation shortfalls.
+  three recover. The security-fix and changed-workflow gates are unchanged: they
+  report defects in the change, not documentation shortfalls.
 - **Failure directions** — an invocation that cannot be launched changed nothing
   on the branch, so the original block is returned unaltered; the same verdict
   is never posted to the issue twice; a block on a run that already has a PR
-  still takes Issue #1140's `summary_incomplete` path, with no invocation at all.
+  still takes Issue #1140's `summary_incomplete` path, with no invocation at
+  all.
 - The infrastructure retry in `runCompletionAttempt` now also skips a
   summary-rule block — re-running the same body against the same summary
   reproduces the verdict.
@@ -70,8 +71,8 @@ invocation count, prompt contents, `gh pr create` calls, comments posted:
 - `completion - the recovery prompt carries the gate's own remediation comment`
   — the prompt carries the closure gate's comment and the summary path, and the
   comment is on the issue thread once.
-- `completion - a second block in the same run ends the run with one comment`
-  — the run fails, no second invocation, no `gh pr create`, one comment.
+- `completion - a second block in the same run ends the run with one comment` —
+  the run fails, no second invocation, no `gh pr create`, one comment.
 - `completion - a recovery invocation that cannot be launched leaves the block standing`
   — the block stands, the quality gate does not re-run.
 - `completion - the reproduction gate recovers on the same path` — the same
@@ -91,8 +92,8 @@ Existing suites re-run unchanged: `completion_phase_acceptance_closure_test.ts`,
 
 ## Documentation
 
-- `docs/workflows/issue-processing.md` — new section *The in-run recovery from a
-  summary-rule block*, with the gate flowchart updated to show the recovery arm.
+- `docs/workflows/issue-processing.md` — new section _The in-run recovery from a
+  summary-rule block_, with the gate flowchart updated to show the recovery arm.
 - `docs/audits/security-sweep-2189-summary-rule-gate-retry.md` and the
   `top-up-2189` slice in `docs/audits/lib-sweep-coverage.json` — the security
   reading of the new module, as the coverage ledger requires.

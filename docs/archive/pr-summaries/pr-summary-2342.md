@@ -26,8 +26,8 @@ flowchart LR
 
 ### What changed
 
-- `worker/deno/lib/issue_executor_agents.ts` (new) — `buildIssueExecutorAgents()`
-  and the five constants it is built from.
+- `worker/deno/lib/issue_executor_agents.ts` (new) —
+  `buildIssueExecutorAgents()` and the five constants it is built from.
 - `worker/deno/lib/agent_provider.ts` — `AgentDefinition`, the optional `agents`
   field on `AgentInvocationRequest`, and the `--agents <json>` emission in
   `buildClaudeCliArgs`, placed with the static flags ahead of `-p`.
@@ -37,8 +37,8 @@ flowchart LR
   `lib/execute_claude_phase.ts` (standalone command path) and
   `lib/phases/execute_phase.ts` (the main loop the fleet actually runs). Wiring
   only the first would have left the key inert on every fleet run.
-- DeepSeek shares Claude's argv builder, so the definitions are stripped there
-  — its endpoint cannot resolve Anthropic tier aliases — and the drop is warned
+- DeepSeek shares Claude's argv builder, so the definitions are stripped there —
+  its endpoint cannot resolve Anthropic tier aliases — and the drop is warned
   about rather than silent, mirroring the existing `--effort` treatment. Codex
   and Gemini build their own argv and never see the field.
 - `docs/CONFIGURATION.md` — both `issue_executor_split` rows updated; they said
@@ -68,13 +68,13 @@ Result: PASSED
   for element — evidence:
   `worker/deno/tests/agent_provider_test.ts::agent provider - Claude emits no --agents when the split is off (Issue #2342)`
   asserts against an explicit expected array — reviewer: met
-- **met** — with the key on, the argv carries `--agents` whose JSON parses to one
-  executor with the Sonnet model, `medium` effort, exactly the six tools and
+- **met** — with the key on, the argv carries `--agents` whose JSON parses to
+  one executor with the Sonnet model, `medium` effort, exactly the six tools and
   `Agent` denied — evidence:
   `worker/deno/tests/agent_provider_test.ts::agent provider - Claude emits --agents carrying the Sonnet executor when the split is on (Issue #2342)`
   and `worker/deno/tests/issue_executor_agents_test.ts` — reviewer: met
-- **met** — a Codex, Gemini or DeepSeek invocation from the same request emits no
-  `--agents` — evidence:
+- **met** — a Codex, Gemini or DeepSeek invocation from the same request emits
+  no `--agents` — evidence:
   `worker/deno/tests/agent_provider_test.ts::agent provider - Codex and Gemini emit no --agents from the same request (Issue #2342)`
   and
   `worker/deno/tests/agent_provider_deepseek_test.ts::agent provider deepseek - sub-agent definitions are dropped from the argv and stated loudly (Issue #2342)`
@@ -129,11 +129,11 @@ Result: PASSED
   split; they never see the field — evidence: `docs/CONFIGURATION.md:399` —
   reason: fixed here by stating what each provider actually does. Adding
   warnings to two more descriptors was declined as out of scope: neither reads
-  the field, so there is no silent *drop* to report.
+  the field, so there is no silent _drop_ to report.
 - **violation** — the INFO line claimed delegation had happened rather than that
-  the key resolved on — evidence:
-  `worker/deno/lib/execute_claude_phase.ts:1396` — reason: fixed here; both log
-  lines now state that the invocation carries the definitions.
+  the key resolved on — evidence: `worker/deno/lib/execute_claude_phase.ts:1396`
+  — reason: fixed here; both log lines now state that the invocation carries the
+  definitions.
 - **violation** — `warnDeepSeekAgentsUnsupported` is exported but had no test in
   its own module's test file, and its phase-less branch was unexercised —
   evidence: `worker/deno/lib/deepseek_executor.ts:253` — reason: fixed here;
@@ -155,14 +155,14 @@ Result: PASSED
   on a real stub's recorded argv rather than grepping source; the CLI-rejection
   path is fail-loud with no retry; JSDoc on every new exported symbol and
   interface field; tests are parallel-safe (fake clock, per-test temp dirs, no
-  `Deno.env.set`, no sleeps); the key-off argv is pinned element for element;
-  no new config key was introduced.
+  `Deno.env.set`, no sleeps); the key-off argv is pinned element for element; no
+  new config key was introduced.
 
 One open risk both reviewers raised independently and neither could settle here:
-the installed CLI documents `--agents` as `{description, prompt}`, and whether it
-honours the per-agent `effort` and `disallowedTools` keys could not be confirmed
-without a live invocation. The issue mandates both fields, so the diff is
-faithful; a key the CLI silently ignores would produce no error, so confirm
+the installed CLI documents `--agents` as `{description, prompt}`, and whether
+it honours the per-agent `effort` and `disallowedTools` keys could not be
+confirmed without a live invocation. The issue mandates both fields, so the diff
+is faithful; a key the CLI silently ignores would produce no error, so confirm
 against the CLI's agent schema before enabling the key on a host. The `tools`
 allowlist already excludes `Agent`, so the denial is belt-and-braces either way.
 

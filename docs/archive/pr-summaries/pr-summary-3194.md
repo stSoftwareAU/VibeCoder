@@ -78,8 +78,8 @@ name, which is unchanged.
   - After the edits, both passed (`ok | 2 passed | 0 failed`).
 - Every test file under `worker/deno/tests` that reads `CODING-STANDARDS.md`,
   the coding_guidelines prompt, the issue prompt or
-  `docs/workflows/issue-processing.md` (93 files, the new suite among them), plus
-  `prompt_house_vocabulary_drift_test.ts`: `ok | 886 passed | 0 failed`.
+  `docs/workflows/issue-processing.md` (93 files, the new suite among them),
+  plus `prompt_house_vocabulary_drift_test.ts`: `ok | 886 passed | 0 failed`.
 - `deno fmt --check`, `deno lint`, `deno task check` and
   `deno task check:manifests` pass.
 - The full suite and the full `./quality.sh` were not run here, because they get

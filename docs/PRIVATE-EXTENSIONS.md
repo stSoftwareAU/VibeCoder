@@ -1,31 +1,30 @@
 # 🧩 Private Extensions
 
 Extend a deployment with software this repository has never heard of — install
-the legacy thing, install the thing you are migrating to, configure one of
-them, and point an agent across the two — **without forking this repository,
-and without your toolchain ever appearing in it**.
+the legacy thing, install the thing you are migrating to, configure one of them,
+and point an agent across the two — **without forking this repository, and
+without your toolchain ever appearing in it**.
 
 The governing rule is one sentence:
 
-> **Core provides extension points. It never learns what is plugged into
-> them.**
+> **Core provides extension points. It never learns what is plugged into them.**
 
 There is no list of supported software here, and there is not meant to be one.
-Enumerating what an operator might install is the failure mode, not the
-feature: the moment core knows one particular tool exists, every other tool
-becomes second-class and the next operator has to send a pull request to be
-recognised. The extension points below take an arbitrary install, an arbitrary
-configuration step and arbitrary direction for the agent, and stay incurious
-about all three. (GitHub Actions is named in this repository only because it
-is the CI *this project itself runs on* — not as an offered integration.)
+Enumerating what an operator might install is the failure mode, not the feature:
+the moment core knows one particular tool exists, every other tool becomes
+second-class and the next operator has to send a pull request to be recognised.
+The extension points below take an arbitrary install, an arbitrary configuration
+step and arbitrary direction for the agent, and stay incurious about all three.
+(GitHub Actions is named in this repository only because it is the CI _this
+project itself runs on_ — not as an offered integration.)
 
-Incurious is not unbounded. What you install is your business; **where it
-lands is still ours** — see [Step 2](#-step-2--declare-what-to-install).
+Incurious is not unbounded. What you install is your business; **where it lands
+is still ours** — see [Step 2](#-step-2--declare-what-to-install).
 
 This page is a **procedure**. Follow it start to finish and you end with a
-working extension. Where a step cannot be completed today, it says so and
-points at [Known gaps](#-known-gaps) rather than describing an interface
-nobody has built.
+working extension. Where a step cannot be completed today, it says so and points
+at [Known gaps](#-known-gaps) rather than describing an interface nobody has
+built.
 
 ## 📋 Table of Contents
 
@@ -47,8 +46,8 @@ You need:
 - A **clone** of Vibe Coder — not a fork. You will never edit a file inside it.
 - A **container runtime** the launcher supports, and the ability to build an
   image locally (the first build takes several minutes).
-- For each piece of software you intend to install: a **`.tar.gz`, `.tar.xz`
-  or `.zip` archive reachable over HTTPS**, and its **SHA-256 digest**. If your
+- For each piece of software you intend to install: a **`.tar.gz`, `.tar.xz` or
+  `.zip` archive reachable over HTTPS**, and its **SHA-256 digest**. If your
   software is not published that way, see
   [If your software is not published as an archive](#if-your-software-is-not-published-as-an-archive).
 
@@ -70,32 +69,31 @@ Two directories, and only one of them is Vibe Coder:
   README.md                   # your notes
 ```
 
-`.config.json` is listed in Vibe Coder's `.gitignore`. It is read at runtime
-and never committed upstream, which is what makes the extension private. Keep
-the authoritative copy in **your** repository and put it in place with a
-symlink or a deploy step:
+`.config.json` is listed in Vibe Coder's `.gitignore`. It is read at runtime and
+never committed upstream, which is what makes the extension private. Keep the
+authoritative copy in **your** repository and put it in place with a symlink or
+a deploy step:
 
 ```bash
 ln -sf ~/my-deployment/config/.config.json ~/vibe-coder/.config.json
 ```
 
 The worker resolves the file as `--config`, else `CONFIG_PATH`, else
-`<base-dir>/.config.json`. Nothing else you write ever needs to live inside
-the clone.
+`<base-dir>/.config.json`. Nothing else you write ever needs to live inside the
+clone.
 
 ## 📦 Step 2 — Declare what to install
 
 Extra software is a **top-level `container_tools` array** in `.config.json` —
-top level, *not* inside `repo_config`. It is baked into the container image at
-**build time**, which is not a preference: the worker runs as a non-root
-user and — on every runtime that supports it — with a read-only root
-filesystem, so nothing can be installed once it is running. Build time is the
-only door.
+top level, _not_ inside `repo_config`. It is baked into the container image at
+**build time**, which is not a preference: the worker runs as a non-root user
+and — on every runtime that supports it — with a read-only root filesystem, so
+nothing can be installed once it is running. Build time is the only door.
 
-Each entry is a declarative archive install: download → verify SHA-256 →
-extract → put `bin` directories on `PATH` → set `env`. There are deliberately
-no install commands and no package names, because those would be a place for
-core to start having opinions.
+Each entry is a declarative archive install: download → verify SHA-256 → extract
+→ put `bin` directories on `PATH` → set `env`. There are deliberately no install
+commands and no package names, because those would be a place for core to start
+having opinions.
 
 ```json
 {
@@ -132,29 +130,29 @@ core to start having opinions.
 }
 ```
 
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `id` | yes | Lower-case letters, digits, hyphens. Installs to `/opt/vibe-tools/<id>` |
-| `version` | yes | Free-form; recorded, never parsed |
-| `url` | yes | Per architecture (`amd64`, `arm64`, `noarch`). **`https:` only** |
-| `sha256` | yes | 64 hex characters per architecture. A `url` without a matching digest is rejected |
-| `stripComponents` | no (`0`) | Leading archive path components dropped on extract; `1` is usual |
-| `bin` | no (none) | Directories **relative to the prefix**, added to `PATH` |
-| `env` | no (none) | Variables set to **prefix-relative** paths; `""` is the prefix root |
+| Field             | Required  | Meaning                                                                           |
+| ----------------- | --------- | --------------------------------------------------------------------------------- |
+| `id`              | yes       | Lower-case letters, digits, hyphens. Installs to `/opt/vibe-tools/<id>`           |
+| `version`         | yes       | Free-form; recorded, never parsed                                                 |
+| `url`             | yes       | Per architecture (`amd64`, `arm64`, `noarch`). **`https:` only**                  |
+| `sha256`          | yes       | 64 hex characters per architecture. A `url` without a matching digest is rejected |
+| `stripComponents` | no (`0`)  | Leading archive path components dropped on extract; `1` is usual                  |
+| `bin`             | no (none) | Directories **relative to the prefix**, added to `PATH`                           |
+| `env`             | no (none) | Variables set to **prefix-relative** paths; `""` is the prefix root               |
 
-Where one tool must find another, express it with `env` — each entry above
-gets a `*_HOME` pointing at its own prefix.
+Where one tool must find another, express it with `env` — each entry above gets
+a `*_HOME` pointing at its own prefix.
 
 **What core still insists on**, whatever the archive contains:
 
-- **The prefix is fixed** at `/opt/vibe-tools/<id>`, and every `bin`/`env`
-  value is interpreted relative to it. An absolute path, a `~`, or a `..` that
-  escapes the prefix is rejected at validation.
-- **Every download is digest-verified.** A mismatch aborts the build naming
-  the tool. You choose the software; you do not get to skip the pin.
+- **The prefix is fixed** at `/opt/vibe-tools/<id>`, and every `bin`/`env` value
+  is interpreted relative to it. An absolute path, a `~`, or a `..` that escapes
+  the prefix is rejected at validation.
+- **Every download is digest-verified.** A mismatch aborts the build naming the
+  tool. You choose the software; you do not get to skip the pin.
 
-A malformed spec is never partially applied — the parser reports the first
-fault naming the tool and the field.
+A malformed spec is never partially applied — the parser reports the first fault
+naming the tool and the field.
 
 ### If your software is not published as an archive
 
@@ -180,8 +178,12 @@ certificates terminated at the network layer — it works unchanged:
 
 ```json
 {
-  "url": { "noarch": "https://artefacts.internal.example.com/tool-a-3.2.1.tar.gz" },
-  "sha256": { "noarch": "80ffca22aed9e8b9713a232f3394fd81d7f20322df75efdb2b047dbd3e3a23bb" }
+  "url": {
+    "noarch": "https://artefacts.internal.example.com/tool-a-3.2.1.tar.gz"
+  },
+  "sha256": {
+    "noarch": "80ffca22aed9e8b9713a232f3394fd81d7f20322df75efdb2b047dbd3e3a23bb"
+  }
 }
 ```
 
@@ -207,8 +209,8 @@ Treat every value in `container_tools` as non-secret.
 
 A short-lived signed URL is the least-bad variant if you have no other option,
 but it is still a credential in build metadata, and because the URL changes on
-each reissue it changes the image tag and forces a rebuild every time. It is
-not a route this page recommends.
+each reissue it changes the image tag and forces a rebuild every time. It is not
+a route this page recommends.
 
 There is also no `file:` support, so you cannot stage an archive on the build
 host and point at it locally — the URL must be `https:`.
@@ -220,9 +222,9 @@ is a real limitation, recorded in [Known gaps](#-known-gaps).
 ## ⚙️ Step 4 — Configure a tool after it is installed
 
 Installing and configuring are different jobs, and `container_tools` only does
-the first. Configuration is `pre_setup_command` under
-`repo_config.<owner/repo>` — an arbitrary shell command run before the agent
-starts work on that repository:
+the first. Configuration is `pre_setup_command` under `repo_config.<owner/repo>`
+— an arbitrary shell command run before the agent starts work on that
+repository:
 
 ```json
 {
@@ -241,9 +243,9 @@ rather than silent.
 
 Four constraints to design around:
 
-1. **It is scoped to a repository, not to a tool.** No hook fires when a tool
-   is installed. Two repositories needing the same configuration each declare
-   the command.
+1. **It is scoped to a repository, not to a tool.** No hook fires when a tool is
+   installed. Two repositories needing the same configuration each declare the
+   command.
 2. **It re-runs on every setup.** Make it idempotent — regenerate the config
    file each time rather than appending.
 3. **It must write somewhere writable.** Treat the image as read-only: the
@@ -272,15 +274,15 @@ EOF
 "${TOOL_B_HOME}/bin/tool-b" --validate-config "${config_dir}/settings.conf"
 ```
 
-The final validation line matters: it turns a silently wrong configuration
-into a non-zero exit the worker reports.
+The final validation line matters: it turns a silently wrong configuration into
+a non-zero exit the worker reports.
 
 ## 🎯 Step 5 — Tell the agent what the work is
 
 `custom_instructions`, also under `repo_config.<owner/repo>`, is free prose
 appended to the agent's instructions for that repository. This is where the
-migration is actually described — and the reason core never needs to know
-which languages are involved:
+migration is actually described — and the reason core never needs to know which
+languages are involved:
 
 ```json
 {
@@ -295,7 +297,7 @@ which languages are involved:
 
 ## 🔍 Step 6 — Build, and confirm it actually worked
 
-**Do not skip this step.** An extension that installs nothing fails *quietly* —
+**Do not skip this step.** An extension that installs nothing fails _quietly_ —
 the empty selection is a valid configuration, not an error — so the only way to
 tell a working extension from an inert one is to check.
 
@@ -310,13 +312,13 @@ deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash
 
 It prints `vibe-coder:<short hash>`. Two things to check:
 
-- **A malformed spec exits non-zero, naming the offending field.** If it
-  prints a tag, your spec parsed.
+- **A malformed spec exits non-zero, naming the offending field.** If it prints
+  a tag, your spec parsed.
 - **The tag must change** once `container_tools` is populated. The selection is
-  mixed into the image identity, so an unchanged tag means *your array was
-  never read* — almost always because it was placed inside `repo_config`
-  instead of at the top level, or the key was misspelled. **This is what a
-  silently inert extension looks like, and this is how you catch it.**
+  mixed into the image identity, so an unchanged tag means _your array was never
+  read_ — almost always because it was placed inside `repo_config` instead of at
+  the top level, or the key was misspelled. **This is what a silently inert
+  extension looks like, and this is how you catch it.**
 
 ### 6b. Build
 
@@ -349,38 +351,39 @@ podman run --rm "$IMAGE" cat /opt/vibe-tools/environment
 ### 6d. Confirm the configuration step ran
 
 `pre_setup_command` runs per repository, so check the worker log for the
-repository you configured. A failure is reported with its exit code and
-stderr; a timeout is reported as `Pre-setup command timed out after 300
-seconds`. Silence in the log with no configured file present means the command
-was never reached — check the `repo_config` key is the exact `owner/repo`
-slug the worker is monitoring.
+repository you configured. A failure is reported with its exit code and stderr;
+a timeout is reported as `Pre-setup command timed out after 300
+seconds`.
+Silence in the log with no configured file present means the command was never
+reached — check the `repo_config` key is the exact `owner/repo` slug the worker
+is monitoring.
 
 ### Failure reference
 
-| Symptom | Cause |
-| --- | --- |
-| `container-image-hash` exits non-zero naming a field | Malformed spec — fix the named field |
-| Tag unchanged after adding tools | The array was not read: wrong nesting or a misspelled key |
-| `SHA-256 mismatch — refusing to install` | Digest does not match the bytes served; re-fetch the published checksum |
-| `unsupported archive extension` | Not `.tar.gz`/`.tar.xz`/`.zip` — repackage it |
-| `download failed from <url>` | Unreachable, or the source needs a credential (see Step 3) |
-| Tool missing from `PATH` at runtime | `bin` is wrong, or `stripComponents` left an extra directory level |
-| Config file absent, no log line | `pre_setup_command` under the wrong repo slug |
+| Symptom                                              | Cause                                                                   |
+| ---------------------------------------------------- | ----------------------------------------------------------------------- |
+| `container-image-hash` exits non-zero naming a field | Malformed spec — fix the named field                                    |
+| Tag unchanged after adding tools                     | The array was not read: wrong nesting or a misspelled key               |
+| `SHA-256 mismatch — refusing to install`             | Digest does not match the bytes served; re-fetch the published checksum |
+| `unsupported archive extension`                      | Not `.tar.gz`/`.tar.xz`/`.zip` — repackage it                           |
+| `download failed from <url>`                         | Unreachable, or the source needs a credential (see Step 3)              |
+| Tool missing from `PATH` at runtime                  | `bin` is wrong, or `stripComponents` left an extra directory level      |
+| Config file absent, no log line                      | `pre_setup_command` under the wrong repo slug                           |
 
 ## 🔄 Step 7 — Upgrades
 
 **Upgrading Vibe Coder does not disturb your extension.** Your `.config.json`
 lives outside the upstream tree and is never touched by an update. When the
-worker checkout moves, the image reference is recomputed from the new
-definition *plus your unchanged selection*; the tag changes, the image is
-rebuilt, and your tools are installed again from the same pinned digests.
+worker checkout moves, the image reference is recomputed from the new definition
+_plus your unchanged selection_; the tag changes, the image is rebuilt, and your
+tools are installed again from the same pinned digests.
 
 Two things that remain yours:
 
-- **Your pins.** The digests do not update themselves. Bump `version`, `url`
-  and `sha256` together the way you would any dependency, and observe the
-  24-hour quarantine in [Coding Standards](../CODING-STANDARDS.md) — do not pin
-  a release published in the last day.
+- **Your pins.** The digests do not update themselves. Bump `version`, `url` and
+  `sha256` together the way you would any dependency, and observe the 24-hour
+  quarantine in [Coding Standards](../CODING-STANDARDS.md) — do not pin a
+  release published in the last day.
 - **Archive availability.** If you host your own archive, the build depends on
   that host staying reachable. A URL that 404s fails the build rather than
   producing an image missing the tool.
@@ -397,28 +400,27 @@ outside this repository is not supported today.**
 The CI-log provider registry in `worker/deno/lib/ci_log_provider.ts` is real —
 `registerCiLogProvider`, `unregisterCiLogProvider`, `getCiLogProvider`,
 `listCiLogProviders` and `resolveCiLogProvider` all work, and the dispatcher
-needs no edit to gain a provider. Two things stop an outside extension using
-it:
+needs no edit to gain a provider. Two things stop an outside extension using it:
 
 1. **The registry is not exported.** `mod.ts` re-exports config, logging, the
    command registry, the GitHub client and several helpers, but nothing from
    `ci_log_provider.ts`. Code outside the package cannot reach
    `registerCiLogProvider`.
 2. **There is no loader.** Nothing reads a path, a module specifier or a
-   configuration key and imports operator-supplied code at start-up. An
-   exported registry would still have no caller, because the worker only runs
-   modules already inside its image.
+   configuration key and imports operator-supplied code at start-up. An exported
+   registry would still have no caller, because the worker only runs modules
+   already inside its image.
 
 **What failure looks like if you try anyway:** naming an unregistered provider
 in `ciProviders` is not a config error — it is caught at dispatch, and the
 worker logs a warning, `ci_log_provider did not produce a result`, carrying
 `error=no CI log provider registered for '<id>'`, then carries on with
 annotations only. The run does not crash; the CI-fix prompt is simply built
-without a log excerpt. So a mistyped or unavailable provider id degrades
-quietly in the log rather than stopping the worker — check the worker log for
-that line if fix quality drops unexpectedly.
+without a log excerpt. So a mistyped or unavailable provider id degrades quietly
+in the log rather than stopping the worker — check the worker log for that line
+if fix quality drops unexpectedly.
 
-Adding a provider *inside* this repository remains appropriate for CI systems
+Adding a provider _inside_ this repository remains appropriate for CI systems
 **this project itself runs on**. Anything specific to one deployment belongs in
 a repository that deployment owns. See
 [Extending the Worker](EXTENDING.md#-adding-a-ci-log-provider) for the provider
@@ -428,14 +430,14 @@ contract.
 
 Recorded here rather than written around:
 
-| Gap | Effect |
-| --- | --- |
-| No credentialed download | `install-tools.sh` sends no `Authorization` header, no `.netrc`, no registry login. Private sources must authorise by network position (Step 3) |
-| No `file:` URLs | An archive already on the build host cannot be referenced; it must be served over HTTPS |
-| No tool-scoped post-install hook | Configuration is per repository via `pre_setup_command`, re-run each setup, not once per install |
-| Registry not exported | `mod.ts` exports nothing from `ci_log_provider.ts` |
-| No extension loader | Operator-supplied TypeScript cannot be loaded without editing this repository |
-| No install verification command | Confirming a tool landed means running it in the image (Step 6c); `first-run-verify` does not check `container_tools` |
+| Gap                              | Effect                                                                                                                                          |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| No credentialed download         | `install-tools.sh` sends no `Authorization` header, no `.netrc`, no registry login. Private sources must authorise by network position (Step 3) |
+| No `file:` URLs                  | An archive already on the build host cannot be referenced; it must be served over HTTPS                                                         |
+| No tool-scoped post-install hook | Configuration is per repository via `pre_setup_command`, re-run each setup, not once per install                                                |
+| Registry not exported            | `mod.ts` exports nothing from `ci_log_provider.ts`                                                                                              |
+| No extension loader              | Operator-supplied TypeScript cannot be loaded without editing this repository                                                                   |
+| No install verification command  | Confirming a tool landed means running it in the image (Step 6c); `first-run-verify` does not check `container_tools`                           |
 
 ## 🔗 Related documentation
 
@@ -446,5 +448,4 @@ Recorded here rather than written around:
 - [Containment](CONTAINMENT.md) — the mount set and the read-only boundary
 - [Troubleshooting](TROUBLESHOOTING.md#which-image-is-this-host-meant-to-run) —
   resolving which image a host should run
-- [Extending the Worker](EXTENDING.md) — extension points inside this
-  repository
+- [Extending the Worker](EXTENDING.md) — extension points inside this repository

@@ -7,12 +7,12 @@ Part of (duplicate PRs for one issue still occur).
 Two identical PRs were raised for the same work in
 `stSoftwareAU/private-repo-18`:
 
-| PR   | Author        | Opened (UTC)     | For issue |
-| ---- | ------------- | ---------------- | --------- |
-| | `stsvcbot` | 2026-07-01 07:29 | |
-| | `Vibecoderbot` | 2026-07-01 11:04 | |
+| PR | Author         | Opened (UTC)     | For issue |
+| -- | -------------- | ---------------- | --------- |
+|    | `stsvcbot`     | 2026-07-01 07:29 |           |
+|    | `Vibecoderbot` | 2026-07-01 11:04 |           |
 
- had been open ≈3.5 h when the host running as `Vibecoderbot` raised the
+had been open ≈3.5 h when the host running as `Vibecoderbot` raised the
 duplicate. The fleet-aware open-PR guard (`fetchOpenPRsForFleet` +
 `getBlockingPRForIssue`) was supposed to prevent exactly this.
 
@@ -21,20 +21,20 @@ duplicate. The fleet-aware open-PR guard (`fetchOpenPRsForFleet` +
 `find_oldest_issue` enumerates the fleet's GitHub logins, fetches each one's
 open PRs, and — for a non-milestone issue — treats **any** fleet-authored,
 non-milestone open PR as a block (the "one PR per work stream" rule). So if the
-`Vibecoderbot` host had seen `stsvcbot`'s, issue would have been
-`pr-blocked` and would never have been raised.
+`Vibecoderbot` host had seen `stsvcbot`'s, issue would have been `pr-blocked`
+and would never have been raised.
 
-The guard therefore fails **only** if was not in the PR set the guard
-considered on that host.
+The guard therefore fails **only** if was not in the PR set the guard considered
+on that host.
 
 ## Candidate causes
 
-| # | Candidate                                                             | Verdict                                                                                                                                                                                                   |
-| - | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 | Guard bug — `getBlockingPRForIssue` issue↔PR matching | **Eliminated.** For a non-milestone issue the guard blocks on _any_ non-milestone fleet PR; it does not match by branch/issue number, so would have blocked had it been in the set. |
-| 2 | Stale per-user PR cache (`prs_${user}`) hiding | **Unlikely as sole cause.** The cache is iteration-scoped (`IssueCache`), so a stale `stsvcbot` entry could only hide within a single scan; the duplicate was raised 3.5 h later across many scans. |
-| 3 | **Missing fleet-account config** — the host never queried `stsvcbot` | **Confirmed root cause (structural).** See below.                                                                                                                                                         |
-| 4 | Outdated worker build (pre-) | **Not the primary cause, but undiagnosable.** Nothing in the logs stamped the build, so an outdated host could not be ruled in or out. Addressed by build stamping. |
+| # | Candidate                                                            | Verdict                                                                                                                                                                                             |
+| - | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 | Guard bug — `getBlockingPRForIssue` issue↔PR matching                | **Eliminated.** For a non-milestone issue the guard blocks on _any_ non-milestone fleet PR; it does not match by branch/issue number, so would have blocked had it been in the set.                 |
+| 2 | Stale per-user PR cache (`prs_${user}`) hiding                       | **Unlikely as sole cause.** The cache is iteration-scoped (`IssueCache`), so a stale `stsvcbot` entry could only hide within a single scan; the duplicate was raised 3.5 h later across many scans. |
+| 3 | **Missing fleet-account config** — the host never queried `stsvcbot` | **Confirmed root cause (structural).** See below.                                                                                                                                                   |
+| 4 | Outdated worker build (pre-)                                         | **Not the primary cause, but undiagnosable.** Nothing in the logs stamped the build, so an outdated host could not be ruled in or out. Addressed by build stamping.                                 |
 
 ## Determined root cause (cause 3)
 
@@ -53,9 +53,9 @@ is not guaranteed to contain the sibling fleet accounts.
 
 On the `Vibecoderbot` host, `stsvcbot` was configured as a fleet sibling in
 `fleet_pr_authors` (so PR-feedback / CI maintenance covered it) but was **not**
-in `allowed_authors`. The guard, reading only `allowedAuthors`, therefore
-never issued `gh pr list --author stsvcbot`, so `stsvcbot`'s was
-invisible to the guard and the duplicate was raised.
+in `allowed_authors`. The guard, reading only `allowedAuthors`, therefore never
+issued `gh pr list --author stsvcbot`, so `stsvcbot`'s was invisible to the
+guard and the duplicate was raised.
 
 This is a structural blind spot, not a transient one: the two config keys can
 legitimately diverge, and whenever they do the guard is permanently blind to any
@@ -90,12 +90,11 @@ flowchart TD
    (from `VIBE_BUILD_COMMIT`). The stamp is emitted at startup
    (`[worker-build] version=… commit=…`) and included in the claim-time and
    PR-open log lines, so an outdated host is now visible in the logs.
-   `VIBE_BUILD_COMMIT` is set by the container launch plan (Issue #1572),
-   which resolves `git rev-parse HEAD` of the checkout it is about to mount —
-   both launchers update that checkout before the plan is built, so the stamp
-   names the code the run really executes. A modified checkout stamps
-   `<sha>-dirty`, and `unknown` now means a genuinely unstamped build rather
-   than every build.
+   `VIBE_BUILD_COMMIT` is set by the container launch plan (Issue #1572), which
+   resolves `git rev-parse HEAD` of the checkout it is about to mount — both
+   launchers update that checkout before the plan is built, so the stamp names
+   the code the run really executes. A modified checkout stamps `<sha>-dirty`,
+   and `unknown` now means a genuinely unstamped build rather than every build.
 4. **Fail-loud fleet-config validation.** `validateFleetConfig()`
    (`lib/fleet_config_validation.ts`) errors on an empty effective fleet set and
    warns when `allowed_authors` is empty or when a `fleet_pr_authors` sibling is
@@ -104,18 +103,17 @@ flowchart TD
 
 ## Residual window closed by (failure mode A)
 
-The fix makes the **discovery-time** guard see every fleet sibling, but
-that guard still runs **only once, at discovery**. A PR opened by a sibling
-account in the window _between_ this host's discovery and its atomic claim is
-invisible to it: the atomic claim (`claimIssue` in `lib/claim_issue.ts`)
-re-checked assignees and issue-closed state but not fleet PRs. So two hosts that
-pick up the same open issue at nearly the same time can each still open a PR
-(the ``/`` timing on `private-repo-18`).
+The fix makes the **discovery-time** guard see every fleet sibling, but that
+guard still runs **only once, at discovery**. A PR opened by a sibling account
+in the window _between_ this host's discovery and its atomic claim is invisible
+to it: the atomic claim (`claimIssue` in `lib/claim_issue.ts`) re-checked
+assignees and issue-closed state but not fleet PRs. So two hosts that pick up
+the same open issue at nearly the same time can each still open a PR (the `/`
+timing on `private-repo-18`).
 
-**Fix — live re-check inside the atomic claim chokepoint.** After
-this host wins the earliest-comment claim race and **before any Claude/token
-work begins**, `claimIssue` performs a live, cache-bypassing fleet open-PR
-re-check:
+**Fix — live re-check inside the atomic claim chokepoint.** After this host wins
+the earliest-comment claim race and **before any Claude/token work begins**,
+`claimIssue` performs a live, cache-bypassing fleet open-PR re-check:
 
 - It fetches open PRs for the same fleet-author union the discovery guard uses
   (`resolveFleetAuthors(githubUser, allowedAuthors, fleetPrAuthors)`, passed in
@@ -153,5 +151,5 @@ sequenceDiagram
 ## Out of scope (per the issue)
 
 No auto-close / duplicate-cleanup machinery — this issue is diagnostics and
-prevention only. Multi-account fleet operation is retained (per).
-Post-merge re-pickup is handled by the Mode-B post-merge sub-issue of.
+prevention only. Multi-account fleet operation is retained (per). Post-merge
+re-pickup is handled by the Mode-B post-merge sub-issue of.

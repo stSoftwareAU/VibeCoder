@@ -2,39 +2,39 @@
 
 ## Summary
 
-`docs/MODEL-AND-CACHING.md` reads as the model/session/caching reference for
-the whole worker, but most of it describes Claude. A reader running
-`agent_provider: codex` had no way to tell which documented behaviour they
-still get. This change makes the applicability explicit and machine-checked.
-Closes #367.
+`docs/MODEL-AND-CACHING.md` reads as the model/session/caching reference for the
+whole worker, but most of it describes Claude. A reader running
+`agent_provider: codex` had no way to tell which documented behaviour they still
+get. This change makes the applicability explicit and machine-checked. Closes
+#367.
 
 - **New `## Provider Applicability` section** below the Table of Contents: a
   legend (✅ applies · ⚠️ partial · ❌ not for this provider · ➖ not wired for
   anyone) and a matrix whose rows cover every `##`/`###` section of the
   document, with a "what Codex/Gemini do instead" column on every non-✅ row.
-- **A one-line `> **Applies to:** …` marker under every `##`/`###` heading**
-  (47 in total, including the `#### Session ID — a UUID` behaviour the issue
-  calls out), so a reader landing mid-document via an anchor is not misled.
-- **Cross-links, no duplication**: the section points at the README
-  coding-agent section, `docs/CONFIGURATION.md` and `docs/CONTAINER.md` for
-  *how to select* a provider; this page stays the *behaviour* reference. The
-  README's coding-agent list gains one bullet pointing back at the matrix.
+- **A one-line `> **Applies to:** …` marker under every `##`/`###` heading** (47
+  in total, including the `#### Session ID — a UUID` behaviour the issue calls
+  out), so a reader landing mid-document via an anchor is not misled.
+- **Cross-links, no duplication**: the section points at the README coding-agent
+  section, `docs/CONFIGURATION.md` and `docs/CONTAINER.md` for _how to select_ a
+  provider; this page stays the _behaviour_ reference. The README's coding-agent
+  list gains one bullet pointing back at the matrix.
 - **Fix-issue status is stated**: #363, #364, #365 and #366 have landed, so
   those rows describe post-fix behaviour. One open gap is recorded and linked.
 
-Every claim was checked against the code, not carried over from the issue
-body — several of the issue's scoping findings were already out of date on the
+Every claim was checked against the code, not carried over from the issue body —
+several of the issue's scoping findings were already out of date on the
 milestone branch:
 
-| Claim | Verified in |
-| --- | --- |
-| Codex and Gemini now route phases through their own tables | `codex_executor.ts`, `gemini_executor.ts`, `phase_routing.ts` |
-| Only Claude has a cheaper-model ladder; others report `no-ladder-for-provider` | `model_fallback.ts`, `agent_provider.ts` (`cheaperModel?`) |
-| Session persistence/allowlist/compaction cover `.claude/` only | `session_manager.ts`, `session_file_policy.ts`, `session_compaction.ts` |
-| Resume mechanisms differ (`--session-id`/`--resume`, `codex exec resume --last`, `--resume latest`) | `session_resume.ts`, `codex_executor.ts`, `gemini_executor.ts` |
-| Layer 2 caching is Anthropic-only — the others fold the system prompt in | `agent_provider.ts` (`--system-prompt`), `agent_prompt.ts` (`composeAgentPrompt`) |
-| Served-model observation (degraded verdict) reads Claude `stream-json` | `run_stats.ts` (`extractServedModels`) |
-| Non-Claude model ids have no context-window row → 200,000-token default | `context_budget.ts` (`MODEL_CONTEXT_WINDOWS`) |
+| Claim                                                                                               | Verified in                                                                       |
+| --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Codex and Gemini now route phases through their own tables                                          | `codex_executor.ts`, `gemini_executor.ts`, `phase_routing.ts`                     |
+| Only Claude has a cheaper-model ladder; others report `no-ladder-for-provider`                      | `model_fallback.ts`, `agent_provider.ts` (`cheaperModel?`)                        |
+| Session persistence/allowlist/compaction cover `.claude/` only                                      | `session_manager.ts`, `session_file_policy.ts`, `session_compaction.ts`           |
+| Resume mechanisms differ (`--session-id`/`--resume`, `codex exec resume --last`, `--resume latest`) | `session_resume.ts`, `codex_executor.ts`, `gemini_executor.ts`                    |
+| Layer 2 caching is Anthropic-only — the others fold the system prompt in                            | `agent_provider.ts` (`--system-prompt`), `agent_prompt.ts` (`composeAgentPrompt`) |
+| Served-model observation (degraded verdict) reads Claude `stream-json`                              | `run_stats.ts` (`extractServedModels`)                                            |
+| Non-Claude model ids have no context-window row → 200,000-token default                             | `context_budget.ts` (`MODEL_CONTEXT_WINDOWS`)                                     |
 
 **Gap found while verifying, filed rather than fixed here (out of scope for a
 documentation issue):** the pre-flight Fable reroute in `claude_runner.ts` is
@@ -49,8 +49,8 @@ which is labelled as describing current, pre-fix behaviour.
 Documentation-only change with no web interface to screenshot; the evidence is
 the new failure-detection test.
 
-`worker/deno/tests/docs_provider_matrix_test.ts` reads the document and
-asserts, against `agentProviderIds()` rather than hand-written prose:
+`worker/deno/tests/docs_provider_matrix_test.ts` reads the document and asserts,
+against `agentProviderIds()` rather than hand-written prose:
 
 ```mermaid
 flowchart LR

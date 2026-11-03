@@ -26,7 +26,7 @@ What changed:
 - **The fail direction is towards scanning.** A comment thread that cannot be
   read, an issue state that cannot be read, a marker authored outside the fleet,
   an unresolved fleet identity, or a reference that is not `owner/repo#N` each
-  leave the check *undeferred* and are logged as errors — a suppressed real
+  leave the check _undeferred_ and are logged as errors — a suppressed real
   failure is the one outcome nobody would notice.
 - **Docs** — `docs/INTERNALS.md` `find_failed_ci_checks()` gains the step;
   `docs/workflows/ci-fix.md` § Retry behaviour gains "Deferred checks are not

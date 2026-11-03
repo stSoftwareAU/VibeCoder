@@ -17,7 +17,8 @@ every gate that already guards a close still applies:
 
 - the Issue #319 title matcher, so a repo-qualified or PR-qualified `#N` is not
   read as a fix;
-- the Issue #482 ordering guard, so a merge never closes an issue filed after it;
+- the Issue #482 ordering guard, so a merge never closes an issue filed after
+  it;
 - the Issue #4396 merge-landing check, so a merge that went nowhere leaves the
   issue open;
 - the VibeCoder#42 escape hatch, so a trusted re-label dated after the merge

@@ -77,24 +77,24 @@ This approximates "a required check or the job feeding it": a job that another
 job in the same workflow lists under `needs` is reported with that aggregator.
 The `cargo mutants` flags that choose the mutants or the build (`--package`,
 `--workspace`, `--features`, `--all-features`, `--no-default-features`,
-`--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`,
-`--regex`, `--examine-re`, `--examine-regex`, `-F`, `-f`, `--file`) are
-read from the job's command line and passed to the worker's own run; diff,
-output, jobs and shuffle flags stay the worker's. Explicit CI package or
-workspace selection replaces the worker's touched-package selection. When all
-changed crates are known to be outside an explicit CI package list, the worker
-checks them separately as advisory and honours summary exemptions.
-Not evaluated or read: reusable-workflow `uses:` jobs, other mutation tools, job
-`if:` and path filters, flags of a `deno task`, and the repository's branch
-protection (required-check names).
+`--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`, `--regex`,
+`--examine-re`, `--examine-regex`, `-F`, `-f`, `--file`) are read from the job's
+command line and passed to the worker's own run; diff, output, jobs and shuffle
+flags stay the worker's. Explicit CI package or workspace selection replaces the
+worker's touched-package selection. When all changed crates are known to be
+outside an explicit CI package list, the worker checks them separately as
+advisory and honours summary exemptions. Not evaluated or read:
+reusable-workflow `uses:` jobs, other mutation tools, job `if:` and path
+filters, flags of a `deno task`, and the repository's branch protection
+(required-check names).
 
 Only regular workflow files up to 1 MiB are read. Symlinked workflow directory
 components, symlinked files and oversized files are reported as unreadable,
-leaving their contract unknown. Reads are
-bounded even if a file grows after its size check. Continued script lines are
-joined once, and each YAML step mapping is scanned once per file. A cumulative
-1 MiB script scan budget per file also bounds repeated YAML string aliases;
-exceeding it reports the workflow as unreadable.
+leaving their contract unknown. Reads are bounded even if a file grows after its
+size check. Continued script lines are joined once, and each YAML step mapping
+is scanned once per file. A cumulative 1 MiB script scan budget per file also
+bounds repeated YAML string aliases; exceeding it reports the workflow as
+unreadable.
 
 The CI tool must match the mutation result: cargo-mutants checks Rust, and a
 Deno mutation task checks Deno. A result for the other language stays advisory
@@ -119,8 +119,8 @@ blocking, because CI fails on them whatever the PR summary says:
    ready. The pending issue note names the CI job, says mutation validation is
    incomplete and the PR will open as a draft, and says the next run continues
    the branch. On the secondary-rate-limit deferral path the parked record
-   carries `draft: true`, and `worker/deno/lib/deferred_pr_drain.ts` opens the pull
-   request as a draft over REST (it never arms auto-merge). The next run
+   carries `draft: true`, and `worker/deno/lib/deferred_pr_drain.ts` opens the
+   pull request as a draft over REST (it never arms auto-merge). The next run
    continues the branch and marks the pull request ready once no survivor is
    left.
 4. **Validation that cannot finish is held too.** A runner error, an unavailable
@@ -172,8 +172,9 @@ The runner, mutator and mutant cap (40) are the PR-raise ones. So are
 `skip_mutation_check`, `mutation_check_budget_seconds`, the
 `quality_credentials` handling and the `exempt (untestable)` exemptions, which
 are read from the PR summary. On a repository with a blocking CI mutation job,
-summary exemptions are ignored in review-fix runs too; the push is not blocked. The skip, runner, budget and credential sequence
-is shared with the PR-raise gate (`invokeMutationCheck`).
+summary exemptions are ignored in review-fix runs too; the push is not blocked.
+The skip, runner, budget and credential sequence is shared with the PR-raise
+gate (`invokeMutationCheck`).
 
 **Recovery.** An unexempted survivor is a drift-check hit. It goes into the
 drift check's one recovery turn, with the same survivor wording as the PR-raise
@@ -231,22 +232,23 @@ directory is removed afterwards, so nothing of cargo-mutants' output reaches the
 working tree (a recovery commit stages it with `git add -A`). That temporary
 directory is created in the system temp directory (`TMPDIR`, else Deno's
 default) or, when that refuses, in a private (`0700`) `.mutation-scratch`
-directory on the work volume (`WORK_DIR`, else `$HOME/auto-issue-work`)
-(Issue #4127). The worker image ships `cargo-mutants` 27.1.0 (amd64 from the release
+directory on the work volume (`WORK_DIR`, else `$HOME/auto-issue-work`) (Issue
+#4127). The worker image ships `cargo-mutants` 27.1.0 (amd64 from the release
 tarball, checksum-verified; arm64 built with `cargo install --locked`).
 
-Absent CI package or workspace selection, the run is limited to the packages the diff touches: for each changed `.rs` file
-the nearest ancestor `Cargo.toml` with a `[package]` section supplies a
-`--package <name>` argument (names failing `^[A-Za-z0-9_-]+$` are skipped; none
-found means no package arguments). A `mutants.out` already in the repository is
-neither read nor touched. cargo-mutants writes `outcomes.json` only after its
-clean build and baseline test run, so a run killed at the budget before then
-leaves none; that is reported as budget exhausted (nothing tried, a warning), as
-a Deno baseline timeout is, not as an error. A normal exit that leaves no
-parseable `outcomes.json`, or exit code 3 (some mutants timed out) with none, is
-an error, except in one case: when the diff touches no mutant at all,
-cargo-mutants logs "No mutants to filter" on stderr and exits 0 without writing
-`outcomes.json`, and that is "Not applicable".
+Absent CI package or workspace selection, the run is limited to the packages the
+diff touches: for each changed `.rs` file the nearest ancestor `Cargo.toml` with
+a `[package]` section supplies a `--package <name>` argument (names failing
+`^[A-Za-z0-9_-]+$` are skipped; none found means no package arguments). A
+`mutants.out` already in the repository is neither read nor touched.
+cargo-mutants writes `outcomes.json` only after its clean build and baseline
+test run, so a run killed at the budget before then leaves none; that is
+reported as budget exhausted (nothing tried, a warning), as a Deno baseline
+timeout is, not as an error. A normal exit that leaves no parseable
+`outcomes.json`, or exit code 3 (some mutants timed out) with none, is an error,
+except in one case: when the diff touches no mutant at all, cargo-mutants logs
+"No mutants to filter" on stderr and exits 0 without writing `outcomes.json`,
+and that is "Not applicable".
 
 At the budget the runner sends `SIGTERM` to cargo-mutants and `SIGKILL` only
 after a 5 second grace period, so cargo-mutants can stop its cargo process
@@ -346,8 +348,8 @@ allowlisted environment built by `buildUntrustedCommandEnv` with `clearEnv`,
 never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
 credentials are not inherited by it (Issue #572, the same control as the quality
 gate). The only additions are the declared credentials described below and
-`TMPDIR`, which every child gets set to the run's own temporary directory
-(Issue #4127): for `cargo mutants` the `--output` directory, for `deno test` a per-run
+`TMPDIR`, which every child gets set to the run's own temporary directory (Issue
+#4127): for `cargo mutants` the `--output` directory, for `deno test` a per-run
 directory created before the first child runs and removed afterwards. A declared
 `TMPDIR` cannot override it.
 
@@ -358,11 +360,11 @@ tests that need them (for example minted AWS credentials) pass their baseline
 here too. These children run as the worker account, not through `sudo`, so the
 environment is their route; the quality gate carries the same credentials on
 stdin instead, because its command runs as `agent`
-([Configuration](CONFIGURATION.md)). Apart from `TMPDIR`, which every
-child (both `deno test` and `cargo mutants`) gets set to the run's own
-temporary directory, only the declared variables are added. If the mint fails,
-the check is not applicable with a warning instead of running without them. At
-PR raise that is reported; on a review-fix run it is logged and not reported.
+([Configuration](CONFIGURATION.md)). Apart from `TMPDIR`, which every child
+(both `deno test` and `cargo mutants`) gets set to the run's own temporary
+directory, only the declared variables are added. If the mint fails, the check
+is not applicable with a warning instead of running without them. At PR raise
+that is reported; on a review-fix run it is logged and not reported.
 
 ## Exemptions
 

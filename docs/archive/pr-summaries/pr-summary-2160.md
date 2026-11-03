@@ -18,7 +18,7 @@ preparation rather than indexing the same checkout a second time, and both
 invocations' `codegraph_explore` tallies are summed into the run's one figure.
 
 With the switch off (the default) nothing is spawned, and every prompt and MCP
-configuration is exactly what it was — the `mcpConfig` key is *absent*, not
+configuration is exactly what it was — the `mcpConfig` key is _absent_, not
 `undefined`.
 
 ### Defect this PR found and fixed
@@ -32,7 +32,7 @@ to avoid. `repoDir` is now optional and an unnamed checkout is recorded
 `failed`.
 
 The first fix guarded `repoDir === undefined` only, while the runner's gate
-reads *falsiness*; an **empty** `workDir` was therefore still reported `ok` with
+reads _falsiness_; an **empty** `workDir` was therefore still reported `ok` with
 the line appended and no server behind it. Empty is now refused the same way as
 absent, pinned by a regression test that fails against the old guard
 (`codegraph_run_test.ts::prepareCodegraphRun - an empty checkout path fails the
@@ -99,9 +99,10 @@ why it is not this branch's change.
   evidence: `worker/deno/tests/lib_sweep_coverage_test.ts:472` — reviewer:
   partial — reason: `check` and `lint` exit 0 and all 17 CodeGraph cases pass,
   but `deno task test` exits 1 (22643 passed, 1 failed) because
-  `worker/deno/lib/markdown_table.ts` and `worker/deno/lib/plan_milestone_groups.ts`
-  are claimed by no sweep slice — both added by merged main commit `04e42712`
-  (#2163), not by this branch's three commits, yet the tip is red as it stands.
+  `worker/deno/lib/markdown_table.ts` and
+  `worker/deno/lib/plan_milestone_groups.ts` are claimed by no sweep slice —
+  both added by merged main commit `04e42712` (#2163), not by this branch's
+  three commits, yet the tip is red as it stands.
 - **unrequested** — `worker/deno/lib/codegraph_run.ts` gains an optional
   `repoDir` plus the empty-string refusal and three new `codegraph_run_test.ts`
   cases — reviewer: unrequested — reason: the shared #2159 module is changed
@@ -119,8 +120,8 @@ why it is not this branch's change.
 
 - **violation** — no `docs/archive/pr-summaries/pr-summary-2160.md` on the
   branch, so the regression-test linkage for the empty-`workDir` fix and the
-  test classification were unrecorded — evidence:
-  `docs/archive/pr-summaries/` — reason: fixed here; this file
+  test classification were unrecorded — evidence: `docs/archive/pr-summaries/` —
+  reason: fixed here; this file
 - **violation** — a docs claim that is not true of the code it describes:
   `cf6d35af` widened the sweep note to "every wired suite asserts that the two
   match", but only four of the six wired suites assert `cwd === repoDir` —
@@ -155,8 +156,8 @@ why it is not this branch's change.
   `[CODEGRAPH_UNAVAILABLE]` and recorded `failed`, never downgraded to `off`,
   with exactly one status line on every path); no secrets on any new sink;
   additive optional fields only, no callback schema touched; import conventions
-  (`import type`, relative `.ts` specifiers); all three commits reference
-  Issue #2160 and carry a `Vibe-Coder-Run-Id` trailer
+  (`import type`, relative `.ts` specifiers); all three commits reference Issue
+  #2160 and carry a `Vibe-Coder-Run-Id` trailer
 - **clean** — the two earlier review rounds are visible in the history:
   `847b467b` remedied the stale three-path list in `CONFIGURATION.md`, the
   untested unnamed-checkout branch and an unnecessary conditional spread;
@@ -165,15 +166,15 @@ why it is not this branch's change.
 
 ## Test Plan
 
-Added, all with an injected fake preparer so no suite spawns `codegraph`
-(unit tests; no integration or benchmark tests apply to this change):
+Added, all with an injected fake preparer so no suite spawns `codegraph` (unit
+tests; no integration or benchmark tests apply to this change):
 
 - `worker/deno/tests/pr_feedback_processor_codegraph_2160_test.ts` — 3 cases:
   switch off leaves the invocation untouched; an indexed run gets the line and
   the server together, in the checkout that was indexed; a failed index adds
   neither half and the run proceeds.
-- `worker/deno/tests/pr_ci_processor_codegraph_2160_test.ts` — 4 cases: the
-  same three, plus the post-quality retry reusing the one preparation with both
+- `worker/deno/tests/pr_ci_processor_codegraph_2160_test.ts` — 4 cases: the same
+  three, plus the post-quality retry reusing the one preparation with both
   invocations' tallies summed.
 - `worker/deno/tests/codegraph_run_test.ts` — 3 new cases for the optional
   checkout: a run that names no checkout fails the index not the run; an empty

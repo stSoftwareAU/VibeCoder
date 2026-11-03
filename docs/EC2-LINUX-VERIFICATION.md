@@ -2,17 +2,17 @@
 
 The launcher's Linux branch probes Docker, then Podman
 ([Deployment](DEPLOYMENT.md#-requirements)), but the maintainer develops on
-macOS — so that branch has never been confirmed on a real Linux host. This
-page is the throwaway host that confirms it: one CloudFormation stack, one
-Ubuntu 24.04 instance, reachable **only** through SSM Session Manager, with
-the host-side prerequisites already installed.
+macOS — so that branch has never been confirmed on a real Linux host. This page
+is the throwaway host that confirms it: one CloudFormation stack, one Ubuntu
+24.04 instance, reachable **only** through SSM Session Manager, with the
+host-side prerequisites already installed.
 
 The template is
 [`infra/cloudformation/linux-verification-host.yaml`](../infra/cloudformation/linux-verification-host.yaml).
 Everything below is done by hand over the session — there is no automated CI
 check for this path, and that is the point: it exercises the documented manual
-route in [Setup](SETUP.md#linux-debianubuntu-as-the-worked-example) exactly as
-a reader would follow it.
+route in [Setup](SETUP.md#linux-debianubuntu-as-the-worked-example) exactly as a
+reader would follow it.
 
 The template itself is deployed against the Floci emulator in CI by
 [`.github/workflows/floci.yml`](../.github/workflows/floci.yml) via
@@ -38,12 +38,12 @@ needs Docker, so inside the worker container it is reported
 
 ## What the stack creates
 
-| Resource | Why |
-| --- | --- |
-| VPC, one public subnet, internet gateway, route table | Self-contained — no dependency on a default VPC that may not exist |
-| Security group with **no inbound rules** and five outbound rules (443, 80, DNS, NTP) | The SSM agent dials out; nothing dials in |
-| IAM role with `AmazonSSMManagedInstanceCore`, and an instance profile | The one permission Session Manager needs, and no other |
-| One `t3.large` Ubuntu 24.04 instance, 100 GiB encrypted gp3 root, IMDSv2 required | The host under test |
+| Resource                                                                               | Why                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| VPC, one public subnet, internet gateway, route table                                  | Self-contained — no dependency on a default VPC that may not exist                                                                                                                                                                                                               |
+| Security group with **no inbound rules** and five outbound rules (443, 80, DNS, NTP)   | The SSM agent dials out; nothing dials in                                                                                                                                                                                                                                        |
+| IAM role with `AmazonSSMManagedInstanceCore`, and an instance profile                  | The one permission Session Manager needs, and no other                                                                                                                                                                                                                           |
+| One `t3.large` Ubuntu 24.04 instance, 100 GiB encrypted gp3 root, IMDSv2 required      | The host under test                                                                                                                                                                                                                                                              |
 | User data that installs `git`, `gh`, `jq`, `podman` and Deno, then clones the checkout | The documented Linux prerequisites — nothing else. No coding-agent CLI by default: the agent runs inside the image, and a Codex-only verification requires a host with **no** Claude CLI present (`HostAgentCli=claude` installs one when you are verifying a Claude deployment) |
 
 ```mermaid
@@ -60,13 +60,14 @@ flowchart LR
 
 - An AWS account and credentials with permission to create the stack
   (`CAPABILITY_IAM` is required — the stack creates one role).
-- The [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+- The
+  [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
   for the AWS CLI, on your own machine.
 - The GitHub, Anthropic (or other provider) credentials you will type into the
   session. **Nothing goes in the template**: it carries no credential, and
   neither does the user data.
-- Outbound access is limited to HTTPS, HTTP, DNS and NTP — there is no
-  outbound SSH, so `gh` and `git` must authenticate over HTTPS.
+- Outbound access is limited to HTTPS, HTTP, DNS and NTP — there is no outbound
+  SSH, so `gh` and `git` must authenticate over HTTPS.
 
 ## Launch
 
@@ -83,8 +84,8 @@ aws cloudformation deploy \
 Parameters worth overriding: `InstanceType`, `RootVolumeSizeGb`,
 `AutoStopHours`, `VibeCoderRepositoryUrl` when verifying a fork, and
 `HostAgentCli=claude` when the deployment under test runs Claude rather than
-Codex — the default installs no agent CLI at all. Then read
-the outputs — the instance id and the ready-made session command:
+Codex — the default installs no agent CLI at all. Then read the outputs — the
+instance id and the ready-made session command:
 
 ```bash
 aws cloudformation describe-stacks \
@@ -92,15 +93,15 @@ aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs' --output table
 ```
 
-**`VibeCoderRepositoryUrl` must be a plain HTTPS clone URL, with no
-credential in it.** The template interpolates the value into the bootstrap's
-`git clone` command line, so it accepts only the characters a clone URL needs
-— letters, digits and `. _ ~ : / @ % + -`. A URL carrying a shell
-metacharacter is refused at deploy time rather than reaching the host's root
-shell. A credential embedded as `https://user:token@…` would also be visible
-three ways — in `describe-stacks`, in the rendered user data, and in the
-stack's history — so verify a private fork by cloning it yourself in the
-session after `gh auth login`, not by putting a token in this parameter.
+**`VibeCoderRepositoryUrl` must be a plain HTTPS clone URL, with no credential
+in it.** The template interpolates the value into the bootstrap's `git clone`
+command line, so it accepts only the characters a clone URL needs — letters,
+digits and `. _ ~ : / @ % + -`. A URL carrying a shell metacharacter is refused
+at deploy time rather than reaching the host's root shell. A credential embedded
+as `https://user:token@…` would also be visible three ways — in
+`describe-stacks`, in the rendered user data, and in the stack's history — so
+verify a private fork by cloning it yourself in the session after
+`gh auth login`, not by putting a token in this parameter.
 
 ## Connect
 
@@ -109,8 +110,8 @@ aws ssm start-session --target i-0123456789abcdef0
 ```
 
 The instance takes a couple of minutes to register with Systems Manager and a
-few more to finish its bootstrap. **Read the bootstrap status first** — the
-user data records its outcome there rather than failing silently:
+few more to finish its bootstrap. **Read the bootstrap status first** — the user
+data records its outcome there rather than failing silently:
 
 ```bash
 cat /var/log/vibe-bootstrap.status   # RUNNING | OK | FAILED at line N
@@ -151,9 +152,9 @@ records each one's output under the transcript directory, then prints
 `report.md`, the table to paste onto the issue you are verifying against. The
 report carries an eighth row, `volume-init`: `run.sh` swallows volume
 initialisation's own output, so that row is read back from the launcher's log
-and the host log directory's `run_core.log` rather than from a stage of its
-own, and it is
-`SKIPPED` — never a pass — when neither source shows the initialisation ran.
+and the host log directory's `run_core.log` rather than from a stage of its own,
+and it is `SKIPPED` — never a pass — when neither source shows the
+initialisation ran.
 
 ```mermaid
 flowchart LR
@@ -227,14 +228,14 @@ directory off public issues.
 
 The host stays stock Ubuntu apart from the installs above, so the podman
 environment faults reported from a real Ubuntu deployment reproduce here. That
-is deliberate: this host exists to confirm their fixes, so the template must
-not paper over them.
+is deliberate: this host exists to confirm their fixes, so the template must not
+paper over them.
 
-| Fault | What it looks like |
-| --- | --- |
-| Rejected mount options | Container start rejects `tmpfs` options the Docker path accepts |
-| Disk floor | The worker declines to claim work because free space is below the larger of 20 GB and 10% of the filesystem — at the default 100 GiB root, the floor is the 20 GB constant |
-| Volume verbs | Recovery paths that assume Docker's spelling of a volume command |
+| Fault                  | What it looks like                                                                                                                                                         |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rejected mount options | Container start rejects `tmpfs` options the Docker path accepts                                                                                                            |
+| Disk floor             | The worker declines to claim work because free space is below the larger of 20 GB and 10% of the filesystem — at the default 100 GiB root, the floor is the 20 GB constant |
+| Volume verbs           | Recovery paths that assume Docker's spelling of a volume command                                                                                                           |
 
 If a fault reproduces, it belongs on the issue that owns it, with the exact
 command and output from this session.
@@ -242,10 +243,10 @@ command and output from this session.
 The report separates the two things a reader would otherwise have to tell apart
 by hand:
 
-| Report section | What it holds |
-| --- | --- |
-| **Expected warnings** | Messages that are benign and permanent — a private-repository ruleset 403, which needs GitHub Pro and is non-fatal (Issue #733), and a runtime that refuses `FITRIM`, which is stated rather than warned about and starts no recovery on its own (Issue #734) |
-| **New defects** | A fault a sibling fix already removed, named with the issue that owns it — a refused `tmpfs` mount option (#727), a base image that will not resolve (#728), a volume verb the runtime rejects (#731), a refused launch (#732), a refused trim followed by a refused launch (#734), or setup demanding the Claude CLI on a Codex-only host (#730) |
+| Report section        | What it holds                                                                                                                                                                                                                                                                                                                                     |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Expected warnings** | Messages that are benign and permanent — a private-repository ruleset 403, which needs GitHub Pro and is non-fatal (Issue #733), and a runtime that refuses `FITRIM`, which is stated rather than warned about and starts no recovery on its own (Issue #734)                                                                                     |
+| **New defects**       | A fault a sibling fix already removed, named with the issue that owns it — a refused `tmpfs` mount option (#727), a base image that will not resolve (#728), a volume verb the runtime rejects (#731), a refused launch (#732), a refused trim followed by a refused launch (#734), or setup demanding the Claude CLI on a Codex-only host (#730) |
 
 Anything under **New defects** is a workaround still required, and a workaround
 still required is a defect: file it as a further sub-issue rather than applying
@@ -272,8 +273,7 @@ Two consequences worth knowing:
 - The user data runs once, so after a restart nothing re-arms the timer —
   schedule it again by hand with the command above.
 
-Tear-down is manual and removes everything the stack created, including the
-VPC:
+Tear-down is manual and removes everything the stack created, including the VPC:
 
 ```bash
 aws cloudformation delete-stack --stack-name vibe-linux-verification
@@ -285,8 +285,8 @@ aws cloudformation wait stack-delete-complete --stack-name vibe-linux-verificati
 - **No credentials.** Not in the template, not in the user data. GitHub,
   Anthropic and coding-agent credentials are supplied interactively in the
   session, so nothing sensitive lands in CloudFormation.
-- **No key pair and no inbound rules.** Session Manager is the only access
-  path; there is no SSH port to leave open and no key to lose.
+- **No key pair and no inbound rules.** Session Manager is the only access path;
+  there is no SSH port to leave open and no key to lose.
 - **No Docker.** The launcher probes Docker first, so leaving it out is what
   forces the podman branch to run.
 - **No podman pre-patching.** See

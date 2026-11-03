@@ -3,11 +3,11 @@
 ## Summary
 
 `custom_label_prompts` (Issue #846) names prompt templates that live on the
-**host**, and the container sees the workspace rather than the host
-(Issue #4060) — so in the default containerised deployment every custom prompt
-failed at dispatch. The launch plan now derives the narrowest mount set that
-fixes it, and the worker inside the container resolves each configured path onto
-that mount. Closes #850.
+**host**, and the container sees the workspace rather than the host (Issue
+#4060) — so in the default containerised deployment every custom prompt failed
+at dispatch. The launch plan now derives the narrowest mount set that fixes it,
+and the worker inside the container resolves each configured path onto that
+mount. Closes #850.
 
 - **The mount.** One **read-only** bind mount per distinct containing directory
   of the configured prompt paths, at `/home/vibe/.vibe-coder/custom-prompts/<n>`
@@ -53,10 +53,12 @@ evidence is the test suites below plus a green gate:
 - `deno test tests/custom_prompt_mounts_test.ts tests/container_launch_test.ts
   tests/custom_label_prompts_config_test.ts tests/container_containment_test.ts`
   — all green.
-- The live containment run (`container containment - the launcher-produced
-  container is contained`) is `ignored` on this host because no container
-  runtime is present; its probe **table** is asserted by a unit test that runs
-  everywhere, and the live probes execute in CI.
+- The live containment run
+  (`container containment - the launcher-produced
+  container is contained`) is
+  `ignored` on this host because no container runtime is present; its probe
+  **table** is asserted by a unit test that runs everywhere, and the live probes
+  execute in CI.
 
 ## Acceptance Criteria
 
@@ -71,17 +73,17 @@ evidence is the test suites below plus a green gate:
   `worker/deno/tests/custom_label_prompts_config_test.ts::loadConfig - inside the container the configured path resolves onto the mount (Issue #850)`
   — reviewer: met — reason: the reviewer noted the coverage is unit-level, which
   is what a launcher-side change can assert without a runtime
-- **met** — a path `assertMountSourcePermitted` rejects fails the launch with the
-  existing containment error — evidence:
+- **met** — a path `assertMountSourcePermitted` rejects fails the launch with
+  the existing containment error — evidence:
   `worker/deno/tests/container_launch_test.ts::buildContainerLaunchPlan - a custom prompt the allowlist refuses fails the launch (Issue #850)`
   — reviewer: met
 - **met** — the mount is read-only: a write from inside the container to a
   mounted prompt file fails — evidence:
   `worker/deno/tests/container_containment_test.ts::containment harness - the operator's custom prompt mount is probed read-only (Issue #850)`
   and the `ro-file`/`ro-dir` probes the live containment run executes —
-  reviewer: partial — reason: the reviewer saw only the `:ro` suffix asserted and
-  no live probe; the probe was added in response, so the write is now executed
-  rather than inferred
+  reviewer: partial — reason: the reviewer saw only the `:ro` suffix asserted
+  and no live probe; the probe was added in response, so the write is now
+  executed rather than inferred
 - **met** — with no `custom_label_prompts` configured, the launch plan is
   byte-identical to today's — evidence:
   `worker/deno/tests/container_launch_test.ts::buildContainerLaunchPlan - no custom prompts leaves the plan exactly as it was (Issue #850)`
@@ -91,15 +93,15 @@ evidence is the test suites below plus a green gate:
   evidence:
   `worker/deno/tests/container_launch_test.ts::buildContainerLaunchPlan - custom prompt mounts keep the containment guarantees (Issue #850)`
   (docker, podman, apple-container) — reviewer: met — reason: the reviewer noted
-  the issue's `assertLaunchArgumentsSafe` is spelled `assertRunArgumentsContained`
-  in this repo; that is the guard the diff keeps
+  the issue's `assertLaunchArgumentsSafe` is spelled
+  `assertRunArgumentsContained` in this repo; that is the guard the diff keeps
 - **met** — tests added covering the mount, the read-only flag, the rejection
   path and the no-config no-op; `deno task test` and `./quality.sh` pass —
-  evidence: the four tests above plus `worker/deno/tests/custom_prompt_mounts_test.ts`;
-  full gate run after the final edit — reviewer: partial — reason: the reviewer
-  could not run the full gate and flagged one vacuous assertion
-  (`"…//three.md".replace("//","/")`), which was rewritten to exercise the real
-  doubled-separator spelling
+  evidence: the four tests above plus
+  `worker/deno/tests/custom_prompt_mounts_test.ts`; full gate run after the
+  final edit — reviewer: partial — reason: the reviewer could not run the full
+  gate and flagged one vacuous assertion (`"…//three.md".replace("//","/")`),
+  which was rewritten to exercise the real doubled-separator spelling
 - **unrequested** — restores `WorkerConfig.customLabelPrompts`,
   `ConfigFile.custom_label_prompts`, the `buildDefaultWorkerConfig` default and
   the `KNOWN_CONFIG_KEYS` entry — reviewer: unrequested — reason: the
@@ -134,11 +136,11 @@ evidence is the test suites below plus a green gate:
 - **violation** — docs accuracy: comments and docs said "native mode", a run
   mode Issue #4 removed — evidence:
   `worker/deno/lib/custom_prompt_mounts.ts:34`, `docs/CONFIGURATION.md:573` —
-  reason: fixed in this diff; the wording now names *where the config is read*
+  reason: fixed in this diff; the wording now names _where the config is read_
   (host-side launcher versus inside the container), not a run mode
-- **violation** — PR summary and evidence: `docs/archive/pr-summaries/pr-summary-850.md`
-  was absent — evidence: this file — reason: fixed; it is the deliverable this
-  block lives in
+- **violation** — PR summary and evidence:
+  `docs/archive/pr-summaries/pr-summary-850.md` was absent — evidence: this file
+  — reason: fixed; it is the deliverable this block lives in
 - **violation** — test quality: the `service_account_env` repair relaxed an
   exact-path assertion instead of stubbing the lookup — evidence:
   `worker/deno/tests/service_account_env_test.ts:425` — reason: stands. The

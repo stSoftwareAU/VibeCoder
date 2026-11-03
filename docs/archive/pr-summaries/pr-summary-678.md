@@ -2,11 +2,11 @@
 
 ## Summary
 
-`setup.sh` kept asking "no ruleset covers `milestone/**` … create one? [y/N]"
-on repositories where a previous run had already answered yes. The repository
-state is the only memory, so the fault had to be in the detection read path —
-and it was. Three ways a run reached that prompt with nothing an answer could
-change, all closed:
+`setup.sh` kept asking "no ruleset covers `milestone/**` … create one? [y/N]" on
+repositories where a previous run had already answered yes. The repository state
+is the only memory, so the fault had to be in the detection read path — and it
+was. Three ways a run reached that prompt with nothing an answer could change,
+all closed:
 
 1. **An unreadable ruleset state was reported as a missing ruleset.**
    `fetchRulesetDetails` caught every read failure and returned an empty list,
@@ -69,10 +69,9 @@ ok | 93 passed | 0 failed
 ```
 
 `./quality.sh` reports every stage PASSED except `deno tests`, which fails on 33
-tests in three files unrelated to this change:
-`tests/run_core_test.ts` and `tests/run_core_rate_limit_resume_test.ts` (an
-uncaught `gh` call reaching the live API: "GraphQL: API rate limit already
-exceeded for user ID 23146043") and
+tests in three files unrelated to this change: `tests/run_core_test.ts` and
+`tests/run_core_rate_limit_resume_test.ts` (an uncaught `gh` call reaching the
+live API: "GraphQL: API rate limit already exceeded for user ID 23146043") and
 `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config dir is restaged writable`
 (the container's ambient gh-config path leaks into the assertion). **These are
 pre-existing and environmental**: the identical 33 failures reproduce on the
@@ -82,16 +81,17 @@ none of this branch's changes present. Full suite on this branch:
 
 ## Reproduction
 
-- **symptom** — a `setup.sh` re-run asked `Create one mirroring the
-  default-branch checks? [y/N]` again for repositories whose milestone ruleset
-  had already been created (or could never be created) on a previous run
+- **symptom** — a `setup.sh` re-run asked
+  `Create one mirroring the
+  default-branch checks? [y/N]` again for
+  repositories whose milestone ruleset had already been created (or could never
+  be created) on a previous run
 - **status** — `verified` — a standalone script driving `checkMilestoneRuleset`
   with a failing `gh` read was run against the unfixed tree in a detached
-  worktree at `758233e^` and printed
-  `codes: [ "no-milestone-ruleset" ]` (exit 1, the finding that triggers the
-  prompt); the same script against the fixed tree printed
-  `codes: [ "ruleset-read-failed" ]` (exit 0). The scratch script and worktree
-  were removed after the run
+  worktree at `758233e^` and printed `codes: [ "no-milestone-ruleset" ]` (exit
+  1, the finding that triggers the prompt); the same script against the fixed
+  tree printed `codes: [ "ruleset-read-failed" ]` (exit 0). The scratch script
+  and worktree were removed after the run
 - **regression test** —
   `worker/deno/tests/milestone_ruleset_read_test.ts::checkMilestoneRuleset - an unreadable state is reported as unreadable, never as missing`
   and
@@ -142,14 +142,14 @@ The issue's "Accepted scope so far" bullets are treated as the stated criteria.
   `GRQ-insiders`, `GRQ-listing`, `GRQ-commodities`, `GRQ-dividends`), whose
   default branch takes direct pushes: the question there can only ever be
   refused. It does not conflict with the "keep asking while missing" criterion,
-  which governs a *declined* answer, not an unanswerable question
+  which governs a _declined_ answer, not an unanswerable question
 - **unrequested** — reading the rulesets once per repository and passing them
   into `checkMilestoneRuleset` — reviewer: unrequested — reason: kept. It is
   what makes the offer, the findings and the auto-merge check assess one state;
   three independent reads could disagree about whether the ruleset exists, which
   is the defect class this issue is about
 - **unrequested** — `fetchRulesetDetails` removed rather than deprecated —
-  reviewer: unrequested — reason: kept. Its empty-list-on-failure contract *is*
+  reviewer: unrequested — reason: kept. Its empty-list-on-failure contract _is_
   the defect; leaving it in place leaves the footgun loaded. Repo-wide grep
   confirms no other callers
 - **unrequested** — a successful creation no longer skips the "legacy classic
@@ -166,15 +166,16 @@ The issue's "Accepted scope so far" bullets are treated as the stated criteria.
   `worker/deno/lib/milestone_ruleset_check.ts:389` — reason: fixed in `a885fc9`;
   an empty body is now a failure, covered by
   `readRulesetDetails - an empty list body is a failure, not an empty repository`
-- **violation** — a summary with no id was dropped with `continue`, contradicting
-  the function's own "the one that could not be read may be the milestone
-  ruleset" reasoning (swallowed error) — evidence:
+- **violation** — a summary with no id was dropped with `continue`,
+  contradicting the function's own "the one that could not be read may be the
+  milestone ruleset" reasoning (swallowed error) — evidence:
   `worker/deno/lib/milestone_ruleset_check.ts:411` — reason: fixed in `a885fc9`;
-  covered by `readRulesetDetails - a summary with no id fails rather than being skipped`
+  covered by
+  `readRulesetDetails - a summary with no id fails rather than being skipped`
 - **violation** — the docstring asserted the offer and the write "can never
-  disagree", but the write re-reads under a different identity (comment
-  accuracy / DRY) — evidence: `worker/deno/setup/setup_cli.ts:942-944` — reason:
-  fixed in `a885fc9`; the docstring now states the re-read is deliberate and why
+  disagree", but the write re-reads under a different identity (comment accuracy
+  / DRY) — evidence: `worker/deno/setup/setup_cli.ts:942-944` — reason: fixed in
+  `a885fc9`; the docstring now states the re-read is deliberate and why
 - **violation** — a repo with nothing to mirror printed two lines that read as
   contradictory: "no check set to mirror" beside "add a ruleset with required
   status checks" (DRY / per-run noise for the repos the issue named) — evidence:
@@ -189,8 +190,8 @@ The issue's "Accepted scope so far" bullets are treated as the stated criteria.
   five tests driving it
 - **violation** — a source-text grep test guarded the write's identity, which
   this change had just relocated (TDD rule: no tests that grep source) —
-  evidence: `worker/deno/tests/milestone_ruleset_check_test.ts:366-380` — reason:
-  fixed in `a885fc9`; replaced by
+  evidence: `worker/deno/tests/milestone_ruleset_check_test.ts:366-380` —
+  reason: fixed in `a885fc9`; replaced by
   `reportMilestoneRuleset - answering yes creates under the OPERATOR identity`,
   which runs the code. Documented in place and in the commit message
 - **violation** — a copied "Australian English spelling throughout (behaviour,
@@ -203,9 +204,9 @@ The issue's "Accepted scope so far" bullets are treated as the stated criteria.
   substantive commits `758233e` and `a885fc9` both cite Issue #678 and carry the
   `Vibe-Coder-Run-Id` trailer
 - **clean** — Australian English in all new prose, identifiers and messages;
-  commit safety (no hidden path staged, no `git add -f`, no `--no-verify`); tests
-  drive real exports through injected seams and assert on returned values, never
-  source text; fail-loud on every read path; `RulesetRead` follows the
+  commit safety (no hidden path staged, no `git add -f`, no `--no-verify`);
+  tests drive real exports through injected seams and assert on returned values,
+  never source text; fail-loud on every read path; `RulesetRead` follows the
   documented `Result`-shaped discriminated union; `deno fmt`, `deno lint`,
   `deno check` and `markdownlint-cli2` clean; `docs/SETUP.md` updated alongside
   the code with no stale `fetchRulesetDetails` reference anywhere
@@ -220,8 +221,9 @@ The issue's "Accepted scope so far" bullets are treated as the stated criteria.
   organisation-inherited ruleset is fetched from the org endpoint rather than
   404ing the whole read.
 - `checkMilestoneRuleset` — an unreadable state yields `ruleset-read-failed` and
-  never `no-milestone-ruleset`; an existing milestone ruleset is detected through
-  the read path; caller-supplied rulesets are reused without a second read.
+  never `no-milestone-ruleset`; an existing milestone ruleset is detected
+  through the read path; caller-supplied rulesets are reused without a second
+  read.
 - `planMilestoneRuleset` — `covered`, `creatable` (with the mirrored contexts),
   and `not-creatable` for a repository with no mirrorable gate or no rulesets.
 - `createMilestoneRuleset` — an unreadable ruleset list fails loud instead of

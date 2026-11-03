@@ -2,22 +2,22 @@
 
 ## Summary
 
-The `secret-assignment` redaction rule masked the line *after* any prose line
-ending in a credential-ish label. Its separator — `["']?\s*[=:]\s*` — spans
-line breaks, so a sentence ending in `credential:` adopted the next non-blank
-line as the assignment's value. When that line was a Mermaid fence, the fence
-itself was published as `***REDACTED***` and the diagram
-`CODING-STANDARDS.md` requires stopped rendering in the PR body.
+The `secret-assignment` redaction rule masked the line _after_ any prose line
+ending in a credential-ish label. Its separator — `["']?\s*[=:]\s*` — spans line
+breaks, so a sentence ending in `credential:` adopted the next non-blank line as
+the assignment's value. When that line was a Mermaid fence, the fence itself was
+published as `***REDACTED***` and the diagram `CODING-STANDARDS.md` requires
+stopped rendering in the PR body.
 
-The fix is entirely on the value side, as the issue asks — the label side of
-the rule stays as blunt as it was, because it is catching real secrets.
+The fix is entirely on the value side, as the issue asks — the label side of the
+rule stays as blunt as it was, because it is catching real secrets.
 `isCredentialShapedValue(value, sameLine)` runs before the substitution, and
 **only judges a value the separator reached across a line break**:
 
 - An **inline** assignment is masked exactly as it always was.
-- Across a line break, **complete** Markdown is never a credential: a fence
-  line (three or more backticks or tildes plus at most a language tag), or a
-  closed inline image. Both match the *whole* value, never a prefix.
+- Across a line break, **complete** Markdown is never a credential: a fence line
+  (three or more backticks or tildes plus at most a language tag), or a closed
+  inline image. Both match the _whole_ value, never a prefix.
 - Anything else across a line break needs at least eight characters and a shape
   that is not a single word without a digit, symbol or internal capital.
 
@@ -44,9 +44,11 @@ flowchart TD
     A[Pool] --> B[Selected credential]
 ```
 
-and the prose variant, `"How a spawn picks a credential:\n\n***REDACTED*** pool
-ranks every candidate.\n"`. After the fix both are returned byte-for-byte
-unchanged, and `containsSecret` on the Mermaid body goes from `true` to `false`.
+and the prose variant,
+`"How a spawn picks a credential:\n\n***REDACTED*** pool
+ranks every candidate.\n"`.
+After the fix both are returned byte-for-byte unchanged, and `containsSecret` on
+the Mermaid body goes from `true` to `false`.
 
 Where the judgement sits in the pass:
 
@@ -83,17 +85,17 @@ token on the line after a label is still masked — the fence beside it survives
 
 ## Adversarial review of the first cut
 
-The first cut of this change was reviewed by an independent agent given only
-the diff, with one instruction: find a secret that *was* masked and no longer
-is. It found five, all now fixed and each pinned by a test:
+The first cut of this change was reviewed by an independent agent given only the
+diff, with one instruction: find a secret that _was_ masked and no longer is. It
+found five, all now fixed and each pinned by a test:
 
-| Finding | Fix |
-|---|---|
-| Excluding a Markdown **prefix** on **any** line turned the chokepoint off — `AWS_SECRET_ACCESS_KEY: ` + fence + a 40-character key was published verbatim | The exclusion matches a **complete** fence or image, and is consulted only across a line break |
-| An unbounded plain-word test read any all-letters value as prose however long — `correcthorsebatterystaple` escaped | The word test is length-bounded at 15 characters |
-| The emphasis strip's unanchored `[*_]+$` was quadratic and reachable from an issue body: 160 KB cost **10.7 s** on the worker's only thread | Bounded to at most three markers; 512 KB now costs 4.6 ms |
-| Detecting by running **every** rule's `replace` and comparing silently narrowed `pem-body-block`, whose callback legitimately returns its input unchanged | Only the assignment rule consults its value predicate; the rest keep their pattern scan |
-| The length floor ran on the emphasis-stripped scalar, so `**hunter7**` fell under it | The floor is measured on the whole value |
+| Finding                                                                                                                                                   | Fix                                                                                            |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Excluding a Markdown **prefix** on **any** line turned the chokepoint off — `AWS_SECRET_ACCESS_KEY:` + fence + a 40-character key was published verbatim  | The exclusion matches a **complete** fence or image, and is consulted only across a line break |
+| An unbounded plain-word test read any all-letters value as prose however long — `correcthorsebatterystaple` escaped                                       | The word test is length-bounded at 15 characters                                               |
+| The emphasis strip's unanchored `[*_]+$` was quadratic and reachable from an issue body: 160 KB cost **10.7 s** on the worker's only thread               | Bounded to at most three markers; 512 KB now costs 4.6 ms                                      |
+| Detecting by running **every** rule's `replace` and comparing silently narrowed `pem-body-block`, whose callback legitimately returns its input unchanged | Only the assignment rule consults its value predicate; the rest keep their pattern scan        |
+| The length floor ran on the emphasis-stripped scalar, so `**hunter7**` fell under it                                                                      | The floor is measured on the whole value                                                       |
 
 The review also confirmed clean: no `lastIndex` carry-over in the rewritten
 detection, and no super-linearity in the other three new patterns.
@@ -103,7 +105,8 @@ detection, and no super-linearity in the other three new patterns.
 The rule now masks strictly less, so the cost is named rather than buried, and
 it is **one rule**: a credential shorter than eight characters, or one whose
 emphasis-stripped value is a single lower-case word, sitting alone on the line
-**after** its label. `worker/deno/tests/secret_redaction_markdown_1727_test.ts::Issue #1727 - the accepted cost is one rule, and it is only this`
+**after** its label.
+`worker/deno/tests/secret_redaction_markdown_1727_test.ts::Issue #1727 - the accepted cost is one rule, and it is only this`
 pins it so it cannot widen unnoticed.
 
 An inline assignment is masked exactly as before, a quoted value of any length
@@ -120,8 +123,8 @@ span, which is the same class of defect as the fence this issue is about.
   `redactGhBodyArgs`, `containsSecret`) plus the predicate's own boundaries:
   - the Issue #1726 Mermaid body survives every chokepoint byte-for-byte;
   - seven label spellings × three gaps (including CRLF) keep the fence;
-  - ten Markdown shapes and seven prose sentences after a trailing label
-    survive redaction;
+  - ten Markdown shapes and seven prose sentences after a trailing label survive
+    redaction;
   - **a fence must not smuggle a secret**, inline or across a line break — six
     inline and three cross-line shapes carrying an AWS key, an ImgBB key or a
     short password stay masked;
@@ -136,10 +139,10 @@ span, which is the same class of defect as the fence this issue is about.
   - detection carries no `lastIndex` between calls;
   - the accepted cost is exactly the one rule above.
 - Added two behavioural super-linearity regressions to
-  `worker/deno/tests/secret_redaction_redos_test.ts` (its documented
-  convention: no stopwatch — feed 512 KB of the adversarial shape and assert
-  the output, because a quadratic strip does not overrun a budget, it does not
-  return). No existing test in that file was changed.
+  `worker/deno/tests/secret_redaction_redos_test.ts` (its documented convention:
+  no stopwatch — feed 512 KB of the adversarial shape and assert the output,
+  because a quadratic strip does not overrun a budget, it does not return). No
+  existing test in that file was changed.
 - Re-ran the 192 existing tests across the redaction suite — all pass
   unmodified. **No existing test was changed, commented out or removed.**
 - Measured `containsSecret` throughput old vs new on a 140 KB input, with and
@@ -154,6 +157,6 @@ span, which is the same class of defect as the fence this issue is about.
   split.
 - The predicate lives in `secret_redaction.ts` rather than its own module
   because a new `worker/deno/lib/` module must be claimed by a slice in the
-  chunk-12 security-sweep ledger (`docs/audits/lib-sweep-coverage.json`), and
-  no sweep has read this code — claiming it would record a sweep that never
+  chunk-12 security-sweep ledger (`docs/audits/lib-sweep-coverage.json`), and no
+  sweep has read this code — claiming it would record a sweep that never
   happened.

@@ -4,21 +4,21 @@ Closes #2952
 
 ## Summary
 
-The issue prompt's docs step only said "if your changes affect usage", so
-fleet PRs that removed or changed behaviour left `docs/` manuals stale. Step 3
-of `prompts/issue/prompt.md` and the `pr_feedback` prompt now say that any
-change which adds, changes or removes behaviour, a field, a UI element or a
-setting owes a docs change. Before committing, the run greps `README.md`,
-`docs/` (excluding `docs/archive/`) and every `*/README.md` for each removed or
-changed name and for the removed user-visible wording, then fixes every hit.
-Every PR summary now carries a one-line **Docs sweep** record.
+The issue prompt's docs step only said "if your changes affect usage", so fleet
+PRs that removed or changed behaviour left `docs/` manuals stale. Step 3 of
+`prompts/issue/prompt.md` and the `pr_feedback` prompt now say that any change
+which adds, changes or removes behaviour, a field, a UI element or a setting
+owes a docs change. Before committing, the run greps `README.md`, `docs/`
+(excluding `docs/archive/`) and every `*/README.md` for each removed or changed
+name and for the removed user-visible wording, then fixes every hit. Every PR
+summary now carries a one-line **Docs sweep** record.
 
 - [x] Issue prompt step 3: broadened trigger, grep sweep, link to **A Code
       Change Owes a Docs Change**
-- [x] Issue prompt PR Summary File: **Docs sweep** line under Evidence, with
-      an example
-- [x] `pr_feedback` prompt: the same sweep for fixes, and a refreshed
-      **Docs sweep** line
+- [x] Issue prompt PR Summary File: **Docs sweep** line under Evidence, with an
+      example
+- [x] `pr_feedback` prompt: the same sweep for fixes, and a refreshed **Docs
+      sweep** line
 - [x] `CODING-STANDARDS.md` and `docs/PROMPTS.md` describe the new contract
 - [x] Prompt contract test
 

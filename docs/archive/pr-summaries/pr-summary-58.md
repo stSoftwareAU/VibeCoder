@@ -16,11 +16,13 @@ cannot fit another repair, stops cleanly and reports the untouched offenders as
 
 What changed:
 
-- `repairFailureDetectionSections()` (`worker/deno/lib/failure_detection_repair.ts`)
-  gains optional `deadlineMs` (absolute epoch-ms), an injected `now: () =>
-  number`, and `repairCostEstimateMs` (default `DEFAULT_REPAIR_COST_ESTIMATE_MS`
-  = 2 min) — injected-dependency shaped like the existing `ghCommandFn` /
-  `runClaude` / `logger`, so the budget is unit-testable with no timers.
+- `repairFailureDetectionSections()`
+  (`worker/deno/lib/failure_detection_repair.ts`) gains optional `deadlineMs`
+  (absolute epoch-ms), an injected `now: () =>
+  number`, and
+  `repairCostEstimateMs` (default `DEFAULT_REPAIR_COST_ESTIMATE_MS` = 2 min) —
+  injected-dependency shaped like the existing `ghCommandFn` / `runClaude` /
+  `logger`, so the budget is unit-testable with no timers.
 - `FailureDetectionRepairResult` gains `deferred: FailureDetectionOffender[]`,
   documented as "never attempted — out of budget" and deliberately distinct from
   `stillOffending` ("the model tried and could not produce a passing section").
@@ -109,10 +111,11 @@ New cases in `worker/deno/tests/failure_detection_repair_test.ts`:
 New case in `worker/deno/tests/planning_processor_test.ts`:
 
 - `a spent handler deadline defers the Failure-Detection repair instead of
-  starting it` — sets `ctx.handlerDeadlineEpochMs` in the past and asserts no
-  repair prompt ever reaches Claude, no sub-issue is edited, and the run still
-  fails loudly with both offenders named — proving the deadline is threaded from
-  the processor through to the repair.
+  starting it`
+  — sets `ctx.handlerDeadlineEpochMs` in the past and asserts no repair prompt
+  ever reaches Claude, no sub-issue is edited, and the run still fails loudly
+  with both offenders named — proving the deadline is threaded from the
+  processor through to the repair.
 
 Docs: `docs/workflows/planning-and-questions.md` gains the deadline-awareness
 section and an updated Mermaid flow.

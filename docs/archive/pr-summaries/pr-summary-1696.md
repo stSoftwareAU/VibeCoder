@@ -2,10 +2,10 @@
 
 ## Summary
 
-Give every coding-agent provider the same quota ranker, scope a usage
-cooldown to the vendor that ran out, rank multiple Codex accounts
-without sharing their secrets, and keep cross-provider failover
-**opt-in and off** for the production fleet.
+Give every coding-agent provider the same quota ranker, scope a usage cooldown
+to the vendor that ran out, rank multiple Codex accounts without sharing their
+secrets, and keep cross-provider failover **opt-in and off** for the production
+fleet.
 
 ```mermaid
 flowchart LR
@@ -15,10 +15,7 @@ flowchart LR
     D --> E["#1703 conformance"]
 ```
 
-Closes #1696.
-Closes #1698.
-Closes #1700.
-Closes #1703.
+Closes #1696. Closes #1698. Closes #1700. Closes #1703.
 
 ## What changed
 
@@ -31,5 +28,5 @@ Closes #1703.
 
 ## Out of scope
 
-Parent #1694 stays open until this lands and the remaining limitations
-in the runbook are accepted. Live Codex smoke stays opt-in and off CI.
+Parent #1694 stays open until this lands and the remaining limitations in the
+runbook are accepted. Live Codex smoke stays opt-in and off CI.

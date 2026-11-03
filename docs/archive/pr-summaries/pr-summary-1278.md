@@ -8,12 +8,14 @@ one: the bare string `"eof"`, which is short enough to match **inside an
 ordinary word** — `typeof`, `codeof`, or any `e o f` run in an error message.
 
 That is a fail-open classifier. On a match, `worker/deno/lib/run_core.ts` logs
-"the network failed, not the worker", returns `buildResult("Transient network
-failure")`, and skips **both** `deps.sendCrashNotification(message)` and
-`fatalError = true`. As `run_core.ts` states in place, without the crash flag
-"the launcher records a clean run and the host neither backs off nor
-escalates" — so a genuinely broken worker whose fatal error message happened to
-contain `eof` crash-looped indefinitely with no notification and no backoff.
+"the network failed, not the worker", returns
+`buildResult("Transient network
+failure")`, and skips **both**
+`deps.sendCrashNotification(message)` and `fatalError = true`. As `run_core.ts`
+states in place, without the crash flag "the launcher records a clean run and
+the host neither backs off nor escalates" — so a genuinely broken worker whose
+fatal error message happened to contain `eof` crash-looped indefinitely with no
+notification and no backoff.
 
 The fix moves that one short entry out of the substring list and into a new
 `TRANSIENT_NETWORK_WORD_PATTERNS` list matched with `/\beof\b/`. The multi-word
@@ -62,27 +64,30 @@ flowchart TD
 
 ### Original trigger closed, no trivial bypass
 
-The trigger was *any* fatal error message containing `eof` as a substring. The
+The trigger was _any_ fatal error message containing `eof` as a substring. The
 only pattern that could fire on a sub-word match was `"eof"`; it is now matched
 by `/\beof\b/` against the same lower-cased haystack, so `typeof`, `codeof` and
 any other message where `eof` is preceded or followed by a word character no
 longer classify as transient — they fall through to the crash path that sends
 the notification and sets `fatalError`. No equivalent bypass exists: every
 remaining entry in `TRANSIENT_NETWORK_PATTERNS` is a multi-word phrase
-containing a space, a slash or a distinctive ≥8-character token
-(`econnrefused`, `etimedout`, `eai_again`, …), none of which can appear inside
-an ordinary English or identifier word. The reverse direction is preserved and
-covered by a test — a standalone `EOF` token, the truncated-response-body case
-the entry exists for, is still classified transient.
+containing a space, a slash or a distinctive ≥8-character token (`econnrefused`,
+`etimedout`, `eai_again`, …), none of which can appear inside an ordinary
+English or identifier word. The reverse direction is preserved and covered by a
+test — a standalone `EOF` token, the truncated-response-body case the entry
+exists for, is still classified transient.
 
 ## Test Plan
 
-- Added `worker/deno/tests/transient_network_failure_test.ts::isTransientNetworkFailure - 'eof' inside an ordinary word is NOT transient`
-  — the regression test. It reproduces the flaw (`TypeError: Cannot read
-  properties of undefined (reading 'typeof')` classified transient), **fails
-  against the unfixed code** and **passes after the fix**, exactly as shown in
-  Evidence above.
-- Added `worker/deno/tests/transient_network_failure_test.ts::isTransientNetworkFailure - a standalone EOF token is still transient`
+- Added
+  `worker/deno/tests/transient_network_failure_test.ts::isTransientNetworkFailure - 'eof' inside an ordinary word is NOT transient`
+  — the regression test. It reproduces the flaw
+  (`TypeError: Cannot read
+  properties of undefined (reading 'typeof')`
+  classified transient), **fails against the unfixed code** and **passes after
+  the fix**, exactly as shown in Evidence above.
+- Added
+  `worker/deno/tests/transient_network_failure_test.ts::isTransientNetworkFailure - a standalone EOF token is still transient`
   — guards the other direction, so the word-boundary change does not lose the
   bare-EOF case the pattern was added for.
 - No existing tests were modified or removed. The whole file plus

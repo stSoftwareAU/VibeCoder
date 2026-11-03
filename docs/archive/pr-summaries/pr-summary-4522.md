@@ -6,8 +6,8 @@ run no longer reverts it as unrelated. Closes #4522.
 
 - `prompts/pr_review_brief/prompt.md` step 2: the worker's bump commit is "not
   unrelated: it is part of the PR, so do not ask for it to be reverted as
-  unrelated to the issue". It remains subject to correctness review, as does
-  the existing audit-fix change.
+  unrelated to the issue". It remains subject to correctness review, as does the
+  existing audit-fix change.
 - `prompts/coding_guidelines/prompt.md` ("Dependency Bumps and Supply Chain"):
   the dangling "see." now says the bump commit is part of the PR.
 
@@ -45,10 +45,10 @@ Prompt-only change. The commit subject comes from `buildBumpCommitMessage` in
   passed, 0 failed).
 - Red check: with both prompt edits reverted, both new tests fail.
 - Review fix: restricted the revert instruction to scope and anchored the
-  correctness-review clauses in both `pr_review_brief_own_bump_4522_test.ts`
-  and `pr_review_brief_audit_fix_4435_test.ts` to their respective rules.
-  Both test files passed after the review fix (4 passed, 0 failed).
-  Related rules checked: the #4435 audit exemption in the same step and
-  `prompts/ci_fix/prompt.md` "Dependency audit failures"; they agree.
+  correctness-review clauses in both `pr_review_brief_own_bump_4522_test.ts` and
+  `pr_review_brief_audit_fix_4435_test.ts` to their respective rules. Both test
+  files passed after the review fix (4 passed, 0 failed). Related rules checked:
+  the #4435 audit exemption in the same step and `prompts/ci_fix/prompt.md`
+  "Dependency audit failures"; they agree.
 
 <!-- vibe-quality-gate-skipped reason="full ./quality.sh exceeded the 500s bound; CI runs it" -->

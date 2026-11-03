@@ -20,20 +20,20 @@ A PR therefore cannot weaken its own checklist. A PR that edits
 `review-checklists.json` is judged against the base version, and the edit takes
 effect once it merges, except when either copy is broken (see the table below).
 
-When the changed files include `review-checklists.json` (or the list is unknown),
-both consumers also read the change's own copy (`git show <headSha>:…` in the
-verifier, the contents API at the PR's head SHA in the fleet gate), so a broken
-file can neither merge nor strand the repo. One shared function,
+When the changed files include `review-checklists.json` (or the list is
+unknown), both consumers also read the change's own copy (`git show <headSha>:…`
+in the verifier, the contents API at the PR's head SHA in the fleet gate), so a
+broken file can neither merge nor strand the repo. One shared function,
 `effectiveChecklistLoad`, decides which copy applies:
 
-| Base copy               | Change's copy                | Judged on                                              |
-| ----------------------- | ---------------------------- | ------------------------------------------------------ |
-| any                     | not touched by the change    | the base copy                                          |
-| absent or valid         | valid, absent or weakened    | the base copy (a change cannot weaken its checklist)   |
-| any                     | malformed or unreadable      | the change's copy: a blocking finding naming the error |
-| malformed or unreadable | valid                        | the change's copy: the change is the repair            |
-| malformed or unreadable | removes the file             | no checklist: the change is the repair                 |
-| fetch failed (either)   | any                          | retried / "not checked", as for any failed fetch       |
+| Base copy               | Change's copy             | Judged on                                              |
+| ----------------------- | ------------------------- | ------------------------------------------------------ |
+| any                     | not touched by the change | the base copy                                          |
+| absent or valid         | valid, absent or weakened | the base copy (a change cannot weaken its checklist)   |
+| any                     | malformed or unreadable   | the change's copy: a blocking finding naming the error |
+| malformed or unreadable | valid                     | the change's copy: the change is the repair            |
+| malformed or unreadable | removes the file          | no checklist: the change is the repair                 |
+| fetch failed (either)   | any                       | retried / "not checked", as for any failed fetch       |
 
 ## Format
 
@@ -179,12 +179,12 @@ appears; then open one touching no listed path and confirm it does not.
 
 The same brief also carries the capability checks from
 [`prompts/coding_guidelines/capability-security.json`](../prompts/coding_guidelines/capability-security.json)
-when the change's task, entry points, imports, callers or sinks match one.
-They are rendered into `{{REVIEW_CHECKLISTS}}` and use the same `checklist`
-verdict contract. The fleet reviewer and the pre-PR verifier render the same
-items. The trusted base copy governs, so a pull request cannot weaken the
-checks used to review it. A bundle that cannot be read is retried
-(`capability-unreadable` on the gate, not-checked on the verifier), not a
-clean review and not a finding charged to an unrelated change. A change that
-breaks the bundle is a blocking finding on that file. See
+when the change's task, entry points, imports, callers or sinks match one. They
+are rendered into `{{REVIEW_CHECKLISTS}}` and use the same `checklist` verdict
+contract. The fleet reviewer and the pre-PR verifier render the same items. The
+trusted base copy governs, so a pull request cannot weaken the checks used to
+review it. A bundle that cannot be read is retried (`capability-unreadable` on
+the gate, not-checked on the verifier), not a clean review and not a finding
+charged to an unrelated change. A change that breaks the bundle is a blocking
+finding on that file. See
 [Capability-scoped security guidance](CAPABILITY-SECURITY-GUIDANCE.md).

@@ -39,8 +39,8 @@ Two supporting fixes fell out of the same work:
 - **`gh`-call attribution is async-scoped.** The process-wide
   `enterPriority`/`exitPriority` stack was exact only while priorities ran one
   after another; with the lane running beside the pool it would cross-credit.
-  `withPriorityContext()` binds the priority to the async chain instead, with
-  an explicit stack entry still winning so nested `enterPriority` keeps
+  `withPriorityContext()` binds the priority to the async chain instead, with an
+  explicit stack entry still winning so nested `enterPriority` keeps
   innermost-wins.
 
 A shutdown bounds the lane exactly as it bounds the pool's drain: no new pass
@@ -96,8 +96,8 @@ running those four files on a clean `main` worktree: the same
 
 New — `worker/deno/tests/run_core_maintenance_lane_test.ts`:
 
-- the dispatch table marks exactly the four repo-clone agent passes lane-eligible
-  and leaves planning serial;
+- the dispatch table marks exactly the four repo-clone agent passes
+  lane-eligible and leaves planning serial;
 - a slow CI fix no longer delays the pool — issue work runs while the CI-fix
   agent is still going (the acceptance criterion);
 - a lane pass and an issue slot never work one clone at once;

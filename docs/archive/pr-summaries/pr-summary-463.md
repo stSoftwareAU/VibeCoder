@@ -81,7 +81,7 @@ Added `worker/deno/tests/dependency_conflict_json_test.ts` (27 tests), covering
 every acceptance criterion:
 
 - `^1.0.0` vs `^1.2.0` in `imports` resolves to `^1.2.0` with the higher version
-  on *either* side.
+  on _either_ side.
 - Each side bumping a different dependency in one hunk keeps both bumps; a
   dependency added on one side only is kept.
 - A `scopes` conflict resolves; multiple hunks in one file all resolve.

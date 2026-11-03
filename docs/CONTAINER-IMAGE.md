@@ -1,114 +1,117 @@
 # 📦 Vibe Coder worker image
 
-Design rationale for `container/Containerfile`. The prose lives
-here rather than in the Containerfile because Apple `container` rejects
-Dockerfiles over 16384 bytes (apple/container) — and within a few bytes of
-that cap the build fails with an unexplained `Stream unexpectedly closed`
-instead of the named error. `worker/deno/tests/container_manifest_test.ts`
-enforces a size margin on the Containerfile; keep new commentary here.
+Design rationale for `container/Containerfile`. The prose lives here rather than
+in the Containerfile because Apple `container` rejects Dockerfiles over 16384
+bytes (apple/container) — and within a few bytes of that cap the build fails
+with an unexplained `Stream unexpectedly closed` instead of the named error.
+`worker/deno/tests/container_manifest_test.ts` enforces a size margin on the
+Containerfile; keep new commentary here.
 
 ## Supply-chain posture
 
 Standard OCI instructions only, so the file builds identically under Apple
 `container`, `docker build` and `podman build`. Every version installed is
-pinned in `container/tools.json`; `container_manifest_test.ts` fails the
-quality gate when the two drift apart. Both base images are registry-qualified
+pinned in `container/tools.json`; `container_manifest_test.ts` fails the quality
+gate when the two drift apart. Both base images are registry-qualified
 (`docker.io/library/ruby`, `docker.io/denoland/deno`) — Docker guesses Docker
 Hub for a short name, but Podman's default `short-name-mode = "enforcing"`
 refuses to, so an unqualified reference fails to build on a fresh host with no
-`unqualified-search-registries` (Issue #728). They are pinned by
-immutable digest and every downloaded tool is verified against a recorded
-SHA-256, so nothing in the build resolves to "whatever upstream published
-most recently". Tarballs from npm are downloaded and checksum-verified first,
-then installed from the local file with `--ignore-scripts` — `npm install
-<name>@<version>` would take upstream's word for the bytes and run lifecycle
-scripts as root.
+`unqualified-search-registries` (Issue #728). They are pinned by immutable
+digest and every downloaded tool is verified against a recorded SHA-256, so
+nothing in the build resolves to "whatever upstream published most recently".
+Tarballs from npm are downloaded and checksum-verified first, then installed
+from the local file with `--ignore-scripts` — `npm install
+<name>@<version>`
+would take upstream's word for the bytes and run lifecycle scripts as root.
 
 ## Base image
 
 The base is the official Ruby image (itself built on `buildpack-deps:trixie`)
 for two historical reasons: the Pages scripts under `.github/scripts/*.rb`
-needed ruby >= 3.1 for `Psych.safe_load_file`
-— those scripts went with the publishing pipeline in Issue #1344, and moving
-off the Ruby base is tracked in Issue #1376 — and git >= 2.41 is required for
-`--end-of-options` to be dropped from argv rather than taken as a revision. The image already ships
-bash, GNU coreutils (so `timeout` resolves without the macOS `gtimeout`
-fallback), git, curl and ca-certificates, which is why there is no
-package-manager install step to rot.
+needed ruby >= 3.1 for `Psych.safe_load_file` — those scripts went with the
+publishing pipeline in Issue #1344, and moving off the Ruby base is tracked in
+Issue #1376 — and git >= 2.41 is required for `--end-of-options` to be dropped
+from argv rather than taken as a revision. The image already ships bash, GNU
+coreutils (so `timeout` resolves without the macOS `gtimeout` fallback), git,
+curl and ca-certificates, which is why there is no package-manager install step
+to rot.
 
 ## Layer order
 
-Node.js is installed ahead of the coding-agent provider layer because a
-provider whose CLI ships as a JavaScript bundle needs the runtime at install
-time. The monitored-repository toolchains come last of the install steps: the
+Node.js is installed ahead of the coding-agent provider layer because a provider
+whose CLI ships as a JavaScript bundle needs the runtime at install time. The
+monitored-repository toolchains come last of the install steps: the
 worker-runtime layers above are untouched by a toolchain bump, so bumping a
-version reuses their cache. Within that block the order is least-to-most
-churn — the static analysers move rarely; Rust moves every few weeks and is
-the largest download, so it sits last and a Rust bump rebuilds only itself.
+version reuses their cache. Within that block the order is least-to-most churn —
+the static analysers move rarely; Rust moves every few weeks and is the largest
+download, so it sits last and a Rust bump rebuilds only itself.
 
-The fetch-verify-extract toolchains in that block are **fragments**
-(Issue #1594): `COPY toolchains/*.sh` puts them in the image, then
+The fetch-verify-extract toolchains in that block are **fragments** (Issue
+#1594): `COPY toolchains/*.sh` puts them in the image, then
 `RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci`
 and a separate `RUN … rust` install them, so the two layers keep the
 least-to-most-churn split while the Containerfile carries ids instead of `ARG`
-blocks. `markdownlint-cli2`, `cspell` and `graft` sit between the two runs, unchanged —
-all are installed from npm, not fetched and extracted, and all are after the
-Node/npm layer they depend on rather than immediately after it, so bumping
-either reuses the provider and fragment layers' cache. The Rust run removes the
-installer and the fragments once it is done, so none of them survive into the
-finished image.
+blocks. `markdownlint-cli2`, `cspell` and `graft` sit between the two runs,
+unchanged — all are installed from npm, not fetched and extracted, and all are
+after the Node/npm layer they depend on rather than immediately after it, so
+bumping either reuses the provider and fragment layers' cache. The Rust run
+removes the installer and the fragments once it is done, so none of them survive
+into the finished image.
 
 `RTK_TELEMETRY_DISABLED=1` and `RTK_SUPPRESS_HOOK_WARNING=1` are set image-wide
 before that first run (Issue #2381), as `POWERSHELL_TELEMETRY_OPTOUT` is. RTK
 does not honour `DO_NOT_TRACK`, so telemetry needs its own switch, and the
-binary honours that one. The second asks for RTK's daily missing-hook warning
-to stay off stderr — noise in a container where the hook reaches the agent CLI
+binary honours that one. The second asks for RTK's daily missing-hook warning to
+stay off stderr — noise in a container where the hook reaches the agent CLI
 through an explicit `--settings` path rather than the CLI's own user settings
 file. v0.49.0 read no such variable (it throttled the warning by a stamp file
-under RTK's data dir); the 1.0.1 binary the image now pins does reference
-it. Setting both before the install keeps the fragment's own
-`rtk --version` probe quiet too.
+under RTK's data dir); the 1.0.1 binary the image now pins does reference it.
+Setting both before the install keeps the fragment's own `rtk --version` probe
+quiet too.
 
 `floci` is the one fragment whose binary is copied out of a container image
 rather than downloaded (Issue #3367, parent #3346): floci publishes no
-standalone release binary, so the Containerfile declares `ARG
+standalone release binary, so the Containerfile declares
+`ARG
 FLOCI_IMAGE=docker.io/floci/floci:2.3.0@sha256:e0b292df4dc9559b7b1bf4f51bdda4bb8e269276236438cd03cae661260ea8a9`,
 adds a `FROM ${FLOCI_IMAGE}
-AS floci` stage, and `COPY --from=floci /app/application
-/tmp/floci-application` pulls that image's native Quarkus binary — which links
-only libc — into the build. The fragment verifies it against the per-architecture
-sha256 recorded in `container/tools.json`, installs it to
-`/usr/local/lib/floci/application`, and writes a `/usr/local/bin/floci`
-wrapper, because the native binary has no `--version` flag of its own —
-passing one would start the server instead of reporting a version — so the
-wrapper answers `--version` with `floci 2.3.0` itself and execs straight
-through for every other invocation. The build then runs a bounded smoke
-check: start floci in the background bound to `127.0.0.1`, `curl --retry …
---retry-connrefused` against `http://127.0.0.1:4566/`, log the HTTP status,
-fail the build on no response, stop the process, and remove the copied
-binary. `container/entrypoint.sh` does not start floci; it exists for the
-worker's own runs as the LocalStack drop-in on port 4566, and whatever needs
-it starts it.
+AS floci` stage, and
+`COPY --from=floci /app/application
+/tmp/floci-application` pulls that image's
+native Quarkus binary — which links only libc — into the build. The fragment
+verifies it against the per-architecture sha256 recorded in
+`container/tools.json`, installs it to `/usr/local/lib/floci/application`, and
+writes a `/usr/local/bin/floci` wrapper, because the native binary has no
+`--version` flag of its own — passing one would start the server instead of
+reporting a version — so the wrapper answers `--version` with `floci 2.3.0`
+itself and execs straight through for every other invocation. The build then
+runs a bounded smoke check: start floci in the background bound to `127.0.0.1`,
+`curl --retry …
+--retry-connrefused` against `http://127.0.0.1:4566/`, log the
+HTTP status, fail the build on no response, stop the process, and remove the
+copied binary. `container/entrypoint.sh` does not start floci; it exists for the
+worker's own runs as the LocalStack drop-in on port 4566, and whatever needs it
+starts it.
 
 ## Node and npm
 
-Node and npm are pinned as two separate toolchains. The Node tarball bundles
-an npm of its own — 11.17.0 for Node 24.19.0 — so before Issue #475 the image
-carried whatever the runtime shipped and every build logged npm's
-"New major version available" notice. `container/tools.json` now gives `npm`
-its own entry, and the build installs that tarball over the bundled copy after
-verifying its checksum, so exactly one pin owns the `npm` command.
+Node and npm are pinned as two separate toolchains. The Node tarball bundles an
+npm of its own — 11.17.0 for Node 24.19.0 — so before Issue #475 the image
+carried whatever the runtime shipped and every build logged npm's "New major
+version available" notice. `container/tools.json` now gives `npm` its own entry,
+and the build installs that tarball over the bundled copy after verifying its
+checksum, so exactly one pin owns the `npm` command.
 
-Every layer that runs `npm install -g` points `npm_config_cache` at
-`/tmp/npmc` and deletes that directory in the same `RUN` (Issue #1015). The
-layer is exactly as small as it was when each of the three layers ended with a
-cache-clean instead, and the build log is three lines shorter: modern npm
-refuses to empty its cache without the protections-off flag and warns whenever
-it is given one, so those three warnings fired on every build, for ever, and
-trained the operator to skim the log that is the first thing read when an image
-build fails. At run time the entrypoint repoints `npm_config_cache` at the
-durable state root, so the image-level default only ever applies during the
-build and in the degraded no-durable-root path.
+Every layer that runs `npm install -g` points `npm_config_cache` at `/tmp/npmc`
+and deletes that directory in the same `RUN` (Issue #1015). The layer is exactly
+as small as it was when each of the three layers ended with a cache-clean
+instead, and the build log is three lines shorter: modern npm refuses to empty
+its cache without the protections-off flag and warns whenever it is given one,
+so those three warnings fired on every build, for ever, and trained the operator
+to skim the log that is the first thing read when an image build fails. At run
+time the entrypoint repoints `npm_config_cache` at the durable state root, so
+the image-level default only ever applies during the build and in the degraded
+no-durable-root path.
 
 The two are still coupled: npm 12 declares
 `engines.node: ^22.22.2 || ^24.15.0 || >=26.0.0`, so a `NODE_VERSION` bump has
@@ -133,60 +136,59 @@ what differs per architecture is **compiled here, not downloaded**.
 
 That compile is the part no other layer has. `--ignore-scripts` suppressed the
 lifecycle scripts that would have built the native modules, so the layer
-rebuilds by name the seven with no usable linux prebuild — tree-sitter core
-and the `go`, `java`, `javascript`, `typescript`, `python` and `kotlin`
-grammars — with `CXXFLAGS=-std=c++20`. Graft's remaining grammars ship working
-prebuilds and are deliberately left alone. Naming the seven is what keeps the
-rest of the tree's scripts suppressed: npm 12 blocks install scripts unless
-`--allow-scripts` names the package, and the allow-list is derived from the
-same shell variable the rebuild list comes from, so the two cannot drift.
+rebuilds by name the seven with no usable linux prebuild — tree-sitter core and
+the `go`, `java`, `javascript`, `typescript`, `python` and `kotlin` grammars —
+with `CXXFLAGS=-std=c++20`. Graft's remaining grammars ship working prebuilds
+and are deliberately left alone. Naming the seven is what keeps the rest of the
+tree's scripts suppressed: npm 12 blocks install scripts unless
+`--allow-scripts` names the package, and the allow-list is derived from the same
+shell variable the rebuild list comes from, so the two cannot drift.
 
 That naming is also the change's one new build-time exposure, and it is
 deliberate. The `sha256` pins the Graft tarball; its dependencies resolve from
-the registry, so `--allow-scripts` grants those resolved packages code
-execution as root during the build — something `markdownlint-cli2`'s layer,
-which stops at `--ignore-scripts`, never does. Seven named packages is the
-smallest list that compiles what Graft needs, which is why the allow-list names
-them rather than being dropped altogether.
+the registry, so `--allow-scripts` grants those resolved packages code execution
+as root during the build — something `markdownlint-cli2`'s layer, which stops at
+`--ignore-scripts`, never does. Seven named packages is the smallest list that
+compiles what Graft needs, which is why the allow-list names them rather than
+being dropped altogether.
 
 Three properties make that step trustworthy:
 
 - **One code path, no `uname` branch — and it really compiles on both.** The
-  rebuild is load-bearing on arm64: tree-sitter core, `python` and `kotlin`
-  ship no linux-arm64 prebuild, and `go`, `java`, `javascript` and
-  `typescript` ship x86-64 binaries mislabelled linux-arm64 (upstream
-  trailhq/Graft#119). Running the same step on amd64 is not by itself enough:
-  each grammar's install script is `node-gyp-build`, which compiles only when
-  the prebuild it finds will not load, and six of the seven ship a **valid**
-  linux-x64 prebuild — so an amd64 build would prove nothing about the C++20
-  compile. `node-gyp-build`'s own `bin.js` skips that check outright when
-  `npm_config_build_from_source` is `true`, which is what makes the compile
-  unconditional, so a C++20 or header regression fails **every** build rather
-  than only the Mac M-series one. Measured on linux/arm64 (Node 24.19.0, g++
-  14.2): the install is about 5 s and the seven forced compiles about 16 s.
-  Without the rebuild all seven fail to load on that architecture: core,
-  `python` and `kotlin` report `No native build was found`, and each of the
-  other four has a `linux-arm64` prebuild that `file` reports as an
-  `ELF 64-bit LSB shared object, x86-64`.
-- **Nothing is fetched.** `npm_config_nodedir=/usr/local` points node-gyp at
-  the headers the Node layer already extracted, so no header tarball is
-  downloaded and no `~/.cache/node-gyp` is created. npm 12 knows neither
-  `nodedir` nor `build-from-source` as one of its own settings and prints an
+  rebuild is load-bearing on arm64: tree-sitter core, `python` and `kotlin` ship
+  no linux-arm64 prebuild, and `go`, `java`, `javascript` and `typescript` ship
+  x86-64 binaries mislabelled linux-arm64 (upstream trailhq/Graft#119). Running
+  the same step on amd64 is not by itself enough: each grammar's install script
+  is `node-gyp-build`, which compiles only when the prebuild it finds will not
+  load, and six of the seven ship a **valid** linux-x64 prebuild — so an amd64
+  build would prove nothing about the C++20 compile. `node-gyp-build`'s own
+  `bin.js` skips that check outright when `npm_config_build_from_source` is
+  `true`, which is what makes the compile unconditional, so a C++20 or header
+  regression fails **every** build rather than only the Mac M-series one.
+  Measured on linux/arm64 (Node 24.19.0, g++ 14.2): the install is about 5 s and
+  the seven forced compiles about 16 s. Without the rebuild all seven fail to
+  load on that architecture: core, `python` and `kotlin` report
+  `No native build was found`, and each of the other four has a `linux-arm64`
+  prebuild that `file` reports as an `ELF 64-bit LSB shared object, x86-64`.
+- **Nothing is fetched.** `npm_config_nodedir=/usr/local` points node-gyp at the
+  headers the Node layer already extracted, so no header tarball is downloaded
+  and no `~/.cache/node-gyp` is created. npm 12 knows neither `nodedir` nor
+  `build-from-source` as one of its own settings and prints an
   `Unknown env config` warning for each; node-gyp and node-gyp-build read both
-  from the environment regardless, and stating them explicitly is what makes
-  the offline compile a guarantee rather than a side-effect of node-gyp's
-  header discovery.
-- **The rebuild is proven, not assumed.** A no-op rebuild is silent: npm
-  reports `rebuilt dependencies successfully` for a run whose scripts it
-  blocked, and `graft --version` is pure JavaScript that loads no grammar, so
-  both would pass over an image whose grammars cannot load. The layer therefore
-  `require`s all seven modules through the image's own Node before it probes
-  the version, which turns that case into a failed build.
+  from the environment regardless, and stating them explicitly is what makes the
+  offline compile a guarantee rather than a side-effect of node-gyp's header
+  discovery.
+- **The rebuild is proven, not assumed.** A no-op rebuild is silent: npm reports
+  `rebuilt dependencies successfully` for a run whose scripts it blocked, and
+  `graft --version` is pure JavaScript that loads no grammar, so both would pass
+  over an image whose grammars cannot load. The layer therefore `require`s all
+  seven modules through the image's own Node before it probes the version, which
+  turns that case into a failed build.
 
 `DO_NOT_TRACK=1` is set image-wide, as `POWERSHELL_TELEMETRY_OPTOUT` is, so
-neither the build's probe nor the start-up self-check's own `graft --version`
-on a fleet host sends a usage ping. The probe reads the version into a variable
-and compares it to the pin rather than piping into `grep`: without `pipefail` a
+neither the build's probe nor the start-up self-check's own `graft --version` on
+a fleet host sends a usage ping. The probe reads the version into a variable and
+compares it to the pin rather than piping into `grep`: without `pipefail` a
 pipeline reports only the last command's status, so a `graft` that printed the
 right version and then failed would have been swallowed into a green layer.
 
@@ -195,25 +197,24 @@ self-check probes it with no `versionArgs` and no code change.
 
 ## Coding-agent providers
 
-The providers are a separable layer selected as a comma-separated *set*
-(quorum mode needs several agent CLIs in one image): the build runs one
-fragment from `container/providers/` per requested id, in order. Adding a
-provider means adding a fragment plus a `container/tools.json` `providers`
-entry — the base definition does not change. An empty list, a malformed or
-duplicate id, an id with no fragment, or a failing fragment aborts the build
-loudly, naming the fragments that do exist (`install-providers.sh`,
-). The default set is the manifest's `installedProviders`
-(gate-checked), and the set is part of the hashed definition, so changing it
-changes the image tag rather than reusing a tag whose contents
-differ.
+The providers are a separable layer selected as a comma-separated _set_ (quorum
+mode needs several agent CLIs in one image): the build runs one fragment from
+`container/providers/` per requested id, in order. Adding a provider means
+adding a fragment plus a `container/tools.json` `providers` entry — the base
+definition does not change. An empty list, a malformed or duplicate id, an id
+with no fragment, or a failing fragment aborts the build loudly, naming the
+fragments that do exist (`install-providers.sh`, ). The default set is the
+manifest's `installedProviders` (gate-checked), and the set is part of the
+hashed definition, so changing it changes the image tag rather than reusing a
+tag whose contents differ.
 
 The launchers pass the deployment's own set (Issue #729). The launch plan
 resolves `.config.json`'s `agent_providers` **once** — the same resolution that
-decides which credential directories are mounted — and carries it into the
-build as `--build-arg AGENT_PROVIDERS=<ids>`, so a Codex-only configuration
-builds a Codex image instead of taking the Claude default. That value is mixed
-into the image tag as well, so a host that switches providers rebuilds rather
-than reusing an image with the wrong agents baked in. A set that is already the
+decides which credential directories are mounted — and carries it into the build
+as `--build-arg AGENT_PROVIDERS=<ids>`, so a Codex-only configuration builds a
+Codex image instead of taking the Claude default. That value is mixed into the
+image tag as well, so a host that switches providers rebuilds rather than
+reusing an image with the wrong agents baked in. A set that is already the
 manifest's `installedProviders` passes no argument and hashes nothing extra, so
 the default fleet build and its tag are byte-for-byte unchanged.
 
@@ -229,27 +230,27 @@ flowchart LR
 
 `COPY providers/*.sh` is a glob, not a bare directory COPY, because Apple
 container 1.2.2's builder silently materialises `COPY providers
-/tmp/providers` (and the trailing-slash form) as an empty directory; the glob
-copies the fragments correctly on every runtime.
+/tmp/providers`
+(and the trailing-slash form) as an empty directory; the glob copies the
+fragments correctly on every runtime.
 
 ## Rust toolchain
 
-The standalone rust-lang distribution is installed into `/usr/local` rather
-than via rustup, so there is no per-user toolchain directory and nothing to
-update at run time. The combined `rust-<version>` package carries only
-rustc/cargo/rust-std (rust-docs is dropped to keep the layer smaller);
-rustfmt and clippy are separate component packages, each with its own pinned
-checksum. Since Issue #1594 that install lives in
-`container/toolchains/rust.sh`, which reads the version and all six checksums
-from `container/tools.json`. `QUALITY_SKIP_RUST_UPDATE=1` stops
-private-repo-9's gate running `rustup update stable` — the image owns its
-toolchain. When this pin falls behind the `rust-version` of a monitored
-crate's own workspace package, the milestone merge and resolution gates name
-the gap — installed versus required rustc, the packages that demand the newer
-one, and `container/tools.json` as the pin to raise — rather than sending the
-failure to the agent rung for a repair round it can never win (Issue #3255).
-A refusal naming only dependencies is fixable in `Cargo.lock`, so it is still
-offered a repair round.
+The standalone rust-lang distribution is installed into `/usr/local` rather than
+via rustup, so there is no per-user toolchain directory and nothing to update at
+run time. The combined `rust-<version>` package carries only
+rustc/cargo/rust-std (rust-docs is dropped to keep the layer smaller); rustfmt
+and clippy are separate component packages, each with its own pinned checksum.
+Since Issue #1594 that install lives in `container/toolchains/rust.sh`, which
+reads the version and all six checksums from `container/tools.json`.
+`QUALITY_SKIP_RUST_UPDATE=1` stops private-repo-9's gate running
+`rustup update stable` — the image owns its toolchain. When this pin falls
+behind the `rust-version` of a monitored crate's own workspace package, the
+milestone merge and resolution gates name the gap — installed versus required
+rustc, the packages that demand the newer one, and `container/tools.json` as the
+pin to raise — rather than sending the failure to the agent rung for a repair
+round it can never win (Issue #3255). A refusal naming only dependencies is
+fixable in `Cargo.lock`, so it is still offered a repair round.
 
 ## semgrep
 
@@ -279,157 +280,152 @@ install is not the usual "download one checksum-verified binary":
 
 - The wheel goes into its own virtualenv at `/opt/semgrep`, with
   `/usr/local/bin/semgrep` a symlink onto it. The base image's system
-  interpreter is PEP 668 *externally managed*, and a virtualenv keeps
-  semgrep's ~30 dependencies out of it entirely.
+  interpreter is PEP 668 _externally managed_, and a virtualenv keeps semgrep's
+  ~30 dependencies out of it entirely.
 - `pip` is a pinned artefact in its own right (`tools` in
   `container/tools.json`): the base ships no `ensurepip`, so the installer is
   downloaded as a checksum-verified wheel and run straight from that file as a
-  zipapp. Nothing installs pip *into* the image.
+  zipapp. Nothing installs pip _into_ the image.
 - Both wheels are fetched by **pinned URL with `curl`**, like every other
   artefact in the file, and the committed `amd64` / `arm64` digest is verified
   **before** anything is installed — the wheels differ per architecture because
   each bundles its own `semgrep-core`. Until Issue #1016 the semgrep wheel was
-  the one download the build asked a *resolver* for (`pip download`), and so
-  the one outside the shared `CURL_RETRY` policy: a build on 2026-09-04 dropped
-  its connection halfway through the 72 MB body and recovered on pip's own
-  resume, with a warning as the only evidence it had happened. The URL embeds
-  the wheel's compatibility-tag string, which `files.pythonhosted.org` also
-  uses as its path segment, so that string is bumped with `SEMGREP_VERSION`; a
-  stale one 404s the fetch rather than installing the wrong bytes, and the
-  `sha256sum -c -` is what makes fetching by URL safe. Only semgrep's
-  dependency wheels come from the index unverified, the same residual risk
+  the one download the build asked a _resolver_ for (`pip download`), and so the
+  one outside the shared `CURL_RETRY` policy: a build on 2026-09-04 dropped its
+  connection halfway through the 72 MB body and recovered on pip's own resume,
+  with a warning as the only evidence it had happened. The URL embeds the
+  wheel's compatibility-tag string, which `files.pythonhosted.org` also uses as
+  its path segment, so that string is bumped with `SEMGREP_VERSION`; a stale one
+  404s the fetch rather than installing the wrong bytes, and the
+  `sha256sum -c -` is what makes fetching by URL safe. Only semgrep's dependency
+  wheels come from the index unverified, the same residual risk
   `playwright-core install --with-deps` carries for its apt set.
-- The step ends by asserting `semgrep --version` reports `SEMGREP_VERSION`, so
-  a drifted or half-installed toolchain fails the build rather than the first
-  gate run. `SEMGREP_ENABLE_VERSION_CHECK=0` keeps an unattended container from
+- The step ends by asserting `semgrep --version` reports `SEMGREP_VERSION`, so a
+  drifted or half-installed toolchain fails the build rather than the first gate
+  run. `SEMGREP_ENABLE_VERSION_CHECK=0` keeps an unattended container from
   making an upgrade-check round trip on every invocation.
 
-**Image-size cost: about 350 MB**, ~260 MB of which is the `semgrep-core`
-binary the wheel bundles. That is the largest single toolchain in the image and
-it was a deliberate trade: the alternative is every fleet agent discovering
-`p/default` findings in CI instead of before the push. The stage scans changed
-files only, so the run-time cost stays small even though the install is large.
+**Image-size cost: about 350 MB**, ~260 MB of which is the `semgrep-core` binary
+the wheel bundles. That is the largest single toolchain in the image and it was
+a deliberate trade: the alternative is every fleet agent discovering `p/default`
+findings in CI instead of before the push. The stage scans changed files only,
+so the run-time cost stays small even though the install is large.
 
 `codespell` follows the same venv pattern for the same reason (Issue #1595): a
 pure-Python console script with no standalone binary, so
 `container/toolchains/codespell.sh` fetches the pinned `pip` and the pinned
 `py3-none-any` wheel by `files.pythonhosted.org` URL, verifies both digests,
-installs into `/opt/codespell` off the externally-managed system interpreter
-and symlinks `/usr/local/bin/codespell`. Two differences: one `noarch` digest
-covers both architectures (nothing compiled is bundled), and the install is
-`--no-deps`, because codespell 2.4.3 declares no required runtime dependencies
-— so unlike semgrep it leaves no unverified wheel coming from the index. Its
-cost is a few megabytes rather than 350.
+installs into `/opt/codespell` off the externally-managed system interpreter and
+symlinks `/usr/local/bin/codespell`. Two differences: one `noarch` digest covers
+both architectures (nothing compiled is bundled), and the install is
+`--no-deps`, because codespell 2.4.3 declares no required runtime dependencies —
+so unlike semgrep it leaves no unverified wheel coming from the index. Its cost
+is a few megabytes rather than 350.
 
 `pyyaml` is the one wheel that is **not** installed into a venv (Issue #1628).
 Its consumer is the image's own interpreter — NEAT-AI-core's BATS suites parse
 workflow YAML with `python3 -c "import yaml"`, and 31 of them failed here with
 `ModuleNotFoundError` once bats-core made those suites execute — so a
 `/opt/<tool>` virtualenv would never satisfy it.
-`container/toolchains/pyyaml.sh` fetches the pinned `pip` and the pinned
-wheel, verifies both digests, then installs with `pip --target` into the
-directory `sysconfig.get_path("purelib")` reports: the interpreter's own admin
-install location, already on its `sys.path`. `--target` is also what keeps the
-PEP 668 externally-managed environment untouched — the wheel lands beside it,
-not in it — and virtualenvs created later do not inherit that directory, so
-nothing here shadows semgrep's or codespell's pinned dependencies. PyYAML
-bundles a C extension, so the digest is per-architecture and the wheel name
-carries the `cp<major><minor>` interpreter tag; the fragment derives that tag
-and the target directory from the running `python3`, so a base-image
-interpreter bump 404s the fetch rather than installing bytes the manifest
-never pinned. Its cost is under a megabyte.
+`container/toolchains/pyyaml.sh` fetches the pinned `pip` and the pinned wheel,
+verifies both digests, then installs with `pip --target` into the directory
+`sysconfig.get_path("purelib")` reports: the interpreter's own admin install
+location, already on its `sys.path`. `--target` is also what keeps the PEP 668
+externally-managed environment untouched — the wheel lands beside it, not in it
+— and virtualenvs created later do not inherit that directory, so nothing here
+shadows semgrep's or codespell's pinned dependencies. PyYAML bundles a C
+extension, so the digest is per-architecture and the wheel name carries the
+`cp<major><minor>` interpreter tag; the fragment derives that tag and the target
+directory from the running `python3`, so a base-image interpreter bump 404s the
+fetch rather than installing bytes the manifest never pinned. Its cost is under
+a megabyte.
 
 ## Playwright + headless Chromium
 
 The worker captures PR evidence through the Playwright MCP server, and a
-contained worker has no host browser or desktop session to borrow, so
-Chromium is installed at build time into `PLAYWRIGHT_BROWSERS_PATH` — nothing
-downloads a browser at container start or mid-run. `PLAYWRIGHT_VERSION` is
-not a free choice: it is exactly the version `@playwright/mcp` depends on,
-because Playwright resolves browsers as `chromium-<revision>` and each
-release pins its own revision; the gate fails when the pin drifts from
+contained worker has no host browser or desktop session to borrow, so Chromium
+is installed at build time into `PLAYWRIGHT_BROWSERS_PATH` — nothing downloads a
+browser at container start or mid-run. `PLAYWRIGHT_VERSION` is not a free
+choice: it is exactly the version `@playwright/mcp` depends on, because
+Playwright resolves browsers as `chromium-<revision>` and each release pins its
+own revision; the gate fails when the pin drifts from
 `PLAYWRIGHT_INSTALLER_VERSION` in `worker/deno/setup/screenshot.ts`.
-`install chromium` resolves to three artefacts, not one
-(Issues #274, #3256): the Chromium zip, the chromium-headless-shell
-zip — the binary a default `chromium.launch()` with no
-`executablePath` actually uses, as in
-`container-build.yml`'s "Capture a screenshot with headless Chromium
-inside the image" step — and ffmpeg, which Playwright installs with every
-browser, so `--no-shell` would not remove it. Playwright 1.61 on Debian
-Trixie fetches Chrome for Testing builds of Chromium and
-chromium-headless-shell on amd64, and its own chromium /
-chromium-headless-shell revisions on arm64. Each zip is downloaded,
-SHA-256 verified against `chromium_*`, `headless_shell_*` and `ffmpeg_*`
-in `container/tools.json`, and extracted into `chromium-<revision>`,
+`install chromium` resolves to three artefacts, not one (Issues #274, #3256):
+the Chromium zip, the chromium-headless-shell zip — the binary a default
+`chromium.launch()` with no `executablePath` actually uses, as in
+`container-build.yml`'s "Capture a screenshot with headless Chromium inside the
+image" step — and ffmpeg, which Playwright installs with every browser, so
+`--no-shell` would not remove it. Playwright 1.61 on Debian Trixie fetches
+Chrome for Testing builds of Chromium and chromium-headless-shell on amd64, and
+its own chromium / chromium-headless-shell revisions on arm64. Each zip is
+downloaded, SHA-256 verified against `chromium_*`, `headless_shell_*` and
+`ffmpeg_*` in `container/tools.json`, and extracted into `chromium-<revision>`,
 `chromium_headless_shell-<revision>` and `ffmpeg-<revision>` respectively
-*before* `playwright-core install --with-deps chromium` runs, so the
-installer sees `INSTALLATION_COMPLETE` for each and downloads none of
-them. `--with-deps` still apt-installs the system-library and font set
-Playwright itself declares. Those Debian packages stay unpinned:
-the list is large, security updates move the versions, and pinning them
-would break the next point release. Residual risk is Debian's signed apt
-repos on the digest-pinned trixie base. Because Playwright only warns when
-it does not recognise a distribution, the build then launches the browser
-and renders a page: a missing library fails the build rather than the first
-screenshot.
+_before_ `playwright-core install --with-deps chromium` runs, so the installer
+sees `INSTALLATION_COMPLETE` for each and downloads none of them. `--with-deps`
+still apt-installs the system-library and font set Playwright itself declares.
+Those Debian packages stay unpinned: the list is large, security updates move
+the versions, and pinning them would break the next point release. Residual risk
+is Debian's signed apt repos on the digest-pinned trixie base. Because
+Playwright only warns when it does not recognise a distribution, the build then
+launches the browser and renders a page: a missing library fails the build
+rather than the first screenshot.
 
-The image also exports `CHROMIUM_PATH=/usr/local/bin/chromium`, a symlink to
-the baked Chrome binary under `PLAYWRIGHT_BROWSERS_PATH` (Issue #3250):
-`chromium-<revision>`'s executable sits at a version-specific path, nothing
-else puts it on `PATH`, and agents' e2e scripts resolve the browser with
-`executablePath: Deno.env.get("CHROMIUM_PATH")` — without the symlink that
-call resolves to nothing. The Containerfile's own build-time smoke test and
-the `container-build.yml` "Verify the baked Playwright and headless
-Chromium" step both launch Chromium through
-`executablePath: process.env.CHROMIUM_PATH`, so a dangling or unset
-`CHROMIUM_PATH` fails the build or CI rather than the first e2e run. The gate
-is `findBrowserInstallViolations` in `worker/deno/lib/container_manifest.ts`,
-which fails when the `Containerfile` never sets `ENV CHROMIUM_PATH`, never
-links it to a baked binary, or never proves the link by launching through it;
-`findChromiumPathVerifyViolations` in the same module separately fails when
-the workflow's verify step drops any of its three CHROMIUM_PATH checks.
+The image also exports `CHROMIUM_PATH=/usr/local/bin/chromium`, a symlink to the
+baked Chrome binary under `PLAYWRIGHT_BROWSERS_PATH` (Issue #3250):
+`chromium-<revision>`'s executable sits at a version-specific path, nothing else
+puts it on `PATH`, and agents' e2e scripts resolve the browser with
+`executablePath: Deno.env.get("CHROMIUM_PATH")` — without the symlink that call
+resolves to nothing. The Containerfile's own build-time smoke test and the
+`container-build.yml` "Verify the baked Playwright and headless Chromium" step
+both launch Chromium through `executablePath: process.env.CHROMIUM_PATH`, so a
+dangling or unset `CHROMIUM_PATH` fails the build or CI rather than the first
+e2e run. The gate is `findBrowserInstallViolations` in
+`worker/deno/lib/container_manifest.ts`, which fails when the `Containerfile`
+never sets `ENV CHROMIUM_PATH`, never links it to a baked binary, or never
+proves the link by launching through it; `findChromiumPathVerifyViolations` in
+the same module separately fails when the workflow's verify step drops any of
+its three CHROMIUM_PATH checks.
 
 ## Pre-warmed Deno cache
 
-The MCP server itself is launched as `deno run --no-config --no-lock
-npm:@playwright/mcp@<pin>` — the two flags stop it from reading or writing
-the product checkout's `deno.json` / `deno.lock` (Issue #3020) — and Deno
-resolves that package, with its own copy of `playwright-core`, into the
-*Deno* npm cache, not the global npm install above. Left alone,
-that meant a mid-run download from npm on every fresh workspace volume (or
-after the cache guard wiped it), and a registry blip broke screenshots for
-the run. The image therefore carries a pre-warmed Deno cache at
+The MCP server itself is launched as
+`deno run --no-config --no-lock
+npm:@playwright/mcp@<pin>` — the two flags stop
+it from reading or writing the product checkout's `deno.json` / `deno.lock`
+(Issue #3020) — and Deno resolves that package, with its own copy of
+`playwright-core`, into the _Deno_ npm cache, not the global npm install above.
+Left alone, that meant a mid-run download from npm on every fresh workspace
+volume (or after the cache guard wiped it), and a registry blip broke
+screenshots for the run. The image therefore carries a pre-warmed Deno cache at
 `VIBE_DENO_SEED_DIR` (`/opt/deno-seed`): the build runs `deno cache` for
-`container/deno-seed/seed.ts` against `container/deno-seed/deno.json` and
-its lockfile — `@playwright/mcp` at `PLAYWRIGHT_MCP_VERSION`, plus the
-worker's own JSR dependencies at the versions `worker/deno/deno.lock` pins —
-fails if the lock would change (every tarball's integrity is pinned), and
-proves the result with `deno run --cached-only`. At container start the
-entrypoint copies whatever the durable volume cache lacks from the seed
-(never overwriting what is there), so a cold cache needs no npm or jsr.io
-round trip. The list of missing files it builds for that copy is a private
-temporary file under `${DENO_DIR}/.seed-tmp` — a 0700 directory on the
-durable volume, never world-writable `/tmp` — and when no such file can be
-created safely the seed step warns and startup continues unseeded rather
-than writing through whatever is at the path (Issue #1522).
-`worker/deno/tests/container_manifest_test.ts` fails the gate
-when the seed's pins drift from `screenshot.ts`, the Containerfile ARG or
-the worker lock, and Container Build drives the MCP server from the seed
-with `--network none`.
+`container/deno-seed/seed.ts` against `container/deno-seed/deno.json` and its
+lockfile — `@playwright/mcp` at `PLAYWRIGHT_MCP_VERSION`, plus the worker's own
+JSR dependencies at the versions `worker/deno/deno.lock` pins — fails if the
+lock would change (every tarball's integrity is pinned), and proves the result
+with `deno run --cached-only`. At container start the entrypoint copies whatever
+the durable volume cache lacks from the seed (never overwriting what is there),
+so a cold cache needs no npm or jsr.io round trip. The list of missing files it
+builds for that copy is a private temporary file under `${DENO_DIR}/.seed-tmp` —
+a 0700 directory on the durable volume, never world-writable `/tmp` — and when
+no such file can be created safely the seed step warns and startup continues
+unseeded rather than writing through whatever is at the path (Issue #1522).
+`worker/deno/tests/container_manifest_test.ts` fails the gate when the seed's
+pins drift from `screenshot.ts`, the Containerfile ARG or the worker lock, and
+Container Build drives the MCP server from the seed with `--network none`.
 
 ## Deployer-supplied build-time tools
 
-A deployment whose monitored repositories need a toolchain the fleet image
-does not carry declares it in
-`.config.json` as `container_tools`. The build takes that validated array as
-the `VIBE_CONTAINER_TOOLS` build argument, writes it to a spec file and runs
-`container/install-tools.sh` over it, which downloads, SHA-256 verifies and
-extracts each entry under `/opt/vibe-tools/<id>`. The whole set is validated
-before anything is downloaded, and any fault — a bad id, a missing digest for
-the build architecture, an unsupported archive extension, a checksum mismatch
-— aborts the build naming the tool, rather than producing an image that
-silently lacks it. The spec shape, a worked example and the
-checksum rules a deployer needs are in
+A deployment whose monitored repositories need a toolchain the fleet image does
+not carry declares it in `.config.json` as `container_tools`. The build takes
+that validated array as the `VIBE_CONTAINER_TOOLS` build argument, writes it to
+a spec file and runs `container/install-tools.sh` over it, which downloads,
+SHA-256 verifies and extracts each entry under `/opt/vibe-tools/<id>`. The whole
+set is validated before anything is downloaded, and any fault — a bad id, a
+missing digest for the build architecture, an unsupported archive extension, a
+checksum mismatch — aborts the build naming the tool, rather than producing an
+image that silently lacks it. The spec shape, a worked example and the checksum
+rules a deployer needs are in
 [Container Image](CONTAINER.md#deployer-supplied-build-time-tools).
 
 ```mermaid
@@ -442,45 +438,44 @@ flowchart LR
     style N fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-The block is **one fixed-size step whatever the tool count** — the script
-loops over the spec, so no tool adds a `RUN` and nothing pushes the
-Containerfile towards Apple `container`'s cap. An absent or empty argument
-writes an empty spec, runs nothing and leaves nothing behind, so a deployment
-that selects no extra tools pays nothing.
+The block is **one fixed-size step whatever the tool count** — the script loops
+over the spec, so no tool adds a `RUN` and nothing pushes the Containerfile
+towards Apple `container`'s cap. An absent or empty argument writes an empty
+spec, runs nothing and leaves nothing behind, so a deployment that selects no
+extra tools pays nothing.
 
 The selection is part of the image's **identity**, not just its build: the tag
 `container-image-hash` prints mixes in a canonical serialisation of the
 validated spec (see
 [Image identity](CONTAINER.md#image-identity--the-tag-is-the-definitions-hash)),
-so a host that selects extra tools cannot be satisfied by another host's
-cached tools-free image.
+so a host that selects extra tools cannot be satisfied by another host's cached
+tools-free image.
 
-These archives are deliberately *not* in `container/tools.json`: they are the
+These archives are deliberately _not_ in `container/tools.json`: they are the
 deployment's, pinned by the digests it declared, not the fleet's. That is the
-single allowance in the parity gate — `findContainerfileViolations` reports
-any *other* build step that downloads without verifying a checksum in the same
-step, and reports this one too if the spec comes from anywhere but
-`${VIBE_CONTAINER_TOOLS}`, if the argument defaults to a non-empty selection,
-or if the argument is declared and never acted on. `install-tools.sh` is part
-of the hashed definition, so editing it changes the image tag.
+single allowance in the parity gate — `findContainerfileViolations` reports any
+_other_ build step that downloads without verifying a checksum in the same step,
+and reports this one too if the spec comes from anywhere but
+`${VIBE_CONTAINER_TOOLS}`, if the argument defaults to a non-empty selection, or
+if the argument is declared and never acted on. `install-tools.sh` is part of
+the hashed definition, so editing it changes the image tag.
 
 ## The deployment's private layer — a second build
 
 A deployment that declares `container_extension` in `.config.json` gets **two**
 builds rather than one: this image exactly as every host builds it, tagged
 `vibe-coder:<baseHash>`, and then the operator's own Containerfile built on top
-of it as `vibe-coder:<extensionHash>` — the tag the container actually runs.
-The layer is handed the base as `--build-arg VIBE_BASE_IMAGE`, its build
-context is the operator's extension directory alone, and a Containerfile that
-does not derive `FROM ${VIBE_BASE_IMAGE}` is refused before either build runs,
-so "layered on the standard image" is a guarantee rather than a comment. A
-failed first build never reaches the second, and either failure aborts the
-launch.
+of it as `vibe-coder:<extensionHash>` — the tag the container actually runs. The
+layer is handed the base as `--build-arg VIBE_BASE_IMAGE`, its build context is
+the operator's extension directory alone, and a Containerfile that does not
+derive `FROM ${VIBE_BASE_IMAGE}` is refused before either build runs, so
+"layered on the standard image" is a guarantee rather than a comment. A failed
+first build never reaches the second, and either failure aborts the launch.
 
-The layer changes what the image *contains*, never what the container may
-*reach*: no host path is mounted into the build, no port is published, and the
-run arguments are the same contained set. The extension directory's contents
-are hashed into `<extensionHash>`, so changing any file under it rebuilds and
+The layer changes what the image _contains_, never what the container may
+_reach_: no host path is mounted into the build, no port is published, and the
+run arguments are the same contained set. The extension directory's contents are
+hashed into `<extensionHash>`, so changing any file under it rebuilds and
 changing nothing does not. The operator's manual, with a worked example, is
 [Container Extension](CONTAINER-EXTENSION.md).
 
@@ -495,24 +490,24 @@ flowchart LR
 
 ## Built from a comment-stripped copy
 
-Apple `container` rejects a Dockerfile over 16,384 bytes (apple/container),
-and `container/Containerfile` is mostly the comments that make its pins
-reviewable. So nothing builds from the committed file directly: the launch
-plan (`container-launch-plan`) writes a comment-stripped copy beside its plan
-file and points `--file` at it (the build context stays `container/`), and
-Container Build does the same through `mod.ts strip-containerfile`. The
-strip removes comment lines and blank lines only — the Dockerfile parser
-discards both itself, continuations included, so the build is byte-for-byte
-the same recipe — and keeps `# syntax=`/`# escape=` directives at the top.
-`tests/containerfile_strip_test.ts` caps the *stripped* text at 14,600 bytes;
+Apple `container` rejects a Dockerfile over 16,384 bytes (apple/container), and
+`container/Containerfile` is mostly the comments that make its pins reviewable.
+So nothing builds from the committed file directly: the launch plan
+(`container-launch-plan`) writes a comment-stripped copy beside its plan file
+and points `--file` at it (the build context stays `container/`), and Container
+Build does the same through `mod.ts strip-containerfile`. The strip removes
+comment lines and blank lines only — the Dockerfile parser discards both itself,
+continuations included, so the build is byte-for-byte the same recipe — and
+keeps `# syntax=`/`# escape=` directives at the top.
+`tests/containerfile_strip_test.ts` caps the _stripped_ text at 14,600 bytes;
 the readable file may grow.
 
-The real limit is lower than 16,384 bytes. The CLI sends the file
-JSON-escaped, in one request with the build arguments, and drops a request
-that is too large with only `Error: unavailable: "Stream unexpectedly
-closed."`. A host that enables more than one agent provider passes an
-`AGENT_PROVIDERS` build argument, so it fails first: at 15,000 stripped bytes
-GRQ-23 (`claude,deepseek`) could not build while single-provider hosts still
-could. The test also checks the escaped file plus the widest provider list
-against that measured limit, and `container-build-heal` names the dropped
-request instead of retrying it.
+The real limit is lower than 16,384 bytes. The CLI sends the file JSON-escaped,
+in one request with the build arguments, and drops a request that is too large
+with only `Error: unavailable: "Stream unexpectedly
+closed."`. A host that
+enables more than one agent provider passes an `AGENT_PROVIDERS` build argument,
+so it fails first: at 15,000 stripped bytes GRQ-23 (`claude,deepseek`) could not
+build while single-provider hosts still could. The test also checks the escaped
+file plus the widest provider list against that measured limit, and
+`container-build-heal` names the dropped request instead of retrying it.

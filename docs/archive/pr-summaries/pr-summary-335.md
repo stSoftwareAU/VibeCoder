@@ -3,8 +3,8 @@
 ## Summary
 
 The branch-update pass logged each failure and moved on, so the next cycle
-retried the same branch from scratch. One branch in
-`stSoftwareAU/NEAT-AI-core` produced **65 identical**
+retried the same branch from scratch. One branch in `stSoftwareAU/NEAT-AI-core`
+produced **65 identical**
 `Failed to checkout branch 'issue-3832-detect-cycles-linear'` warnings across
 days: nothing counted the repeats, nothing escalated, and the line never named
 git's own failure, so even the sixty-fifth was unactionable.
@@ -16,19 +16,20 @@ This change gives the failure a memory and a voice:
   **one** issue against the repo naming the PR, the branch, the consecutive
   count and the underlying git error. Persistent JSON written atomically,
   marker-deduped on the issue body so two hosts converge on one issue, cleared
-  on the first success. Same shape as `bump_script_failure_streak.ts` (#207)
-  and `idle_inversion_streak.ts` (#321).
+  on the first success. Same shape as `bump_script_failure_streak.ts` (#207) and
+  `idle_inversion_streak.ts` (#321).
 - **Escalated branches are skipped, not retried** — with a bounded re-probe
   every 10 cycles, so a branch that is fixed heals itself instead of staying
   suppressed for ever. Suppression is reported (`suppressedCount`, an info line
   and a per-PR detail), never silent.
 - **`git_pull.ts` now carries git's stderr on every checkout failure.** Two of
   the three checkout sites discarded it entirely; all three now share one
-  `checkoutFailureError()` helper, so the warning names the pathspec, dirty
-  tree or lock file that caused the refusal.
-- Wired into both callers of `executePrBranchUpdates` — `run_core_production_deps.ts`
-  and the `pr_maintenance` command. Omitting the new `failureStreak` dep leaves
-  the pass behaving exactly as before, which one test pins.
+  `checkoutFailureError()` helper, so the warning names the pathspec, dirty tree
+  or lock file that caused the refusal.
+- Wired into both callers of `executePrBranchUpdates` —
+  `run_core_production_deps.ts` and the `pr_maintenance` command. Omitting the
+  new `failureStreak` dep leaves the pass behaving exactly as before, which one
+  test pins.
 
 Counting is per `(repo, branch)`, so one stuck branch never suppresses updates
 for its siblings, and per **cycle**, so a pass that runs twice in one cycle
@@ -82,12 +83,12 @@ stateDiagram-v2
 
 ### Acceptance criteria
 
-| Criterion | Where it is pinned |
-| --- | --- |
+| Criterion                                                            | Where it is pinned                                                                                                                                     |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | N consecutive failing cycles escalate once, not retried indefinitely | `#335 - a permanently failing branch is escalated once, then skipped` — 10 cycles produce 3 update attempts, 1 `gh issue create`, 1 escalation warning |
-| The warning names the underlying git failure | `git_pull_checkout_error_test.ts` — both `updatePrBranch` and `ensurePrMergeable` surface git's `pathspec` stderr |
-| A transient failure that clears escalates nothing | `#335 - a transient failure that clears escalates nothing` — 12 cycles of fail/fail/succeed make zero `gh` calls and leave empty state |
-| The count is per `(repo, branch)` | `#335 - one escalated branch does not suppress its siblings` — the sibling branch is still attempted while the escalated one is skipped |
+| The warning names the underlying git failure                         | `git_pull_checkout_error_test.ts` — both `updatePrBranch` and `ensurePrMergeable` surface git's `pathspec` stderr                                      |
+| A transient failure that clears escalates nothing                    | `#335 - a transient failure that clears escalates nothing` — 12 cycles of fail/fail/succeed make zero `gh` calls and leave empty state                 |
+| The count is per `(repo, branch)`                                    | `#335 - one escalated branch does not suppress its siblings` — the sibling branch is still attempted while the escalated one is skipped                |
 
 ## Test Plan
 

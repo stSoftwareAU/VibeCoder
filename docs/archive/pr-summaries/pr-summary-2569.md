@@ -42,21 +42,20 @@ wired" caveat is removed, and the path counts go from six to ten.
 ## Evidence
 
 This is a backend-only change, so there are no screenshots. Each test below
-drives the real phase entry point with seams for the model, `gh` and the RTK
-and CodeGraph preparers:
+drives the real phase entry point with seams for the model, `gh` and the RTK and
+CodeGraph preparers:
 
 - `worker/deno/tests/phase_accelerators_test.ts` checks the helper:
   - prepares once per run;
   - each accelerator can be switched off on its own;
   - Graft queries are tallied across invocations.
-- The four phase tests below each check the following when the accelerators
-  are on:
+- The four phase tests below each check the following when the accelerators are
+  on:
   - one Graft collection per run, against `${workDir}/repo`;
   - one RTK preparation per run;
   - every spawn carries the bundle, the Graft and CodeGraph lines, both MCP
     servers and the RTK hook, with `cwd` set to `workDir`;
-  - the stats comment carries the Graft, CodeGraph and RTK lines in that
-    order.
+  - the stats comment carries the Graft, CodeGraph and RTK lines in that order.
 
   With the accelerators off, each also checks that the spawn is left
   unaccelerated.

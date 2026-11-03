@@ -5,7 +5,7 @@
 The idle-decision census and the idle-detect audit both model "could the
 Priority 2 scan claim this issue right now?" — and both were missing the one
 gate that never clears by itself. Since Issue #3151 a **merged** fleet PR whose
-title names issue `#N` makes the scan refuse `#N` *permanently*
+title names issue `#N` makes the scan refuse `#N` _permanently_
 (`merged-pr-permanent`); only a trusted author re-applying the pickup label with
 a date after the merge lifts it. Neither instrument knew that, so a single such
 issue held `inversion_signal=true` and `claimable>0` on every cycle, for ever.
@@ -14,7 +14,8 @@ The consequence is not just log noise. The census verdict suppresses the
 idle-task filer (Issue #2813), and after three consecutive cycles Issue #321
 escalates the repo by filing "the claim scan keeps refusing" against it — which
 costs a human a `work-on` label and a whole worker run. Two such issues were
-filed on 2026-08-26 for the same non-fault: this one and `stSoftwareAU/GRQ#4419`.
+filed on 2026-08-26 for the same non-fault: this one and
+`stSoftwareAU/GRQ#4419`.
 
 The live strand: `stSoftwareAU/GRQ#4326` is open, labelled `work-on` since
 2026-08-23T05:18:55Z, unassigned, carrying no blocking label and blocked by no
@@ -36,24 +37,24 @@ Closes #429.
   `mergedPrBlocked` counter. Issues named by a merged fleet PR are excluded from
   `unblocked` (and therefore from `inversionSignal`) and surfaced in the
   `[idle-census]` line as `merged_pr_blocked=<n>`, so the strand stays visible
-  rather than silently dropped. Applied *after* stream occupancy and open-PR
+  rather than silently dropped. Applied _after_ stream occupancy and open-PR
   blocking, matching the existing attribution order.
 - `idle_detect_diagnostics.ts` — new `merged_pr_blocked` exclusion reason, a
   `mergedPRs` classifier input and a `mergedPRsFn` audit option.
-  `pickDominantReason` ranks it above `pr_blocked`: an open PR clears itself when
-  it merges, a merged one never does, so it is the more actionable answer to
-  "why was nothing picked up".
+  `pickDominantReason` ranks it above `pr_blocked`: an open PR clears itself
+  when it merges, a merged one never does, so it is the more actionable answer
+  to "why was nothing picked up".
 - `run_core_production_deps.ts` — one shared `fetchMergedPRsForCensus` helper
   wires both instruments to `fetchRecentlyClosedPRsForFleet` through the
-  iteration-scoped `prs_closed_*` cache the Priority 2 scan already populates, so
-  the gate costs **no** extra API call on a warm iteration.
+  iteration-scoped `prs_closed_*` cache the Priority 2 scan already populates,
+  so the gate costs **no** extra API call on a warm iteration.
 - `docs/IDLE-TASK-FRAMEWORK.md` — the "unblocked" definition, the flowchart and
   the incident record.
 
 ### Two deliberate limits
 
 Both keep the instruments cheap probes rather than a second scan, and both make
-them *under*-count — which at worst files an idle-task while work exists, the
+them _under_-count — which at worst files an idle-task while work exists, the
 bounded-harm direction this module already prefers over starving the filer:
 
 - Only **merged** PRs count. A closed-unmerged PR blocks for a cooldown window
@@ -93,7 +94,7 @@ flowchart LR
 
 - a merged fleet PR permanently blocks the issue it names — the GRQ#4326
   regression, asserting `workOn=0`, `mergedPrBlocked=1`, no inversion
-- a merged PR naming a *different* issue does not block
+- a merged PR naming a _different_ issue does not block
 - a closed-unmerged PR does not raise `mergedPrBlocked`
 - stream occupancy is attributed ahead of a merged PR
 - `idle-task` counts ignore the merged-PR gate

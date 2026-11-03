@@ -160,8 +160,8 @@ supplied by the caller is invisible to it. That is stated here rather than left
 implicit — the gate closes the class as written today, not every spelling of it.
 
 **Closed by #1227.** Both checks now also flag a **variable** binary in any
-module that names the guarded binary at the head of an argv literal and does
-not import the chokepoint. Running the extended scan over `worker/deno/lib` and
+module that names the guarded binary at the head of an argv literal and does not
+import the chokepoint. Running the extended scan over `worker/deno/lib` and
 `worker/deno/commands` surfaced five `gh` evasions (`language_detector.ts`,
 `workflow_auditor.ts`, `repo_visibility.ts`, `recent_activity.ts`,
 `software_updates.ts`) and three `git` ones (`benchmark.ts`,
@@ -203,8 +203,8 @@ Named here so a later sweep does not re-litigate them.
 - **`secrets_history_scan.ts`** — `gitleaks`/`trufflehog` argv is worker-owned
   paths and fixed flags only.
 - **`benchmark.ts` (`runBenchmarkCommand`)** — the runner is generic, but every
-  call site passes fixed literals (`deno check`, `git init/add/commit` against
-  a fixture directory the benchmark itself creates). Its `git` half now routes
+  call site passes fixed literals (`deno check`, `git init/add/commit` against a
+  fixture directory the benchmark itself creates). Its `git` half now routes
   through `runGitCommand` (Issue #1396), so the fixture calls carry the
   chokepoint's timeout, audit journal and work-volume fault detection; the
   remaining direct spawn is the `deno check` step, an operator-invoked
@@ -242,32 +242,34 @@ code for a milestone. `spawnTask` in `milestone_resolution_gate.ts` (the
 repository's `deno task`, `cargo test` or `bash quality.sh`) and
 `spawnTypeCheck` in `milestone_merge_gate.ts` (its `deno task check` or
 `cargo check`) both spawned with the worker's whole environment. They now spawn
-through [`worker/deno/lib/untrusted_gate_spawn.ts`](../../worker/deno/lib/untrusted_gate_spawn.ts):
+through
+[`worker/deno/lib/untrusted_gate_spawn.ts`](../../worker/deno/lib/untrusted_gate_spawn.ts):
 an allowlisted environment, `clearEnv: true`, and no inherited repository
-credential. With an available account, commands stay on `agent`: failed, timed out or unreadable/unwritable access probes
-leave the command to CI through the gates' existing environment-fault path.
-A nested project directory or a manifest replaced by a prior repository task
-cannot select the worker account. Symbolic-link manifests and manifests whose
-uid differs from the worker's are refused before probing.
+credential. With an available account, commands stay on `agent`: failed, timed
+out or unreadable/unwritable access probes leave the command to CI through the
+gates' existing environment-fault path. A nested project directory or a manifest
+replaced by a prior repository task cannot select the worker account.
+Symbolic-link manifests and manifests whose uid differs from the worker's are
+refused before probing.
 
 An unwritable cargo `target` gives `agent` a persistent, per-checkout and
 per-account target through `cargoTargetDirForCheckout`. It uses the configured
-cache root when supplied; otherwise it is under the checkout on the work
-volume, away from memory-backed TMPDIR. It is retained for incremental builds,
-and the gates still consult the heavy-build budget before running cargo.
-The existing trim-refused cache placement and an explicitly named target
-remain authoritative.
+cache root when supplied; otherwise it is under the checkout on the work volume,
+away from memory-backed TMPDIR. It is retained for incremental builds, and the
+gates still consult the heavy-build budget before running cargo. The existing
+trim-refused cache placement and an explicitly named target remain
+authoritative.
 
-Each gate's real default runner has a test that plants a parent credential
-and asserts the child cannot see it. Declared `quality_credentials` are
-resolved per checkout through `setGateCredentialSource`. A mint failure stops
-the command. An `agent` command receives them on its stdin, through a fixed
-wrapper inside `sudo`, and not in argv or the wrapper text (Issue #4705). The
-worker account runs a command only where the image has no `agent` account at
-all, with the restricted environment, and there the declared values are placed
-in that environment, last. That fallback retains access to the worker's
-credential files. Neither a declared credential nor project layout nor
-per-command probe results select the worker account.
+Each gate's real default runner has a test that plants a parent credential and
+asserts the child cannot see it. Declared `quality_credentials` are resolved per
+checkout through `setGateCredentialSource`. A mint failure stops the command. An
+`agent` command receives them on its stdin, through a fixed wrapper inside
+`sudo`, and not in argv or the wrapper text (Issue #4705). The worker account
+runs a command only where the image has no `agent` account at all, with the
+restricted environment, and there the declared values are placed in that
+environment, last. That fallback retains access to the worker's credential
+files. Neither a declared credential nor project layout nor per-command probe
+results select the worker account.
 
 ## Swept paths
 

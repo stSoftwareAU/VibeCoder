@@ -4,9 +4,9 @@
 
 The `gh` and `git` spawn chokepoint quality checks matched a **literal** binary
 name, so a module written as `new Deno.Command(cmd[0]!, …)` whose callers hand
-it `["gh", "api", …]` was a direct spawn the gate reported as a clean tree.
-Both checks now also flag a **variable** binary, and every module the extended
-scan surfaced routes through its chokepoint. Closes #1227.
+it `["gh", "api", …]` was a direct spawn the gate reported as a clean tree. Both
+checks now also flag a **variable** binary, and every module the extended scan
+surfaced routes through its chokepoint. Closes #1227.
 
 What changed:
 
@@ -26,8 +26,8 @@ What changed:
   same reasoning applies to the sibling `git` chokepoint".
 - Docs: `SECURITY.md`, `docs/AGENT-ACCOUNTABILITY.md` and the sweep ledger
   `docs/audits/security-sweep-1214-subprocess-argv.md` (whose "Residual risk in
-  the new gate" section named this gap) record the closure and the residual
-  risk that remains.
+  the new gate" section named this gap) record the closure and the residual risk
+  that remains.
 
 ```mermaid
 flowchart LR
@@ -45,12 +45,12 @@ flowchart LR
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-gate and the tests.
+Backend/CLI change with no web interface to screenshot. The evidence is the gate
+and the tests.
 
 **The gate sees it now.** Running the extended scanners over `worker/deno/lib`
-and `worker/deno/commands` before the module fixes reported eight violations
-the previous gate reported as a clean tree:
+and `worker/deno/commands` before the module fixes reported eight violations the
+previous gate reported as a clean tree:
 
 ```
 GH:  language_detector.ts:94, recent_activity.ts:94, repo_visibility.ts:54,
@@ -93,7 +93,7 @@ longer depends on the binary being a literal, only on the module naming it in
 its own argv. The two remaining escapes are stated rather than hidden — a module
 that imports the chokepoint is exempt on its other spawns, and the two
 documented false positives (`secrets_history_scan.ts`, `claude_runner.ts`, which
-name `git` as tool *data*) are allowlisted — both recorded in
+name `git` as tool _data_) are allowlisted — both recorded in
 `git_spawn_chokepoint_check.ts` and in the sweep ledger.
 
 ## Test Plan
@@ -142,8 +142,8 @@ every worker/deno/lib module is claimed by exactly one sweep slice ... FAILED
   - worker/deno/lib/gh_timeout.ts
 ```
 
-`docs/audits/lib-sweep-coverage.json` was never updated when PRs #1304 and
-#1319 added those two modules. Verified failing at `HEAD~1` of this branch in a
-clean worktree, so it predates this work; adding the paths to the "closing pass"
-slice would falsely claim a security sweep read them. Filed as
+`docs/audits/lib-sweep-coverage.json` was never updated when PRs #1304 and #1319
+added those two modules. Verified failing at `HEAD~1` of this branch in a clean
+worktree, so it predates this work; adding the paths to the "closing pass" slice
+would falsely claim a security sweep read them. Filed as
 stSoftwareAU/VibeCoder#1325.

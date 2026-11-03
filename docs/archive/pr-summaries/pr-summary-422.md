@@ -4,10 +4,11 @@
 
 The re-armable issue-work deadline (#4290/#4295/#4296) shipped dark:
 `progressExtensionEnabled` defaulted to `false`, so a worker with no
-`progress_extension_*` keys in its config file got `buildProgressExtension() ===
-undefined` and kept the flat one-shot `claude_timeout` kill. With deadline
-truncation gone (#420) a legitimately long, demonstrably-progressing claim was
-still killed on the clock.
+`progress_extension_*` keys in its config file got
+`buildProgressExtension() ===
+undefined` and kept the flat one-shot
+`claude_timeout` kill. With deadline truncation gone (#420) a legitimately long,
+demonstrably-progressing claim was still killed on the clock.
 
 This flips the default to `true` in `OPERATIONAL_DEFAULTS` — the single source
 both config readers (`lib/config.ts` and `commands/load_config.ts`) resolve
@@ -30,13 +31,13 @@ What did **not** change:
 
 ### Files changed
 
-| File | Change |
-| --- | --- |
-| `worker/deno/lib/config_defaults.ts` | `progressExtensionEnabled: false → true`; comment now says why it is on and what bounds it |
-| `docs/CONFIGURATION.md` | Reference-table default `false → true`; opt-in prose rewritten; new **Turning it off** subsection |
-| `docs/TROUBLESHOOTING.md` | "Why did this run take three hours?" no longer implies the operator switched it on |
-| `worker/deno/tests/progress_extension_default_422_test.ts` | New — both readers, the switch, and the doc assertion |
-| `worker/deno/tests/config_test.ts`, `load_config_test.ts`, `execute_phase_full_budget_420_test.ts` | Existing default-pinning assertions updated (see Test Plan) |
+| File                                                                                               | Change                                                                                            |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `worker/deno/lib/config_defaults.ts`                                                               | `progressExtensionEnabled: false → true`; comment now says why it is on and what bounds it        |
+| `docs/CONFIGURATION.md`                                                                            | Reference-table default `false → true`; opt-in prose rewritten; new **Turning it off** subsection |
+| `docs/TROUBLESHOOTING.md`                                                                          | "Why did this run take three hours?" no longer implies the operator switched it on                |
+| `worker/deno/tests/progress_extension_default_422_test.ts`                                         | New — both readers, the switch, and the doc assertion                                             |
+| `worker/deno/tests/config_test.ts`, `load_config_test.ts`, `execute_phase_full_budget_420_test.ts` | Existing default-pinning assertions updated (see Test Plan)                                       |
 
 ## Evidence
 
@@ -87,20 +88,20 @@ New — `worker/deno/tests/progress_extension_default_422_test.ts`:
   same empty config — the two readers cannot drift apart;
 - `progress_extension_enabled: false` still resolves `false`, still makes
   `buildProgressExtension` return `undefined`, and still exports `:-false`;
-- an unconfigured worker builds a real runner option carrying the default
-  grant / stall / check values;
+- an unconfigured worker builds a real runner option carrying the default grant
+  / stall / check values;
 - `docs/CONFIGURATION.md` documents the `true` default, no longer says "off by
   default", shows how to switch it off, and still states the hard-cap ceiling.
 
 Modified — business-logic change, documented as required:
 
 - `config_test.ts` — "progress extension is off by default" now asserts `true`
-  for the same unconfigured input. The old expectation *was* the bug.
+  for the same unconfigured input. The old expectation _was_ the bug.
 - `load_config_test.ts` — the exported shell default asserted as `:-true`.
 - `execute_phase_full_budget_420_test.ts` — the disabled case can no longer be
   reached via `buildDefaultWorkerConfig()`, so it now uses an explicit
-  `progressExtensionEnabled: false` config (same assertion, honest input), and
-  a new test asserts an unconfigured worker *does* reach the runner with a
+  `progressExtensionEnabled: false` config (same assertion, honest input), and a
+  new test asserts an unconfigured worker _does_ reach the runner with a
   `progressExtension` option. No test was removed or commented out.
 
 ## Pre-PR Security Self-Check

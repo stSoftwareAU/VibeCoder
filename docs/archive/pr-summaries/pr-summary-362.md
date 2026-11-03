@@ -58,9 +58,9 @@ The provider and executor suites this change touches all pass
 `agent_mcp_config_test.ts`, `prompt_stable_prefix_test.ts` —
 `269 passed | 0 failed`).
 
-`./quality.sh` reports `deno lint`, `deno type check`, `deno fmt`,
-markdownlint, mermaid and every chokepoint check PASSED. The full `deno test`
-run shows 10 failures in `fleet_health_test.ts`, `setup_workdir_reminder_test.ts`,
+`./quality.sh` reports `deno lint`, `deno type check`, `deno fmt`, markdownlint,
+mermaid and every chokepoint check PASSED. The full `deno test` run shows 10
+failures in `fleet_health_test.ts`, `setup_workdir_reminder_test.ts`,
 `host_workdir_guard_test.ts` and `optional_feature_env_test.ts` — all
 pre-existing on the milestone branch: they fail identically with this branch's
 changes stashed (verified by `git stash -u` and re-running those four files),
@@ -82,8 +82,8 @@ the real descriptors:
   explicit values.
 - Golden argv, for every phase key and the phase-less call:
   - Claude's `buildInvocation()` equals
-    `buildClaudeModelArgs(phase) + buildClaudeEffortArgs(phase) + tail`
-    (a) with no model/effort and (b) with an explicit model + effort.
+    `buildClaudeModelArgs(phase) + buildClaudeEffortArgs(phase) + tail` (a) with
+    no model/effort and (b) with an explicit model + effort.
   - Claude's argv carries the phase's designed default, pinned deterministically
     via the `CLAUDE_MODEL_PLANNING` / `CLAUDE_EFFORT_PLANNING` env vars
     (precedence step 1), restored afterwards.

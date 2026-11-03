@@ -3,7 +3,7 @@
 ## Summary
 
 DeepSeek is carried on the **Claude** CLI, so its argv shape is Claude's — and
-Claude's routing resolves to *tier aliases* (`fable`, `opus`, `sonnet`,
+Claude's routing resolves to _tier aliases_ (`fable`, `opus`, `sonnet`,
 `haiku`), not model ids. A DeepSeek provider with no routing of its own returns
 `undefined` and the CLI falls back to an Anthropic model name DeepSeek's
 endpoint cannot resolve, failing mid-run against a third-party endpoint. This
@@ -23,13 +23,13 @@ phase to a real DeepSeek model id. Closes #413.
 - **Resolvers** (new `worker/deno/lib/deepseek_executor.ts`):
   `resolveDeepSeekModel(phase?)` calls the shared `resolvePhaseRoutedValue`
   helper with `DEEPSEEK_`-named keys throughout, so the six-step chain is
-  Claude's precedence with DeepSeek names.
-  `resolveDeepSeekEffort(phase?)` follows the Gemini precedent (#364): DeepSeek's
-  Anthropic-compatible endpoint does not implement Anthropic's effort control, so
-  the resolver reports what the phase was *asked* to run at and
-  `warnDeepSeekEffortUnsupported()` warns once per phase instead of emitting an
-  `--effort` flag. There is deliberately no DeepSeek effort table and no
-  `deepseek_effort` config key — either would be dead configuration (#3234).
+  Claude's precedence with DeepSeek names. `resolveDeepSeekEffort(phase?)`
+  follows the Gemini precedent (#364): DeepSeek's Anthropic-compatible endpoint
+  does not implement Anthropic's effort control, so the resolver reports what
+  the phase was _asked_ to run at and `warnDeepSeekEffortUnsupported()` warns
+  once per phase instead of emitting an `--effort` flag. There is deliberately
+  no DeepSeek effort table and no `deepseek_effort` config key — either would be
+  dead configuration (#3234).
 - **No `cheaperModel` export.** `deepseek-chat` is not a cheaper rung of
   `deepseek-reasoner` in the sense `model_fallback.ts` means, so the descriptor
   can omit the optional method and get `no-ladder-for-provider` rather than a
@@ -79,8 +79,8 @@ Result: PASSED (with skipped checks)
 New `worker/deno/tests/deepseek_executor_test.ts` (18 tests), all calling the
 real resolvers and the real config loader:
 
-- **Phase table** — the full phase→model map asserted value by value;
-  `planning` → `deepseek-reasoner`, `summarise` → `deepseek-chat`.
+- **Phase table** — the full phase→model map asserted value by value; `planning`
+  → `deepseek-reasoner`, `summarise` → `deepseek-chat`.
 - **Key parity** — every key of `PHASE_MODEL_DEFAULTS` is present in
   `DEEPSEEK_PHASE_MODEL_DEFAULTS`, so a future phase that is added to one table
   and forgotten in the other fails `deno test`.
@@ -99,5 +99,5 @@ real resolvers and the real config loader:
   `--effort`.
 - **Config keys** — `deepseek_phase_model_overrides` passes the unknown-key
   check and validates as a string map, and a `.config.json` carrying both the
-  global key and per-repo `deepseek_model` /
-  `deepseek_phase_model_overrides` survives `loadConfig` and drives the resolver.
+  global key and per-repo `deepseek_model` / `deepseek_phase_model_overrides`
+  survives `loadConfig` and drives the resolver.

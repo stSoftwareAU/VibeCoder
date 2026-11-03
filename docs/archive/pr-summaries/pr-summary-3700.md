@@ -5,8 +5,8 @@ scan it on the first idle opportunity every six hours, and report scrubbed
 operator findings. Add an agent-incident runbook for detection, containment,
 evidence preservation, credential rotation, recovery and disclosure.
 
-Closes #3700. Closes #3702 after the required human runbook review.
-The companion turn-limit change and its branch evidence are recorded in
+Closes #3700. Closes #3702 after the required human runbook review. The
+companion turn-limit change and its branch evidence are recorded in
 [pr-summary-3701.md](pr-summary-3701.md).
 
 ## Spec
@@ -22,12 +22,14 @@ The companion turn-limit change and its branch evidence are recorded in
 - The explicit transcript cap can shorten the age window and logs when it does.
   Tiny transcripts and compressed/numbered rotations remain eligible evidence.
 - Scan actual Claude/DeepSeek, Codex and Gemini tool records. Findings contain
-  file, line, signal and count; commands, URLs and credential contents stay local.
+  file, line, signal and count; commands, URLs and credential contents stay
+  local.
 - Persist schedule and changed-file fingerprints across restarts. Malformed,
   unreadable and oversized files remain retryable, with incomplete coverage
   reported to the operator. Bound decompressed input at 100 MiB per file.
 - Run through production idle hooks before GitHub quota gates. Capture remains
-  opt-in, and the scanner is a heuristic signal rather than an isolation boundary.
+  opt-in, and the scanner is a heuristic signal rather than an isolation
+  boundary.
 
 ### Undiscoverable Facts
 
@@ -41,8 +43,8 @@ The companion turn-limit change and its branch evidence are recorded in
 ## Evidence
 
 [Validation record](../../evidence/milestone121-validation.md) includes local
-checks, mutation evidence, CLI limitations and exact acceptance mapping.
-There is no UI change, so screenshots would not demonstrate the behaviour.
+checks, mutation evidence, CLI limitations and exact acceptance mapping. There
+is no UI change, so screenshots would not demonstrate the behaviour.
 
 Docs sweep — grep: "3-day retention", "200-file cap", "agent-incident runbook";
 updated SECURITY.md and docs/CONFIGURATION.md; section: Agent transcripts,
@@ -68,9 +70,9 @@ lists retained historical gap-analysis hits and unchanged timeout references.
 
 ## Acceptance Criteria
 
-| Issue | Criterion | Evidence and status |
-| --- | --- | --- |
-| #3700 | Default retention at least 30 days; cleanup unit test | Implemented; agent_transcript_retention_3700_test.ts |
-| #3700 | Seeded signal flagged and clean transcript passes | Implemented; agent_transcript_scan_3700_test.ts and actual idle-loop wiring test |
+| Issue | Criterion                                                             | Evidence and status                                                                          |
+| ----- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| #3700 | Default retention at least 30 days; cleanup unit test                 | Implemented; agent_transcript_retention_3700_test.ts                                         |
+| #3700 | Seeded signal flagged and clean transcript passes                     | Implemented; agent_transcript_scan_3700_test.ts and actual idle-loop wiring test             |
 | #3702 | Detection, stop/rotate/preserve, recovery/disclosure and R9/R11 links | Implemented in SECURITY.md Agent-incident runbook; links checked against local documentation |
-| #3702 | Human reviews finished section before merge | **Awaiting human review. Merge and auto-merge remain held.** |
+| #3702 | Human reviews finished section before merge                           | **Awaiting human review. Merge and auto-merge remain held.**                                 |

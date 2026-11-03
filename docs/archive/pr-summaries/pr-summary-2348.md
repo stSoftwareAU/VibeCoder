@@ -28,8 +28,8 @@ The new section covers four things:
    providers, the 30-run-or-4-week window, a table naming the source of each of
    the five reported numbers, the `issuePhaseSplitRuns` sanity check, and a
    "What no number measures" note on unit-test quality.
-4. **Default-on decision criteria** — the four conditions as a conjunctive
-   table with the 15% cost threshold, the explicit statement that a cheaper run
+4. **Default-on decision criteria** — the four conditions as a conjunctive table
+   with the 15% cost threshold, the explicit statement that a cheaper run
    producing worse code is a false saving, duration marked reported-not-gated,
    and a second Mermaid `flowchart TD` showing the quality veto ahead of the
    cost gate.
@@ -56,7 +56,8 @@ tested instead:
 - Targeted docs-consistency suite re-run after the review fixes:
   `deno test tests/markdown_anchors_test.ts tests/docs_provider_matrix_test.ts
   tests/model_routing_docs_test.ts tests/config_docs_consistency_test.ts
-  tests/docs_provider_prose_test.ts` — **21 passed, 0 failed**.
+  tests/docs_provider_prose_test.ts`
+  — **21 passed, 0 failed**.
 - `npx markdownlint-cli2` over the documentation set — **0 issues in 0 files**
   across 180 files.
 - Every code reference in the new prose was checked against the source rather
@@ -75,45 +76,45 @@ tested instead:
 
 - **AC1 — `docs/MODEL-AND-CACHING.md` describes the advisor/executor topology,
   the Sonnet executor tier and the bounded reversal, with the negative result
-  still stated for non-split runs.** `reviewer: met`
-  Evidence: `docs/MODEL-AND-CACHING.md:436` `### Advisor and executor split
-  (issue phase)` — advisor on the phase's model (Opus `high`) with `Edit`/
-  `Write` denied by a `PreToolUse` hook, executors `sonnet` at `medium` with
-  `Read`/`Grep`/`Glob`/`Edit`/`Write`/`Bash` and no `Agent` tool, plus a
-  topology diagram. `docs/MODEL-AND-CACHING.md:480` `#### Bounded reversal of
-  the delegation negative result` scopes the lift to the `issue` phase while
-  `issue_executor_split` is on, and L504-506 states "Everywhere else the
-  negative result stands unchanged".
-- **AC2 — the pilot section names pilot and control groups, the
-  30-run-or-4-week window and the source of every one of the five numbers.**
-  `reviewer: met`
-  Evidence: `docs/MODEL-AND-CACHING.md:508` `#### Pilot method` — groups and
-  the non-Claude exclusion at L516-524, window at L526-527, and a five-row
-  source table at L531-537 naming `successes`/`failures`, `issuePhaseUsd`,
+  still stated for non-split runs.** `reviewer: met` Evidence:
+  `docs/MODEL-AND-CACHING.md:436`
+  `### Advisor and executor split
+  (issue phase)` — advisor on the phase's
+  model (Opus `high`) with `Edit`/ `Write` denied by a `PreToolUse` hook,
+  executors `sonnet` at `medium` with `Read`/`Grep`/`Glob`/`Edit`/`Write`/`Bash`
+  and no `Agent` tool, plus a topology diagram. `docs/MODEL-AND-CACHING.md:480`
+  `#### Bounded reversal of
+  the delegation negative result` scopes the lift to
+  the `issue` phase while `issue_executor_split` is on, and L504-506 states
+  "Everywhere else the negative result stands unchanged".
+- **AC2 — the pilot section names pilot and control groups, the 30-run-or-4-week
+  window and the source of every one of the five numbers.** `reviewer: met`
+  Evidence: `docs/MODEL-AND-CACHING.md:508` `#### Pilot method` — groups and the
+  non-Claude exclusion at L516-524, window at L526-527, and a five-row source
+  table at L531-537 naming `successes`/`failures`, `issuePhaseUsd`,
   `issuePhaseFirstAttemptGatePasses`, the `## Standards Review` block and
   `issuePhaseDurationSeconds`. Counter names verified against
   `worker/deno/lib/fleet_telemetry.ts:107-115`.
 - **AC3 — the four default-on conditions listed as conjunctive with the 15%
   threshold and the quality veto explicit, duration reported-not-gated.**
-  `reviewer: met`
-  Evidence: `docs/MODEL-AND-CACHING.md:552` `#### Default-on decision criteria`
-  — "only if all four of these hold… three out of four is not a pass", the
-  15% row at L562, the false-saving veto at L565 and "Duration is reported, not
-  gated." at L569, with a decision flowchart repeating the same ordering.
+  `reviewer: met` Evidence: `docs/MODEL-AND-CACHING.md:552`
+  `#### Default-on decision criteria` — "only if all four of these hold… three
+  out of four is not a pass", the 15% row at L562, the false-saving veto at L565
+  and "Duration is reported, not gated." at L569, with a decision flowchart
+  repeating the same ordering.
 - **AC4 — `docs/CONFIGURATION.md`'s `issue_executor_split` entry links to the
-  pilot section.** `reviewer: met`
-  Evidence: `docs/CONFIGURATION.md:399` links both
-  `MODEL-AND-CACHING.md#pilot-method` and
+  pilot section.** `reviewer: met` Evidence: `docs/CONFIGURATION.md:399` links
+  both `MODEL-AND-CACHING.md#pilot-method` and
   `MODEL-AND-CACHING.md#default-on-decision-criteria`; both anchors resolve
   (`markdown_anchors_test.ts` passes).
-- **AC5 — `./quality.sh` passes.** `reviewer: met`
-  Evidence: full `./quality.sh < /dev/null` run in the worktree exited 0 —
-  `Result: PASSED (with skipped checks)`; only `config integration` was
-  skipped, which is unrelated to this diff.
-- **Additions beyond the literal ask.** `reviewer: unrequested`
-  Reason: kept — each is required by a repository invariant or supports the
-  requested content, and none contradicts the issue. They are the second
-  cross-reference on the per-repo `repo_config.<repo>.issue_executor_split` row
+- **AC5 — `./quality.sh` passes.** `reviewer: met` Evidence: full
+  `./quality.sh < /dev/null` run in the worktree exited 0 —
+  `Result: PASSED (with skipped checks)`; only `config integration` was skipped,
+  which is unrelated to this diff.
+- **Additions beyond the literal ask.** `reviewer: unrequested` Reason: kept —
+  each is required by a repository invariant or supports the requested content,
+  and none contradicts the issue. They are the second cross-reference on the
+  per-repo `repo_config.<repo>.issue_executor_split` row
   (`docs/CONFIGURATION.md:4225`), the TOC entry and Provider Applicability row
   the file's own `deno test` invariants make mandatory
   (`docs/MODEL-AND-CACHING.md:15`, `:102`), the two Mermaid diagrams, and the
@@ -130,19 +131,19 @@ tested instead:
   identifier, and `worker/deno/lib/independent_review_gate.ts:365-373` enforces
   an evidence string only on Standards-axis `violation` entries. **Fixed here**
   in commit `4feab963` — the sentence now reads "the Spec reviewer must name
-  evidence for each criterion — the file, the test, or the test identifier —
-  and where that evidence is a test, the quality gate runs it."
+  evidence for each criterion — the file, the test, or the test identifier — and
+  where that evidence is a test, the quality gate runs it."
 - `violation` — `docs/MODEL-AND-CACHING.md:535` claimed every run-stats comment
   carries a `quality gate: passed on attempt N` line;
   `worker/deno/lib/issue_run_stats_comment.ts:340-341` renders no line when
-  there is no gate outcome and `- quality gate: failed` for a never-passing
-  run. **Fixed here** in commit `4feab963` — now "the line a run-stats comment
+  there is no gate outcome and `- quality gate: failed` for a never-passing run.
+  **Fixed here** in commit `4feab963` — now "the line a run-stats comment
   carries when a gate outcome exists".
 - `violation` — `docs/MODEL-AND-CACHING.md:484` attributed the split prompt's
-  precedence sentence to the *Cap delegation* bullet in
+  precedence sentence to the _Cap delegation_ bullet in
   `prompts/coding_guidelines/prompt.md`, but
-  `worker/deno/lib/issue_executor_split_prompt.ts` names the *Delegate
-  sparingly* bullet in `prompts/issue/prompt.md`. Net effect was right, the
+  `worker/deno/lib/issue_executor_split_prompt.ts` names the _Delegate
+  sparingly_ bullet in `prompts/issue/prompt.md`. Net effect was right, the
   attribution wrong. **Fixed here** in commit `4feab963` — both bullets are now
   named and precedence is stated against the one the prompt actually cites.
 - `violation` — `docs/MODEL-AND-CACHING.md:2536` left the cross-reference
@@ -155,12 +156,12 @@ tested instead:
   documentation conventions (heading hierarchy, Applies-to marker, ToC and
   Provider Applicability matrix updated — `markdownlint-cli2` reports
   `0 issues`); Mermaid (both `flowchart TD` blocks parse, repo check
-  `mermaid: PASSED`); link correctness (all added links and all five new
-  anchors resolve; 21 doc-consistency Deno tests pass); code references
+  `mermaid: PASSED`); link correctness (all added links and all five new anchors
+  resolve; 21 doc-consistency Deno tests pass); code references
   (`ISSUE_EXECUTOR_MODEL`, `ISSUE_EXECUTOR_EFFORT`, the five
-  `IssuePhaseCounters` fields, `StandardsStatus`, and the per-provider
-  behaviour in `agent_provider.ts` all verified against source); scope (only
-  the two documentation files, plus this summary).
+  `IssuePhaseCounters` fields, `StandardsStatus`, and the per-provider behaviour
+  in `agent_provider.ts` all verified against source); scope (only the two
+  documentation files, plus this summary).
 
 ## Test Plan
 
@@ -168,12 +169,12 @@ Documentation-only, so the plan is the repository's own docs invariants rather
 than new tests — no new behaviour exists to test, and no existing test was
 changed or removed.
 
-| Check | Command | Result |
-| --- | --- | --- |
-| Full quality gate | `./quality.sh < /dev/null` | exit 0, `Result: PASSED (with skipped checks)` |
-| Docs-consistency suite | `deno test tests/markdown_anchors_test.ts tests/docs_provider_matrix_test.ts tests/model_routing_docs_test.ts tests/config_docs_consistency_test.ts tests/docs_provider_prose_test.ts` | 21 passed, 0 failed |
-| Markdown lint | `npx markdownlint-cli2` | 0 issues in 0 files (180 linted) |
-| Mermaid parse | repository Mermaid check inside `./quality.sh` | `mermaid: PASSED` |
+| Check                  | Command                                                                                                                                                                                | Result                                         |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Full quality gate      | `./quality.sh < /dev/null`                                                                                                                                                             | exit 0, `Result: PASSED (with skipped checks)` |
+| Docs-consistency suite | `deno test tests/markdown_anchors_test.ts tests/docs_provider_matrix_test.ts tests/model_routing_docs_test.ts tests/config_docs_consistency_test.ts tests/docs_provider_prose_test.ts` | 21 passed, 0 failed                            |
+| Markdown lint          | `npx markdownlint-cli2`                                                                                                                                                                | 0 issues in 0 files (180 linted)               |
+| Mermaid parse          | repository Mermaid check inside `./quality.sh`                                                                                                                                         | `mermaid: PASSED`                              |
 
 Two of those suites are the ones that would have caught a mistake here, and one
 did: `docs_provider_matrix_test.ts` failed on the first run because a new `###`

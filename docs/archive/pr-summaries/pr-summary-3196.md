@@ -29,29 +29,29 @@ reason, and the independent-review gate accepted any text. Closes #3196.
 ### Intent and Rationale
 
 - The reviewer had already found the defect with a `file:line`, so the fix was
-  one line away. The only escape left open was the free-text reason, and that
-  is the one thing this change closes.
+  one line away. The only escape left open was the free-text reason, and that is
+  the one thing this change closes.
 
 ### Essential Design Decisions
 
 - One predicate, `violationReasonSettles`, lives in
-  `independent_review_gate.ts`. `closure_verdict.ts` imports it, so the gate
-  and the in-run recovery cannot disagree.
-- "Fixed" is matched only at the start of the reason, so "not fixed — it
-  stands" is refused. `corrected` and `resolved` are accepted too, because an
-  existing test summary already wrote "corrected to `behaviour` in this diff".
+  `independent_review_gate.ts`. `closure_verdict.ts` imports it, so the gate and
+  the in-run recovery cannot disagree.
+- "Fixed" is matched only at the start of the reason, so "not fixed — it stands"
+  is refused. `corrected` and `resolved` are accepted too, because an existing
+  test summary already wrote "corrected to `behaviour` in this diff".
 - A placeholder `#<n>` has no digits, so it does not count as a link.
 - **Optional part not done:** the issue offered an optional cross-check of the
-  evidence `file:line` against the diff's added lines. The gate is pure and
-  sees only the issue body and the summary, not the diff. The prompt carries
-  that rule instead, and the gate closes the free-text escape.
+  evidence `file:line` against the diff's added lines. The gate is pure and sees
+  only the issue body and the summary, not the diff. The prompt carries that
+  rule instead, and the gate closes the free-text escape.
 
 ### Undiscoverable Facts
 
-- `closure_verdict.ts`'s `sanitiseField` used to strip every `#` to stop
-  forged headings. That would have turned `filed #123` into `filed 123` and
-  failed the new rule. A markdown heading needs a space after its hashes, so
-  `#` followed by a digit cannot open one.
+- `closure_verdict.ts`'s `sanitiseField` used to strip every `#` to stop forged
+  headings. That would have turned `filed #123` into `filed 123` and failed the
+  new rule. A markdown heading needs a space after its hashes, so `#` followed
+  by a digit cannot open one.
 
 ## Standards Review
 
@@ -78,10 +78,10 @@ Backend and prompt change; no UI files touched.
 - [x] New tests failed first: 4 in `independent_review_gate_test.ts` and
       `closure_verdict_test.ts`, then 3 in `standing_violation_3196_test.ts`
 - [x] `independent_review_gate_test.ts`: `stands, left for a follow-up` blocks;
-      `fixed in this diff` passes; `pre-existing, filed #123` passes; issue
-      URLs and `owner/repo#n` pass; `#<n>` blocks
-- [x] `closure_verdict_test.ts`: a standing violation is a coverage shortfall;
-      a filed `#123` survives rendering and passes the gate
+      `fixed in this diff` passes; `pre-existing, filed #123` passes; issue URLs
+      and `owner/repo#n` pass; `#<n>` blocks
+- [x] `closure_verdict_test.ts`: a standing violation is a coverage shortfall; a
+      filed `#123` survives rendering and passes the gate
 - [x] 69 targeted test files that read the touched code, prompt or docs: 656
       passed, 0 failed
 - [x] `deno fmt --check`, `deno lint`, `deno task check`,

@@ -84,10 +84,12 @@ other hits outside `docs/archive/`.
 ## Test Plan
 
 - Added `worker/deno/tests/clickable_row_tap_3681_docs_test.ts` (two tests).
-  Each pinned phrase was checked with `deno task drift-pins-on-base
+  Each pinned phrase was checked with
+  `deno task drift-pins-on-base
   origin/milestone/fleet-guidance-ui-breakpoints-and-tap-targets <doc> <section>
-  <phrase>...`, which reported every one of the nine `Instructions` pins and the
-  three `Visual design anti-patterns` pins as "absent on base".
+  <phrase>...`,
+  which reported every one of the nine `Instructions` pins and the three
+  `Visual design anti-patterns` pins as "absent on base".
 - Edited `worker/deno/tests/front_end_design_anti_patterns_2636_test.ts`:
   `MAX_CHECKS` 9 → 10. No assertion is removed. Red check: run with the cap put
   back to 9, "html bucket - carries a short design anti-pattern list" failed
@@ -96,13 +98,15 @@ other hits outside `docs/archive/`.
 - `deno task test:unit tests/clickable_row_tap_3681_docs_test.ts
   tests/front_end_design_anti_patterns_2636_test.ts
   tests/open_state_viewport_3335_docs_test.ts
-  tests/breakpoint_sides_3656_docs_test.ts` — 13 passed, 0 failed.
+  tests/breakpoint_sides_3656_docs_test.ts`
+  — 13 passed, 0 failed.
 - Bucket tests (`bucket_check_numbering_test.ts`, `bucket_docs_test.ts`,
   `best_practices_bucket_guides_consumer_test.ts`,
   `best_practices_bucket_picker_test.ts`, the anti-pattern test) — 71 passed, 0
   failed.
-- `./quality.sh < /dev/null` on the head — `Result: PASSED (with skipped checks)`
-  (config integration skipped by the gate itself), exit 0.
+- `./quality.sh < /dev/null` on the head —
+  `Result: PASSED (with skipped checks)` (config integration skipped by the gate
+  itself), exit 0.
 
 <!-- vibe-branch-outcomes -->
 

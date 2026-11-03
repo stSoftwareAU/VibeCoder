@@ -6,14 +6,14 @@ The Playwright MCP server — outbound HTTP through a full browser context — w
 wired into the agent's tool set for **every** run that carried a `cwd`
 (`claude_runner.ts`: "Default true whenever `cwd` is set"), so every issue the
 fleet worked, backend or not, handed a possibly prompt-injected agent a browser
-it could be steered at an internal or attacker-controlled host (CWE-250,
-LLM06 Excessive Agency).
+it could be steered at an internal or attacker-controlled host (CWE-250, LLM06
+Excessive Agency).
 
 The grant is now opt-in on an explicit need signal:
 
 - `RunClaudeOptions.mcpConfig` is honoured only when the caller sets it `true`
-  **and** a `cwd` is present. Absent or `false` means no browser — a `cwd`
-  alone grants nothing.
+  **and** a `cwd` is present. Absent or `false` means no browser — a `cwd` alone
+  grants nothing.
 - Both issue-work paths set the signal from the same `detectScreenshotRequired`
   detection that already injects the screenshot instructions — the
   `needs-screenshot` label, or a repo configured with `requiresScreenshots`:
@@ -25,9 +25,9 @@ The grant is now opt-in on an explicit need signal:
   invoked with no browser at all.
 
 Nothing else about the server changed: the same per-clone config is generated
-into `${WORK_DIR}/.vibe-cache/mcp/` and passed as `--mcp-config` when the
-signal is set, so a `needs-screenshot` run captures evidence exactly as before
-(Issue #4355 behaviour preserved for the runs that need it).
+into `${WORK_DIR}/.vibe-cache/mcp/` and passed as `--mcp-config` when the signal
+is set, so a `needs-screenshot` run captures evidence exactly as before (Issue
+#4355 behaviour preserved for the runs that need it).
 
 Closes #192.
 
@@ -61,11 +61,11 @@ the only way to obtain a `--mcp-config` argument is for a caller to pass
 `mcpConfig: true`. The two issue-work callers derive that boolean from
 `detectScreenshotRequired(...)` over the issue's labels and the repo config —
 worker-controlled inputs the agent cannot write mid-run (labels are read before
-the prompt is built, and the `gh` guard refuses reserved-label writes). No
-other production call site passes `mcpConfig`, so no run reaches the browser by
-omission; the equivalent bypasses — a truthy non-`true` value, or a `cwd`
-alone — are both rejected by the strict `=== true` test, and each is covered by
-an assertion below.
+the prompt is built, and the `gh` guard refuses reserved-label writes). No other
+production call site passes `mcpConfig`, so no run reaches the browser by
+omission; the equivalent bypasses — a truthy non-`true` value, or a `cwd` alone
+— are both rejected by the strict `=== true` test, and each is covered by an
+assertion below.
 
 Verified failure against the unfixed code (`origin/main` implementation files,
 new tests in place):
@@ -79,13 +79,12 @@ execute_phase - a needs-screenshot issue is granted the browser (Issue #192) ...
 execute_phase - a repo configured with requiresScreenshots is granted the browser (Issue #192) ... FAILED
 ```
 
-All pass after the fix (`deno test` over the three suites: 48 passed,
-0 failed).
+All pass after the fix (`deno test` over the three suites: 48 passed, 0 failed).
 
 ## Test Plan
 
-Regression tests added (each reproduces the flaw, fails against the unfixed
-code and passes after the fix):
+Regression tests added (each reproduces the flaw, fails against the unfixed code
+and passes after the fix):
 
 - `worker/deno/tests/execute_phase_browser_grant_test.ts::execute_phase - a backend issue is run with no browser MCP server (Issue #192)`
   — the main-loop path invokes the runner with `mcpConfig: false` for a plain
@@ -111,10 +110,10 @@ pre-existing and unrelated — they assert against this container's real
 `host_workdir_guard`'s assertion over the same `buildFleetHealthConfig`
 behaviour). Nothing in this change touches those modules.
 
-Docs updated in the same change: `docs/CONTAINER.md` (the grant rule, which
-run types get a browser, and the self-healing round trip),
-`docs/CONFIGURATION.md` (`requires_screenshots` now also grants the browser),
-and `CODING-STANDARDS.md` (the agent-facing tool list).
+Docs updated in the same change: `docs/CONTAINER.md` (the grant rule, which run
+types get a browser, and the self-healing round trip), `docs/CONFIGURATION.md`
+(`requires_screenshots` now also grants the browser), and `CODING-STANDARDS.md`
+(the agent-facing tool list).
 
 ## Pre-PR security self-check
 

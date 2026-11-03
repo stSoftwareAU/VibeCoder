@@ -22,8 +22,8 @@ What landed:
   commit-SHA pin (`comparable: false`) and a repository with no releases.
   Nothing throws: every fault is a `Result` the launcher degrades to a warning.
 - **`worker/deno/lib/upgrade_command.ts`** — the upgrade command's name, once.
-  The notice is built from it and the command Issue #691 registers is named
-  from it, so the wording and the real command cannot drift into two hard-coded
+  The notice is built from it and the command Issue #691 registers is named from
+  it, so the wording and the real command cannot drift into two hard-coded
   strings.
 - **`worker/deno/commands/release_notice.ts`** — the `release-notice` command.
   It reads `update_mode` and `pinned_ref` through the very reader
@@ -39,9 +39,9 @@ the logic living in the Deno command keeps that a port rather than a rewrite.
 
 ## Evidence
 
-Backend/CLI change with no web interface, so there is nothing to screenshot.
-The evidence is the launcher and unit tests below, all run by the `validate`
-job in `.github/workflows/validate-scripts.yml`.
+Backend/CLI change with no web interface, so there is nothing to screenshot. The
+evidence is the launcher and unit tests below, all run by the `validate` job in
+`.github/workflows/validate-scripts.yml`.
 
 ```mermaid
 flowchart TD
@@ -75,18 +75,18 @@ bash -n run.sh    (clean)
 shellcheck run.sh (clean)
 ```
 
-`./quality.sh` — every check passes except three failures that are
-environmental and predate this branch, confirmed by running them against
-`HEAD~2` (the commit before this work) in a scratch worktree:
+`./quality.sh` — every check passes except three failures that are environmental
+and predate this branch, confirmed by running them against `HEAD~2` (the commit
+before this work) in a scratch worktree:
 
-| Failure | Why it is not this change |
-| --- | --- |
+| Failure                                                                                                  | Why it is not this change                                                                                                                                                           |
+| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config dir is restaged writable` | This sandbox has no writable `gh` staging directory, so the restage lands in `/tmp/<random>/vibe-gh-config` instead of `.container-state/gh-config`. Fails identically on `HEAD~2`. |
-| `run_core_test.ts` (uncaught) | `GraphQL: API rate limit already exceeded for user ID …` — a live GitHub rate limit. |
-| `run_core_rate_limit_resume_test.ts` (uncaught) | The same rate limit. |
+| `run_core_test.ts` (uncaught)                                                                            | `GraphQL: API rate limit already exceeded for user ID …` — a live GitHub rate limit.                                                                                                |
+| `run_core_rate_limit_resume_test.ts` (uncaught)                                                          | The same rate limit.                                                                                                                                                                |
 
-All 18 tests added here pass inside that run
-(`tests/release_notice_test.ts` and the four `Issue #690` launcher cases).
+All 18 tests added here pass inside that run (`tests/release_notice_test.ts` and
+the four `Issue #690` launcher cases).
 
 ## Acceptance Criteria
 
@@ -102,7 +102,9 @@ All 18 tests added here pass inside that run
 - **met** — A frozen host already on the newest release prints no notice —
   evidence:
   `worker/deno/tests/release_notice_test.ts::release notice - a frozen host already on the newest release says nothing`
-  and the `release-notice command - prints nothing at all when there is nothing to say` case.
+  and the
+  `release-notice command - prints nothing at all when there is nothing to say`
+  case.
 - **met** — A dynamic host prints no notice — evidence:
   `worker/deno/tests/release_notice_test.ts::release notice - a dynamic host says nothing: it installs the latest at every launch`,
   whose deps reject any `gh` call, so a dynamic host that looked at all fails
@@ -115,14 +117,14 @@ All 18 tests added here pass inside that run
   (exit 0, container still launched, warning on stderr and in `run_core.log`),
   plus the network-failure and timeout cases in
   `release notice - a failed release check is a fail-loud error, never a silent pass`.
-- **partial** — The notice's command string is asserted against the real
-  upgrade command's name — evidence:
-  `worker/deno/lib/upgrade_command.ts` is the single source of truth,
+- **partial** — The notice's command string is asserted against the real upgrade
+  command's name — evidence: `worker/deno/lib/upgrade_command.ts` is the single
+  source of truth,
   `worker/deno/tests/release_notice_test.ts::release notice - the notice names the upgrade command, and cannot drift from it`
-  asserts the notice is built from it and that any registered command whose
-  name mentions `upgrade` is exactly that constant — reason: the upgrade
-  command itself lands in #691, so the registry half of the assertion has
-  nothing to bind to yet; #691 registering `UPGRADE_COMMAND_NAME` closes it.
+  asserts the notice is built from it and that any registered command whose name
+  mentions `upgrade` is exactly that constant — reason: the upgrade command
+  itself lands in #691, so the registry half of the assertion has nothing to
+  bind to yet; #691 registering `UPGRADE_COMMAND_NAME` closes it.
 - **met** — Unit tests cover each case with injected deps; `bash -n`/shellcheck
   pass over the `run.sh` change; `./quality.sh` passes — evidence: the test
   output above; the quality gate's only failures are the three pre-existing

@@ -52,9 +52,9 @@ flowchart LR
 Backend/CLI change with no web interface, so no screenshot applies. The evidence
 is the test run below, executed against both the unfixed and the fixed code.
 
-Against the **unfixed** code (`git checkout 37b3c87 -- worker/deno/lib/…` for the
-three library files, the new test kept), the suite fails — the bounded runners
-do not exist at all:
+Against the **unfixed** code (`git checkout 37b3c87 -- worker/deno/lib/…` for
+the three library files, the new test kept), the suite fails — the bounded
+runners do not exist at all:
 
 ```
 error: TS2305 [ERROR]: Module '.../lib/coverage_gap_scanner.ts' has no exported

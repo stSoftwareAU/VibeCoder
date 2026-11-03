@@ -236,8 +236,8 @@ Sibling names grepped: `carryEnvThroughSudo`, `untrustedQualityCommandEnv`,
   runner's sandbox, not a test defect.
 
 - The Gitleaks PR-range scan includes earlier commits containing synthetic
-  credential fixtures. Its configuration exempts only those exact fixture
-  lines, retaining scanning for other values.
+  credential fixtures. Its configuration exempts only those exact fixture lines,
+  retaining scanning for other values.
 
 ## Known gaps
 

@@ -11,16 +11,15 @@ applies exactly one guide per run. A repository whose draw landed on
 question at all.
 
 The rule now lives once, in a `### Cross-bucket: verbose gate output` stanza in
-the orchestrator prompt (`prompts/best_practices/prompt.md`), which every
-bucket run applies regardless of the draw. The five bucket guides that carried
-a full copy now carry a one-line pointer to the stanza instead. The check reads
-the quality-gate script, the default test task and pull-request CI steps **as
-text only** — it never runs the suite — and flags test/build/install
-invocations with no quiet-or-failures-only flag, plus any explicit `--verbose`,
-`-v` or `set -x`. A finding files once per repository under the fixed id
-`BP-VERBOSE-GATE` at `severity:medium`; a second scan while that issue is open
-files nothing, and the scan never opens a PR — the fix rides the repository's
-own `work-on` PR.
+the orchestrator prompt (`prompts/best_practices/prompt.md`), which every bucket
+run applies regardless of the draw. The five bucket guides that carried a full
+copy now carry a one-line pointer to the stanza instead. The check reads the
+quality-gate script, the default test task and pull-request CI steps **as text
+only** — it never runs the suite — and flags test/build/install invocations with
+no quiet-or-failures-only flag, plus any explicit `--verbose`, `-v` or `set -x`.
+A finding files once per repository under the fixed id `BP-VERBOSE-GATE` at
+`severity:medium`; a second scan while that issue is open files nothing, and the
+scan never opens a PR — the fix rides the repository's own `work-on` PR.
 
 Closes #2472.
 
@@ -64,9 +63,9 @@ Result: PASSED (with skipped checks)
 ```
 
 All 20 non-skipped checks (deno tests, deno lint, deno type check, deno fmt,
-mermaid, markdownlint, semgrep, release-tag ruleset, completeness checks,
-source targets, chokepoint checks, workflow hygiene, benchmark audit,
-hardcoded branch names) PASSED; `config integration` SKIPPED as always.
+mermaid, markdownlint, semgrep, release-tag ruleset, completeness checks, source
+targets, chokepoint checks, workflow hygiene, benchmark audit, hardcoded branch
+names) PASSED; `config integration` SKIPPED as always.
 
 ## Acceptance Criteria
 
@@ -75,37 +74,44 @@ hardcoded branch names) PASSED; `config integration` SKIPPED as always.
 - **met** — the check runs on every best-practices scan whichever bucket the
   draw picks, and on no other cadence — evidence:
   `prompts/best_practices/prompt.md` `### Cross-bucket: verbose gate output`,
-  pinned by `the verbose-gate stanza states the runs on every scan regardless
-  of the draw` — reviewer: met
-- **met** — one stanza, one ecosystem flag table, applied by every bucket run
-  — evidence: `prompts/best_practices/prompt.md`, pinned by `the verbose-gate
-  stanza states the per-ecosystem quiet flags` — reviewer: met
+  pinned by
+  `the verbose-gate stanza states the runs on every scan regardless
+  of the draw`
+  — reviewer: met
+- **met** — one stanza, one ecosystem flag table, applied by every bucket run —
+  evidence: `prompts/best_practices/prompt.md`, pinned by
+  `the verbose-gate
+  stanza states the per-ecosystem quiet flags` — reviewer:
+  met
 - **met** — `general.md` check 19 and the four bucket "Test output" sections
   fold into one-line pointers — evidence:
   `prompts/best_practices/buckets/{general,typescript,rust,java,react}.md`,
-  pinned by `no bucket guide keeps a duplicate Test output section` and `every
+  pinned by `no bucket guide keeps a duplicate Test output section` and
+  `every
   folded guide points at the orchestrator stanza` — reviewer: met
 - **met** — a test asserts the stanza exists and no guide keeps a full copy;
   `docs/BEST-PRACTICES-SCAN.md` documents it — evidence:
-  `worker/deno/tests/best_practices_verbose_gate_test.ts`, plus `the scan
+  `worker/deno/tests/best_practices_verbose_gate_test.ts`, plus
+  `the scan
   documentation records the stanza and its fixed id` — reviewer: met
-- **met** — the check reads the quality-gate script, default test task and PR
-  CI steps as text and never runs the suite — evidence: stanza clause `the
-  three surfaces it reads` and `static-evidence-only rule`, both pinned with a
-  negative control — reviewer: met
-- **met** — flags runners/build/install steps with no quiet flag, plus
-  explicit `--verbose`/`-v`/`set -x` — evidence: stanza clause
+- **met** — the check reads the quality-gate script, default test task and PR CI
+  steps as text and never runs the suite — evidence: stanza clause
+  `the
+  three surfaces it reads` and `static-evidence-only rule`, both pinned
+  with a negative control — reviewer: met
+- **met** — flags runners/build/install steps with no quiet flag, plus explicit
+  `--verbose`/`-v`/`set -x` — evidence: stanza clause
   `explicit-verbosity detections` — reviewer: met
 - **met** — one issue per repository under fixed id `BP-VERBOSE-GATE` at
-  `severity:medium`, listing every verbose line by file/line with the quiet
-  flag beside it; a second scan while open files nothing — evidence: stanza
-  clauses `fixed finding id, one issue per repository` and `severity band` —
-  reviewer: met
-- **met** — the six already-known-verbose repositories get no hand-filed
-  issue — reviewer: met — reason: this is an operational instruction to the
-  scan operator, not a testable code path; no code in this diff hand-files
-  issues for those repositories, and the fixed-id dedup means a prior run's
-  filed issue (if any) still suppresses a repeat.
+  `severity:medium`, listing every verbose line by file/line with the quiet flag
+  beside it; a second scan while open files nothing — evidence: stanza clauses
+  `fixed finding id, one issue per repository` and `severity band` — reviewer:
+  met
+- **met** — the six already-known-verbose repositories get no hand-filed issue —
+  reviewer: met — reason: this is an operational instruction to the scan
+  operator, not a testable code path; no code in this diff hand-files issues for
+  those repositories, and the fixed-id dedup means a prior run's filed issue (if
+  any) still suppresses a repeat.
 - **met** — the scan never opens a PR; the fix rides the repository's own
   `work-on` PR — evidence: stanza clause `no-pull-request boundary` — reviewer:
   met
@@ -138,24 +144,26 @@ hardcoded branch names) PASSED; `config integration` SKIPPED as always.
   (74 tests total, 0 failures) and the full gate.
 - **clean** — Australian English throughout; no hidden or secret paths staged;
   every test calls a real function (`loadPrompt`, `readRepoDoc`, `section`,
-  `withoutSection`) and asserts on its return value — no source-grepping;
-  every prose assertion is paired with a negative control against the same
-  text with the stanza removed, so a predicate that pins nothing is caught;
-  the stanza itself carries no bare `#NNN` issue reference or repo-relative
-  path, so it stays portable when filed verbatim as an issue body in another
-  repository (`the verbose-gate stanza stays portable across repositories`);
-  commit references Issue #2472 and carries `Co-Authored-By` and
-  `Vibe-Coder-Run-Id` trailers.
+  `withoutSection`) and asserts on its return value — no source-grepping; every
+  prose assertion is paired with a negative control against the same text with
+  the stanza removed, so a predicate that pins nothing is caught; the stanza
+  itself carries no bare `#NNN` issue reference or repo-relative path, so it
+  stays portable when filed verbatim as an issue body in another repository
+  (`the verbose-gate stanza stays portable across repositories`); commit
+  references Issue #2472 and carries `Co-Authored-By` and `Vibe-Coder-Run-Id`
+  trailers.
 
 ## Test Plan
 
 - `worker/deno/tests/best_practices_verbose_gate_test.ts` (new, 30 tests):
-  - One states/absent pair per contract clause (12 clauses × 2) run against
-    the orchestrator stanza and against the orchestrator with the stanza cut
-    out, so a predicate satisfied by unrelated prose elsewhere in the prompt
-    is caught by its own negative control.
-  - `no bucket guide keeps a duplicate Test output section` / `... a copy of
-    the quiet-flag table` — the fold actually happened in all nine guides.
+  - One states/absent pair per contract clause (12 clauses × 2) run against the
+    orchestrator stanza and against the orchestrator with the stanza cut out, so
+    a predicate satisfied by unrelated prose elsewhere in the prompt is caught
+    by its own negative control.
+  - `no bucket guide keeps a duplicate Test output section` /
+    `... a copy of
+    the quiet-flag table` — the fold actually happened in all
+    nine guides.
   - `every folded guide points at the orchestrator stanza` — the five folded
     guides left a pointer, not a silent deletion.
   - `every bucket guide is still non-empty after the fold`.
@@ -164,14 +172,15 @@ hardcoded branch names) PASSED; `config integration` SKIPPED as always.
     `#NNN` or repo-local path inside the stanza body.
 - `worker/deno/tests/support/markdown_docs.ts` — added `sectionBounds()`
   (private, shared by `section()` and the new `withoutSection()`) and exported
-  `withoutSection()`. Behaviour-preserving for existing callers; re-ran all
-  four other consumer suites (44 tests) to confirm.
+  `withoutSection()`. Behaviour-preserving for existing callers; re-ran all four
+  other consumer suites (44 tests) to confirm.
 - No existing test was modified to pass, or removed.
 
 ## Docs
 
-- `docs/BEST-PRACTICES-SCAN.md` — new entry naming the `### Cross-bucket:
-  verbose gate output` stanza and the fixed `BP-VERBOSE-GATE` finding id.
-- `prompts/best_practices/buckets/{general,typescript,rust,java,react}.md` —
-  the five full copies replaced with one-line pointers to the orchestrator
-  stanza.
+- `docs/BEST-PRACTICES-SCAN.md` — new entry naming the
+  `### Cross-bucket:
+  verbose gate output` stanza and the fixed
+  `BP-VERBOSE-GATE` finding id.
+- `prompts/best_practices/buckets/{general,typescript,rust,java,react}.md` — the
+  five full copies replaced with one-line pointers to the orchestrator stanza.

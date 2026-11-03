@@ -8,16 +8,17 @@ Both issues carried `work-on` applied by a trusted human, no assignee, no
 blocking label, and no PR in their work stream — every gate the census models
 said "claimable". Both had also been claimed and handed back earlier the same
 day, so this run held them in its **processed-issue registry**, and
-`find_oldest_issue.ts` filtered them out as `cooldown` *after* every collector
+`find_oldest_issue.ts` filtered them out as `cooldown` _after_ every collector
 had passed them. Registry entries live as long as the process does, so that
 refusal repeated on every later cycle of the run — a permanent strand behind a
 skip reason nobody could see.
 
 Nobody could see it because the second half of the fault was in the scan's own
-reporting: the cooldown filters called `logIssueSkipped` and recorded **nothing**
-in `blockedDetails`, the field Issue #460 added precisely so the escalation can
-name the gate per issue. Issue #655 was therefore filed with an empty
-"What the claim scan did with them" section — the one fact its reader needed.
+reporting: the cooldown filters called `logIssueSkipped` and recorded
+**nothing** in `blockedDetails`, the field Issue #460 added precisely so the
+escalation can name the gate per issue. Issue #655 was therefore filed with an
+empty "What the claim scan did with them" section — the one fact its reader
+needed.
 
 The same over-count sat in the **idle-detect audit**, the second alert the issue
 names. It counted #622 and #623 as claimable on every tick, so
@@ -42,15 +43,15 @@ Four changes:
    `runLocalHolds` classifier input and a `runLocalHoldFn` audit option, applied
    last for the same reason and ranked in `pickDominantReason` below the two PR
    gates (which describe fleet state outliving this process) and above the gates
-   applied before it. Exactly the shape Issue #4223 and GRQ#4419 used to give the
-   audit the open-PR and merged-PR gates. A hold source that throws falls back to
-   no hold, so a failure restores the old over-count rather than reporting a repo
-   as having nothing to do.
+   applied before it. Exactly the shape Issue #4223 and GRQ#4419 used to give
+   the audit the open-PR and merged-PR gates. A hold source that throws falls
+   back to no hold, so a failure restores the old over-count rather than
+   reporting a repo as having nothing to do.
 4. **`run_core_production_deps.ts`** — `loadRunLocalHolds()` resolves the
    persisted retry cooldown plus the processed-issue registry **once**, and all
    three readers use it: the claim scan's `isIssueInCooldown`, the census's
-   `runLocalHolds` and the audit's `runLocalHoldFn`. One source of truth, so they
-   cannot drift again.
+   `runLocalHolds` and the audit's `runLocalHoldFn`. One source of truth, so
+   they cannot drift again.
 
 A held `work-on` issue still serialises the repo's lower tiers, because the scan
 increments its suppression count inside the collector, before this filter runs.
@@ -108,8 +109,8 @@ gate in both tier arrangements.
 
 - **symptom** — the census reported `work_on=2 inversion_signal=true` for
   `stSoftwareAU/VibeCoder` on cycle after cycle, and the audit reported
-  `claimable=2` beside it, while the claim scan silently refused #622 and #623
-  — and the filed escalation named no scan reason at all
+  `claimable=2` beside it, while the claim scan silently refused #622 and #623 —
+  and the filed escalation named no scan reason at all
 - **status** — `verified` — every regression check was observed failing against
   the unfixed code and passing after the fix: the finder test read
   `blockedDetails` reason `undefined` for the cooled-down issues, the recorded

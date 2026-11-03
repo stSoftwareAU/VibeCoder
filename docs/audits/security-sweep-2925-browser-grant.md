@@ -17,12 +17,12 @@ looks at what now reaches the browser, not at the one-line predicate.
 
 Shapes checked:
 
-| Property                                         | Result                                                                                                                                                                                  |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| the decision reads only operator configuration   | the sole input is the operator's `repo_config` map and the repository name; no issue, PR or comment text can switch the browser on or off                                               |
-| the operator opt-out still wins                  | `skip_screenshot_check: true` returns `false`, so that repository's runs start no Chromium and no MCP server, as Issue #1584 required                                                   |
-| the server's own guards are unchanged            | `generateMcpConfig` still blocks the cloud metadata origins, denies the worker's secrets by `--deny-env` and in the `env` block, and uses a disposable profile outside the checkout     |
-| the grant is limited to code-changing runs       | issue execute, PR-feedback and CI-fix runs ask it; planning, question and grill-me runs never do and keep no browser                                                                    |
+| Property                                       | Result                                                                                                                                                                              |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the decision reads only operator configuration | the sole input is the operator's `repo_config` map and the repository name; no issue, PR or comment text can switch the browser on or off                                           |
+| the operator opt-out still wins                | `skip_screenshot_check: true` returns `false`, so that repository's runs start no Chromium and no MCP server, as Issue #1584 required                                               |
+| the server's own guards are unchanged          | `generateMcpConfig` still blocks the cloud metadata origins, denies the worker's secrets by `--deny-env` and in the `env` block, and uses a disposable profile outside the checkout |
+| the grant is limited to code-changing runs     | issue execute, PR-feedback and CI-fix runs ask it; planning, question and grill-me runs never do and keep no browser                                                                |
 
 Residual risk, accepted by the owner on #2925: a prompt-injected agent on a
 backend issue now has a browser tool it did not have. It already had outbound

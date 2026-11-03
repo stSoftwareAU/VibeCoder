@@ -46,11 +46,11 @@ flowchart LR
 deterministic, network-free and executes nothing — the gate script and the
 workflows are read as text.
 
-| Input | Rule |
-| --- | --- |
-| `quality.sh` | A `command -v <tool>` guard followed by an `echo … skipping` is a **skip**. Both the `if … then … else` and the `\|\| echo` spellings are recognised. An `exit` disqualifies only **its own branch**: `if command -v bats; then bats t \|\| exit 1; else echo "… skipping"; fi` still skips when the tool is absent, while an `exit` beside the skip line means the gate stops and is never a finding. A nested guard inside the block does not hide the outer skip. |
-| `.github/workflows/*` | The tool is **enforced** when a `run:` step invokes it, or a `uses:` action runs it (`codespell-project/actions-codespell`). A bare `<tool> --version` probe and a `setup-*` action are installs, not enforcement. An install step (`apt-get install -y bats`, `pip install codespell`) is recorded as supporting evidence. |
-| `container/tools.json` | A tool pinned as a toolchain whose `repos` list names this repository is **suppressed** — the image carries it, so the gate no longer skips. |
+| Input                  | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `quality.sh`           | A `command -v <tool>` guard followed by an `echo … skipping` is a **skip**. Both the `if … then … else` and the `\|\| echo` spellings are recognised. An `exit` disqualifies only **its own branch**: `if command -v bats; then bats t \|\| exit 1; else echo "… skipping"; fi` still skips when the tool is absent, while an `exit` beside the skip line means the gate stops and is never a finding. A nested guard inside the block does not hide the outer skip. |
+| `.github/workflows/*`  | The tool is **enforced** when a `run:` step invokes it, or a `uses:` action runs it (`codespell-project/actions-codespell`). A bare `<tool> --version` probe and a `setup-*` action are installs, not enforcement. An install step (`apt-get install -y bats`, `pip install codespell`) is recorded as supporting evidence.                                                                                                                                          |
+| `container/tools.json` | A tool pinned as a toolchain whose `repos` list names this repository is **suppressed** — the image carries it, so the gate no longer skips.                                                                                                                                                                                                                                                                                                                         |
 
 ## Findings
 
@@ -98,20 +98,22 @@ All three fields are mandatory and the check fails closed: a marker missing
 suppress, and the drift is reported as normal. `author=` must also match the
 login `git blame` attributes to the marker line in `quality.sh`; otherwise the
 marker does not suppress. That binding holds only under squash merge; under
-merge-commit or rebase merge a contributor can forge it ([THREAT-MODEL.md R15](THREAT-MODEL.md#%EF%B8%8F-residual-risks)).
-See
+merge-commit or rebase merge a contributor can forge it
+([THREAT-MODEL.md R15](THREAT-MODEL.md#%EF%B8%8F-residual-risks)). See
 [operator triage and suppression](IDLE-TASK-FRAMEWORK.md#operator-triage-and-suppression).
 
 ## Cadence
 
 `cooldownHours: 168` caps the audit to once per repository per week, enforced by
-`idle_task_cooldown_gate.ts`. The wrapper title dispatch matches on `Run a
-gate-skip drift audit`, and `shouldFile` vetoes a fresh wrapper while one is
-still open.
+`idle_task_cooldown_gate.ts`. The wrapper title dispatch matches on
+`Run a
+gate-skip drift audit`, and `shouldFile` vetoes a fresh wrapper while one
+is still open.
 
 ## Related documentation
 
 - [Idle-task framework](IDLE-TASK-FRAMEWORK.md) — lifecycle, registry, cadence.
-- [Container image](CONTAINER.md) — the toolchain manifest the suppression reads.
+- [Container image](CONTAINER.md) — the toolchain manifest the suppression
+  reads.
 - [Bash syntax audit scan](BASH-SYNTAX-AUDIT-SCAN.md) — the sibling audit that
   checks a repository's CI blocks invalid scripts.

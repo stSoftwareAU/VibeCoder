@@ -7,21 +7,21 @@ with nowhere to live.
 
 This adds an **optional** agent identity to `buildCodingGuidelines()` and
 appends a per-model working-style overlay behind the agnostic baseline, inside
-the one `<coding_guidelines>` wrapper. With no identity — or no overlay
-authored for it — the output is byte-identical to today, which stays the common
-path. Closes #374.
+the one `<coding_guidelines>` wrapper. With no identity — or no overlay authored
+for it — the output is byte-identical to today, which stays the common path.
+Closes #374.
 
 - `worker/deno/lib/coding_guidelines_overlay.ts` (new) resolves the overlay:
   `AgentIdentity { provider?, model? }` maps to
   `prompts/coding_guidelines_<provider>_<model>/` then
-  `prompts/coding_guidelines_<provider>/`, most specific first, each an
-  ordinary immutable `vN.md` prompt directory.
+  `prompts/coding_guidelines_<provider>/`, most specific first, each an ordinary
+  immutable `vN.md` prompt directory.
 - Identity segments are slugged to `[a-z0-9-]` before they touch a path, so a
   malformed provider id from `.config.json` or the environment cannot traverse
   out of `prompts/`.
 - **Fails loud, not silently:** an overlay directory that exists but carries no
   `vN.md` was authored deliberately, so it returns an error rather than passing
-  for "no overlay". An *absent* directory is the ordinary no-overlay case.
+  for "no overlay". An _absent_ directory is the ordinary no-overlay case.
 - `stripPlaywrightSection` runs after the overlay is appended, so
   `skipScreenshots: true` strips Playwright guidance from the overlay too.
 - Identity is threaded through the nine `buildCodingGuidelines()` call sites in
@@ -79,15 +79,15 @@ ok | 98 passed | 0 failed
   issue exists to prevent, and it now fails `deno test` in CI.**
 - An unknown identity resolves to the exact baseline — no throw, no empty
   overlay heading.
-- `skipScreenshots: true` strips the Playwright section from the overlay as
-  well as the baseline, wrapper intact.
+- `skipScreenshots: true` strips the Playwright section from the overlay as well
+  as the baseline, wrapper intact.
 
 `worker/deno/tests/coding_guidelines_overlay_test.ts` (new file):
 
 - `codingGuidelinesOverlayNames()`: no identity → no candidates; provider alone
-  → one candidate; provider + model → model-specific first; a bare model with
-  no provider → nothing; a hostile provider/model id is slugged to a single
-  safe path segment.
+  → one candidate; provider + model → model-specific first; a bare model with no
+  provider → nothing; a hostile provider/model id is slugged to a single safe
+  path segment.
 - `loadCodingGuidelinesOverlay()`: absent overlay → `undefined` not an error;
   unknown identity → `undefined` not a throw; highest `vN.md` wins; a model
   overlay beats the provider overlay and an unmatched model falls back to it;
@@ -101,7 +101,7 @@ ok | 98 passed | 0 failed
 - `docs/EXTENDING.md` § **Per-model coding-guidelines overlays** — naming,
   precedence, immutability, the `skip_screenshot_check` interaction, and the
   prompt-cache constraint above.
-- `docs/MODEL-AND-CACHING.md` § *Model-generation prompt tuning* — now points
-  at the overlay prompts as where a tuning derived from an observed behaviour
-  is applied.
+- `docs/MODEL-AND-CACHING.md` § _Model-generation prompt tuning_ — now points at
+  the overlay prompts as where a tuning derived from an observed behaviour is
+  applied.
 - `docs/PROMPTS.md` — the new prompt type listed in the template table.

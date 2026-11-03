@@ -19,13 +19,13 @@ The trigger was the inherited environment itself: any `pre_setup_command` — or
 any install hook it reaches — could read a provider credential with
 `echo $CLAUDE_CODE_OAUTH_TOKEN`. The child environment is now **built by
 allowlist**, not filtered: `buildUntrustedCommandEnv()` copies only the names in
-`ALLOWED_ENV_NAMES`, and `clearEnv: true` means nothing else reaches the child at
-all. No credential name is on that allowlist, so there is no variant spelling,
-suffix or new provider name to bypass with — a denylist could be evaded, an
-allowlist has nothing to slip past. The only remaining additions are the two
-explicit overrides `REPO_PATH` and `REPO_NAME`, both worker-computed, neither
-carrying a secret. Deeper descendants inherit from the built environment, so
-grandchild processes are covered by construction.
+`ALLOWED_ENV_NAMES`, and `clearEnv: true` means nothing else reaches the child
+at all. No credential name is on that allowlist, so there is no variant
+spelling, suffix or new provider name to bypass with — a denylist could be
+evaded, an allowlist has nothing to slip past. The only remaining additions are
+the two explicit overrides `REPO_PATH` and `REPO_NAME`, both worker-computed,
+neither carrying a secret. Deeper descendants inherit from the built
+environment, so grandchild processes are covered by construction.
 
 ## Evidence
 
@@ -81,8 +81,8 @@ regression file for this class (Issues #572 / #1214):
   `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` in a **child** worker's
   environment, has that child run the real `runPreSetupCommand`, and asserts the
   spawned command cannot read the token. Fails against the unfixed code with
-  "the pre-setup command could read a provider credential"; passes after the fix.
-  The credential is planted in a child process, never this one, so nothing
+  "the pre-setup command could read a provider credential"; passes after the
+  fix. The credential is planted in a child process, never this one, so nothing
   process-wide is mutated and the test stays parallel-safe (Issue #880).
 
 Existing `worker/deno/tests/repo_config_test.ts` pre-setup tests (success,

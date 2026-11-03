@@ -6,8 +6,8 @@ defaults to allowing every origin. That config is not setup-only —
 `lib/agent_mcp_config.ts:126` builds it for the live agent, whose navigation
 target comes from issue and PR text anyone can write. A prompt injection could
 therefore `browser_navigate` to `http://169.254.169.254/latest/meta-data/`,
-`browser_take_screenshot` into `docs/evidence/`, and have the worker upload
-that image to ImgBB and link it in a **public** PR.
+`browser_take_screenshot` into `docs/evidence/`, and have the worker upload that
+image to ImgBB and link it in a **public** PR.
 
 This adds `PLAYWRIGHT_MCP_BLOCKED_HOSTS` and `blockedOriginsValue()` and passes
 the resulting `--blocked-origins` list in the generated argv. Closes #1292.
@@ -20,16 +20,16 @@ and assert on the argv they produce.
 
 Blocked hosts (each emitted in bare-host and wildcard-port form, because
 `@playwright/mcp` matches a bare host as `*://host/**` — any scheme, **default
-port only** — while `http://host:*` covers any port, and neither form covers
-the other):
+port only** — while `http://host:*` covers any port, and neither form covers the
+other):
 
-| Host | Endpoint |
-|------|----------|
-| `169.254.169.254` | AWS / Azure / GCP / OpenStack / DigitalOcean IMDS |
-| `169.254.170.2` | AWS ECS task metadata |
-| `[fd00:ec2::254]` | AWS IMDS over IPv6 |
-| `metadata.google.internal`, `metadata.goog` | GCP |
-| `100.100.100.100` | Alibaba Cloud |
+| Host                                        | Endpoint                                          |
+| ------------------------------------------- | ------------------------------------------------- |
+| `169.254.169.254`                           | AWS / Azure / GCP / OpenStack / DigitalOcean IMDS |
+| `169.254.170.2`                             | AWS ECS task metadata                             |
+| `[fd00:ec2::254]`                           | AWS IMDS over IPv6                                |
+| `metadata.google.internal`, `metadata.goog` | GCP                                               |
+| `100.100.100.100`                           | Alibaba Cloud                                     |
 
 A blocklist, not an allowlist: `lib/screenshot_validation.ts` and
 `lib/prompt_builder.ts` instruct the agent to serve local pages on `127.0.0.1`,
@@ -49,17 +49,17 @@ flowchart LR
 
 ### Original trigger closed, no trivial bypass
 
-The issue's trigger — `browser_navigate` to `http://169.254.169.254/latest/meta-data/`
-followed by `browser_take_screenshot` — is closed: `generateMcpConfig()` now
-emits `--blocked-origins`, and `@playwright/mcp@0.0.75` turns each entry into a
-route that aborts the request with `blockedbyclient`
-(`playwright-core .../coreBundle.js:58449`, matcher `originOrHostGlob` at
-`:58215`). The obvious variations are enumerated rather than left open: `https`
-as well as `http` (bare-host form matches any scheme), non-default ports
-(wildcard-port form), the IPv6 IMDS address, and the ECS / GCP / Alibaba
-metadata addresses — so a scheme, port or provider swap is not a bypass. A host
-carrying the `;` list separator would silently split the list into entries that
-match nothing, so that case throws instead.
+The issue's trigger — `browser_navigate` to
+`http://169.254.169.254/latest/meta-data/` followed by `browser_take_screenshot`
+— is closed: `generateMcpConfig()` now emits `--blocked-origins`, and
+`@playwright/mcp@0.0.75` turns each entry into a route that aborts the request
+with `blockedbyclient` (`playwright-core .../coreBundle.js:58449`, matcher
+`originOrHostGlob` at `:58215`). The obvious variations are enumerated rather
+than left open: `https` as well as `http` (bare-host form matches any scheme),
+non-default ports (wildcard-port form), the IPv6 IMDS address, and the ECS / GCP
+/ Alibaba metadata addresses — so a scheme, port or provider swap is not a
+bypass. A host carrying the `;` list separator would silently split the list
+into entries that match nothing, so that case throws instead.
 
 Residual, stated plainly rather than claimed closed: the package documents that
 origin filtering "does not serve as a security boundary and does not affect

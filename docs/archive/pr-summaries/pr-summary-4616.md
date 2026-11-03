@@ -48,12 +48,12 @@ flowchart LR
   default when they deny warnings, and `--locked` is added before
   the `--` separator when a `Cargo.lock` is committed and CI does not already
   pass it. The default includes `-D warnings` when CI's invocation does not.
-- Unavailable tools, timeout, disk pressure, unreachable remote modules and
-  an older `rustc` defer verification and withdraw the attempt without a push
-  or a charged failure. Repository commands use the quality gate's untrusted
-  spawn and allowlisted environment; if the untrusted account is unavailable,
-  the check defers instead of executing as the worker. Repair replies are
-  retained alongside the original conflict-resolution reply.
+- Unavailable tools, timeout, disk pressure, unreachable remote modules and an
+  older `rustc` defer verification and withdraw the attempt without a push or a
+  charged failure. Repository commands use the quality gate's untrusted spawn
+  and allowlisted environment; if the untrusted account is unavailable, the
+  check defers instead of executing as the worker. Repair replies are retained
+  alongside the original conflict-resolution reply.
 - On refusal or cut-short the local branch is reset to the attempt's starting
   tip (`discardLocalMerge`); only commits made after that tip in this attempt
   are destroyed and none was pushed.
@@ -91,7 +91,8 @@ Backend and prompt only, no UI. No fleet-wide measurement is claimed.
   `tests/pr_merge_conflict_processor_test.ts`. The new refusal test verifies
   that no command starts when the account is unavailable; the real-child
   environment test still checks that a parent credential does not reach it.
-- On repair commit `4649d8f`, `deno test --frozen --allow-all
+- On repair commit `4649d8f`,
+  `deno test --frozen --allow-all
   tests/merge_fast_checks_test.ts tests/pr_merge_conflict_processor_test.ts`
   passed 143 tests. These cover the deferred outcomes, disk check, spawn
   environment and retained replies as well as the prior merge-check cases.
@@ -143,12 +144,12 @@ Backend and prompt only, no UI. No fleet-wide measurement is claimed.
   no base merge and are unchanged. Five other test files that import the
   processor pass without changes.
 - On the original implementation, `./quality.sh` passed every stage except
-  `deno tests`, where the parallel
-  pass ended with 31604 passed and 2 failed, both in
-  `tests/completion_phase_repo_formatters_test.ts` (lines 480 and 567, the cargo
-  fmt commit tests; this host has no rustup/cargo and this diff does not touch
-  that code). The serial pass did not run because the parallel pass failed.
-  `config integration` and `checkov` were skipped for local prerequisites.
+  `deno tests`, where the parallel pass ended with 31604 passed and 2 failed,
+  both in `tests/completion_phase_repo_formatters_test.ts` (lines 480 and 567,
+  the cargo fmt commit tests; this host has no rustup/cargo and this diff does
+  not touch that code). The serial pass did not run because the parallel pass
+  failed. `config integration` and `checkov` were skipped for local
+  prerequisites.
 - Docs updated: `docs/workflows/merge-conflicts.md` (TL;DR, the contract list,
   the stage-timings section), `README.md` (Merge conflict row),
   `prompts/merge_conflict/prompt.md`, and the comment in

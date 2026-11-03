@@ -19,7 +19,8 @@ slices are not repeated here.
 > **Result: nil.** All 35 slices were swept and every candidate was refuted. No
 > finding survived, so no issue was filed.
 
-> **`top-up-2279` retired under [#2842](https://github.com/stSoftwareAU/VibeCoder/issues/2842).**
+> **`top-up-2279` retired under
+> [#2842](https://github.com/stSoftwareAU/VibeCoder/issues/2842).**
 > `conflict_rebase_rung.ts` was deleted and its slice removed from
 > `lib-sweep-coverage.json`; the row below is dropped with it. 34 slices remain
 > enforced — the refutation for the deleted module is kept under
@@ -254,9 +255,8 @@ text change is constant.
 ### conflict ladder
 
 The #2023, #2030, #2276 and #2279 git rungs all run git as argv through an
-injected runner, never through a shell. `top-up-2279`'s slice was later
-retired under #2842 (module deleted); its refutation is kept here for
-history.
+injected runner, never through a shell. `top-up-2279`'s slice was later retired
+under #2842 (module deleted); its refutation is kept here for history.
 
 - `milestone_conflict_ported.ts` (top-up-2023, added) calls `assertSafeGitRef`
   and `assertSafeRefComponent`, then runs `ls-files -u`,

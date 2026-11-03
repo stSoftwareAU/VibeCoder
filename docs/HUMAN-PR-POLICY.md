@@ -5,7 +5,8 @@ yours — unless you ask it to.
 
 This page is the operator-facing statement of that policy: what the worker will
 and will not do to a PR authored by a trusted human, how to hand it a PR, how to
-take it back, and why your open PR never parks the worker's queue. The two configuration lists behind it are described in the
+take it back, and why your open PR never parks the worker's queue. The two
+configuration lists behind it are described in the
 [Configuration Reference](CONFIGURATION.md#-fleet-pr-authors-fleet-aware-pr-maintenance);
 the incident that produced the policy is recorded in
 [Lessons learnt](LESSONS-LEARNT.md#-a-set-defined-by-trust-is-not-a-set-defined-by-ownership).
@@ -14,32 +15,32 @@ the incident that produced the policy is recorded in
 
 There are two author lists, and they answer two different questions.
 
-| List                | Members                    | What membership grants                                                             |
-| ------------------- | -------------------------- | ---------------------------------------------------------------------------------- |
-| `fleet_pr_authors`  | Sibling fleet logins       | Their PRs are **maintained** — claimed, fixed, commented on, merged                  |
-| `allowed_authors`   | Trusted humans             | They may **instruct** the worker — file issues, apply labels, comment, invite        |
+| List               | Members              | What membership grants                                                        |
+| ------------------ | -------------------- | ----------------------------------------------------------------------------- |
+| `fleet_pr_authors` | Sibling fleet logins | Their PRs are **maintained** — claimed, fixed, commented on, merged           |
+| `allowed_authors`  | Trusted humans       | They may **instruct** the worker — file issues, apply labels, comment, invite |
 
 In one line: **trusted to command, not to be commanded.** Being trusted to
 direct the worker never makes your PR the worker's to take over.
 
 `service_accounts` is not a third list: those logins are fleet accounts, so
 `loadConfig` unions them into the effective `fleet_pr_authors`
-([Configuration](CONFIGURATION.md#service-accounts-are-fleet-pr-authors-too)).
-A sibling named only there is a fleet login everywhere, never a human.
+([Configuration](CONFIGURATION.md#service-accounts-are-fleet-pr-authors-too)). A
+sibling named only there is a fleet login everywhere, never a human.
 
 ## 🚫 What the worker will and will not do
 
 For a PR authored by a trusted human, with no invitation:
 
-| Action                                    | Uninvited human PR | Fleet PR | Bot PR (same repository) |
-| ----------------------------------------- | ------------------ | -------- | ------------------------ |
-| Claim it (`eyes` reaction, claim comment)  | Never              | Yes      | Yes                      |
-| Push a CI-fix or spelling-fix commit       | Never              | Yes      | Yes                      |
-| Reply to review feedback on it             | Never              | Yes      | Yes                      |
-| Enable auto-merge / merge it               | Never              | Yes      | Yes                      |
-| Post a CI nudge comment                    | Never              | Yes      | No — the nudge scan lists by author only |
-| Add or remove a label, add a reaction      | Never              | Yes      | Yes                      |
-| Wait behind it before raising its own PR   | Never              | Yes      | Never                    |
+| Action                                    | Uninvited human PR | Fleet PR | Bot PR (same repository)                 |
+| ----------------------------------------- | ------------------ | -------- | ---------------------------------------- |
+| Claim it (`eyes` reaction, claim comment) | Never              | Yes      | Yes                                      |
+| Push a CI-fix or spelling-fix commit      | Never              | Yes      | Yes                                      |
+| Reply to review feedback on it            | Never              | Yes      | Yes                                      |
+| Enable auto-merge / merge it              | Never              | Yes      | Yes                                      |
+| Post a CI nudge comment                   | Never              | Yes      | No — the nudge scan lists by author only |
+| Add or remove a label, add a reaction     | Never              | Yes      | Yes                                      |
+| Wait behind it before raising its own PR  | Never              | Yes      | Never                                    |
 
 The five PR-maintenance scans — PR feedback, CI fix, spelling, auto-merge and
 the CI nudge — list PRs by author through the **push-capable** set
@@ -48,7 +49,7 @@ the CI nudge — list PRs by author through the **push-capable** set
 `gh pr list --author`, so an uninvited human PR is not merely skipped late — it
 is never fetched by that listing at all. Bot-authored PRs arrive by a different
 door — see [Bot-authored PRs](#-bot-authored-prs) — and that door does read the
-repository's un-filtered open-PR listing, so a human PR's *metadata* is now
+repository's un-filtered open-PR listing, so a human PR's _metadata_ is now
 visible to it. It admits bot logins and nothing else, so an uninvited human PR
 is still never **admitted**: no scan claims it, reads its comments, or writes to
 it.
@@ -58,10 +59,10 @@ through the wider fleet-owned set (`resolveFleetPrAuthorSet`), which meant one
 unrelated human PR parked every `work-on` issue in the repo. It no longer does:
 `getBlockingPRForIssue` only considers PRs authored by the **push-capable** set,
 so your PR is invisible to issue selection. You manage your PR; the worker gets
-on with the issues it was invited to. The per-stream limit still
-applies to the fleet's *own* PRs — one per milestone branch, one per slot on the
-default branch (`fleet_pr_slots`, Issue #2663) — so the worker never runs more
-of its own PRs into a work stream than it has slots to carry.
+on with the issues it was invited to. The per-stream limit still applies to the
+fleet's _own_ PRs — one per milestone branch, one per slot on the default branch
+(`fleet_pr_slots`, Issue #2663) — so the worker never runs more of its own PRs
+into a work stream than it has slots to carry.
 
 ```mermaid
 flowchart TD
@@ -107,17 +108,17 @@ What counts as a bot **for admission** is `isBotAuthorForMaintenance`
 
 - a login **ending** in `[bot]` — `dependabot[bot]`, `renovate[bot]`,
   `copilot-swe-agent[bot]`;
-- one of the three known **suffix-less** bots, matched whole:
-  `dependabot`, `renovate`, `github-actions`.
+- one of the three known **suffix-less** bots, matched whole: `dependabot`,
+  `renovate`, `github-actions`.
 
 That is deliberately narrower than `isBotLogin`, the worker's general
 `[bot]`-detection predicate, which also matches a login **starting** with
 `github-copilot`, `copilot`, `cursor`, `dependabot`, `renovate`, `snyk` or
 `codecov`. Those are prefix matches, so `isBotLogin` reads `cursorjoe` and
-`snyked` as bots — harmless where it decides whether to *trust* a review
-comment (over-detecting a bot only withholds trust), and unacceptable here,
-where a match means the worker claims the PR and pushes to its head branch.
-The two predicates were split for exactly that reason
+`snyked` as bots — harmless where it decides whether to _trust_ a review comment
+(over-detecting a bot only withholds trust), and unacceptable here, where a
+match means the worker claims the PR and pushes to its head branch. The two
+predicates were split for exactly that reason
 ([#1872](https://github.com/stSoftwareAU/VibeCoder/issues/1872)): a human whose
 login happens to start with a bot's name keeps their PR.
 
@@ -138,7 +139,7 @@ The boundaries, all of which fail **closed**:
 - **An unreadable listing admits nothing.** The failure is logged and no bot PR
   enters the scan set.
 - **Human PRs are untouched by this.** The un-filtered listing this door reads
-  contains every open PR, so it *sees* a human PR — but it admits bot logins and
+  contains every open PR, so it _sees_ a human PR — but it admits bot logins and
   nothing else, so an uninvited human PR is never added to the scan set and no
   scan ever acts on it.
 
@@ -164,15 +165,15 @@ reason (`reason=cross-repository-head`, `reason=cross-repository-unknown`).
 
 A dependency bot stops rebasing its own PR the moment a foreign commit lands on
 it, so once the worker pushes a fix the PR drifts behind its base until the
-merge gate skips it as "branch not fresh". The branch-update scan (Priority
-1.6, `pr_branch_update.ts`) therefore selects those PRs too: alongside the
-worker's own PRs (body marker or `issue-<n>-` branch), it admits a PR whose
-author is a bot, whose head branch lives in **this** repository, and whose
-commits include at least one by this host's login — `isHostPushedBotPr`.
+merge gate skips it as "branch not fresh". The branch-update scan (Priority 1.6,
+`pr_branch_update.ts`) therefore selects those PRs too: alongside the worker's
+own PRs (body marker or `issue-<n>-` branch), it admits a PR whose author is a
+bot, whose head branch lives in **this** repository, and whose commits include
+at least one by this host's login — `isHostPushedBotPr`.
 
 The commit lookup (`gh pr view <n> --json commits`) is issued **only** for
-bot-authored same-repository PRs, so a human or worker PR costs no extra call.
-A lookup that fails **excludes** the PR and is logged
+bot-authored same-repository PRs, so a human or worker PR costs no extra call. A
+lookup that fails **excludes** the PR and is logged
 (`[branch-update] excluded repo=… prNumber=… reason=commit-lookup-failed …`) —
 an unreadable answer is never read as "no host commits".
 
@@ -187,10 +188,10 @@ The policy is "only when asked", not "never". Every scan additionally lists the
 open PRs authored by `allowed_authors` and admits only those carrying an
 explicit invitation. Two signals count:
 
-| Signal      | How to give it                                                    | Who may give it                                                       |
-| ----------- | ----------------------------------------------------------------- | --------------------------------------------------------------------- |
-| **Label**   | Add the `work-on` label to the PR                                  | A trusted human in `allowed_authors` — the timeline adder is checked   |
-| **Mention** | Comment on, or review, the PR mentioning `@<worker-login>`         | A trusted human in `allowed_authors` — the comment author is checked   |
+| Signal      | How to give it                                             | Who may give it                                                      |
+| ----------- | ---------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Label**   | Add the `work-on` label to the PR                          | A trusted human in `allowed_authors` — the timeline adder is checked |
+| **Mention** | Comment on, or review, the PR mentioning `@<worker-login>` | A trusted human in `allowed_authors` — the comment author is checked |
 
 Details that decide real cases:
 
@@ -198,8 +199,8 @@ Details that decide real cases:
   worker resolves from the PR timeline who applied it. An unattributable label
   is not an invitation.
 - **A fleet account is never an inviter.** Fleet logins sit in `allowed_authors`
-  for PR dedup, so without that exclusion a worker could label its
-  way onto your PR.
+  for PR dedup, so without that exclusion a worker could label its way onto your
+  PR.
 - **Mentions must be genuine.** A `@worker` inside a fenced code block or a
   quoted log is ignored — pasted CI output must not conscript the worker.
 - **Anything unclear is a refusal.** An unreadable listing, an unattributable
@@ -229,33 +230,32 @@ branch — revoking stops future work, it does not rewrite history.
 
 ## 🚧 Your PR and the worker's queue
 
-Your open PR does not block the worker's issue pickup at all.
-There is no stand-down, no `needs-human` label, and no comment on the blocked
-issue: the worker simply keeps working the issues it was invited to, in
-parallel with you.
+Your open PR does not block the worker's issue pickup at all. There is no
+stand-down, no `needs-human` label, and no comment on the blocked issue: the
+worker simply keeps working the issues it was invited to, in parallel with you.
 
-Only **fleet-authored** open PRs defer an issue, and they do so repo-wide —
-one open fleet PR at a time per work stream, so the worker never stacks several
-of its own PRs into merge hell. Two inputs are deliberately treated as
-fleet-owned because authorship could not be established, and guessing wrong
-would break that rule:
+Only **fleet-authored** open PRs defer an issue, and they do so repo-wide — one
+open fleet PR at a time per work stream, so the worker never stacks several of
+its own PRs into merge hell. Two inputs are deliberately treated as fleet-owned
+because authorship could not be established, and guessing wrong would break that
+rule:
 
 - an open PR whose author was never recorded (a cache entry written before the
   author was stamped), and
 - an unresolved or empty push-capable set.
 
-If you *want* the worker on your PR, invite it (label or @mention, above).
+If you _want_ the worker on your PR, invite it (label or @mention, above).
 
 ## 🔍 Verifying the policy holds
 
-| Where                                                                                        | What it pins                                                                     |
-| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `worker/deno/tests/pr_uninvited_action_test.ts`                                                 | Cross-scan invariant: no scan writes to an uninvited human PR                     |
-| `worker/deno/tests/pr_maintenance_test.ts`, `pr_ci_nudge_scan_test.ts`                         | The `--author` arguments each scan passes to `gh`                                 |
-| `worker/deno/tests/human_pr_never_blocks_test.ts`                                              | That a human PR never blocks issue pickup, and a fleet PR still does              |
-| `worker/deno/tests/human_pr_policy_docs_test.ts`                                               | This page's labels and author sets against the real predicates                    |
-| `worker/deno/tests/pr_bot_lookup_test.ts`, `pr_maintenance_bot_prs_test.ts`                    | That bot PRs reach all four scans and fork-headed ones do not                     |
-| `worker/deno/tests/pr_branch_update_bot_prs_test.ts`                                            | That a bot PR the worker pushed to is kept up to date with its base               |
+| Where                                                                       | What it pins                                                         |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `worker/deno/tests/pr_uninvited_action_test.ts`                             | Cross-scan invariant: no scan writes to an uninvited human PR        |
+| `worker/deno/tests/pr_maintenance_test.ts`, `pr_ci_nudge_scan_test.ts`      | The `--author` arguments each scan passes to `gh`                    |
+| `worker/deno/tests/human_pr_never_blocks_test.ts`                           | That a human PR never blocks issue pickup, and a fleet PR still does |
+| `worker/deno/tests/human_pr_policy_docs_test.ts`                            | This page's labels and author sets against the real predicates       |
+| `worker/deno/tests/pr_bot_lookup_test.ts`, `pr_maintenance_bot_prs_test.ts` | That bot PRs reach all four scans and fork-headed ones do not        |
+| `worker/deno/tests/pr_branch_update_bot_prs_test.ts`                        | That a bot PR the worker pushed to is kept up to date with its base  |
 
 In the logs, `[pr-invitation] admitted …` is the only sanctioned route to a
 worker action on a human-authored PR.

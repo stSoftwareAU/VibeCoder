@@ -3,20 +3,20 @@
 ## Summary
 
 The notice (#690), the upgrade command (#691) and the pinned-by-default setup
-(#692) each documented their own behaviour. This adds the connective tissue
-that belongs to none of them: the loop, end to end, tied back to the code that
+(#692) each documented their own behaviour. This adds the connective tissue that
+belongs to none of them: the loop, end to end, tied back to the code that
 produces it. Closes #693.
 
 - **`docs/CONFIGURATION.md`** — a new `#### The upgrade loop` section: the
   notice line as the launcher prints it, what `./run.sh upgrade` rewrites
   (`pinned_ref` plus all three `pinned_tool_versions`, and nothing else), that
-  it installs nothing itself, and that a hand-edited pin stays first-class for
-  a host that wants a specific ref. The `update_mode` row in the defaults table
+  it installs nothing itself, and that a hand-edited pin stays first-class for a
+  host that wants a specific ref. The `update_mode` row in the defaults table
   now names the setup default and the upgrade command alongside the load-time
   default.
 - **A Mermaid diagram of the loop** — launch → release check → notice (frozen
-  and behind only) → `./run.sh upgrade` rewrites the pins → next launch
-  installs exactly those versions → launch.
+  and behind only) → `./run.sh upgrade` rewrites the pins → next launch installs
+  exactly those versions → launch.
 - **`docs/SETUP.md`** — where the upgrade command fits after a fresh pinned
   setup: the pin moves by command, not by re-running setup.
 - **`docs/RELEASE-TAGGING.md`** — the manifest section now names the two hosts
@@ -65,7 +65,8 @@ flowchart TD
   and what it does and does not change, alongside the existing hand-edit path —
   evidence: `docs/CONFIGURATION.md` "The upgrade loop";
   `worker/deno/tests/update_mode_docs_test.ts::CONFIGURATION.md - the upgrade
-  loop names the real command and quotes the real notice` and
+  loop names the real command and quotes the real notice`
+  and
   `::CONFIGURATION.md - the upgrade loop states what the command changes and
   what it does not`.
 - **met** — the Mermaid diagram renders and passes the repo's Mermaid checks —
@@ -76,9 +77,10 @@ flowchart TD
   `docs/TROUBLESHOOTING.md` and `README.md` are updated, with cross-links
   resolving to real headings — evidence:
   `worker/deno/tests/update_mode_docs_test.ts::the upgrade-loop cross-links
-  resolve to real headings` (each added link is resolved against the target
-  document's real anchors), plus the per-document tests for README, SETUP,
-  DEPLOYMENT, RELEASE-TAGGING and TROUBLESHOOTING.
+  resolve to real headings`
+  (each added link is resolved against the target document's real anchors), plus
+  the per-document tests for README, SETUP, DEPLOYMENT, RELEASE-TAGGING and
+  TROUBLESHOOTING.
 - **met** — docs tests assert the command name, the notice wording and the
   worked examples against the code — evidence: the tests import
   `UPGRADE_COMMAND_NAME`/`UPGRADE_INVOCATION` (and assert `upgradeCommand.name`

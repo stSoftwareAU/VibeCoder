@@ -40,8 +40,8 @@ against three conditions:
 species it is: a filesystem-derived invariant, needing no exemption.
 
 **`prompts/test_audit/prompt.md` check 2** — the auditor stopped saying "Flag
-every grep-as-assertion you find"; it flags every grep-as-assertion *over source
-code*, and a new paragraph exempts the documentation-drift shape while naming
+every grep-as-assertion you find"; it flags every grep-as-assertion _over source
+code_, and a new paragraph exempts the documentation-drift shape while naming
 the two ways it degenerates back into a finding (whole-file assertion, or a
 retyped value the code does express). Its body describes the shape rather than
 citing `support/markdown_docs.ts`, because `test_audit` is filed into other
@@ -60,10 +60,11 @@ flowchart TD
 ### Scope
 
 `prompts/coding_guidelines/prompt.md` is deliberately untouched. Its
-corresponding bullets are scoped to *source files*, so they never banned the
-documentation shape and need no carve-out; `coding_guidelines_twin_drift_test.ts`
-case 2 additionally asserts that file carries no TDD wording, so adding one
-there would break a sibling pin for no gain.
+corresponding bullets are scoped to _source files_, so they never banned the
+documentation shape and need no carve-out;
+`coding_guidelines_twin_drift_test.ts` case 2 additionally asserts that file
+carries no TDD wording, so adding one there would break a sibling pin for no
+gain.
 
 ## Evidence
 
@@ -122,8 +123,8 @@ is narrowed with `section()` rather than run over a whole file.
 3. **The auditor exempts the pattern it still flags in source** — the prompt
    still mentions `grep-as-assertion`, now says documentation-drift tests are
    not a finding, no longer contains the unconditional "Flag every
-   grep-as-assertion you find.", and does not cite the internal helper path
-   (the cross-repo body guard).
+   grep-as-assertion you find.", and does not cite the internal helper path (the
+   cross-repo body guard).
 4. **The pattern the carve-out protects is real** — walks `worker/deno/tests`
    and fails if no `*_docs_test.ts` suite remains, or if no test imports the
    helper the carve-out names. The exemption cannot outlive what it exempts.

@@ -10,21 +10,20 @@ one.
 
 - **`worker/deno/lib/held_issue_gate_comment.ts`** (new) — pure builder plus
   injectable upsert:
-  - `buildHeldIssueGateComment(gate)` renders the Markdown body and the gate
-    key for the three gate kinds the fleet can actually report: `pr-open`
-    ("PR #N is open on this stream; this issue is worked once it lands"),
-    `milestone-wait` ("waits on milestone M — #N is closed but its code only
-    reaches the default branch when M merges") and `dependency` ("waits on
-    dependency #N", plus the unworkable-root sentence when the chain ends at a
-    root nobody can work).
+  - `buildHeldIssueGateComment(gate)` renders the Markdown body and the gate key
+    for the three gate kinds the fleet can actually report: `pr-open` ("PR #N is
+    open on this stream; this issue is worked once it lands"), `milestone-wait`
+    ("waits on milestone M — #N is closed but its code only reaches the default
+    branch when M merges") and `dependency` ("waits on dependency #N", plus the
+    unworkable-root sentence when the chain ends at a root nobody can work).
   - The hidden marker is `<!-- vibe-held-issue-gate key="<kind + refs>" -->`.
     Every interpolated value is fleet-controlled (a `number`, a
     `ChainRootReason` union member) or sanitised: refs go through
     `chain_root_comment.ts`'s own `safeRepo` (via the newly exported
-    `renderRef`), a milestone title through `safeMilestone`
-    (`[A-Za-z0-9._/ -]`, 120 chars — spaces and slashes survive because real
-    milestone names use them), and a root detail through `safeDetail`
-    (`[A-Za-z0-9._/-]`, 60 chars) for the key.
+    `renderRef`), a milestone title through `safeMilestone` (`[A-Za-z0-9._/ -]`,
+    120 chars — spaces and slashes survive because real milestone names use
+    them), and a root detail through `safeDetail` (`[A-Za-z0-9._/-]`, 60 chars)
+    for the key.
   - `upsertHeldIssueGateComment({ repo, issueNumber, gate, ghFn, fleetAuthors })`
     reads the thread with `fetchMarkerComments`, keeps only fleet-authored hits
     via `isFleetAuthor`, and returns `"unchanged"` (newest fleet marker already
@@ -32,11 +31,13 @@ one.
     comment id) or `"posted"` (none → POST).
   - `reasonSentence` is **reused** from `chain_root_comment.ts`, not copied — it
     and `renderRef` were promoted to exports for this.
-- **`worker/deno/lib/marker_comment_pages.ts`** — added `updateIssueComment(repo,
-  commentId, body, ghFn)` beside `deleteIssueComment`, issuing
+- **`worker/deno/lib/marker_comment_pages.ts`** — added
+  `updateIssueComment(repo,
+  commentId, body, ghFn)` beside
+  `deleteIssueComment`, issuing
   `gh api -X PATCH repos/{repo}/issues/comments/{id} -f body=…` as argv.
-- **`docs/audits/`** — the new module is claimed by the `top-up-2496` sweep slice
-  in `lib-sweep-coverage.json`, and
+- **`docs/audits/`** — the new module is claimed by the `top-up-2496` sweep
+  slice in `lib-sweep-coverage.json`, and
   `security-sweep-2496-chain-root-comment.md` carries its actual sweep reading
   (a per-input Input/Decision/Handling table, the label boundary, and the blast
   radius of a wrong verdict).
@@ -72,18 +73,18 @@ Two boundaries the upsert does not soften:
 - **Only a fleet-authored marker counts.** A comment body is text anyone who can
   comment may write; only the author is authenticated. A stranger's marker
   neither suppresses the post nor — the sharper harm, new to this module — hands
-  the fleet a comment id to overwrite. An empty `fleetAuthors` trusts nothing and
-  posts, so the failure direction is a duplicate rather than an edit of someone
-  else's comment.
+  the fleet a comment id to overwrite. An empty `fleetAuthors` trusts nothing
+  and posts, so the failure direction is a duplicate rather than an edit of
+  someone else's comment.
 - **An unreadable thread throws.** A blind read passing as "no marker found" is
   how the branch-lock and PR-claim markers papered their threads (#2265/#2266).
-  A refused PATCH throws too: a swallowed edit would leave the stale gate reading
-  as current.
+  A refused PATCH throws too: a swallowed edit would leave the stale gate
+  reading as current.
 
 ## Evidence
 
-Backend/CLI change — no visual surface, so no screenshot applies. The evidence is
-the test and gate output below.
+Backend/CLI change — no visual surface, so no screenshot applies. The evidence
+is the test and gate output below.
 
 Targeted suites, from `worker/deno`:
 
@@ -111,11 +112,11 @@ Full gate (`./quality.sh < /dev/null`, foreground): **PASSED** — including
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - Two upserts with the same gate make one POST and no PATCH; a third with a
-  different gate makes one PATCH on the existing comment id and no POST — **met**
-  (`tests/held_issue_gate_comment_test.ts`: the same-key case asserts the second
-  call returns `"unchanged"` with no further `gh` write, and the changed-gate case
-  asserts exactly one `PATCH …/issues/comments/<id>` on the fleet comment's own
-  id and zero POSTs).
+  different gate makes one PATCH on the existing comment id and no POST —
+  **met** (`tests/held_issue_gate_comment_test.ts`: the same-key case asserts
+  the second call returns `"unchanged"` with no further `gh` write, and the
+  changed-gate case asserts exactly one `PATCH …/issues/comments/<id>` on the
+  fleet comment's own id and zero POSTs).
 - A marker comment by a non-fleet author is neither trusted for dedup nor edited
   — **met** (a stranger-authored marker produces `"posted"`, and the recorded
   argv is a POST, never a PATCH against that comment's id; empty `fleetAuthors`
@@ -156,30 +157,31 @@ recorded here rather than left silent:
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-Verdict on the first pass was **changes requested**; four findings were fixed and
-three declined with reasoning.
+Verdict on the first pass was **changes requested**; four findings were fixed
+and three declined with reasoning.
 
 Violations, and what happened to each:
 
-- **HIGH — fixed.** `worker/deno/lib/held_issue_gate_comment.ts:1` — a new module
-  under `worker/deno/lib/` must be claimed by exactly one sweep slice
+- **HIGH — fixed.** `worker/deno/lib/held_issue_gate_comment.ts:1` — a new
+  module under `worker/deno/lib/` must be claimed by exactly one sweep slice
   (`CODING-STANDARDS.md:458`). Both validators are now satisfied: the path is in
-  the `top-up-2496` slice's `paths` (`docs/audits/lib-sweep-coverage.json`) **and**
-  the slice's record file names it and reads it
+  the `top-up-2496` slice's `paths` (`docs/audits/lib-sweep-coverage.json`)
+  **and** the slice's record file names it and reads it
   (`docs/audits/security-sweep-2496-chain-root-comment.md:12,57`). Adding the
   path alone would have made `diffCoverage` green and the record false.
 - **MEDIUM — fixed.** `worker/deno/lib/held_issue_gate_comment.ts:140` — the
   unworkable-root sentence named the dependency, which is wrong for a multi-hop
-  chain. Now `reasonSentence` receives `renderRef(gate.root ?? gate.dependency)`;
-  pinned by "names the chain root, not the dependency, when they differ".
+  chain. Now `reasonSentence` receives
+  `renderRef(gate.root ?? gate.dependency)`; pinned by "names the chain root,
+  not the dependency, when they differ".
 - **MEDIUM — fixed.** `worker/deno/lib/held_issue_gate_comment.ts:171` — the key
   ignored the root ref and detail, so a changed assignee read as an unchanged
-  gate and the comment was never edited. Both are folded in; pinned by "a changed
-  assignee changes the key".
+  gate and the comment was never edited. Both are folded in; pinned by "a
+  changed assignee changes the key".
 - **LOW — fixed.** `worker/deno/lib/held_issue_gate_comment.ts:9,33` — docstring
   wording overstated the guarantee ("never a second comment" for a thread the
   module does not own). Softened to what the module actually guarantees: that
-  *the fleet* writes no second one.
+  _the fleet_ writes no second one.
 - **MEDIUM-LOW — declined.** `worker/deno/lib/held_issue_gate_comment.ts:242` —
   extract a shared `postIssueComment` helper with `chain_root_comment.ts`. Two
   copies of a six-element argv array is under the DRY threshold worth an
@@ -191,7 +193,7 @@ Violations, and what happened to each:
   type is identical, so nothing can drift.
 - **LOW — declined.** `worker/deno/tests/marker_comment_pages_test.ts` — argv
   assertions read as implementation-shape assertions
-  (`CODING-STANDARDS.md:172-184`). Building the correct argv *is* this module's
+  (`CODING-STANDARDS.md:172-184`). Building the correct argv _is_ this module's
   observable behaviour — the `gh` call is its only output — so asserting it is
   asserting a result, not a source pattern.
 
@@ -205,9 +207,9 @@ Clean:
   `Error | null`.
 - **Injection surface** — every value reaching `key="…"` or visible Markdown
   passes `safeRepo` (via `renderRef`), `safeMilestone` or `safeDetail`, each of
-  which strips `"`, `<`, `>` and newlines; `gh` is invoked as argv with no shell,
-  and `-f body=` is a raw field with no `@file` expansion, so a body beginning
-  `@` cannot read a local file. Secret redaction is inherited at the
+  which strips `"`, `<`, `>` and newlines; `gh` is invoked as argv with no
+  shell, and `-f body=` is a raw field with no `@file` expansion, so a body
+  beginning `@` cannot read a local file. Secret redaction is inherited at the
   `gh_spawn.ts` chokepoint.
 - **Least privilege** — no labelling helper is imported; the only GitHub state
   changed is one comment on the held issue.
@@ -221,8 +223,8 @@ Clean:
 
 `worker/deno/tests/held_issue_gate_comment_test.ts` (20 tests, new):
 
-- Body and key for each of the three gate kinds, including the
-  unworkable-root sentence and its absence when `rootReason` is unset.
+- Body and key for each of the three gate kinds, including the unworkable-root
+  sentence and its absence when `rootReason` is unset.
 - Sanitisation: a crafted repo ref, a milestone title with quotes/angle
   brackets/newlines, and a crafted root detail cannot close the marker's
   `key="…"` attribute or open a second HTML comment; the body carries exactly
@@ -238,8 +240,10 @@ Clean:
 - Fail loud: an unreadable thread rejects rather than returning `"posted"`.
 
 `worker/deno/tests/marker_comment_pages_test.ts` (5 tests, 1 new): asserts
-`updateIssueComment` issues `api -X PATCH repos/<repo>/issues/comments/<id> -f
-body=<body>` and propagates a `gh` failure.
+`updateIssueComment` issues
+`api -X PATCH repos/<repo>/issues/comments/<id> -f
+body=<body>` and propagates a
+`gh` failure.
 
 Regression linkage: the `"edited"` path is the direct fix for the class of stale
 gate comment the issue cites — a POST-only keyed poster leaving the old comment

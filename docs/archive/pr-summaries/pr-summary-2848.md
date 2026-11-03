@@ -4,19 +4,19 @@
 
 Closes #2848
 
-`ensureRepoClone` and `setupRepo` treated any directory at `${workDir}/<repo>` as
-a clone. An interrupted clone leaves a directory with no valid `.git`, and every
-later run reused it and died at setup with `fatal: not a git repository`. The
-fast-failure record then kept only git's trailer line,
+`ensureRepoClone` and `setupRepo` treated any directory at `${workDir}/<repo>`
+as a clone. An interrupted clone leaves a directory with no valid `.git`, and
+every later run reused it and died at setup with `fatal: not a git repository`.
+The fast-failure record then kept only git's trailer line,
 `Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).`,
 which hid the cause.
 
 - [x] `discardBrokenClone` (`worker/deno/lib/broken_clone.ts`) asks git whether
       the directory holds a repository. It sets `GIT_CEILING_DIRECTORIES` to the
-      parent, so a directory nested in another repository still counts as broken.
-      Only an explicit `not a git repository` answer causes the directory to be
-      removed. If the probe or the removal fails, the function fails loud and
-      nothing is deleted.
+      parent, so a directory nested in another repository still counts as
+      broken. Only an explicit `not a git repository` answer causes the
+      directory to be removed. If the probe or the removal fails, the function
+      fails loud and nothing is deleted.
 - [x] `ensureRepoClone` and `setupRepo` now re-clone a broken directory instead
       of reusing it.
 - [x] `diagnosticErrorLine` skips the `Stopping at filesystem boundary` trailer,

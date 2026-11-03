@@ -15,20 +15,20 @@ conflict-resolution pass** — and makes the stuck queue visible. Closes #84.
 - **`worker/deno/lib/pr_merge_conflict_scan.ts`** — finds open worker PRs with
   `mergeable == CONFLICTING`, applies the `merge-conflict` label to every one it
   sees (so the queue is visible even for PRs it will not touch this pass), and
-  returns one due candidate. Attempts are bounded: **one per PR per 4 hours,
-  max 2**, tracked by marker comments on the PR itself so the bound holds across
+  returns one due candidate. Attempts are bounded: **one per PR per 4 hours, max
+  2**, tracked by marker comments on the PR itself so the bound holds across
   worker restarts and across fleet hosts. A PR already carrying `needs-human` is
   labelled but never claimed.
 - **`worker/deno/lib/pr_merge_conflict_processor.ts`** — takes the cross-host PR
   lock, records the attempt **before** merging (so a worker that dies mid-merge
-  still spends its attempt rather than looping), runs
-  `git merge origin/<base>`, and hands the conflicted tree to an agent under the
-  #4373 contract. It then enforces mechanically what it can: refuses to push a
-  tree with unmerged paths or leftover conflict markers, aborts the merge on any
-  failure (leaving the branch exactly as its author pushed it), verifies the base
-  is genuinely an ancestor of the new tip, pushes **without force**, comments
-  what was merged, and drops the label. The final failed attempt applies
-  `needs-human` with a conflict summary instead of retrying forever.
+  still spends its attempt rather than looping), runs `git merge origin/<base>`,
+  and hands the conflicted tree to an agent under the #4373 contract. It then
+  enforces mechanically what it can: refuses to push a tree with unmerged paths
+  or leftover conflict markers, aborts the merge on any failure (leaving the
+  branch exactly as its author pushed it), verifies the base is genuinely an
+  ancestor of the new tip, pushes **without force**, comments what was merged,
+  and drops the label. The final failed attempt applies `needs-human` with a
+  conflict summary instead of retrying forever.
 - **`prompts/merge_conflict/v1.md`** + `buildMergeConflictPrompt` — the contract
   as a versioned prompt: both sides survive, the only exception is a genuine
   duplicate, contradictions abort and escalate, no rebase/force-push/branch
@@ -77,11 +77,11 @@ re-running `fleet_health_test.ts`, `optional_feature_env_test.ts` and
 identically):
 
 ```text
-  deno tests                     FAILED   (14392 passed | 7 failed | 32 ignored)
-  deno lint                      PASSED
-  deno type check                PASSED
-  deno fmt                       PASSED
-  mermaid / markdownlint / prompt immutability / docs prompt versions  PASSED
+deno tests                     FAILED   (14392 passed | 7 failed | 32 ignored)
+deno lint                      PASSED
+deno type check                PASSED
+deno fmt                       PASSED
+mermaid / markdownlint / prompt immutability / docs prompt versions  PASSED
 ```
 
 ## Test Plan
@@ -90,8 +90,8 @@ New — `worker/deno/tests/pr_merge_conflict_scan_test.ts` (16 tests):
 
 - `parseConflictAttempts` counts attempt markers, tracks the latest timestamp,
   resets on a resolved marker, and ignores malformed comment entries.
-- `isConflictAttemptDue` honours the cooldown, treats an unparseable timestamp as
-  "not due", and `hasExhaustedConflictAttempts` binds at the budget.
+- `isConflictAttemptDue` honours the cooldown, treats an unparseable timestamp
+  as "not due", and `hasExhaustedConflictAttempts` binds at the budget.
 - `findConflictingPr` returns and labels a conflicting PR; leaves a mergeable PR
   alone; does not re-add an existing label; labels but skips a PR carrying
   `needs-human`; holds a PR back inside its cooldown; returns one whose cooldown

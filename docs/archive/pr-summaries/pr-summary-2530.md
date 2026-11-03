@@ -4,7 +4,7 @@
 
 A `top-priority` or `work-on` issue no longer waits for a milestone stream
 another host is already running. The fleet-wide stream lock (Issue #2334) still
-reports the stream busy, but the claim path now treats that as *shareable* for
+reports the stream busy, but the claim path now treats that as _shareable_ for
 those two tiers: the claim proceeds, the result carries
 `streamShared: { holderIssue, holderHost, streamLabel }`, and the setup phase
 skips `primeStreamSession` so the run keeps its **own per-issue conversation**.
@@ -33,9 +33,10 @@ fakes:
 
 - `deno test worker/deno/tests/claim_issue_test.ts tests/setup_branch_resume_test.ts tests/issue_filter_test.ts tests/stream_lock_blank_test.ts tests/stream_holder_test.ts`
   → `ok | 181 passed | 0 failed`.
-- `./quality.sh` → `Result: PASSED (with skipped checks)` (only `config
-  integration`, which needs credentials, is skipped); re-run after the review
-  fixes below.
+- `./quality.sh` → `Result: PASSED (with skipped checks)` (only
+  `config
+  integration`, which needs credentials, is skipped); re-run after the
+  review fixes below.
 
 ## Acceptance Criteria
 
@@ -45,27 +46,33 @@ fakes:
   another host is claimed, carries `streamShared`, and runs per-issue —
   evidence: `worker/deno/lib/claim_issue.ts` check 3 shareable branch,
   `worker/deno/tests/claim_issue_test.ts::claim issue - a shareable tier claims
-  into a busy stream and reports the holder (Issue #2530)` and
+  into a busy stream and reports the holder (Issue #2530)`
+  and
   `worker/deno/tests/setup_branch_resume_test.ts::#2530 - a shared stream keeps
-  this run on a per-issue session` (asserts `streamSession` and
-  `sessionResumeState` both unset against a pre-seeded stream record). No
-  `vibe-stream-holder` marker follows, because both write-backs in
-  `execute_phase.ts` are gated on `state.streamSession`
+  this run on a per-issue session`
+  (asserts `streamSession` and `sessionResumeState` both unset against a
+  pre-seeded stream record). No `vibe-stream-holder` marker follows, because
+  both write-backs in `execute_phase.ts` are gated on `state.streamSession`
   (`worker/deno/tests/stream_holder_test.ts::recordStreamHolderForRun - a run
-  that joined no stream writes nothing`) — reviewer: met
+  that joined no stream writes nothing`)
+  — reviewer: met
 - **met** — a `low-priority` issue is still refused `stream_busy` with the
-  existing log line — evidence: `worker/deno/tests/claim_issue_test.ts::claim
+  existing log line — evidence:
+  `worker/deno/tests/claim_issue_test.ts::claim
   issue - a non-shareable tier still waits for the busy stream (Issue #2530)`,
-  plus the unchanged #2334 test `refuses a claim while a sibling of the
-  milestone stream is beating` — reviewer: met
+  plus the unchanged #2334 test
+  `refuses a claim while a sibling of the
+  milestone stream is beating` —
+  reviewer: met
 - **met** — `checkStreamAffinity` is not called for a shared claim and is
   unchanged for a first holder — evidence: the shareable branch returns before
   check 4; the shared test asserts the tracking issue is never read
-  (`issues/2319/comments`) and `claim issue - a first holder of a free stream
-  shares nothing and still checks affinity (Issue #2530)` asserts it **is** read
-  for a first holder — reviewer: partial — reason: the reviewer saw the
-  first-holder half as resting on pre-existing #2336 tests only; a positive
-  assertion for it was added after the review
+  (`issues/2319/comments`) and
+  `claim issue - a first holder of a free stream
+  shares nothing and still checks affinity (Issue #2530)`
+  asserts it **is** read for a first holder — reviewer: partial — reason: the
+  reviewer saw the first-holder half as resting on pre-existing #2336 tests
+  only; a positive assertion for it was added after the review
 - **met** — `deno task test` and `./quality.sh` pass and both doc surfaces are
   updated in this PR — evidence: full suite `24275 passed / 0 failed` and
   `./quality.sh` PASSED (run by the Spec reviewer and here),
@@ -86,9 +93,9 @@ fakes:
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — the module header of the stream lock still stated the
-  one-run-per-stream rule unqualified — evidence: `worker/deno/lib/stream_lock.ts:12`
-  — reason: fixed here; the header now names the Issue #2530 exception and says
-  the module itself is unchanged
+  one-run-per-stream rule unqualified — evidence:
+  `worker/deno/lib/stream_lock.ts:12` — reason: fixed here; the header now names
+  the Issue #2530 exception and says the module itself is unchanged
 - **violation** — the `CONFIGURATION.md` quote of the new log line omitted its
   `(Issue #2527)` suffix — evidence: `docs/CONFIGURATION.md:3437` — reason:
   fixed here; the quoted line now matches the emitted string exactly. The
@@ -103,13 +110,15 @@ fakes:
   result (shared tier continues with no stream session, `low-priority` exits
   early holding no claim)
 - **violation** — a redundant second `import type` from `stream_lock.ts` and a
-  dead `applied.size === 0` guard — evidence: `worker/deno/lib/claim_issue.ts:43`,
-  `worker/deno/lib/issue_filter.ts:155` — reason: both fixed here
+  dead `applied.size === 0` guard — evidence:
+  `worker/deno/lib/claim_issue.ts:43`, `worker/deno/lib/issue_filter.ts:155` —
+  reason: both fixed here
 - **violation** — the tier-label set is now expressed in three places
-  (`issue_filter.ts`, `merged_pr_precheck_phase.ts:314`, `diagnose_issue.ts:265`)
-  — evidence: `worker/deno/lib/issue_filter.ts:150` — reason: stands. The issue
-  adds the helper precisely so later sub-issues converge on it; folding the two
-  existing call sites in is adjacent refactoring this issue did not ask for
+  (`issue_filter.ts`, `merged_pr_precheck_phase.ts:314`,
+  `diagnose_issue.ts:265`) — evidence: `worker/deno/lib/issue_filter.ts:150` —
+  reason: stands. The issue adds the helper precisely so later sub-issues
+  converge on it; folding the two existing call sites in is adjacent refactoring
+  this issue did not ask for
 - **violation** — the public option is `streamShareable`, not the `shareable`
   the issue named — evidence: `worker/deno/lib/claim_issue.ts:158` — reason:
   stands. The internal `streamLock.shareable` matches the spec; the caller-side

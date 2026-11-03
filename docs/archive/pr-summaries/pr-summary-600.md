@@ -12,9 +12,9 @@ carry a "Make this scan block merges (human action required)" section naming:
   workflow's own `name:` and job id — never hard-coded);
 - where to add it — Settings → Rules → Rulesets → **Require status checks to
   pass**;
-- **both** ruleset targets: the default branch *and* `milestone/**`. A ruleset
-  requiring the check on the default branch alone leaves every `milestone/**`
-  PR merging unblocked, which is where most PRs land (Issue #1300);
+- **both** ruleset targets: the default branch _and_ `milestone/**`. A ruleset
+  requiring the check on the default branch alone leaves every `milestone/**` PR
+  merging unblocked, which is where most PRs land (Issue #1300);
 - that **a human must make this change — the worker cannot and must not**. The
   worker's token is deliberately denied ruleset and repository-settings
   permissions (Issue #599), so ruleset ownership stays with a human.
@@ -65,10 +65,10 @@ issue body (tail), produced by the real `issueBody()`:
 ```markdown
 ### Make this scan block merges (human action required)
 
-Adding the workflow only makes the scan *advisory*: a red run reports the
-problem and the pull request still merges. It blocks a merge only once its
-check is a **required status check** on the ruleset that gates the branch
-being merged into.
+Adding the workflow only makes the scan _advisory_: a red run reports the
+problem and the pull request still merges. It blocks a merge only once its check
+is a **required status check** on the ruleset that gates the branch being merged
+into.
 
 1. Open **Settings → Rules → Rulesets** in this repository.
 2. Edit the ruleset that targets the **default branch**, and the ruleset that
@@ -80,12 +80,14 @@ being merged into.
 **A human must make this change — the worker cannot and must not.** …
 
 ---
-*Raised automatically by VibeCoder workflow sync.*
+
+_Raised automatically by VibeCoder workflow sync._
+
 <!-- vibe-coder:workflow-sync:gitleaks -->
 ```
 
-Test run: `deno test --allow-all tests/required_status_check_guidance_test.ts`
-→ **14 passed, 0 failed**. Adjacent suites re-run green:
+Test run: `deno test --allow-all tests/required_status_check_guidance_test.ts` →
+**14 passed, 0 failed**. Adjacent suites re-run green:
 `tests/setup_workflow_sync_test.ts`, `tests/gitleaks_drift_scanner_test.ts`,
 `tests/setup_cli_workflow_sync_integration_test.ts`,
 `tests/workflow_definitions_test.ts`,
@@ -97,11 +99,12 @@ Test run: `deno test --allow-all tests/required_status_check_guidance_test.ts`
 - **Regression test** —
   `worker/deno/tests/required_status_check_guidance_test.ts::issueBody - the
   gitleaks missing-workflow issue tells the human how to make the check block
-  merges` reproduces the gap: run against the unfixed code it failed (the
-  first run errored at type-check because `issueBody` was not exported, and the
-  body assertions failed once it was), and it passes after the change. The
-  companion tests cover the partial-match body, every drift finding's suggested
-  fix, and the dedup-tag/finding-id invariants.
+  merges`
+  reproduces the gap: run against the unfixed code it failed (the first run
+  errored at type-check because `issueBody` was not exported, and the body
+  assertions failed once it was), and it passes after the change. The companion
+  tests cover the partial-match body, every drift finding's suggested fix, and
+  the dedup-tag/finding-id invariants.
 - **Original trigger closed, no trivial bypass** — the enforcement gap was that
   a gitleaks recommendation never told the human to require the check, so a red
   scan stayed advisory. Every path that renders one of these bodies now
@@ -120,22 +123,29 @@ Test run: `deno test --allow-all tests/required_status_check_guidance_test.ts`
   ruleset targets (default branch and `milestone/**`) — evidence:
   `worker/deno/tests/required_status_check_guidance_test.ts::issueBody - the
   gitleaks missing-workflow issue tells the human how to make the check block
-  merges` and `::issueBodyPartial - the gitleaks partial-match issue carries the
-  same instructions` (both assert the check name, `Settings → Rules → Rulesets`,
+  merges`
+  and
+  `::issueBodyPartial - the gitleaks partial-match issue carries the
+  same instructions`
+  (both assert the check name, `Settings → Rules → Rulesets`,
   `Require status checks to pass`, `default branch` and `` `milestone/**` ``).
 - **met** — The body states the human must make the change and the worker must
-  not — evidence: the `A human must make this change — the worker cannot and
-  must not.` assertion in `assertCarriesGuidance()`, applied by every body test.
+  not — evidence: the
+  `A human must make this change — the worker cannot and
+  must not.` assertion
+  in `assertCarriesGuidance()`, applied by every body test.
 - **met** — Drift findings carry the same guidance in their suggested fix —
   evidence:
   `worker/deno/tests/required_status_check_guidance_test.ts::scanGitleaksDrift -
-  every finding's suggested fix carries the required-status-check guidance` and
+  every finding's suggested fix carries the required-status-check guidance`
+  and
   `::scanGitleaksDrift - the guidance names the check the scanned file actually
   reports`.
 - **met** — Dedup tags are unchanged, verified by test — evidence:
   `worker/deno/tests/required_status_check_guidance_test.ts::issueBody - dedup
-  tags are unchanged and still appear exactly once` pins both literal tag
-  strings and asserts each appears exactly once, at the end of the body;
+  tags are unchanged and still appear exactly once`
+  pins both literal tag strings and asserts each appears exactly once, at the
+  end of the body;
   `::scanGitleaksDrift - finding ids are unchanged by the added prose` pins the
   `BP-GITLEAKS-…` ids.
 - **met** — `./quality.sh` passes — evidence: full gate run in the foreground
@@ -146,7 +156,8 @@ Test run: `deno test --allow-all tests/required_status_check_guidance_test.ts`
   deriving the check name from each spec's own template makes the general case
   no more code than special-casing one id; the choice is pinned by
   `::issueBody/issueBodyPartial - every security spec carries the guidance with
-  its own check name` and by `::issueBody - non-security specs are unaffected by
+  its own check name`
+  and by `::issueBody - non-security specs are unaffected by
   the guidance`.
 - **unrequested** — `issueBody` is now exported from
   `worker/deno/setup/workflow_sync.ts` — reason: the issue asks for tests over
@@ -162,9 +173,9 @@ New file `worker/deno/tests/required_status_check_guidance_test.ts` (14 tests):
   path as the workflow-name fallback; a job-less workflow still yields a name.
 - `requiredStatusCheckSection` — throws when given no usable check name; lists
   every name when a workflow reports several.
-- `issueBody` / `issueBodyPartial` — gitleaks bodies carry the full
-  instruction; every security spec carries it with its own check name;
-  non-security specs are unaffected; dedup tags unchanged and emitted once.
+- `issueBody` / `issueBodyPartial` — gitleaks bodies carry the full instruction;
+  every security spec carries it with its own check name; non-security specs are
+  unaffected; dedup tags unchanged and emitted once.
 - `scanGitleaksDrift` — every finding's suggested fix carries the guidance
   exactly once; the check name follows the scanned file's own workflow/job
   names; finding ids unchanged.

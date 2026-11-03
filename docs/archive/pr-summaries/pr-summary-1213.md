@@ -5,9 +5,9 @@
 The blocking-PR stall watchdog read checks, auto-merge and draft state but never
 the PR's mergeability or labels, so a `CONFLICTING` PR tripped `unmerged-green`
 and was told to "push a fix … **or close it**". Nothing withdrew that
-instruction when the PR entered the merge-conflict lane, so
-`NEAT-AI-Ockham#119` was closed by hand thirteen minutes later — inside the
-ladder's cooldown, before rung 1 ever ran — and the work was redone by hand.
+instruction when the PR entered the merge-conflict lane, so `NEAT-AI-Ockham#119`
+was closed by hand thirteen minutes later — inside the ladder's cooldown, before
+rung 1 ever ran — and the work was redone by hand.
 
 `worker/deno/lib/blocking_pr_stall_detector.ts` now knows about the lane:
 
@@ -66,28 +66,27 @@ flowchart TD
 
 - **met** — read mergeability in the observation; a `CONFLICTING` PR is not
   "unmerged-green" — evidence:
-  `worker/deno/lib/blocking_pr_stall_detector.ts:189` (`isMergeConflictLaneOwned`)
-  and
+  `worker/deno/lib/blocking_pr_stall_detector.ts:189`
+  (`isMergeConflictLaneOwned`) and
   `worker/deno/tests/blocking_pr_stall_detector_test.ts::a CONFLICTING blocking PR is never reported as green but unmerged`
   — reviewer: met
 - **met** — make the next step conditional on the lane — evidence:
-  `worker/deno/lib/blocking_pr_stall_detector.ts:428` (`buildBlockingPrStallNextStep`)
-  and
+  `worker/deno/lib/blocking_pr_stall_detector.ts:428`
+  (`buildBlockingPrStallNextStep`) and
   `worker/deno/tests/blocking_pr_stall_detector_test.ts::the escalation comment on a lane-owned PR omits the close invitation`
   — reviewer: met — reason: the reviewer also judged the first wording
   over-reaching (it dropped "push a fix"/"reply", which the ladder does not do,
   and named a label that may not be on the PR yet); both were rewritten in
   commit `fb143f9` before this summary
-- **partial** — withdraw or amend a live stall escalation when the PR enters
-  the lane — evidence:
-  `worker/deno/lib/blocking_pr_stall_detector.ts:663` (`withdrawBlockingPrStallEscalation`),
-  wired at `:1027`, covered by
+- **partial** — withdraw or amend a live stall escalation when the PR enters the
+  lane — evidence: `worker/deno/lib/blocking_pr_stall_detector.ts:663`
+  (`withdrawBlockingPrStallEscalation`), wired at `:1027`, covered by
   `worker/deno/tests/blocking_pr_stall_detector_test.ts::a live unmerged-green escalation is withdrawn once the PR enters the lane`
   — reviewer: partial — reason: the PR comment is retracted, but the separate
   work-queue issue `escalateAsWork` filed before the PR entered the lane still
   carries the old next step in its body; the watchdog does not record that
-  issue's number, so amending it is a change to `escalate_as_work.ts`'s
-  contract rather than to this watchdog
+  issue's number, so amending it is a change to `escalate_as_work.ts`'s contract
+  rather than to this watchdog
 - **unrequested** — new "The merge-conflict ladder owns its own PRs" subsection
   and two flowchart nodes in `docs/CONFIGURATION.md`, plus a cross-reference
   bullet in `docs/workflows/merge-conflicts.md` — reviewer: unrequested —

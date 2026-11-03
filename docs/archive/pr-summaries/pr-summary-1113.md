@@ -13,12 +13,11 @@ changes — nothing calls the module yet, and that wiring is #1114. Closes #1113
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suite: 24 cases in
-`worker/deno/tests/conflict_issue_context_test.ts` drive the module through
-injected `git` and `gh` seams, plus 6 new cases across the two reused helpers.
-`./quality.sh < /dev/null` passes in full (semgrep, markdownlint, mermaid,
-deno tests/lint/check/fmt).
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suite: 24 cases in `worker/deno/tests/conflict_issue_context_test.ts` drive the
+module through injected `git` and `gh` seams, plus 6 new cases across the two
+reused helpers. `./quality.sh < /dev/null` passes in full (semgrep,
+markdownlint, mermaid, deno tests/lint/check/fmt).
 
 ```mermaid
 flowchart LR
@@ -33,8 +32,8 @@ flowchart LR
 
 **Test category** (per CODING-STANDARDS "Unit, Integration and Benchmark
 Tests"): the new suite is a **unit test** — behavioural, self-contained (no
-network, no spawned script, `git`/`gh` injected), fast (8 ms) and
-parallel-safe (no process-wide state), so it needs no manifest entry.
+network, no spawned script, `git`/`gh` injected), fast (8 ms) and parallel-safe
+(no process-wide state), so it needs no manifest entry.
 
 **Bounds, with documented defaults:** 20 commits per path, 8 issues, 4000
 characters of issue body text, 30 `gh` calls. Whichever bound bites is declared
@@ -45,8 +44,8 @@ one.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — a PR on `issue-116-foo` returns issue 116 and names the
-  branch-shape signal — evidence:
+- **met** — a PR on `issue-116-foo` returns issue 116 and names the branch-shape
+  signal — evidence:
   `worker/deno/tests/conflict_issue_context_test.ts::conflict issue context - branch shape names the PR-side issue`
   — reviewer: met
 - **met** — a branch with no issue number but `Closes #42` in the body returns
@@ -57,16 +56,16 @@ one.
   returns issue 77 keyed to that path — evidence:
   `worker/deno/tests/conflict_issue_context_test.ts::conflict issue context - a base merge commit resolves to its issue`
   — reviewer: met
-- **met** — a path whose base commits map to no PR yields an explicit
-  unresolved entry — evidence:
+- **met** — a path whose base commits map to no PR yields an explicit unresolved
+  entry — evidence:
   `worker/deno/tests/conflict_issue_context_test.ts::conflict issue context - base commits with no PR yield an unresolved entry`
   (`unresolved: "no-pr"`) — reviewer: met
 - **met** — a PR with no discoverable issue yields an explicit "none found"
   distinguishable from `[]` — evidence:
   `worker/deno/tests/conflict_issue_context_test.ts::conflict issue context - no discoverable PR issue is stated, not empty`
   asserts the whole value equals `{resolved: false, reason: "no-signal"}`;
-  `PrSideOrigin` is a discriminated union, so an empty list is not expressible
-  — reviewer: met
+  `PrSideOrigin` is a discriminated union, so an empty list is not expressible —
+  reviewer: met
 - **met** — `issue-1160-…` does not resolve to issue 116 — evidence:
   `worker/deno/tests/conflict_issue_context_test.ts::conflict issue context - issue-1160 does not resolve to issue 116`
   and
@@ -78,29 +77,29 @@ one.
   `worker/deno/tests/conflict_issue_context_test.ts` — reviewer: met — reason:
   the reviewer noted the `gh`-budget case did not exercise a repeated base PR;
   that gap was a real defect (no PR-view cache) and is fixed, with
-  `conflict issue context - one issue touched by two paths is fetched once`
-  now asserting one `gh pr view` per PR
+  `conflict issue context - one issue touched by two paths is fetched once` now
+  asserting one `gh pr view` per PR
 - **met** — `./quality.sh` passes — evidence: full gate run after the final
-  edit, `Result: PASSED (with skipped checks)` — reviewer: missing — reason:
-  the reviewer saw only the diff and could not run the gate; it was run here
-  and passed
-- **unrequested** — `hasClosingKeyword` rewritten onto a shared literal
-  pattern covering every GitHub conjugation — evidence:
-  `worker/deno/lib/pr_body.ts:22` — reviewer: unrequested — reason: forced by
-  the gate — the semgrep `detect-non-literal-regexp` rule fails the build for
-  the pre-existing `new RegExp` once the file is touched; the two readers now
-  share one pattern so they cannot drift, and the broadened set matches what
-  GitHub itself closes on
+  edit, `Result: PASSED (with skipped checks)` — reviewer: missing — reason: the
+  reviewer saw only the diff and could not run the gate; it was run here and
+  passed
+- **unrequested** — `hasClosingKeyword` rewritten onto a shared literal pattern
+  covering every GitHub conjugation — evidence: `worker/deno/lib/pr_body.ts:22`
+  — reviewer: unrequested — reason: forced by the gate — the semgrep
+  `detect-non-literal-regexp` rule fails the build for the pre-existing
+  `new RegExp` once the file is touched; the two readers now share one pattern
+  so they cannot drift, and the broadened set matches what GitHub itself closes
+  on
 - **unrequested** — `extractIssueFromBranch` in
   `worker/deno/lib/pr_maintenance.ts:650` now delegates to
-  `issueNumberFromBranch` — evidence: `worker/deno/lib/pr_maintenance.ts:650`
-  — reviewer: unrequested — reason: without it this diff would leave two
+  `issueNumberFromBranch` — evidence: `worker/deno/lib/pr_maintenance.ts:650` —
+  reviewer: unrequested — reason: without it this diff would leave two
   branch-shape parsers that disagree (`issue-0116-x` → `"0116"` vs `null`),
   which is the exact mis-resolution trap the issue names
 - **unrequested** — new "What were the two sides trying to do?" section in
   `docs/workflows/merge-conflicts.md` — evidence:
-  `docs/workflows/merge-conflicts.md:151` — reviewer: unrequested — reason:
-  the workflow doc states the both-sides-survive contract this module exists to
+  `docs/workflows/merge-conflicts.md:151` — reviewer: unrequested — reason: the
+  workflow doc states the both-sides-survive contract this module exists to
   inform; leaving it undocumented would strand the module
 
 ## Standards Review
@@ -115,10 +114,10 @@ one.
   behaviour — evidence: `worker/deno/lib/pr_body.ts:44` — reason: fixed here —
   `pr_body - hasClosingKeyword honours every conjugation GitHub does` covers
   `Fixed #42`, `Prefixes #42` and `Closes owner/repo#42`
-- **violation** — a partly-resolved path returned `unresolved: null` and a
-  short issue list, so a partial answer read as a whole one (fail loud) —
-  evidence: `worker/deno/lib/conflict_issue_context.ts:661` — reason: fixed
-  here — `BasePathOrigin.partial` states it, covered by
+- **violation** — a partly-resolved path returned `unresolved: null` and a short
+  issue list, so a partial answer read as a whole one (fail loud) — evidence:
+  `worker/deno/lib/conflict_issue_context.ts:661` — reason: fixed here —
+  `BasePathOrigin.partial` states it, covered by
   `conflict issue context - a partly-resolved path says it is partial`
 - **violation** — a bespoke `Lookup<T>` union instead of the repo's
   `Result<T, E>` — evidence: `worker/deno/lib/conflict_issue_context.ts:235` —
@@ -128,21 +127,20 @@ one.
   reason: fixed here — both reasons are now stated on the correct side
 - **violation** — `docs/archive/pr-summaries/pr-summary-1113.md` missing —
   evidence: this file — reason: fixed here
-- **clean** — Australian English throughout code, comments and docs; tests
-  call real code through injected seams with no source-text grepping, no
-  wall-clock assertions, no process-state mutation and no spawned scripts (a
-  parallel-safe unit test needing no manifest entry); one test file per module;
-  `@std/assert` only; `gh`/`git` failures become stated warnings plus explicit
-  unresolved reasons rather than empty lists; no hidden or credential paths
-  staged; commits reference Issue #1113 and carry the run-id trailer
+- **clean** — Australian English throughout code, comments and docs; tests call
+  real code through injected seams with no source-text grepping, no wall-clock
+  assertions, no process-state mutation and no spawned scripts (a parallel-safe
+  unit test needing no manifest entry); one test file per module; `@std/assert`
+  only; `gh`/`git` failures become stated warnings plus explicit unresolved
+  reasons rather than empty lists; no hidden or credential paths staged; commits
+  reference Issue #1113 and carry the run-id trailer
 
 ## Test Plan
 
 Added `worker/deno/tests/conflict_issue_context_test.ts` (24 cases):
 
-- PR-side precedence: branch shape, body closing keyword, GitHub linkage,
-  branch beating a contradicting body, and the `issue-1160` / `wip/issue-220-x`
-  traps.
+- PR-side precedence: branch shape, body closing keyword, GitHub linkage, branch
+  beating a contradicting body, and the `issue-1160` / `wip/issue-220-x` traps.
 - Explicit absence: `{resolved: false, reason: "no-signal"}` as a whole value,
   and an unreadable issue reported as `lookup-failed` with a warning.
 - Base side: merge-commit subject, squash subject via body keywords, a PR title

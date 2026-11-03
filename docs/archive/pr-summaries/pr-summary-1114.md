@@ -108,15 +108,16 @@ ok | 85 passed | 0 failed
   `::a base still not an ancestor fails an intent-justified merge` — reviewer:
   partial — reason: the reviewer found the base-is-ancestor case untested; that
   third test was added in response
-- **met** — `./quality.sh` passes — evidence: full gate run after the final
-  edit — reviewer: met
+- **met** — `./quality.sh` passes — evidence: full gate run after the final edit
+  — reviewer: met
 - **unrequested** — the attempt comment is amended by `gh api -X PATCH` (with
   `parseCommentId` and a fallback comment) rather than built with the consulted
   issues inside `buildAttemptComment` — reviewer: unrequested — reason: the
   attempt comment is posted **before** the merge (Issue #395, pinned by
   `pr_merge_conflict_processor_test.ts::records the attempt before touching the
-  branch`), so the conflicted paths do not exist when it is written; amending it
-  keeps one auditable attempt comment rather than two
+  branch`),
+  so the conflicted paths do not exist when it is written; amending it keeps one
+  auditable attempt comment rather than two
 - **unrequested** — malformed-claim reporting (`INTENT_OVERRIDE_SYNTAX`, the
   `malformed` channel) — reviewer: unrequested — reason: an override the parser
   cannot read must not read as "no override was claimed"; it is reported on the
@@ -136,10 +137,9 @@ ok | 85 passed | 0 failed
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — the new outbound PR-comment sink did not route through
-  `redactSecrets()` — evidence:
-  `worker/deno/lib/conflict_intent_context.ts:123` — reason: fixed here;
-  `sanitiseIssueText` now redacts before sanitising, covering both the comment
-  and the prompt, with
+  `redactSecrets()` — evidence: `worker/deno/lib/conflict_intent_context.ts:123`
+  — reason: fixed here; `sanitiseIssueText` now redacts before sanitising,
+  covering both the comment and the prompt, with
   `merge_conflict_intent_context_test.ts::sanitiseIssueText - redacts a secret`
 - **violation** — `docs/archive/pr-summaries/pr-summary-1114.md` missing —
   evidence: this file — reason: fixed here
@@ -151,14 +151,13 @@ ok | 85 passed | 0 failed
   `worker/deno/lib/conflict_intent_context.ts:87` — reason: fixed here; every
   reason code is now asserted to render distinct prose
 - **violation** — the new template tests assert on prose keywords rather than
-  behaviour — evidence:
-  `worker/deno/tests/merge_conflict_prompt_v2_test.ts:185` — reason: stands. A
-  prompt template *is* prose, and this mirrors the file's existing 12 template
-  assertions; the behavioural half of the same file drives
+  behaviour — evidence: `worker/deno/tests/merge_conflict_prompt_v2_test.ts:185`
+  — reason: stands. A prompt template _is_ prose, and this mirrors the file's
+  existing 12 template assertions; the behavioural half of the same file drives
   `buildMergeConflictPrompt` for real
 - **clean** — Australian English throughout; no hidden paths staged; tests call
   real functions rather than grepping source; fail-loud error handling (both new
-  `catch` blocks log with context and degrade to a *stated* result); untrusted
+  `catch` blocks log with context and degrade to a _stated_ result); untrusted
   issue text sanitised, fenced and nonce-wrapped; new logic in two focused
   modules rather than added to the processor; JSDoc on every exported symbol
 

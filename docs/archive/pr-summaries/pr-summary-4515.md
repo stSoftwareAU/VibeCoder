@@ -9,8 +9,8 @@ itself. That is false for a PR raised outside the worker: its body has no
 stayed, and the next review sent the PR back (VibeCoder#4502). The three prompts
 now say the rebuild covers a worker-built description only, and that a
 description written outside the worker is updated with
-`gh pr edit <n> --body-file <file>` and named in `.pr_response_message`.
-Closes #4515.
+`gh pr edit <n> --body-file <file>` and named in `.pr_response_message`. Closes
+#4515.
 
 ## Spec
 
@@ -51,22 +51,22 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
 
 ## Test Plan
 
-- `worker/deno/tests/marker_less_body_rebuild_4515_docs_test.ts` (4 tests):
-  each prompt section names the worker marker from `WORKER_PR_MARKER_PREFIX`,
+- `worker/deno/tests/marker_less_body_rebuild_4515_docs_test.ts` (4 tests): each
+  prompt section names the worker marker from `WORKER_PR_MARKER_PREFIX`,
   describes the outside-worker body and edit command, and requires the reporting
   clause built from `PR_RESPONSE_MESSAGE_FILE`. It rejects the old ban. The
-  dependency-audit section also requires the marker-scoped rebuild and live
-  body update for its tracking issue; it is excluded from the main ci_fix
-  section check so it cannot satisfy that check's pins. The pr_feedback test
-  also distinguishes the worker-built body without a digest marker.
+  dependency-audit section also requires the marker-scoped rebuild and live body
+  update for its tracking issue; it is excluded from the main ci_fix section
+  check so it cannot satisfy that check's pins. The pr_feedback test also
+  distinguishes the worker-built body without a digest marker.
 - The head test file passes (4 passed, 0 failed); with the three prompts
   restored from `main`, it fails (0 passed, 4 failed).
 - `deno task drift-pins-on-base` confirmed every required phrase is absent from
   each corresponding section on `main`.
-- Changing `PR_RESPONSE_MESSAGE_FILE` at its source made all four tests fail
-  on the missing reporting clause; the source was restored afterwards.
-- Changing `WORKER_PR_MARKER_PREFIX` at its source made all four tests fail
-  on the missing marker; the source was restored afterwards.
+- Changing `PR_RESPONSE_MESSAGE_FILE` at its source made all four tests fail on
+  the missing reporting clause; the source was restored afterwards.
+- Changing `WORKER_PR_MARKER_PREFIX` at its source made all four tests fail on
+  the missing marker; the source was restored afterwards.
 - Removing the `gh pr edit` clause from the main ci_fix guidance made its test
   fail (3 passed, 1 failed); the prompt was restored afterwards.
 - Restoring the base wording for the pre-#3315 digest case made the pr_feedback

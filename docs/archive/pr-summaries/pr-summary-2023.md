@@ -9,18 +9,18 @@ contains the milestone's and is taken; symmetrically for the milestone. A path
 neither history explains goes to the agent, narrowed to exactly those paths.
 Closes #2023.
 
-Why this shape: on 2026-09-12 the agent rung spent 44 minutes and 800 tool
-calls on a ninety-file conflict (twenty-five add/add pairs across whole
-directories) merging the default branch into a milestone whose content had
-already reached it through another milestone's squash. Experiments on git 2.54
-showed the merge already handles a rebase-style rewrite cleanly, and that
-cherry-pick replay conflicts exactly where the merge does on a squash rewrite —
-so the discriminating evidence is historical blobs, not patches.
+Why this shape: on 2026-09-12 the agent rung spent 44 minutes and 800 tool calls
+on a ninety-file conflict (twenty-five add/add pairs across whole directories)
+merging the default branch into a milestone whose content had already reached it
+through another milestone's squash. Experiments on git 2.54 showed the merge
+already handles a rebase-style rewrite cleanly, and that cherry-pick replay
+conflicts exactly where the merge does on a squash rewrite — so the
+discriminating evidence is historical blobs, not patches.
 
 What changed:
 
-- **`worker/deno/lib/milestone_conflict_ported.ts`** (new) — `parseStageBlobs`
-  / `readStageBlobs` read the conflicted index; `classifyConflictShape` /
+- **`worker/deno/lib/milestone_conflict_ported.ts`** (new) — `parseStageBlobs` /
+  `readStageBlobs` read the conflicted index; `classifyConflictShape` /
   `isWrongBaseShape` / `describeConflictShape` name the shape (>20 files, or
   add/add pairs in >1 directory) for the log; `decidePorted` runs
   `git log --max-count=1 --find-object=<blob> <ref> -- <path>` for each side;
@@ -36,10 +36,10 @@ What changed:
 
 ## Tests
 
-`worker/deno/tests/milestone_conflict_ported_test.ts` (real git): squash
-rewrite ⇒ both conflicted paths taken from main, staged, the milestone's own
-new file untouched, shape logged; symmetric case ⇒ ours; rival design ⇒
-undecided and unmerged; unsafe branch name ⇒ refused before git; in the ladder
-⇒ agent never reached, or reached only with the unexplained path. Pure tests for
-shape and stage parsing. 160 pass across the ported, ladder, triage, sync and
-ledger suites.
+`worker/deno/tests/milestone_conflict_ported_test.ts` (real git): squash rewrite
+⇒ both conflicted paths taken from main, staged, the milestone's own new file
+untouched, shape logged; symmetric case ⇒ ours; rival design ⇒ undecided and
+unmerged; unsafe branch name ⇒ refused before git; in the ladder ⇒ agent never
+reached, or reached only with the unexplained path. Pure tests for shape and
+stage parsing. 160 pass across the ported, ladder, triage, sync and ledger
+suites.

@@ -12,14 +12,14 @@ Start-up prints this every cycle:
 The advice is right, and matches the design. `collect_work_on_candidates.ts`
 says so at the point it guards the consequence:
 
-> Issue #3416: exclude fleet worker logins (own host + siblings) — **they sit
-> in allowedAuthors for PR-dedup** but must not be trusted to self-apply the
+> Issue #3416: exclude fleet worker logins (own host + siblings) — **they sit in
+> allowedAuthors for PR-dedup** but must not be trusted to self-apply the
 > reserved `work-on` discovery label.
 
-Service accounts belong in `allowed_authors`, with targeted exclusions
-wherever that trust must not follow. #3416 added one. **The equivalent for
-suppression authorship was missing**, so simply following the warning would
-have widened trust in a way the warning does not mention.
+Service accounts belong in `allowed_authors`, with targeted exclusions wherever
+that trust must not follow. #3416 added one. **The equivalent for suppression
+authorship was missing**, so simply following the warning would have widened
+trust in a way the warning does not mention.
 
 `allowed_authors` feeds the suppression allowlist directly:
 
@@ -35,8 +35,8 @@ identity, but `stservice` **is** the identity the fleet commits under, so that
 bind is satisfied by the worker's own commits and stops nothing. The net effect
 would be the worker able to waive security findings in code it wrote.
 
-The divergence was accidentally preventing that. That is not a safeguard — it
-is a warning nobody can act on without quietly widening trust.
+The divergence was accidentally preventing that. That is not a safeguard — it is
+a warning nobody can act on without quietly widening trust.
 
 `setSuppressionFleetLogins` closes it. The exclusion set is
 `github_user ∪ fleet_pr_authors`, deliberately **not** `allowed_authors`,
@@ -63,8 +63,8 @@ $ deno test --allow-all tests/suppression_fleet_login_test.ts
 ok | 6 passed | 0 failed (2ms)
 ```
 
-**The warning clears, for the right reason.** With the service accounts added
-to `allowed_authors` and this guard in place:
+**The warning clears, for the right reason.** With the service accounts added to
+`allowed_authors` and this guard in place:
 
 ```text
 level: ok
@@ -85,14 +85,14 @@ and re-verified.
 real `findSuppressions` path with the #269 commit-identity bind **satisfied**,
 so the fleet exclusion is the only thing that can refuse the marker:
 
-| Case | Asserts |
-| --- | --- |
-| a fleet login in `allowed_authors` still cannot suppress | Exactly the state the `[fleet-config]` warning asks for — the whole point of the change |
-| the host's own login cannot suppress either | `github_user`, not just siblings |
-| a human in `allowed_authors` suppresses exactly as before | The exclusion must not strip the humans who legitimately suppress — the #3426 trap |
-| the comparison is case-insensitive | `StService` and `stservice` are the same login |
-| with no fleet logins configured nothing changes | A caller that never wires the set keeps the pre-#334 behaviour |
-| a login outside the allowlist is still refused for that reason | The new refusal does not mask the original one |
+| Case                                                           | Asserts                                                                                 |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| a fleet login in `allowed_authors` still cannot suppress       | Exactly the state the `[fleet-config]` warning asks for — the whole point of the change |
+| the host's own login cannot suppress either                    | `github_user`, not just siblings                                                        |
+| a human in `allowed_authors` suppresses exactly as before      | The exclusion must not strip the humans who legitimately suppress — the #3426 trap      |
+| the comparison is case-insensitive                             | `StService` and `stservice` are the same login                                          |
+| with no fleet logins configured nothing changes                | A caller that never wires the set keeps the pre-#334 behaviour                          |
+| a login outside the allowlist is still refused for that reason | The new refusal does not mask the original one                                          |
 
 ## Operational note
 

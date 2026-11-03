@@ -4,11 +4,11 @@
 
 The `gh` rate-limit circuit breaker kept its state in a fixed-name flag file
 whose default directory could fall back to the shared `/tmp`, written with a
-bare `Deno.writeTextFile`. Two variants of the same weakness followed: a
-symlink planted at that path was followed and its target truncated, and a
-plain file holding a **future** timestamp produced a negative `elapsed` that is
-always below the cooldown, so the auto-reset never fired and every
-`safeGhCommand` short-circuited with exit 223 indefinitely.
+bare `Deno.writeTextFile`. Two variants of the same weakness followed: a symlink
+planted at that path was followed and its target truncated, and a plain file
+holding a **future** timestamp produced a negative `elapsed` that is always
+below the cooldown, so the auto-reset never fired and every `safeGhCommand`
+short-circuited with exit 223 indefinitely.
 
 `worker/deno/lib/gh_wrapper.ts` now:
 
@@ -94,8 +94,8 @@ same `refuseNonRegular` check on read and is renamed over on write; the only
 remaining effect an attacker retains is deleting the flag, which opens the
 breaker rather than wedging it. Under the shared temporary root the path is no
 longer shared at all: `sharedTmpStateDir` binds the directory name to this
-account and it is created `0700`, so another local account cannot reach the
-path in the first place.
+account and it is created `0700`, so another local account cannot reach the path
+in the first place.
 
 ## Test Plan
 

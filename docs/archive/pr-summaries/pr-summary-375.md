@@ -9,8 +9,8 @@ scan was wrong, and the culprit was the **adaptive claim floor** (Issue #245).
 `decideAdaptiveClaim` refuses an issue with evidence of being a long job —
 preserved WIP, a prior `execute` timeout, a long-job size label — unless the
 cycle still has `0.75 × min(claude_timeout, cycleSeconds)` of runway. Its own
-module doc names the invariant that makes that safe: *the requirement must stay
-satisfiable*. On this host it is not. The cycle is 3600 s and `claude_timeout`
+module doc names the invariant that makes that safe: _the requirement must stay
+satisfiable_. On this host it is not. The cycle is 3600 s and `claude_timeout`
 is 3600 s, so the requirement is 2700 s of **remaining** runway — but a claim
 gate is only reached after startup, the maintenance passes and the scan have
 run, about twenty minutes into the cycle. The best runway ever offered to a
@@ -35,7 +35,7 @@ which is why the alert named three repos, not one.
 This is the failure shape Issue #319 described: **a permanent condition worded
 as a passing one**.
 
-The fix gives the deferral a memory. The worker counts the consecutive *cycles*
+The fix gives the deferral a memory. The worker counts the consecutive _cycles_
 (not scans — a slot re-scans every 30 s) that the floor deferred one issue. On
 the third it yields: the issue is claimed on whatever runway is left, the
 execute is deadline-bound, and WIP preservation carries the progress into the
@@ -80,8 +80,8 @@ Every other check passes, and the full suite is `15859 passed | 10 failed`.
 
 ## Test Plan
 
-New — `worker/deno/tests/adaptive_floor_starvation_test.ts` (10 tests) drives the
-real state module against a temporary work directory:
+New — `worker/deno/tests/adaptive_floor_starvation_test.ts` (10 tests) drives
+the real state module against a temporary work directory:
 
 - consecutive cycles increment the streak; repeat scans within one cycle do not
 - streaks are tracked per issue, and clearing one resets it to zero
@@ -95,8 +95,8 @@ real state module against a temporary work directory:
 New in `worker/deno/tests/run_core_adaptive_claim_test.ts` (5 tests) drive the
 scan-loop wiring through `runCoreLoop`:
 
-- an issue already deferred on the two previous cycles is **claimed** on 933 s of
-  runway, and the starvation alert is logged — the regression test for this
+- an issue already deferred on the two previous cycles is **claimed** on 933 s
+  of runway, and the starvation alert is logged — the regression test for this
   issue: it fails against the unfixed code, which defers again
 - below the limit the issue is still deferred, with `[deferred cycle 1 of 3]`
   named in the line

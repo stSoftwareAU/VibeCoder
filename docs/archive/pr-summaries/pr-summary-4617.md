@@ -12,10 +12,11 @@ the pull request the same way and names the next action. A pull request parked
 by the secondary-rate-limit deferral is recorded with `draft: true` and opened
 as a draft by the drain. The worker's `cargo mutants` run uses the CI job's
 scope flags (package, features, exclude patterns). The issue stays open, and the
-next run continues the branch. CI holds only results for the language its tool checks: cargo-mutants for Rust,
-Deno tasks for Deno. Results for the other language remain advisory, including
-summary exemptions. Runner errors have no language and remain incomplete.
-Repositories without such a job behave exactly as before. Part of #4617.
+next run continues the branch. CI holds only results for the language its tool
+checks: cargo-mutants for Rust, Deno tasks for Deno. Results for the other
+language remain advisory, including summary exemptions. Runner errors have no
+language and remain incomplete. Repositories without such a job behave exactly
+as before. Part of #4617.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -48,31 +49,31 @@ flowchart TD
   `deno task *mutat*` and can fail as blocking. Branch protection is not read,
   `if:`/path filters are not evaluated and reusable-workflow callers are not
   followed (the module and `docs/mutation-check.md` say so). An unreadable
-  workflow is logged and read as unknown, never as a pass.
-  Only regular files up to 1 MiB are read, with bounded reads if a file grows;
-  skipped symlinks and oversized files are reported as unreadable. Continued
-  lines are collected and joined once, and YAML step aliases are scanned only
-  once per file, including aliases shared across jobs. Directory symlinks are
-  rejected and a cumulative scan budget charges script characters and every
-  visited step, bounding both string and steps-array aliases across jobs.
+  workflow is logged and read as unknown, never as a pass. Only regular files up
+  to 1 MiB are read, with bounded reads if a file grows; skipped symlinks and
+  oversized files are reported as unreadable. Continued lines are collected and
+  joined once, and YAML step aliases are scanned only once per file, including
+  aliases shared across jobs. Directory symlinks are rejected and a cumulative
+  scan budget charges script characters and every visited step, bounding both
+  string and steps-array aliases across jobs.
 - On a blocking-CI repository a survivor for the matching language, or a check
-  that cannot finish (runner error, missing tool, baseline failure, worker fault, exhausted budget or
-  mutant cap), holds the PR as a draft. The incomplete case carries an
-  `incomplete.nextAction` into the draft body and comment. No recovery turn runs
-  for the budget case, since a turn cannot add mutants. A repository whose cap
-  is always short of its diff stays a draft until the change is narrower or the
-  budget is raised; that is the cost of not reporting unvalidated work ready.
+  that cannot finish (runner error, missing tool, baseline failure, worker
+  fault, exhausted budget or mutant cap), holds the PR as a draft. The
+  incomplete case carries an `incomplete.nextAction` into the draft body and
+  comment. No recovery turn runs for the budget case, since a turn cannot add
+  mutants. A repository whose cap is always short of its diff stays a draft
+  until the change is narrower or the budget is raised; that is the cost of not
+  reporting unvalidated work ready.
 - The contract is read before the check so the CI job's `cargo mutants` scope
   flags (`--package`, `--workspace`, `--features`, `--exclude`, `--exclude-re`,
   `--examine-re` and similar, values passed as argv words, never through a
   shell) reach the worker's run. A job another job lists under `needs` is
   reported with that aggregator.
-- For matching CI, a summary `exempt (untestable)` line cannot clear a
-  survivor; the comment points at the tool's own skip mechanism. No exemption
-  or lowered threshold was added. The hold reuses the draft-continuation path
-  (`convertToDraftContinuation`,
-  `withholdIssueClose`); the fleet's own draft does not hold its issue, so the
-  next run resumes the branch.
+- For matching CI, a summary `exempt (untestable)` line cannot clear a survivor;
+  the comment points at the tool's own skip mechanism. No exemption or lowered
+  threshold was added. The hold reuses the draft-continuation path
+  (`convertToDraftContinuation`, `withholdIssueClose`); the fleet's own draft
+  does not hold its issue, so the next run resumes the branch.
 
 ### Undiscoverable Facts
 
@@ -88,30 +89,29 @@ mutation verdict, completion phase, deferral and review-fix paths.
 
 - `worker/deno/tests/ci_mutation_contract_test.ts`: cargo and Deno tool
   identification, installation commands excluded, filter aliases carried,
-  aggregator reporting and scope extraction after `;`, `&&` and `||`.
-  Hostile inputs include a separator followed by 200000 spaces and no cargo,
-  cargo whitespace, toolchain text, a Deno task name and a non-no-op tail.
-  Reader regressions cover a symlink outside the checkout and an oversized
-  workflow, both reported unreadable without a blocking job. Continuation
-  joining has an N/4N growth guard; a getter counts reads across repeated step
-  aliases and jobs. A real YAML fixture combines 40000 continued lines with
-  100 aliases. The detector suite runs in the serial pass for its growth guard.
-  Directory-symlink fixtures cover both path components; repeated scalar aliases
-  exceed the scan budget and are reported unreadable, with a counted-work check
-  across jobs.
-  A shared steps-array fixture and a counted budget test cover repeated visits
-  to aliased mappings and non-mappings across jobs.
+  aggregator reporting and scope extraction after `;`, `&&` and `||`. Hostile
+  inputs include a separator followed by 200000 spaces and no cargo, cargo
+  whitespace, toolchain text, a Deno task name and a non-no-op tail. Reader
+  regressions cover a symlink outside the checkout and an oversized workflow,
+  both reported unreadable without a blocking job. Continuation joining has an
+  N/4N growth guard; a getter counts reads across repeated step aliases and
+  jobs. A real YAML fixture combines 40000 continued lines with 100 aliases. The
+  detector suite runs in the serial pass for its growth guard. Directory-symlink
+  fixtures cover both path components; repeated scalar aliases exceed the scan
+  budget and are reported unreadable, with a counted-work check across jobs. A
+  shared steps-array fixture and a counted budget test cover repeated visits to
+  aliased mappings and non-mappings across jobs.
 - `worker/deno/tests/mutation_gate_test.ts`: matching CI ignores summary
   exemptions; mismatched tools retain exemptions in both language directions;
   errors, budget, cap and hostile job labels retain their coverage.
 - `worker/deno/tests/completion_phase_mutation_gate_test.ts`: held survivors,
   existing PRs, runner errors and exhausted budgets; the current REST test is
-  `completion - a held PR the REST fallback opens is a draft and not armed`
-  and asserts the REST draft flag. Both secondary-only and exhausted-create
+  `completion - a held PR the REST fallback opens is a draft and not armed` and
+  asserts the REST draft flag. Both secondary-only and exhausted-create
   deferrals assert that the issue note names the CI job, calls mutation
-  validation incomplete, promises a draft and says the next run continues.
-  The near-limit summary test checks the held body size. Cargo scope flags
-  reach the runner. A cargo CI job with a Deno survivor stays ready and armed.
+  validation incomplete, promises a draft and says the next run continues. The
+  near-limit summary test checks the held body size. Cargo scope flags reach the
+  runner. A cargo CI job with a Deno survivor stays ready and armed.
 - `worker/deno/tests/pr_feedback_drift_check_3750_test.ts`: a matching Deno CI
   job ignores the exemption; absent CI and cargo CI honour that Deno exemption.
 - Supporting coverage: `draft_continuation_mutation_hold_test.ts`,
@@ -120,12 +120,12 @@ mutation verdict, completion phase, deferral and review-fix paths.
   and cargo argv respectively. `deferred_pr_store_test.ts` and
   `completion_phase_secondary_limit_test.ts` cover ordinary parked PRs.
 - Read `docs/mutation-check.md`, including its blocking-CI and review-fix
-  sections; updated it for language matching and the held pending note.
-  Earlier changes also update `docs/workflows/issue-processing.md`,
+  sections; updated it for language matching and the held pending note. Earlier
+  changes also update `docs/workflows/issue-processing.md`,
   `docs/workflows/pr-feedback.md`, `prompts/issue/prompt.md`,
-  `CODING-STANDARDS.md` and its twin `prompts/coding_guidelines/prompt.md`.
-  REST creation carries the draft flag; held bodies obey the GitHub limit.
-  Ledger entry: `docs/audits/lib-sweep-coverage/top-up-4617.json`.
+  `CODING-STANDARDS.md` and its twin `prompts/coding_guidelines/prompt.md`. REST
+  creation carries the draft flag; held bodies obey the GitHub limit. Ledger
+  entry: `docs/audits/lib-sweep-coverage/top-up-4617.json`.
 
 ## Acceptance Criteria
 
@@ -134,10 +134,10 @@ mutation verdict, completion phase, deferral and review-fix paths.
 - **partial** — Use the repository's actual required CI contract (including jobs
   feeding an aggregator) — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a job another job needs is reported with its aggregator`
-  — reviewer: partial — reason: branch protection and rulesets are not read,
-  any PR-triggered job counts, and reusable workflows are not followed
-- **partial** — Run the applicable changed-code mutation command with CI-equivalent
-  flags after the final relevant edit — evidence:
+  — reviewer: partial — reason: branch protection and rulesets are not read, any
+  PR-triggered job counts, and reusable workflows are not followed
+- **partial** — Run the applicable changed-code mutation command with
+  CI-equivalent flags after the final relevant edit — evidence:
   `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - the CI job's cargo mutants flags reach the worker's runner`
   — reviewer: partial — reason: Deno task flags and review-fix cargo flags are
   not carried; the worker also adds its own `--package` and `--in-diff`
@@ -166,14 +166,15 @@ mutation verdict, completion phase, deferral and review-fix paths.
 
 - Review follow-up: the detector suite passed 46 tests through the local gate's
   serial runner, including both directory symlinks and the scalar-alias scan
-  budget. Full-tree Deno formatting, lint and frozen-lockfile type checks passed.
+  budget. Full-tree Deno formatting, lint and frozen-lockfile type checks
+  passed.
 - Focused local tests use `deno task test:unit` from `worker/deno`, with the
   detector, gate, completion, review-fix, deferred store and secondary-limit
-  files named in Evidence. Formatter, linter, type check and manifest checks
-  use the same Deno configuration and frozen lockfile as `quality.sh`.
-- Reproduced before the fix: separator extraction returned no flags; both
-  held deferrals posted the finished-work note; cargo CI held a Deno survivor.
-  Each corresponding regression failed, then passed after the fix. The hostile
+  files named in Evidence. Formatter, linter, type check and manifest checks use
+  the same Deno configuration and frozen lockfile as `quality.sh`.
+- Reproduced before the fix: separator extraction returned no flags; both held
+  deferrals posted the finished-work note; cargo CI held a Deno survivor. Each
+  corresponding regression failed, then passed after the fix. The hostile
   separator test exercises the removed overlapping whitespace quantifiers.
 - Existing assertions are retained. Detector expectations gain the production
   tool field; completion hold fixtures now return Rust for cargo CI, and the
@@ -183,39 +184,38 @@ mutation verdict, completion phase, deferral and review-fix paths.
   both produced a blocking job, continued-line growth exceeded the linear
   allowance (24 ms at N versus 479 ms at 4N), and the counted alias guard
   detected repeated scanning. No duplicate reader or continuation helper was
-  found; both callers use the same detector. The operator manual now records
-  the file cap and alias handling.
-- Both production callers pass the tool to the shared `evaluateMutationGate`;
-  it owns language matching, so completion and review fixes use one rule.
-  No second detector or verdict implementation was found.
+  found; both callers use the same detector. The operator manual now records the
+  file cap and alias handling.
+- Both production callers pass the tool to the shared `evaluateMutationGate`; it
+  owns language matching, so completion and review fixes use one rule. No second
+  detector or verdict implementation was found.
 - Docs sweep: checked mutation/survivor references in the operator manual and
-  review workflow. `docs/workflows/pr-feedback.md` was corrected earlier in
-  this PR; it is not an unchanged-hit claim. The coding-standard sentence and
-  its prompt twin remain aligned.
+  review workflow. `docs/workflows/pr-feedback.md` was corrected earlier in this
+  PR; it is not an unchanged-hit claim. The coding-standard sentence and its
+  prompt twin remain aligned.
 - Results: the six focused files passed (238 tests), covering the detector,
   mutation gate, completion, review-fix, parallel-unsafe manifest and test-pass
-  planner; full-tree `deno fmt`,
-  `deno lint`, `deno check`, Mermaid and Markdown lint passed. Manifest checks
-  passed (847 tests, one existing ignored case). `pr-summary-check` reported
-  zero blocked gates; closure, independent review and reproduction were not
-  checked without issue-body/label inputs.
+  planner; full-tree `deno fmt`, `deno lint`, `deno check`, Mermaid and Markdown
+  lint passed. Manifest checks passed (847 tests, one existing ignored case).
+  `pr-summary-check` reported zero blocked gates; closure, independent review
+  and reproduction were not checked without issue-body/label inputs.
 - Full `./quality.sh < /dev/null` failed at the parallel Deno test pass. A
   repeat of `deno task test:unit` reproduced a Deno 2.9.5 macOS/aarch64 runtime
-  panic: `pledge test permissions called before restoring previous pledge`.
-  The serial pass did not run after that crash. The base branch merge (PR
-  #4715, Quality run 41555343824) and the existing PR head (Quality run
-  41562135230) passed all CI test shards, confirmed with `gh`. PR #4715's
-  checked head is `b223dc4d391dd328b6cfa4600469a2a9507a598f` and its merge
-  commit is the checkout's `origin/main` (`0a4d803a`).
+  panic: `pledge test permissions called before restoring previous pledge`. The
+  serial pass did not run after that crash. The base branch merge (PR #4715,
+  Quality run 41555343824) and the existing PR head (Quality run 41562135230)
+  passed all CI test shards, confirmed with `gh`. PR #4715's checked head is
+  `b223dc4d391dd328b6cfa4600469a2a9507a598f` and its merge commit is the
+  checkout's `origin/main` (`0a4d803a`).
 - Local Semgrep and Checkov were unavailable (no installed binary or cached
-  container); config integration was skipped because no local config exists.
-  CI remains authoritative for those checks. No tests were skipped or changed
-  to work around the runtime panic.
+  container); config integration was skipped because no local config exists. CI
+  remains authoritative for those checks. No tests were skipped or changed to
+  work around the runtime panic.
 - Red checks: removing only the language filter made the mixed-language
   completion test, both-direction exemption test and review-fix control fail.
-  Inverting the detected tool made all edited detector tool expectations and
-  the matching-language completion/review-fix hold tests fail. Restored both
-  changes before the final focused run.
+  Inverting the detected tool made all edited detector tool expectations and the
+  matching-language completion/review-fix hold tests fail. Restored both changes
+  before the final focused run.
 
 ## Base merge conflict resolution
 
@@ -231,17 +231,17 @@ mutation verdict, completion phase, deferral and review-fix paths.
   review-fix invocation also passes CI flags to the runner. The runner and gate
   tests cover the outside-scope exemption and package/workspace arguments.
 - Review follow-up: aggregator lookup scans each shared `needs` array once,
-  preserving the first matching job. A counted regression failed before the
-  fix (100,000 element reads instead of 1,000); a YAML alias fixture exercises
-  the detector end to end. No second aggregator lookup was found. All 50
-  detector tests, the local gate's formatting, lint, type and completeness
-  checks passed. The parallel test pass hit the Deno permission-pledge panic
-  again; base Quality run 41555343824 passed its test shards. Semgrep and the
-  pinned Checkov were unavailable locally.
+  preserving the first matching job. A counted regression failed before the fix
+  (100,000 element reads instead of 1,000); a YAML alias fixture exercises the
+  detector end to end. No second aggregator lookup was found. All 50 detector
+  tests, the local gate's formatting, lint, type and completeness checks passed.
+  The parallel test pass hit the Deno permission-pledge panic again; base
+  Quality run 41555343824 passed its test shards. Semgrep and the pinned Checkov
+  were unavailable locally.
 - Review follow-up: charge each visited step against the shared workflow scan
-  budget before deduplication. The aliased-array fixture and counted budget
-  test failed before this change and pass afterwards; no duplicate detector
-  was found.
+  budget before deduplication. The aliased-array fixture and counted budget test
+  failed before this change and pass afterwards; no duplicate detector was
+  found.
 - Reproduced the completion test failure locally: a regular file at
   `.github/workflows` is now reported as unreadable by the directory guard,
   rather than throwing into completion's catch branch. Updated the diagnostic
@@ -250,16 +250,16 @@ mutation verdict, completion phase, deferral and review-fix paths.
   assertions; the supported non-blocking behaviour is unchanged.
 - The completion and workflow-detector suites pass together: 85 tests.
 - The exact CI command, `.github/scripts/deno-test-shard.sh 2 4`, was attempted
-  before and after the edit but cannot launch on this host because `setsid`
-  is missing. CI will run the shard on the pushed head.
+  before and after the edit but cannot launch on this host because `setsid` is
+  missing. CI will run the shard on the pushed head.
 - Local gate type-check, lint, formatting, Markdown, Mermaid and completeness
   checks passed; the separate manifest run passed 847 tests (one existing
   ignored case). The full gate hit the same Deno 2.9.5 macOS permission-pledge
-  runtime panic documented above in its parallel test pass; its serial pass
-  did not run. Reconfirmed the base Quality run 41555343824 passed all four
-  CI test shards. Semgrep and Checkov were unavailable locally and config
-  integration had no local configuration. The PR-summary check reported zero
-  blocked gates (three checks require issue-body/label inputs).
+  runtime panic documented above in its parallel test pass; its serial pass did
+  not run. Reconfirmed the base Quality run 41555343824 passed all four CI test
+  shards. Semgrep and Checkov were unavailable locally and config integration
+  had no local configuration. The PR-summary check reported zero blocked gates
+  (three checks require issue-body/label inputs).
 
 ## Known gaps
 

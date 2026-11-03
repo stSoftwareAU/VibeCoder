@@ -3,7 +3,7 @@
 ## Summary
 
 The merged-PR pre-check closed any issue whose linked PR is `MERGED`, even when
-a trusted human had re-approved the issue *after* that merge. #1562 was grilled
+a trusted human had re-approved the issue _after_ that merge. #1562 was grilled
 to Ready and given `top-priority` at 00:21; at 00:41 the pre-check found PR
 #1567 — matched only by the issue number in its title — merged at 22:49 the
 night before, and closed it. Re-opening by hand achieved nothing, because the
@@ -27,8 +27,8 @@ Closes #1618.
 
 Backend-only change, no web interface to screenshot. Evidence is the test suite:
 `deno test tests/merged_pr_precheck_reapproval_test.ts
-tests/merged_pr_precheck_phase_test.ts` → **19 passed, 0 failed**, and the full
-`./quality.sh` gate passes.
+tests/merged_pr_precheck_phase_test.ts`
+→ **19 passed, 0 failed**, and the full `./quality.sh` gate passes.
 
 ```mermaid
 flowchart TD
@@ -74,8 +74,10 @@ flowchart TD
   evidence: the three guards in `findPostMergeApproval` and the four
   `closes as before …` tests — reviewer: met
 - **met** — Timeline lookup throws, or `mergedAt` is missing/unparseable → close
-  as today, warning logged — evidence: `a timeline lookup error warns and still
-  closes`, `a missing mergedAt warns and still closes`, and
+  as today, warning logged — evidence:
+  `a timeline lookup error warns and still
+  closes`,
+  `a missing mergedAt warns and still closes`, and
   `an unparseable mergedAt warns and still closes` — reviewer: met — reason: the
   reviewer noted the non-empty unparseable string was untested; a test for it
   was added after the review
@@ -113,22 +115,22 @@ flowchart TD
   `an approval beyond timeline page 1 still skips the close`
 - **violation** — the JSDoc fail-safe contract and the module header did not
   mention the truncation case or the widened `--json state,mergedAt` read —
-  evidence: `worker/deno/lib/phases/merged_pr_precheck_phase.ts:12` and `:289`
-  — reason: fixed here, both updated in the same commit
+  evidence: `worker/deno/lib/phases/merged_pr_precheck_phase.ts:12` and `:289` —
+  reason: fixed here, both updated in the same commit
 - **violation** — `docs/archive/pr-summaries/pr-summary-1618.md` absent —
   evidence: `docs/archive/pr-summaries/` — reason: fixed here, this file
 - **violation** — the #1562 narrative is retold in the phase header, the inline
   comment, the `findPostMergeApproval` JSDoc, the test header and the workflow
-  doc — evidence:
-  `worker/deno/lib/phases/merged_pr_precheck_phase.ts:144-149` — reason: stands.
-  Each telling carries the detail its own reader needs (why the phase exists,
-  why the check sits at that line, why the fixture times are what they are); the
-  doc is the one authoritative telling and the code points at the issue number.
+  doc — evidence: `worker/deno/lib/phases/merged_pr_precheck_phase.ts:144-149` —
+  reason: stands. Each telling carries the detail its own reader needs (why the
+  phase exists, why the check sits at that line, why the fixture times are what
+  they are); the doc is the one authoritative telling and the code points at the
+  issue number.
 - **clean** — Australian English throughout; unit tests are parallel-safe with
-  no sleeps, spawned processes or wall-clock assertions; the gh fake models
-  gh's own `--json` projection so a pre-check that stops requesting `mergedAt`
-  goes red on its own; no hidden or credential paths staged; failures are
-  logged loud and never swallowed into a silent skip; `isAuthorTrusted` and
+  no sleeps, spawned processes or wall-clock assertions; the gh fake models gh's
+  own `--json` projection so a pre-check that stops requesting `mergedAt` goes
+  red on its own; no hidden or credential paths staged; failures are logged loud
+  and never swallowed into a silent skip; `isAuthorTrusted` and
   `resolveFleetMaintenanceAuthorSet` reused rather than re-implemented; labels
   read from config, not hardcoded.
 

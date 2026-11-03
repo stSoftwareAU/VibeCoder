@@ -14,17 +14,17 @@ runtime client or the container itself
 ```
 
 The runtime client had already explained itself — "no such image", "invalid
-reference format", "permission denied" — but `run.sh` started the container
-with that stderr inherited by the console and captured nowhere, so the
-escalation could not quote it.
+reference format", "permission denied" — but `run.sh` started the container with
+that stderr inherited by the console and captured nowhere, so the escalation
+could not quote it.
 
 `run.sh` now streams the run client's stderr through `tee` into a capture file
 and hands that file to `container-restart-backoff` as `--launch-log` on exit
 status **125**, **126** or **127** — exactly the statuses
 `resolveFailurePhase()` turns into a `container_start` escalation. Any other
 status came from a container that started, so its output is the worker's own
-console and is never quoted as launch evidence. This is the treatment Issue
-#709 gave the image build, applied to the phase after it.
+console and is never quoted as launch evidence. This is the treatment Issue #709
+gave the image build, applied to the phase after it.
 
 Two details are load-bearing:
 
@@ -45,10 +45,10 @@ Backend/CLI change — no web interface to screenshot. The evidence is the
 launcher harness, which runs the real `run.sh` against a recording runtime stub
 and asserts on the invocation it actually constructed.
 
-**Red first.** With the runtime stub refusing the start
-(`STUB_RUN_EXIT=125`, `STUB_RUN_STDERR=…`), the new test failed against the
-unfixed launcher with exactly the reported signature — an escalation carrying
-the status and no evidence:
+**Red first.** With the runtime stub refusing the start (`STUB_RUN_EXIT=125`,
+`STUB_RUN_STDERR=…`), the new test failed against the unfixed launcher with
+exactly the reported signature — an escalation carrying the status and no
+evidence:
 
 ```text
 run.sh - a refused container start quotes the runtime client's own stderr … FAILED
@@ -78,22 +78,23 @@ flowchart LR
 Added to `worker/deno/tests/run_sh_launcher_test.ts`:
 
 - `run.sh - a refused container start quotes the runtime client's own stderr
-  (Issue #711)` — the regression test. It drives every status in
-  `CONTAINER_START_EXIT_CODES` (125, 126, 127, imported from
-  `container_restart_backoff.ts`, so the launcher's list cannot drift from the
-  recorder's), and asserts three things: the refusal still reaches the console,
-  `--launch-log` is passed, and the file handed over still holds the client's
-  message when the recorder reads it.
+  (Issue #711)`
+  — the regression test. It drives every status in `CONTAINER_START_EXIT_CODES`
+  (125, 126, 127, imported from `container_restart_backoff.ts`, so the
+  launcher's list cannot drift from the recorder's), and asserts three things:
+  the refusal still reaches the console, `--launch-log` is passed, and the file
+  handed over still holds the client's message when the recorder reads it.
 - `run.sh - a container that started is never quoted as failure evidence (Issue
-  #711)` — exit status 1 with output on stderr: a worker that failed for its
-  own reasons inside a container that started fine is not a refused launch, so
+  #711)`
+  — exit status 1 with output on stderr: a worker that failed for its own
+  reasons inside a container that started fine is not a refused launch, so
   nothing is quoted.
 
 Changed:
 
 - `run.sh` — the capture at the run invocation, the status test that sets
-  `EVIDENCE_LOG`, and the capture's removal in the existing exit trap (after
-  the outcome record, never before it).
+  `EVIDENCE_LOG`, and the capture's removal in the existing exit trap (after the
+  outcome record, never before it).
 - `worker/deno/tests/fixtures/launcher_harness.ts` — `STUB_RUN_STDERR`, so the
   runtime stub can print the refusal a `container_start` escalation exists to
   quote.

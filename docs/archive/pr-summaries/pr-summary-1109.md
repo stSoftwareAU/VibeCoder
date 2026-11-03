@@ -6,8 +6,8 @@ Every PR the merge-conflict pass decides on now leaves exactly one
 machine-readable reason behind, from a closed taxonomy, plus one pass-level
 summary. Previously a skipped PR produced either nothing or an unstructured log
 line, so "the label went on and then silence" — the #1076 symptom — was
-indistinguishable from a pass that ran and correctly decided to wait.
-Closes #1109.
+indistinguishable from a pass that ran and correctly decided to wait. Closes
+#1109.
 
 What landed:
 
@@ -17,10 +17,10 @@ What landed:
   operands that make the decision checkable (`msUntilDue`, `attemptsSpent` /
   `maxAttempts`, `disruptedCount`, `lockHolder`, …).
 - **Compile-time closure.** The scan's per-PR decision returns
-  `ConflictScanPrOutcome` and the drain's loop returns `ConflictDrainStop`, so an
-  exit added with no reason is a type error; `conflictReasonOperands` and
-  `isQueuedConflictReason` switch exhaustively, so a reason added with no case is
-  a type error too.
+  `ConflictScanPrOutcome` and the drain's loop returns `ConflictDrainStop`, so
+  an exit added with no reason is a type error; `conflictReasonOperands` and
+  `isQueuedConflictReason` switch exhaustively, so a reason added with no case
+  is a type error too.
 - **`findConflictingPr` returns `{ selected, decisions }`** instead of the bare
   selection, so a caller sees the whole set the pass walked and what happened to
   each.
@@ -90,59 +90,61 @@ flowchart LR
   fixed in this diff.
 - **met** — Adding an exit that returns no reason fails to compile — evidence:
   `worker/deno/tests/merge_conflict_decision_taxonomy_test.ts::taxonomy compile
-  gate - an exit that returns no reason fails to compile` — reviewer: partial —
-  reason: the reviewer was right that the drain's `let stop = { kind: "cap" }`
-  left the hole open; the loop is now a function returning
-  `ConflictDrainStop`, and `deno check` refuses a `return` with no stop
-  (verified by hand: `TS2322 ... 'undefined' is not assignable to type
+  gate - an exit that returns no reason fails to compile`
+  — reviewer: partial — reason: the reviewer was right that the drain's
+  `let stop = { kind: "cap" }` left the hole open; the loop is now a function
+  returning `ConflictDrainStop`, and `deno check` refuses a `return` with no
+  stop (verified by hand:
+  `TS2322 ... 'undefined' is not assignable to type
   'ConflictDrainStop'`).
 - **partial** — A pass over a fleet with N labelled PRs emits N per-PR records
   plus one summary, asserted against injected seams — evidence:
   `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr - every
-  labelled PR gets a record, plus one summary` — reviewer: partial — reason: a
-  scan pass ends at its selection, so PRs after the selected one are decided on
-  the next call; walking past the selection would cost a label read and a
-  comment page per PR, which the "no additional API calls" criterion forbids.
-  The boundary is documented in `docs/workflows/merge-conflicts.md`.
+  labelled PR gets a record, plus one summary`
+  — reviewer: partial — reason: a scan pass ends at its selection, so PRs after
+  the selected one are decided on the next call; walking past the selection
+  would cost a label read and a comment page per PR, which the "no additional
+  API calls" criterion forbids. The boundary is documented in
+  `docs/workflows/merge-conflicts.md`.
 - **met** — The `cooldown` record carries the milliseconds remaining; the
   `budget-spent` record carries attempts spent and the cap — evidence:
   `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr - the
-  cooldown record carries the milliseconds still to run` and `::findConflictingPr
+  cooldown record carries the milliseconds still to run`
+  and `::findConflictingPr
   - the budget-spent record carries the attempts and the cap` — reviewer: met.
 - **met** — Selection behaviour is unchanged: an existing scan test over a fixed
   fleet selects the same PR — evidence: every pre-existing assertion in
   `worker/deno/tests/pr_merge_conflict_scan_test.ts` and
   `merge_conflict_pr_blocked_reachability_test.ts` is unchanged apart from
   reading `.selected` off the new result shape — reviewer: partial — reason: the
-  reviewer's concern was the new author guard and its bespoke login matcher;
-  the matcher is gone (the guard now calls the repo's `isFleetAuthor`, the same
+  reviewer's concern was the new author guard and its bespoke login matcher; the
+  matcher is gone (the guard now calls the repo's `isFleetAuthor`, the same
   helper `pr_ci_nudge_scan.ts` uses for the identical guard), and the guard
   cannot fire on a listing `gh` already filtered by `--author`, so no PR the old
   code selected is skipped.
 - **met** — No additional GitHub API calls per pass, asserted by counting calls
   on the injected `gh` seam — evidence:
   `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr - the
-  records cost no extra gh calls` pins the exact four-call sequence — reviewer:
-  met.
-- **met** — `./quality.sh` passes — evidence: full gate run after the final edit,
-  `Result: PASSED (with skipped checks)` — reviewer: met.
+  records cost no extra gh calls`
+  pins the exact four-call sequence — reviewer: met.
+- **met** — `./quality.sh` passes — evidence: full gate run after the final
+  edit, `Result: PASSED (with skipped checks)` — reviewer: met.
 - **unrequested** — `author` added to `PR_FIELDS` and `PrEntry` — reviewer:
   unrequested — reason: the issue enumerates `out-of-scope-author` in the
   taxonomy, and without the author on the listing entry that reason has no
   producer. It rides the existing listing, so it costs no call.
 - **unrequested** — taxonomy members `already-handled` and `scan-error` beyond
   the issue's enumerated list — reviewer: unrequested — reason: the first
-  acceptance criterion requires *every* exit to yield a reason, and these are
+  acceptance criterion requires _every_ exit to yield a reason, and these are
   the exits the issue's list did not name.
-- **unrequested** — `reposScanned` / `reposNotAllowed` / `reposListFailed` on the
-  pass summary — reviewer: unrequested — reason: the repo-level exits have no PR
-  to key on, so counting them is the only way they appear in the decision
+- **unrequested** — `reposScanned` / `reposNotAllowed` / `reposListFailed` on
+  the pass summary — reviewer: unrequested — reason: the repo-level exits have
+  no PR to key on, so counting them is the only way they appear in the decision
   surface at all.
-- **unrequested** — `lock-held` recorded from
-  `pr_merge_conflict_processor.ts` rather than the scan — reviewer: unrequested —
-  reason: the issue lists `lock-held` in the taxonomy and that exit lives in the
-  processor; the duplicate prose line beside it was removed so the event is
-  logged once.
+- **unrequested** — `lock-held` recorded from `pr_merge_conflict_processor.ts`
+  rather than the scan — reviewer: unrequested — reason: the issue lists
+  `lock-held` in the taxonomy and that exit lives in the processor; the
+  duplicate prose line beside it was removed so the event is logged once.
 - **unrequested** — the new section in `docs/workflows/merge-conflicts.md` —
   reviewer: unrequested — reason: the standards require a docs change to
   accompany a change in documented behaviour.
@@ -160,8 +162,8 @@ flowchart LR
   `fleet_authors.ts::isFleetAuthor`.
 - **violation** — doc comment naming a file that does not exist
   (`merge_conflict_decision_compile_test.ts`) — evidence:
-  `worker/deno/lib/pr_merge_conflict_scan.ts:908` (pre-fix) — reason: fixed —
-  it now names `merge_conflict_decision_taxonomy_test.ts`.
+  `worker/deno/lib/pr_merge_conflict_scan.ts:908` (pre-fix) — reason: fixed — it
+  now names `merge_conflict_decision_taxonomy_test.ts`.
 - **violation** — `sanitizeResources: false` disabling a failure detector that
   was not in the way — evidence:
   `worker/deno/tests/merge_conflict_decision_taxonomy_test.ts:375` (pre-fix) —
@@ -189,7 +191,7 @@ flowchart LR
 - **violation** (low confidence, per the reviewer) — the compile-gate test
   spawns `deno check` three times — evidence:
   `worker/deno/tests/merge_conflict_decision_taxonomy_test.ts` — reason: stands.
-  The issue names the compile-time guard as the *earliest* failure-detection
+  The issue names the compile-time guard as the _earliest_ failure-detection
   point, and a type error cannot be asserted without a type checker. It is ~1 s
   per run, spawns no repo script, binary or server, and contains no sleep or
   poll. The version-fragile assertion on compiler prose was replaced with the
@@ -216,10 +218,11 @@ New file `worker/deno/tests/merge_conflict_decision_taxonomy_test.ts`:
 
 `worker/deno/tests/pr_merge_conflict_scan_test.ts` (added):
 
-- one test per scan branch — attempted, `not-conflicting`, `out-of-scope-author`,
-  a fleet author matched case-insensitively, `already-handled`, `scan-error` at
-  each of the three stages, `needs-human`, `cooldown` (exact `msUntilDue`),
-  `budget-spent` (attempts and cap), `disrupted-bound`;
+- one test per scan branch — attempted, `not-conflicting`,
+  `out-of-scope-author`, a fleet author matched case-insensitively,
+  `already-handled`, `scan-error` at each of the three stages, `needs-human`,
+  `cooldown` (exact `msUntilDue`), `budget-spent` (attempts and cap),
+  `disrupted-bound`;
 - N labelled PRs → N records plus one summary with a count per reason;
 - the repo-level counters on the summary;
 - the exact `gh` call sequence, so a record built by re-fetching fails;

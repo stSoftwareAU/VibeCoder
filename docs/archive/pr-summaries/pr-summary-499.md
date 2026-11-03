@@ -6,22 +6,24 @@ The census and the claim scan disagreed about `stSoftwareAU/NEAT-AI-Rebase`
 because **both** were wrong, one level apart. Closes #499.
 
 **What the field data showed.** `NEAT-AI-Rebase#48` carries `work-on`, is
-unassigned and carries no blocking label — but merged PR #49
-("Emit population-candidate.json as a creature, not bare topology (Issue #48)")
-names it, so `isBlockedByRecentlyClosedPR` makes the scan refuse it as
-`merged-pr-permanent` on every cycle. That skip is permanent by design
-(Issue #3151): only a trusted re-label dated after the merge lifts it.
+unassigned and carries no blocking label — but merged PR #49 ("Emit
+population-candidate.json as a creature, not bare topology (Issue #48)") names
+it, so `isBlockedByRecentlyClosedPR` makes the scan refuse it as
+`merged-pr-permanent` on every cycle. That skip is permanent by design (Issue
+#3151): only a trusted re-label dated after the merge lifts it.
 
 Refusing #48 was right. What was not right is that #48 still raised
 `hasSuppressingWorkOn`, and `selectHighestPriority` drops **every**
 `low-priority` candidate from a repo in `reposWithOpenWorkOn`. So the repo was
 deadlocked: #48 could never be claimed, and neither could any of the 28
 `low-priority` issues parked behind it. That is exactly the state the issue
-describes — *"that work is not being done by anyone"*.
+describes — _"that work is not being done by anyone"_.
 
-The census, meanwhile, models the merged-PR gate (so `work_on=0
-merged_pr_blocked=1`) but has never modelled tier-3 suppression at all, so it
-kept counting all 28 as claimable. Three such cycles filed this issue.
+The census, meanwhile, models the merged-PR gate (so
+`work_on=0
+merged_pr_blocked=1`) but has never modelled tier-3 suppression at
+all, so it kept counting all 28 as claimable. Three such cycles filed this
+issue.
 
 ```mermaid
 flowchart TD
@@ -59,15 +61,15 @@ stream, closed-**unmerged** PR cooldown). A closed-unmerged PR still suppresses
 — that block expires with the cooldown window.
 
 **2. `worker/deno/lib/idle_decision_census.ts` — the census gap.** The census
-now models tier-3 suppression, with the same two carve-outs the scan applies, and
-reports the excluded backlog as `low_priority_suppressed=<n>` on the per-repo
-`[idle-census]` line. Without this, any repo with a legitimately deferred
-`work-on` issue (an open PR, an occupied stream) plus a `low-priority` backlog
-manufactures this same escalation for as long as the deferral lasts.
+now models tier-3 suppression, with the same two carve-outs the scan applies,
+and reports the excluded backlog as `low_priority_suppressed=<n>` on the
+per-repo `[idle-census]` line. Without this, any repo with a legitimately
+deferred `work-on` issue (an open PR, an occupied stream) plus a `low-priority`
+backlog manufactures this same escalation for as long as the deferral lasts.
 
 Worth noting for the next time: `CENSUS_SCAN_GATE_COVERAGE` is a total map over
-`SkipReason` precisely to stop this class of bug, and it did not catch this one —
-tier-3 suppression happens in `selectHighestPriority`, never reaches
+`SkipReason` precisely to stop this class of bug, and it did not catch this one
+— tier-3 suppression happens in `selectHighestPriority`, never reaches
 `logIssueSkipped`, and so has no `SkipReason` to classify. That limit is now
 written down in `docs/IDLE-TASK-FRAMEWORK.md`.
 
@@ -115,7 +117,8 @@ environment; every other check passed.)
 ### Added — `worker/deno/tests/idle_decision_census_test.ts`
 
 - `a suppressing work-on issue removes the low-priority backlog from the
-  claimable count` — the new gate, including `claimableIssues`.
+  claimable count`
+  — the new gate, including `claimableIssues`.
 - `with no work-on issue the low-priority backlog stays claimable` — the
   negative case.
 - `a permanently merged-PR-blocked work-on issue does not suppress the backlog`
@@ -143,9 +146,9 @@ No test was removed or disabled.
 
 - `docs/workflows/issue-processing.md` — new **Per-repo tier suppression**
   section with the suppresses / does-not-suppress table.
-- `docs/IDLE-TASK-FRAMEWORK.md` — the census's new gate, the updated
-  counting flowchart, and the note that the `SkipReason` compiler guard cannot
-  cover selection-stage gates.
+- `docs/IDLE-TASK-FRAMEWORK.md` — the census's new gate, the updated counting
+  flowchart, and the note that the `SkipReason` compiler guard cannot cover
+  selection-stage gates.
 - `docs/SUPPLY-CHAIN-TRIAGE.md` — the tier-3 row said "any repo that has an open
   work-on issue", which is no longer accurate.
 
@@ -153,7 +156,8 @@ No test was removed or disabled.
 
 - No new external input, shell, SQL, filesystem or HTTP call; both changes are
   pure in-process counting over data the worker already holds.
-- No secrets, credentials or hidden files staged (`git diff --cached
+- No secrets, credentials or hidden files staged
+  (`git diff --cached
   --name-only` verified before commit).
 - No new dependency, no change to authentication, authorisation or error
   surfaces.

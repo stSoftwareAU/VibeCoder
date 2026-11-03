@@ -1,10 +1,10 @@
 ## Summary
 
 Quality-gate failure records are no longer classified as host faults. The
-quality gate now passes `qualityGateOutput: true` to `handleIssueFailure`.
-With that flag, `markIssueAsFailedOnce` and `markIssueAsFailed` skip
-`detectHostFault` and write a `**Source:** quality gate` line straight after
-the Category line. The host-fault release sweep recognises that line and never
+quality gate now passes `qualityGateOutput: true` to `handleIssueFailure`. With
+that flag, `markIssueAsFailedOnce` and `markIssueAsFailed` skip
+`detectHostFault` and write a `**Source:** quality gate` line straight after the
+Category line. The host-fault release sweep recognises that line and never
 releases such a record. Before this fix, a failing test whose name or output
 mentioned `No space left on device`, `ENOSPC` or `ignoring broken ref` made the
 sweep strip `failed-once` / `failed` and post a false "Host fault cleared".
@@ -14,27 +14,27 @@ Closes #3445.
 
 ### Intent and Rationale
 
-- The quality gate's raw output is repository-authored: test names and
-  assertion diffs. It cannot carry host output, so host-fault classification
-  must not run on it.
-- Skipping `detectHostFault` alone was not enough. `classifyFailureRecord`
-  still re-reads any unmarked "Automated Processing Failed" body for a
-  `clone-corrupt` signature. A quality-gate record that quotes
-  `ignoring broken ref` would still be released. The record therefore carries a
-  worker-written `**Source:** quality gate` head line, and the sweep returns
-  `null` when it sees it. This follows the precedent of the summary-gate
-  refusal (`isSummaryGateFailureRecord`).
+- The quality gate's raw output is repository-authored: test names and assertion
+  diffs. It cannot carry host output, so host-fault classification must not run
+  on it.
+- Skipping `detectHostFault` alone was not enough. `classifyFailureRecord` still
+  re-reads any unmarked "Automated Processing Failed" body for a `clone-corrupt`
+  signature. A quality-gate record that quotes `ignoring broken ref` would still
+  be released. The record therefore carries a worker-written
+  `**Source:** quality gate` head line, and the sweep returns `null` when it
+  sees it. This follows the precedent of the summary-gate refusal
+  (`isSummaryGateFailureRecord`).
 
 ### Essential Design Decisions
 
-- `isQualityGateFailureRecord` is anchored to the comment head: the heading,
-  the Category line, then the Source line. A Source line quoted deeper in the
-  error output does not count. Forging the line could only keep a label in
-  place, never release one.
+- `isQualityGateFailureRecord` is anchored to the comment head: the heading, the
+  Category line, then the Source line. A Source line quoted deeper in the error
+  output does not count. Forging the line could only keep a label in place,
+  never release one.
 - `qualityGateOutput` is optional, and when absent host faults are detected as
-  before. Only the quality gate's call site passes repository test output.
-  Every other `handleIssueFailure` caller passes a setup, clone or run-level
-  reason that can carry host output: `coding_failure_ladder.ts`,
+  before. Only the quality gate's call site passes repository test output. Every
+  other `handleIssueFailure` caller passes a setup, clone or run-level reason
+  that can carry host output: `coding_failure_ladder.ts`,
   `planning_processor.ts`, `question_processor.ts` and
   `commands/label_manager.ts`.
 
@@ -72,8 +72,8 @@ flowchart LR
 **Docs sweep** — grep: `detectHostFault`, `vibe-host-fault`, "Host fault"
 (README.md, docs/ excluding docs/archive/); section:
 `docs/INTERNALS.md#-host-fault-failure-labels-release-themselves-issue-2890`;
-updated: `docs/INTERNALS.md`; `docs/TROUBLESHOOTING.md:988` — still true
-because a host-caused failure comment still carries the Host fault line;
+updated: `docs/INTERNALS.md`; `docs/TROUBLESHOOTING.md:988` — still true because
+a host-caused failure comment still carries the Host fault line;
 `docs/INTERNALS.md:4846` and `docs/INTERNALS.md:4929` — still true because
 `planCodingFailure` is untouched and short-circuits on `ladderApplied` for
 quality-gate runs; `docs/audits/security-sweep-2890-host-fault-release.md:64` —
@@ -105,9 +105,9 @@ historical audit record, and marker precedence is unchanged.
 - `worker/deno/lib/label_failure.ts:47` — flag set → no host fault —
   `label_failure - markIssueAsFailedOnce never marks quality-gate output as a host fault (Issue #3445)`
   — ignoring the flag turned 4 tests red.
-- `worker/deno/lib/label_failure.ts:47` — flag absent → `detectHostFault` runs
-  — `label_failure - markIssueAsFailedOnce marks a host fault in the comment`
-  — always returning `null` turned 4 tests red.
+- `worker/deno/lib/label_failure.ts:47` — flag absent → `detectHostFault` runs —
+  `label_failure - markIssueAsFailedOnce marks a host fault in the comment` —
+  always returning `null` turned 4 tests red.
 - `worker/deno/lib/label_failure.ts:53` — flag set → Source line written —
   `isQualityGateFailureRecord - recognises only the worker-written head (Issue #3445)`
   — returning `""` turned 4 tests red.

@@ -47,26 +47,31 @@ candidate build errors, which still hold.
 
 ## Test Plan
 
-- New `feedback verifier - an unavailable verifier is logged and does not block
-  (Issue #4509)` (`pr_feedback_verifier_3784_test.ts`): `verify` returns
-  `not_checked` with the JSON-parse reason from the issue; asserts `ok`, exactly
-  one `Review-fix verifier not checked` warning carrying that reason, and no
+- New
+  `feedback verifier - an unavailable verifier is logged and does not block
+  (Issue #4509)`
+  (`pr_feedback_verifier_3784_test.ts`): `verify` returns `not_checked` with the
+  JSON-parse reason from the issue; asserts `ok`, exactly one
+  `Review-fix verifier not checked` warning carrying that reason, and no
   `Review-fix verifier verdicts` record.
-- New `review-fix verifier - an unavailable verifier does not block: the fix is
+- New
+  `review-fix verifier - an unavailable verifier does not block: the fix is
   pushed and addressed, with no failure charged (Issue #4509)`
   (`pr_feedback_review_dismissal_3383_test.ts`): runs the real
   `verifyFeedbackFix` through `processPrFeedback`; asserts one check, no
   recovery prompt, one `commitAndPushPending`, the review marked addressed and
   no `handlePrCommentFailure`. `runScenario` now also returns the agent prompts
   (additive).
-- Blocked result unchanged: existing `persistent findings stay outstanding…`
-  and `recovery must clear before pushing` tests pass unedited.
+- Blocked result unchanged: existing `persistent findings stay outstanding…` and
+  `recovery must clear before pushing` tests pass unedited.
 - Red check: with the old `throw` restored in the lib, both new tests fail
   (`checks` 2 vs 1; `result.ok` false vs true); with the fix they pass. The
   combined run of the two files: 32 passed, 0 failed.
 - Removed from `worker/deno/tests/pr_feedback_verifier_3784_test.ts`: the
-  `not_checked` / `timeout` case in `unavailable, malformed and blocking results
-  fail closed` (renamed `malformed and blocking results fail closed`).
+  `not_checked` / `timeout` case in
+  `unavailable, malformed and blocking results
+  fail closed` (renamed
+  `malformed and blocking results fail closed`).
   - Required by: "turns a verifier that could not run (`runPrePrVerifier`
     returning `not_checked`) into the same error as a verifier that found the
     fix incomplete"

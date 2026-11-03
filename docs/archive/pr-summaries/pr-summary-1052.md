@@ -4,10 +4,10 @@
 
 Closes #1052.
 
-The fleet filed no `idle-task` issue for **ten days** — last created
-2026-08-26, zero open across all eighteen monitored repos — while slot capacity
-sat unused, and nothing escalated. The operator found it by noticing the fleet
-did not look busy.
+The fleet filed no `idle-task` issue for **ten days** — last created 2026-08-26,
+zero open across all eighteen monitored repos — while slot capacity sat unused,
+and nothing escalated. The operator found it by noticing the fleet did not look
+busy.
 
 Every instrument needed to notice was present, running and correct, and all
 three end at `log(...)`:
@@ -35,8 +35,8 @@ idle slot-seconds (four slot-hours) over the same span.**
 - A **busy** fleet files no idle task for days by design; its slots are
   occupied, so the capacity half never trips.
 - A **genuinely quiet** fleet files an idle task, and `maybe-file-idle-task`
-  keeps at most one open across the whole monitored set — so one open wrapper
-  is the healthy steady state, which ends the episode and restarts the clock.
+  keeps at most one open across the whole monitored set — so one open wrapper is
+  the healthy steady state, which ends the episode and restarts the clock.
 - Idle capacity with **no** idle task is neither, and is the state that went
   unnoticed for ten days.
 
@@ -55,9 +55,9 @@ reached any threshold. The episode is written atomically to
 `idle_starvation.json` in the work directory: its start instant, the idle
 slot-seconds banked across every run since, the run whose ledger reading was
 last banked, and the latest evidence. The #925 ledger is itself per-run, so each
-observation banks the **delta** of that run's cumulative reading against what the
-episode last saw from it — a restarted run contributes its whole reading, and
-the episode's measurement survives the restart intact.
+observation banks the **delta** of that run's cumulative reading against what
+the episode last saw from it — a restarted run contributes its whole reading,
+and the episode's measurement survives the restart intact.
 
 ### Shape, deliberately copied from `idle_inversion_streak.ts`
 
@@ -119,14 +119,14 @@ No UI change, so no screenshots. The evidence is the red/green matrix below:
 each row is a deliberate mutation of the shipped module, and the tests that go
 red under it. Every mutation was reverted immediately after the run.
 
-| Mutation (the defect it re-introduces) | Tests that go red |
-| --- | --- |
+| Mutation (the defect it re-introduces)                                                          | Tests that go red                                                                                                                     |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | Threshold never met — the detector escalates nothing (the pre-fix world, and #1051's inertness) | ten-day case, two-host dedup, restart persistence, one-issue-per-episode, failed search, marker forging, threshold override — 7 of 12 |
-| `openIdleTasks` ignored — the alert fires on a healthy fleet | quiet fleet, one-issue-per-episode — 2 of 12 |
-| Marker search skipped — no cross-host dedup | two-host dedup, failed search — 2 of 12 |
-| Episode read from memory only, never from disk (**exactly** #1051's defect) | ten-day case, two-host dedup, restart persistence, one-issue-per-episode, failed search, marker forging, threshold override — 7 of 12 |
-| Filed issue number not recorded — one issue per *cycle* | one-issue-per-episode — 1 of 12 |
-| Idle slot-seconds half dropped — elapsed time alone escalates | busy fleet — 1 of 12 |
+| `openIdleTasks` ignored — the alert fires on a healthy fleet                                    | quiet fleet, one-issue-per-episode — 2 of 12                                                                                          |
+| Marker search skipped — no cross-host dedup                                                     | two-host dedup, failed search — 2 of 12                                                                                               |
+| Episode read from memory only, never from disk (**exactly** #1051's defect)                     | ten-day case, two-host dedup, restart persistence, one-issue-per-episode, failed search, marker forging, threshold override — 7 of 12 |
+| Filed issue number not recorded — one issue per _cycle_                                         | one-issue-per-episode — 1 of 12                                                                                                       |
+| Idle slot-seconds half dropped — elapsed time alone escalates                                   | busy fleet — 1 of 12                                                                                                                  |
 
 Unmutated, all 12 tests pass.
 
@@ -181,15 +181,16 @@ Verification run (not `./quality.sh`, which takes 15+ minutes):
 - `deno check` on both changed library files and `mod.ts` — clean.
 - `deno test tests/idle_starvation_escalation_1052_test.ts` — 12 passed.
 - `deno test tests/idle_inversion_streak_test.ts
-  tests/slot_idle_accounting_925_test.ts` plus the new suite — 46 passed.
+  tests/slot_idle_accounting_925_test.ts`
+  plus the new suite — 46 passed.
 - Every suite importing `run_core_production_deps.ts` (10 files) — 125 passed.
 - All 43 `tests/idle*_test.ts` suites — 667 passed.
 - `markdownlint-cli2 docs/IDLE-TASK-FRAMEWORK.md` — 0 errors.
 
 ## Documentation
 
-`docs/IDLE-TASK-FRAMEWORK.md` gains a section under Coordination — *Idle
-capacity that files no idle task (Issue #1052)* — recording the incident, the
+`docs/IDLE-TASK-FRAMEWORK.md` gains a section under Coordination — _Idle
+capacity that files no idle task (Issue #1052)_ — recording the incident, the
 two-halves rule, the thresholds and why they are what they are, the persistence
 model, and the per-observation log line; and the Regression coverage section now
 names both escalation suites.

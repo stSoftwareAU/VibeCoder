@@ -28,17 +28,17 @@ The third hazard the issue names — "do not open a competing PR" — is already
 answered by `decideCompletionPr`, which **recovers** an open PR that references
 the issue instead of creating a second one. An earlier revision of this change
 duplicated that as a stale-claim abort; it regressed the self-heal path, because
-`superseding_pr.ts` reports an *unreadable* PR state as "open", so a `gh pr view`
-hiccup abandoned a finished run that today recovers cleanly. The rule was
-dropped and the recover path is now pinned by a test instead.
+`superseding_pr.ts` reports an _unreadable_ PR state as "open", so a
+`gh pr view` hiccup abandoned a finished run that today recovers cleanly. The
+rule was dropped and the recover path is now pinned by a test instead.
 
-A stale claim is a **clean stop, never a failure**: the branch is already pushed,
-so the completion phase comments the branch link on the issue and returns a
-`claim_stale` `RunOutcome` — no failure label, no `unknown` class, no run-failure
-issue, and no contribution to the failure streak (the phases return
-`status: "early_exit"`, which `issue_worker.ts` reports as `success: true`). That
-is #342's lesson applied: a normal outcome counted as a crash backs the whole
-host off.
+A stale claim is a **clean stop, never a failure**: the branch is already
+pushed, so the completion phase comments the branch link on the issue and
+returns a `claim_stale` `RunOutcome` — no failure label, no `unknown` class, no
+run-failure issue, and no contribution to the failure streak (the phases return
+`status: "early_exit"`, which `issue_worker.ts` reports as `success: true`).
+That is #342's lesson applied: a normal outcome counted as a crash backs the
+whole host off.
 
 Every lookup failure fails safe to `fresh` and is warned about, never swallowed.
 This guard withholds a PR for finished, pushed, quality-gated work, so a `gh`
@@ -133,7 +133,8 @@ the lookups and the outcome:
 - `pre-write` mode issues exactly one `gh` call and does not stop a run for an
   in-flight PR; `pre-pr` mode also classifies the PR
 - a lower-case `gh` state is still recognised as closed
-- `formatStaleClaimReason` starts with the greppable `claim_stale:<reason>` token
+- `formatStaleClaimReason` starts with the greppable `claim_stale:<reason>`
+  token
 - the hand-off comment links the branch, names the overtaking PR, and renders
   with no `undefined` when there is none
 - the outcome is `claim_stale`, never `no_pr`; the release comment and the

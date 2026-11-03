@@ -22,8 +22,8 @@ For the **agent-facing** rules (label policy, suppression syntax) see
 
 Bash has **no compile step**, so an invalid bash script can regress into a
 repository with no quality gate catching it. That is the exact FLEET regression
-that motivated: broken scripts reached the default branch and no gate
-flagged them, because — unlike compiled languages — bash is never type-checked.
+that motivated: broken scripts reached the default branch and no gate flagged
+them, because — unlike compiled languages — bash is never type-checked.
 
 The fix is per-repo and **layered**:
 
@@ -34,11 +34,11 @@ The fix is per-repo and **layered**:
   every monitored repo has those gates plus a native check/compile step for its
   other languages, and raises an issue where one is missing.
 
-Repositories are **absolutely isolated**: there is no shared cross-repo
-reusable Action. The audit only verifies presence and raises an issue; each
-repo owns and commits its own gate, and that fix rides a normal `work-on`
-pipeline PR later. Rollout is audit-driven — the audit is built first and no
-proactive per-repo sub-issues are filed (Round 2 Q2).
+Repositories are **absolutely isolated**: there is no shared cross-repo reusable
+Action. The audit only verifies presence and raises an issue; each repo owns and
+commits its own gate, and that fix rides a normal `work-on` pipeline PR later.
+Rollout is audit-driven — the audit is built first and no proactive per-repo
+sub-issues are filed (Round 2 Q2).
 
 A weekly cadence (`cooldownHours: 168`) matches how rarely CI configuration
 changes.
@@ -48,8 +48,8 @@ changes.
 The audit is **deterministic and native** — two Deno detectors drive the core
 checks, so **no Claude invocation is involved**. The prompt at
 [`prompts/bash_syntax_audit/`](../prompts/bash_syntax_audit/) is used only as
-the human-style wrapper body, so an operator can paste it into a
-fresh `idle-task` issue titled `Run a bash syntax audit` and the worker runs it
+the human-style wrapper body, so an operator can paste it into a fresh
+`idle-task` issue titled `Run a bash syntax audit` and the worker runs it
 identically.
 
 **No PR, ever.** The template sets `skipMilestone: true`, mirroring the other
@@ -61,17 +61,17 @@ unknown-count string instead (Issue #1105) — see
 
 ## The two detectors
 
-| Detector | Module | Checks |
-| --- | --- | --- |
-| **Bash CI gate** | [`bash_ci_gate_scanner.ts`](../worker/deno/lib/bash_ci_gate_scanner.ts) | Discovers the repo's bash scripts (`*.sh` / `*.bash` and bash-shebang files), then checks `.github/workflows/*` for a `bash -n` / `sh -n` **syntax** gate and a `shellcheck` **lint** gate. A step invoking a committed gate script (e.g. `./quality.sh`, `quality/bash_syntax.sh`) counts — the script's committed contents are inspected. |
-| **Language validity** | [`language_validity_gate.ts`](../worker/deno/lib/language_validity_gate.ts) | For each other main language (Rust, TypeScript, React, Java, Python), checks a native basic-validity step is wired into CI — `cargo check`, `deno check` / `tsc --noEmit`, `mvn compile` / `gradle compileJava`, `python -m py_compile`. Basic validity only (does it compile / parse), not style or lint. |
+| Detector              | Module                                                                      | Checks                                                                                                                                                                                                                                                                                                                                      |
+| --------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Bash CI gate**      | [`bash_ci_gate_scanner.ts`](../worker/deno/lib/bash_ci_gate_scanner.ts)     | Discovers the repo's bash scripts (`*.sh` / `*.bash` and bash-shebang files), then checks `.github/workflows/*` for a `bash -n` / `sh -n` **syntax** gate and a `shellcheck` **lint** gate. A step invoking a committed gate script (e.g. `./quality.sh`, `quality/bash_syntax.sh`) counts — the script's committed contents are inspected. |
+| **Language validity** | [`language_validity_gate.ts`](../worker/deno/lib/language_validity_gate.ts) | For each other main language (Rust, TypeScript, React, Java, Python), checks a native basic-validity step is wired into CI — `cargo check`, `deno check` / `tsc --noEmit`, `mvn compile` / `gradle compileJava`, `python -m py_compile`. Basic validity only (does it compile / parse), not style or lint.                                  |
 
-### What counts as a *main* language (Issue #3)
+### What counts as a _main_ language (Issue #3)
 
 Presence alone does not make a language a main language. A language is
-considered main only when it holds at least **5 %**
-(`MAIN_LANGUAGE_MIN_SHARE`) of the repository's measured bytes, taken from the
-same GitHub Languages API counts the best-practices bucket picker uses.
+considered main only when it holds at least **5 %** (`MAIN_LANGUAGE_MIN_SHARE`)
+of the repository's measured bytes, taken from the same GitHub Languages API
+counts the best-practices bucket picker uses.
 
 A Rust repository whose only TypeScript is a single fixture-generation script
 (0.1 % of its bytes) has no TypeScript worth type-checking, so demanding a
@@ -83,32 +83,32 @@ repositories in scope while excluding one-off helper scripts.
 
 Both detectors distinguish **missing** from **unknown**:
 
-- A repo with **no bash scripts** is *not applicable* — no bash finding.
-- A language below the **main-language share threshold** above is *not
-  applicable* — no validity-gate finding for an incidental helper script.
+- A repo with **no bash scripts** is _not applicable_ — no bash finding.
+- A language below the **main-language share threshold** above is _not
+  applicable_ — no validity-gate finding for an incidental helper script.
 - A repo with **no loaded workflows** or an **unparseable workflow** leaves the
-  affected gate *unknown* — no false "missing gate" finding (the
-  zero-workflow fail-safe).
+  affected gate _unknown_ — no false "missing gate" finding (the zero-workflow
+  fail-safe).
 
-Only a *definite* missing gate yields a finding.
+Only a _definite_ missing gate yields a finding.
 
 ### Fail-loud (never a silent green)
 
-A detector that cannot run (a directory-walk or file-read failure) surfaces as
-a loud `ok: false` summary on the wrapper issue — an audit that cannot complete
-is **never** reconciled as "no findings".
+A detector that cannot run (a directory-walk or file-read failure) surfaces as a
+loud `ok: false` summary on the wrapper issue — an audit that cannot complete is
+**never** reconciled as "no findings".
 
 ## Bash conventions and gotchas
 
 This is the canonical home for the durable bash portability conventions the
-project follows — the audit checks that a repo *has* a `bash -n` gate, and these
+project follows — the audit checks that a repo _has_ a `bash -n` gate, and these
 are the mistakes that gate is there to catch.
 
 ### `set -u` empty-array expansion (Bash 3.2)
 
 The project runs under `set -euo pipefail` and must support **macOS's Bash
 3.2**. On Bash 3.2, a bare `"${arr[@]}"` on an **empty** array is treated as an
-*unbound variable* and aborts the script under `set -u` (nounset). Newer Bash
+_unbound variable_ and aborts the script under `set -u` (nounset). Newer Bash
 (4.4+) does not, so this fails only on macOS — a class of bug that recurred
 across several PRs.
 
@@ -128,19 +128,19 @@ Equivalently, guard the access with `if [[ ${#arr[@]} -gt 0 ]]; then`. The
 over the shell scripts the PR changed, so a new bare `"${arr[@]}"` is caught
 before merge. Findings are advisory — an array proven non-empty by control flow
 is a legitimate false positive — but the scan **not running** is fatal: the
-script exits non-zero when the PR's base commit is missing from the local
-object store, and always reports how many scripts it inspected. Issue #1891
-fixed the reverse of that: under a shallow checkout the diff printed
-`fatal: bad object`, a `|| true` swallowed it, and the gate reported "complete"
-having inspected nothing.
+script exits non-zero when the PR's base commit is missing from the local object
+store, and always reports how many scripts it inspected. Issue #1891 fixed the
+reverse of that: under a shallow checkout the diff printed `fatal: bad object`,
+a `|| true` swallowed it, and the gate reported "complete" having inspected
+nothing.
 
 ## Findings — one issue per missing gate
 
-| Gate class | Stable finding id | Severity |
-| --- | --- | --- |
-| Missing `bash -n` / `sh -n` syntax gate | `BP-BASH-SYNTAX-GATE` | `high` — invalid bash reaching the default branch is the exact regression this audit prevents. |
-| Missing `shellcheck` gate | `BP-BASH-SHELLCHECK-GATE` | `medium` — the lint gate; error-level findings block at rollout, warnings tighten later (Round 2 Q1). |
-| A main language missing its native validity check | `BP-VALIDITY-GATE-<language>` | `high` — mirrors the best-practices compile-gate severity. |
+| Gate class                                        | Stable finding id             | Severity                                                                                              |
+| ------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Missing `bash -n` / `sh -n` syntax gate           | `BP-BASH-SYNTAX-GATE`         | `high` — invalid bash reaching the default branch is the exact regression this audit prevents.        |
+| Missing `shellcheck` gate                         | `BP-BASH-SHELLCHECK-GATE`     | `medium` — the lint gate; error-level findings block at rollout, warnings tighten later (Round 2 Q1). |
+| A main language missing its native validity check | `BP-VALIDITY-GATE-<language>` | `high` — mirrors the best-practices compile-gate severity.                                            |
 
 Each finding **leads with the fix**: it names the missing gate and gives the
 concrete CI invocation to add. Every finding carries exactly the
@@ -203,6 +203,6 @@ flowchart TD
 
 ## No PR, ever
 
-The template is issue-only. It never opens a pull request or edits a file —
-each repo commits its own gate through the normal `work-on` pipeline once a
-human confirms intent.
+The template is issue-only. It never opens a pull request or edits a file — each
+repo commits its own gate through the normal `work-on` pipeline once a human
+confirms intent.

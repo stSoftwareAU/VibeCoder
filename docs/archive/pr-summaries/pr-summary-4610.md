@@ -6,36 +6,34 @@ Closes #4610
 
 A fleet PR that fails CI costs a full CI run plus a second agent session to
 repair it. The fleet's Macs are already paid for; GitHub Actions minutes are
-not. From 2026-10-25 there were 127 failed PR CI runs across four
-repositories, and the same steps kept failing: Deno test shards (~55),
-`cargo clippy` (12), `cargo mutants` (12), coverage floors (12) and PR summary
-freshness (8). The example that started this was a clippy
-`indexing_slicing` failure introduced by a babysitter repair commit. That
-commit was pushed without running the repository's `quality.sh`, which runs
-the same clippy command.
+not. From 2026-10-25 there were 127 failed PR CI runs across four repositories,
+and the same steps kept failing: Deno test shards (~55), `cargo clippy` (12),
+`cargo mutants` (12), coverage floors (12) and PR summary freshness (8). The
+example that started this was a clippy `indexing_slicing` failure introduced by
+a babysitter repair commit. That commit was pushed without running the
+repository's `quality.sh`, which runs the same clippy command.
 
 This PR makes two changes.
 
-1. **Detection (`lib/shift_left_failures.ts`).** Each babysitter pass reads
-   the PR workflow runs that have failed since its last scan. It records one
-   observation per failed job of a fleet PR whose failed step runs a
-   recognised local tool, provided the CI failure classifier calls it a code
-   fault. When the same check and step fail on 3 or more distinct fleet PRs
-   within 7 days, the babysitter files one `idle-task` issue in the repository
-   that owns the fix:
-   - **VibeCoder** when the babysitter pushed most of the failing heads, or
-     when the repository's `quality.sh` already runs the tool.
+1. **Detection (`lib/shift_left_failures.ts`).** Each babysitter pass reads the
+   PR workflow runs that have failed since its last scan. It records one
+   observation per failed job of a fleet PR whose failed step runs a recognised
+   local tool, provided the CI failure classifier calls it a code fault. When
+   the same check and step fail on 3 or more distinct fleet PRs within 7 days,
+   the babysitter files one `idle-task` issue in the repository that owns the
+   fix:
+   - **VibeCoder** when the babysitter pushed most of the failing heads, or when
+     the repository's `quality.sh` already runs the tool.
    - **VibeCoder, once,** when CI runs the tool but no local gate does, in two
      or more repositories (a fleet-wide gap).
    - **That repository** when only its own local gate lacks the tool.
 2. **Repairs verify locally.** The babysitter's repair prompt is now
-   `buildRepairPrompt`. A CI repair reproduces the failing step with the
-   command the workflow runs and confirms it passes before reporting ready.
-   Review and conflict repairs run the formatter, linter and type or compile
-   check for the code they touched.
+   `buildRepairPrompt`. A CI repair reproduces the failing step with the command
+   the workflow runs and confirms it passes before reporting ready. Review and
+   conflict repairs run the formatter, linter and type or compile check for the
+   code they touched.
 
-No check is weakened: the same checks run earlier, and CI stays as the
-backstop.
+No check is weakened: the same checks run earlier, and CI stays as the backstop.
 
 ## Spec
 
@@ -79,23 +77,24 @@ backstop.
 
 ## Evidence
 
-Manual read: `docs/workflows/fleet-pr-babysitter.md` (updated with a
-"Shift-left detection" section). Visual evidence is not applicable; this is a
-background service with no UI.
+Manual read: `docs/workflows/fleet-pr-babysitter.md` (updated with a "Shift-left
+detection" section). Visual evidence is not applicable; this is a background
+service with no UI.
 
-- `tests/shift_left_failures_test.ts`: 23 tests. Each scan behaviour was
-  written first and seen failing: routing, generic grouping, the `idle-task`
-  label, author-verified markers, branch-matched runs, a missing log skipped,
-  the escape-refusal retry, and the per-pass cap with resume.
+- `tests/shift_left_failures_test.ts`: 23 tests. Each scan behaviour was written
+  first and seen failing: routing, generic grouping, the `idle-task` label,
+  author-verified markers, branch-matched runs, a missing log skipped, the
+  escape-refusal retry, and the per-pass cap with resume.
 - `tests/fleet_pr_babysitter_test.ts`: three prompt tests, which failed before
   `buildRepairPrompt` existed.
 - `deno task check:manifests`: passed. It first caught a missing sweep slice,
   level words in log text, an unverified marker author and an undeclared
   `VIBE_SHIFT_LEFT` name; all four are fixed.
-- Related suites (babysitter, App, env registry, log-level lint, marker
-  author cap, sweep coverage): 116 passed, 0 failed.
+- Related suites (babysitter, App, env registry, log-level lint, marker author
+  cap, sweep coverage): 116 passed, 0 failed.
 - Read-only dry run against two repositories over 7 days: 170 qualifying
-  failures, for example clippy on 21 fleet PRs, coverage on 21, `cargo
+  failures, for example clippy on 21 fleet PRs, coverage on 21,
+  `cargo
   mutants` on 15 (routed to the repository, whose `quality.sh` has no
   mutants step) and `deno test` on 12 in each repository.
 

@@ -75,20 +75,21 @@ flowchart LR
   hand";
   `worker/deno/tests/update_mode_docs_test.ts::CONFIGURATION.md - hand-editing a pin is documented as needing no setup re-run`
 - **met** — the relationship to the release tags and to
-  `VIBE_SKIP_CHECKOUT_UPDATE` is documented — evidence:
-  `docs/CONFIGURATION.md` "Choosing a pin" and "`VIBE_SKIP_CHECKOUT_UPDATE` is
-  not frozen mode";
+  `VIBE_SKIP_CHECKOUT_UPDATE` is documented — evidence: `docs/CONFIGURATION.md`
+  "Choosing a pin" and "`VIBE_SKIP_CHECKOUT_UPDATE` is not frozen mode";
   `worker/deno/tests/update_mode_docs_test.ts::CONFIGURATION.md - the pin is related to the release tags and to the skip env var`
 - **met** — every field name and value in the docs matches what the code
   actually reads — evidence: the test imports `UPDATE_MODES`, `PINNED_TOOLS`,
   `DEFAULT_UPDATE_MODE`, `KNOWN_CONFIG_KEYS`, `pinValueErrors` and
   `SKIP_CHECKOUT_UPDATE_ENV` and validates every documented example through them
 - **partial** — `markdownlint` passes (the `check-markdownlint` gate);
-  `./quality.sh` passes — evidence: `./quality.sh` reports `markdownlint
-  PASSED`, `mermaid PASSED`, `docs prompt versions PASSED`, `deno lint PASSED`,
-  `deno type check PASSED`, `deno fmt PASSED` — reason: the `deno tests` stage
-  reports FAILED, from pre-existing environment/parallel-run flakiness unrelated
-  to this change (see the note below), so the gate's overall result is FAILED
+  `./quality.sh` passes — evidence: `./quality.sh` reports
+  `markdownlint
+  PASSED`, `mermaid PASSED`, `docs prompt versions PASSED`,
+  `deno lint PASSED`, `deno type check PASSED`, `deno fmt PASSED` — reason: the
+  `deno tests` stage reports FAILED, from pre-existing environment/parallel-run
+  flakiness unrelated to this change (see the note below), so the gate's overall
+  result is FAILED
 
 ### Pre-existing test-suite failures, stated rather than hidden
 
@@ -97,15 +98,15 @@ this change's: they are credential-provisioning, agent-runner, `run.sh`-launcher
 and `run_core` tests that collide over shared temporary state when the suite
 runs in parallel in this environment. Measured both ways with the same command:
 
-| Tree | `deno test -A --no-check --parallel` |
-| --- | --- |
-| This branch | 16132 passed, 32 failed |
-| The commit this branch is based on | 16105 passed, 52 failed |
+| Tree                               | `deno test -A --no-check --parallel` |
+| ---------------------------------- | ------------------------------------ |
+| This branch                        | 16132 passed, 32 failed              |
+| The commit this branch is based on | 16105 passed, 52 failed              |
 
 Every file that failed here passes in isolation on this branch
 (`deno test -A --no-check tests/setup_credential_provisioning_test.ts
-tests/commit_and_push_pending_test.ts tests/run_sh_launcher_test.ts` →
-68 passed, 0 failed). This change adds documentation and one docs test; it
+tests/commit_and_push_pending_test.ts tests/run_sh_launcher_test.ts`
+→ 68 passed, 0 failed). This change adds documentation and one docs test; it
 touches no code path any of those tests exercise.
 
 ## Test Plan

@@ -1,12 +1,12 @@
 # 📚 Documentation-Audit Scans — Operator Manual
 
 The documentation-audit scan is the thirteenth registered
-[idle-task](IDLE-TASK-FRAMEWORK.md) template. When the worker has
-no claimable work it may pick this template, clone one monitored repository, and
-run a static, evidence-backed audit of that repo's **prose documentation** —
-READMEs, `docs/**`, AI-agent instruction files (`CLAUDE.md`, `AGENTS.md`, and
-other flavours), and the accumulated PR-summary archive — plus, from check 13,
-the **comments in the source that contradict the code**. It files a small,
+[idle-task](IDLE-TASK-FRAMEWORK.md) template. When the worker has no claimable
+work it may pick this template, clone one monitored repository, and run a
+static, evidence-backed audit of that repo's **prose documentation** — READMEs,
+`docs/**`, AI-agent instruction files (`CLAUDE.md`, `AGENTS.md`, and other
+flavours), and the accumulated PR-summary archive — plus, from check 13, the
+**comments in the source that contradict the code**. It files a small,
 logically-grouped set of `documentation-audit` issues (most important first)
 that ride the normal `work-on` flow. A clean audit files nothing.
 
@@ -49,24 +49,24 @@ so a human approves each grouped change before it lands.
 
 From v5 onward the prompt opens with the shared
 [Phase 0 — Adapt to the project](IDLE-TASK-FRAMEWORK.md#phase-0--adapt-to-the-project)
-stanza: a repo that has documented its own agent-file hierarchy or doc
-layout no longer collects a check-9 false positive, because a
-**documented** convention beats a check. An unsafe convention is filed as
-a finding against the convention itself.
+stanza: a repo that has documented its own agent-file hierarchy or doc layout no
+longer collects a check-9 false positive, because a **documented** convention
+beats a check. An unsafe convention is filed as a finding against the convention
+itself.
 
 ### Relationship to sibling scans
 
-| Concern                                        | Owned by                                 |
-| ---------------------------------------------- | ---------------------------------------- |
-| Prose / Markdown documentation rot             | **this scan** (`documentation-audit`)    |
-| Comments that contradict the code they sit beside | **this scan** (check 13) |
+| Concern                                                           | Owned by                                 |
+| ----------------------------------------------------------------- | ---------------------------------------- |
+| Prose / Markdown documentation rot                                | **this scan** (`documentation-audit`)    |
+| Comments that contradict the code they sit beside                 | **this scan** (check 13)                 |
 | Code doc-comment coverage (missing or paraphrase-only docstrings) | [`doc-coverage`](IDLE-TASK-FRAMEWORK.md) |
-| Spelling mistakes on PRs                       | `spelling-fix`                           |
+| Spelling mistakes on PRs                                          | `spelling-fix`                           |
 
 A candidate that belongs to a sibling scan is left to that scan. The
-`doc-coverage` boundary is drawn by **what is wrong with the comment**: an absent
-or paraphrase-only doc comment is `doc-coverage`'s, a comment that says something
-untrue is check 13 here.
+`doc-coverage` boundary is drawn by **what is wrong with the comment**: an
+absent or paraphrase-only doc comment is `doc-coverage`'s, a comment that says
+something untrue is check 13 here.
 
 ## The fourteen-check catalogue
 
@@ -143,30 +143,31 @@ in [REFERENCES.md](REFERENCES.md)).
     - The comment describes **deliberate behaviour the code never implements** —
       a guard, a limit, an error path or a lock it says is there. The comment is
       the only record of that intent, so it stays and the finding is filed as a
-      **possible bug in the code**, naming the missing behaviour and the function
-      that lacks it. `severity:high`.
+      **possible bug in the code**, naming the missing behaviour and the
+      function that lacks it. `severity:high`.
 
     Verified statically, by reading the whole body the comment describes — never
     by running it. Findings collapse to **one per source file**; a possible-bug
     finding is filed separately from its file's removal cluster. The scan stays
     silent on `TODO`/`FIXME` notes, commented-out code, licence headers, and
-    comments explaining *why* rather than what.
+    comments explaining _why_ rather than what.
 
 14. **Agent instructions do not follow Claude Code guidance** (from Issue #2321)
-    — checks 5 and 9 decide how many agent instruction files a repo keeps;
-    check 14 reads what the surviving one **says**. The assessed set is check
-    9's detection set plus every file they import with an `@path` line, judged
+    — checks 5 and 9 decide how many agent instruction files a repo keeps; check
+    14 reads what the surviving one **says**. The assessed set is check 9's
+    detection set plus every file they import with an `@path` line, judged
     together with `README.md` — an item documented in the README satisfies that
     item. The check never asks a repo to create a `CLAUDE.md`, and it is held
     while check 5 or check 9 is outstanding, because content review is moot
     mid-consolidation. What it reports:
     - **Missing commands** (`severity:medium`) — a runnable command line, in the
       agent instruction file or the README, for each stage the repo has: test
-      always; build only with a build signal (a `build` task/script, a `Makefile`
-      `build` target, `Cargo.toml`, `pom.xml`/`build.gradle`); lint only with a
-      linter or formatter config. One documented gate command (`./quality.sh`)
-      satisfies every stage it runs. A repo with **no** agent instruction file is
-      a finding only when the README also lacks those commands.
+      always; build only with a build signal (a `build` task/script, a
+      `Makefile` `build` target, `Cargo.toml`, `pom.xml`/`build.gradle`); lint
+      only with a linter or formatter config. One documented gate command
+      (`./quality.sh`) satisfies every stage it runs. A repo with **no** agent
+      instruction file is a finding only when the README also lacks those
+      commands.
     - **Over 200 lines** (`severity:medium`) — Anthropic's published budget,
       counted as `wc -l` physical lines with no exclusions, **per file** rather
       than file-plus-imports. It never fires on `README.md`.
@@ -175,10 +176,10 @@ in [REFERENCES.md](REFERENCES.md)).
       file's size entry.
     - **Five conditional items** (`severity:low`) — style rules, repository
       etiquette, architectural decisions, environment quirks and gotchas, each
-      reported only when a fixed signal in the repo makes it applicable
-      (a linter/formatter config; `CONTRIBUTING.md` or a PR template;
-      `docs/adr/` or an architecture doc; `.env.example` or a compose
-      environment block; gotchas never).
+      reported only when a fixed signal in the repo makes it applicable (a
+      linter/formatter config; `CONTRIBUTING.md` or a PR template; `docs/adr/`
+      or an architecture doc; `.env.example` or a compose environment block;
+      gotchas never).
 
     All of one repo's gaps collapse into **one** finding per run under the fixed
     title `Agent instruction files do not follow Claude Code guidance`, so the
@@ -188,9 +189,9 @@ in [REFERENCES.md](REFERENCES.md)).
 ### Cap pressure — verification out-produces drift
 
 Four systematic verification checks — three over a large `docs/` tree, one over
-the source-comment shortlist — can find far more than the six-finding cap allows,
-so the audit would file nothing but check-10 findings against one document. Two
-rules keep the mix balanced:
+the source-comment shortlist — can find far more than the six-finding cap
+allows, so the audit would file nothing but check-10 findings against one
+document. Two rules keep the mix balanced:
 
 - **Collapse per document.** All of one document's dead references are a single
   finding; all of its broken fences are another; all of one source file's
@@ -231,9 +232,9 @@ sequenceDiagram
 
 ## Wrapper issue layout
 
-The wrapper issue is **human-style** — no hidden marker, no
-parameters block. Anyone can paste the same prompt into a fresh issue with the
-`idle-task` label and the worker will run it identically.
+The wrapper issue is **human-style** — no hidden marker, no parameters block.
+Anyone can paste the same prompt into a fresh issue with the `idle-task` label
+and the worker will run it identically.
 
 - **Title:** the literal string `Run a documentation audit`. Dispatch matches
   the title to
@@ -288,8 +289,8 @@ triage.
   unverifiable claim (check 12); a comment the adjacent code refutes and that
   should simply be removed (check 13); prose paraphrasing upstream documentation
   instead of linking to it; an agent file that should be trimmed or deleted,
-  including one over the 200-line budget or missing a mandatory command
-  (check 14); two or more coexisting agent instruction files that should be
+  including one over the 200-line budget or missing a mandatory command (check
+  14); two or more coexisting agent instruction files that should be
   consolidated; a batch of undefined terms.
 - **`severity:low`** — polish: a broken link, a single undefined term, a place a
   diagram would help, minor readability; a conditional agent-instruction item
@@ -334,8 +335,8 @@ The template sets `skipMilestone: true`, mirroring the other scan templates. A
 documentation-audit run **never raises a pull request**: each finding is filed
 as its own GitHub issue, the wrapper is closed with either `no findings` or
 `Documentation audit complete. Filed N issues: …`, and nothing else. A failed
-before/after snapshot lookup renders the unknown-count string instead
-(Issue #1105) — see
+before/after snapshot lookup renders the unknown-count string instead (Issue
+#1105) — see
 [IDLE-TASK-FRAMEWORK.md → The newly-filed diff](IDLE-TASK-FRAMEWORK.md#the-newly-filed-diff--unknown-is-not-empty).
 The actual doc changes ride the normal `work-on` flow on the filed issues.
 

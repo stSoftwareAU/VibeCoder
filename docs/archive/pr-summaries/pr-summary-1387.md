@@ -9,10 +9,9 @@ were never filed. Both are fixed here. Closes #1387.
 `fetchSourceText` in `worker/deno/lib/references_source_probe.ts` fetched a URL
 taken verbatim from a `docs/REFERENCES.md` credit row. The only validation was
 `references_doc.ts`'s `url.startsWith("https://")`, and `bounded_fetch.ts`
-bounds only *how much* a fetch costs, never *where* it goes — so a merged edit
-to that document could point the worker at `127.0.0.1`, at
-`169.254.169.254`, or at an RFC-1918 host, and `redirect: "follow"` re-validated
-nothing after a hop.
+bounds only _how much_ a fetch costs, never _where_ it goes — so a merged edit
+to that document could point the worker at `127.0.0.1`, at `169.254.169.254`, or
+at an RFC-1918 host, and `redirect: "follow"` re-validated nothing after a hop.
 
 A new module, `worker/deno/lib/public_url_guard.ts`, is the guard such a fetch
 now passes through. It refuses on three axes because each alone is bypassable:
@@ -36,8 +35,8 @@ One abort signal covers the whole redirect chain, so hops cannot multiply the
 time budget, and the caller still owes the response a bounded read.
 
 **SEC-08c4f1a7e2b9 — bare 32-hex credential unmasked by `redactSecrets` (low).**
-`secret_redaction.ts` masked the ImgBB API key only while it kept a wrapper —
-an `--imgbb-api-key` flag or a `VIBE_IMGBB_API_KEY` environment assignment.
+`secret_redaction.ts` masked the ImgBB API key only while it kept a wrapper — an
+`--imgbb-api-key` flag or a `VIBE_IMGBB_API_KEY` environment assignment.
 Stripped of both (an upload client echoing the rejected key into an error
 string, or the key sitting in an `?key=` query parameter) it is a bare hex blob
 with no provider prefix and no rule matched it, even though
@@ -95,8 +94,8 @@ change.
   `2130706433` / `0177.0.0.1` loopback forms, intranet hostnames); resolution
   refusals (a hostname resolving to `10.0.0.5`, to nothing, and a resolver
   failure); and redirect handling (a hop re-validated before it is requested, a
-  redirect to a private address refused, a public redirect followed, the hop cap,
-  a `Location`-less 3xx, and a failed request named).
+  redirect to a private address refused, a public redirect followed, the hop
+  cap, a `Location`-less 3xx, and a failed request named).
 - `worker/deno/tests/security_scan_overflow_1387_test.ts` (new, 9 tests) — one
   block per finding, calling `createDefaultProbeDeps().fetchTextFn` and
   `redactSecrets` / `containsSecret` with real data.
@@ -113,8 +112,8 @@ change.
   externally-supplied URL is parsed and range-checked before it is dereferenced,
   and each redirect target is re-validated as a fresh input.
 - **Secrets** — no credentials staged; the test fixture key
-  (`0123456789abcdef…`) is the same non-secret placeholder the existing
-  overflow tests use.
+  (`0123456789abcdef…`) is the same non-secret placeholder the existing overflow
+  tests use.
 - **Injection surface** — no new shell, SQL or filesystem calls. The one new
   outbound call is narrower than the one it replaces.
 - **Error handling** — every refusal is a loud `Error` naming the reason; no

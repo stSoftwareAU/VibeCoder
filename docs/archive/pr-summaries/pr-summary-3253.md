@@ -1,9 +1,9 @@
 ## Summary
 
-Adds the rule **A new argument or behaviour reaches every caller that needs
-it** to `CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md`, word
-for word on both, placed straight after **Every changed call site needs a test
-that goes red without it**. The issue prompt's Test Plan step now points at it.
+Adds the rule **A new argument or behaviour reaches every caller that needs it**
+to `CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md`, word for
+word on both, placed straight after **Every changed call site needs a test that
+goes red without it**. The issue prompt's Test Plan step now points at it.
 Before changing a shared function or a router, the agent lists every caller and
 sibling route. It then passes the new value on each one or says why a caller
 does not need it. A parameter that carries the behaviour is made required
@@ -26,13 +26,13 @@ helper, is a blocking self-review finding. Closes #3253.
 
 - Same placement and mirroring as #3067 and #3100: one identical paragraph on
   both surfaces, enforced by a drift test.
-- The rule allows a caller to go without the value when the PR summary gives
-  the reason, so a genuinely uninvolved caller is not forced to pass it.
+- The rule allows a caller to go without the value when the PR summary gives the
+  reason, so a genuinely uninvolved caller is not forced to pass it.
 
 ### Undiscoverable Facts
 
-- The three send-backs cited are from the fleet PR reviewer, dated
-  2026-10-02 to 2026-10-05 (see the issue body).
+- The three send-backs cited are from the fleet PR reviewer, dated 2026-10-02 to
+  2026-10-05 (see the issue body).
 
 ## Evidence
 
@@ -40,12 +40,19 @@ Documentation and prompt change only. No runtime code changed.
 
 **Related rules checked:** **Every changed call site needs a test that goes red
 without it** (#3067, the new rule covers callers outside that one's reach and
-names it); **Narrowing a shared helper changes every caller** (#3100, deals
-with a different case: rejecting values, not missing callers); **A new path to
-an existing outcome keeps that outcome's guards** (#3087, about guards, not
+names it); **Narrowing a shared helper changes every caller** (#3100, deals with
+a different case: rejecting values, not missing callers); **A new path to an
+existing outcome keeps that outcome's guards** (#3087, about guards, not
 arguments). None of them conflicts with the new rule.
 
-**Docs sweep** — grep: "Every changed call site", "Narrowing a shared helper", "call site", "callers checked"; section: `docs/workflows/issue-processing.md#narrowing-a-shared-helper-changes-every-caller-issue-3100` (the guideline-history list); updated: `CODING-STANDARDS.md`, `prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`, `docs/workflows/issue-processing.md`; `CODING-STANDARDS.md:654` — still true because the Units bullet's back-reference to the changed-call-site rule is unchanged
+**Docs sweep** — grep: "Every changed call site", "Narrowing a shared helper",
+"call site", "callers checked"; section:
+`docs/workflows/issue-processing.md#narrowing-a-shared-helper-changes-every-caller-issue-3100`
+(the guideline-history list); updated: `CODING-STANDARDS.md`,
+`prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`,
+`docs/workflows/issue-processing.md`; `CODING-STANDARDS.md:654` — still true
+because the Units bullet's back-reference to the changed-call-site rule is
+unchanged
 
 ## Test Plan
 
@@ -53,9 +60,9 @@ arguments). None of them conflicts with the new rule.
   surfaces carry the identical paragraph with its 8 key phrases, and that the
   issue prompt's PR Summary File section carries the pointer. It passed on the
   head.
-- Went red without its change: deleting the paragraph from
-  `CODING-STANDARDS.md` alone failed test (a), and deleting the sentence from
-  the issue prompt failed test (b).
+- Went red without its change: deleting the paragraph from `CODING-STANDARDS.md`
+  alone failed test (a), and deleting the sentence from the issue prompt failed
+  test (b).
 - Per-phrase base check: `deno task drift-pins-on-base origin/main <doc>
   <section> ...` reported every pinned phrase as `absent on base`. That covers
   all 8 phrases in `CODING-STANDARDS.md` "Test coverage expectations", the same

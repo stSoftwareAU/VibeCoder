@@ -36,9 +36,9 @@ Closes #782.
 
 ## Evidence
 
-Prompt-content change with no runtime surface to screenshot. The evidence is
-the rendered prompt — the template alone never carried the escalation text at
-all, so that is the only place the contradiction existed.
+Prompt-content change with no runtime surface to screenshot. The evidence is the
+rendered prompt — the template alone never carried the escalation text at all,
+so that is the only place the contradiction existed.
 
 ```mermaid
 flowchart TD
@@ -98,8 +98,8 @@ reviewer sub-agents.
   evidence: `prompts/question/v11.md`;
   `::the rendered prompt carries the escalation text and its carve-out (Issue #782)`
   and `::the answer text is named as the only escalation channel (Issue #782)`
-- **met** — "the next free number if a concurrent `question` bump lands first"
-  — evidence: v11, because #779 minted v10 for the output-contract override
+- **met** — "the next free number if a concurrent `question` bump lands first" —
+  evidence: v11, because #779 minted v10 for the output-contract override
   earlier in this queue
 - **met** — a Deno regression test asserting the rendered question prompt
   contains the carve-out — evidence: the six cases in
@@ -111,37 +111,38 @@ reviewer sub-agents.
   asserts the shared block still says "for any reason" and carries no carve-out
 - **met** — `quorum/v1` and `quorum_judge/v1` untouched — evidence: not in the
   diff. They receive no guidelines block, so no contradiction exists there
-- **partial** — "the H1 declares the new file's own version number (per #792)"
-  — evidence: `question` has no H1 at all; it opens with
+- **partial** — "the H1 declares the new file's own version number (per #792)" —
+  evidence: `question` has no H1 at all; it opens with
   `{{VERBOSITY_INSTRUCTIONS}}` — reason: there is no H1 version declaration to
   keep in step here, the same finding as #781. Adding one is #792's sweep, and
   inventing a shape now would pre-empt what that issue settles
 
 - **unrequested** — the sentence naming the worker as the party that performs
   the escalation — reason: the carve-out on its own says what the run must not
-  do and where to put the words, but not that anything happens afterwards. A
-  run reading only "those sections do not apply" could reasonably conclude the
+  do and where to put the words, but not that anything happens afterwards. A run
+  reading only "those sections do not apply" could reasonably conclude the
   escalation is lost; the prompt already knew the answer two lines below, and
   now says it in the same breath
-- **unrequested** — `::the read-only constraints the carve-out relies on are
-  intact (Issue #782)` — reason: the carve-out is only correct while the phase
-  really writes nothing. If a later version relaxed that, the carve-out would
-  become the wrong answer and this case says so
+- **unrequested** —
+  `::the read-only constraints the carve-out relies on are
+  intact (Issue #782)`
+  — reason: the carve-out is only correct while the phase really writes nothing.
+  If a later version relaxed that, the carve-out would become the wrong answer
+  and this case says so
 
 ## Standards Review
 
-- **clean** — prompt immutability honoured: one new version, nothing edited,
-  and a case asserts v10 still reads as it did; Australian English throughout;
-  the fix is phase-side, so no other phase's escalation behaviour is touched
+- **clean** — prompt immutability honoured: one new version, nothing edited, and
+  a case asserts v10 still reads as it did; Australian English throughout; the
+  fix is phase-side, so no other phase's escalation behaviour is touched
 - **clean** — the test renders through the real builder rather than reading the
   template, which is the only way to see this defect: the template alone never
   contained the escalation text
 - **violation** — `::the carve-out is stated after the block it qualifies`
-  asserts document order — evidence:
-  `question_escalation_carveout_test.ts` — reason: stands, as in #781. The
-  guidelines arrive in the system prompt and the carve-out in the template that
-  follows; if that ever inverted, the reader would meet the exemption before
-  the rule and read it as a different rule
+  asserts document order — evidence: `question_escalation_carveout_test.ts` —
+  reason: stands, as in #781. The guidelines arrive in the system prompt and the
+  carve-out in the template that follows; if that ever inverted, the reader
+  would meet the exemption before the rule and read it as a different rule
 - **violation** — the assertions match prose fragments — reason: stands. A
   prompt is prose, and the alternative is asserting nothing about the sentence
   that resolves the contradiction

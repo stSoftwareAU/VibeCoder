@@ -5,10 +5,11 @@
 `spawnGh` called `redactGhBodyArgs(args)` with **no file reader**, so the whole
 `--body-file` / `-F <path>` / `-F key=@path` / `--input <file>` branch of the
 redactor was dead code for every worker `gh` call: a file body was neither
-scanned **nor** refused, and `UnredactableBodyError` — the control that exists so
-"unparseable never means unscanned" — could not fire. A body piped on **stdin**
-(`gh api … --input -`, used by the SARIF upload and the ruleset writes) was seen
-by no redactor at all, because `redactGhBodyArgs` only ever sees argv.
+scanned **nor** refused, and `UnredactableBodyError` — the control that exists
+so "unparseable never means unscanned" — could not fire. A body piped on
+**stdin** (`gh api … --input -`, used by the SARIF upload and the ruleset
+writes) was seen by no redactor at all, because `redactGhBodyArgs` only ever
+sees argv.
 
 This change gives the worker chokepoint the same coverage the agent's guard
 child already had:
@@ -27,13 +28,14 @@ child already had:
   is not published.
 
 One enabling fix rides along, without which the change breaks repo hardening:
-the `secret-assignment` rule in `worker/deno/lib/secret_redaction.ts` now ignores
-a value that opens `{` or `[`. The body `repo_settings_harden.ts` PATCHes to
-enable secret scanning is `{"security_and_analysis":{"secret_scanning":{…}}}` —
-the rule's `\S+` branch swallowed the brace and left truncated, invalid JSON, so
-the new fail-closed scan refused a body that contains no secret at all. A
-credential never opens with `{` or `[`, and a secret nested inside the object is
-still masked by the rule's own pass over the inner `"key": "value"`.
+the `secret-assignment` rule in `worker/deno/lib/secret_redaction.ts` now
+ignores a value that opens `{` or `[`. The body `repo_settings_harden.ts`
+PATCHes to enable secret scanning is
+`{"security_and_analysis":{"secret_scanning":{…}}}` — the rule's `\S+` branch
+swallowed the brace and left truncated, invalid JSON, so the new fail-closed
+scan refused a body that contains no secret at all. A credential never opens
+with `{` or `[`, and a secret nested inside the object is still masked by the
+rule's own pass over the inner `"key": "value"`.
 
 Closes #1254.
 
@@ -55,7 +57,8 @@ evidence is the test suite: each regression test below was run against the
 unfixed code and observed failing, then run again after the fix and observed
 passing.
 
-Against the **unfixed** code (`deno test --filter "1254" tests/gh_spawn_test.ts`):
+Against the **unfixed** code
+(`deno test --filter "1254" tests/gh_spawn_test.ts`):
 
 ```text
 spawnGh - masks a secret read from a --body-file body (Issue #1254) => FAILED
@@ -78,20 +81,21 @@ Full gate: `./quality.sh` — **PASSED** (semgrep, markdownlint, mermaid, deno
 tests/lint/type check/fmt; `config integration`, `pages-liquid` and
 `mermaid built output` skipped as usual on this host).
 
-**The original trigger is closed, with no trivial bypass.** Every body class that
-reaches GitHub through `spawnGh` is now either scanned or refused before the
-subprocess starts: argv bodies (`--body`, `-b`, `--body=`, `-f/-F body=`) as
-before; file bodies (`--body-file`, `--body-file=`, `-F <path>`, `-F body=@path`,
-`--input <file>`, `--input=<file>`) through the injected reader, with a masked
-`--input` body materialised into a fresh file rather than the caller's; and the
-stdin body through `redactSecrets()` at the same chokepoint. The remaining
-`-` fail-closed path is not a bypass: it is skipped only when `options.stdin` is
-set, which is precisely the case where `spawnGh` holds and redacts those bytes.
-A caller cannot reach `gh` without passing through `spawnGh` — the
-`gh spawn chokepoint` quality check (PASSED above) fails the build on any direct
-`new Deno.Command("gh", …)` elsewhere in `worker/deno/` — and an unscannable body
-raises `UnredactableBodyError`, which is not caught anywhere on the `spawnGh`
-path, so a failed control fails the call rather than publishing.
+**The original trigger is closed, with no trivial bypass.** Every body class
+that reaches GitHub through `spawnGh` is now either scanned or refused before
+the subprocess starts: argv bodies (`--body`, `-b`, `--body=`, `-f/-F body=`) as
+before; file bodies (`--body-file`, `--body-file=`, `-F <path>`,
+`-F body=@path`, `--input <file>`, `--input=<file>`) through the injected
+reader, with a masked `--input` body materialised into a fresh file rather than
+the caller's; and the stdin body through `redactSecrets()` at the same
+chokepoint. The remaining `-` fail-closed path is not a bypass: it is skipped
+only when `options.stdin` is set, which is precisely the case where `spawnGh`
+holds and redacts those bytes. A caller cannot reach `gh` without passing
+through `spawnGh` — the `gh spawn chokepoint` quality check (PASSED above) fails
+the build on any direct `new Deno.Command("gh", …)` elsewhere in `worker/deno/`
+— and an unscannable body raises `UnredactableBodyError`, which is not caught
+anywhere on the `spawnGh` path, so a failed control fails the call rather than
+publishing.
 
 ## Test Plan
 

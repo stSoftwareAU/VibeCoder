@@ -2,8 +2,8 @@
 
 Closes #4034.
 
-When a provider refuses the requested model and has no cheaper model, the
-agent runner now retries the same invocation on the next provider in
+When a provider refuses the requested model and has no cheaper model, the agent
+runner now retries the same invocation on the next provider in
 `agent_provider_fallback`. Before this change it logged
 `no cheaper fallback available (no-ladder-for-provider)` and gave up. Only the
 health gate consulted the fallback list (Issue #4014), so a phase whose model
@@ -24,12 +24,12 @@ stood idle.
 ### Essential Design Decisions
 
 - `loadConfig` records the resolved policy on a seam in
-  `provider_fallback_policy.ts`, the same way it records the active and
-  enabled provider ids, because the runner holds no config handle. Each reload
-  replaces it.
-- The switch reuses `mayFallbackOn` / `nextFallbackProvider`, so the
-  one-switch cap and the no-revisit rule match every other fallback. A pinned
-  policy (the default) still gives up exactly as before.
+  `provider_fallback_policy.ts`, the same way it records the active and enabled
+  provider ids, because the runner holds no config handle. Each reload replaces
+  it.
+- The switch reuses `mayFallbackOn` / `nextFallbackProvider`, so the one-switch
+  cap and the no-revisit rule match every other fallback. A pinned policy (the
+  default) still gives up exactly as before.
 - On a switch the explicit `model` and the session are cleared. The refused id
   names the old provider's catalogue, and a session id belongs to the CLI that
   recorded it. The fallback resolves its own phase model.
@@ -43,8 +43,8 @@ stood idle.
 
 ## Evidence
 
-The new runner test was red before the change, and its log matched GRQ-23's
-line for line:
+The new runner test was red before the change, and its log matched GRQ-23's line
+for line:
 
 ```
 [model-fallback] The codex coding-agent provider has no cheaper-model ladder ...
@@ -61,6 +61,7 @@ config, runner fallback, model fallback and provider-policy suites.
   Codex model with `agent_provider_fallback: ["claude"]` → one switch, run
   succeeds on the fallback; with no fallback → gives up, no other provider
   invoked.
-- `worker/deno/tests/config_test.ts`: `loadConfig records the provider
-  fallback policy for the agent runner (Issue #4034)`, including a reload
-  without the key resetting it to pinned.
+- `worker/deno/tests/config_test.ts`:
+  `loadConfig records the provider
+  fallback policy for the agent runner (Issue #4034)`,
+  including a reload without the key resetting it to pinned.

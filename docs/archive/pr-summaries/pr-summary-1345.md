@@ -4,12 +4,11 @@
 
 `ensureMilestoneBranchExists` created a missing milestone branch by checking it
 out locally (`git checkout -B <milestone> <default>`) and pushing that branch.
-Git refuses `checkout -B` outright when another worktree holds the branch name
-— `fatal: 'milestone/x' is already used by worktree at …` — so both recovery
-paths failed and the setup phase escalated with `needs-human`.
-NEAT-AI-Ockham#133 died that way three times in one day (01:54, 06:06 and 11:54
-UTC) on a host whose clone carried a stale, never-pushed local checkout of the
-milestone branch.
+Git refuses `checkout -B` outright when another worktree holds the branch name —
+`fatal: 'milestone/x' is already used by worktree at …` — so both recovery paths
+failed and the setup phase escalated with `needs-human`. NEAT-AI-Ockham#133 died
+that way three times in one day (01:54, 06:06 and 11:54 UTC) on a host whose
+clone carried a stale, never-pushed local checkout of the milestone branch.
 
 The branch is now created **on origin**, by pushing the default branch ref
 straight to the milestone ref name
@@ -59,10 +58,10 @@ lint, type check, fmt, semgrep, mermaid, markdownlint, every chokepoint check).
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — when the remote milestone ref is absent, `ensureMilestoneBranchExists`
-  creates it on origin by pushing the default branch ref directly, with no local
-  checkout; the function returns ok and the run bases its PR on it instead of
-  adding `needs-human` — evidence:
+- **met** — when the remote milestone ref is absent,
+  `ensureMilestoneBranchExists` creates it on origin by pushing the default
+  branch ref directly, with no local checkout; the function returns ok and the
+  run bases its PR on it instead of adding `needs-human` — evidence:
   `worker/deno/lib/git_branch.ts` (push loop over `origin/<default>` then
   `<default>`),
   `worker/deno/tests/milestone_branch_worktree_block_test.ts::ensureMilestoneBranchExists - creates the branch on origin when a stale worktree holds the name`
@@ -96,10 +95,10 @@ lint, type check, fmt, semgrep, mermaid, markdownlint, every chokepoint check).
   redirect the push; the file's Issue #3714 convention requires the guard
 - **unrequested** — `tests/support/git_repo_fixture.ts`,
   `capturingWarningsAsync` in `tests/support/warnings.ts`, and the
-  `docs/audits/lib-sweep-coverage.json` entry — reviewer: unrequested —
-  reason: the first two remove fixture copies this change would otherwise have
-  made a third and fourth; the ledger entry is mandatory — `lib_sweep_coverage`
-  fails the gate for any `lib/` module no sweep slice claims
+  `docs/audits/lib-sweep-coverage.json` entry — reviewer: unrequested — reason:
+  the first two remove fixture copies this change would otherwise have made a
+  third and fourth; the ledger entry is mandatory — `lib_sweep_coverage` fails
+  the gate for any `lib/` module no sweep slice claims
 
 ## Standards Review
 
@@ -136,8 +135,8 @@ lint, type check, fmt, semgrep, mermaid, markdownlint, every chokepoint check).
   `worker/deno/tests/issue_worker_test.ts:568`
 - **violation** — commit message form: the first commit's subject carried no
   issue reference — evidence: commit `195414a` — reason: stands (rewriting a
-  pushed commit is not worth it); its body carries `Closes #1345` and the
-  run-id trailer, and the follow-up commit uses the documented form
+  pushed commit is not worth it); its body carries `Closes #1345` and the run-id
+  trailer, and the follow-up commit uses the documented form
 - **clean** — ref-injection hardening (`assertSafeRefComponent` on both halves
   of the refspec, `--end-of-options`), commit safety (no hidden or credential
   paths staged), Australian English throughout, Deno-native tooling only, real
@@ -154,8 +153,8 @@ Added:
   is left untouched and named in exactly one line; no line when no local ref
   exists; the default-branch fetch fallback is warned about.
 - `worker/deno/tests/milestone_local_branch_test.ts` — the new module's happy,
-  error and edge paths, including a non-repository directory reporting
-  `unknown` rather than `absent`.
+  error and edge paths, including a non-repository directory reporting `unknown`
+  rather than `absent`.
 - `worker/deno/tests/git_ref_args_test.ts` — three cases for
   `buildPushCreateBranchArgs` (refspec shape, `:` rejected in either half,
   dash-leading and empty refs rejected).

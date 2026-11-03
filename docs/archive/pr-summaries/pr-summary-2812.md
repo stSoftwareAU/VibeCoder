@@ -7,16 +7,16 @@ Closes #2812.
 Sonnet 5.5 ($2/$10 per MTok) costs half as much as Opus 5.5 ($4/$20). This PR
 uses that 2× gap: Opus plans, and Sonnet implements and reviews.
 
-- **Pricing:** an explicit `claude-sonnet-5-5` row in `MODEL_PRICING`, set to
-  $2 input, $10 output, $2.50 cache write and $0.20 cache read.
+- **Pricing:** an explicit `claude-sonnet-5-5` row in `MODEL_PRICING`, set to $2
+  input, $10 output, $2.50 cache write and $0.20 cache read.
   `MODEL-AND-CACHING.md` now states the gap as 2×.
 - **Issue phase:** `issueExecutorSplit` and `issueReviewerAgents` both default
   to `true`.
 - **Reactive phases:** `ci_fix`, `pr_feedback` and `quality_fix` default to
   `sonnet` at `high` effort.
 - **Revert criteria:** the old 15% pilot threshold is replaced by a per-phase
-  before/after check. It compares the first 30 runs after merge with the last
-  30 before. Any of these four signals triggers a revert:
+  before/after check. It compares the first 30 runs after merge with the last 30
+  before. Any of these four signals triggers a revert:
   - success rate falls;
   - first-attempt gate pass rate falls;
   - violations per PR rise;
@@ -108,8 +108,8 @@ The first pass found four violations. All are fixed in this PR:
 - `./quality.sh` passes lint, type check, fmt, markdownlint, mermaid and
   semgrep.
 - One Deno test fails in the full suite, and it also fails on `main`:
-  - The test is `security_sweep_2839_ledger_test.ts:63`, "the recorded
-    sweptAt is an ancestor of HEAD".
-  - The recorded `SWEPT_AT` commit `42c876e` is not an ancestor of
-    `origin/main` either.
+  - The test is `security_sweep_2839_ledger_test.ts:63`, "the recorded sweptAt
+    is an ancestor of HEAD".
+  - The recorded `SWEPT_AT` commit `42c876e` is not an ancestor of `origin/main`
+    either.
   - It is unrelated to this change and left out of scope.

@@ -4,7 +4,7 @@
 
 `classifyGhApi()` (`worker/deno/lib/audit_mutation_classifier.ts`) already
 computed a local `unreadableBody` — set by `gh api --input` / `--input=<file>`
-and by an `@file`-sourced `query=` field value — but only *consulted* it on the
+and by an `@file`-sourced `query=` field value — but only _consulted_ it on the
 `graphql` branch. On the REST return path the flag was computed and then
 discarded, so no downstream caller could tell an argv-visible request body from
 one the argv cannot show.
@@ -55,17 +55,18 @@ flowchart LR
 - **Both failure directions covered:**
   `…::classifyGhMutation - an argv-visible REST body leaves unreadableBody absent`
   fails if the field is ever set unconditionally or written as an explicit
-  `false`, and `…::classifyGhMutation - a GET with --input stays a read, flag or not`
-  fails if the plumbing turns `--input` into a forced mutation.
+  `false`, and
+  `…::classifyGhMutation - a GET with --input stays a read, flag or not` fails
+  if the plumbing turns `--input` into a forced mutation.
 - **Original trigger closed, no trivial bypass:** every argv spelling that makes
   a REST body unreadable — `--input <file>`, `--input=<file>`, and an
   `@file`/`@-` sourced `query=` value via `-f`/`-F`/`--field=`/`--raw-field=` —
   writes the same single local `unreadableBody`, and the REST return path now
-  reads that one local unconditionally. There is no second code path that
-  builds a REST `MutationInfo`, so no argv variant can produce an unreadable
-  body while the field stays absent. The complementary direction is closed too:
-  the field is spread in only when the local is `true`, so it cannot be forged
-  onto a fully argv-visible call.
+  reads that one local unconditionally. There is no second code path that builds
+  a REST `MutationInfo`, so no argv variant can produce an unreadable body while
+  the field stays absent. The complementary direction is closed too: the field
+  is spread in only when the local is `true`, so it cannot be forged onto a
+  fully argv-visible call.
 
 ### Test run
 
@@ -74,9 +75,9 @@ deno test --allow-all tests/gh_api_body_classification_test.ts
 ok | 21 passed | 0 failed (4ms)
 ```
 
-`./quality.sh` reports `deno lint`, `deno type check` and `deno fmt` PASSED.
-The `deno tests` stage reports 7 pre-existing environment failures unrelated to
-this change — `fleet_health_test.ts` (container-mode work-dir mount),
+`./quality.sh` reports `deno lint`, `deno type check` and `deno fmt` PASSED. The
+`deno tests` stage reports 7 pre-existing environment failures unrelated to this
+change — `fleet_health_test.ts` (container-mode work-dir mount),
 `optional_feature_env_test.ts` (unreadable-file permission case) and five
 `setup_workdir_reminder_test.ts` host work-dir cases. All 7 were confirmed to
 fail identically on a clean tree at the same base commit (`git stash`, re-run,
@@ -100,5 +101,5 @@ Added to `worker/deno/tests/gh_api_body_classification_test.ts`:
 - `classifyGhMutation - an explicit PATCH with --input surfaces unreadableBody`
   — the flag rides an explicit method too, not just the implied POST.
 
-Existing tests kept unchanged, including the `graphql` fail-closed cases and
-the original `evaluateGhCommand - a GET with --input stays a read`.
+Existing tests kept unchanged, including the `graphql` fail-closed cases and the
+original `evaluateGhCommand - a GET with --input stays a read`.

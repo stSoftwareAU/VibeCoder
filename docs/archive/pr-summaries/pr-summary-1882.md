@@ -37,8 +37,8 @@ flowchart TD
 
 ## Reproduction
 
-- **symptom** — an exit-1 script failure whose log merely mentions `timeout`
-  (a `timeout-minutes:` echo) was classified `timing`, so the CI-fix agent was
+- **symptom** — an exit-1 script failure whose log merely mentions `timeout` (a
+  `timeout-minutes:` echo) was classified `timing`, so the CI-fix agent was
   pointed at a timing remedy instead of the script's own error
 - **status** — `verified` — the PR 150 fixture returned `timing` against the
   unfixed classifier (observed: `Actual: timing / Expected: code-fix-required`)
@@ -56,8 +56,8 @@ flowchart TD
   — reviewer: met
 - **met** — existing `ci_failure_classifier_test.ts` cases still pass;
   `./quality.sh < /dev/null` green — evidence: 40 passed / 0 failed in that
-  file, and a full gate run reporting `Result: PASSED (with skipped checks)`
-  — reviewer: met
+  file, and a full gate run reporting `Result: PASSED (with skipped checks)` —
+  reviewer: met
 - **partial** — the issue's "explicit error line" half of the remedy — evidence:
   `worker/deno/lib/ci_failure_classifier.ts:148` — reviewer: partial — reason:
   the reviewer is right that `::error::` / `##[error]` prefixes still match no
@@ -79,11 +79,12 @@ flowchart TD
   `timeout`-worded timing failure, which the issue did not ask for either
 
 The spec reviewer's three regression probes were reproduced and fixed in the
-final commit: Jest's `Exceeded timeout of 5000 ms` and `npm ERR! network Socket
-timeout` stay `timing` (the windows are now bidirectional), the
-`--timeout 60 --retry after failure` false positive is gone (`after`,
-`waiting` and a bare `error` dropped from the post-`timeout` keywords), and
-exit codes 124/137/143 no longer claim a code fix.
+final commit: Jest's `Exceeded timeout of 5000 ms` and
+`npm ERR! network Socket
+timeout` stay `timing` (the windows are now
+bidirectional), the `--timeout 60 --retry after failure` false positive is gone
+(`after`, `waiting` and a bare `error` dropped from the post-`timeout`
+keywords), and exit codes 124/137/143 no longer claim a code fix.
 
 ## Standards Review
 
@@ -100,10 +101,10 @@ exit codes 124/137/143 no longer claim a code fix.
   way to tell the rungs apart — evidence:
   `worker/deno/lib/ci_failure_classifier.ts:28` — reason: fixed; rung 5 is
   labelled "code-fix-required, second rung" and names its pattern table
-- **violation** — the new `reason` and `signals` values were asserted by no
-  test — evidence: `worker/deno/tests/ci_failure_classifier_test.ts:314` —
-  reason: fixed; the PR 150 and "timeout named as the failure" tests now assert
-  the reason text and the `exit:`/`regex:` signals
+- **violation** — the new `reason` and `signals` values were asserted by no test
+  — evidence: `worker/deno/tests/ci_failure_classifier_test.ts:314` — reason:
+  fixed; the PR 150 and "timeout named as the failure" tests now assert the
+  reason text and the `exit:`/`regex:` signals
 - **clean** — tests call the real `classifyCiFailure` and assert on its return
   (no source-text grepping, no wall-clock assertions); no existing test removed
   or altered; Australian English throughout; no hidden paths staged; bounded
@@ -112,11 +113,11 @@ exit codes 124/137/143 no longer claim a code fix.
 
 ## Test Plan
 
-Added to `worker/deno/tests/ci_failure_classifier_test.ts` (all new, no
-existing test changed):
+Added to `worker/deno/tests/ci_failure_classifier_test.ts` (all new, no existing
+test changed):
 
 - regression for PR 150 — incidental `timeout-minutes:` echo + `::error::` line
-  + exit 1 → `code-fix-required`, asserting the reason and signals
+  - exit 1 → `code-fix-required`, asserting the reason and signals
 - a bare `timeout-minutes:` echo alone → `unknown`
 - a `timeout 900 …` wrapper on the command line → `unknown`
 - a `--timeout 60 --retry after failure` command line + exit 1 →

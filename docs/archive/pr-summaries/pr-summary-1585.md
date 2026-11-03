@@ -11,8 +11,8 @@ running beside it was credited to `comments-batch`.
 This adds `graphqlSourceStorage` (an `AsyncLocalStorage<string>`) with
 `withGraphQLSourceContext()` / `currentGraphQLSourceContext()`, mirroring
 `withPriorityContext` / `currentPriorityContext` in the same file, and
-reimplements `withGraphQLSource()` on top of it. `recordGhCall` now resolves
-the source exactly as it resolves the priority — explicit stack top, else the
+reimplements `withGraphQLSource()` on top of it. `recordGhCall` now resolves the
+source exactly as it resolves the priority — explicit stack top, else the
 async-scoped store, else `"unattributed"` — so an explicit
 `enterGraphQLSource()` keeps innermost-wins. All eight existing
 `withGraphQLSource` call sites became concurrency-safe with no edit.
@@ -34,8 +34,8 @@ flowchart TB
 
 ## Evidence
 
-Backend/CLI telemetry change — no web interface to screenshot. Verified by
-unit tests and the full quality gate.
+Backend/CLI telemetry change — no web interface to screenshot. Verified by unit
+tests and the full quality gate.
 
 ```
 $ deno test --allow-all tests/gh_call_metrics_test.ts
@@ -67,8 +67,8 @@ and in `docs/GH-API-OPTIMISATION.md`:
 
 - **symptom** — a `gh` call issued by one lane was credited to another lane's
   GraphQL source bucket, inflating `graphqlBySource` for the wrapped caller
-- **status** — `verified` — the regression test was observed failing against
-  the unfixed code (`comments-batch` read 3 instead of 1, absorbing the second
+- **status** — `verified` — the regression test was observed failing against the
+  unfixed code (`comments-batch` read 3 instead of 1, absorbing the second
   lane's `issue list` and `pr view`) and passing after the fix
 - **regression test** —
   `worker/deno/tests/gh_call_metrics_test.ts::gh_call_metrics - concurrent chains do not cross-credit GraphQL sources`
@@ -91,10 +91,10 @@ and in `docs/GH-API-OPTIMISATION.md`:
   explicit source wrapping a `withGraphQLSource` chain) as changed — outer now
   wins. That follows from the resolution order the issue prescribes and the
   precedent of the priority axis; `enterGraphQLSource` has no production call
-  site, so nothing depends on the old order. Recorded in the code comment
-  rather than changed.
-- **met** — no `withGraphQLSource` call site needed editing — evidence: the
-  diff touches four files; the eight call sites (`comment_batch.ts:218`,
+  site, so nothing depends on the old order. Recorded in the code comment rather
+  than changed.
+- **met** — no `withGraphQLSource` call site needed editing — evidence: the diff
+  touches four files; the eight call sites (`comment_batch.ts:218`,
   `check_runs_batch.ts:265`, `timeline_batch.ts:205`, `pr_branch_state.ts:239`,
   `pr_linkage.ts:123`, `milestone_health.ts:259`, `issue_edit_actor.ts:142`,
   `fleet_pr_search.ts:324`) are unchanged — reviewer: met
@@ -105,8 +105,8 @@ and in `docs/GH-API-OPTIMISATION.md`:
 - **unrequested** — a paragraph added to `docs/GH-API-OPTIMISATION.md`
   describing the new attribution scope and the 40-vs-23 finding — reviewer:
   unrequested — reason: the repo standard "A Code Change Owes a Docs Change"
-  requires the operator manual that documents the `graphql-calls:` line to
-  match the changed attribution semantics.
+  requires the operator manual that documents the `graphql-calls:` line to match
+  the changed attribution semantics.
 
 ## Standards Review
 
@@ -115,14 +115,14 @@ and in `docs/GH-API-OPTIMISATION.md`:
 - **violation** — the concurrency test hand-rolled an unbounded promise gate
   instead of the repo's `createRendezvous` helper ("Rendezvous, never sleep, to
   prove concurrency") — evidence:
-  `worker/deno/tests/gh_call_metrics_test.ts:520` — reason: fixed here; the
-  test now uses `createRendezvous(2)` from `tests/support/rendezvous.ts`, whose
-  wait is bounded, so a lane that never arrives fails the assertion instead of
+  `worker/deno/tests/gh_call_metrics_test.ts:520` — reason: fixed here; the test
+  now uses `createRendezvous(2)` from `tests/support/rendezvous.ts`, whose wait
+  is bounded, so a lane that never arrives fails the assertion instead of
   hanging the suite.
 - **violation** — no error-path test for the newly exported
   `withGraphQLSourceContext` ("Test coverage expectations") — evidence:
-  `worker/deno/tests/gh_call_metrics_test.ts:562` — reason: fixed here; the
-  test now also asserts a throwing `fn` propagates and unwinds the context.
+  `worker/deno/tests/gh_call_metrics_test.ts:562` — reason: fixed here; the test
+  now also asserts a throwing `fn` propagates and unwinds the context.
 - **violation** — `docs/archive/pr-summaries/pr-summary-1585.md` was missing —
   evidence: `docs/archive/pr-summaries/` — reason: fixed here; this file.
 - **violation** — `withGraphQLSource` is now a one-line pass-through to
@@ -131,14 +131,14 @@ and in `docs/GH-API-OPTIMISATION.md`:
   `worker/deno/lib/gh_call_metrics.ts:320` — reason: stands. The issue
   explicitly asks for both `withGraphQLSourceContext` and for
   `withGraphQLSource` to be reimplemented on top of it, precisely so the eight
-  existing call sites need no edit; collapsing them would break that
-  criterion and diverge from the priority axis it mirrors.
-- **clean** — Australian English throughout; commit carries the issue
-  reference and the `Vibe-Coder-Run-Id` trailer; new logic in Deno TypeScript
-  under `worker/deno/lib/`; no existing test commented out or removed; tests
-  call real functions and assert on `getGhCallMetrics()` snapshots rather than
-  grepping source; no sleeps, wall-clock thresholds or spawned processes in
-  the new tests; no catch-and-ignore (the removed `try/finally` is replaced by
+  existing call sites need no edit; collapsing them would break that criterion
+  and diverge from the priority axis it mirrors.
+- **clean** — Australian English throughout; commit carries the issue reference
+  and the `Vibe-Coder-Run-Id` trailer; new logic in Deno TypeScript under
+  `worker/deno/lib/`; no existing test commented out or removed; tests call real
+  functions and assert on `getGhCallMetrics()` snapshots rather than grepping
+  source; no sleeps, wall-clock thresholds or spawned processes in the new
+  tests; no catch-and-ignore (the removed `try/finally` is replaced by
   `AsyncLocalStorage.run`, which propagates the rejection); no hidden paths or
   credential files staged.
 
@@ -146,8 +146,8 @@ and in `docs/GH-API-OPTIMISATION.md`:
 
 Added to `worker/deno/tests/gh_call_metrics_test.ts`:
 
-- `concurrent chains do not cross-credit GraphQL sources` — the regression
-  test. Two lanes meet at a bounded `createRendezvous(2)`: one suspended inside
+- `concurrent chains do not cross-credit GraphQL sources` — the regression test.
+  Two lanes meet at a bounded `createRendezvous(2)`: one suspended inside
   `withGraphQLSource("comments-batch")`, one outside any source. Asserts
   `comments-batch === 1` and `unattributed === 2`. Fails against the unfixed
   code with `comments-batch === 3`.

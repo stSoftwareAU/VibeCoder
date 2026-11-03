@@ -10,8 +10,7 @@ misleading: a template author reading them would rebuild the defect.
 This change documents the **two-line, repo-wide dedup contract** across the
 framework doc, every scan doc that enumerates prompt placeholders, and the
 template-authoring guidance, and adds a docs guard so a future scan doc cannot
-list `{{KNOWN_OPEN_FINDING_IDS}}` without `{{OPEN_ISSUE_TITLES}}`.
-Closes #541.
+list `{{KNOWN_OPEN_FINDING_IDS}}` without `{{OPEN_ISSUE_TITLES}}`. Closes #541.
 
 - `docs/IDLE-TASK-FRAMEWORK.md` — rewrote **Cross-label dedup**: both lines are
   repo-wide and label-blind (`logLabel` names the caller in logs only, it never
@@ -25,10 +24,10 @@ Closes #541.
 - Ten scan docs now list `{{OPEN_ISSUE_TITLES}}` beside
   `{{KNOWN_OPEN_FINDING_IDS}}` with the `(none)`-on-empty note and a link to the
   contract: `SECURITY-SCAN`, `BEST-PRACTICES-SCAN`, `TEST-AUDIT-SCAN`,
-  `GITHUB-ACTIONS-AUDIT-SCAN`, `SUPPLY-CHAIN-READINESS-SCAN`, `ORPHAN-DEPS-SCAN`,
-  `DOCUMENTATION-AUDIT-SCAN`, plus the three siblings whose prompts carry the
-  block (`DUPLICATED-KNOWLEDGE-SCAN`, `PRIVATE-REPO-REFERENCE-AUDIT-SCAN`,
-  `SUPPLY-CHAIN-DETECTION-SCAN`).
+  `GITHUB-ACTIONS-AUDIT-SCAN`, `SUPPLY-CHAIN-READINESS-SCAN`,
+  `ORPHAN-DEPS-SCAN`, `DOCUMENTATION-AUDIT-SCAN`, plus the three siblings whose
+  prompts carry the block (`DUPLICATED-KNOWLEDGE-SCAN`,
+  `PRIVATE-REPO-REFERENCE-AUDIT-SCAN`, `SUPPLY-CHAIN-DETECTION-SCAN`).
 - `docs/EXTENDING.md` — new "A new idle-task scan prompt inherits the dedup
   contract" section, so the next author gets it from the docs rather than by
   copying an older module, plus the "reference `prompts/<type>/`, never a pinned
@@ -113,14 +112,13 @@ flowchart LR
   (`scanDedupPlaceholderContent`) plus the tree walker
   (`runDedupPlaceholderDocsCheck`) the test drives.
 - `./quality.sh < /dev/null` run in full: every check PASSED except
-  `deno tests`, which reports **four pre-existing, environment-caused
-  failures** unrelated to this diff —
-  `tests/gh_spawn_test.ts` ×3 ("production runner tolerates a discarded
-  stderr/both streams/stdin path") and
+  `deno tests`, which reports **four pre-existing, environment-caused failures**
+  unrelated to this diff — `tests/gh_spawn_test.ts` ×3 ("production runner
+  tolerates a discarded stderr/both streams/stdin path") and
   `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
-  config dir is restaged writable` (the container runs as root, so an
-  unwritable directory stays writable). Verified pre-existing: the same four
-  fail with this branch's changes stashed —
+  config dir is restaged writable`
+  (the container runs as root, so an unwritable directory stays writable).
+  Verified pre-existing: the same four fail with this branch's changes stashed —
   `git stash -u && deno task test tests/gh_spawn_test.ts
-  tests/service_account_env_test.ts` → `FAILED | 31 passed | 4 failed`.
-  The remaining 15,706 tests pass.
+  tests/service_account_env_test.ts`
+  → `FAILED | 31 passed | 4 failed`. The remaining 15,706 tests pass.

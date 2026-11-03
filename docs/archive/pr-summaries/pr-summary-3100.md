@@ -14,8 +14,8 @@ value the new rule rejects, apply the stricter rule at the new call site only.
 
 ## Checklist
 
-- [x] `CODING-STANDARDS.md` § Test coverage expectations: new rule **Narrowing
-      a shared helper changes every caller.**, after "Every changed call site
+- [x] `CODING-STANDARDS.md` § Test coverage expectations: new rule **Narrowing a
+      shared helper changes every caller.**, after "Every changed call site
       needs a test that goes red without it".
 - [x] `prompts/coding_guidelines/prompt.md`: the same paragraph, word for word.
 - [x] `docs/workflows/issue-processing.md`: a background paragraph after the
@@ -45,27 +45,27 @@ it.
 
 ### Essential Design Decisions
 
-- The rule sits next to the #3067 call-site rule. That rule covers *threading
-  a new argument through* callers; this one covers *removing an accepted value*
+- The rule sits next to the #3067 call-site rule. That rule covers _threading a
+  new argument through_ callers; this one covers _removing an accepted value_
   that callers rely on.
-- "Real values" means the tool's actual output. The rule links to **Observe
-  the real tool before you rely on it** instead of repeating it. In the #3095
-  case, the rejected `MERGED` was a value that real `gh` output could contain.
+- "Real values" means the tool's actual output. The rule links to **Observe the
+  real tool before you rely on it** instead of repeating it. In the #3095 case,
+  the rejected `MERGED` was a value that real `gh` output could contain.
 - The fallback is to keep the shared helper as it was and apply the stricter
   rule locally. It is not to "fix every caller", which would widen the change.
 
 ### Undiscoverable Facts
 
-- `prompts/coding_guidelines_claude/prompt.md` is only a Working Style
-  addendum. It does not mirror Test Coverage Expectations, so it is unchanged.
+- `prompts/coding_guidelines_claude/prompt.md` is only a Working Style addendum.
+  It does not mirror Test Coverage Expectations, so it is unchanged.
 
 ## Changes
 
-| File | Change |
-| --- | --- |
-| `CODING-STANDARDS.md` | New rule paragraph in Test coverage expectations. |
-| `prompts/coding_guidelines/prompt.md` | Same paragraph, word for word. |
-| `docs/workflows/issue-processing.md` | Background paragraph citing VibeCoder#2881 and #3095. |
+| File                                                     | Change                                                                                                         |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `CODING-STANDARDS.md`                                    | New rule paragraph in Test coverage expectations.                                                              |
+| `prompts/coding_guidelines/prompt.md`                    | Same paragraph, word for word.                                                                                 |
+| `docs/workflows/issue-processing.md`                     | Background paragraph citing VibeCoder#2881 and #3095.                                                          |
 | `worker/deno/tests/narrowing_shared_helper_3100_test.ts` | Section-scoped drift test. It pins six phrases on both surfaces and checks the paragraph is identical on both. |
 
 ## Related existing rules checked
@@ -73,11 +73,11 @@ it.
 These rules overlap the new one. All of them agree with it, so none needed
 changing:
 
-- **Every changed call site needs a test that goes red without it** (#3067).
-  It is complementary: that rule covers each changed caller, and this rule
-  covers callers the diff does not touch.
-- **Observe the real tool before you rely on it.** The new rule
-  cross-references it by name.
+- **Every changed call site needs a test that goes red without it** (#3067). It
+  is complementary: that rule covers each changed caller, and this rule covers
+  callers the diff does not touch.
+- **Observe the real tool before you rely on it.** The new rule cross-references
+  it by name.
 - **A stub mirrors the real callee's contract.**
 - **A new path to an existing outcome keeps that outcome's guards** (#3087).
 - **Documentation-drift tests**, conditions 1–4. Condition 4 is why the test
@@ -103,18 +103,20 @@ whitespace. The count was 0 in both files.
 
 ## Test Plan
 
-- `deno task test:unit tests/narrowing_shared_helper_3100_test.ts tests/changed_call_site_red_3067_test.ts < /dev/null`: 4 passed, 0 failed.
+- `deno task test:unit tests/narrowing_shared_helper_3100_test.ts tests/changed_call_site_red_3067_test.ts < /dev/null`:
+  4 passed, 0 failed.
 - The doc-reading suites `markdown_anchors_test.ts`,
   `workflow_validator_contract_3021_test.ts` and `docs_sweep_gate_test.ts` all
   passed.
-- Red run 1: I removed the paragraph from `CODING-STANDARDS.md`. The test
-  failed with `could not locate the narrowing-helper rule in
+- Red run 1: I removed the paragraph from `CODING-STANDARDS.md`. The test failed
+  with `could not locate the narrowing-helper rule in
   CODING-STANDARDS.md`.
 - Red run 2: I removed "List the callers checked in the PR summary." from the
   prompt copy. The test failed with the missing-phrase assertion.
 - Red run 3: I removed the sentence "A narrowed shared helper with no
   callers-checked list is a blocking self-review finding (Issue #3100)." from
-  the prompt copy. The test failed with `coding_guidelines is missing "A
+  the prompt copy. The test failed with
+  `coding_guidelines is missing "A
   narrowed shared helper with no callers-checked list"`.
 - After each red run I restored the file and confirmed it matched HEAD with
   `git diff`.
@@ -127,9 +129,9 @@ whitespace. The count was 0 in both files.
 - The rule "Narrowing a shared helper changes every caller" is in
   CODING-STANDARDS.md, next to the #3067 call-site rule. reviewer: met
 - It is mirrored in `prompts/coding_guidelines/prompt.md`. reviewer: met
-- The wording covers the issue's points: list callers and real values, check
-  the real output, apply the stricter rule at the new site, test an existing
-  caller, and list the callers checked. reviewer: met
+- The wording covers the issue's points: list callers and real values, check the
+  real output, apply the stricter rule at the new site, test an existing caller,
+  and list the callers checked. reviewer: met
 - A guidance test in the style of `existing_rule_conflicts_3077_test.ts`.
   reviewer: met
 - The `issue-processing.md` background paragraph was not one of the issue's

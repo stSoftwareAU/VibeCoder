@@ -3,8 +3,8 @@
 Chunk 12c of the #1209 security-scan overflow: the untrusted-ingestion slice of
 `worker/deno/lib/`. **177 modules** were read at their GitHub-data ingestion
 points, every GitHub-sourced field classified as authenticated or
-attacker-writable, and every trust decision traced. **The result was not empty** —
-nineteen distinct root causes survived triage. Closes #1216.
+attacker-writable, and every trust decision traced. **The result was not empty**
+— nineteen distinct root causes survived triage. Closes #1216.
 
 One class was fixed here; the rest were filed. The class:
 
@@ -14,17 +14,17 @@ the match without asking GitHub who wrote it. A comment body is text any GitHub
 account may write, so each let one planted, invisible HTML comment steer the
 worker — and every one of them failed towards silence.
 
-| Module | What a planted comment did |
-| ------ | -------------------------- |
-| `lib/issue_comment_pages.ts` `issueCommentsContainMarker` | The shared helper. Substring-matched the **raw page JSON**, so a marker anywhere in the payload from anyone counted. Four callers: the blocking-PR stall escalation (suppressed outright), each stall-reason comment, the self-schedule announcement, the CI-nudge audit trail |
-| `lib/needs_human_escalation.ts` | Every production dedup key is derivable from public numbers (`context-budget-<n>`, `merge-blocked:<repo>#<pr>`, …), so one marker silenced a hand-off's "why / next step" explanation for 24 h |
-| `lib/run_failure_issue.ts` | The follow-up marker's epoch is attacker-chosen and unbounded, so `t - epoch < window` stayed true for ever and the descending sort put the forged comment first. Every later occurrence of the class was `PATCH`ed onto the attacker's comment — or, when the edit was refused, the class was permanently `suppressed:gh_failed`. Step 1 of the same function already author-verified the *issue* match; step 3 dropped the discipline |
-| `lib/milestone_branch_self_heal.ts` | Permanently exempted a PR from being retargeted at its milestone branch, so its work merged to the default branch outside the milestone |
+| Module                                                    | What a planted comment did                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/issue_comment_pages.ts` `issueCommentsContainMarker` | The shared helper. Substring-matched the **raw page JSON**, so a marker anywhere in the payload from anyone counted. Four callers: the blocking-PR stall escalation (suppressed outright), each stall-reason comment, the self-schedule announcement, the CI-nudge audit trail                                                                                                                                                          |
+| `lib/needs_human_escalation.ts`                           | Every production dedup key is derivable from public numbers (`context-budget-<n>`, `merge-blocked:<repo>#<pr>`, …), so one marker silenced a hand-off's "why / next step" explanation for 24 h                                                                                                                                                                                                                                          |
+| `lib/run_failure_issue.ts`                                | The follow-up marker's epoch is attacker-chosen and unbounded, so `t - epoch < window` stayed true for ever and the descending sort put the forged comment first. Every later occurrence of the class was `PATCH`ed onto the attacker's comment — or, when the edit was refused, the class was permanently `suppressed:gh_failed`. Step 1 of the same function already author-verified the _issue_ match; step 3 dropped the discipline |
+| `lib/milestone_branch_self_heal.ts`                       | Permanently exempted a PR from being retargeted at its milestone branch, so its work merged to the default branch outside the milestone                                                                                                                                                                                                                                                                                                 |
 
 All four now route through `selectFleetAuthoredComments`
 (`lib/alert_dedup_authors.ts`), so the comparison set is the fleet identity.
 **The fail direction is uniform and safe:** every one of these markers
-*suppresses* an action, so an unresolvable fleet identity discards every match,
+_suppresses_ an action, so an unresolvable fleet identity discards every match,
 the suppressed action goes ahead, and the condition is logged loudly.
 
 **Why the existing gate missed it.** `marker_dedup_author_manifest.ts`'s scanner
@@ -75,7 +75,7 @@ and a comment with no readable author yields `null` and is discarded. The same
 filter guards the other three modules, and `deps.dedupAuthors` is the only
 injection point, which production never supplies. Flooding a page with planted
 markers does not hide a later fleet marker (the scan continues past a page whose
-matches were all rejected), and an unresolvable fleet identity discards *every*
+matches were all rejected), and an unresolvable fleet identity discards _every_
 match rather than accepting any.
 
 ```mermaid
@@ -92,15 +92,15 @@ flowchart LR
 **Findings filed** (each with a `<!-- finding-id: SEC-… -->` marker, a
 `<!-- cwe: … -->` tag and `severity:*` / `confidence:*` labels):
 
-| Id | Issue | Finding |
-| --- | --- | --- |
+| Id          | Issue                                                          | Finding                                                                                                                                         |
+| ----------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | SEC-1216-02 | [#1243](https://github.com/stSoftwareAU/VibeCoder/issues/1243) | `idle_task_snapshot.ts` finding-id dedup trusts an unauthenticated issue body — one planted issue suppresses a real finding across ~12 scanners |
-| SEC-1216-03 | [#1244](https://github.com/stSoftwareAU/VibeCoder/issues/1244) | the planning close-out path decides from unauthenticated text at four sites |
-| SEC-1216-04 | [#1245](https://github.com/stSoftwareAU/VibeCoder/issues/1245) | measured catastrophic backtracking in `plan_coverage_gate.ts` — 40 000 dashes → 5.4 s, quadratic |
-| SEC-1216-05 | [#1246](https://github.com/stSoftwareAU/VibeCoder/issues/1246) | milestone tracking issues identified by title alone → milestone branch deleted, third-party issue closed |
-| SEC-1216-06 | [#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247) | conflict attempt history read from unauthenticated PR comments → two planted markers close the PR |
-| SEC-1216-07 | [#1248](https://github.com/stSoftwareAU/VibeCoder/issues/1248) | issue title interpolated into the PR title unscrubbed → another issue stranded permanently |
-| SEC-1216-08 | [#1249](https://github.com/stSoftwareAU/VibeCoder/issues/1249) | overflow tracker: 12 further findings beyond the per-run filing cap of six |
+| SEC-1216-03 | [#1244](https://github.com/stSoftwareAU/VibeCoder/issues/1244) | the planning close-out path decides from unauthenticated text at four sites                                                                     |
+| SEC-1216-04 | [#1245](https://github.com/stSoftwareAU/VibeCoder/issues/1245) | measured catastrophic backtracking in `plan_coverage_gate.ts` — 40 000 dashes → 5.4 s, quadratic                                                |
+| SEC-1216-05 | [#1246](https://github.com/stSoftwareAU/VibeCoder/issues/1246) | milestone tracking issues identified by title alone → milestone branch deleted, third-party issue closed                                        |
+| SEC-1216-06 | [#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247) | conflict attempt history read from unauthenticated PR comments → two planted markers close the PR                                               |
+| SEC-1216-07 | [#1248](https://github.com/stSoftwareAU/VibeCoder/issues/1248) | issue title interpolated into the PR title unscrubbed → another issue stranded permanently                                                      |
+| SEC-1216-08 | [#1249](https://github.com/stSoftwareAU/VibeCoder/issues/1249) | overflow tracker: 12 further findings beyond the per-run filing cap of six                                                                      |
 
 Full record, including the swept path list, the two negative sweeps and the
 refuted set: `docs/audits/security-sweep-1216-untrusted-github-ingestion.md`.
@@ -137,8 +137,8 @@ refuted set: `docs/audits/security-sweep-1216-untrusted-github-ingestion.md`.
   excluded on reasoning this sweep showed to be wrong. The non-marker text
   matchers (`planning_processor.ts`, `plan_coverage_gate.ts`,
   `idle_task_freshness.ts`) stay out — the manifest is about marker dedup
-  lookups, and those are `Part of #N` prose, a markdown table and a
-  last-comment read; they live in #1244 and #1249.
+  lookups, and those are `Part of #N` prose, a markdown table and a last-comment
+  read; they live in #1244 and #1249.
 - **met** — an empty result stated explicitly — evidence: the audit record's
   "**This is not an empty result.** … Nineteen distinct root causes survived
   triage." — reviewer: met
@@ -152,11 +152,10 @@ refuted set: `docs/audits/security-sweep-1216-untrusted-github-ingestion.md`.
   the issue names a file that does not exist) passes with the new entries —
   reviewer: partial — reason: the two-directional staleness assertion covers
   only `MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES`, and consumer entries cannot be
-  gated that way *by construction* — the scanner is what makes the cap possible
+  gated that way _by construction_ — the scanner is what makes the cap possible
   and these are the sites it cannot classify. Rather than fake a gate, the
-  limitation is now stated in the module
-  (`marker_dedup_author_manifest.ts`, "This list has no staleness gate, and
-  cannot have one").
+  limitation is now stated in the module (`marker_dedup_author_manifest.ts`,
+  "This list has no staleness gate, and cannot have one").
 - **partial** — coverage detected by the `docs/audits/` record naming the swept
   paths — evidence: the record names 91 of the 177 paths individually and
   reproduces the exact regeneration command — reviewer: partial — reason: a
@@ -169,7 +168,7 @@ refuted set: `docs/audits/security-sweep-1216-untrusted-github-ingestion.md`.
   the `GITHUB_USER` half of `resolveFleetMaintenanceAuthorSet` — compared
   against a GitHub-authenticated `comment.author`, so it is the same trust
   boundary rather than a bypass; it keeps the hand-off dedup working on a host
-  whose fleet config cannot be read, which is the one place a *duplicate*
+  whose fleet config cannot be read, which is the one place a _duplicate_
   needs-human comment is genuinely costly.
 - **unrequested** — `lib/milestone_branch_self_heal.ts` swaps its hand-rolled
   `gh api --paginate … --jq .[].body` for the shared helper, which caps at
@@ -179,13 +178,13 @@ refuted set: `docs/audits/security-sweep-1216-untrusted-github-ingestion.md`.
   in memory). Past 2 000 comments the marker becomes invisible and the PR is
   re-commented; that is the trade the bounded helper already makes everywhere
   else.
-- **unrequested** — new `dedupAuthors` fields on
-  `HandOffSuspiciousImageDeps`, `ProcessCiNudgeCandidateDeps`,
-  `SelfDiagnosticDeps`, `EscalateBlockingPrStallDeps` /
-  `ScanBlockingPrStallsOptions`, `MilestoneSelfHealDeps` and
-  `EscalateUnworkableDeps` — reviewer: unrequested — reason: the seam the
-  standards require, so a unit test names the fleet instead of reading the
-  host's `.config.json`. Production omits it and reads the configured fleet.
+- **unrequested** — new `dedupAuthors` fields on `HandOffSuspiciousImageDeps`,
+  `ProcessCiNudgeCandidateDeps`, `SelfDiagnosticDeps`,
+  `EscalateBlockingPrStallDeps` / `ScanBlockingPrStallsOptions`,
+  `MilestoneSelfHealDeps` and `EscalateUnworkableDeps` — reviewer: unrequested —
+  reason: the seam the standards require, so a unit test names the fleet instead
+  of reading the host's `.config.json`. Production omits it and reads the
+  configured fleet.
 - **unrequested** — `_data/page_titles.yml` gains the audit page — reviewer:
   unrequested — reason: `page_titles_completeness_test.ts` fails without it.
 
@@ -254,10 +253,10 @@ Per-caller:
 
 Modified, with the reason recorded in place:
 
-- `worker/deno/tests/needs_human_escalation_test.ts::escalateToHuman - dedup: same key within 24h skips comment, still ensures label` and the
-  `suspicious-image - re-run within 24h dedups the escalation comment` sibling —
-  both now state the fleet, because a marker with no attributable author no
-  longer dedups.
-- `worker/deno/tests/escalate_unworkable_work_on_test.ts::escalateUnworkableWorkOn - idempotent: a prior dedup marker suppresses the comment` —
-  now passes `githubUser: "bot"`, which is what makes the prior marker the
+- `worker/deno/tests/needs_human_escalation_test.ts::escalateToHuman - dedup: same key within 24h skips comment, still ensures label`
+  and the `suspicious-image - re-run within 24h dedups the escalation comment`
+  sibling — both now state the fleet, because a marker with no attributable
+  author no longer dedups.
+- `worker/deno/tests/escalate_unworkable_work_on_test.ts::escalateUnworkableWorkOn - idempotent: a prior dedup marker suppresses the comment`
+  — now passes `githubUser: "bot"`, which is what makes the prior marker the
   worker's own.

@@ -43,13 +43,13 @@ flowchart LR
 Backend/CLI change — no web interface to screenshot. Measured inside the worker
 container image (PowerShell 7.6.5 at `/usr/local/bin/pwsh`):
 
-| Command | Result |
-| --- | --- |
-| `deno test tests/run_ps1_launcher_test.ts` | 39 passed, 0 failed (1m14s) |
-| `deno test --parallel tests/launcher_parity_test.ts tests/launcher_egress_probe_test.ts` | 31 passed, 0 failed (14s) |
-| the gate's serial pass, as `unitTestPasses` builds it | 102 passed, 0 failed, 1 ignored (1m34s) |
-| `./quality.sh < /dev/null` | `Result: PASSED (with skipped checks)` — `deno tests PASSED` |
-| `deno task check:manifests` | 613 passed, 0 failed |
+| Command                                                                                  | Result                                                       |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `deno test tests/run_ps1_launcher_test.ts`                                               | 39 passed, 0 failed (1m14s)                                  |
+| `deno test --parallel tests/launcher_parity_test.ts tests/launcher_egress_probe_test.ts` | 31 passed, 0 failed (14s)                                    |
+| the gate's serial pass, as `unitTestPasses` builds it                                    | 102 passed, 0 failed, 1 ignored (1m34s)                      |
+| `./quality.sh < /dev/null`                                                               | `Result: PASSED (with skipped checks)` — `deno tests PASSED` |
+| `deno task check:manifests`                                                              | 613 passed, 0 failed                                         |
 
 The gate's own passes now carry them — `unitTestPasses` reports 32 excluded
 integration suites where it reported 35, the serial pass names
@@ -58,9 +58,12 @@ integration suites where it reported 35, the serial pass names
 Red-capable, both criteria, before/after:
 
 - Re-adding `tests/run_ps1_launcher_test.ts` to `INTEGRATION_TEST_FILES` **and**
-  deleting its `IN_GATE_SCRIPT_SUITES` entry → `pwsh suites - every run.ps1
-  suite is in the gate` and `pwsh suites - the manifest names exactly those
-  suites` both FAIL; restoring both → all 5 pass.
+  deleting its `IN_GATE_SCRIPT_SUITES` entry →
+  `pwsh suites - every run.ps1
+  suite is in the gate` and
+  `pwsh suites - the manifest names exactly those
+  suites` both FAIL; restoring
+  both → all 5 pass.
 - `env -u VIBE_PWSH PATH=/usr/bin:/bin deno test tests/pwsh_suites_in_the_gate_test.ts`
   → `pwsh suites - a host without PowerShell fails the gate` FAILS with the
   remedy message; with `pwsh` on `PATH` it passes.
@@ -77,7 +80,7 @@ Red-capable, both criteria, before/after:
   the suites — evidence:
   `worker/deno/tests/pwsh_suites_in_the_gate_test.ts::pwsh suites - a host without PowerShell fails the gate (Issue #1598)`,
   observed failing with `PATH=/usr/bin:/bin` — reviewer: met
-- **partial** — remove the `--ignore` exclusion of *the PowerShell suites* and
+- **partial** — remove the `--ignore` exclusion of _the PowerShell suites_ and
   let `tests/support/pwsh.ts` resolve the image's `/usr/local/bin/pwsh` —
   evidence: `worker/deno/lib/integration_test_manifest.ts:97-143` — reviewer:
   partial — reason: only the three `run.ps1` suites moved, matching the issue
@@ -95,10 +98,10 @@ Red-capable, both criteria, before/after:
   is now read off the tree, and that escape was observed failing.
 - **met** — keep `validate-scripts.yml` as the CI enforcement and note the
   change wherever the exclusion is documented — evidence:
-  `.github/workflows/validate-scripts.yml` unchanged, `CODING-STANDARDS.md:210-330`,
-  `CONTRIBUTING.md:103`, `docs/CONTAINER.md:128`, `container/tools.json`,
-  `worker/deno/lib/pr_check_contexts.ts`, `.github/scripts/deno-test-shard.sh` —
-  reviewer: met
+  `.github/workflows/validate-scripts.yml` unchanged,
+  `CODING-STANDARDS.md:210-330`, `CONTRIBUTING.md:103`, `docs/CONTAINER.md:128`,
+  `container/tools.json`, `worker/deno/lib/pr_check_contexts.ts`,
+  `.github/scripts/deno-test-shard.sh` — reviewer: met
 - **unrequested** — `IN_GATE_SCRIPT_SUITES` as a reason-carrying third
   placement, plus its conformance tests — reviewer: unrequested — reason: the
   repo's classifier fails any script-driving file that is in neither existing
@@ -107,7 +110,7 @@ Red-capable, both criteria, before/after:
   what make the exception reviewable.
 - **unrequested** — a `pwsh` availability step was added to the
   `validate (tests N/4)` shard job and then removed — reviewer: unrequested —
-  reason: the reviewer was right that the issue asked only to *keep*
+  reason: the reviewer was right that the issue asked only to _keep_
   `validate-scripts.yml`, and the push confirmed it: this run's token carries no
   `workflow` scope. The shards enforce the prerequisite through
   `pwsh_suites_in_the_gate_test.ts`, which fails loud in the same job, so
@@ -175,12 +178,13 @@ Red-capable, both criteria, before/after:
   evidence: this file — reason: fixed here; it was written after the diff the
   reviewer read.
 - **clean** — Australian English throughout; fail-loud (the skip became a loud
-  failure with a named remedy); commit safety (only allowlisted `.github/**` hidden paths staged, no
-  credentials, no `git add -f`, no `--no-verify`); `Vibe-Coder-Run-Id` trailer
-  and issue reference on both commits; parallel-safety (the two suites entering
-  the parallel pass mutate no process state, `run_ps1_launcher_test.ts` stays in
-  `WALL_CLOCK_TEST_FILES`); no benchmark disguised as a test; no absolute
-  wall-clock threshold added; cost claims match measurement.
+  failure with a named remedy); commit safety (only allowlisted `.github/**`
+  hidden paths staged, no credentials, no `git add -f`, no `--no-verify`);
+  `Vibe-Coder-Run-Id` trailer and issue reference on both commits;
+  parallel-safety (the two suites entering the parallel pass mutate no process
+  state, `run_ps1_launcher_test.ts` stays in `WALL_CLOCK_TEST_FILES`); no
+  benchmark disguised as a test; no absolute wall-clock threshold added; cost
+  claims match measurement.
 
 ## Test Plan
 

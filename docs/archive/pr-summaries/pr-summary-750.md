@@ -7,12 +7,11 @@ environment variables. Setup (`setup.sh`, `setup.ps1`,
 `worker/deno/setup/setup_cli.ts`) read **`CONFIG_FILE`**; the launcher
 (`resolveContainerLaunchHostPaths`) read **`CONFIG_PATH`**; and
 `worker/deno/mod.ts` — the worker CLI, run on the host as well as in the
-container — read `CONFIG_PATH` too. A host that relocated its `.config.json`
-and set only one of them had setup reading and writing
-`<checkout>/.config.json` while `./run.sh` staged the relocated file. Nothing
-reported the split. A relative value made it worse: the Deno side resolved it
-against the checkout, `setup.sh` against whatever directory the operator
-happened to be in.
+container — read `CONFIG_PATH` too. A host that relocated its `.config.json` and
+set only one of them had setup reading and writing `<checkout>/.config.json`
+while `./run.sh` staged the relocated file. Nothing reported the split. A
+relative value made it worse: the Deno side resolved it against the checkout,
+`setup.sh` against whatever directory the operator happened to be in.
 
 `CONFIG_FILE` is now canonical and `CONFIG_PATH` is its documented alias, with
 one rule in `worker/deno/lib/host_config_path.ts` that every side calls:
@@ -25,9 +24,9 @@ one rule in `worker/deno/lib/host_config_path.ts` that every side calls:
 
 The host path helpers (`pathStyleFor`, `normalisePath`, `isAbsolutePath`,
 `joinPath`) moved out of `container_launch.ts` into `host_path_style.ts` so the
-resolver joins a relative path exactly as the launcher does — writing that
-logic twice is the defect this issue reports. `container_launch.ts` re-exports
-the two names it has always published, so no caller changed.
+resolver joins a relative path exactly as the launcher does — writing that logic
+twice is the defect this issue reports. `container_launch.ts` re-exports the two
+names it has always published, so no caller changed.
 
 `CONFIG_PATH` keeps its second, unrelated meaning inside the container, where
 the launcher sets it to the staged read-only copy: that value is absolute and
@@ -61,8 +60,8 @@ flowchart LR
 ```
 
 The seven-case matrix — neither set, either alone (absolute and relative), both
-agreeing, both agreeing only once resolved — is asserted four times over: against
-the resolver, against `resolveContainerLaunchHostPaths`, against a real
+agreeing, both agreeing only once resolved — is asserted four times over:
+against the resolver, against `resolveContainerLaunchHostPaths`, against a real
 `source setup.sh`, and against a real `. setup.ps1`. Each shell run reports the
 checkout it resolved itself to, and the expectation is computed from that base,
 so no path-canonicalisation difference can make the comparison lie.
@@ -96,9 +95,9 @@ the new suite avoids the same trap by keeping the host `PATH`.
   report of the split; a relative `CONFIG_FILE` resolves against the checkout in
   Deno and against the working directory in `setup.sh`
 - **status** — `verified` — the matrix test was watched failing before the
-  shells and the launcher were moved onto the shared rule (the `CONFIG_PATH`-only
-  and relative cases resolved to different files on the two sides) and passing
-  after
+  shells and the launcher were moved onto the shared rule (the
+  `CONFIG_PATH`-only and relative cases resolved to different files on the two
+  sides) and passing after
 - **regression test** —
   `worker/deno/tests/host_config_path_test.ts::setup.sh - resolves the file the resolver names, for every combination (Issue #750)`
   and `::the launcher stages the file the resolver names (Issue #750)`

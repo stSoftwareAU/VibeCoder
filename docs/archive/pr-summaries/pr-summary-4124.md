@@ -2,8 +2,8 @@
 
 Malformed issue rows now reject the list with the row index and field name,
 instead of silently producing an empty or partial repository snapshot.
-Closed-issue batches use the same parser and propagate command failures.
-Neither fetcher caches a failed response; a genuine empty array remains valid.
+Closed-issue batches use the same parser and propagate command failures. Neither
+fetcher caches a failed response; a genuine empty array remains valid.
 
 Closes #4124
 
@@ -18,8 +18,8 @@ Closes #4124
 ### Essential Design Decisions
 
 - Reuse the existing field guards and parser for open and closed lists.
-- Preserve optional-field defaults and cache payload shapes, including reads
-  of legacy cache entries. No cache key change is needed.
+- Preserve optional-field defaults and cache payload shapes, including reads of
+  legacy cache entries. No cache key change is needed.
 - Reviewed all direct callers: the parser is used by the two batch fetchers;
   label and milestone filters propagate errors. Existing caller-level recovery
   remains unchanged. Milestone-health error reporting is tracked by #4106.
@@ -37,14 +37,14 @@ None.
 - Manifest checks: 810 passed, 0 failed, 1 ignored.
 - Eight isolated mutations replacing each rejection with an empty return all
   failed the relevant regression tests.
-- Full quality gate: type-check, lint, formatting and completeness passed.
-  Unit parallel pass: 29,715 passed, 4 failed, 9 ignored; the serial pass did
-  not run after the failure. All four failures reproduced on unchanged
-  `main` (`ffdc31c9`): process cleanup in `claude_runner_killed_test.ts` and
+- Full quality gate: type-check, lint, formatting and completeness passed. Unit
+  parallel pass: 29,715 passed, 4 failed, 9 ignored; the serial pass did not run
+  after the failure. All four failures reproduced on unchanged `main`
+  (`ffdc31c9`): process cleanup in `claude_runner_killed_test.ts` and
   `process_tree_test.ts`, CLI stdout in `log_dir_default_test.ts`, and the
   missing PowerShell check in `pwsh_suites_in_the_gate_test.ts`.
-- Config integration, markdownlint, Semgrep and Checkov were skipped locally.
-  CI verification remains required; the full local gate is not green.
+- Config integration, markdownlint, Semgrep and Checkov were skipped locally. CI
+  verification remains required; the full local gate is not green.
 - PR-summary check: no blocked gates; four model/issue-context gates were not
   checked locally.
 - Backend-only change; no visual evidence applies.
@@ -60,8 +60,8 @@ manual references describe batching and cache keys, which are unchanged.
 
 - Reject invalid JSON, non-array roots, non-object rows, invalid number/title,
   and malformed author, assignee, label and milestone values by field name.
-- Assert failed open and closed fetches leave caches untouched and retry with
-  a valid response; verify filtering helpers propagate malformed-list errors.
+- Assert failed open and closed fetches leave caches untouched and retry with a
+  valid response; verify filtering helpers propagate malformed-list errors.
 - Verify closed transport failures reject and genuine empty lists are cached.
 - Retain valid-row, optional-field and legacy-cache compatibility coverage.
 - Twinned rule: closed-list parsing now delegates to the open-list parser.

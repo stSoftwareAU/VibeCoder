@@ -2,11 +2,11 @@
 
 ## Summary
 
-The rule *A Code Change Owes a Docs Change* only triggered on a rename, a
+The rule _A Code Change Owes a Docs Change_ only triggered on a rename, a
 signature or default change, or a flag change, and told the agent to grep for
 the **old** name. A change to behaviour that keeps the name has no old name to
-grep for, so stale doc comments and API prose slipped through. Two examples
-from GRQ-AutoTrader are `roll_over_carried` and `kept_reason`.
+grep for, so stale doc comments and API prose slipped through. Two examples from
+GRQ-AutoTrader are `roll_over_carried` and `kept_reason`.
 
 This change adds three bullets to that section in both twins,
 `CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md`:

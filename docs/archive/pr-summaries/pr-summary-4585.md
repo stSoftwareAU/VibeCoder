@@ -61,11 +61,10 @@ numbers cited as provenance:
 - #3750: Diff-scoped mutation gate (#3393) runs only at PR raise: review-fix
   rounds still add branches no test pins (VibeCoder#3160, #3312, #3716).
 
-The mutation-check
-manual (`docs/mutation-check.md`, Review-fix runs and Outcomes)
-and PR-feedback manual (`docs/workflows/pr-feedback.md`, drift check) were read
-and updated to name the emitted `### Drift check` and `#### Mutation check`
-headings.
+The mutation-check manual (`docs/mutation-check.md`, Review-fix runs and
+Outcomes) and PR-feedback manual (`docs/workflows/pr-feedback.md`, drift check)
+were read and updated to name the emitted `### Drift check` and
+`#### Mutation check` headings.
 
 ## Test Plan
 

@@ -21,7 +21,7 @@ Detection — a branch is stale exactly when:
 2. its merge commit is contained in the base branch, but
 3. the branch tip does **not** contain that merge commit.
 
-A branch that *was* rebased onto the post-merge base contains the merge commit,
+A branch that _was_ rebased onto the post-merge base contains the merge commit,
 so legitimate follow-up work on a reused branch name is never flagged.
 `ensureHistoryDepth()` runs first, because ancestry on a `--depth=1` clone is
 unanswerable and an unanswerable test would read as "not stale".
@@ -39,7 +39,7 @@ Recovery replays content rather than picking a side, with three post-conditions:
 - **No side-picking.** A cherry-pick conflict restores the branch and refuses,
   the same stance `pr_merge_conflict_scan.ts` takes.
 - **Lease-protected republish.** The healed branch is force-pushed with
-  `--force-with-lease` pinned to the remote SHA read *before* the rebase, so a
+  `--force-with-lease` pinned to the remote SHA read _before_ the rebase, so a
   writer whose remote head moved underneath it stops rather than destroying the
   other writer's commits — the exact loss that started this. When the merge
   reaped the branch there is nothing to force past: the now-lying
@@ -124,12 +124,12 @@ Added `worker/deno/tests/stale_branch_lineage_test.ts` (21 tests):
 - **`classifyBranchLineage`** names the stale merge against a real graph, and
   reports `unknown` when the merge commit is absent from the clone.
 - Pure rules: `decideLineage` (5 cases, including the rebased-branch case that
-  must *not* be flagged), `unexplainedDeletions`, `parseMergedPrList`
-  (malformed JSON is an error, never an empty list).
+  must _not_ be flagged), `unexplainedDeletions`, `parseMergedPrList` (malformed
+  JSON is an error, never an empty list).
 
 Added `worker/deno/tests/completion_phase_stale_lineage_test.ts`: the completion
-phase fails loudly with the Issue #534 reason and **never reaches the push** when
-the branch is stale and cannot be healed safely.
+phase fails loudly with the Issue #534 reason and **never reaches the push**
+when the branch is stale and cannot be healed safely.
 
 Existing completion-phase suites (`head_reconcile`, `superseded_wip`,
 `wip_only_gate`, `rest_pr_fallback`) still pass — the guard fails open when the

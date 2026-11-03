@@ -45,13 +45,12 @@ single source of truth, and the description is regenerated from it.
   overwritten.
 - **Sections that exist only on the live body are kept.** The `## Milestone`
   section, the leading `## ⚠️ Degraded run —` block, and the
-  dependency-bump-skip note are copied from the current body, because they
-  come from creation-time state the fix run does not have.
+  dependency-bump-skip note are copied from the current body, because they come
+  from creation-time state the fix run does not have.
 - **No-op when the body is identical.** No edit call is made.
 - **Fails loudly but does not block.** The sync returns a `Result`, and
-  `runPrBodySync` logs that failure once, at warning. A stale description is
-  not worth failing a fix that was already pushed, but the fault is never
-  swallowed.
+  `runPrBodySync` logs that failure once, at warning. A stale description is not
+  worth failing a fix that was already pushed, but the fault is never swallowed.
 - **Not run on gated-head fix branches** (`fixBranch` set). In that case the
   push goes to a separate branch, not the PR head.
 
@@ -108,9 +107,9 @@ sequenceDiagram
   - updated the three fix-run prompts (do not hand-edit the description; the
     summary file drives it);
   - updated `docs/workflows/ci-fix.md` (happy path, re-sync after the push),
-    `docs/workflows/pr-feedback.md` (keep the PR summary true to the head)
-    and `docs/workflows/merge-conflicts.md` (a superseded change leaves the
-    PR summary).
+    `docs/workflows/pr-feedback.md` (keep the PR summary true to the head) and
+    `docs/workflows/merge-conflicts.md` (a superseded change leaves the PR
+    summary).
 
 ## Related existing rules checked
 
@@ -133,8 +132,8 @@ sequenceDiagram
   - milestone and bump-note carry-over;
   - keeps a leading degraded-run section and drops the old summary's H1
     (`sync - keeps a leading degraded-run section`);
-  - `runPrBodySync` warns once when the sync fails and does not fail the
-    caller (`runPrBodySync - a failed sync warns once and does not fail the caller`).
+  - `runPrBodySync` warns once when the sync fails and does not fail the caller
+    (`runPrBodySync - a failed sync warns once and does not fail the caller`).
 - `worker/deno/tests/pr_ci_processor_test.ts` and
   `worker/deno/tests/pr_feedback_processor_test.ts`:
   - syncs once after a verified push;

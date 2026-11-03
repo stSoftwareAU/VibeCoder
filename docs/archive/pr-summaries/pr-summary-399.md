@@ -10,26 +10,26 @@ minutes before the kill, and issue slots were truncated at the cycle deadline.
 Three root causes are fixed here. Closes #399.
 
 1. **The guidance made the gate the inner loop.** `buildQualityInstructions`
-   told every agent to "keep running `./quality.sh` until it passes cleanly" —
-   a 16-minute gate re-run after every edit, inside a ~15-minute window. It now
+   told every agent to "keep running `./quality.sh` until it passes cleanly" — a
+   16-minute gate re-run after every edit, inside a ~15-minute window. It now
    points the inner loop at the repo's fast checks (formatter, linter, type
    check, only the touched test files) and asks for **one foreground gate run**
    at the end, explicitly forbidding a backgrounded gate and a `sleep`/`pgrep`
    poll loop. This is the issue's point 3 — the cheapest and largest win.
 2. **The gate was silent until it finished.** `runQualityGate` accumulated all
    output and printed it only at the end, so a slow run and a hung run looked
-   identical — which is *why* the poll loops existed. Each check now emits one
-   `✓ deno tests: PASSED (12.3s)` line the moment it settles, in both
-   sequential and parallel modes. It goes to **stdout**, ahead of the detail
-   dump, deliberately: the worker captures a failing run as `stdout + stderr`
-   and quotes the *tail* into the remediation prompt and the failure comment,
-   so a progress block on stderr would have crowded out the failing detail
-   those tails exist to carry.
+   identical — which is _why_ the poll loops existed. Each check now emits one
+   `✓ deno tests: PASSED (12.3s)` line the moment it settles, in both sequential
+   and parallel modes. It goes to **stdout**, ahead of the detail dump,
+   deliberately: the worker captures a failing run as `stdout + stderr` and
+   quotes the _tail_ into the remediation prompt and the failure comment, so a
+   progress block on stderr would have crowded out the failing detail those
+   tails exist to carry.
 3. **The launcher tests leaked process trees.** `loop_supervisor_test.ts`
    SIGKILLed `loop.sh` alone; its background control-plane probe and its
-   `run.sh` were re-parented to PID 1 and looped on `sleep 120` for ever
-   (about twenty had accumulated on one host, the oldest over two days old).
-   The new `killProcessTree` fixture stops the root first so it cannot fork a
+   `run.sh` were re-parented to PID 1 and looped on `sleep 120` for ever (about
+   twenty had accumulated on one host, the oldest over two days old). The new
+   `killProcessTree` fixture stops the root first so it cannot fork a
    replacement, terminates the tree bottom-up, then kills the root.
 
 ### Deliberate non-changes
@@ -69,8 +69,8 @@ flowchart TD
 Backend/CLI change — no web interface to screenshot. Evidence is the test suite
 and the gate's own output.
 
-**The leak reproduces and is fixed.** A root that forks a grandchild, killed
-the old way:
+**The leak reproduces and is fixed.** A root that forks a grandchild, killed the
+old way:
 
 ```text
 grandchild 23832 alive after plain SIGKILL of the root: true
@@ -102,16 +102,15 @@ as the new guidance prescribes.
 Added:
 
 - `worker/deno/tests/repo_config_test.ts` — three tests over
-  `buildQualityInstructions`: the inner loop names the fast checks and no
-  longer says "keep running"; the gate is run once in the foreground and
-  polling is forbidden; a repo-configured custom quality command carries the
-  same rules.
+  `buildQualityInstructions`: the inner loop names the fast checks and no longer
+  says "keep running"; the gate is run once in the foreground and polling is
+  forbidden; a repo-configured custom quality command carries the same rules.
 - `worker/deno/tests/quality_gate_test.ts` — six tests: `formatCheckProgress`
-  with and without a measured duration; `runChecksSequential` reports each
-  check *before the next one starts*; `runChecksParallel` reports a fast check
-  while a slow one is still blocked (the regression that mattered — no waiting
-  for the whole set); a throwing check is still reported, never silent;
-  `runQualityGate` streams its pre-checks through `onProgress`.
+  with and without a measured duration; `runChecksSequential` reports each check
+  _before the next one starts_; `runChecksParallel` reports a fast check while a
+  slow one is still blocked (the regression that mattered — no waiting for the
+  whole set); a throwing check is still reported, never silent; `runQualityGate`
+  streams its pre-checks through `onProgress`.
 - `worker/deno/tests/process_tree_test.ts` — `killProcessTree` kills a
   grandchild of the killed process, and handles a childless process.
 - `worker/deno/tests/loop_supervisor_test.ts` — `loop.sh #399`: snapshot the

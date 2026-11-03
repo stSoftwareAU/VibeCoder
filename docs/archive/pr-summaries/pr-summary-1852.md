@@ -9,9 +9,9 @@ minutes and the same failure. The worker's own diagnostics already said the
 failure predated the run (`GRQ-actual-validation#82`).
 
 The baseline-aware bypass (Issues #2604/#1641) could not help: it reasons over
-*findings*, which only the diffable checks (mermaid, markdownlint, workflow
-hygiene) produce. This change adds the check-agnostic half of the same
-question. Closes #1852.
+_findings_, which only the diffable checks (mermaid, markdownlint, workflow
+hygiene) produce. This change adds the check-agnostic half of the same question.
+Closes #1852.
 
 - **`decidePreExistingGateFailure`** (`worker/deno/lib/baseline_gate.ts`)
   compares the post-change gate's failing checks — and what each one printed —
@@ -35,8 +35,8 @@ question. Closes #1852.
   has gained a line, a baseline with no recorded per-check output, and an
   **infrastructure-class** failure all keep today's behaviour. That last guard
   matters: a host that cannot find `deno` fails the baseline and the post-change
-  gate with byte-identical output, so without it a broken *host* would read as a
-  broken *repository* — silencing the health failure an operator needs and
+  gate with byte-identical output, so without it a broken _host_ would read as a
+  broken _repository_ — silencing the health failure an operator needs and
   filing a tracker on an innocent repo.
 
 ```mermaid
@@ -58,8 +58,8 @@ test suite and the full gate.
 
 - `./quality.sh` — **PASSED** (all checks; `config integration` skipped as it is
   on a clean checkout), run after the final edit.
-- 302 tests across the touched suites pass:
-  `pre_existing_gate_failure_test.ts`, `quality_gate_phase_pre_existing_test.ts`,
+- 302 tests across the touched suites pass: `pre_existing_gate_failure_test.ts`,
+  `quality_gate_phase_pre_existing_test.ts`,
   `baseline_carryover_tracker_test.ts`, `quality_helpers_test.ts`,
   `quality_gate_test.ts`, `baseline_quality_cache_test.ts`,
   `baseline_quality_phase_cache_test.ts`, `redacted_text_test.ts`,
@@ -93,9 +93,9 @@ test suite and the full gate.
 - **met** — no failure cooldown on the issue — evidence:
   `worker/deno/lib/issue_worker.ts` (quality-gate early exit → `expectedSkip`),
   which takes the bounce path, not the failure path — reviewer: partial —
-  reason: the reviewer is right that the bounce path still writes the flat
-  600 s retry cooldown; that is the ordinary skip cooldown, not the failure
-  cooldown (no failure tracking, no repo failure record, no `failed-once`), and
+  reason: the reviewer is right that the bounce path still writes the flat 600 s
+  retry cooldown; that is the ordinary skip cooldown, not the failure cooldown
+  (no failure tracking, no repo failure record, no `failed-once`), and
   suppressing it entirely would return the issue to the pool to repeat the same
   doomed run every scan. The docs and the code comment were corrected to say
   exactly this rather than "no cooldown".
@@ -113,7 +113,8 @@ test suite and the full gate.
   `fileRedCheckTracker - an open findings tracker does not suppress it`.
 - **met** — the head of the gate output survives in the captured excerpt —
   evidence: `redactedHeadTail` in `worker/deno/lib/redacted_text.ts`, used by
-  both log sites and the failure snippet; `redacted_text_test.ts` — reviewer: met
+  both log sites and the failure snippet; `redacted_text_test.ts` — reviewer:
+  met
 - **met** — a genuinely new failure keeps today's behaviour — evidence:
   `new_failing_check` / `new_output` in `baseline_gate.ts`, with four negative
   phase tests — reviewer: met
@@ -121,10 +122,9 @@ test suite and the full gate.
   `pre_existing_gate_failure: <checks>` reason and the `checks` log field in
   `quality_gate_remediation_phase.ts` — reviewer: met
 - **met** — regression test: baseline X → pre-existing; baseline X ∪ {D} →
-  failure as today — evidence:
-  `quality_gate_phase_pre_existing_test.ts` (both directions) and
-  `pre_existing_gate_failure_test.ts` (the pure decision, nine cases) —
-  reviewer: met
+  failure as today — evidence: `quality_gate_phase_pre_existing_test.ts` (both
+  directions) and `pre_existing_gate_failure_test.ts` (the pure decision, nine
+  cases) — reviewer: met
 - **unrequested** — the remediation attempt is skipped rather than spent —
   reviewer: unrequested — reason: the decision runs on the first failing
   attempt; a fix run cannot clear a check that fails on the untouched tree, so

@@ -1,13 +1,12 @@
 ## Summary
 
-- `worker/deno/lib/host_fault.ts`: `detectHostFault` gains `CLONE_CORRUPT_PATTERNS`,
-  three new regexes that recognise a bad `.git/config` line, "not in a git
-  directory", and "ignoring broken ref" as `clone-corrupt`, alongside the
-  existing broken-ref/bad-object checks.
+- `worker/deno/lib/host_fault.ts`: `detectHostFault` gains
+  `CLONE_CORRUPT_PATTERNS`, three new regexes that recognise a bad `.git/config`
+  line, "not in a git directory", and "ignoring broken ref" as `clone-corrupt`,
+  alongside the existing broken-ref/bad-object checks.
 - `describeHostFault`'s `clone-corrupt` wording now reads "a corrupt git clone
-  on the worker host (broken ref, unreadable object, corrupt .git/config or
-  lost git directory)" so the rendered failure comment matches the widened
-  detection.
+  on the worker host (broken ref, unreadable object, corrupt .git/config or lost
+  git directory)" so the rendered failure comment matches the widened detection.
 - `worker/deno/tests/host_fault_test.ts` and `host_fault_release_test.ts` add
   regression coverage for the four verbatim strings, the negative cases
   (ordinary deno test failures, merge conflicts, a bad config line in
@@ -47,18 +46,21 @@ PASSED; config integration SKIPPED).
 
 - **Symptom** — about 52 first-attempt failures over 14 days from a damaged
   clone kept their issues at `failed-once` instead of releasing, because
-  `detectHostFault` returned `null` for `fatal: bad config line 1 in file
-  .git/config`, `fatal: not in a git directory`, and `warning: ignoring broken
+  `detectHostFault` returned `null` for
+  `fatal: bad config line 1 in file
+  .git/config`,
+  `fatal: not in a git directory`, and `warning: ignoring broken
   ref …`.
 - **Status** — `verified` — reproduced with `deno eval` against the pre-fix
-  tree: those three strings returned `null`, while `fatal: bad object
+  tree: those three strings returned `null`, while
+  `fatal: bad object
   refs/heads/…` already returned `clone-corrupt`.
 - **Regression tests** — `worker/deno/tests/host_fault_test.ts`: "host fault -
   detects clone-corrupt from a bad .git/config line (Issue #2953)", "host
-  fault - detects clone-corrupt from a lost git directory (Issue #2953)",
-  "host fault - detects clone-corrupt from an ignoring-broken-ref ellipsis
-  (Issue #2953)", "host fault - a bad .git/config line still matches with a
-  different line number (Issue #2953)"; plus
+  fault - detects clone-corrupt from a lost git directory (Issue #2953)", "host
+  fault - detects clone-corrupt from an ignoring-broken-ref ellipsis (Issue
+  #2953)", "host fault - a bad .git/config line still matches with a different
+  line number (Issue #2953)"; plus
   `worker/deno/tests/host_fault_release_test.ts`: "classifyFailureRecord (via
   releaseHostFaultFailureLabels) - a legacy unmarked bad .git/config record is
   released (Issue #2953)".
@@ -78,9 +80,9 @@ PASSED; config integration SKIPPED).
   `host_fault_release_test.ts` exercises this via
   `releaseHostFaultFailureLabels`, since `classifyFailureRecord` is
   module-private; `host_fault_release.ts` itself is unchanged.
-- `describeHostFault` wording and the docs table updates — reviewer:
-  unrequested — reason: keeps the rendered description and docs true for the
-  widened kind (docs-change rule).
+- `describeHostFault` wording and the docs table updates — reviewer: unrequested
+  — reason: keeps the rendered description and docs true for the widened kind
+  (docs-change rule).
 
 The extra `ignoring broken ref` pattern was needed because the verbatim
 criterion string names no `refs/heads` or `refs/remotes` ref, so the existing
@@ -90,10 +92,10 @@ criterion string names no `refs/heads` or `refs/remotes` ref, so the existing
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-No violations. Clean: TDD with real-code tests, positive and negative
-coverage, unit (in-process) classification, a KISS regex list placed alongside
-the existing patterns, Australian English, docs updated alongside the
-behaviour change, and no hidden or secret files.
+No violations. Clean: TDD with real-code tests, positive and negative coverage,
+unit (in-process) classification, a KISS regex list placed alongside the
+existing patterns, Australian English, docs updated alongside the behaviour
+change, and no hidden or secret files.
 
 ## Test Plan
 

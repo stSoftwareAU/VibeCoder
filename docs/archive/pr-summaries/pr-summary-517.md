@@ -22,7 +22,7 @@ supply-chain vector), and a human approves each idea before it reaches a prompt.
 **No prompt template was changed by this PR.** Rule 1 also records the one
 honest exception a reviewer will find by grepping — the best-practices bucket
 prompts carry a short "link, do not restate" list of canonical guides so a
-*finding* can cite them, which is a working instruction rather than credit.
+_finding_ can cite them, which is a working instruction rather than credit.
 
 To stop the credit list rotting, `worker/deno/lib/references_doc.ts` parses the
 credit tables into data and fails loud on a malformed row, so the tests can hold
@@ -46,8 +46,8 @@ flowchart LR
 `worker/deno/tests/references_doc_test.ts` — 16 tests, all passing. The parser
 was written after the tests; the first run failed on the missing module.
 
-Full gate: `./quality.sh` passes. It caught one thing worth noting for
-reviewers — a new published page needs an entry in `_data/page_titles.yml`, so
+Full gate: `./quality.sh` passes. It caught one thing worth noting for reviewers
+— a new published page needs an entry in `_data/page_titles.yml`, so
 `docs/REFERENCES.md` was added there (title and 📚 icon) alongside its README
 row.
 
@@ -55,8 +55,8 @@ row.
 
 Added `worker/deno/tests/references_doc_test.ts`:
 
-- **Happy path** — a credit row yields name, URL, note and paths; multiple
-  paths in one cell; rows collected across several credit tables.
+- **Happy path** — a credit row yields name, URL, note and paths; multiple paths
+  in one cell; rows collected across several credit tables.
 - **Error paths** (fail loud, never silently drop a credit) — unlinked source,
   `http://` URL, empty note, no backticked path, and a document with no credit
   table each throw with the offending row in the message.
@@ -65,5 +65,5 @@ Added `worker/deno/tests/references_doc_test.ts`:
 - **The real document** — the four seed sources from the issue are credited,
   every path in the "where it shows up" column exists on disk, and each source
   URL appears exactly once.
-- **Invariants** — `docs/REFERENCES.md` is linked from `README.md`, and no
-  file under `prompts/` references the credit list (prompt purity).
+- **Invariants** — `docs/REFERENCES.md` is linked from `README.md`, and no file
+  under `prompts/` references the credit list (prompt purity).

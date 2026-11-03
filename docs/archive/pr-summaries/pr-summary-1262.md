@@ -18,7 +18,7 @@ The rule is now **value, not presence**, and it lives in one place:
   returns `true` only for a stamp with non-whitespace content. A blank stamp
   reads exactly like an absent one: host. That is the direction the repo already
   encodes — the setup suites export `VIBE_IMAGE_AGENT_PROVIDERS=""` precisely to
-  simulate a host run — and it is fail-safe: a blank stamp *narrows* what the
+  simulate a host run — and it is fail-safe: a blank stamp _narrows_ what the
   worker will do, never widens it.
 - `service_account_env.ts` and `stuck_issue_detector.ts` read the stamp through
   that helper, so a blank value can no longer re-enable the ambient-credential
@@ -69,7 +69,8 @@ ok | 2 passed | 0 failed (3ms)
 The same red/green was observed for the sweep: reverting
 `stuck_issue_detector.ts:132` to the presence test fails
 `detectAndRecoverStuckIssues - a blank container stamp does not sweep a live
-heartbeat (Issue #1262)`; restoring the helper passes it.
+heartbeat (Issue #1262)`;
+restoring the helper passes it.
 
 How the stamp is read now:
 
@@ -106,7 +107,7 @@ flowchart LR
   `VIBE_IMAGE_AGENT_PROVIDERS` (`role: "launch_plumbing"`) — reviewer: missing —
   reason: the registration half was already true before this change, and the
   "reject loudly" half is deliberately not implemented — the registry is a pure
-  inventory with no validation path, and a blank stamp is treated as *host*
+  inventory with no validation path, and a blank stamp is treated as _host_
   rather than thrown on, because throwing would contradict the repo's own
   convention (`tests/setup_provider_credential_flow_test.ts:55` sets the stamp
   to `""` to simulate a host run) and would turn a host misconfiguration into a
@@ -145,8 +146,8 @@ flowchart LR
   names the three readers it actually serves, and the remaining six
   (`run_housekeeping.ts:191`, `claude_env.ts:172`, `crash_notification.ts:65`,
   `disk_space.ts:646`, `software_updates.ts:1809`, `commands/benchmark.ts:46`)
-  plus the two duplicate constants are filed as
-  stSoftwareAU/VibeCoder#1493 rather than folded into a security fix
+  plus the two duplicate constants are filed as stSoftwareAU/VibeCoder#1493
+  rather than folded into a security fix
 - **violation** — the audit's per-module table was updated for
   `stuck_issue_detector.ts` but had no row for the new env-reading module —
   evidence: `docs/audits/security-sweep-1217-env-config-secrets.md:382` —
@@ -168,15 +169,19 @@ flowchart LR
   `runningInContainerImage`: a stamped provider set is a container run, an
   absent stamp is a host run, a blank/whitespace stamp is a host run and not a
   mode switch, and surrounding whitespace does not hide a real stamp.
-- Added `worker/deno/tests/service_account_env_test.ts::buildServiceAccountEnv - a blank container stamp does not enable the ambient fall-through (Issue #1262)`
+- Added
+  `worker/deno/tests/service_account_env_test.ts::buildServiceAccountEnv - a blank container stamp does not enable the ambient fall-through (Issue #1262)`
   — reproduces the leak (the ambient `GH_CONFIG_DIR` winning over the configured
   path), fails against the unfixed code and passes after the fix.
-- Added `worker/deno/tests/service_account_env_test.ts::buildServiceAccountEnv - a whitespace container stamp does not enable the ambient fall-through (Issue #1262)`
+- Added
+  `worker/deno/tests/service_account_env_test.ts::buildServiceAccountEnv - a whitespace container stamp does not enable the ambient fall-through (Issue #1262)`
   — the trimmed case, same red/green.
-- Added `worker/deno/tests/stuck_issue_detector_test.ts::detectAndRecoverStuckIssues - a blank container stamp does not sweep a live heartbeat (Issue #1262)`
+- Added
+  `worker/deno/tests/stuck_issue_detector_test.ts::detectAndRecoverStuckIssues - a blank container stamp does not sweep a live heartbeat (Issue #1262)`
   — a young heartbeat survives a blank stamp and no `gh` mutation is issued;
   fails against the unfixed presence test, passes after the fix.
-- Added `worker/deno/tests/stuck_issue_detector_test.ts::detectAndRecoverStuckIssues - a stamped container run still sweeps every heartbeat (Issue #4241)`
+- Added
+  `worker/deno/tests/stuck_issue_detector_test.ts::detectAndRecoverStuckIssues - a stamped container run still sweeps every heartbeat (Issue #4241)`
   — the other half of the rule, so the fix cannot be mistaken for switching
   container mode off.
 - Existing coverage relied on: `worker/deno/tests/agent_provider_test.ts:348`

@@ -17,12 +17,11 @@ the merge together as one merge commit, checks the fix (not the base's own
 changes) for whitespace errors and conflict markers, runs the repository's own
 gate on that committed head before anything is pushed (Issue #4625), and
 rechecks the PR. It pushes only if that gate passed and the PR still matches the
-original head. A base merge on its own
-is also pushed when the agent made no change, so the branch is never left
-behind. Once a review fix is pushed, the babysitter dismisses the addressed
-review if it is still the current review and the PR head has not changed. GitHub
-CI then runs the repository's quality and regression checks on the updated
-branch.
+original head. A base merge on its own is also pushed when the agent made no
+change, so the branch is never left behind. Once a review fix is pushed, the
+babysitter dismisses the addressed review if it is still the current review and
+the PR head has not changed. GitHub CI then runs the repository's quality and
+regression checks on the updated branch.
 
 The babysitter also arms auto-merge on every repair candidate that does not have
 it yet, through the fleet's shared auto-merge helper, before any repair or
@@ -167,8 +166,8 @@ applies it after the push (or when there is no code change), re-adding any
 closing reference such as `Closes #N` the proposal dropped.
 
 The runner and the agent exchange files through a runner-owned exchange
-directory that the agent cannot write, outside its clone and scratch grants.
-The runner stages the PR description it applies there before
+directory that the agent cannot write, outside its clone and scratch grants. The
+runner stages the PR description it applies there before
 `gh pr edit --body-file`, and it passes Codex a `--output-last-message` file
 there for the final message that ends with the completion marker. The agent can
 write `.babysitter-pr-body` in the clone, so the runner reads that file, and the
@@ -180,15 +179,14 @@ also requires write permission on the output file. Another special file can
 still leave an open pending after the timeout; it cannot be cancelled and can
 keep a process alive. The non-watch pass explicitly exits after cleanup so it
 cannot hold the supervisor. Watch mode continues running with the pending open;
-if it eventually completes, its descriptor is closed. A repair that fails this way
-publishes no PR description and dismisses no review. It is recorded as a failed
-attempt for that head, so it is
-not retried on this host until its state file is removed, as described above; a
-new head or a new review gets its own attempt. The design relies on Codex
-writing `--output-last-message` from outside the agent's permissions profile.
-That behaviour is taken from the issue and has not been checked against an
-installed Codex, so confirm it on each host, as for the key check in
-"Verifying the credential boundary" below.
+if it eventually completes, its descriptor is closed. A repair that fails this
+way publishes no PR description and dismisses no review. It is recorded as a
+failed attempt for that head, so it is not retried on this host until its state
+file is removed, as described above; a new head or a new review gets its own
+attempt. The design relies on Codex writing `--output-last-message` from outside
+the agent's permissions profile. That behaviour is taken from the issue and has
+not been checked against an installed Codex, so confirm it on each host, as for
+the key check in "Verifying the credential boundary" below.
 
 The profile explicitly enables network access so the agent can fetch GitHub
 feedback and check details. Host `[sandbox_workspace_write]` settings do not
@@ -227,12 +225,12 @@ push. A failed or unproductive agent attempt is recorded under
 not retried on that host for the same PR head. A head the repository's gate
 rejected keeps its record, so it is not retried either. A head whose gate could
 not run is not judged: the runner removes its record, so a later pass retries
-it. A review repair is keyed on the
-head and the newest change-request review, so a new review on an attempted head
-gets its own attempt. Removing the matching state file permits a retry. The
-shared lock prevents simultaneous work; this local attempt record does not
-prevent a different host from retrying later. Repository mirrors live in the
-same state directory, under `mirrors/`, as described above.
+it. A review repair is keyed on the head and the newest change-request review,
+so a new review on an attempted head gets its own attempt. Removing the matching
+state file permits a retry. The shared lock prevents simultaneous work; this
+local attempt record does not prevent a different host from retrying later.
+Repository mirrors live in the same state directory, under `mirrors/`, as
+described above.
 
 ## Shift-left detection
 

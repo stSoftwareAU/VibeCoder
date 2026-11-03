@@ -30,7 +30,7 @@ Four parts, one root cause:
 4. **The alarm teaches.** A new `work_volume_ratchet.ts` classifies the gap
    between the peak and current use and produces the operator-facing sentences.
    The host-disk status names the ratchet, and the `[HOST_DISK_LOW]` reclaim
-   line states plainly that the bytes it freed were freed *inside the guest*,
+   line states plainly that the bytes it freed were freed _inside the guest_,
    that the host got none of them, and what returns them.
 
 Before / after, on the GRQ-23 numbers:
@@ -94,9 +94,9 @@ deno test tests/work_volume_ratchet_test.ts tests/host_disk_test.ts \
 ok | 114 passed | 0 failed
 ```
 
-`./quality.sh` passes every check except `deno tests`, which reports 10
-failures that are **pre-existing and environment-dependent** — verified by
-running `tests/fleet_health_test.ts`, `tests/host_workdir_guard_test.ts`,
+`./quality.sh` passes every check except `deno tests`, which reports 10 failures
+that are **pre-existing and environment-dependent** — verified by running
+`tests/fleet_health_test.ts`, `tests/host_workdir_guard_test.ts`,
 `tests/optional_feature_env_test.ts` and `tests/setup_workdir_reminder_test.ts`
 on a stashed (clean) tree: the same 10 fail there. They assert on the test
 host's real `~/auto-issue-work` layout and touch none of the code in this
@@ -109,8 +109,8 @@ New — `worker/deno/tests/work_volume_ratchet_test.ts` (10 tests):
 - the peak the guest reached is what the host lost (the GRQ-23 numbers);
 - a volume that has not shrunk, and a gap under the 1 GiB floor, are not
   ratchets;
-- an unknown reading never becomes a ratchet claim, and a peak below the
-  current reading cannot go negative;
+- an unknown reading never becomes a ratchet claim, and a peak below the current
+  reading cannot go negative;
 - `describeWorkVolumeRatchet` names the dead space and the volume, or says
   nothing;
 - `describeGuestReclaimToHost` always states `0 bytes returned to the host`,

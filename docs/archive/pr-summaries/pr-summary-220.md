@@ -16,16 +16,16 @@ Prior work is now found by issue **number**:
   plus `refs/heads/<persisted branch>` so the resume pointer is honoured
   whatever the branch is called.
 - A candidate qualifies when it carries commits beyond the base branch and its
-  tip is inside the 24 h resume window (the same window as the resume file —
-  it keeps a long-dead, squash-merged branch from being rebuilt). Of the
-  qualifying candidates the persisted branch wins, else the most recently
-  pushed; the rest are named in the log.
+  tip is inside the 24 h resume window (the same window as the resume file — it
+  keeps a long-dead, squash-merged branch from being rebuilt). Of the qualifying
+  candidates the persisted branch wins, else the most recently pushed; the rest
+  are named in the log.
 - The lookup no longer sits behind `enable_session_resume`. That flag now gates
   only the CLI `--resume` conversation replay and the periodic checkpoints, not
   whether pushed WIP is used.
-- The resumed branch becomes `state.branchName`, so this run's commits, push
-  and PR head all follow the branch that holds the work rather than the new
-  title's slug.
+- The resumed branch becomes `state.branchName`, so this run's commits, push and
+  PR head all follow the branch that holds the work rather than the new title's
+  slug.
 - Every claim logs which branch it resumed, or that none existed.
 
 Resume stays an optimisation, never control flow: an `ls-remote` failure, an
@@ -80,9 +80,9 @@ New `worker/deno/tests/issue_branch_resume_test.ts` (unit, 15 cases):
   handled loudly (the latter still resumes rather than losing WIP); a
   non-numeric issue number throws.
 
-New `worker/deno/tests/setup_branch_resume_test.ts` (drives the real setup
-phase with `enable_session_resume: false`, 5 cases) — the acceptance test the
-issue asks for:
+New `worker/deno/tests/setup_branch_resume_test.ts` (drives the real setup phase
+with `enable_session_resume: false`, 5 cases) — the acceptance test the issue
+asks for:
 
 - persisted branch ≠ title-derived branch ⇒ the persisted branch is resumed,
   becomes `state.branchName`, and nothing is recreated from base;

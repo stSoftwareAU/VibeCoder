@@ -1,17 +1,15 @@
 # 🧹 Whole-tree security sweep
 
-Operator manual for the one-shot, re-runnable security sweep across the
-**entire checkout** — the worker's own security scan, semgrep and CodeQL,
-merged into one deduplicated findings table (Issue
-, part of the
- proving-ground
-hardening). The scheduled CI wiring is Issue.
+Operator manual for the one-shot, re-runnable security sweep across the **entire
+checkout** — the worker's own security scan, semgrep and CodeQL, merged into one
+deduplicated findings table (Issue , part of the proving-ground hardening). The
+scheduled CI wiring is Issue.
 
 The idle-task scans ([Security Scans](SECURITY-SCAN.md)) and
-`.github/workflows/semgrep.yml` are incremental by design — they follow
-changes. Nothing had ever produced a single full-tree baseline, so the true
-finding count before publication was unknown. The sweep answers that with one
-table, one baseline and one verdict.
+`.github/workflows/semgrep.yml` are incremental by design — they follow changes.
+Nothing had ever produced a single full-tree baseline, so the true finding count
+before publication was unknown. The sweep answers that with one table, one
+baseline and one verdict.
 
 ## The single command
 
@@ -29,19 +27,19 @@ Report-only by default. Exits non-zero when any deduplicated finding is
 alert feed or an unexpected scanner exit code is an **error**, never a clean
 sweep.
 
-| Option | Meaning |
-| ------ | ------- |
-| `--repo <dir>` | Checkout to sweep (default: current directory) |
-| `--slug owner/repo` | Repository for the `gh`-backed sources and for filing (default: `gh repo view` in the checkout) |
-| `--sources a,b` | Any of `worker-scan`, `semgrep`, `codeql` (default: all three). Narrowing is stated in the report |
-| `--semgrep-config` | semgrep ruleset (default `p/default`, the same as `semgrep.yml`) |
-| `--semgrep-json PATH` | Consume a pre-produced `semgrep scan --json` file instead of running semgrep |
-| `--codeql-sarif PATH` | Consume a SARIF file (e.g. from a local CodeQL CLI run) instead of reading code-scanning alerts |
-| `--run-worker-scan` | Trigger a fresh worker security scan (Claude, ~1 h) before harvesting its issues |
-| `--file-issues` | File one issue per NEW finding cluster (see Filing) |
-| `--max-issues N` | Per-run filing cap (default 20) so a first sweep cannot flood the fleet |
-| `--baseline`, `--report` | Override the paths under `docs/audits/` |
-| `--stamp` | Add a timestamp to the report (the committed report is deterministic, so this is for ad-hoc runs only) |
+| Option                   | Meaning                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `--repo <dir>`           | Checkout to sweep (default: current directory)                                                         |
+| `--slug owner/repo`      | Repository for the `gh`-backed sources and for filing (default: `gh repo view` in the checkout)        |
+| `--sources a,b`          | Any of `worker-scan`, `semgrep`, `codeql` (default: all three). Narrowing is stated in the report      |
+| `--semgrep-config`       | semgrep ruleset (default `p/default`, the same as `semgrep.yml`)                                       |
+| `--semgrep-json PATH`    | Consume a pre-produced `semgrep scan --json` file instead of running semgrep                           |
+| `--codeql-sarif PATH`    | Consume a SARIF file (e.g. from a local CodeQL CLI run) instead of reading code-scanning alerts        |
+| `--run-worker-scan`      | Trigger a fresh worker security scan (Claude, ~1 h) before harvesting its issues                       |
+| `--file-issues`          | File one issue per NEW finding cluster (see Filing)                                                    |
+| `--max-issues N`         | Per-run filing cap (default 20) so a first sweep cannot flood the fleet                                |
+| `--baseline`, `--report` | Override the paths under `docs/audits/`                                                                |
+| `--stamp`                | Add a timestamp to the report (the committed report is deterministic, so this is for ad-hoc runs only) |
 
 ## Sources and coverage
 
@@ -57,43 +55,44 @@ flowchart LR
     NEW -- "--file-issues" --> I["one issue per cluster<br/>SWEEP-id, severity + confidence labels"]
 ```
 
-- **worker-scan** — the four-phase security scan is Claude-driven and files
-  one `security` issue per finding, each carrying a
-  `<!-- finding-id: SEC-… -->` marker. The sweep harvests those open issues as
-  the worker source, and `--run-worker-scan` triggers a fresh scan first
-  (through the same `runSecurityScan` the idle task uses; it needs Claude
-  credentials and the idle-task budget, so it is off by default). Findings the
-  worker uploaded to code scanning as `VibeCoder-security-scan` are attributed
-  here, never to CodeQL.
+- **worker-scan** — the four-phase security scan is Claude-driven and files one
+  `security` issue per finding, each carrying a `<!-- finding-id: SEC-… -->`
+  marker. The sweep harvests those open issues as the worker source, and
+  `--run-worker-scan` triggers a fresh scan first (through the same
+  `runSecurityScan` the idle task uses; it needs Claude credentials and the
+  idle-task budget, so it is off by default). Findings the worker uploaded to
+  code scanning as `VibeCoder-security-scan` are attributed here, never to
+  CodeQL.
 - **semgrep** — `semgrep scan --config p/default --json --metrics=off .` over
   the whole checkout. A local `semgrep` on PATH is used when present; otherwise
-  the first available container runtime (`docker`, `podman`, Apple
-  `container`) runs the **same digest-pinned image** as `semgrep.yml`
-  (`SEMGREP_IMAGE` in `worker/deno/lib/security_tree_sweep.ts` — keep the two
-  in step). No binary and no runtime is an error.
+  the first available container runtime (`docker`, `podman`, Apple `container`)
+  runs the **same digest-pinned image** as `semgrep.yml` (`SEMGREP_IMAGE` in
+  `worker/deno/lib/security_tree_sweep.ts` — keep the two in step). No binary
+  and no runtime is an error.
 - **codeql** — GitHub default-setup CodeQL, read as the repository's **open
   code-scanning alerts** at every severity (the `alert-feed` idle task reads
   only high/critical). A 403/404 (Code Security not enabled, or a token that
-  cannot read it) is an error with a hint; narrow `--sources` explicitly if
-  the repository genuinely has no code scanning, and the report will say so.
+  cannot read it) is an error with a hint; narrow `--sources` explicitly if the
+  repository genuinely has no code scanning, and the report will say so.
 
 The report states its own coverage: the number of tracked files (`git
-ls-files`) and the top-level directories they live under, so a run against a
-shallow or partial checkout is visible as such. On VibeCoder that list
-includes `.github/`, `container/`, `hooks/`, `prompts/` and `worker/` — the
-directories the acceptance criteria name — because semgrep and the worker scan
-walk the tree rather than a diff.
+ls-files`)
+and the top-level directories they live under, so a run against a shallow or
+partial checkout is visible as such. On VibeCoder that list includes `.github/`,
+`container/`, `hooks/`, `prompts/` and `worker/` — the directories the
+acceptance criteria name — because semgrep and the worker scan walk the tree
+rather than a diff.
 
 ## Normalisation and dedup
 
 Every raw finding becomes one shape:
 `{source, ruleId, path, line, severity, confidence, message, ref}`.
 
-| Source | Severity | Confidence |
-| ------ | -------- | ---------- |
-| semgrep | `ERROR` → high, `WARNING` → medium, `INFO` → low | `metadata.confidence` (default medium) |
-| codeql | `rule.security_severity_level`, else `error`/`warning`/`note` → high/medium/low; SARIF `security-severity` ≥ 9 → critical | `precision:` tag when present (default medium) |
-| worker-scan | `severity:*` label (title emoji fallback) | `confidence:*` label |
+| Source      | Severity                                                                                                                  | Confidence                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| semgrep     | `ERROR` → high, `WARNING` → medium, `INFO` → low                                                                          | `metadata.confidence` (default medium)         |
+| codeql      | `rule.security_severity_level`, else `error`/`warning`/`note` → high/medium/low; SARIF `security-severity` ≥ 9 → critical | `precision:` tag when present (default medium) |
+| worker-scan | `severity:*` label (title emoji fallback)                                                                                 | `confidence:*` label                           |
 
 Findings are then merged by **fingerprint** = rule family + path + 10-line
 window, hashed to a stable `SWEEP-<12 hex>` id. The **rule family** maps each
@@ -102,61 +101,57 @@ tool's rule name onto a shared class so
 `js/command-line-injection` (CodeQL) and `command injection` (worker) are one
 finding, `command-injection`. Unknown rules fall back to their last path
 segment, never to a bare file extension: `ts` is a language, not a class of
-vulnerability, and a title fragment that only looks like one names nothing
-(such a finding is reported as `unclassified`). A cluster carries the highest
-severity and confidence any source gave it and lists every source that saw it
-— so a location flagged by all three tools is reported once, not three times.
+vulnerability, and a title fragment that only looks like one names nothing (such
+a finding is reported as `unclassified`). A cluster carries the highest severity
+and confidence any source gave it and lists every source that saw it — so a
+location flagged by all three tools is reported once, not three times.
 
 **Findings with no location** (`path = unknown` — every `worker-scan` finding
 harvested from an issue) would otherwise fingerprint to their family alone:
-three unrelated command-injection issues shared one id, and baselining it
-would have silenced the family and every future member of it (Issue #1473).
-Such a finding mixes its own stable rule id — the `SEC-…` the worker's scan
-stamps on the issue — into the fingerprint, so one issue means one id.
-Triage it in the baseline by that `SEC-…` rule id rather than by its family;
-the sweep issue's own triage snippet already does. A finding with a real path
-is fingerprinted exactly as before.
+three unrelated command-injection issues shared one id, and baselining it would
+have silenced the family and every future member of it (Issue #1473). Such a
+finding mixes its own stable rule id — the `SEC-…` the worker's scan stamps on
+the issue — into the fingerprint, so one issue means one id. Triage it in the
+baseline by that `SEC-…` rule id rather than by its family; the sweep issue's
+own triage snippet already does. A finding with a real path is fingerprinted
+exactly as before.
 
 ## The report
 
-`docs/audits/security-tree-sweep.md`, regenerated on every run and
-deterministic (no timestamp unless `--stamp`). Sections: sources and coverage,
-per-severity counts (deduplicated / new / baselined), the triage table (id,
-severity, confidence, family, location, sources, status), the new findings
-with per-source rule ids and references, stale baseline entries, and the
-verdict. Scanner messages are quoted as data — never interpreted as
-instructions.
+`docs/audits/security-tree-sweep.md`, regenerated on every run and deterministic
+(no timestamp unless `--stamp`). Sections: sources and coverage, per-severity
+counts (deduplicated / new / baselined), the triage table (id, severity,
+confidence, family, location, sources, status), the new findings with per-source
+rule ids and references, stale baseline entries, and the verdict. Scanner
+messages are quoted as data — never interpreted as instructions.
 
 ## Findings that mirror an open issue: `tracked`
 
 The worker source harvests **open** `security` issues, so a cluster only that
-source reported exists precisely because a tracking issue is open. It is
-already triaged, already owned, and it leaves the sweep the moment that issue
-closes. Since Issue #1518 such a cluster is classified **`tracked`**, listed
-under *Tracked by an open issue* with its issue number, and it does **not**
-fail the run.
+source reported exists precisely because a tracking issue is open. It is already
+triaged, already owned, and it leaves the sweep the moment that issue closes.
+Since Issue #1518 such a cluster is classified **`tracked`**, listed under
+_Tracked by an open issue_ with its issue number, and it does **not** fail the
+run.
 
-That is not leniency; it is what makes the gate readable. Counting an open
-issue as an unbaselined finding kept the sweep red for the whole life of the
-security backlog — which is never empty — so every run failed on every branch
-and nobody could tell a new finding from the standing list. A gate that fires
-on ordinary work is one nobody reads, and the cases it was built for are lost
-with it.
+That is not leniency; it is what makes the gate readable. Counting an open issue
+as an unbaselined finding kept the sweep red for the whole life of the security
+backlog — which is never empty — so every run failed on every branch and nobody
+could tell a new finding from the standing list. A gate that fires on ordinary
+work is one nobody reads, and the cases it was built for are lost with it.
 
 Two boundaries keep the class honest:
 
 - **A scanner that saw the same site keeps the finding `new`.** If semgrep or
-  CodeQL independently flagged it, it is a code finding and is triaged as one
-  — being mirrored by an issue never softens it.
+  CodeQL independently flagged it, it is a code finding and is triaged as one —
+  being mirrored by an issue never softens it.
 - **A tracked finding is never baseline material.** It is real and it has an
-  owner; it disappears when the issue closes, not when a baseline line is
-  added.
+  owner; it disappears when the issue closes, not when a baseline line is added.
 
 ## The baseline
 
-`.github/security-tree-sweep-baseline.json` is the committed triage
-record. Every deduplicated finding must either be fixed or appear in exactly
-one list:
+`.github/security-tree-sweep-baseline.json` is the committed triage record.
+Every deduplicated finding must either be fixed or appear in exactly one list:
 
 ```json
 {
@@ -189,33 +184,33 @@ Rules the sweep enforces:
 - `line` is optional on `accepted` entries and matches within the 10-line
   window, so a small edit above the site does not orphan the entry; a moved
   finding does, and shows up as **stale** plus a NEW finding — re-anchor it.
-- A `falsePositives` entry needs a `line` or a `snippet` (the normalised
-  source line: whitespace collapsed and trimmed). The snippet is compared only
-  when both the entry and the finding carry one; otherwise the `line` check
-  applies. A snippet-only entry never matches a finding that has no snippet,
-  so it fails closed. An entry with neither would suppress every finding of
-  the rule in the file, so it is a baseline error.
+- A `falsePositives` entry needs a `line` or a `snippet` (the normalised source
+  line: whitespace collapsed and trimmed). The snippet is compared only when
+  both the entry and the finding carry one; otherwise the `line` check applies.
+  A snippet-only entry never matches a finding that has no snippet, so it fails
+  closed. An entry with neither would suppress every finding of the rule in the
+  file, so it is a baseline error.
 - `evidence` is mandatory on a `falsePositives` entry: one or more
   repository-relative `path:line` citations of the defence, type constraint or
   non-attacker origin that eliminates the finding. Each path must resolve to a
-  regular file inside the tree, and the line must be no greater than that
-  file's line count. An absolute path, a `.`, `..` or empty segment, or a path
-  that escapes the tree through `..` or a symlink is rejected, and so is a line
-  past the end of the file. Any of these is a baseline error and the sweep
-  fails. A citation is pinned to a line, so an edit that shortens the cited
-  file below that line makes the baseline error until the citation is
-  re-pointed. This follows VulnHunter's Phase 2b rule (see
+  regular file inside the tree, and the line must be no greater than that file's
+  line count. An absolute path, a `.`, `..` or empty segment, or a path that
+  escapes the tree through `..` or a symlink is rejected, and so is a line past
+  the end of the file. Any of these is a baseline error and the sweep fails. A
+  citation is pinned to a line, so an edit that shortens the cited file below
+  that line makes the baseline error until the citation is re-pointed. This
+  follows VulnHunter's Phase 2b rule (see
   [the methodology evaluation](security/vulnhunter-methodology-evaluation.md)):
-  a finding is eliminated only by naming what eliminates it. Without it, a
-  pull request whose own change trips the sweep could silence the finding with
-  a 10-character reason — the "loosen the check" route #3512 documents.
+  a finding is eliminated only by naming what eliminates it. Without it, a pull
+  request whose own change trips the sweep could silence the finding with a
+  10-character reason — the "loosen the check" route #3512 documents.
 - `accepted` entries need no `evidence`: they are real risks, not eliminations.
 - `reason` is mandatory and at least 10 characters. `accepted` entries should
   carry the tracking `issue`.
 - Malformed baselines fail the run and suppress nothing.
 
-Stale entries (matching nothing) are listed in the report; they do not fail
-the run but should be removed.
+Stale entries (matching nothing) are listed in the report; they do not fail the
+run but should be removed.
 
 ## Triage and filing
 
@@ -227,11 +222,13 @@ Triage each NEW finding in this order:
    anchor (no `line` or `snippet`) can only go under `accepted`.
 3. **Accepted risk** — add an `accepted` entry with the reason and the issue.
 
-`--file-issues` files one issue per NEW cluster, most important first
-(severity, then confidence), and:
+`--file-issues` files one issue per NEW cluster, most important first (severity,
+then confidence), and:
 
-- carries the stable id in the title (`🟠 command-injection in
-  src/app.ts:12 (SWEEP-…)`) and as `<!-- finding-id: SWEEP-… -->` in the body,
+- carries the stable id in the title
+  (`🟠 command-injection in
+  src/app.ts:12 (SWEEP-…)`) and as
+  `<!-- finding-id: SWEEP-… -->` in the body,
 - cites tool, rule, path and line for every source in a table,
 - is labelled `security`, `security-tree-sweep`, `severity:<x>` and
   `confidence:<x>` — the same axes the worker's own findings use, so
@@ -239,99 +236,101 @@ Triage each NEW finding in this order:
   [remediation batching](SECURITY-REMEDIATION-BATCHING.md) conventions apply
   unchanged,
 - is skipped when an open `security-tree-sweep` issue already carries the id
-  (the report marks it "already open"), so re-running against an unchanged
-  tree files zero new issues,
+  (the report marks it "already open"), so re-running against an unchanged tree
+  files zero new issues,
 - stops at `--max-issues` (default 20) and reports the rest as deferred.
 
 ## Where the first real run stands
 
 The first real sweep of VibeCoder ran semgrep (via the pinned image) plus the
 worker source: 12 deduplicated findings — ten `unsafe-regex`
-(`detect-non-literal-regexp`) sites where only an issue number, an escaped
-slug or a worker-owned constant is interpolated (baselined as false positives
-with per-site reasons) and two low supply-chain policy findings (the one-day
+(`detect-non-literal-regexp`) sites where only an issue number, an escaped slug
+or a worker-owned constant is interpolated (baselined as false positives with
+per-site reasons) and two low supply-chain policy findings (the one-day
 Dependabot cooldown and the first-party Renovate exemption, baselined as
 accepted with the issues that chose them). CodeQL was excluded because Code
-Security is not enabled on the private repository, and the committed report
-says so in its Sources table.
+Security is not enabled on the private repository, and the committed report says
+so in its Sources table.
 
 ## The 2026-09 triage, and whether `sweep` should be required
 
 The gate was red on every run from 2026-09-06 (Issue #1518). The issue counted
 fourteen unbaselined findings; by the 13:16 run of 2026-09-07 there were
 thirteen, because the fourteenth was the mirror of #1463 and that issue had
-closed — the whole of class (c), *already fixed, finding now gone*, cleared
-itself while the issue was being written. That is the class working as
-intended, and it is why no triage was owed to it.
+closed — the whole of class (c), _already fixed, finding now gone_, cleared
+itself while the issue was being written. That is the class working as intended,
+and it is why no triage was owed to it.
 
-The thirteen that remained separated into three classes, which is how any
-future backlog should be read.
+The thirteen that remained separated into three classes, which is how any future
+backlog should be read.
 
-| Class | What it was | What it took |
-| ----- | ----------- | ------------ |
-| (a) Located CodeQL results | Ten results in real files | Two fixed in code (`references_source_probe.ts` did not close on `</script >` or `</script foo>`, js/bad-tag-filter; a no-op `.replace(":", ":")` in `security_scan_defensive_labels_test.ts`, js/identity-replacement) — both clear when CodeQL next analyses the tree. Seven baselined as false positives and one as accepted, each with its own reason |
-| (b) Worker-scan findings | Three open `security` issues | Neither fixed nor baselined — classified `tracked` (above). Two more (#1548, #1549) arrived during the fix, which is the point: the class refills, so it needed a status rather than a triage pass |
-| (c) Stale findings | The #1463 mirror, gone before the fix | Nothing. A closed issue leaves the worker source on its own |
+| Class                      | What it was                           | What it took                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (a) Located CodeQL results | Ten results in real files             | Two fixed in code (`references_source_probe.ts` did not close on `</script >` or `</script foo>`, js/bad-tag-filter; a no-op `.replace(":", ":")` in `security_scan_defensive_labels_test.ts`, js/identity-replacement) — both clear when CodeQL next analyses the tree. Seven baselined as false positives and one as accepted, each with its own reason |
+| (b) Worker-scan findings   | Three open `security` issues          | Neither fixed nor baselined — classified `tracked` (above). Two more (#1548, #1549) arrived during the fix, which is the point: the class refills, so it needed a status rather than a triage pass                                                                                                                                                        |
+| (c) Stale findings         | The #1463 mirror, gone before the fix | Nothing. A closed issue leaves the worker source on its own                                                                                                                                                                                                                                                                                               |
 
 Separately, ten `unsafe-regex` baseline entries matched nothing and were
 removed: `p/default` no longer emits `detect-non-literal-regexp`, and a stale
-entry suppresses nothing. If that rule ever returns, the ten reasons are in
-the history of the baseline file, on the Issue #1518 commit.
+entry suppresses nothing. If that rule ever returns, the ten reasons are in the
+history of the baseline file, on the Issue #1518 commit.
 
 The one **accepted** entry (`run_core.ts`, js/useless-assignment-to-local) is
 recorded in the baseline with its reasoning and tracked against Issue #1518,
-**not** as a threat-model residual risk. R-entries state exposures a reader
-must weigh; a write nobody reads carries none, and adding it to that table
-would dilute the entries that do. An accepted finding with real exposure still
-belongs in [the threat model](THREAT-MODEL.md).
+**not** as a threat-model residual risk. R-entries state exposures a reader must
+weigh; a write nobody reads carries none, and adding it to that table would
+dilute the entries that do. An accepted finding with real exposure still belongs
+in [the threat model](THREAT-MODEL.md).
 
-A tracked finding keeps its severity in the summary table and is named with
-its issue in the report and on the CLI, so an ageing critical stays visible
-even though it does not fail the run. Closing it is the security backlog's
-job; the sweep's job is to say whether anything is **untriaged**.
+A tracked finding keeps its severity in the summary table and is named with its
+issue in the report and on the CLI, so an ageing critical stays visible even
+though it does not fail the run. Closing it is the security backlog's job; the
+sweep's job is to say whether anything is **untriaged**.
 
 **Is `sweep` a required status check?** Not yet, and deliberately. It blocks
-nothing today, which is what let it stay red for a fortnight. Making it
-required is a maintainer decision that follows a green gate rather than
-preceding it — the cleanup above is the precondition, not the argument for it.
+nothing today, which is what let it stay red for a fortnight. Making it required
+is a maintainer decision that follows a green gate rather than preceding it —
+the cleanup above is the precondition, not the argument for it.
 
 ## The scheduled workflow
 
-`.github/workflows/security-tree-sweep.yml` runs the sweep weekly (Tuesday
-03:41 UTC), on `workflow_dispatch`, and on pull requests that touch the
-workflow, the baseline or the sweep code:
+`.github/workflows/security-tree-sweep.yml` runs the sweep weekly (Tuesday 03:41
+UTC), on `workflow_dispatch`, and on pull requests that touch the workflow, the
+baseline or the sweep code:
 
 1. **CodeQL** — `github/codeql-action/init` + `analyze` (SHA-pinned) over
-   JavaScript/TypeScript with `upload: never`, so the SARIF stays on the
-   runner and never collides with the repository's default-setup CodeQL;
-   the sweep reads it with `--codeql-sarif`.
-2. **Semgrep** — the same digest-pinned `semgrep/semgrep:1.182.1@sha256:…`
-   image `semgrep.yml` uses, `semgrep scan --config p/default --json`, handed
-   over with `--semgrep-json`. Running it as its own step separates "scanner
-   failed" from "sweep failed".
-3. **Worker scan** — the open `security` issues, read with the workflow
-   token (`issues: read`).
-4. **Sweep** — `mod.ts security-tree-sweep --slug "$GITHUB_REPOSITORY"
-   --stamp`, report appended to the job summary and uploaded as an artefact
-   (with the raw semgrep JSON and SARIF, seven days). The job fails when a
-   scanner produced nothing, when the sweep could not run, or when any
-   deduplicated finding is unbaselined. A **pull request** run first
-   collects the PR's changed files (diff against the base SHA from the
-   event payload) and passes them as `--changed-files`. The list is
-   written NUL-delimited with quoting off (`git -c core.quotePath=false
-   diff --name-only -z`), so a non-ASCII filename is matched verbatim; a
-   C-quoted (newline) list is rejected rather than read as out of scope
-   (Issue #2776). Unbaselined findings OUTSIDE that set are listed in the
-   report under "Unbaselined, outside the changed files" and do not fail
-   the run — a PR gates its own diff, and the tree-wide scheduled sweep
-   owns everything else. A dependabot pin bump therefore goes green even
-   while main carries untriaged findings, because no commit on the PR
-   branch could clear them. The scheduled and manual runs pass no list and
-   stay strict.
+   JavaScript/TypeScript with `upload: never`, so the SARIF stays on the runner
+   and never collides with the repository's default-setup CodeQL; the sweep
+   reads it with `--codeql-sarif`.
+2. **Semgrep** — the same digest-pinned `semgrep/semgrep:1.182.1@sha256:…` image
+   `semgrep.yml` uses, `semgrep scan --config p/default --json`, handed over
+   with `--semgrep-json`. Running it as its own step separates "scanner failed"
+   from "sweep failed".
+3. **Worker scan** — the open `security` issues, read with the workflow token
+   (`issues: read`).
+4. **Sweep** —
+   `mod.ts security-tree-sweep --slug "$GITHUB_REPOSITORY"
+   --stamp`, report
+   appended to the job summary and uploaded as an artefact (with the raw semgrep
+   JSON and SARIF, seven days). The job fails when a scanner produced nothing,
+   when the sweep could not run, or when any deduplicated finding is
+   unbaselined. A **pull request** run first collects the PR's changed files
+   (diff against the base SHA from the event payload) and passes them as
+   `--changed-files`. The list is written NUL-delimited with quoting off
+   (`git -c core.quotePath=false
+   diff --name-only -z`), so a non-ASCII
+   filename is matched verbatim; a C-quoted (newline) list is rejected rather
+   than read as out of scope (Issue #2776). Unbaselined findings OUTSIDE that
+   set are listed in the report under "Unbaselined, outside the changed files"
+   and do not fail the run — a PR gates its own diff, and the tree-wide
+   scheduled sweep owns everything else. A dependabot pin bump therefore goes
+   green even while main carries untriaged findings, because no commit on the PR
+   branch could clear them. The scheduled and manual runs pass no list and stay
+   strict.
 
-Repository-local by construction: the slug comes from `github.repository`
-and the baseline lives at `.github/security-tree-sweep-baseline.json` (both
-are in the public export manifest), so the same workflow runs unchanged as
+Repository-local by construction: the slug comes from `github.repository` and
+the baseline lives at `.github/security-tree-sweep-baseline.json` (both are in
+the public export manifest), so the same workflow runs unchanged as
 `stSoftwareAU/VibeCoder` after the clean-publish cut-over — no private
-repository name is hard-coded. Filing (`--file-issues`) is deliberately not
-part of the workflow; run it from the fleet identity that owns filing.
+repository name is hard-coded. Filing (`--file-issues`) is deliberately not part
+of the workflow; run it from the fleet identity that owns filing.

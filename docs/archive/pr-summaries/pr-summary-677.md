@@ -2,11 +2,12 @@
 
 ## Summary
 
-Added one new check to the Rust best-practices bucket: **busy-wait polling**.
-A consumer thread that spins on shared state — `while !ready.load(Ordering::Acquire) {}`,
-a bare `loop { if *done.lock().unwrap() { break } }`, `try_recv()` retried with
-no wait — holds a core at 100 % for the entire length of the wait and starves
-the producer it is waiting on. The bucket had no check for it: check 16 already
+Added one new check to the Rust best-practices bucket: **busy-wait polling**. A
+consumer thread that spins on shared state —
+`while !ready.load(Ordering::Acquire) {}`, a bare
+`loop { if *done.lock().unwrap() { break } }`, `try_recv()` retried with no wait
+— holds a core at 100 % for the entire length of the wait and starves the
+producer it is waiting on. The bucket had no check for it: check 16 already
 covers the two other lessons from the source video (a `Condvar` pairs with the
 `Mutex` guarding the state, and a woken thread rechecks its predicate in a
 `while` loop), so only the spin itself was missing. Closes #677.
@@ -76,12 +77,14 @@ brought green.
 **33 pre-existing, environment-caused failures unrelated to this change**:
 
 - `tests/run_core_test.ts` and `tests/run_core_rate_limit_resume_test.ts` —
-  module-level uncaught error, `gh command failed (exit 1): GraphQL: API rate
-  limit already exceeded for user ID 23146043`. The worker account's GitHub API
-  budget is spent on this host.
+  module-level uncaught error,
+  `gh command failed (exit 1): GraphQL: API rate
+  limit already exceeded for user ID 23146043`.
+  The worker account's GitHub API budget is spent on this host.
 - `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
-  config dir is restaged writable` — expects the restaged directory under
-  `TMPDIR`, gets this host's `/home/vibe/auto-issue-work/.container-state/…`.
+  config dir is restaged writable`
+  — expects the restaged directory under `TMPDIR`, gets this host's
+  `/home/vibe/auto-issue-work/.container-state/…`.
 
 Verified pre-existing: the same three files were run in a clean worktree at the
 base commit `daf1c1b` (before any change here) and produced the identical

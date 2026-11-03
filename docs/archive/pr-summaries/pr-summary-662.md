@@ -53,9 +53,10 @@ capture. The evidence is the test suite and the quality gate:
 
 - `./quality.sh < /dev/null` — passes (exit 0), including `deno fmt --check`,
   `deno lint`, the full Deno test suite, markdownlint and the mermaid check.
-- 121 tests pass across the affected files (`best_practices_bucket_picker_test.ts`,
-  `best_practices_template_test.ts`, `bucket_docs_test.ts`,
-  `bucket_check_numbering_test.ts`, `best_practices_bucket_guides_consumer_test.ts`,
+- 121 tests pass across the affected files
+  (`best_practices_bucket_picker_test.ts`, `best_practices_template_test.ts`,
+  `bucket_docs_test.ts`, `bucket_check_numbering_test.ts`,
+  `best_practices_bucket_guides_consumer_test.ts`,
   `setup_content_label_definitions_test.ts`).
 - `bucket_docs_test.ts` and `best_practices_bucket_guides_consumer_test.ts` are
   the structural gates: the new guide must be linked from `CODING-STANDARDS.md`
@@ -68,14 +69,16 @@ capture. The evidence is the test suite and the quality gate:
 - **met** — new bucket `prompts/best_practices/buckets/design.md` carrying the
   twelve named smells, each as _what it is_ → _how to fix_ — evidence:
   `prompts/best_practices/buckets/design.md:48-115` (gapless checks 1–12,
-  verified by `worker/deno/tests/bucket_check_numbering_test.ts`) — reviewer: met
+  verified by `worker/deno/tests/bucket_check_numbering_test.ts`) — reviewer:
+  met
 - **met** — the repo's documented standards override the baseline — evidence:
   `prompts/best_practices/buckets/design.md:24-31` — reviewer: met
 - **met** — every smell reported as a judgement call, never a violation, and
   tooling-enforced shapes skipped — evidence:
   `prompts/best_practices/buckets/design.md:32-43,144` — reviewer: met
 - **met** — registered alongside the existing buckets, selectable by the
-  idle-task filer — evidence: `worker/deno/lib/best_practices_bucket_picker.ts:104`,
+  idle-task filer — evidence:
+  `worker/deno/lib/best_practices_bucket_picker.ts:104`,
   `worker/deno/lib/idle_task_templates/best_practices_template.ts:240`,
   `worker/deno/setup/content_label_definitions.ts:262`, and
   `worker/deno/tests/best_practices_bucket_picker_test.ts::pickBucket - design is a candidate on a marker-only repo`
@@ -95,11 +98,11 @@ capture. The evidence is the test suite and the quality gate:
   overlap — evidence: `prompts/best_practices/buckets/design.md:153-177` —
   reviewer: met
 - **unrequested** — the picker no longer returns `general` deterministically for
-  a repo whose languages have no bucket; `general` and `design` now draw 50/50
-  — evidence: `worker/deno/lib/best_practices_bucket_picker.ts:91-108` —
-  reviewer: unrequested — reason: kept, because the issue's stated gap is that
-  "a repo in a language with no bucket gets no design feedback whatsoever";
-  without this the new bucket is unreachable on exactly those repos
+  a repo whose languages have no bucket; `general` and `design` now draw 50/50 —
+  evidence: `worker/deno/lib/best_practices_bucket_picker.ts:91-108` — reviewer:
+  unrequested — reason: kept, because the issue's stated gap is that "a repo in
+  a language with no bucket gets no design feedback whatsoever"; without this
+  the new bucket is unreachable on exactly those repos
 - **unrequested** — `design` competes at the dominant language's weight, so a
   single-language repo's language bucket falls from a 1/2 to a 1/3 share —
   evidence: `worker/deno/lib/best_practices_bucket_picker.ts:108` — reviewer:
@@ -110,9 +113,10 @@ capture. The evidence is the test suite and the quality gate:
   reason: kept, because every other bucket has a doc surface and the repo's
   standards require a docs change alongside the code change
 - **unrequested** — a new orchestrating prompt version `v12.md` (copy of `v11`
-  plus 26 changed lines) — evidence: `prompts/best_practices/v12.md:31,179-182,358-360`
-  — reviewer: not flagged as creep — reason: prompt versions are immutable in
-  this repo, so any prompt edit is a new version
+  plus 26 changed lines) — evidence:
+  `prompts/best_practices/v12.md:31,179-182,358-360` — reviewer: not flagged as
+  creep — reason: prompt versions are immutable in this repo, so any prompt edit
+  is a new version
 
 ## Standards Review
 
@@ -180,8 +184,8 @@ was left as it is.
 
 Added (`worker/deno/tests/best_practices_bucket_picker_test.ts`):
 
-- `pickBucket - unknown language only returns general or design` — the
-  behaviour change for repos with no language bucket.
+- `pickBucket - unknown language only returns general or design` — the behaviour
+  change for repos with no language bucket.
 - `pickBucket - a repo with no code at all never picks design`
 - `pickBucket - all-zero byte counts count as no code at all`
 - `pickBucket - design is a candidate on a marker-only repo`

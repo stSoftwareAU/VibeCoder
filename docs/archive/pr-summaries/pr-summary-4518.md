@@ -61,7 +61,7 @@ hold).
   `deno check` on the touched files: clean.
 - Updated `settled_pr_listing_2409_test.ts` to derive its full-listing fixture
   from `OPEN_PR_BY_USER_LIMIT`; both merged and closed listings still verify
-  that a full open listing proves nothing. Passed: `deno test` on that file
-  (14 passed, 0 failed).
+  that a full open listing proves nothing. Passed: `deno test` on that file (14
+  passed, 0 failed).
 
 <!-- vibe-quality-gate-skipped reason="the full ./quality.sh takes about 15 minutes and did not fit the remaining run budget alongside the other pending PRs; targeted tests ran, CI runs the full gate" -->

@@ -13,16 +13,16 @@ exists, and the Issue #375 starvation counter papered over it.
 Both surviving floors are now measured against the boundary that actually kills
 a run — the **supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`, resolved by
 `run_hard_cap.ts`, Issue #421) — instead of the cycle deadline. The cycle
-deadline is untouched: it still stops *new* claims on its own (Issue #397's soft
+deadline is untouched: it still stops _new_ claims on its own (Issue #397's soft
 gate). Closes #425.
 
 ### Verdict on each of the three rules
 
-| Rule | Fate | Why |
-|------|------|-----|
-| `minClaimRunwaySeconds` (#4304) | **Kept, re-based** | Its premise — "a claim that cannot even finish setup is doomed on arrival" — is still true, but the deadline it must be measured against moved from the cycle to the hard cap. |
-| `fullExecuteBudgetSeconds` (#47) | **Retired outright** | Its stated purpose was to make a deadline-bound execute "a documented exception rather than the default tail of every cycle". There are no deadline-bound issue executes left for it to make rare. |
-| Adaptive floor (#245) + starvation escape (#375) | **Kept, re-based** | An issue with evidence of a long job genuinely still cannot fit when the supervisor will kill the run first, so the justification is live. It survives measured against hard-cap runway, and #375 survives with it — the floor can still be unsatisfiable on a short-cap host. |
+| Rule                                             | Fate                 | Why                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `minClaimRunwaySeconds` (#4304)                  | **Kept, re-based**   | Its premise — "a claim that cannot even finish setup is doomed on arrival" — is still true, but the deadline it must be measured against moved from the cycle to the hard cap.                                                                                                 |
+| `fullExecuteBudgetSeconds` (#47)                 | **Retired outright** | Its stated purpose was to make a deadline-bound execute "a documented exception rather than the default tail of every cycle". There are no deadline-bound issue executes left for it to make rare.                                                                             |
+| Adaptive floor (#245) + starvation escape (#375) | **Kept, re-based**   | An issue with evidence of a long job genuinely still cannot fit when the supervisor will kill the run first, so the justification is live. It survives measured against hard-cap runway, and #375 survives with it — the floor can still be unsatisfiable on a short-cap host. |
 
 ### What changed
 
@@ -43,9 +43,9 @@ gate). Closes #425.
   short.
 - **`run_core_production_deps.ts`** — new `resolveClaimHardCap()` bridges
   `resolveRunHardCap()` into the claim gate. Absent env (a CLI run, a host with
-  `VIBE_RUN_MAX_SECONDS=0`) leaves both floors inert, and that is logged once per
-  cycle via `ClaimRunwayFloor.inertReason` — never a silent refusal, and never a
-  silent non-refusal.
+  `VIBE_RUN_MAX_SECONDS=0`) leaves both floors inert, and that is logged once
+  per cycle via `ClaimRunwayFloor.inertReason` — never a silent refusal, and
+  never a silent non-refusal.
 - **Config surface** — `claim_require_full_execute_budget` /
   `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET` removed from `WorkerConfig`, `ConfigFile`,
   `ConfigFileJson`, `OPERATIONAL_DEFAULTS`, `loadConfig`, the boolean-validation
@@ -58,13 +58,13 @@ gate). Closes #425.
   (`ADAPTIVE_FLOOR_ENTRY_TTL_SECONDS`) already prevents accumulation.
 - **`docs/CONFIGURATION.md`** — the retired key is removed from the table, the
   `min_claim_runway_seconds` row and the adaptive-floor section are restated
-  against the hard cap, and the flowchart's decision node now reads
-  "Hard-cap runway ≥ 75% of min(claude_timeout, cap window)".
+  against the hard cap, and the flowchart's decision node now reads "Hard-cap
+  runway ≥ 75% of min(claude_timeout, cap window)".
 
 No floor rule is left in the code with a comment justifying it by truncation:
-`claim_runway.ts`, `claim_runway_evidence.ts` and
-`adaptive_floor_starvation.ts` each open with the post-#397 justification and
-state explicitly which premise died with #420.
+`claim_runway.ts`, `claim_runway_evidence.ts` and `adaptive_floor_starvation.ts`
+each open with the post-#397 justification and state explicitly which premise
+died with #420.
 
 ## Evidence
 
@@ -98,9 +98,9 @@ flowchart TD
 
 The acceptance case in numbers, on a default host (3600 s cycle, 3600 s execute
 budget, 10800 s cap): 20 minutes before the cycle deadline with two hours of cap
-runway left, the plain floor needs 300 s and the adaptive floor needs
-0.75 × min(3600, 10500) = 2700 s. Both are met, so the issue is claimed. Before
-this change the same moment offered 1200 s of *cycle* runway and was refused.
+runway left, the plain floor needs 300 s and the adaptive floor needs 0.75 ×
+min(3600, 10500) = 2700 s. Both are met, so the issue is claimed. Before this
+change the same moment offered 1200 s of _cycle_ runway and was refused.
 
 ### Quality gate
 
@@ -115,23 +115,28 @@ New cases in `worker/deno/tests/run_core_slot_pool_test.ts`, each of which fails
 against the pre-change floors:
 
 - `slot pool #425 - a claim 20 minutes before the cycle deadline proceeds when
-  the hard cap has hours left` — the issue's headline acceptance criterion.
+  the hard cap has hours left`
+  — the issue's headline acceptance criterion.
 - `slot pool #425 - zero hard-cap runway stops the slot with reason=hard-cap,
-  and it is logged` — asserts the runway number and the floor are both named in
-  the log line (Issue #219).
+  and it is logged`
+  — asserts the runway number and the floor are both named in the log line
+  (Issue #219).
 - `slot pool #397 - past the cycle deadline the slot still stops with
-  reason=deadline` — the soft gate is unchanged.
+  reason=deadline`
+  — the soft gate is unchanged.
 - `slot pool #425 - an issue with long-job evidence is claimed late in the cycle
-  when the hard cap can host it` — the adaptive floor no longer defers on cycle
-  runway.
+  when the hard cap can host it`
+  — the adaptive floor no longer defers on cycle runway.
 - `slot pool #245/#425 - a long job is still deferred when the hard cap cannot
-  host an execute` — the surviving justification still bites, and the slot takes
-  the next candidate rather than parking.
+  host an execute`
+  — the surviving justification still bites, and the slot takes the next
+  candidate rather than parking.
 
 New cases in `worker/deno/tests/run_core_spend_guards_3648_test.ts`:
 
 - `Issues #4304/#425 - the runway floor stops claiming once the hard cap is
-  close` (serial scan loop).
+  close`
+  (serial scan loop).
 - `Issue #425 - the retired #47 full-budget rule no longer refuses a late claim`.
 - `Issue #425 - an uncapped run states the inert floor and keeps claiming` —
   asserts the inert gate is logged, not silent.
@@ -142,8 +147,7 @@ New cases in `worker/deno/tests/run_core_adaptive_claim_test.ts`:
   claimed when the hard cap has hours left`.
 - `adaptive claim #425 - an uncapped run has no adaptive floor at all`.
 
-Rewritten (not removed) in
-`worker/deno/tests/claim_runway_test.ts`,
+Rewritten (not removed) in `worker/deno/tests/claim_runway_test.ts`,
 `worker/deno/tests/claim_runway_evidence_test.ts` and
 `worker/deno/tests/claim_runway_config_test.ts`: the cases that asserted the
 `fullExecuteBudgetSeconds` / `cycleSeconds` inputs and the
@@ -152,8 +156,11 @@ Rewritten (not removed) in
 still pass.
 
 **Documented test change.** Two `#289` config cases lost their
-`claim_require_full_execute_budget` assertions and one — `the #207 host settings
-refuse a late claim` — was rewritten as `claim runway #425 - a configured floor
-refuses a claim inside it of the hard cap`, because the key they exercised no
-longer exists. The behaviour they protected (a claim with 904 s of runway is
-refused under an 1800 s floor) is still asserted, now against the hard cap.
+`claim_require_full_execute_budget` assertions and one —
+`the #207 host settings
+refuse a late claim` — was rewritten as
+`claim runway #425 - a configured floor
+refuses a claim inside it of the hard cap`,
+because the key they exercised no longer exists. The behaviour they protected (a
+claim with 904 s of runway is refused under an 1800 s floor) is still asserted,
+now against the hard cap.

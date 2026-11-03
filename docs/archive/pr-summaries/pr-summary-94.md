@@ -2,11 +2,11 @@
 
 ## Summary
 
-End-to-end regression tests for the #11 reserved-label bypass
-(SEC-b17ab4cc0e2a, CWE-863): a reserved workflow label present **only** in a
+End-to-end regression tests for the #11 reserved-label bypass (SEC-b17ab4cc0e2a,
+CWE-863): a reserved workflow label present **only** in a
 `gh api --input <file>` body, never in the argv. The sibling sub-issues (#90,
 #91, #92, #93) each unit-test their own module; none of them proves the exploit
-is refused *the way an injected agent would run it*. The argv the PATH shim
+is refused _the way an injected agent would run it_. The argv the PATH shim
 hands `evaluateGhCommand` is `parsed.ghArgs`, and that wiring is its own seam —
 a regression there leaves every unit test green and the guard open.
 
@@ -54,8 +54,8 @@ ok | 76 passed | 0 failed (315ms)
 **The original trigger is closed with no trivial bypass.** The exploit's argv
 carries no label, so `extractLabelValues` sees nothing; the refusal comes from
 the unconditional `info.unreadableBody` block in
-`worker/deno/lib/gh_guard_decision.ts`, which sits *with* the reserved-label
-check and *before* the `ctx.active` early return. Every way of supplying the
+`worker/deno/lib/gh_guard_decision.ts`, which sits _with_ the reserved-label
+check and _before_ the `ctx.active` early return. Every way of supplying the
 body is therefore covered: a readable `--input` path is read and scanned against
 the same `FORBIDDEN_LABELS` denylist (all three REST label shapes, and any shape
 it cannot parse is `unreadable` → refused); `--input -` (stdin) and an
@@ -84,36 +84,39 @@ flowchart LR
 
 ## Test Plan
 
-Added (all fail against the unfixed `main` tree except the three
-over-blocking counterparts, which must pass in both directions):
+Added (all fail against the unfixed `main` tree except the three over-blocking
+counterparts, which must pass in both directions):
 
 - `worker/deno/tests/gh_guard_shim_test.ts::gh-guard-shim #11 - refuses the
-  exploit when the reserved label is present ONLY in the --input file` — the
-  #11 exploit verbatim, against an allowlist naming the run's own repo so only
-  this control can refuse it. Reproduces the flaw: it fails against the unfixed
-  code (exit 0, stub `gh` invoked) and passes after the fix. Asserts exit
-  status `1`, the `[SECURITY] [WORKER_LABEL_REFUSED]` marker with
+  exploit when the reserved label is present ONLY in the --input file`
+  — the #11 exploit verbatim, against an allowlist naming the run's own repo so
+  only this control can refuse it. Reproduces the flaw: it fails against the
+  unfixed code (exit 0, stub `gh` invoked) and passes after the fix. Asserts
+  exit status `1`, the `[SECURITY] [WORKER_LABEL_REFUSED]` marker with
   `reason=reserved_workflow_label_in_input_body`, that the stub `gh` never ran,
   and that the agent's own file is not rewritten.
 - `worker/deno/tests/gh_guard_shim_test.ts::gh-guard-shim #11 - refuses every
-  WORKER_FORBIDDEN_LABEL_LITERALS entry carried only by the --input file` —
-  driven from the exported constant, so a label added to the denylist is covered
-  automatically and a renamed/emptied constant fails at import or on the
+  WORKER_FORBIDDEN_LABEL_LITERALS entry carried only by the --input file`
+  — driven from the exported constant, so a label added to the denylist is
+  covered automatically and a renamed/emptied constant fails at import or on the
   length assertion. Alternates the `{"labels":["x"]}` and
   `{"labels":[{"name":"x"}]}` body shapes.
 - `worker/deno/tests/gh_guard_shim_test.ts::gh-guard-shim #11 - allows a
-  scan-finding label set supplied by --input` — `security`,
-  `severity:critical`, `confidence:high` reach the real binary with the argv
-  unchanged. This is the outage detector if the fix is ever tightened into a
-  blanket refusal of `--input`.
+  scan-finding label set supplied by --input`
+  — `security`, `severity:critical`, `confidence:high` reach the real binary
+  with the argv unchanged. This is the outage detector if the fix is ever
+  tightened into a blanket refusal of `--input`.
 - `worker/deno/tests/gh_guard_shim_test.ts::gh-guard-shim #11 - refuses a label
-  set hidden behind -F 'labels[]=@file'` — the field-path twin of `--input`.
+  set hidden behind -F 'labels[]=@file'`
+  — the field-path twin of `--input`.
 - `worker/deno/tests/gh_guard_shim_test.ts::gh-guard-shim #11 - allows an -X GET
-  read that supplies --input` — a read is not refused.
+  read that supplies --input`
+  — a read is not refused.
 - `worker/deno/tests/gh_guard_shim_test.ts::gh-guard-shim #11 - an -X GET
   --input - read is refused by the secret-redaction control, not the label
-  guard` — boundary case pinned as it actually behaves: the label guard allows
-  the read, and the refusal comes from the older stdin-body rule (#3938,
+  guard`
+  — boundary case pinned as it actually behaves: the label guard allows the
+  read, and the refusal comes from the older stdin-body rule (#3938,
   `GH_BODY_UNREDACTABLE`). The case asserts the stderr does **not** carry
   `WORKER_LABEL_REFUSED`, so a future change that refuses reads as labelled
   writes fails here.
@@ -121,8 +124,9 @@ over-blocking counterparts, which must pass in both directions):
   set hidden behind -F 'labels[]=@file'`,
   `::gh-guard-cli #11 - allows an -X GET read that supplies --input`, and
   `::gh-guard-cli #11 - an -X GET --input - read is refused by the
-  secret-redaction control, not the label guard` — the same two shapes at the
-  CLI seam the wrapper invokes, asserting the exit code / verdict-marker pair.
+  secret-redaction control, not the label guard`
+  — the same two shapes at the CLI seam the wrapper invokes, asserting the exit
+  code / verdict-marker pair.
 
 Modified:
 

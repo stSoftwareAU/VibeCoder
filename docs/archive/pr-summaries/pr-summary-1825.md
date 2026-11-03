@@ -6,9 +6,8 @@
 into monitored repositories — said nothing about `.github/workflows/`, so a run
 either inferred the rules or invented them (the NEAT-AI-scorer `semgrep.yml`
 bare-digest pin in stSoftwareAU/NEAT-AI-scorer#617 is the invented shape). This
-change adds a `## Workflow Files` section beside `## Change Scope`, covering
-any file the run adds or changes under `.github/workflows/`. It states three
-things:
+change adds a `## Workflow Files` section beside `## Change Scope`, covering any
+file the run adds or changes under `.github/workflows/`. It states three things:
 
 - **A workflow-sync template is committed verbatim.** When the issue body
   carries a `<!-- vibe-coder:workflow-sync:… -->` tag, the file differs from the
@@ -32,16 +31,18 @@ Enforcement here is by construction — the prompt is an instruction, not a gate
 The worker-side gate is filed as the follow-up this issue asked for:
 **stSoftwareAU/VibeCoder#1859** — run `WORKFLOW_FILE_CHECKS` over every changed
 `.github/workflows/` file before `gh pr create` and fail loud on any finding.
-The dedup search (`gh issue list --state open --search "pre-PR workflow file
-checks in:title,body"`) returned only this issue, so no duplicate exists.
+The dedup search
+(`gh issue list --state open --search "pre-PR workflow file
+checks in:title,body"`)
+returned only this issue, so no duplicate exists.
 
 Closes #1825.
 
 ## Evidence
 
-Prompt-and-test change with no web interface, so there is nothing to
-screenshot. The evidence is the test behaving in both directions, verified by
-mutating the inputs:
+Prompt-and-test change with no web interface, so there is nothing to screenshot.
+The evidence is the test behaving in both directions, verified by mutating the
+inputs:
 
 - Removing the `strict-mode` bullet from the prompt fails
   `issue prompt - names every workflow file check with its rule` with
@@ -62,10 +63,10 @@ flowchart LR
 ```
 
 One accuracy note for the reviewer: the "How to apply" section
-`worker/deno/setup/workflow_sync.ts:252` emits today lists no repository-specific
-values, so the exception clause currently points at an empty list and resolves to
-the safe "verbatim" behaviour. #1824 is the issue that populates it; the wording
-here is deliberately the one #1825 specified.
+`worker/deno/setup/workflow_sync.ts:252` emits today lists no
+repository-specific values, so the exception clause currently points at an empty
+list and resolves to the safe "verbatim" behaviour. #1824 is the issue that
+populates it; the wording here is deliberately the one #1825 specified.
 
 ## Acceptance Criteria
 
@@ -110,9 +111,9 @@ a bullet in the issue.
   (`never bump one to a newer tag`). The load-bearing case iterates the exported
   table rather than a hand-written list, so it fails on real drift.
 - **violation** — the copy-pins rule was stated four times in 62 lines, against
-  the token-economy standard — evidence: `prompts/issue/prompt.md:584` —
-  reason: fixed here; the duplicate bullet under "Resolving action SHAs" was
-  removed, leaving one positive statement and its three negatives.
+  the token-economy standard — evidence: `prompts/issue/prompt.md:584` — reason:
+  fixed here; the duplicate bullet under "Resolving action SHAs" was removed,
+  leaving one positive statement and its three negatives.
 - **violation** — the test docstring claimed Australian English "(behaviour,
   colour, organisation)" for words the file does not contain — evidence:
   `worker/deno/tests/issue_prompt_workflow_files_test.ts:18` — reason: fixed
@@ -141,9 +142,9 @@ issue-processing section is outside its scope.
   the "How to apply" exceptions; resolved pins are copied as given and never
   re-resolved, bumped or reformatted; an action SHA is resolved in the run with
   the tag recorded beside the pin.
-- Re-ran the prompt suites that read the same template:
-  `prompt_prose_test.ts`, `prompt_house_vocabulary_drift_test.ts`,
-  `prompt_h1_version_suffix_test.ts`, `issue_prompt_v38_reproduction_method_test.ts`,
+- Re-ran the prompt suites that read the same template: `prompt_prose_test.ts`,
+  `prompt_house_vocabulary_drift_test.ts`, `prompt_h1_version_suffix_test.ts`,
+  `issue_prompt_v38_reproduction_method_test.ts`,
   `issue_prompt_v39_independent_review_test.ts`, `prompt_manager_test.ts`,
   `custom_prompts_docs_test.ts` — 78 passed.
 - `./quality.sh` — PASSED.

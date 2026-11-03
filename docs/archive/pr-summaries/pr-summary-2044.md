@@ -2,8 +2,8 @@
 
 ## Summary
 
-The changed-workflow gate runs whether or not a PR already exists — by design,
-a workflow finding is a defect in the change — but everything it *reported* was
+The changed-workflow gate runs whether or not a PR already exists — by design, a
+workflow finding is a defect in the change — but everything it _reported_ was
 written for the no-PR case. On 2026-09-12 a run's agent raised its own PR with
 `gh pr create`; thirty seconds later the gate refused, and the worker commented
 "so no PR was raised" over that live PR, recorded the failure as category
@@ -27,8 +27,8 @@ finding still has to be fixed:
    plus a `blocked` detail (phase + diagnosed category + reason). The callback
    context carries `prNumber`, `phase`, `category` and `failureClass`, so a
    fleet archive can count "delivered, one finding outstanding" apart from
-   "delivered nothing" (Issue #1947). This applies to **any**
-   PR-then-later-step failure, not only this gate's.
+   "delivered nothing" (Issue #1947). This applies to **any** PR-then-later-step
+   failure, not only this gate's.
 
 Behaviour deliberately unchanged: the run still ends `failure`, and the failure
 ladder still treats the block as the issue's (`workflow-gate` is not in
@@ -81,23 +81,23 @@ Release comment for the blocked-after-PR case, as rendered by
 
 - Added `worker/deno/tests/completion_phase_workflow_gate_pr_test.ts` — drives
   the live completion phase over a workflow file the branch added with a
-  tag-pinned action: the message names the PR and never says "no PR was
-  raised"; the category is `workflow_gate` with or without a PR; the derived
-  outcome is `pr` + `prNumber` + `blocked`, and the callback context carries
-  `category` / `failureClass` / `phase`; with no PR (and with an unnumberable
-  PR URL) the reporting is exactly as before.
+  tag-pinned action: the message names the PR and never says "no PR was raised";
+  the category is `workflow_gate` with or without a PR; the derived outcome is
+  `pr` + `prNumber` + `blocked`, and the callback context carries `category` /
+  `failureClass` / `phase`; with no PR (and with an unnumberable PR URL) the
+  reporting is exactly as before.
 - Added to `worker/deno/tests/changed_workflow_gate_test.ts` — both message
   openings, each still carrying the remediation and each diagnosing as
   `workflow_gate`.
 - Added to `worker/deno/tests/failure_diagnosis_test.ts` — detection, display,
   diagnosis, one-liner, normalisation and the non-infrastructure verdict for
-  `workflow_gate`; plus a timeout that merely *quotes* the gate wording in the
+  `workflow_gate`; plus a timeout that merely _quotes_ the gate wording in the
   agent's output keeps its own category (the #249 lesson).
 - Added to `worker/deno/tests/run_outcome_test.ts` — a failed run with a PR
-  keeps the PR and names the block; a delivered run is byte-identical to
-  before; the release clause states both halves.
-- Added to `worker/deno/tests/heartbeat_outcome_render_test.ts` — the blocked
-  PR renders under the ✅ delivered line, round-trips through
+  keeps the PR and names the block; a delivered run is byte-identical to before;
+  the release clause states both halves.
+- Added to `worker/deno/tests/heartbeat_outcome_render_test.ts` — the blocked PR
+  renders under the ✅ delivered line, round-trips through
   `parseReleaseAttemptFromBody`, and stays inside the block length cap.
 - Added a row to `worker/deno/tests/run_outcome_classifier_test.ts` —
   `workflow_gate` → `workflow-gate`, `not_code_fixable`.

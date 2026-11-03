@@ -19,8 +19,8 @@ A handler that keeps working after its agent returns now declares a **floor**:
 - `agentHandlerFloorMs(agentTimeoutSeconds, postAgentTailSeconds)` — derives the
   floor from the wrapped agent timeout plus that allowance.
 - `PriorityHandler.agentFloorMs` — Planning Mode carries
-  `agentHandlerFloorMs(config.planningTimeoutSeconds, PLANNING_TAIL_SECONDS)`
-  = 2400 s. `RunCoreConfig.planningTimeoutSeconds` mirrors the operator's
+  `agentHandlerFloorMs(config.planningTimeoutSeconds, PLANNING_TAIL_SECONDS)` =
+  2400 s. `RunCoreConfig.planningTimeoutSeconds` mirrors the operator's
   `planning_timeout`, so raising it widens the handler budget with it.
 - `handlerHardTimeoutMs(..., agentFloorMs)` takes the floor as a further lower
   bound for agent-backed handlers only.
@@ -52,7 +52,8 @@ flowchart LR
 ```
 
 Red-then-green check — with the floor removed from `handlerHardTimeoutMs()`, the
-three new behavioural cases fail; with it in place all 12 cases in the file pass:
+three new behavioural cases fail; with it in place all 12 cases in the file
+pass:
 
 ```text
 # floor removed from Math.max(...)
@@ -78,27 +79,30 @@ change stashed), so this PR neither introduces nor fixes them. Everything else:
 Added to `worker/deno/tests/agent_run_termination_test.ts`:
 
 - `handlerHardTimeoutMs: a non-agent handler ignores the agent floor and keeps
-  exactly the flat handlerTimeoutSeconds (Issue #62)` — the "keep the flat
-  budget unchanged" half of the acceptance criteria.
+  exactly the flat handlerTimeoutSeconds (Issue #62)`
+  — the "keep the flat budget unchanged" half of the acceptance criteria.
 - `handlerHardTimeoutMs: an agent-backed budget is never below the wrapped agent
   timeout plus its tail allowance, at every cycle-remaining including zero and
-  negative (Issue #62)` — the invariant case, swept over nine cycle remainders
-  from a full cycle down to −3 600 000 ms; it also re-asserts the #4369 bound so
-  the floor cannot be traded for it. This is the CI backstop for the
-  GRQ-validation#835 mid-repair kill.
+  negative (Issue #62)`
+  — the invariant case, swept over nine cycle remainders from a full cycle down
+  to −3 600 000 ms; it also re-asserts the #4369 bound so the floor cannot be
+  traded for it. This is the CI backstop for the GRQ-validation#835 mid-repair
+  kill.
 - `agentHandlerFloorMs derives the floor from the wrapped agent timeout plus the
-  named tail allowance (Issue #62)` — including the negative-config edge case.
+  named tail allowance (Issue #62)`
+  — including the negative-config edge case.
 - `Planning Mode declares an agent floor of planningTimeout plus the tail
-  allowance; handlers with no post-agent tail declare none (Issue #62)` — the
-  dispatch table wiring.
+  allowance; handlers with no post-agent tail declare none (Issue #62)`
+  — the dispatch table wiring.
 - `a wedged Planning Mode past the cycle deadline is abandoned at the planning
-  floor, not the flat 600 s, and its agent is still terminated (Issue #62)` —
-  loop-level: proves the floor reaches the watchdog (the `[watchdog]` line reads
-  `2400s`) and that `terminateActiveAgentRuns()` still fires on abandonment.
+  floor, not the flat 600 s, and its agent is still terminated (Issue #62)`
+  — loop-level: proves the floor reaches the watchdog (the `[watchdog]` line
+  reads `2400s`) and that `terminateActiveAgentRuns()` still fires on
+  abandonment.
 - `a Planning Mode run whose post-publish repair tail outlives the flat 600 s
-  completes instead of being abandoned mid-repair (Issue #62)` — loop-level
-  regression test for the observed failure: a 900 s planning + gate + repair now
-  runs to completion with no abandonment logged.
+  completes instead of being abandoned mid-repair (Issue #62)`
+  — loop-level regression test for the observed failure: a 900 s planning +
+  gate + repair now runs to completion with no abandonment logged.
 
 Updated deliberately (not loosened): the existing Issue #4369 case is renamed to
 `… for an agent-backed handler that declares no agent floor (Issue #4369)`. Its
@@ -113,11 +117,11 @@ Unchanged backstops re-run green: `tests/run_core_watchdog_test.ts`,
 `tests/config_defaults_test.ts` — 258 passed.
 
 Docs updated: **DESIGN-PRINCIPLES.md** (Per-handler dispatch watchdog gains an
-*Agent floor* bullet) and **docs/workflows/resilience-and-concurrency.md**.
+_Agent floor_ bullet) and **docs/workflows/resilience-and-concurrency.md**.
 
 ## Pre-PR Security Self-Check
 
 - Input validation: `agentHandlerFloorMs()` clamps a negative configuration to
   zero rather than shrinking the budget below the flat timeout.
-- No secrets, no new dependencies, no new shell/SQL/HTTP surface, no
-  user-facing output changes beyond an existing `[watchdog]` log line's number.
+- No secrets, no new dependencies, no new shell/SQL/HTTP surface, no user-facing
+  output changes beyond an existing `[watchdog]` log line's number.

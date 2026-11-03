@@ -1,12 +1,12 @@
 # 🪓 RTK Bash-output trial — condensing what the agent reads
 
-| | |
-| - | - |
-| **Trial host** | **GRQ-25** — one host, one candidate, one window |
-| **Switch** | `rtk_output.enabled` in a host's `.config.json`, default `true` since [#2432](https://github.com/stSoftwareAU/VibeCoder/issues/2432) |
-| **Bar** | ≥ 10% lower tokens **or** cost per completed Claude implementation run, no worse success rate |
-| **First judged** | after **2 days** or **20** completed RTK-enabled runs, whichever is later |
-| **Status** | ⚪ superseded before a verdict — made the default on 20 September 2026 by the owner's decision, on function; the bar below was **not measured** (§8, §9) |
+|                  |                                                                                                                                                          |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Trial host**   | **GRQ-25** — one host, one candidate, one window                                                                                                         |
+| **Switch**       | `rtk_output.enabled` in a host's `.config.json`, default `true` since [#2432](https://github.com/stSoftwareAU/VibeCoder/issues/2432)                     |
+| **Bar**          | ≥ 10% lower tokens **or** cost per completed Claude implementation run, no worse success rate                                                            |
+| **First judged** | after **2 days** or **20** completed RTK-enabled runs, whichever is later                                                                                |
+| **Status**       | ⚪ superseded before a verdict — made the default on 20 September 2026 by the owner's decision, on function; the bar below was **not measured** (§8, §9) |
 
 This page is the protocol the RTK trial is judged by. It is a sibling of the
 [Repo-context Trial](REPO-CONTEXT-TRIAL.md), which judges Graft and CodeGraph by
@@ -26,21 +26,20 @@ The switch is `rtk_output.enabled` — one boolean, per host, default `true`
 (`false` until [#2432](https://github.com/stSoftwareAU/VibeCoder/issues/2432)),
 parsed by [#2380](https://github.com/stSoftwareAU/VibeCoder/issues/2380), turned
 into a hook run by
-[#2382](https://github.com/stSoftwareAU/VibeCoder/issues/2382), wired
-into the ten spawn paths by
+[#2382](https://github.com/stSoftwareAU/VibeCoder/issues/2382), wired into the
+ten spawn paths by
 [#2383](https://github.com/stSoftwareAU/VibeCoder/issues/2383),
 [#2384](https://github.com/stSoftwareAU/VibeCoder/issues/2384),
 [#2561](https://github.com/stSoftwareAU/VibeCoder/issues/2561) (grill-me) and
 [#2569](https://github.com/stSoftwareAU/VibeCoder/issues/2569) (clarity
-assessment, refinement, revision and quorum), and
-documented
-in the [Configuration Reference](CONFIGURATION.md). The binary
-itself is a pinned container toolchain fragment
+assessment, refinement, revision and quorum), and documented in the
+[Configuration Reference](CONFIGURATION.md). The binary itself is a pinned
+container toolchain fragment
 ([#2381](https://github.com/stSoftwareAU/VibeCoder/issues/2381)), so every host
 running a given image runs the same RTK version.
 
-Claude Code and Codex support the hook. On a switched-on Claude host the run
-is prepared like this:
+Claude Code and Codex support the hook. On a switched-on Claude host the run is
+prepared like this:
 
 ```mermaid
 sequenceDiagram
@@ -70,10 +69,11 @@ Three details decide what a run is worth comparing against:
 - Support comes from the provider descriptor's `supportsPreToolUseHooks`
   capability. Claude Code and Codex report `ok` after a successful RTK preflight
   and record the saved-token delta from the same gain store. Gemini and DeepSeek
-  report `unsupported`. Codex presents its shell calls to hooks as `Bash` with
-  a string `tool_input.command`, which RTK reads directly; no payload shim or
+  report `unsupported`. Codex presents its shell calls to hooks as `Bash` with a
+  string `tool_input.command`, which RTK reads directly; no payload shim or
   AGENTS.md instruction is needed. The spike and its execution-environment
-  limitation are recorded in the [implementation evidence](archive/pr-summaries/pr-summary-4121.md).
+  limitation are recorded in the
+  [implementation evidence](archive/pr-summaries/pr-summary-4121.md).
 
 ## 2. 📼 Motivation, not evidence
 
@@ -81,17 +81,16 @@ Two public measurements motivated trialling RTK at all:
 
 - **JetBrains**, in its work on agentic coding context, reports large fractions
   of an agent's context window consumed by tool output rather than by code.
-- **codepointer.dev** published a Bash-output condensing benchmark with
-  token reductions in the tens of percent on command-heavy sessions.
+- **codepointer.dev** published a Bash-output condensing benchmark with token
+  reductions in the tens of percent on command-heavy sessions.
 
 These figures are **motivation only — not evidence**, and no decision on this
 page cites them. They were measured on other people's workloads with other
-people's prompts. This fleet runs Claude with
-`--dangerously-skip-permissions` on long, Bash-heavy implementation runs whose
-output profile nobody has measured — `git`, `gh`, `deno test`, `./quality.sh`
-and a repository's own suite. Whether that profile has 10% of slack in it is
-exactly the open question, which is why there is a window and a bar instead of
-a rollout.
+people's prompts. This fleet runs Claude with `--dangerously-skip-permissions`
+on long, Bash-heavy implementation runs whose output profile nobody has measured
+— `git`, `gh`, `deno test`, `./quality.sh` and a repository's own suite. Whether
+that profile has 10% of slack in it is exactly the open question, which is why
+there is a window and a bar instead of a rollout.
 
 ## 3. 📏 The bar
 
@@ -140,25 +139,25 @@ carries one experiment at a time, or neither result means anything.
 
 The two populations are **RTK-enabled completed Claude implementation runs** and
 **RTK-disabled completed Claude implementation runs**, on **any** host — the
-switch, not the hostname, sorts a run into a side. Which side a run belongs to is
-read from its own recorded flag, never inferred from when it ran.
+switch, not the hostname, sorts a run into a side. Which side a run belongs to
+is read from its own recorded flag, never inferred from when it ran.
 
-| Run | Side |
-| --- | ---- |
-| `ok` — the hook was installed and the preflight passed | RTK-enabled |
-| `failed` — the switch was on, RTK could not be prepared | RTK-enabled |
-| `off` — the switch was off, or the run ended before RTK ran | control |
-| `unsupported` — the provider takes no hook | excluded |
+| Run                                                         | Side        |
+| ----------------------------------------------------------- | ----------- |
+| `ok` — the hook was installed and the preflight passed      | RTK-enabled |
+| `failed` — the switch was on, RTK could not be prepared     | RTK-enabled |
+| `off` — the switch was off, or the run ended before RTK ran | control     |
+| `unsupported` — the provider takes no hook                  | excluded    |
 
 Two exclusions and one inclusion carry the rule:
 
 - A run from **before 1.7.0** carries no `- **RTK:**` line at all. It is
   excluded from both sides rather than assumed to be a control run.
-- An `unsupported` run is excluded: it is a Gemini or DeepSeek run whose
-  cost profile is not comparable with a Claude run either way. Codex runs
-  report `ok` (Issue #4121) and so fall in the enabled population; the trial's
-  baseline population is Claude-only, so compare Codex runs separately by
-  provider rather than pooling them with Claude runs.
+- An `unsupported` run is excluded: it is a Gemini or DeepSeek run whose cost
+  profile is not comparable with a Claude run either way. Codex runs report `ok`
+  (Issue #4121) and so fall in the enabled population; the trial's baseline
+  population is Claude-only, so compare Codex runs separately by provider rather
+  than pooling them with Claude runs.
 - A **`failed`** run stays in, on the enabled side. It cost what an enabled host
   really costs when the binary is missing or the store is unreadable, and hiding
   that cost would flatter the candidate.
@@ -170,13 +169,13 @@ usable on either side here.
 
 ## 6. 📥 Where each figure is read from
 
-| Figure | Read from |
-| ------ | --------- |
+| Figure                      | Read from                                                                                     |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
 | Which side a run belongs to | the `- **RTK:**` status line in the run-stats comment, or the `rtk` block on the run document |
-| Tokens per run | the token total in the run-stats comment |
-| Cost per run | the cost total in the run-stats comment |
-| Success rate | the run's own completion outcome, as the run-stats comment records it |
-| `savedTokens` | RTK's own gain store — **indicative only**, never the bar |
+| Tokens per run              | the token total in the run-stats comment                                                      |
+| Cost per run                | the cost total in the run-stats comment                                                       |
+| Success rate                | the run's own completion outcome, as the run-stats comment records it                         |
+| `savedTokens`               | RTK's own gain store — **indicative only**, never the bar                                     |
 
 Every run — `off` included — renders exactly one status line, so the two
 populations can be separated by reading the comment alone
@@ -192,8 +191,8 @@ shapes it can take are:
 ```
 
 It is a status line, never a cost line: the saved-token figure is deliberately
-outside the shape that the cost tally reads, so a saving can never be counted
-as spend.
+outside the shape that the cost tally reads, so a saving can never be counted as
+spend.
 
 The same outcome rides the `rtk` callback block on every run document
 ([#2386](https://github.com/stSoftwareAU/VibeCoder/issues/2386)), alongside the
@@ -217,9 +216,9 @@ trial is run with that stated rather than discovered:
   only by a reviewed image change, under the same supply-chain gate as every
   other pinned tool.
 - It resolves `git` and `gh` through **PATH**, so the guard shims still sit in
-  front of both: the `gh` guard (**C13**) and outbound redaction (**C24**)
-  apply to an RTK-wrapped command exactly as they do to a bare one. RTK rewrites
-  what the agent *reads*; it does not choose what runs.
+  front of both: the `gh` guard (**C13**) and outbound redaction (**C24**) apply
+  to an RTK-wrapped command exactly as they do to a bare one. RTK rewrites what
+  the agent _reads_; it does not choose what runs.
 - Its telemetry is disabled image-wide (`RTK_TELEMETRY_DISABLED=1`; RTK does not
   honour `DO_NOT_TRACK`), so no run's command output leaves the container by
   this path. `RTK_SUPPRESS_HOOK_WARNING=1` is set beside it to keep the daily
@@ -249,13 +248,13 @@ The residual risk this leaves is recorded in the
 > counter showed output being condensed. That host also had Graft on, so even
 > its figures could not have been read as a saving under §5.
 
-| Measure | RTK-enabled | Control | Delta |
-| ------- | ----------- | ------- | ----- |
-| Completed runs | — | — | — |
-| Tokens per run | — | — | —% |
-| Cost per run | — | — | —% |
-| Success rate | — | — | — |
-| `savedTokens` (indicative) | — | n/a | n/a |
+| Measure                    | RTK-enabled | Control | Delta |
+| -------------------------- | ----------- | ------- | ----- |
+| Completed runs             | —           | —       | —     |
+| Tokens per run             | —           | —       | —%    |
+| Cost per run               | —           | —       | —%    |
+| Success rate               | —           | —       | —     |
+| `savedTokens` (indicative) | —           | n/a     | n/a   |
 
 - **Window:** — to —
 - **Margin against the bar:** — (tokens: —%, cost: —%)
@@ -287,20 +286,20 @@ bar, none has a window, and none is compared against RTK — they are written do
 so a later reader knows they were seen and passed over, and so a future trial
 starts from a list rather than a search.
 
-| Tool | What it does | Why it is not in this trial |
-| ---- | ------------ | --------------------------- |
-| **headroom** | Reports context-window headroom during a session | Measures pressure, does not reduce it |
-| **context-mode** | Switches an agent between context strategies | Overlaps the repo-context trial's own candidates |
-| **caveman** | Compresses prompt prose to terse tokens | Tone model already recorded in [References](REFERENCES.md); changes the prompt, not Bash output |
-| **ponytail** | Terse agent-output style ([#2322](https://github.com/stSoftwareAU/VibeCoder/issues/2322)) | Shapes what the agent writes, not what it reads |
-| **code-graph tools** (Graft, CodeGraph) | Serve repo structure instead of file reads | Already under their own protocol — [Repo-context Trial](REPO-CONTEXT-TRIAL.md) |
+| Tool                                    | What it does                                                                              | Why it is not in this trial                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| **headroom**                            | Reports context-window headroom during a session                                          | Measures pressure, does not reduce it                                                           |
+| **context-mode**                        | Switches an agent between context strategies                                              | Overlaps the repo-context trial's own candidates                                                |
+| **caveman**                             | Compresses prompt prose to terse tokens                                                   | Tone model already recorded in [References](REFERENCES.md); changes the prompt, not Bash output |
+| **ponytail**                            | Terse agent-output style ([#2322](https://github.com/stSoftwareAU/VibeCoder/issues/2322)) | Shapes what the agent writes, not what it reads                                                 |
+| **code-graph tools** (Graft, CodeGraph) | Serve repo structure instead of file reads                                                | Already under their own protocol — [Repo-context Trial](REPO-CONTEXT-TRIAL.md)                  |
 
 ## 11. 🔗 Related documentation
 
 - **[Repo-context Trial](REPO-CONTEXT-TRIAL.md)** — the sibling protocol, same
   bar shape, different candidates and host.
-- **[brief trial](BRIEF-TRIAL.md)** — the sibling protocol for brief, removed
-  on analysis before its window opened (Issue #2699).
+- **[brief trial](BRIEF-TRIAL.md)** — the sibling protocol for brief, removed on
+  analysis before its window opened (Issue #2699).
 - **[Configuration Reference](CONFIGURATION.md)** — the `rtk_output` switch row,
   and every other `.config.json` key.
 - **[Container Image](CONTAINER.md)** — the pinned RTK toolchain fragment and

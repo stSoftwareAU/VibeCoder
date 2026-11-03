@@ -3,7 +3,7 @@
 `setup.sh` provisions coding-agent credentials from a table of
 `subdir|provisioning variable|credential variables` rows. There was no
 `deepseek` row, so a run with `agent_provider: deepseek` failed its credential
-preflight with *provider-credentials-missing* and had no non-interactive way to
+preflight with _provider-credentials-missing_ and had no non-interactive way to
 be provisioned at all.
 
 This adds the DeepSeek row to that table — in `setup.sh` and in its Windows twin
@@ -22,7 +22,7 @@ that cannot help them.
 
 The descriptor–table drift assertion was also loosened in one direction: every
 **registered** descriptor must still have a row (registering a fifth provider
-fails the quality gate until it is provisionable), but a row may land *before*
+fails the quality gate until it is provisionable), but a row may land _before_
 its descriptor is registered, which is exactly the case here — the DeepSeek
 descriptor is a sibling issue. Such an early row is still checked for shape, so
 a typo cannot sit in the table waiting for a descriptor to meet it, and a new
@@ -69,18 +69,17 @@ Note the key itself is written through a subshell `umask 077` and never printed
 the real `setup.sh` and calls `provision_vibe_credentials` against a temporary
 `HOME`):
 
-- **`provisions the DeepSeek API key`** — asserts `deepseek/provider.env`
-  holds a single `DEEPSEEK_API_KEY` line carrying the provisioned key, mode
-  `0600` under a `0700` directory, the
-  key is absent from stdout, and a second run is idempotent (same contents, same
-  mode, no duplicate line).
+- **`provisions the DeepSeek API key`** — asserts `deepseek/provider.env` holds
+  a single `DEEPSEEK_API_KEY` line carrying the provisioned key, mode `0600`
+  under a `0700` directory, the key is absent from stdout, and a second run is
+  idempotent (same contents, same mode, no duplicate line).
 - **`a claude+deepseek run passes the preflight unchanged`** — with only Claude
   provisioned the preflight fails naming `deepseek` and
   `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY`; once both files exist it passes with both
   providers sourced from `directory`, with no edit to `credential_preflight.ts`.
-- **`no credential variables leaves nothing behind and warns`** (extended) —
-  the warning names `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY` and
-  `platform.deepseek.com`, and suggests no login command for any provider.
+- **`no credential variables leaves nothing behind and warns`** (extended) — the
+  warning names `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY` and `platform.deepseek.com`,
+  and suggests no login command for any provider.
 
 `worker/deno/tests/multi_provider_credentials_test.ts`:
 

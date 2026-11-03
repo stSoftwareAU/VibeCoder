@@ -1,16 +1,16 @@
 ## Summary
 
 Adds a pre-PR gate that runs every entry in `WORKFLOW_FILE_CHECKS` over the
-`.github/workflows/` files a worker run added or changed, before
-`gh pr create`, and fails loud on any finding. #1755 hardened the provisioning
-path by construction only — templates, filing-time pin resolution and a prompt
-rule, all of them instructions an LLM run follows rather than a gate. A run that
+`.github/workflows/` files a worker run added or changed, before `gh pr create`,
+and fails loud on any finding. #1755 hardened the provisioning path by
+construction only — templates, filing-time pin resolution and a prompt rule, all
+of them instructions an LLM run follows rather than a gate. A run that
 embellishes what it was given, or writes a workflow no template produces, still
 shipped a file the `github-actions-audit` idle task filed a finding against days
 later, in a repository the fleet does not own. Closes #1859.
 
-- `worker/deno/lib/changed_workflow_gate.ts` — the seam: an injected
-  diff/file reader in, a verdict out. Only `*.yml`/`*.yaml` **directly** under
+- `worker/deno/lib/changed_workflow_gate.ts` — the seam: an injected diff/file
+  reader in, a verdict out. Only `*.yml`/`*.yaml` **directly** under
   `.github/workflows/` are in scope, deletions are excluded
   (`--diff-filter=ACMR`), and a failed diff, an unreadable file, an unparseable
   file or a check that throws each produce `ok: false` with a named error —
@@ -71,8 +71,8 @@ flowchart TD
   `worker/deno/tests/completion_phase_changed_workflow_gate_test.ts::completion - a changed workflow with no finding raises the PR`
   and `::completion - a run that changes no workflow file is unaffected` —
   reviewer: partial — reason: the reviewer found that an unresolvable base ref
-  would have failed *any* run; fixed after the review
-  (`completion_phase.ts` now stands the gate down at ERROR) and covered by
+  would have failed _any_ run; fixed after the review (`completion_phase.ts` now
+  stands the gate down at ERROR) and covered by
   `::completion - an unresolvable base ref stands the gate down, not the run`
 - **met** — tests cover the pass, block, out-of-scope-file and read-failure
   paths — evidence: `worker/deno/tests/changed_workflow_gate_test.ts` (23 tests,
@@ -113,8 +113,8 @@ flowchart TD
   `worker/deno/lib/changed_workflow_gate.ts:1` — reason: fixed here — slice
   `12p` added to `docs/audits/lib-sweep-coverage.json` with its written record
   in `docs/audits/security-sweep-1859-changed-workflow-gate.md`
-- **violation** — an outbound sink posted un-redacted subprocess output (a
-  `git` stderr tail could reach an issue comment and the run record) — evidence:
+- **violation** — an outbound sink posted un-redacted subprocess output (a `git`
+  stderr tail could reach an issue comment and the run record) — evidence:
   `worker/deno/lib/phases/completion_phase.ts:1473` — reason: fixed here — the
   message builder is now the chokepoint and passes the whole message through
   `redactSecrets()`
@@ -166,9 +166,10 @@ issue scoped this to `.github/workflows/`.
   unparseable file each fail loud; one bad file does not hide the others; and an
   over-cap finding list is truncated with a count.
 - Added `worker/deno/tests/completion_phase_changed_workflow_gate_test.ts` — six
-  tests driving the live `workOnIssueCompletion`: a finding blocks `gh pr create`
-  and names the check id, file and line on the issue; a clean workflow and a run
-  with no workflow change raise the PR; a pre-existing offender does not block an
-  unrelated PR; an unreadable changed workflow fails loud; an unresolvable base
-  ref stands the gate down rather than failing the run.
+  tests driving the live `workOnIssueCompletion`: a finding blocks
+  `gh pr create` and names the check id, file and line on the issue; a clean
+  workflow and a run with no workflow change raise the PR; a pre-existing
+  offender does not block an unrelated PR; an unreadable changed workflow fails
+  loud; an unresolvable base ref stands the gate down rather than failing the
+  run.
 - `./quality.sh` — `Result: PASSED (with skipped checks)`.

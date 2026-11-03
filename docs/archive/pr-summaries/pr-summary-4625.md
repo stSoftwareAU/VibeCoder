@@ -13,8 +13,14 @@ owns the result contract and five lanes consume it:
   PR spelling (`pr_spelling_processor.ts`), through the existing `beforePush`
   seam of `commitAndPushPending` and `recoverFromPushRejection`;
 - babysitter repair (`fleet_pr_babysitter.ts`), after the commit and before the
-  push, so `BABYSITTER_READY` alone is no longer the quality result.
+  push, so `BABYSITTER_READY` alone is no longer the quality result;
+- the completion recovery turns (`summary_rule_gate_retry.ts`,
+  `screenshot_gate_retry.ts`, `pr_body_length.ts`), which push the issue branch
+  before completion's own gate, now pass the same guard as `beforePush`.
 
+In the CI lane an `unavailable` gate now releases the pull request: the retry
+charge is refunded (`refundCiCheckRetry` in `pr_ci_checks.ts`), no failed-push
+comment or attempt marker is written, and the round returns `processed: false`.
 Part of #4625: commits an agent pushes itself in the CI and feedback lanes are
 still gated only by the changed-file pre-push hook (see Acceptance Criteria).
 
@@ -51,9 +57,9 @@ flowchart LR
 
 - Three outcomes. `unavailable` (missing tool, Docker or credential fault, disk
   full, gate timeout, unreadable checkout) is infrastructure: never pushed,
-  never a content failure, and the lane retries. A repository with no
-  `quality.sh` is an explicit `gate: "absent"` pass; `skip_quality_check` is
-  `gate: "opted-out"`.
+  never a content failure, never charged as a fix attempt, and the lane retries.
+  A repository with no `quality.sh` is an explicit `gate: "absent"` pass;
+  `skip_quality_check` is `gate: "opted-out"`.
 - The result is tied to the head: a dirty working tree (worker state files
   excepted) is a failure, a head that moves during the run is discarded, and the
   guard re-validates any new head. A pass is reused only for the same clean
@@ -100,6 +106,19 @@ git repositories and bare origins:
   against a bare origin leaves the branch unmoved with the cause in the reported
   failure; feedback runs the gate before the verifier, unavailable releases the
   claim, failed is not marked addressed.
+- `worker/deno/tests/pr_ci_processor_test.ts` also runs six unavailable rounds
+  against one state directory: each returns `processed: false` with `retryCount`
+  0, the retry file stays at 0, no comment is posted, and a failed gate in the
+  next round still costs one attempt. `pr_ci_checks_test.ts` covers
+  `refundCiCheckRetry` (one back, floor at zero, other checks untouched).
+- `worker/deno/tests/recovery_turn_publication_guard_4625_test.ts` drives each
+  of the three recovery turns against a real bare origin: a failed or an
+  unavailable gate leaves origin unmoved, a passed gate publishes.
+- `worker/deno/tests/publication_validation_test.ts` runs the real
+  `runQualityGateCheck` over a `quality.sh` that runs `deno test`: a test module
+  that does not compile (TS2322) is `failed` with the compiler output; a failing
+  Deno test is `failed` on the initial run, then the same entry point passes on
+  the repaired head.
 - `worker/deno/tests/fleet_pr_babysitter_validation_test.ts` runs the scenarios
   in `worker/deno/tests/fixtures/fleet_pr_babysitter_validation_scenarios.ts` in
   a child `deno test` (they set `HOME`, which the process-state cap forbids in a
@@ -110,26 +129,47 @@ git repositories and bare origins:
 
 ## Acceptance Criteria
 
-- **missing** — "Include the test targets CI compiles" / "CI's impacted-test
-  selection": the runner executes the repository's own entry point and rejects
-  an empty Deno selection, but this repository has no impacted-test selection to
-  mirror and no test proves Deno tests execute in both an initial run and a
-  repair — reason: nothing to reuse here; the full `quality.sh` runs.
-- **missing** — "Tests exercise every publishing path": commits an agent pushes
-  itself in the CI and feedback lanes reach origin through the pre-push hook,
-  which runs only the changed-file checks, and the completion recovery turns
-  (summary-rule, screenshot, PR-body-length) push the issue branch before
-  completion's own gate — reason: running a multi-minute gate inside the agent's
-  `git push` was not attempted; every worker-owned push and every PR creation is
-  covered.
-- **missing** — "infrastructure outcome ... release/defer": the CI lane keeps
-  its retry charge when the gate is unavailable and only reports the push as
-  deferred — reason: `pr_ci_checks.ts` has no refund helper; adding one is a
-  redesign of the retry accounting.
-- **missing** — "test compilation failure" as its own case: a failing real
-  `quality.sh` is covered, but no test compiles a broken test module — reason:
-  the validator only sees the gate's exit and output, so it would repeat the
-  failing-command test.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — "Include the test targets CI compiles" / "CI's impacted-test
+  selection": the runner executes the repository's own entry point
+  (`quality.sh`), rejects a Deno run that executed no tests, and this repository
+  has no impacted-test selection to mirror — evidence:
+  `tests/publication_validation_test.ts::the real quality gate: Deno tests run in the initial run and again in the repair`,
+  `tests/publication_validation_test.ts::a Deno run that executed no tests is not a pass`
+  — reviewer: met
+- **partial** — "Tests exercise every publishing path": every worker-owned push
+  now carries the gate, including the three completion recovery turns —
+  evidence: `tests/recovery_turn_publication_guard_4625_test.ts` — reviewer:
+  partial — reason: commits an agent pushes itself in the CI and feedback lanes
+  reach origin through the pre-push hook, which runs only the changed-file
+  checks; running a multi-minute gate inside the agent's `git push` was not
+  attempted
+- **met** — "infrastructure outcome ... release/defer": an unavailable gate in
+  the CI lane refunds the retry, writes no comment or marker and returns
+  `processed: false` — evidence:
+  `tests/pr_ci_processor_test.ts::processCiFailure - an unavailable repository check releases the PR`,
+  `tests/pr_ci_checks_test.ts::refundCiCheckRetry gives back one recorded retry`
+  — reviewer: met
+- **met** — "test compilation failure" as its own case — evidence:
+  `tests/publication_validation_test.ts::the real quality gate: a test module that does not compile is a failed verdict, naming the compile error`
+  — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — DRY: the state-file path was rebuilt by hand in
+  `refundCiCheckRetry` — evidence: `worker/deno/lib/pr_ci_checks.ts:73` —
+  reason: fixed in this diff (`retryStateFile`)
+- **violation** — DRY: the `createPublicationGuard({...})` block is repeated at
+  three recovery-turn sites — evidence:
+  `worker/deno/lib/summary_rule_gate_retry.ts`, `screenshot_gate_retry.ts`,
+  `pr_body_length.ts` — reason: left as is; each site names its own branch and
+  the three files share no helper module
+- **clean** — Australian English, comments explaining why with the issue
+  reference, `Result` use, `@std/assert`, temp directories removed, docs updated
+  in `docs/INTERNALS.md`
 
 ## Test Plan
 
@@ -141,7 +181,10 @@ Commands run from `worker/deno` on the final head (stdin from `/dev/null`):
   `tests/pr_feedback_review_dismissal_3383_test.ts`,
   `tests/pr_spelling_processor_test.ts`,
   `tests/fleet_pr_babysitter_validation_test.ts`,
-  `tests/parallel_safety_cap_test.ts`: passed.
+  `tests/parallel_safety_cap_test.ts`, `tests/pr_ci_checks_test.ts`,
+  `tests/recovery_turn_publication_guard_4625_test.ts`,
+  `tests/summary_rule_gate_retry_test.ts`, `tests/pr_body_length_4359_test.ts`,
+  `tests/gate_retry_finish_deadline_4245_test.ts`: passed.
 - `./quality.sh`: every stage passed except `deno tests`, whose only two
   failures (32278 passed) are the two base-commit failures named above;
   `config integration` and `checkov` were skipped by the gate on this host.
@@ -160,8 +203,20 @@ Red checks (the change broken on purpose, test goes red, then restored):
   parent test; unavailable treated as passed, attempt record not removed, the
   renewal re-check removed, and the config load removed each turn their scenario
   red.
+- CI unavailable release: the refund call removed, the retry stays charged and
+  the repeated-rounds test goes red. Screenshot recovery turn: the `beforePush`
+  argument removed, the failed and unavailable tests go red (origin moves).
 - `publication_validation.ts`: timeout mapping, disk mapping, the 1800 s default
   timeout and the re-read error cause each removed: the matching test goes red.
+
+The mutation check reported that it could not run because
+`tests/fleet_babysitter_app_test.ts`,
+`tests/fleet_pr_babysitter_single_push_test.ts` and
+`tests/fleet_pr_babysitter_test.ts` fail before any mutation. The failing test
+in that set, `babysitter default heartbeat resolves its checkout revision`, is
+the base-commit failure named above (jsr.io unreachable from this sandbox,
+`Import 'https://jsr.io/@std/crypto/meta.json' failed`), so it is environmental,
+not caused by this change.
 
 No existing assertion was removed. Existing fixtures changed only to supply the
 new seam: `validatePublication: passingPublication` in
@@ -173,4 +228,4 @@ and retry), spelling (final and retry) pass the guard;
 `recoverFromPushRejection` in those three lanes passes it; completion uses
 `gateBeforePush` and validates before `pushUnpushedCommits`; the completion
 recovery turns (`summary_rule_gate_retry.ts`, `screenshot_gate_retry.ts`,
-`pr_body_length.ts`) do not, as stated above.
+`pr_body_length.ts`) pass the guard too.

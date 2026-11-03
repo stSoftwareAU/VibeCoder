@@ -3,8 +3,8 @@
 **Issue:** [#2627](https://github.com/stSoftwareAU/VibeCoder/issues/2627) (chunk
 top-up-2627) · **Parent:** #1209
 
-This is the written record for the one module that entered
-`worker/deno/setup/` under #2627:
+This is the written record for the one module that entered `worker/deno/setup/`
+under #2627:
 
 - `worker/deno/setup/codeowners_sync.ts`
 
@@ -16,12 +16,12 @@ CODEOWNERS file. It runs no subprocess itself; the default-branch lookup is
 injected (`findCodeownersOnDefaultBranch`, already swept with
 `repo_settings_harden.ts`).
 
-| Input | Source | Handling |
-| ----- | ------ | -------- |
-| `repo` slug | host `.config.json` (operator) | checked with `isValidRepoSlug` before any path is derived; a `..` or empty segment is an `error`, never a path. The checkout is `${workDir}/<name>`, the same rule as `gitignore_sync.ts` |
-| `owners` | host `.config.json` `codeowners_owners` (operator) | every entry must match the literal pattern `^@[A-Za-z0-9-]+(/[A-Za-z0-9._-]+)?$`; `[bot]` logins, `@stservice`, `@VibeCoderST` and `@stSoftwareAU/developers` are refused case-insensitively. An empty list is refused. Checked again in the writer, so a caller that skips `resolveCodeownersOwners` still cannot write a bot owner or inject a newline into the file |
-| checkout contents | repository-derived | only `lstat`ed at the three CODEOWNERS locations; a dangling symlink counts as present, so the writer never follows a link planted at one of them |
-| default-branch lookup | GitHub API via injected function | `present` and `error` both skip; a thrown lookup is treated as `error`. A failed read is never taken as absent |
+| Input                 | Source                                             | Handling                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repo` slug           | host `.config.json` (operator)                     | checked with `isValidRepoSlug` before any path is derived; a `..` or empty segment is an `error`, never a path. The checkout is `${workDir}/<name>`, the same rule as `gitignore_sync.ts`                                                                                                                                                                              |
+| `owners`              | host `.config.json` `codeowners_owners` (operator) | every entry must match the literal pattern `^@[A-Za-z0-9-]+(/[A-Za-z0-9._-]+)?$`; `[bot]` logins, `@stservice`, `@VibeCoderST` and `@stSoftwareAU/developers` are refused case-insensitively. An empty list is refused. Checked again in the writer, so a caller that skips `resolveCodeownersOwners` still cannot write a bot owner or inject a newline into the file |
+| checkout contents     | repository-derived                                 | only `lstat`ed at the three CODEOWNERS locations; a dangling symlink counts as present, so the writer never follows a link planted at one of them                                                                                                                                                                                                                      |
+| default-branch lookup | GitHub API via injected function                   | `present` and `error` both skip; a thrown lookup is treated as `error`. A failed read is never taken as absent                                                                                                                                                                                                                                                         |
 
 The write uses `createNew`, so a file that appears between the check and the
 write is refused rather than replaced. The writer never edits, renames or

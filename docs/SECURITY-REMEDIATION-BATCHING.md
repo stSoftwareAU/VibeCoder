@@ -3,27 +3,28 @@
 Part of the worker-throughput epic (sub-issue).
 
 The worker serialises to **one in-flight PR per work stream** (see
-[DESIGN-PRINCIPLES.md → One PR per work stream](../DESIGN-PRINCIPLES.md)). Under a sustained stream of
-`security` findings, that means the backlog clears one PR at a time. Batching
-lets a single remediation PR close several *related* findings at once, raising
-throughput **without** relaxing the one-PR-per-stream invariant.
+[DESIGN-PRINCIPLES.md → One PR per work stream](../DESIGN-PRINCIPLES.md)). Under
+a sustained stream of `security` findings, that means the backlog clears one PR
+at a time. Batching lets a single remediation PR close several _related_
+findings at once, raising throughput **without** relaxing the one-PR-per-stream
+invariant.
 
 ## Safe grouping criteria
 
 A batch only ever contains findings that can be remediated together in one
 branch with low blast radius. Three strategies are supported:
 
-| Strategy     | Groups findings that share… | Why it is safe to batch                |
-| ------------ | --------------------------- | -------------------------------------- |
-| `file`       | the same source file        | one edit pass over a single file       |
-| `class`      | the same vulnerability class | one fix pattern applied repeatedly     |
-| `dependency` | the same dependency          | one version bump                       |
+| Strategy     | Groups findings that share…  | Why it is safe to batch            |
+| ------------ | ---------------------------- | ---------------------------------- |
+| `file`       | the same source file         | one edit pass over a single file   |
+| `class`      | the same vulnerability class | one fix pattern applied repeatedly |
+| `dependency` | the same dependency          | one version bump                   |
 
 Two guards keep batches reviewable and correct:
 
 - **PR-size cap** — each group is capped at `maxGroupSize` findings (default
-  `5`). Buckets larger than the cap are split into multiple groups, so no
-  single batch PR grows too large to review.
+  `5`). Buckets larger than the cap are split into multiple groups, so no single
+  batch PR grows too large to review.
 - **Singleton fallback** — a finding with no shared key for the chosen strategy
   (e.g. a finding whose file could not be parsed) is emitted as its own group of
   one. Un-groupable findings are never batched unsafely.

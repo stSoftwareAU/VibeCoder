@@ -15,9 +15,9 @@ that section:
 
 - Heading retitled `## Working Style`.
 - The generation-specific premise replaced with a neutral lead.
-- All four directives kept. The fourth is restated as the rule —
-  **Trust the quality gate** ("a green quality gate is the signal to stop") —
-  instead of "You already check your work as you go".
+- All four directives kept. The fourth is restated as the rule — **Trust the
+  quality gate** ("a green quality gate is the signal to stop") — instead of
+  "You already check your work as you go".
 
 The generation-specific observations that justified the original framing were
 not deleted: they are prior tuning results and stay in
@@ -64,8 +64,7 @@ $ echo $?
 `coding_guidelines v42 - differs from v41 only in the working-style section`
 asserts the byte-identical prefix and suffix around the rewritten section.
 
-How the guidelines reach a run, and where the model-generation detail now
-lives:
+How the guidelines reach a run, and where the model-generation detail now lives:
 
 ```mermaid
 flowchart LR
@@ -93,25 +92,26 @@ reproduces the same failures. The 12 new tests pass.
 
 ## Test Plan
 
-New `worker/deno/tests/coding_guidelines_v42_test.ts` (12 tests), written
-before the template and confirmed failing against v41 (10 failed / 2 passed),
-then passing after. It asserts against the **latest** version — not v42 alone —
-so a future copy-forward that re-introduces a model name or drops a directive
-fails in CI:
+New `worker/deno/tests/coding_guidelines_v42_test.ts` (12 tests), written before
+the template and confirmed failing against v41 (10 failed / 2 passed), then
+passing after. It asserts against the **latest** version — not v42 alone — so a
+future copy-forward that re-introduces a model name or drops a directive fails
+in CI:
 
 - `coding_guidelines v42 - loads via loadPrompt` / `is the latest version` /
   `satisfies the placeholder contract`.
 - `latest coding_guidelines - names no Claude model generation` — reuses
   `findModelGenerationNames()` from
-  `worker/deno/lib/model_generation_name_check.ts` (the `opus|fable|sonnet|haiku`
-  + `claude-<digit>` matcher already used for `CODING-STANDARDS.md`), so the two
-  checks cannot drift.
+  `worker/deno/lib/model_generation_name_check.ts` (the
+  `opus|fable|sonnet|haiku`
+  - `claude-<digit>` matcher already used for `CODING-STANDARDS.md`), so the two
+    checks cannot drift.
 - `latest coding_guidelines - names no foreign model generation` — `gpt|gemini`.
 - `latest coding_guidelines - working-style heading is model-agnostic`.
 - `latest coding_guidelines - keeps all four working-style directives` — asserts
   each of **Stay in scope**, **Cap delegation**, **Keep deliverables tight**,
-  **Trust the quality gate** by keyword, and that
-  "You already check your work as you go" is gone.
+  **Trust the quality gate** by keyword, and that "You already check your work
+  as you go" is gone.
 - `latest coding_guidelines - drops the model-generation premise`.
 - `coding_guidelines v42 - differs from v41 only in the working-style section`
   and `carries v41 sections forward` — every other `##`/`###` heading survives.

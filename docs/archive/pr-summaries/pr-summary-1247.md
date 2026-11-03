@@ -8,9 +8,9 @@ author's. A PR comment is writable by any GitHub account on a public repository,
 so both directions were exploitable with no repository permission at all:
 
 - **Two planted `CONFLICT_FAILED_MARKER` comments closed the PR.**
-  `parseConflictAttempts` counted them, `hasExhaustedConflictAttempts` called the
-  budget spent, and `abandonAndRestart` closed the PR and re-queued its issue — a
-  destructive write driven entirely by unauthenticated text.
+  `parseConflictAttempts` counted them, `hasExhaustedConflictAttempts` called
+  the budget spent, and `abandonAndRestart` closed the PR and re-queued its
+  issue — a destructive write driven entirely by unauthenticated text.
 - **One planted `<!-- vibe-merge-conflict-restart -->` comment did the
   opposite.** `restartMarkerPrNumbers` read it off the originating issue, the
   rung declined `already-restarted` permanently, and the conflicted PR stalled
@@ -31,19 +31,19 @@ This was recorded in the manifest rather than fixed alongside the rest of the
 class in #1216 because the fail direction is **not** the usual one, and the fix
 had to express both:
 
-| Marker | What it does | Unattributable ⇒ |
-| --- | --- | --- |
-| `CONFLICT_FAILED_MARKER` / `CONFLICT_ATTEMPT_MARKER` on the PR | **drives** the close | discarded — fewer counted attempts, so the PR is *not* abandoned |
-| `CONFLICT_RESTART_MARKER` on the issue | **suppresses** the close | the abandon **declines** (`restart-claim-unverifiable`) — discarding it would relax the only bound on closing and re-raising the work |
+| Marker                                                         | What it does             | Unattributable ⇒                                                                                                                      |
+| -------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `CONFLICT_FAILED_MARKER` / `CONFLICT_ATTEMPT_MARKER` on the PR | **drives** the close     | discarded — fewer counted attempts, so the PR is _not_ abandoned                                                                      |
+| `CONFLICT_RESTART_MARKER` on the issue                         | **suppresses** the close | the abandon **declines** (`restart-claim-unverifiable`) — discarding it would relax the only bound on closing and re-raising the work |
 
-"Unattributable" is deliberately narrower than "untrusted": a comment carrying an
-outsider's login *is* attributed — to an outsider — and is simply dropped, which
-is the fix. Only a comment with no readable `user.login`, or one compared against
-no configured fleet identity, is unattributable. `trustedAuthors` is a
+"Unattributable" is deliberately narrower than "untrusted": a comment carrying
+an outsider's login _is_ attributed — to an outsider — and is simply dropped,
+which is the fix. Only a comment with no readable `user.login`, or one compared
+against no configured fleet identity, is unattributable. `trustedAuthors` is a
 **required** dependency of `abandonAndRestart`, so no call site can read a claim
-off a comment anybody could have written; the scan defaults it to the maintenance
-set it already computes, and `run_core_production_deps.ts` threads the same set
-into the processor.
+off a comment anybody could have written; the scan defaults it to the
+maintenance set it already computes, and `run_core_production_deps.ts` threads
+the same set into the processor.
 
 ```mermaid
 flowchart TD
@@ -96,24 +96,24 @@ before it can be counted — `findConflictingPr` reduces the fetched thread to
 `parseConflictAttempts` never sees the planted comments, so the tally stays at
 zero and `hasExhaustedConflictAttempts` is false. The regression test
 `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr - planted
-failure markers cannot close a PR` asserts exactly that input reaches no abandon
-and no escalation.
+failure markers cannot close a PR`
+asserts exactly that input reaches no abandon and no escalation.
 
 There is no equivalent bypass along the same path:
 
 - **Vary the marker.** All three merge-conflict markers
   (`CONFLICT_ATTEMPT_MARKER`, `CONFLICT_FAILED_MARKER`,
-  `CONFLICT_RESOLVED_MARKER`) are read out of the *same* filtered list, so no
+  `CONFLICT_RESOLVED_MARKER`) are read out of the _same_ filtered list, so no
   marker in the vocabulary is reachable from an untrusted comment. That includes
   the resolved marker, which resets the budget — it cannot be planted either.
 - **Move to the issue side.** The restart claim is filtered by the same helper,
-  and its unattributable case *refuses* rather than proceeds, so the suppression
+  and its unattributable case _refuses_ rather than proceeds, so the suppression
   half cannot be reopened by making the claim unreadable.
 - **Forge the author.** Attribution is `user.login` from the REST payload
   compared against the resolved fleet set with `isFleetAuthor` (the fleet's
-  single case-insensitive comparison), not a body string, so nothing an
-  attacker writes into a comment body can satisfy it. A body that *quotes* a
-  marker still fails the author check.
+  single case-insensitive comparison), not a body string, so nothing an attacker
+  writes into a comment body can satisfy it. A body that _quotes_ a marker still
+  fails the author check.
 - **Blank the author.** A comment with no readable `user.login` counts as
   unattributable, which is discarded on the driving path and refuses on the
   suppressing path — both non-destructive.
@@ -142,7 +142,8 @@ weaken the genuine bounds):
 - `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr - the fleet's own failure markers still spend the budget`
 - `worker/deno/tests/conflict_abandon_restart_test.ts::abandonAndRestart - the fleet's own restart claim still bounds the rung`
 
-New unit suite for the helper — `worker/deno/tests/conflict_marker_trust_test.ts`:
+New unit suite for the helper —
+`worker/deno/tests/conflict_marker_trust_test.ts`:
 
 - `conflictCommentAuthor - reads the REST user.login shape`
 - `partitionConflictComments - keeps the fleet's own, discards outsiders`
@@ -151,8 +152,8 @@ New unit suite for the helper — `worker/deno/tests/conflict_marker_trust_test.
 - `partitionConflictComments - an empty thread is neither trusted nor unattributable`
 
 Existing suites updated, none removed or disabled: the fixtures in
-`pr_merge_conflict_scan_test.ts` and `conflict_abandon_restart_test.ts` now carry
-the `user.login` a real REST comment carries, and the abandon tests supply
+`pr_merge_conflict_scan_test.ts` and `conflict_abandon_restart_test.ts` now
+carry the `user.login` a real REST comment carries, and the abandon tests supply
 `trustedAuthors`. The three planned attempt-counting, cooldown and cross-host
 dedup assertions are unchanged and still pass.
 
@@ -160,15 +161,16 @@ dedup assertions are unchanged and still pass.
 
 - [x] **Input validation** — `partitionConflictComments` and
       `conflictCommentAuthor` type-check every field of an `unknown` REST object
-      before use; malformed entries count as unattributable rather than throwing.
+      before use; malformed entries count as unattributable rather than
+      throwing.
 - [x] **Secrets** — no credentials, no hidden paths staged.
 - [x] **Injection surface** — no new SQL, shell, filesystem or HTTP calls; no
       new `gh` invocations at all (the fix reuses the thread the scan already
       fetched).
 - [x] **Output encoding** — the abandon comment's existing `sanitiseIssueText`
       pass is untouched; this change reduces what reaches it.
-- [x] **Authorisation** — the new check *is* the authorisation, resolved from the
-      same push-capable maintenance set the surrounding pass already uses.
-- [x] **Error handling** — no new catch sites; the decline is a typed outcome the
-      escalation names to the human, not a swallowed error.
+- [x] **Authorisation** — the new check _is_ the authorisation, resolved from
+      the same push-capable maintenance set the surrounding pass already uses.
+- [x] **Error handling** — no new catch sites; the decline is a typed outcome
+      the escalation names to the human, not a swallowed error.
 - [x] **Dependencies** — none added.

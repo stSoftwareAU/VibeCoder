@@ -64,15 +64,15 @@ flowchart LR
   the suite pins them to the live modules, matching the repo's existing
   `*_docs_test.ts` precedent.
 - **unrequested** — a Mermaid flowchart of the window sequence
-  (`docs/REPO-CONTEXT-TRIAL.md` §4) — reviewer: unrequested — reason: the
-  coding standards ask for a diagram where it aids understanding, and the
+  (`docs/REPO-CONTEXT-TRIAL.md` §4) — reviewer: unrequested — reason: the coding
+  standards ask for a diagram where it aids understanding, and the
   sequential-window/manual-switch-over rule is the page's most easily misread
   paragraph.
 - **unrequested** — the rule that `failed` runs stay in a candidate's figures
   (`docs/REPO-CONTEXT-TRIAL.md` §5) — reviewer: unrequested — reason: the issue
   names two exclusions and says nothing about the third status; leaving it
-  unstated is exactly the ambiguity this page exists to remove, so it is
-  written down rather than left to the judge's discretion.
+  unstated is exactly the ambiguity this page exists to remove, so it is written
+  down rather than left to the judge's discretion.
 
 ## Standards Review
 
@@ -107,14 +107,13 @@ flowchart LR
   `docs/REPO-CONTEXT-TRIAL.md:34,37` — reason: fixed here; both are now pinned
   to `CODEGRAPH_INDEX_TIMEOUT_MS` and `CODEGRAPH_UNAVAILABLE_MARKER`.
 - **violation** — the motivating figures had no citation — evidence:
-  `docs/REPO-CONTEXT-TRIAL.md:62-74` in the reviewed commit — reason: fixed
-  here with an inline link to the source comparison; no `docs/REFERENCES.md`
-  row was added, because that page credits sources whose *ideas* are embedded
-  in the prompts and docs, not one-off figures a trial was launched on.
+  `docs/REPO-CONTEXT-TRIAL.md:62-74` in the reviewed commit — reason: fixed here
+  with an inline link to the source comparison; no `docs/REFERENCES.md` row was
+  added, because that page credits sources whose _ideas_ are embedded in the
+  prompts and docs, not one-off figures a trial was launched on.
 - **violation** — the Australian-English attestation named words the file did
-  not contain — evidence:
-  `worker/deno/tests/repo_context_trial_docs_test.ts:16` in the reviewed commit
-  — reason: fixed here.
+  not contain — evidence: `worker/deno/tests/repo_context_trial_docs_test.ts:16`
+  in the reviewed commit — reason: fixed here.
 - **violation** — the Graft column carried figures that cannot be checked in
   this tree (no `graft_context` module on this build) — evidence:
   `docs/REPO-CONTEXT-TRIAL.md:32-37` — reason: the figures are what milestone

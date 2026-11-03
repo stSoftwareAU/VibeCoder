@@ -36,9 +36,10 @@ point: the result no longer depends on what the host exports.
 Full gate after the final edit: `./quality.sh` → every check PASSED except
 `deno tests`, whose only failure is
 `agent_provider_test.ts::agent provider - the per-run provider override beats
-the configured file value (Issue #2062)` — the same host-dependence class in an
-untouched file, already tracked as open issue #2141 and failing identically on
-`origin/main`. It is a separate root cause and out of scope here.
+the configured file value (Issue #2062)`
+— the same host-dependence class in an untouched file, already tracked as open
+issue #2141 and failing identically on `origin/main`. It is a separate root
+cause and out of scope here.
 
 ```mermaid
 flowchart LR

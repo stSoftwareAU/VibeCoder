@@ -20,16 +20,17 @@ fate. Closes #222.
   released with the outcome `deferred: depends on owner/repo#N`, which the
   release comment states. The `blocked` label is the fallback when the body
   cannot be edited; when neither lands the run logs a partial deferral rather
-  than reporting success. The deferral is checked **before** the already-complete
-  branch, because a blocked answer routinely contains "no changes needed …" and
-  closing a live task is the one outcome the next scan cannot undo.
+  than reporting success. The deferral is checked **before** the
+  already-complete branch, because a blocked answer routinely contains "no
+  changes needed …" and closing a live task is the one outcome the next scan
+  cannot undo.
 - **Detection requires two signals** — a line opening a `Blocked` / `Depends on`
-  section, *and* an issue reference in that section naming something other than
+  section, _and_ an issue reference in that section naming something other than
   the issue being worked — so a passing mention ("nothing here is blocked")
   never defers an issue. Code fences and code spans are ignored, matching
   `extractDependencyReferences`.
 - **No silent re-deferral.** The deferral comment carries a hidden marker naming
-  the dependency. A run reporting the *same* dependency again means the gate did
+  the dependency. A run reporting the _same_ dependency again means the gate did
   not hold, so it falls through to the analysis-only hand-off and a human sees
   it, instead of spending a full agent run on every scan.
 - **`gh` guard refuses issue-lifecycle verbs.** A coding run seeds its claimed
@@ -98,8 +99,8 @@ All four suites are new and call the real functions with test data:
   shape, bare `#N`, list/bold/heading openings, self-reference excluded, fenced
   examples ignored, passing mentions rejected, reason bounded.
 - `worker/deno/tests/handle_no_changes_blocked_deferral_test.ts` — the
-  regression the issue asks for: blocked-shaped output ⇒ deferral, **not**
-  close and **not** analysis-only (issue open, no `needs-human`, dependency line
+  regression the issue asks for: blocked-shaped output ⇒ deferral, **not** close
+  and **not** analysis-only (issue open, no `needs-human`, dependency line
   written, `deferred: depends on owner/repo#N` outcome); a blocked run carrying
   "no changes needed" is never treated as already complete; a second deferral on
   the same dependency hands off instead of looping; non-blocked analysis-only

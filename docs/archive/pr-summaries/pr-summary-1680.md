@@ -73,20 +73,21 @@ Result: PASSED (with skipped checks)  # ./quality.sh
 
 Added to `worker/deno/tests/security_fix_gate_test.ts`:
 
-- `citedTestIdentifierInDiff - matches a Rust test declared under a test attribute (Issue #1680)` —
-  `#[test]` + `fn rejects_oob_index() {`, cited as `tests/index_test.rs::rejects_oob_index`.
-- `citedTestIdentifierInDiff - matches the async and stacked Rust attribute forms (Issue #1680)` —
-  `#[tokio::test(flavor = "multi_thread")]` with `async fn`, `#[rstest]`,
+- `citedTestIdentifierInDiff - matches a Rust test declared under a test attribute (Issue #1680)`
+  — `#[test]` + `fn rejects_oob_index() {`, cited as
+  `tests/index_test.rs::rejects_oob_index`.
+- `citedTestIdentifierInDiff - matches the async and stacked Rust attribute forms (Issue #1680)`
+  — `#[tokio::test(flavor = "multi_thread")]` with `async fn`, `#[rstest]`,
   `#[proptest]`, and `#[test]` + `#[should_panic(…)]` + `pub fn`.
-- `citedTestIdentifierInDiff - a Rust fn only counts under a test attribute (Issue #1680)` —
-  a plain helper `fn`, a `#[cfg(test)] mod`, and a name used only inside another
-  test's body all stay blocked (the existing #1279 rule).
+- `citedTestIdentifierInDiff - a Rust fn only counts under a test attribute (Issue #1680)`
+  — a plain helper `fn`, a `#[cfg(test)] mod`, and a name used only inside
+  another test's body all stay blocked (the existing #1279 rule).
 - `citedTestIdentifierInDiff - matches a Go test function (Issue #1680)` —
   `func TestRejectsOob(t *testing.T) {` passes; a non-test `func` carrying the
   name in its body does not.
-- `matchedTestDeclarations - reports the Rust and Go declaration lines (Issue #1680)` —
-  the operator-facing evidence list now names both declarations.
+- `matchedTestDeclarations - reports the Rust and Go declaration lines (Issue #1680)`
+  — the operator-facing evidence list now names both declarations.
 
-Docs: `docs/security-fix-gate-feedback.md` gains a
-**Test declarations the gate recognises** table so `matchedDeclarations=0` can
-be read against the syntaxes the gate actually knows.
+Docs: `docs/security-fix-gate-feedback.md` gains a **Test declarations the gate
+recognises** table so `matchedDeclarations=0` can be read against the syntaxes
+the gate actually knows.

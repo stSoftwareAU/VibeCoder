@@ -37,7 +37,7 @@ now belongs to the provider that created it.
 - **Hand-on names the provider that served the run:** planning now passes each
   turn's `provider` to `handOnStreamSession`, as the execute phase already did.
   Before, a turn whose state carried no provider was filed under the provider
-  *anticipated* before the spawn. That is one way a Claude session lands in the
+  _anticipated_ before the spawn. That is one way a Claude session lands in the
   DeepSeek slot.
 - **Docs:** `DESIGN-PRINCIPLES.md` has a new principle, F2c.
 
@@ -60,23 +60,23 @@ legacy record, creator recording, and compaction of another provider's session.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-| Criterion | Status | Evidence |
-| --------- | ------ | -------- |
+| Criterion                                                                                                                        | Status  | Evidence                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | AC1: a session records its creator, the store keeps one session per provider, and a run never resumes another provider's session | **met** | Tests "a saved stream session records the provider that created it", "a Claude-created stream session is not resumed on DeepSeek" and "a Claude session filed in the DeepSeek slot is still not resumed on DeepSeek". Resumed state carries the creator, so `sessionResumeForProvider` also drops it if the spawn lands elsewhere ("a resumed stream state is bound to its creator at spawn"). |
-| AC2: switching back resumes the original provider's own session | **met** | "switching back to Claude resumes Claude's own session after a DeepSeek run": Claude → DeepSeek (own session) → Claude resumes `CLAUDE_SESSION`, and DeepSeek resumes its own. A foreign entry is never deleted. |
-| AC3: stored sessions with no provider are treated as the configured preferred provider, with no migration and no crash | **met** | "a legacy record with no provider reads as the preferred provider's" covers both preferences. "the preferred provider ignores the pace fallback's run override" covers the resolver. |
-| AC4: the skip log names both providers and the session id | **met** | `primeStreamSession` logs `stream session <id> was created by <creator> — not resuming it on <provider>; …`. The test asserts the id, `claude` and `deepseek`. The compaction skip names all three too. |
-| AC5: tests cover both directions | **met** | Not resumed on DeepSeek (two tests) and resumed on Claude (two tests), plus the legacy case and compaction in both directions. |
+| AC2: switching back resumes the original provider's own session                                                                  | **met** | "switching back to Claude resumes Claude's own session after a DeepSeek run": Claude → DeepSeek (own session) → Claude resumes `CLAUDE_SESSION`, and DeepSeek resumes its own. A foreign entry is never deleted.                                                                                                                                                                               |
+| AC3: stored sessions with no provider are treated as the configured preferred provider, with no migration and no crash           | **met** | "a legacy record with no provider reads as the preferred provider's" covers both preferences. "the preferred provider ignores the pace fallback's run override" covers the resolver.                                                                                                                                                                                                           |
+| AC4: the skip log names both providers and the session id                                                                        | **met** | `primeStreamSession` logs `stream session <id> was created by <creator> — not resuming it on <provider>; …`. The test asserts the id, `claude` and `deepseek`. The compaction skip names all three too.                                                                                                                                                                                        |
+| AC5: tests cover both directions                                                                                                 | **met** | Not resumed on DeepSeek (two tests) and resumed on Claude (two tests), plus the legacy case and compaction in both directions.                                                                                                                                                                                                                                                                 |
 
 ## Reproduction
 
 - **symptom**: a stream session created on Claude was resumed on DeepSeek
   (`stream stSoftwareAU/GRQ (blank) session 2ab1e141-… (resumed)
-  providerId=deepseek`). The run logged `init model: claude-opus-5`, then
-  `Prompt is too long`.
+  providerId=deepseek`).
+  The run logged `init model: claude-opus-5`, then `Prompt is too long`.
 - **status**: `verified`. Against the pre-fix `lib/`, the new suite fails the
-  GRQ-23 record case (the DeepSeek slot holding a Claude session is resumed)
-  and the legacy-record case (an unlabelled DeepSeek-slot entry is resumed on
+  GRQ-23 record case (the DeepSeek slot holding a Claude session is resumed) and
+  the legacy-record case (an unlabelled DeepSeek-slot entry is resumed on
   DeepSeek). With the fix, all 10 tests pass.
 - **regression test**:
   `worker/deno/tests/stream_session_provider_binding_2638_test.ts::#2638 - a Claude session filed in the DeepSeek slot is still not resumed on DeepSeek`
@@ -85,8 +85,7 @@ legacy record, creator recording, and compaction of another provider's session.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **TDD:** the failing tests were written first, and they cover both
-  directions.
+- **TDD:** the failing tests were written first, and they cover both directions.
 - **Backward compatible:** the new `providerId` field is optional. Old files
   parse, and nothing is migrated.
 - **Resume is an optimisation:** a mismatch costs one resume, never the issue.

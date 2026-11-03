@@ -4,13 +4,13 @@
 
 The worker's `gh` credential re-stage wrote `hosts.yml` into a directory any
 other local account could own. On a host run neither `VIBE_STATE_DIR` nor
-`VIBE_SCRATCH_DIR` is set (the container entrypoint exports them, `loop.sh`
-does not), so the only staging candidate was `${TMPDIR:-/tmp}/vibe-gh-config`
-— one fixed path for every account on the box. The directory was created with
+`VIBE_SCRATCH_DIR` is set (the container entrypoint exports them, `loop.sh` does
+not), so the only staging candidate was `${TMPDIR:-/tmp}/vibe-gh-config` — one
+fixed path for every account on the box. The directory was created with
 `recursive: true` (so a pre-planted one was adopted), the token was written at
 the umask default and `chmod`'d **after** it was already on disk, every failure
-in that block was swallowed by a bare `catch`, and nothing removed the
-directory at the end of the run.
+in that block was swallowed by a bare `catch`, and nothing removed the directory
+at the end of the run.
 
 `worker/deno/lib/gh_credential_stage.ts` now binds the copy to this account
 before the token touches the disk:
@@ -23,11 +23,14 @@ before the token touches the disk:
 - a pre-existing path that is not this account's private directory — a symlink
   or file, another uid's directory, or one with group/other bits — is
   **refused** for that candidate by `stagingDirRefusal`;
-- `hosts.yml` is unlinked and then created with `{ mode: 0o600, createNew: true }`,
-  so a planted symlink is dropped rather than followed and there is no
-  world-readable window between the write and a later `chmod`;
-- a refusal is **warned loudly** per candidate (`[SECURITY] refusing to stage
-  the gh credential at …`) instead of being swallowed;
+- `hosts.yml` is unlinked and then created with
+  `{ mode: 0o600, createNew: true }`, so a planted symlink is dropped rather
+  than followed and there is no world-readable window between the write and a
+  later `chmod`;
+- a refusal is **warned loudly** per candidate
+  (`[SECURITY] refusing to stage
+  the gh credential at …`) instead of being
+  swallowed;
 - a directory this process created is registered and removed at run end
   (`removeStagedGhConfigDirs`, armed on `unload`), so the credential does not
   outlive the worker.
@@ -76,24 +79,24 @@ Full gate: `./quality.sh` was run and reports `deno tests` and `deno lint` as
 FAILED — **both fail identically on the unmodified branch base** (verified by
 stashing this change and re-running the gate). The failures are
 `tests/lib_sweep_coverage_test.ts::every worker/deno/lib module is claimed by
-exactly one sweep slice` (four unrelated modules —
-`console_redaction_entrypoint_check.ts`, `guarded_issue_labels.ts`,
-`issue_create_label_check.ts`, `self_diagnostic_attestation.ts` — claimed by no
-sweep slice) and four `no-unused-vars` lint errors in
+exactly one sweep slice`
+(four unrelated modules — `console_redaction_entrypoint_check.ts`,
+`guarded_issue_labels.ts`, `issue_create_label_check.ts`,
+`self_diagnostic_attestation.ts` — claimed by no sweep slice) and four
+`no-unused-vars` lint errors in
 `tests/collect_self_diagnostic_candidates_test.ts`. None of those files is
-touched by this change. Every check this change does affect —
-`deno type check`, `deno fmt`, semgrep, and the suites above — passes.
+touched by this change. Every check this change does affect — `deno type check`,
+`deno fmt`, semgrep, and the suites above — passes.
 
 ## Reproduction
 
 - **symptom** — on a shared host, a second local account that pre-creates
   `/tmp/vibe-gh-config` with a `hosts.yml` symlink receives the worker's
-  `oauth_token`; failing that, the token is world-readable between the write
-  and the `chmod`, and the directory is left behind after the run
-- **status** — `verified` — the regression test was observed failing against
-  the unfixed code (it staged into the pre-created world-writable directory and
-  the planted file received the real token, output above) and passing after the
-  fix
+  `oauth_token`; failing that, the token is world-readable between the write and
+  the `chmod`, and the directory is left behind after the run
+- **status** — `verified` — the regression test was observed failing against the
+  unfixed code (it staged into the pre-created world-writable directory and the
+  planted file received the real token, output above) and passing after the fix
 - **regression test** —
   `worker/deno/tests/gh_credential_stage_test.ts::restageGhConfigDir - refuses a pre-created world-writable candidate and never follows a planted hosts.yml symlink`
 
@@ -108,14 +111,14 @@ touched by this change. Every check this change does affect —
 - **Original trigger closed, no trivial bypass** — the original attack input is
   a pre-existing path at the staging candidate. Every write now goes through
   `prepareStagingDir` → `stagingDirRefusal`, which `lstat`s (never follows) the
-  candidate and refuses it unless it is a real directory, owned by this uid, with
-  no group/other bits; a path that appears **after** that check still cannot be
-  adopted, because the leaf `mkdir` is non-recursive (EEXIST → refused) and
-  `hosts.yml` is created with `createNew: true` (EEXIST → refused) rather than
-  truncating or following. The equivalent bypasses are closed with it: the
-  fixed `/tmp/vibe-gh-config` name is now per-account, the mode is applied at
-  creation rather than after the write, the refusal is warned rather than
-  swallowed, and the directory this process created is removed at run end.
+  candidate and refuses it unless it is a real directory, owned by this uid,
+  with no group/other bits; a path that appears **after** that check still
+  cannot be adopted, because the leaf `mkdir` is non-recursive (EEXIST →
+  refused) and `hosts.yml` is created with `createNew: true` (EEXIST → refused)
+  rather than truncating or following. The equivalent bypasses are closed with
+  it: the fixed `/tmp/vibe-gh-config` name is now per-account, the mode is
+  applied at creation rather than after the write, the refusal is warned rather
+  than swallowed, and the directory this process created is removed at run end.
 
 ## Test Plan
 
@@ -142,6 +145,6 @@ Modified (documented, none removed or disabled):
 - `restageGhConfigDir - an unwritable candidate falls through to the next` and
   `service_account_env_test.ts::buildServiceAccountEnv - an unwritable gh config dir is restaged writable`
   — same path change.
-- The test file's `fakeIo` was updated to the new IO seams
-  (`writePrivateFile`, `makePrivateDir`, `lstat`, `remove`, `ownerUid`), which
-  record creation modes and can report a foreign-uid directory.
+- The test file's `fakeIo` was updated to the new IO seams (`writePrivateFile`,
+  `makePrivateDir`, `lstat`, `remove`, `ownerUid`), which record creation modes
+  and can report a foreign-uid directory.

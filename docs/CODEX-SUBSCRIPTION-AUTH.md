@@ -76,14 +76,13 @@ seeded home has unknown quota until its first Codex session records rate limits;
 unknown subscription quota remains eligible after providers with fresh known
 capacity. An exhausted Claude subscription cannot outrank it.
 
-
 ## Billing fail-closed rule
 
 When an invocation selects a non-blank `CODEX_HOME`, VibeCoder deliberately
-removes `OPENAI_API_KEY` and `CODEX_API_KEY` from that Codex child's environment,
-even if either variable exists in the parent process. A revoked or exhausted
-subscription therefore fails as a subscription; it cannot silently turn into
-metered API spend.
+removes `OPENAI_API_KEY` and `CODEX_API_KEY` from that Codex child's
+environment, even if either variable exists in the parent process. A revoked or
+exhausted subscription therefore fails as a subscription; it cannot silently
+turn into metered API spend.
 
 The older explicit API-key path is retained for compatibility when **no**
 `CODEX_HOME` is selected. It is not eligible for the subscription-only automatic
@@ -91,8 +90,8 @@ routing introduced by #1923/#1925/#1926.
 
 ## Restart behaviour
 
-The worker container is disposable; the Codex authentication directory is not.
-A restart must therefore have this shape:
+The worker container is disposable; the Codex authentication directory is not. A
+restart must therefore have this shape:
 
 ```text
 container N                persistent agent-state volume          container N+1

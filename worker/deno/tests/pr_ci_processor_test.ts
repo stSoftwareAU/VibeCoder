@@ -23,6 +23,7 @@ import {
   captureBranchHead,
 } from "../lib/branch_head_tracker.ts";
 import {
+  PublicationValidationFailedError,
   PublicationValidationUnavailableError,
   type validateRepositoryForPublication,
 } from "../lib/publication_validation.ts";
@@ -3580,7 +3581,7 @@ Deno.test("processCiFailure - the final push, its recovery and its retry all car
   }
 });
 
-Deno.test("processCiFailure - an unavailable repository check defers the push and is not counted as a content failure (Issue #4625)", async () => {
+Deno.test("processCiFailure - an unavailable repository check releases the PR: no retry charged, no comment, no marker, however often it repeats (Issue #4625)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const warnings: string[] = [];
@@ -3588,43 +3589,86 @@ Deno.test("processCiFailure - an unavailable repository check defers the push an
     logger.warn = (message) => {
       warnings.push(message);
     };
-    const deps = createMockDeps({
-      claude: {
-        runClaudeWithRetry: (() =>
-          Promise.resolve({
-            ok: true,
-            value: { output: "Fixed", exitCode: 0, timedOut: false },
-          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
-      },
-      github: { runGhCommand: openPrGh() },
-      git: {
-        commitAndPushPending: (() =>
-          Promise.resolve({
-            ok: false,
-            error: new PublicationValidationUnavailableError(
-              "docker is not running",
-            ),
-          })) as unknown as GitDeps["commitAndPushPending"],
-      },
-    });
-    const result = await processCiFailure(makeInput(), {
-      promptsDir: PROMPTS_DIR,
-      logger,
-      deps,
-      stateDir: `${tmpDir}/.ci_check_state`,
-      workDir: tmpDir,
-      workRoot: tmpDir,
-    });
-    assertEquals(result.ok, true);
-    if (result.ok) {
-      assertEquals(result.value.changesPushed, false);
+    const comments: string[] = [];
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const makeDeps = (error: Error) =>
+      createMockDeps({
+        claude: {
+          runClaudeWithRetry: (() =>
+            Promise.resolve({
+              ok: true,
+              value: { output: "Fixed", exitCode: 0, timedOut: false },
+            })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+        },
+        github: {
+          runGhCommand: openPrGh((args) => {
+            if (args[0] === "pr" && args[1] === "comment") {
+              comments.push(args[args.indexOf("--body") + 1] ?? "");
+            }
+            return Promise.resolve("");
+          }),
+        },
+        git: {
+          commitAndPushPending: (() =>
+            Promise.resolve({
+              ok: false,
+              error,
+            })) as unknown as GitDeps["commitAndPushPending"],
+        },
+      });
+    // Far more rounds than the attempt cap: were each charged, the cap would
+    // be reached and the lane would abandon the pull request.
+    for (let round = 0; round < 6; round++) {
+      const result = await processCiFailure(makeInput(), {
+        promptsDir: PROMPTS_DIR,
+        logger,
+        deps: makeDeps(
+          new PublicationValidationUnavailableError("docker is not running"),
+        ),
+        stateDir,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+      });
+      assertEquals(result.ok, true);
+      if (result.ok) {
+        assertEquals(result.value.processed, false, `round ${round}`);
+        assertEquals(result.value.changesPushed, false);
+        assertEquals(result.value.retryCount, 0, `round ${round}`);
+        assertStringIncludes(result.value.summary, "no attempt charged");
+      }
+      assertEquals(
+        await getCiCheckRetryCount(stateDir, "org/repo", "67890"),
+        0,
+        `round ${round}: the retry charge must be refunded`,
+      );
     }
+    assertEquals(
+      comments,
+      [],
+      "an unavailable gate posts no failed-push comment and no attempt marker",
+    );
     assertEquals(
       warnings.some((w) =>
         w.includes("Publication deferred: repository checks could not run")
       ),
       true,
       `deferral must be logged; got: ${warnings.join(" | ")}`,
+    );
+
+    // A rejected head is a content verdict, not a deferral: it stays charged.
+    const failed = await processCiFailure(makeInput(), {
+      promptsDir: PROMPTS_DIR,
+      logger,
+      deps: makeDeps(new PublicationValidationFailedError("lint failed")),
+      stateDir,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+    });
+    assertEquals(failed.ok, true);
+    assertEquals(
+      await getCiCheckRetryCount(stateDir, "org/repo", "67890"),
+      1,
+      "a failed gate still costs the attempt",
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

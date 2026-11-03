@@ -175,16 +175,16 @@ A cached `ok` spent no brief time on that run: the map came from the cache.
 ## 8. 📊 Results — the brief window
 
 **No window opened.** No trial host was ever named and the switch was never
-turned on, so there are no trial figures. brief was removed on analysis
-instead, because the mechanism in §2 has nothing to act on in this fleet:
+turned on, so there are no trial figures. brief was removed on analysis instead,
+because the mechanism in §2 has nothing to act on in this fleet:
 
 - **The gap §2 describes does not exist here.** Every monitored repository with
-  a `Cargo.toml` also has a `quality.sh` that runs `cargo test`, `clippy`,
-  `fmt` and `build`, and the codebase map already lists `./quality.sh` as the
-  gate to run before a PR. The agent was never rediscovering Cargo commands.
-- **The block could only add tokens.** It kept nothing but allowlisted
-  `cargo …` strings — commands the model already knows. On every Rust run it
-  added prompt text and brief's own run time, and it could save nothing.
+  a `Cargo.toml` also has a `quality.sh` that runs `cargo test`, `clippy`, `fmt`
+  and `build`, and the codebase map already lists `./quality.sh` as the gate to
+  run before a PR. The agent was never rediscovering Cargo commands.
+- **The block could only add tokens.** It kept nothing but allowlisted `cargo …`
+  strings — commands the model already knows. On every Rust run it added prompt
+  text and brief's own run time, and it could save nothing.
 - **A window would have spent a host to measure a zero.** Clause 1 of §3 (≥ 10%
   fewer tokens or lower cost) had no mechanism by which it could pass.
 

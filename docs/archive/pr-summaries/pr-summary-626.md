@@ -2,11 +2,11 @@
 
 ## Summary
 
-Setup now asks how this host tracks Vibe Coder releases, and records the
-answer. A new `update-mode` subcommand under `worker/deno/setup/` owns the
-whole conversation — the prompts, the ref validation and the merge into
-`.config.json` — and `setup.sh` delegates to it in the same shape as
-`run.sh` → `worker-checkout-update`, keeping no mode logic of its own.
+Setup now asks how this host tracks Vibe Coder releases, and records the answer.
+A new `update-mode` subcommand under `worker/deno/setup/` owns the whole
+conversation — the prompts, the ref validation and the merge into `.config.json`
+— and `setup.sh` delegates to it in the same shape as `run.sh` →
+`worker-checkout-update`, keeping no mode logic of its own.
 
 The conversation:
 
@@ -22,17 +22,17 @@ The conversation:
    through the `resolveDynamicVersions` helper added in #623.
 
 A run with no terminal never prompts: existing update-mode values are left
-untouched and a fresh config is defaulted to `dynamic`. `setup.ps1` is
-unchanged — the Windows counterpart is a follow-up, which is exactly what
-putting the logic in the Deno command buys.
+untouched and a fresh config is defaulted to `dynamic`. `setup.ps1` is unchanged
+— the Windows counterpart is a follow-up, which is exactly what putting the
+logic in the Deno command buys.
 
 Closes #626.
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-unit suite: 18 tests in `worker/deno/tests/setup_update_mode_test.ts` drive the
-real command with injected input, injected git and an injected dynamic-version
+Backend/CLI change with no web interface to screenshot. The evidence is the unit
+suite: 18 tests in `worker/deno/tests/setup_update_mode_test.ts` drive the real
+command with injected input, injected git and an injected dynamic-version
 resolver, asserting on what actually lands in a temporary `.config.json` — no
 terminal, no network, no real checkout.
 
@@ -88,10 +88,9 @@ sequenceDiagram
   and nothing invalid is written — evidence:
   `worker/deno/tests/setup_update_mode_test.ts::runUpdateModeSetup - an unresolvable ref is rejected by name and asked again`
   and `::runUpdateModeSetup - a ref that never resolves writes nothing at all`
-- **met** — Blank answers at the tool-version prompts store the versions
-  dynamic mode would install today — evidence: the same frozen-tag test, whose
-  three blank answers store the injected resolver's `2.0.76` / `2.62.0` /
-  `2.5.4`
+- **met** — Blank answers at the tool-version prompts store the versions dynamic
+  mode would install today — evidence: the same frozen-tag test, whose three
+  blank answers store the injected resolver's `2.0.76` / `2.62.0` / `2.5.4`
 - **met** — A non-interactive setup run neither prompts nor changes existing
   update-mode values — evidence:
   `worker/deno/tests/setup_update_mode_test.ts::runUpdateModeSetup - a non-interactive run neither prompts nor changes existing values`
@@ -111,9 +110,9 @@ Changes beyond the criteria, and why each is here:
   following phases are renumbered), and `docs/CONFIGURATION.md` gains a bullet
   under Update Mode — reason: a code change owes a docs change; the setup
   sequence and the config reference both described a setup that did not ask.
-- **unrequested** — a `setup.sh` delegation test in the same test file —
-  reason: the issue's own requirement is that the shell keeps no mode logic, so
-  the contract is asserted rather than assumed.
+- **unrequested** — a `setup.sh` delegation test in the same test file — reason:
+  the issue's own requirement is that the shell keeps no mode logic, so the
+  contract is asserted rather than assumed.
 
 ## Test Plan
 

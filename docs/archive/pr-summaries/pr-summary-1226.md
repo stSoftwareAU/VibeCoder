@@ -1,18 +1,18 @@
 ## Summary
 
-Content-processing tooling no longer inherits the worker's credentials.
-Issue #1214 built the environment for the three spawns of repository-supplied
-code; a second band was left inheriting everything, so a compromised npm
-dependency, gem or scanner image saw `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN` and
-any cloud credential the run held. Each of those sites now spawns with
+Content-processing tooling no longer inherits the worker's credentials. Issue
+#1214 built the environment for the three spawns of repository-supplied code; a
+second band was left inheriting everything, so a compromised npm dependency, gem
+or scanner image saw `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN` and any cloud
+credential the run held. Each of those sites now spawns with
 `env: buildUntrustedCommandEnv()` and `clearEnv: true` — the same control
 `quality_gate_phase.ts` applies. Closes #1226.
 
-| Site | Spawn | Change |
-| --- | --- | --- |
-| `worker/deno/lib/markdownlint_check.ts` | `markdownlint-cli2` (runner and `--help` probe) | built environment, allowlist only |
-| `worker/deno/lib/pages_liquid_check.ts` | `bundle`/`ruby` (driver and probe) | built environment, plus the Ruby toolchain names |
-| `worker/deno/lib/security_tree_sweep.ts` | `semgrep`, container runtime | built environment, plus two declared container-runtime names |
+| Site                                     | Spawn                                           | Change                                                       |
+| ---------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------ |
+| `worker/deno/lib/markdownlint_check.ts`  | `markdownlint-cli2` (runner and `--help` probe) | built environment, allowlist only                            |
+| `worker/deno/lib/pages_liquid_check.ts`  | `bundle`/`ruby` (driver and probe)              | built environment, plus the Ruby toolchain names             |
+| `worker/deno/lib/security_tree_sweep.ts` | `semgrep`, container runtime                    | built environment, plus two declared container-runtime names |
 
 The sweep's `git ls-files` half of that row is no longer a direct spawn: PR
 #1327 (Issue #1227) routed `cmd.bin === "git"` through `runGitCommand`, the
@@ -47,27 +47,29 @@ flowchart LR
 
 ## Evidence
 
-Backend/CLI change with no web interface, so there is no screenshot to
-capture. The evidence is the tests below plus the full gate.
+Backend/CLI change with no web interface, so there is no screenshot to capture.
+The evidence is the tests below plus the full gate.
 
 - New regression tests, run against the unfixed code and then against the fix:
-  all three FAILED before (`… these names were inherited rather than built from
-  the allowlist`) and PASS after. The red run was produced by stripping only
-  the `env:`/`clearEnv:` lines from the three modules.
+  all three FAILED before
+  (`… these names were inherited rather than built from
+  the allowlist`) and
+  PASS after. The red run was produced by stripping only the `env:`/`clearEnv:`
+  lines from the three modules.
 - `./quality.sh` → `Result: PASSED (with skipped checks)`, re-run after the
   milestone branch was merged in. The `markdownlint` stage still reports PASSED
   while running under the built environment, which is the live proof the
   allowlist carries what that tool needs. `pages-liquid` reports SKIPPED for a
-  reason that predates this change and is not caused by it: the container has
-  no `liquid` gem, so `bundle exec ruby -rliquid` fails identically with the
+  reason that predates this change and is not caused by it: the container has no
+  `liquid` gem, so `bundle exec ruby -rliquid` fails identically with the
   worker's inherited environment and with the built one.
 
 The `Security Tree Sweep` check on this PR reports 11 unbaselined findings, all
 in files this branch does not touch (`repo_settings_harden.ts`,
 `work_volume_prune.ts`, `container_extension_config.ts`, `run_core.ts` and
 others) plus six stale baseline entries. It is pre-existing baseline drift on
-the milestone branch — the same check fails on the other issue branches cut
-from it, including #1227's, which merged — and not a required check.
+the milestone branch — the same check fails on the other issue branches cut from
+it, including #1227's, which merged — and not a required check.
 
 Unrelated pre-existing breakage on the milestone branch, fixed here so the gate
 is green: `lib_sweep_coverage_test.ts` failed because
@@ -82,20 +84,21 @@ following the precedent of commit `a03159d`.
 
 - **Original trigger closed** — the reported flaw is that these children
   inherited the worker's environment. Every spawn on the three paths now passes
-  `clearEnv: true` with an environment built by name from
-  `ALLOWED_ENV_NAMES`, so a credential can only reach a child if its name is on
-  that allowlist; the existing
+  `clearEnv: true` with an environment built by name from `ALLOWED_ENV_NAMES`,
+  so a credential can only reach a child if its name is on that allowlist; the
+  existing
   `untrusted_command_env_test.ts::ALLOWED_ENV_NAMES - the allowlist itself
-  carries no credential name` guard rejects any credential-shaped addition, and
-  the names added here (`GEM_*`, `BUNDLE_*`, `DOCKER_HOST`,
-  `XDG_RUNTIME_DIR`) carry no secret. There is no trivial bypass: the
-  allowlist is positive (unknown names are simply absent rather than filtered),
-  `clearEnv: true` stops Deno merging the built environment over the inherited
-  one, and the probe spawns beside each runner (`canRunBinary`, `canRunLiquid`)
-  were changed too, so no sibling code path re-opens the same channel.
-- **Input validation / injection surface** — no new external input is parsed
-  and no argv is built from untrusted data; the change only narrows what an
-  existing spawn can see.
+  carries no credential name`
+  guard rejects any credential-shaped addition, and the names added here
+  (`GEM_*`, `BUNDLE_*`, `DOCKER_HOST`, `XDG_RUNTIME_DIR`) carry no secret. There
+  is no trivial bypass: the allowlist is positive (unknown names are simply
+  absent rather than filtered), `clearEnv: true` stops Deno merging the built
+  environment over the inherited one, and the probe spawns beside each runner
+  (`canRunBinary`, `canRunLiquid`) were changed too, so no sibling code path
+  re-opens the same channel.
+- **Input validation / injection surface** — no new external input is parsed and
+  no argv is built from untrusted data; the change only narrows what an existing
+  spawn can see.
 - **Secrets** — no credentials or hidden files staged.
 
 ## Test Plan

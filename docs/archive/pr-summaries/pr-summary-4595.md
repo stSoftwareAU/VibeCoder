@@ -104,12 +104,13 @@ The review-fix run executed `./quality.sh`: formatting, lint, type checking,
 Markdown and completeness checks passed. The full unit stage failed on this
 host: Deno 2.9.5 panicked in testing.rs with "pledge test permissions called
 before restoring previous pledge"; a separate unit-suite run reproduced it.
-PowerShell, Semgrep and Checkov were unavailable. Targeted suites passed as below.
+PowerShell, Semgrep and Checkov were unavailable. Targeted suites passed as
+below.
 
 Review fixes: earlier-call stats omit refusals so only the returned call drives
 the existing refusal policy. The regression covers both haiku and sonnet tiers,
 retains executor spend and checks that a returned refusal still retries. It
 failed with retry-on-sonnet before the fix. A returned review retry now has a
-test asserting its earlier attempt occurs exactly once and its final attempt
-is excluded; replacing the returned-call slice with an empty array made it fail.
+test asserting its earlier attempt occurs exactly once and its final attempt is
+excluded; replacing the returned-call slice with an empty array made it fail.
 The gate, stats-comment and refusal-policy suites pass: 154 tests.

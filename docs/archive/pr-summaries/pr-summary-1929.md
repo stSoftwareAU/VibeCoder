@@ -2,8 +2,8 @@
 
 ## Summary
 
-The `changes` job in `.github/workflows/container-build.yml` decided whether
-the 11-minute image build ran from a single command:
+The `changes` job in `.github/workflows/container-build.yml` decided whether the
+11-minute image build ran from a single command:
 
 ```bash
 changed="$(git diff --name-only "${base}" "${head}" -- … || true)"
@@ -65,10 +65,11 @@ The evidence is the regression suite plus the repository's own workflow checks.
   ok | 8 passed | 0 failed (2s)
   ```
 
-- `WORKFLOW_FILE_CHECKS` (the changed-workflow gate's table) run over the
-  edited workflow with `defaultBranch: "main"` report **no findings** —
+- `WORKFLOW_FILE_CHECKS` (the changed-workflow gate's table) run over the edited
+  workflow with `defaultBranch: "main"` report **no findings** —
   `BP-TRIGGER-container-build` is cleared. Before this change the same run
-  produced a `🟡 Test/lint workflow triggers on push to the default branch` finding.
+  produced a `🟡 Test/lint workflow triggers on push to the default branch`
+  finding.
 - `shellcheck .github/scripts/detect-image-changes.sh` — clean.
 - `actionlint .github/workflows/container-build.yml` — clean.
 - `./quality.sh` — `Result: PASSED (with skipped checks)` (`config integration`
@@ -77,13 +78,13 @@ The evidence is the regression suite plus the repository's own workflow checks.
 ## Reproduction
 
 - **symptom** — a `git diff` failure in the `changes` job produced an empty
-  change set, so `image=false` was written, the image build was skipped, and
-  the required `container` check reported green having verified nothing
-- **status** — `verified` — the filter script was first written with the
-  unfixed inline logic verbatim (`git diff … || true`, no commit checks) and
-  the suite ran red: 5 failed, including the headline case, where an
-  unreachable head commit exited `0` and wrote `image=false`. With the
-  fail-loud script in place the same suite is 8 passed, 0 failed.
+  change set, so `image=false` was written, the image build was skipped, and the
+  required `container` check reported green having verified nothing
+- **status** — `verified` — the filter script was first written with the unfixed
+  inline logic verbatim (`git diff … || true`, no commit checks) and the suite
+  ran red: 5 failed, including the headline case, where an unreachable head
+  commit exited `0` and wrote `image=false`. With the fail-loud script in place
+  the same suite is 8 passed, 0 failed.
 - **regression test** —
   `worker/deno/tests/container_image_change_filter_test.ts::image filter - a commit outside the object store fails loud (Issue #1929)`
 
@@ -105,6 +106,6 @@ The evidence is the regression suite plus the repository's own workflow checks.
   probe-path suite now names a `.sh` path and is placed in
   `SCRIPT_READING_UNIT_TESTS` with its reason (it reads, never spawns). The
   manifest conformance suite passes in both directions.
-- **Updated** `docs/CONTAINER.md` — the CI paragraph described the push
-  trigger and the push-time Podman build; both now describe the weekly sweep,
-  and the filter script is linked.
+- **Updated** `docs/CONTAINER.md` — the CI paragraph described the push trigger
+  and the push-time Podman build; both now describe the weekly sweep, and the
+  filter script is linked.

@@ -16,11 +16,11 @@ log is the first thing an operator opens when an image build fails.
 The clean was earning its place, so it was not simply dropped. Measured on this
 host, installing the three pinned tarballs into a fresh cache directory:
 
-| Layer                        | npm cache after the install |
-| ---------------------------- | --------------------------- |
-| `npm@12.0.2`                 | 2 988 KiB (2.9 MiB)         |
-| `markdownlint-cli2@0.23.2`   | 13 928 KiB (+10.7 MiB)      |
-| `playwright-core@1.61.0-…`   | 16 688 KiB (+2.7 MiB)       |
+| Layer                      | npm cache after the install |
+| -------------------------- | --------------------------- |
+| `npm@12.0.2`               | 2 988 KiB (2.9 MiB)         |
+| `markdownlint-cli2@0.23.2` | 13 928 KiB (+10.7 MiB)      |
+| `playwright-core@1.61.0-…` | 16 688 KiB (+2.7 MiB)       |
 
 So 16.3 MiB would have landed in the image had the clean simply been deleted.
 Instead `npm_config_cache` is an image-level `/tmp/npmc` and each `RUN` deletes
@@ -77,19 +77,19 @@ the parity contract rather than quietly pruning its own base.
 
 **Containerfile size cap.** `CONTAINERFILE_SIZE_CAP_BYTES` is 15 000.
 
-| | stripped bytes |
-| --- | --- |
-| `origin/main` | 14 908 |
-| after #1015 | 14 883 |
-| after #1015 + #1016 | **14 949** |
+|                     | stripped bytes |
+| ------------------- | -------------- |
+| `origin/main`       | 14 908         |
+| after #1015         | 14 883         |
+| after #1015 + #1016 | **14 949**     |
 
 **Build log.** A full image build is impractical in this environment, so the two
 Containerfile layers were built as standalone slices with Apple `container`
 1.2.2, copied verbatim from the committed file.
 
 - npm slice, current form: `EXIT=0`, `grep -c 'npm warn using'` → **0**, and the
-  final step's `du -sk /root/.npm /tmp/npmc` reported *No such file or
-  directory* for both — the layer did not grow.
+  final step's `du -sk /root/.npm /tmp/npmc` reported _No such file or
+  directory_ for both — the layer did not grow.
 - npm slice, previous form (`npm cache clean --force`): `EXIT=0` and two
   `npm warn using --force Recommended protections disabled.` lines, one per npm
   layer in the slice. The third occurrence is the playwright-core layer, which

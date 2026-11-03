@@ -2,8 +2,8 @@
 
 ## Summary
 
-#249 is an auto-filed `worker-crash` bug. Reading the message it was filed
-from, the run it describes did not crash:
+#249 is an auto-filed `worker-crash` bug. Reading the message it was filed from,
+the run it describes did not crash:
 
 ```text
 Claude timed out at the cycle deadline with its work preserved on the branch
@@ -15,29 +15,28 @@ Claude timed out at the cycle deadline with its work preserved on the branch
 ```
 
 Exit 143 at the cycle deadline with two WIP checkpoints pushed is the clean
-deadline stop working exactly as designed. The category detector agreed and
-said `timeout`. The classifier overrode it and said `worker-crash`,
-`code_fixable`, with the rationale "the message carries an unhandled exception
-/ stack trace from the worker".
+deadline stop working exactly as designed. The category detector agreed and said
+`timeout`. The classifier overrode it and said `worker-crash`, `code_fixable`,
+with the rationale "the message carries an unhandled exception / stack trace
+from the worker".
 
 There was no exception. `crashOr()` scans the whole failure message, and
 `formatDetailedFailureMessage` embeds the tail of Claude's stdout in that
 message. Inside the `<details>` block, Claude had written:
 
-> …on a failure the remaining workers keep pulling, so a second failure
-> surfaces as an **unhandled rejection**. Tightening it to stop dispatch and
-> re-throw.
+> …on a failure the remaining workers keep pulling, so a second failure surfaces
+> as an **unhandled rejection**. Tightening it to stop dispatch and re-throw.
 
-That is the agent narrating a concurrency bug in **GRQ's** code — the bug it
-was in the middle of fixing. `STACK_TRACE_RE` matched the phrase, and the
-worker filed a bug against itself for a sentence its own agent wrote about
-somebody else's software.
+That is the agent narrating a concurrency bug in **GRQ's** code — the bug it was
+in the middle of fixing. `STACK_TRACE_RE` matched the phrase, and the worker
+filed a bug against itself for a sentence its own agent wrote about somebody
+else's software.
 
-This is not a one-off. An agent's whole job is discussing code, so
-"unhandled exception", "TypeError:" and "ReferenceError:" appear in its
-narration constantly. Every long-running agent that mentions one while timing
-out becomes a spurious `worker-crash`, and `worker-crash` is in `CRASH_CLASSES`
-— the classes that auto-file.
+This is not a one-off. An agent's whole job is discussing code, so "unhandled
+exception", "TypeError:" and "ReferenceError:" appear in its narration
+constantly. Every long-running agent that mentions one while timing out becomes
+a spurious `worker-crash`, and `worker-crash` is in `CRASH_CLASSES` — the
+classes that auto-file.
 
 ### The fix
 
@@ -55,8 +54,8 @@ Two things it deliberately does **not** do:
   excluded, because prose is what the agent produces about other people's code.
 - **It does not touch the "Processes at the kill" block.** That sibling
   `<details>` is worker-authored evidence. The strip is anchored on the
-  `Last output from Claude` summary line and is non-greedy, so it cannot
-  swallow it.
+  `Last output from Claude` summary line and is non-greedy, so it cannot swallow
+  it.
 
 The asymmetry with the other detectors is now stated in the code rather than
 left to be rediscovered. `DISK_FULL_RE` and `OOM_EVIDENCE_RE` still scan the
@@ -115,16 +114,16 @@ matching the convention the file's own header sets.
 
 `worker/deno/tests/run_outcome_classifier_test.ts` — 8 new cases:
 
-| Case | Asserts | On `main` |
-| --- | --- | --- |
-| a deadline timeout is not a worker crash because Claude said 'unhandled rejection' | The verbatim #249 message classifies as `timeout`/`unknown` | **FAILS** |
-| prose alone inside the agent block never reaches worker-crash | Four narration phrases — `unhandled rejection`, `TypeError:`, `ReferenceError:`, `unhandled exception` — all stay `timeout` | **FAILS** |
-| the same prose in the worker's own words IS a crash | The fix does not blind the classifier outside the agent block | passes |
-| a real stack frame inside the agent block still counts | A Claude CLI crash dump is still `worker-crash` | passes |
-| the 'Processes at the kill' block stays worker evidence | The non-greedy strip does not swallow the sibling block | passes |
-| disk exhaustion in the agent block is still real evidence | The documented asymmetry holds — ENOSPC there is still `disk-full` | passes |
-| `splitAgentNarration` removes the agent block and keeps everything else | Diagnostics and the summary line survive; the prose is separated, not lost | n/a (new export) |
-| `splitAgentNarration` — a message with no agent block is unchanged | The common case is a pass-through | n/a (new export) |
+| Case                                                                               | Asserts                                                                                                                     | On `main`        |
+| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| a deadline timeout is not a worker crash because Claude said 'unhandled rejection' | The verbatim #249 message classifies as `timeout`/`unknown`                                                                 | **FAILS**        |
+| prose alone inside the agent block never reaches worker-crash                      | Four narration phrases — `unhandled rejection`, `TypeError:`, `ReferenceError:`, `unhandled exception` — all stay `timeout` | **FAILS**        |
+| the same prose in the worker's own words IS a crash                                | The fix does not blind the classifier outside the agent block                                                               | passes           |
+| a real stack frame inside the agent block still counts                             | A Claude CLI crash dump is still `worker-crash`                                                                             | passes           |
+| the 'Processes at the kill' block stays worker evidence                            | The non-greedy strip does not swallow the sibling block                                                                     | passes           |
+| disk exhaustion in the agent block is still real evidence                          | The documented asymmetry holds — ENOSPC there is still `disk-full`                                                          | passes           |
+| `splitAgentNarration` removes the agent block and keeps everything else            | Diagnostics and the summary line survive; the prose is separated, not lost                                                  | n/a (new export) |
+| `splitAgentNarration` — a message with no agent block is unchanged                 | The common case is a pass-through                                                                                           | n/a (new export) |
 
 Acceptance: a run that stops cleanly at its deadline is no longer auto-filed as
 a worker crash, and the crash detection that #4328 added still fires on every

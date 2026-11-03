@@ -1,9 +1,9 @@
 ## Summary
 
-The dependency-bump phase is now a deliberate no-op on a milestone child run.
-A child PR targets `milestone/**`, where the default branch's own PRs already
-bump dependencies and the every-cycle milestone sync carries those bumps down —
-so bumping again in the child rewrote the same lockfile lines and handed every
+The dependency-bump phase is now a deliberate no-op on a milestone child run. A
+child PR targets `milestone/**`, where the default branch's own PRs already bump
+dependencies and the every-cycle milestone sync carries those bumps down — so
+bumping again in the child rewrote the same lockfile lines and handed every
 child PR a conflict against the sync for no new versions.
 
 `workOnIssueBumpDeps` returns before `runBumpDeps` when `state.milestoneBranch`
@@ -51,34 +51,32 @@ flowchart TD
   here and passed.
 - **partial** — Docs: `docs/INTERNALS.md` bump-phase paragraph and
   `docs/SUPPLY-CHAIN-GATE.md` "where it states the bump runs on every PR" —
-  evidence: `docs/INTERNALS.md` bump-phase paragraph updated — reviewer:
-  partial — reason: `docs/SUPPLY-CHAIN-GATE.md` contains no mention of
-  `bump-deps.sh` or a per-PR bump (it documents the SHA-pin / frozen-lockfile
-  gate only), so there was no claim there to correct; the surfaces that do make
-  the every-PR claim — `prompts/coding_guidelines/prompt.md`,
-  `docs/workflows/milestones.md`, `docs/TROUBLESHOOTING.md` — were updated
-  instead.
+  evidence: `docs/INTERNALS.md` bump-phase paragraph updated — reviewer: partial
+  — reason: `docs/SUPPLY-CHAIN-GATE.md` contains no mention of `bump-deps.sh` or
+  a per-PR bump (it documents the SHA-pin / frozen-lockfile gate only), so there
+  was no claim there to correct; the surfaces that do make the every-PR claim —
+  `prompts/coding_guidelines/prompt.md`, `docs/workflows/milestones.md`,
+  `docs/TROUBLESHOOTING.md` — were updated instead.
 - **unrequested** — `docs/workflows/milestones.md` per-issue happy path gains
   the skip and its rationale — reviewer: unrequested — reason: the milestone
   operator manual is where a reader looks for what a child run does; leaving it
   silent would make the new behaviour undiscoverable.
-- **unrequested** — `prompts/coding_guidelines/prompt.md` gains two lines
-  saying not to bump on a milestone child run — reviewer: unrequested —
-  reason: the adjacent paragraph asserts the worker bumps on every PR, which is
-  now false; kept to two lines because that block is injected into every run.
+- **unrequested** — `prompts/coding_guidelines/prompt.md` gains two lines saying
+  not to bump on a milestone child run — reviewer: unrequested — reason: the
+  adjacent paragraph asserts the worker bumps on every PR, which is now false;
+  kept to two lines because that block is injected into every run.
 - **unrequested** — `docs/TROUBLESHOOTING.md` gains a row for "PRs into a
   `milestone/**` branch never carry a dep bump" — reviewer: unrequested —
   reason: that table is the operator index of bump outcomes, and the new one
   looks exactly like the failure modes above it.
 - **unrequested** — the skip is gated on the repo actually having a
-  `bump-deps.sh` — reviewer: unrequested — reason: without the guard a repo
-  with no bump script got a PR body asserting a suppression that never
-  happened; the literal criterion is still met for every repo that has a
-  script.
+  `bump-deps.sh` — reviewer: unrequested — reason: without the guard a repo with
+  no bump script got a PR body asserting a suppression that never happened; the
+  literal criterion is still met for every repo that has a script.
 - **unrequested** — a milestone skip leaves the `bump-deps.sh` rejection streak
-  untouched rather than clearing it — reviewer: unrequested — reason: the
-  streak records script failures, and a run where the script never executed is
-  evidence of neither failure nor recovery.
+  untouched rather than clearing it — reviewer: unrequested — reason: the streak
+  records script failures, and a run where the script never executed is evidence
+  of neither failure nor recovery.
 
 ## Standards Review
 
@@ -87,19 +85,18 @@ flowchart TD
 - **violation** — no `docs/archive/pr-summaries/pr-summary-1775.md` in the first
   commit — evidence: `docs/archive/pr-summaries/` — reason: fixed here; this
   file is the summary.
-- **violation** — test banner read "Scenario 5" with no Scenario 4 in the file
-  — evidence: `worker/deno/tests/bump_deps_phase_test.ts:826` — reason: fixed;
-  the banner is now unnumbered.
+- **violation** — test banner read "Scenario 5" with no Scenario 4 in the file —
+  evidence: `worker/deno/tests/bump_deps_phase_test.ts:826` — reason: fixed; the
+  banner is now unnumbered.
 - **violation** — the test file docstring still claimed "the three scenarios"
-  after the file grew — evidence:
-  `worker/deno/tests/bump_deps_phase_test.ts:4` — reason: fixed; it now names
-  the milestone-child skip.
+  after the file grew — evidence: `worker/deno/tests/bump_deps_phase_test.ts:4`
+  — reason: fixed; it now names the milestone-child skip.
 - **violation** — `buildBumpSkipNote`'s doc comment called the return a
   "markdown section" when it is a bare paragraph — evidence:
   `worker/deno/lib/bump_deps.ts:285` — reason: fixed.
-- **violation** — `docs/TROUBLESHOOTING.md` bump-outcome table gained no row
-  for the new outcome — evidence: `docs/TROUBLESHOOTING.md:543` — reason:
-  fixed; the row is added.
+- **violation** — `docs/TROUBLESHOOTING.md` bump-outcome table gained no row for
+  the new outcome — evidence: `docs/TROUBLESHOOTING.md:543` — reason: fixed; the
+  row is added.
 - **violation** — the note text is restated verbatim in prose — evidence:
   `docs/workflows/milestones.md:92` — reason: stands. Quoting the exact
   user-visible string is what makes the doc searchable from a PR body; the
@@ -113,8 +110,8 @@ flowchart TD
   new status; duplicating that in the test buys no extra safety.
 - **violation** — worker-internal phase routing added to the language-agnostic
   injected prompt — evidence: `prompts/coding_guidelines/prompt.md:972` —
-  reason: reduced to two lines. It stays because the paragraph directly above
-  it tells the agent the worker bumps on every PR, which is now wrong.
+  reason: reduced to two lines. It stays because the paragraph directly above it
+  tells the agent the worker bumps on every PR, which is now wrong.
 - **clean** — Australian English throughout; new tests call real functions and
   assert on results and side effects (no source grepping, no sleeps, no env
   mutation); fail-loud (the skip records a positive status and is stated in the
@@ -132,8 +129,8 @@ Added to `worker/deno/tests/bump_deps_phase_test.ts`:
 - `workOnIssueBumpDeps - milestone child with no script reports absent, not skipped`
   — a repo with no `bump-deps.sh` reports `absent`.
 - `workOnIssueBumpDeps - a milestone skip leaves the rejection streak untouched`
-  — a real streak file: two rejections, then a milestone run that neither
-  clears nor advances it.
+  — a real streak file: two rejections, then a milestone run that neither clears
+  nor advances it.
 - `workOnIssueBumpDeps - a default-branch run still bumps (no milestone branch)`
   — the unchanged default-branch path.
 
@@ -145,8 +142,8 @@ Added to `worker/deno/tests/bump_deps_test.ts`:
 
 Added to `worker/deno/tests/completion_phase_bump_comment_test.ts`:
 
-- `completion - PR body carries the skip note on a milestone child run` —
-  reads the `--body` value out of the recorded `gh pr create` argv.
+- `completion - PR body carries the skip note on a milestone child run` — reads
+  the `--body` value out of the recorded `gh pr create` argv.
 - `completion - PR body carries no skip note on a default-branch run`
 
 No existing test was modified beyond the two assertion updates the

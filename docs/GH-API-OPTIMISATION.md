@@ -1,40 +1,37 @@
 # 📡 GitHub API Optimisation
 
-This document describes how the worker minimises calls to GitHub via the
-`gh` CLI: which caches it keeps, what TTLs it applies, when it
-invalidates entries, and how to read the per-iteration telemetry. It is
-the reference for the work tracked under the **Reduce GH calls**
-milestone (parent issue).
+This document describes how the worker minimises calls to GitHub via the `gh`
+CLI: which caches it keeps, what TTLs it applies, when it invalidates entries,
+and how to read the per-iteration telemetry. It is the reference for the work
+tracked under the **Reduce GH calls** milestone (parent issue).
 
 ## Why this matters
 
 Every loop iteration of the worker scans every configured repo. A naive
-implementation issues O(repos × candidate-issues) `gh` calls per
-iteration, which is wasteful (network round-trips dominate latency) and
-risks tripping GitHub's primary rate limit. The strategy below cuts that
-to roughly O(repos) on the steady-state path while preserving
-correctness.
+implementation issues O(repos × candidate-issues) `gh` calls per iteration,
+which is wasteful (network round-trips dominate latency) and risks tripping
+GitHub's primary rate limit. The strategy below cuts that to roughly O(repos) on
+the steady-state path while preserving correctness.
 
 ## Cache layers
 
-The worker maintains three independent caches. Each is keyed
-differently and has its own TTL because the underlying data has
-different freshness requirements.
+The worker maintains three independent caches. Each is keyed differently and has
+its own TTL because the underlying data has different freshness requirements.
 
-| Layer | Location | TTL (default) | Storage | Purpose |
-| --- | --- | --- | --- | --- |
-| `IssueCache` | `worker/deno/lib/issue_cache.ts` | 600s (10 min) | File-backed JSON under `${TMPDIR}/vibe-issue-cache-deno-<user>/` — or the caller's `${WORK_DIR}/.gh-scan-cache` — created `0700` and ownership-checked wherever it sits (Issues #1215, #1261), entries written `0600` with every string value redacted on the way in (Issue #1261) | Issue and PR list responses (`gh issue list`, `gh pr list`). Shared across worker invocations on the same host. |
-| Rate-limit pre-flight cache | `worker/deno/lib/rate_limit_preflight_cache.ts` | 90s | File-backed JSON in `workDir` | Skips `gh api rate_limit` round-trips between back-to-back respawns when remaining quota is comfortably above the threshold. |
-| `TimelineCache` | `worker/deno/lib/timeline_cache.ts` | 300s (5 min) | File-backed JSON under `${TMPDIR}/vibe-timeline-cache-deno-<user>/`, created `0700` and ownership-checked | Caches `gh api repos/{repo}/issues/{N}/timeline` results to remove the per-candidate N+1 calls. A hit may **deny** the reserved-label trust gate but never **grant** it — a trust-granting entry is re-confirmed against API-backed timeline data (the current iteration’s GraphQL batch or the paginated REST fallback). |
+| Layer                       | Location                                        | TTL (default) | Storage                                                                                                                                                                                                                                                                            | Purpose                                                                                                                                                                                                                                                                                                                   |
+| --------------------------- | ----------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IssueCache`                | `worker/deno/lib/issue_cache.ts`                | 600s (10 min) | File-backed JSON under `${TMPDIR}/vibe-issue-cache-deno-<user>/` — or the caller's `${WORK_DIR}/.gh-scan-cache` — created `0700` and ownership-checked wherever it sits (Issues #1215, #1261), entries written `0600` with every string value redacted on the way in (Issue #1261) | Issue and PR list responses (`gh issue list`, `gh pr list`). Shared across worker invocations on the same host.                                                                                                                                                                                                           |
+| Rate-limit pre-flight cache | `worker/deno/lib/rate_limit_preflight_cache.ts` | 90s           | File-backed JSON in `workDir`                                                                                                                                                                                                                                                      | Skips `gh api rate_limit` round-trips between back-to-back respawns when remaining quota is comfortably above the threshold.                                                                                                                                                                                              |
+| `TimelineCache`             | `worker/deno/lib/timeline_cache.ts`             | 300s (5 min)  | File-backed JSON under `${TMPDIR}/vibe-timeline-cache-deno-<user>/`, created `0700` and ownership-checked                                                                                                                                                                          | Caches `gh api repos/{repo}/issues/{N}/timeline` results to remove the per-candidate N+1 calls. A hit may **deny** the reserved-label trust gate but never **grant** it — a trust-granting entry is re-confirmed against API-backed timeline data (the current iteration’s GraphQL batch or the paginated REST fallback). |
 
-The timeline cache and GraphQL batch path are implemented. The file-backed
-cache and the iteration-scoped batch have different trust and freshness
-contracts, described below.
+The timeline cache and GraphQL batch path are implemented. The file-backed cache
+and the iteration-scoped batch have different trust and freshness contracts,
+described below.
 
 ## Request flow
 
-The diagram below shows how an issue/PR list request travels from the
-caller through the cache hierarchy down to GitHub.
+The diagram below shows how an issue/PR list request travels from the caller
+through the cache hierarchy down to GitHub.
 
 ```mermaid
 flowchart TD
@@ -77,60 +74,58 @@ flowchart LR
 
 ## List-then-filter pattern
 
-Rather than calling `gh issue list --label X` once per label, the
-worker fetches the **full open-issue list once per repo** and filters
-client-side. This is implemented in
-`worker/deno/lib/issue_query.ts`:
+Rather than calling `gh issue list --label X` once per label, the worker fetches
+the **full open-issue list once per repo** and filters client-side. This is
+implemented in `worker/deno/lib/issue_query.ts`:
 
-- `fetchAllIssues(repo, cache, …)` reads/writes the `issues_all` cache
-  key. Invalid JSON, non-array roots and malformed issue rows throw before
-  any cache write; an incomplete snapshot must never look like an empty repo.
-  The closed-issue batch (`fetchAllClosedIssues`, `issues_closed_all`) shares
-  this validation and also propagates command failures (Issue #4124).
-- `fetchIssuesByLabel(repo, label, cache, …)` calls `fetchAllIssues`
-  and applies the label filter in memory — it never issues a per-label
-  GitHub call. The scan collectors read up to `SCAN_LABELLED_ISSUE_LIMIT`
-  (200) labelled issues per label, the full width of the listing the scan
-  reads and never a narrower window, because the listing is newest-first and
-  a narrower cap would drop the oldest labelled issues while the idle-decision
-  census still counts them (Issue #4464).
+- `fetchAllIssues(repo, cache, …)` reads/writes the `issues_all` cache key.
+  Invalid JSON, non-array roots and malformed issue rows throw before any cache
+  write; an incomplete snapshot must never look like an empty repo. The
+  closed-issue batch (`fetchAllClosedIssues`, `issues_closed_all`) shares this
+  validation and also propagates command failures (Issue #4124).
+- `fetchIssuesByLabel(repo, label, cache, …)` calls `fetchAllIssues` and applies
+  the label filter in memory — it never issues a per-label GitHub call. The scan
+  collectors read up to `SCAN_LABELLED_ISSUE_LIMIT` (200) labelled issues per
+  label, the full width of the listing the scan reads and never a narrower
+  window, because the listing is newest-first and a narrower cap would drop the
+  oldest labelled issues while the idle-decision census still counts them (Issue
+  #4464).
 - `fetchClosedIssuesByMilestoneNumber(repo, n, cache, …)` reads/writes the
-  `issues_closed_milestone_<n>` cache key, holding one milestone's closed
-  issues (PRs filtered out). It is read with `gh api
-  repos/<repo>/issues?milestone=<n>&state=closed&per_page=100 --paginate`, so it
-  is not bounded by the newest-500 repo-wide batch. A failed read throws and
-  is never cached. The entry is dropped by a worker close or reopen (see the
+  `issues_closed_milestone_<n>` cache key, holding one milestone's closed issues
+  (PRs filtered out). It is read with
+  `gh api
+  repos/<repo>/issues?milestone=<n>&state=closed&per_page=100 --paginate`,
+  so it is not bounded by the newest-500 repo-wide batch. A failed read throws
+  and is never cached. The entry is dropped by a worker close or reopen (see the
   close/reopen row of the invalidation table), by `IssueCache.invalidateRepo`,
   or by its 600 s TTL, whichever comes first.
 
-The cost is one `gh issue list` per repo per TTL window (10 min),
-regardless of how many label scans the iteration performs. Issue
- further
-removed a redundant second-phase `fetchAllIssues` call by passing the
-in-memory list from the availability check straight to
-`collectLabelCandidates` / `collectWorkOnCandidates`.
+The cost is one `gh issue list` per repo per TTL window (10 min), regardless of
+how many label scans the iteration performs. Issue further removed a redundant
+second-phase `fetchAllIssues` call by passing the in-memory list from the
+availability check straight to `collectLabelCandidates` /
+`collectWorkOnCandidates`.
 
 ## Cross-repo prefetch — one search per owner (Issue #1486)
 
-List-then-filter removes the *per-label* fan-out; the same idea applied
-across repositories removes the *per-repo per-author* one. Three passes ask
-GitHub the same question once per repo **and** once per author:
+List-then-filter removes the _per-label_ fan-out; the same idea applied across
+repositories removes the _per-repo per-author_ one. Three passes ask GitHub the
+same question once per repo **and** once per author:
 
-| Consumer | Cache key | Author set |
-| --- | --- | --- |
-| Open-PR duplicate guard (`fetchOpenPRsByUser`) | `prs_<login>` | `resolveFleetPrAuthorSet` |
-| PR maintenance (`listOpenPrs`) | `prs_maint_<login>` | `resolveFleetMaintenanceAuthorSet` |
+| Consumer                                        | Cache key             | Author set                                  |
+| ----------------------------------------------- | --------------------- | ------------------------------------------- |
+| Open-PR duplicate guard (`fetchOpenPRsByUser`)  | `prs_<login>`         | `resolveFleetPrAuthorSet`                   |
+| PR maintenance (`listOpenPrs`)                  | `prs_maint_<login>`   | `resolveFleetMaintenanceAuthorSet`          |
 | Human-invitation lookup (`listInvitedHumanPrs`) | `prs_invited_<login>` | `allowed_authors` minus the maintenance set |
 
 At 19 repos with 2 fleet authors and 3 authorised commenters that is ~130
-GraphQL-backed `gh pr list` calls on a cold cycle. GitHub's search API
-answers all of them at once: it takes a whole owner, and repeated `author:`
-qualifiers are ORed. `worker/deno/lib/fleet_pr_search.ts` issues that search
-through `gh api graphql` — REST `gh search prs` cannot return
-`baseRefName`, `headRefOid`, `autoMergeRequest` or `mergeable`, and the
-consumers need all four — and
-`worker/deno/lib/fleet_pr_prefetch.ts` writes the answer into the very cache
-entries above. `run_core` calls it at the start of every iteration, after
+GraphQL-backed `gh pr list` calls on a cold cycle. GitHub's search API answers
+all of them at once: it takes a whole owner, and repeated `author:` qualifiers
+are ORed. `worker/deno/lib/fleet_pr_search.ts` issues that search through
+`gh api graphql` — REST `gh search prs` cannot return `baseRefName`,
+`headRefOid`, `autoMergeRequest` or `mergeable`, and the consumers need all four
+— and `worker/deno/lib/fleet_pr_prefetch.ts` writes the answer into the very
+cache entries above. `run_core` calls it at the start of every iteration, after
 the trusted-author refresh that decides which logins to search for, and again
 before every issue scan and the post-scan auto-merge pass (Issue #2662).
 
@@ -148,122 +143,120 @@ flowchart LR
 Three boundaries keep this from trading correctness for calls:
 
 - **Never truncate silently.** Search caps a result set at 1,000 matches. The
-  search pages to exhaustion and returns a **failure** — not a short list —
-  when the page budget is exceeded, GraphQL reports errors, or a page claims
-  a successor without a cursor. A failed owner writes nothing, so its repos
-  simply run their per-repo listings as before.
+  search pages to exhaustion and returns a **failure** — not a short list — when
+  the page budget is exceeded, GraphQL reports errors, or a page claims a
+  successor without a cursor. A failed owner writes nothing, so its repos simply
+  run their per-repo listings as before.
 - **The per-repo path stays.** A cache miss, an owner the search could not
-  cover, and the `forceRefresh` read-after-write re-check
-  (`fetchOpenPRsByUser`, Issue #3150) all still issue `gh pr list`. Search is
-  eventually consistent, so any path that needs read-after-write must keep
-  using it — and the duplicate guard does: `claimIssue` re-checks the repo it
-  is about to claim **live**, bypassing this cache, so a blind or stale
-  discovery-time answer cannot by itself open a duplicate PR.
+  cover, and the `forceRefresh` read-after-write re-check (`fetchOpenPRsByUser`,
+  Issue #3150) all still issue `gh pr list`. Search is eventually consistent, so
+  any path that needs read-after-write must keep using it — and the duplicate
+  guard does: `claimIssue` re-checks the repo it is about to claim **live**,
+  bypassing this cache, so a blind or stale discovery-time answer cannot by
+  itself open a duplicate PR.
 - **A conversation that did not fit one page is not served.** The invitation
-  predicate reads every label, comment and review, so the search asks for
-  each connection's `totalCount`; a PR holding more than one page is left to
-  the per-repo listing rather than admitted — or refused — on a partial read.
+  predicate reads every label, comment and review, so the search asks for each
+  connection's `totalCount`; a PR holding more than one page is left to the
+  per-repo listing rather than admitted — or refused — on a partial read.
 - **A warm cycle costs nothing.** A per-owner marker is written beside the
-  entries and read before the next pass, so a second cycle inside the cache
-  TTL issues no search at all. An entry invalidated in the meantime simply
-  misses and falls back to its per-repo listing.
-- **Open PRs only.** The closed/merged half is deliberately left on its
-  per-repo listing: `fetchRecentlyClosedPRsForFleet` treats a merged PR as a
+  entries and read before the next pass, so a second cycle inside the cache TTL
+  issues no search at all. An entry invalidated in the meantime simply misses
+  and falls back to its per-repo listing.
+- **Open PRs only.** The closed/merged half is deliberately left on its per-repo
+  listing: `fetchRecentlyClosedPRsForFleet` treats a merged PR as a
   **permanent** skip regardless of age, and this fleet has ~8,500 closed PRs
-  against a 1,000-result search ceiling (~1,240 in the last 30 days alone).
-  A windowed cross-repo search would silently drop older merged PRs and
-  weaken the duplicate-PR guard.
+  against a 1,000-result search ceiling (~1,240 in the last 30 days alone). A
+  windowed cross-repo search would silently drop older merged PRs and weaken the
+  duplicate-PR guard.
 
 ### When the search fails — reuse, never storm (Issue #2662)
 
 Falling back to the per-repo listings turned one failed search into
 `repos × authors` GraphQL calls, at exactly the moment the budget was gone:
 GRQ-23 spent 3,281 calls on 2026-09-25 on `pr list --author … --state=open`
-alone, on an account four hosts share. So a failed search now degrades in
-this order:
+alone, on an account four hosts share. So a failed search now degrades in this
+order:
 
-1. **Reuse the last good result.** Every successful search is also kept as
-   the owner's *last good* result. A failed search inside
-   `PREFETCH_REUSE_WINDOW_SECONDS` (**3,600 s**, GitHub's primary GraphQL
-   quota window) fills the guard and maintenance entries from it — only the
-   ones that are missing, so a newer live listing always wins — and writes
-   no marker, so the next pass searches again. The invitation listing is
-   never served from a reused result: a human PR is admitted only on a
-   current reading of its conversation, so it fails closed to its own
-   per-repo path. The window is longer than the 600 s listing cache on
-   purpose — the search only runs once that cache has expired, so an equal
-   window would never reuse anything.
-2. **Rate-limited with nothing to reuse: wait.** The prefetch reports the
-   owner in `ownersRateLimited`, the production dep throws the primary rate
-   limit, and `run_core` re-throws it into the cycle's existing pause until
-   the quota resets (Issue #1780). No consumer lists per repo.
+1. **Reuse the last good result.** Every successful search is also kept as the
+   owner's _last good_ result. A failed search inside
+   `PREFETCH_REUSE_WINDOW_SECONDS` (**3,600 s**, GitHub's primary GraphQL quota
+   window) fills the guard and maintenance entries from it — only the ones that
+   are missing, so a newer live listing always wins — and writes no marker, so
+   the next pass searches again. The invitation listing is never served from a
+   reused result: a human PR is admitted only on a current reading of its
+   conversation, so it fails closed to its own per-repo path. The window is
+   longer than the 600 s listing cache on purpose — the search only runs once
+   that cache has expired, so an equal window would never reuse anything.
+2. **Rate-limited with nothing to reuse: wait.** The prefetch reports the owner
+   in `ownersRateLimited`, the production dep throws the primary rate limit, and
+   `run_core` re-throws it into the cycle's existing pause until the quota
+   resets (Issue #1780). No consumer lists per repo.
 3. **Any other failure with nothing to reuse: per-repo, once.** The per-repo
-   listings run as before; each is cached, so it runs at most once per repo
-   and author per 600 s window.
+   listings run as before; each is cached, so it runs at most once per repo and
+   author per 600 s window.
 
 The prefetch is also refreshed **before every issue scan** and **before the
-post-scan auto-merge pass**, not only at the start of the cycle. Inside the
-TTL that is one marker read; after a run that outlived the 600 s cache it is
-one search per owner where every consumer would otherwise list every repo.
-Concurrent slots share one pass. The post-scan pass itself lists live only
-the repos the cycle claimed from (`EnsureAutoMergeOptions.refreshRepos`) —
-the only repos it can have raised a PR in — instead of every repo per fleet
-author. And the prefetched `prs_<login>` entry now carries `isDraft`, which
-the auto-merge sweep reads to leave a draft alone (Issue #1800).
+post-scan auto-merge pass**, not only at the start of the cycle. Inside the TTL
+that is one marker read; after a run that outlived the 600 s cache it is one
+search per owner where every consumer would otherwise list every repo.
+Concurrent slots share one pass. The post-scan pass itself lists live only the
+repos the cycle claimed from (`EnsureAutoMergeOptions.refreshRepos`) — the only
+repos it can have raised a PR in — instead of every repo per fleet author. And
+the prefetched `prs_<login>` entry now carries `isDraft`, which the auto-merge
+sweep reads to leave a draft alone (Issue #1800).
 
-The closed-PR listing (`fetchClosedPRsByUser`, `--state=closed …
-mergedAt,closedAt,body`) needed no new cache: it is already a *settled
-listing* (Issue #2409), served for up to 3,600 s while every open PR seen
-since it was cached is still open. It learns that open set from
-`prs_<login>`, so it is kept warm by the prefetch — including a reused one.
-The listing is also sorted by update recency (`--search sort:updated-desc`,
-Issue #2901), so a recently closed or merged PR is never pushed out of the
-100-PR window by newer-created ones.
+The closed-PR listing (`fetchClosedPRsByUser`,
+`--state=closed …
+mergedAt,closedAt,body`) needed no new cache: it is already a
+_settled listing_ (Issue #2409), served for up to 3,600 s while every open PR
+seen since it was cached is still open. It learns that open set from
+`prs_<login>`, so it is kept warm by the prefetch — including a reused one. The
+listing is also sorted by update recency (`--search sort:updated-desc`, Issue
+#2901), so a recently closed or merged PR is never pushed out of the 100-PR
+window by newer-created ones.
 
 Measured on the three-repo, two-author fixture in
-`worker/deno/tests/iteration_call_budget_test.ts`: `pr list` falls from 12 to
-6 for one cold iteration — the whole open half — at the cost of one
-`api graphql` search. The remaining 6 are the closed half.
+`worker/deno/tests/iteration_call_budget_test.ts`: `pr list` falls from 12 to 6
+for one cold iteration — the whole open half — at the cost of one `api graphql`
+search. The remaining 6 are the closed half.
 
 ### One cache key, one limit (Issue #1486)
 
 Two per-issue reads on the scan path are cached too (Issue #1818): the
 dependency fetcher's `issue_state_v2_<n>`, `issue_body_v1_<n>` and
-`issue_sub_issues_v2_<n>` (a referenced issue is viewed once per iteration,
-not once per idle re-scan; a failed sub-issues lookup rejects and is not
-cached under this key, so the next read retries rather than inheriting a
-stale failure — Issue #3321), and the scan-time content-integrity check reads
-the candidate's title and body from the listing instead of a live
-`gh issue view` — the claimed issue is still re-verified live at pickup
-(Issue #3647). Before this one cycle spent ~735 `issue view` calls on 94
-candidates re-scanned four times, and exhausted the fleet's shared GraphQL
-quota mid-window.
+`issue_sub_issues_v2_<n>` (a referenced issue is viewed once per iteration, not
+once per idle re-scan; a failed sub-issues lookup rejects and is not cached
+under this key, so the next read retries rather than inheriting a stale failure
+— Issue #3321), and the scan-time content-integrity check reads the candidate's
+title and body from the listing instead of a live `gh issue view` — the claimed
+issue is still re-verified live at pickup (Issue #3647). Before this one cycle
+spent ~735 `issue view` calls on 94 candidates re-scanned four times, and
+exhausted the fleet's shared GraphQL quota mid-window.
 
-`fetchAllIssues` shares a single `issues_all` entry between callers asking
-for different limits (200 from `find_oldest_issue`, 100 from
-`stuck_recovery` and `find_planning_issues`). Whichever call ran first used
-to decide what every later caller saw, so a pass expecting 200 issues could
-silently be handed 100. The entry now stores the `--limit` it was fetched
-with: a narrower entry is refetched rather than served, unless it came back
-short of its own limit, which proves the listing was exhaustive.
+`fetchAllIssues` shares a single `issues_all` entry between callers asking for
+different limits (200 from `find_oldest_issue`, 100 from `stuck_recovery` and
+`find_planning_issues`). Whichever call ran first used to decide what every
+later caller saw, so a pass expecting 200 issues could silently be handed 100.
+The entry now stores the `--limit` it was fetched with: a narrower entry is
+refetched rather than served, unless it came back short of its own limit, which
+proves the listing was exhaustive.
 
 ## A cheap REST signal gates the expensive GraphQL call (Issue #1488)
 
 REST and GraphQL bill against **separate budgets**, so a cheap REST probe that
 decides whether to spend a GraphQL call is close to free. The milestone branch
 sync was the worked example: per repo per cycle it made a REST
-`repos/<repo>/milestones` listing *and* a GraphQL `gh issue list --state closed`,
-and the GraphQL half existed only to answer "has anything been completed in this
-milestone yet?" — which the REST payload's own `closed_issues` count could
-answer for nothing.
+`repos/<repo>/milestones` listing _and_ a GraphQL
+`gh issue list --state closed`, and the GraphQL half existed only to answer "has
+anything been completed in this milestone yet?" — which the REST payload's own
+`closed_issues` count could answer for nothing.
 
 **That example is now retired, by deleting the question rather than gating it
 (Issue #1776).** A milestone that has completed nothing still drifts against a
 default branch taking ~27 commits a day, so the sync sweeps every open milestone
-and spends no GraphQL call at all; its cadence signal is
-`git rev-parse`, which bills against no API budget whatever. The cheapest
-version of this optimisation is always the one where the question turns out not
-to need asking at all.
+and spends no GraphQL call at all; its cadence signal is `git rev-parse`, which
+bills against no API budget whatever. The cheapest version of this optimisation
+is always the one where the question turns out not to need asking at all.
 
 Two properties made that gate safe where a TTL over the closed-issue list would
 not have been, and they are what the next such gate should copy:
@@ -276,50 +269,47 @@ not have been, and they are what the next such gate should copy:
 
 The general form applies beyond milestones: **any hot GraphQL path with a
 REST-visible change signal is a candidate for the same treatment**, and REST
-additionally supports conditional requests — a `304 Not Modified` costs
-nothing against the rate limit at all, which GraphQL has no equivalent for.
+additionally supports conditional requests — a `304 Not Modified` costs nothing
+against the rate limit at all, which GraphQL has no equivalent for.
 
 ## Pagination — never trust the default 30
 
-GitHub's REST and GraphQL APIs return only the **first 30 records** by
-default and **silently drop the rest** — no error, just truncated data.
-This is a data-loss footgun that has already caused bugs: `getIssueComments`
-ignored every comment past the 30th, and the
-reserved-label trust gate read a stale timeline event as the "most recent"
-one because the genuine latest event fell outside the default-30 window — a
-security bypass. Any `gh`
-call that lists a collection (comments, timeline events, issues, PRs,
-reviews, …) must page explicitly.
+GitHub's REST and GraphQL APIs return only the **first 30 records** by default
+and **silently drop the rest** — no error, just truncated data. This is a
+data-loss footgun that has already caused bugs: `getIssueComments` ignored every
+comment past the 30th, and the reserved-label trust gate read a stale timeline
+event as the "most recent" one because the genuine latest event fell outside the
+default-30 window — a security bypass. Any `gh` call that lists a collection
+(comments, timeline events, issues, PRs, reviews, …) must page explicitly.
 
 **REST — always page:**
 
-- Request the maximum page size and let `gh` walk every `Link: rel="next"`
-  page:
+- Request the maximum page size and let `gh` walk every `Link: rel="next"` page:
 
   ```sh
   gh api "repos/OWNER/REPO/issues/N/comments?per_page=100" --paginate
   ```
 
 - **`--paginate` with `--jq` prints one JSON array per page.** `gh` applies
-  `--jq` *per page*, so the concatenated output is not one JSON document, and
+  `--jq` _per page_, so the concatenated output is not one JSON document, and
   `gh` refuses `--slurp` alongside `--jq`. Either fetch the raw pages with
   `--paginate` alone and post-process the merged result in code (this is why
   `getIssueComments` moved its field remapping into the pure
-  `parseGhRawCommentsJson` helper), or keep the `--jq` projection and parse
-  the output **one array per line**, throwing on a malformed line so an
-  unreadable page never passes as an empty result —
-  `parseMarkerCommentPages` (`worker/deno/lib/marker_comment_pages.ts`) and
-  `parseNativeSubIssueRefPages` (`worker/deno/lib/native_sub_issues.ts`,
-  Issue #3319) do this. Never `JSON.parse` the whole payload as one array.
+  `parseGhRawCommentsJson` helper), or keep the `--jq` projection and parse the
+  output **one array per line**, throwing on a malformed line so an unreadable
+  page never passes as an empty result — `parseMarkerCommentPages`
+  (`worker/deno/lib/marker_comment_pages.ts`) and `parseNativeSubIssueRefPages`
+  (`worker/deno/lib/native_sub_issues.ts`, Issue #3319) do this. Never
+  `JSON.parse` the whole payload as one array.
 
 **GraphQL — paginate with `first:`/`last:` + cursors:**
 
 - Pass an explicit page size (`first: 100` / `last: 100`) and follow
   `pageInfo.hasNextPage` / `endCursor` for collections larger than one page.
-- When you only ever inspect the **most recent** items, read from the tail
-  with `last: N` (e.g. `timelineItems(... last: 100)`): the newest event is
-  then guaranteed present regardless of how many older events exist — strictly
-  more correct than `first: N` with no pagination.
+- When you only ever inspect the **most recent** items, read from the tail with
+  `last: N` (e.g. `timelineItems(... last: 100)`): the newest event is then
+  guaranteed present regardless of how many older events exist — strictly more
+  correct than `first: N` with no pagination.
 
 ## Batch path (GraphQL)
 
@@ -335,41 +325,40 @@ main-loop iteration and resets them at the iteration boundary.
 - Matching timeline requests receive the batch for page 1 (or no page
   parameter), and `[]` for page 2 and later. This terminates the REST-shaped
   pagination adapter even when the batch has exactly 100 events (Issue #3974).
-- This is a bounded tail of label adds, not the issue's full event history.
-  Its most recent add is present; a label absent from the tail cannot grant
+- This is a bounded tail of label adds, not the issue's full event history. Its
+  most recent add is present; a label absent from the tail cannot grant
   label-author trust. The wrapper does not request older GraphQL pages.
 - On a GraphQL failure, callers retain the per-issue REST fallback, whose
-  pagination reads through to a short page or fails closed at the page cap.
-  The discovery collectors catch a throwing label-author check per issue and
-  log a warning. Work-on, configured-label and low-priority collection skip
-  that issue; idle-task collection still honours its separate trusted-author
-  origin exception.
+  pagination reads through to a short page or fails closed at the page cap. The
+  discovery collectors catch a throwing label-author check per issue and log a
+  warning. Work-on, configured-label and low-priority collection skip that
+  issue; idle-task collection still honours its separate trusted-author origin
+  exception.
 
-The batch and file-backed cache are **complementary**. Batching shares live
-data within an iteration; file-backed cache hits can deny reserved-label trust
-across iterations. A file-cache entry that would grant trust still requires
-an API-backed check, which may use the current iteration's GraphQL batch or
-the REST fallback. The batch itself is fetched again in a later iteration;
-the combination does not promise zero calls on a quiet repository.
+The batch and file-backed cache are **complementary**. Batching shares live data
+within an iteration; file-backed cache hits can deny reserved-label trust across
+iterations. A file-cache entry that would grant trust still requires an
+API-backed check, which may use the current iteration's GraphQL batch or the
+REST fallback. The batch itself is fetched again in a later iteration; the
+combination does not promise zero calls on a quiet repository.
 
 ## Invalidation rules
 
-Caches are invalidated on the events below to prevent the worker
-acting on stale data **after it has just changed that data itself**.
-External label changes (made by humans or other tools) are tolerated
-until the TTL expires — that is the deliberate freshness/cost
-trade-off.
+Caches are invalidated on the events below to prevent the worker acting on stale
+data **after it has just changed that data itself**. External label changes
+(made by humans or other tools) are tolerated until the TTL expires — that is
+the deliberate freshness/cost trade-off.
 
-| Event | What is invalidated | API |
-| --- | --- | --- |
-| Worker adds/removes a label | The repo's issue/PR list (so the next read sees the change) | `IssueCache.invalidate(repo, "issues_all")` or `IssueCache.invalidateRepo(repo)` |
-| Worker writes a claim comment | Repo's issue list (claim is reflected in the issue body / labels) | `IssueCache.invalidateRepo(repo)` |
-| Worker creates/closes a PR | Repo's PR list cache (`prs_${user}`, `prs_closed_${user}`) | `IssueCache.invalidate(repo, key)` |
-| Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}`, `pr_linkage_open_v2_${number}`, `issue_state_v2_${number}` and every `issues_closed_milestone_<n>` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181, #1818, #3662) |
-| Default-branch tip moves | Every milestone branch's "already synced" verdict (Issue #1776) | `git rev-parse origin/<default>` against the ledger's `lastSyncedDefaultSha` |
-| Rate-limit signal active | Pre-flight cache is bypassed unconditionally | Step 1 of `preflightGitHubRateLimit` |
-| Pre-flight remaining < 2× threshold | Pre-flight cache is bypassed for this call (re-checks fresh) | `readPreflightCache` returns null |
-| Worker label change to timeline (planned) | Timeline entry for the affected issue | `IssueCache.invalidate(repo, "${number}#timeline")` (future) |
+| Event                                     | What is invalidated                                                                                                                                                         | API                                                                              |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Worker adds/removes a label               | The repo's issue/PR list (so the next read sees the change)                                                                                                                 | `IssueCache.invalidate(repo, "issues_all")` or `IssueCache.invalidateRepo(repo)` |
+| Worker writes a claim comment             | Repo's issue list (claim is reflected in the issue body / labels)                                                                                                           | `IssueCache.invalidateRepo(repo)`                                                |
+| Worker creates/closes a PR                | Repo's PR list cache (`prs_${user}`, `prs_closed_${user}`)                                                                                                                  | `IssueCache.invalidate(repo, key)`                                               |
+| Worker closes/reopens an issue            | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}`, `pr_linkage_open_v2_${number}`, `issue_state_v2_${number}` and every `issues_closed_milestone_<n>` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181, #1818, #3662)             |
+| Default-branch tip moves                  | Every milestone branch's "already synced" verdict (Issue #1776)                                                                                                             | `git rev-parse origin/<default>` against the ledger's `lastSyncedDefaultSha`     |
+| Rate-limit signal active                  | Pre-flight cache is bypassed unconditionally                                                                                                                                | Step 1 of `preflightGitHubRateLimit`                                             |
+| Pre-flight remaining < 2× threshold       | Pre-flight cache is bypassed for this call (re-checks fresh)                                                                                                                | `readPreflightCache` returns null                                                |
+| Worker label change to timeline (planned) | Timeline entry for the affected issue                                                                                                                                       | `IssueCache.invalidate(repo, "${number}#timeline")` (future)                     |
 
 Note: `issues_closed_milestone_<n>` (Issue #3662, written by
 `fetchClosedIssuesByMilestoneNumber` in `worker/deno/lib/issue_query.ts`) is
@@ -386,18 +375,18 @@ invalidation, every entry is automatically refreshed at most 10 minutes
 
 ### Issue closes are never left to the TTL (Issue #181)
 
-An issue the worker closed and a 600 s issue-list entry that still lists it
-as open is the one combination the TTL cannot absorb: the scan re-claimed a
-closed idle-task wrapper on each of the next three pool entries while
-thirteen open wrappers in the same repo went untouched. Two defences now
-apply, both driven from the single `gh` chokepoint (`spawnGh`):
+An issue the worker closed and a 600 s issue-list entry that still lists it as
+open is the one combination the TTL cannot absorb: the scan re-claimed a closed
+idle-task wrapper on each of the next three pool entries while thirteen open
+wrappers in the same repo went untouched. Two defences now apply, both driven
+from the single `gh` chokepoint (`spawnGh`):
 
-- **Cache invalidation** — a successful `gh issue close`/`gh issue reopen`,
-  or its REST form `gh api -X PATCH repos/o/r/issues/N -f state=closed|open`
-  (the idle-task wrapper closure's shape since Issue #1753, read by the same
+- **Cache invalidation** — a successful `gh issue close`/`gh issue reopen`, or
+  its REST form `gh api -X PATCH repos/o/r/issues/N -f state=closed|open` (the
+  idle-task wrapper closure's shape since Issue #1753, read by the same
   `classifyIssueLifecycle` the agent-side guard uses), drops the repo's
-  close-sensitive entries (the table row above), so the next scan re-reads
-  the list from GitHub.
+  close-sensitive entries (the table row above), so the next scan re-reads the
+  list from GitHub.
 - **A per-run registry** — `ProcessedIssueRegistry`
   (`worker/deno/lib/processed_issue_registry.ts`) records the close, and every
   terminal outcome of the scan loop (success, skip, failure) besides.
@@ -415,20 +404,19 @@ flowchart LR
     R --> K["claimIssue refuses<br/>already_closed"]
 ```
 
-The registry is in-process and one process is one run, so an entry lives
-exactly as long as the run: a genuinely re-openable issue is reconsidered on
-the next run, and a `gh issue reopen` clears the entry immediately.
+The registry is in-process and one process is one run, so an entry lives exactly
+as long as the run: a genuinely re-openable issue is reconsidered on the next
+run, and a `gh issue reopen` clears the entry immediately.
 
 ## Telemetry
 
-`worker/deno/lib/gh_call_metrics.ts` exposes in-memory counters that
-record every `gh` invocation, every cache hit/miss/expiry, and the
-sub-command bucket of each call (`issue list`, `pr view`, `api`, …).
-The invocation counter is fed from the `gh` spawn chokepoint (`spawnGh`
-in `worker/deno/lib/gh_spawn.ts`, Issue #1485), so a module that spawns
-`gh` directly is counted exactly like one that goes through
-`runGhCommandRaw()`; nothing can issue a `gh` process uncounted.
-The counters are reset at the start of each main-loop iteration and
+`worker/deno/lib/gh_call_metrics.ts` exposes in-memory counters that record
+every `gh` invocation, every cache hit/miss/expiry, and the sub-command bucket
+of each call (`issue list`, `pr view`, `api`, …). The invocation counter is fed
+from the `gh` spawn chokepoint (`spawnGh` in `worker/deno/lib/gh_spawn.ts`,
+Issue #1485), so a module that spawns `gh` directly is counted exactly like one
+that goes through `runGhCommandRaw()`; nothing can issue a `gh` process
+uncounted. The counters are reset at the start of each main-loop iteration and
 logged as a one-line summary at the end:
 
 ```
@@ -437,196 +425,186 @@ gh-calls: 17 total, 12 saved-by-cache, 0 expired, issue-list=5, pr-list=3, api=9
 
 Reading the line:
 
-- **`total`** — every `gh` invocation made during the iteration. Lower
-  is better (cache and batch wins both reduce this number).
-- **`saved-by-cache`** — the number of cache hits that prevented a
-  `gh` call. Roughly `≥ total` on a healthy steady-state repo.
-- **`expired`** — entries present but past TTL. A high count suggests
-  iterations are running more frequently than the TTL accommodates;
-  consider raising the TTL or the iteration interval.
-- **Per-bucket counts** (`issue-list=5`, …) — sorted by call count
-  descending. Spikes in `api=` typically indicate timeline calls and
-  motivate the work in /.
+- **`total`** — every `gh` invocation made during the iteration. Lower is better
+  (cache and batch wins both reduce this number).
+- **`saved-by-cache`** — the number of cache hits that prevented a `gh` call.
+  Roughly `≥ total` on a healthy steady-state repo.
+- **`expired`** — entries present but past TTL. A high count suggests iterations
+  are running more frequently than the TTL accommodates; consider raising the
+  TTL or the iteration interval.
+- **Per-bucket counts** (`issue-list=5`, …) — sorted by call count descending.
+  Spikes in `api=` typically indicate timeline calls and motivate the work in /.
 
 The same metrics object is exported through `getGhCallMetrics()` for
-programmatic inspection, and `find_oldest_issue.ts` reuses the
-underlying counters so its `cache: N hits, M misses` log matches.
+programmatic inspection, and `find_oldest_issue.ts` reuses the underlying
+counters so its `cache: N hits, M misses` log matches.
 
-A companion line, `graphql-calls: N total, <source>=n, …`, counts the
-subset of those invocations that are GraphQL-backed and attributes them
-to the scan that issued them — by the four-step resolution described
-below, which since Issue #1586 names the ordinary scan traffic too.
-Every `gh` sub-command (`issue list`,
-`pr view`, `search`, …) is GraphQL-backed, as is an explicit
-`gh api graphql`; only a plain REST `gh api <path>` is not. The line
-uses the same predicate as the primary-quota latch
-(`isQuotaExemptGhCall`), so the two can never disagree about what
-counts. Before Issue #1485 only `gh api graphql` was counted, and the
-line showed a fraction of the real burn — a whole cycle's `issue list`
-and `pr list` traffic was invisible to it.
+A companion line, `graphql-calls: N total, <source>=n, …`, counts the subset of
+those invocations that are GraphQL-backed and attributes them to the scan that
+issued them — by the four-step resolution described below, which since Issue
+#1586 names the ordinary scan traffic too. Every `gh` sub-command (`issue list`,
+`pr view`, `search`, …) is GraphQL-backed, as is an explicit `gh api graphql`;
+only a plain REST `gh api <path>` is not. The line uses the same predicate as
+the primary-quota latch (`isQuotaExemptGhCall`), so the two can never disagree
+about what counts. Before Issue #1485 only `gh api graphql` was counted, and the
+line showed a fraction of the real burn — a whole cycle's `issue list` and
+`pr list` traffic was invisible to it.
 
-The primary-quota latch (Issue #42) is set and enforced at the same
-chokepoint. The first GraphQL-backed spawn from any module that comes
-back `API rate limit already exceeded` is handed to the hook `github.ts`
-registers, which probes the reset, latches the process and writes the
-shared rate-limit signal (Issue #1540 — before that only
-`runGhCommandRaw`'s own catch could latch, so a refusal seen by a direct
-`spawnGh` caller was logged, retried and never latched). From then on
-every GraphQL-backed spawn returns a `gh command skipped: … API rate
-limit already exceeded` failure without starting a process, while REST
-`gh api <path>` calls and the quota probe that learns the reset still
-run.
+The primary-quota latch (Issue #42) is set and enforced at the same chokepoint.
+The first GraphQL-backed spawn from any module that comes back
+`API rate limit already exceeded` is handed to the hook `github.ts` registers,
+which probes the reset, latches the process and writes the shared rate-limit
+signal (Issue #1540 — before that only `runGhCommandRaw`'s own catch could
+latch, so a refusal seen by a direct `spawnGh` caller was logged, retried and
+never latched). From then on every GraphQL-backed spawn returns a
+`gh command skipped: … API rate
+limit already exceeded` failure without starting
+a process, while REST `gh api <path>` calls and the quota probe that learns the
+reset still run.
 
-A bare `Forbidden` from `Post "https://api.github.com/graphql"` is
-classified as a secondary-limit refusal. The worker latches GraphQL-backed
-calls for the short cool-down and writes the shared rate-limit signal. A
-standalone quota probe can discover and latch that refusal without probing
-again; a healthy REST quota fallback cannot clear the cool-down or let the
-merged-PR issue sweep proceed. Repository sweeps stop at the first primary
-or secondary refusal, leaving the current repository's unfinished watermark
-state for the next cycle. A call skipped by either latch is logged as INFO
-by lifecycle observation (per-PR snapshots and the closed-PR listing),
-including skips wrapped by `runGhOrThrow`, while actual observation faults
-remain ERROR. Cached stale-branch lookups propagate request failures to the
-cleanup sweep so it can stop at a rate-limit refusal; any other lookup failure
-skips that branch until the next sweep, as the uncached lookup does.
+A bare `Forbidden` from `Post "https://api.github.com/graphql"` is classified as
+a secondary-limit refusal. The worker latches GraphQL-backed calls for the short
+cool-down and writes the shared rate-limit signal. A standalone quota probe can
+discover and latch that refusal without probing again; a healthy REST quota
+fallback cannot clear the cool-down or let the merged-PR issue sweep proceed.
+Repository sweeps stop at the first primary or secondary refusal, leaving the
+current repository's unfinished watermark state for the next cycle. A call
+skipped by either latch is logged as INFO by lifecycle observation (per-PR
+snapshots and the closed-PR listing), including skips wrapped by `runGhOrThrow`,
+while actual observation faults remain ERROR. Cached stale-branch lookups
+propagate request failures to the cleanup sweep so it can stop at a rate-limit
+refusal; any other lookup failure skips that branch until the next sweep, as the
+uncached lookup does.
 
 ### How the two counters relate
 
-`graphql-calls: N total` and the `api-graphql=` bucket of the
-`gh-calls:` line answer different questions, and both are wanted:
+`graphql-calls: N total` and the `api-graphql=` bucket of the `gh-calls:` line
+answer different questions, and both are wanted:
 
-- **`graphql-calls: N total`** counts *every* GraphQL-billed
-  sub-command — `issue list`, `pr view`, `search`, and `api graphql`.
+- **`graphql-calls: N total`** counts _every_ GraphQL-billed sub-command —
+  `issue list`, `pr view`, `search`, and `api graphql`.
 - **`api-graphql=` in `gh-calls:`** is the subset that is an explicit
   `gh api graphql`. It is always ≤ the `graphql-calls:` total.
 
-So `api-graphql=23` beside `graphql-calls: 796 total` is normal, not a
-defect. What the two must agree on is *which argv is an `api graphql`
-invocation*, and since Issue #1588 they do by construction: both derive
-from the one flag-aware classifier in `worker/deno/lib/gh_argv.ts`
-(`classifyGhCall`), which skips flags **and the values of value-taking
-flags** (`-f`, `-F`, `--field`, `--raw-field`, `-H`, `--header`, `-X`,
-`--method`, `-q`, `--jq`, `-t`, `--template`, `--input`, `-R`,
-`--repo`, `--cache`, `-p`, `--preview`, `--hostname` — every
-value-taking flag `gh api` itself has) before reading the endpoint
-token. argv is normalised by `normaliseGhArgs`
-(`worker/deno/lib/gh_flag_parser.ts`, Issue #3867/#1219) first and
-pflag shorthand groups are then read the way pflag reads them, so
-neither `gh api -iXPOST graphql` nor `gh api -iq .data graphql` — both
-`-i` plus a value-taking shorthand — can hide the endpoint token behind
-a flag value. Before that, `classifyGhArgs` read
-`["api", "-f", "query=…", "graphql"]` as REST `api` while the latch
-read it as GraphQL, and the latch's `args.includes("graphql")` matched
-the token anywhere in argv — including as a flag value.
+So `api-graphql=23` beside `graphql-calls: 796 total` is normal, not a defect.
+What the two must agree on is _which argv is an `api graphql` invocation_, and
+since Issue #1588 they do by construction: both derive from the one flag-aware
+classifier in `worker/deno/lib/gh_argv.ts` (`classifyGhCall`), which skips flags
+**and the values of value-taking flags** (`-f`, `-F`, `--field`, `--raw-field`,
+`-H`, `--header`, `-X`, `--method`, `-q`, `--jq`, `-t`, `--template`, `--input`,
+`-R`, `--repo`, `--cache`, `-p`, `--preview`, `--hostname` — every value-taking
+flag `gh api` itself has) before reading the endpoint token. argv is normalised
+by `normaliseGhArgs` (`worker/deno/lib/gh_flag_parser.ts`, Issue #3867/#1219)
+first and pflag shorthand groups are then read the way pflag reads them, so
+neither `gh api -iXPOST graphql` nor `gh api -iq .data graphql` — both `-i` plus
+a value-taking shorthand — can hide the endpoint token behind a flag value.
+Before that, `classifyGhArgs` read `["api", "-f", "query=…", "graphql"]` as REST
+`api` while the latch read it as GraphQL, and the latch's
+`args.includes("graphql")` matched the token anywhere in argv — including as a
+flag value.
 
-Only a positively-classified REST `gh api <path>` is exempt from the
-latch; anything the classifier cannot place as REST — a sub-command, an
-`api` call with no endpoint token, an argv with no positional at all —
-stays GraphQL-billed. That is the safe direction for the tightening:
-the flag list would have to gain a *false* entry, not miss one, for a
-real GraphQL call to be waved through as REST.
+Only a positively-classified REST `gh api <path>` is exempt from the latch;
+anything the classifier cannot place as REST — a sub-command, an `api` call with
+no endpoint token, an argv with no positional at all — stays GraphQL-billed.
+That is the safe direction for the tightening: the flag list would have to gain
+a _false_ entry, not miss one, for a real GraphQL call to be waved through as
+REST.
 
-Because every `withGraphQLSource` call site wraps exactly one
-`gh api graphql` spawn, the **explicitly-sourced** buckets (steps 1–2
-of the resolution below — not the derived `priority:` ones, and not
-`unattributed`) should sum to exactly the `api-graphql=` count. A
-divergence therefore means one of two concrete things, and nothing
-vaguer: either a `withGraphQLSource` wrapper spans a call that is not
-an `api graphql` spawn (the sum runs high), or an `api graphql` call
+Because every `withGraphQLSource` call site wraps exactly one `gh api graphql`
+spawn, the **explicitly-sourced** buckets (steps 1–2 of the resolution below —
+not the derived `priority:` ones, and not `unattributed`) should sum to exactly
+the `api-graphql=` count. A divergence therefore means one of two concrete
+things, and nothing vaguer: either a `withGraphQLSource` wrapper spans a call
+that is not an `api graphql` spawn (the sum runs high), or an `api graphql` call
 site is not wrapped at all (the sum runs low). A table-driven test in
-`worker/deno/tests/gh_call_metrics_test.ts` holds both functions to the
-same argv rows, so a future edit to either classifier that reopens the
-divergence fails before merge.
+`worker/deno/tests/gh_call_metrics_test.ts` holds both functions to the same
+argv rows, so a future edit to either classifier that reopens the divergence
+fails before merge.
 
 Source attribution is scoped to the async chain that entered it
-(`withGraphQLSource`, Issue #1585), so two lanes running at once cannot
-credit each other's calls. Before that, the source was a process-wide
-stack: while `comment_batch.ts` awaited its `api graphql` spawn, an
-`issue list` from the lane beside it was credited to `comments-batch`.
-That mechanism explains the earlier reading where the attributed
-buckets summed to 40 against an `api-graphql` sub-command counter of 23
-for the same cycle — but only if the 40 was summed over the *named*
-buckets. Every `withGraphQLSource` call site wraps exactly one
-`gh api graphql` spawn, so absent concurrency the named buckets sum to
-exactly the `api graphql` count, and only a shared stack could let one
-absorb 17 unrelated sub-command calls. Summed over *all* buckets
-including `unattributed`, the gap needs no cross-crediting: since
-Issue #1485 the source counters count every GraphQL-backed sub-command,
-while the `api graphql` sub-command bucket counts only the explicit
-ones, so the two measure different sets by design.
+(`withGraphQLSource`, Issue #1585), so two lanes running at once cannot credit
+each other's calls. Before that, the source was a process-wide stack: while
+`comment_batch.ts` awaited its `api graphql` spawn, an `issue list` from the
+lane beside it was credited to `comments-batch`. That mechanism explains the
+earlier reading where the attributed buckets summed to 40 against an
+`api-graphql` sub-command counter of 23 for the same cycle — but only if the 40
+was summed over the _named_ buckets. Every `withGraphQLSource` call site wraps
+exactly one `gh api graphql` spawn, so absent concurrency the named buckets sum
+to exactly the `api graphql` count, and only a shared stack could let one absorb
+17 unrelated sub-command calls. Summed over _all_ buckets including
+`unattributed`, the gap needs no cross-crediting: since Issue #1485 the source
+counters count every GraphQL-backed sub-command, while the `api graphql`
+sub-command bucket counts only the explicit ones, so the two measure different
+sets by design.
 
-The source of a GraphQL-billed call is resolved in four steps
-(Issue #1586):
+The source of a GraphQL-billed call is resolved in four steps (Issue #1586):
 
 1. the explicit `enterGraphQLSource()` stack — innermost wins, so an
    `enterGraphQLSource()` nested inside a wrapped chain still beats it;
 2. else the async-scoped `withGraphQLSource()` context;
-3. else the **active priority** — the `enterPriority()` stack top, else
-   the async-scoped `withPriorityContext()` — emitted with a `priority:`
-   prefix, e.g. `priority:issue-scanning`;
+3. else the **active priority** — the `enterPriority()` stack top, else the
+   async-scoped `withPriorityContext()` — emitted with a `priority:` prefix,
+   e.g. `priority:issue-scanning`;
 4. else the `unattributed` bucket.
 
-Only the eight batching modules wrap themselves in an explicit GraphQL
-source, so before step 3 existed the bulk of the burn — the ordinary
-`issue list` / `pr list` / `issue view` traffic — had no source at all
-and `unattributed` was most of the line. With the priority fallback a
-cycle reads like `graphql-calls: 796 total,
-priority:issue-scanning=239, timeline-batch=26, …`. The `priority:`
-prefix keeps a derived bucket distinguishable from an explicit one, so
-a priority named the same as a source cannot merge with it.
+Only the eight batching modules wrap themselves in an explicit GraphQL source,
+so before step 3 existed the bulk of the burn — the ordinary `issue list` /
+`pr list` / `issue view` traffic — had no source at all and `unattributed` was
+most of the line. With the priority fallback a cycle reads like
+`graphql-calls: 796 total,
+priority:issue-scanning=239, timeline-batch=26, …`.
+The `priority:` prefix keeps a derived bucket distinguishable from an explicit
+one, so a priority named the same as a source cannot merge with it.
 
-`unattributed` is therefore an anomaly signal, not the normal case: it
-means a call was issued with neither a GraphQL source nor a priority
-context in scope — a pass that runs outside `withPriorityContext`. The
-buckets sum exactly to the total, and a unit test in
-`worker/deno/tests/gh_call_metrics_test.ts` asserts that invariant, so
-any future path that counts a GraphQL call without choosing a bucket
-fails before merge.
+`unattributed` is therefore an anomaly signal, not the normal case: it means a
+call was issued with neither a GraphQL source nor a priority context in scope —
+a pass that runs outside `withPriorityContext`. The buckets sum exactly to the
+total, and a unit test in `worker/deno/tests/gh_call_metrics_test.ts` asserts
+that invariant, so any future path that counts a GraphQL call without choosing a
+bucket fails before merge.
 
 The primary-quota latch (Issue #42) and the secondary-limit cool-down are
 enforced at the same chokepoint: once either is active, every GraphQL-backed
-spawn from any module returns a `gh command skipped: …` failure without
-starting a process, while REST `gh api <path>` calls and the quota probe that
-learns the primary reset still run.
+spawn from any module returns a `gh command skipped: …` failure without starting
+a process, while REST `gh api <path>` calls and the quota probe that learns the
+primary reset still run.
 
 ### The `gh-calls-by-priority:` line — which pass spent the calls
 
-A third line attributes the same invocations to the cycle phase that
-issued them:
+A third line attributes the same invocations to the cycle phase that issued
+them:
 
 ```
 gh-calls-by-priority: issue-scanning=239 post-scan-auto-merge=12 initialisation=6
 ```
 
-Every dispatched priority handler is attributed by
-`executePriorityHandler`, and the Priority 2 scan by its own
-`"Issue Scanning"` wrapper. Issue #1587 extended the axis to the phases
-that run *outside* priority dispatch, each in its own named context:
-`initialisation`, `issue-callbacks`, `post-scan-auto-merge`,
+Every dispatched priority handler is attributed by `executePriorityHandler`, and
+the Priority 2 scan by its own `"Issue Scanning"` wrapper. Issue #1587 extended
+the axis to the phases that run _outside_ priority dispatch, each in its own
+named context: `initialisation`, `issue-callbacks`, `post-scan-auto-merge`,
 `idle-work-hooks`, plus the outer-loop passes the same audit found —
 `trust-refresh`, `fleet-pr-prefetch`, `stale-assignment-recovery`,
-`github-auth-check` and `liveness-guard`. Before that, those phases'
-calls appeared in `gh-calls:` and in no by-priority bucket at all.
+`github-auth-check` and `liveness-guard`. Before that, those phases' calls
+appeared in `gh-calls:` and in no by-priority bucket at all.
 
-Attribution uses `withPriorityContext` (async-scoped, Issue #213), so a
-phase overlapping the scan pool cannot cross-credit it, and the
-innermost context wins — the callbacks a scan slot fires are credited
-to `issue-callbacks`, not to `issue-scanning`.
+Attribution uses `withPriorityContext` (async-scoped, Issue #213), so a phase
+overlapping the scan pool cannot cross-credit it, and the innermost context wins
+— the callbacks a scan slot fires are credited to `issue-callbacks`, not to
+`issue-scanning`.
 
 Two probes are deliberately left bare: `preflightGitHubRateLimit` and
-`describeGraphqlQuota` read the quota itself, which GitHub does not
-charge, and both run after the summary line is emitted.
+`describeGraphqlQuota` read the quota itself, which GitHub does not charge, and
+both run after the summary line is emitted.
 
 ### The `graphql-quota:` line — points, as GitHub counts them
 
-The call counters above count *this process's* invocations, and they
-count them as calls, not points: a `gh issue list --limit 500` is one
-call and about five points, a 25-issue timeline batch is one call and
-about twenty-five. The line that follows them is different in kind —
-it is GitHub's own accounting of the account's GraphQL primary quota,
-read from the response headers of a free `{ rateLimit { … } }` probe
-(`worker/deno/lib/graphql_quota_probe.ts`, Issue #1456):
+The call counters above count _this process's_ invocations, and they count them
+as calls, not points: a `gh issue list --limit 500` is one call and about five
+points, a 25-issue timeline batch is one call and about twenty-five. The line
+that follows them is different in kind — it is GitHub's own accounting of the
+account's GraphQL primary quota, read from the response headers of a free
+`{ rateLimit { … } }` probe (`worker/deno/lib/graphql_quota_probe.ts`, Issue
+#1456):
 
 ```
 graphql-quota: used=1579/5000 remaining=3421 window-reopens at 2026-09-07 11:57:27 AEST (in 13m 2s) spent-since-last-cycle=363 (every consumer of this GitHub account, not just this host)
@@ -634,123 +612,121 @@ graphql-quota: used=1579/5000 remaining=3421 window-reopens at 2026-09-07 11:57:
 
 Reading the line:
 
-- **`used` / `remaining`** — the window's true state. When `remaining`
-  is far below what the `gh-calls:` counts could explain, sibling hosts
-  on the same GitHub account are spending the balance.
+- **`used` / `remaining`** — the window's true state. When `remaining` is far
+  below what the `gh-calls:` counts could explain, sibling hosts on the same
+  GitHub account are spending the balance.
 - **`window-reopens`** — the reset GitHub reports. This is the value the
-  primary-quota latch and the pre-flight pause now wait for; it is
-  typically minutes away, not the flat hour the REST `rate_limit`
-  document used to imply.
-- **`spent-since-last-cycle`** — the points the *account* spent between
-  this reading and the previous cycle's, idle sleep included. It is not
-  this host's cost alone, and the line says so.
+  primary-quota latch and the pre-flight pause now wait for; it is typically
+  minutes away, not the flat hour the REST `rate_limit` document used to imply.
+- **`spent-since-last-cycle`** — the points the _account_ spent between this
+  reading and the previous cycle's, idle sleep included. It is not this host's
+  cost alone, and the line says so.
 
-Why not `gh api rate_limit`? Because it lies for at least some tokens:
-in production it reported the GraphQL bucket as `used: 0` with a reset
-exactly one hour out while, in the same second, a GraphQL response on
-the same token carried `X-Ratelimit-Used: 1104` and a reset eighteen
-minutes away. The headers are the bucket's own accounting; the REST
-document is now only the fallback when the probe cannot run.
+Why not `gh api rate_limit`? Because it lies for at least some tokens: in
+production it reported the GraphQL bucket as `used: 0` with a reset exactly one
+hour out while, in the same second, a GraphQL response on the same token carried
+`X-Ratelimit-Used: 1104` and a reset eighteen minutes away. The headers are the
+bucket's own accounting; the REST document is now only the fallback when the
+probe cannot run.
 
 ### The `budget-pacing:` line — the sleep that stretches to fit the window
 
-The end-of-cycle sleep used to be a fixed `sleepInterval` no matter how
-much of the hour's quota was left, so a busy launch could spend its way
-to the pre-flight threshold long before the window reopened. Since
-Issue #2447 the `scanHadSuccess` branch of the end-of-cycle sleep asks
-the same free probe and, when the account spent more last cycle than the
-remaining window can afford per cycle, stretches the sleep
-proportionally (capped) so the hour's quota lasts the hour:
+The end-of-cycle sleep used to be a fixed `sleepInterval` no matter how much of
+the hour's quota was left, so a busy launch could spend its way to the
+pre-flight threshold long before the window reopened. Since Issue #2447 the
+`scanHadSuccess` branch of the end-of-cycle sleep asks the same free probe and,
+when the account spent more last cycle than the remaining window can afford per
+cycle, stretches the sleep proportionally (capped) so the hour's quota lasts the
+hour:
 
 ```
 budget-pacing: remaining=4000 affordable/cycle=200 spent=300 sleep=450s (last cycle's spend exceeds the affordable spend per cycle)
 ```
 
 The decision lives in `worker/deno/lib/budget_pacing.ts`
-(`computePacedSleepSeconds`), pure so every input is a number and the
-output is derived from them:
+(`computePacedSleepSeconds`), pure so every input is a number and the output is
+derived from them:
 
-- **`BUDGET_RESERVE_FRACTION = 0.2`** — one fifth of the window
-  (`limit` points, 5,000 for a user token) is kept in reserve for issue
-  work, so pacing never spends the last 1,000 points on idle sleep.
-- **`PACED_SLEEP_CAP_MULTIPLE = 3`** — the paced sleep is at most three
-  times the base it was given. That base is the run loop's jittered
-  `sleepInterval` (default 300 s, see
-  [Operational defaults](CONFIGURATION.md)). A default host can therefore
-  sleep longer than its jittered base — up to three times that base —
-  when the window is overspent. Pacing never returns a sleep shorter
-  than the base. A `sleepInterval` of zero caps at zero, which stays a
-  finite number.
+- **`BUDGET_RESERVE_FRACTION = 0.2`** — one fifth of the window (`limit` points,
+  5,000 for a user token) is kept in reserve for issue work, so pacing never
+  spends the last 1,000 points on idle sleep.
+- **`PACED_SLEEP_CAP_MULTIPLE = 3`** — the paced sleep is at most three times
+  the base it was given. That base is the run loop's jittered `sleepInterval`
+  (default 300 s, see [Operational defaults](CONFIGURATION.md)). A default host
+  can therefore sleep longer than its jittered base — up to three times that
+  base — when the window is overspent. Pacing never returns a sleep shorter than
+  the base. A `sleepInterval` of zero caps at zero, which stays a finite number.
 - The **affordable spend per cycle** is
   `(remaining − limit·reserve) / cyclesLeftInWindow`, where
   `cyclesLeftInWindow = max(1, (reset − now) / (cycleSeconds + baseSleep))`.
-  When `spentLastCycle` is at or below that, the base sleep stands; when
-  it exceeds it, the sleep is stretched by the overspend ratio
+  When `spentLastCycle` is at or below that, the base sleep stands; when it
+  exceeds it, the sleep is stretched by the overspend ratio
   (`base × spent / affordable`) and capped at three times the base.
-- `inReserve` is set when `remaining ≤ limit·reserve`; the sleep is
-  never returned below the base. With nothing affordable left there is
-  no finite overspend ratio, so the stretch goes straight to the cap —
-  which is also what keeps a `sleep_interval` of zero out of
-  `0 × Infinity`. `inReserve` picks the level the line is logged at:
-  INFO for an ordinary stretch (the feature working), WARNING once the
-  window is down to its reserve and the worker is being throttled.
+- `inReserve` is set when `remaining ≤ limit·reserve`; the sleep is never
+  returned below the base. With nothing affordable left there is no finite
+  overspend ratio, so the stretch goes straight to the cap — which is also what
+  keeps a `sleep_interval` of zero out of `0 × Infinity`. `inReserve` picks the
+  level the line is logged at: INFO for an ordinary stretch (the feature
+  working), WARNING once the window is down to its reserve and the worker is
+  being throttled.
 
-`spentLastCycle` is the spend since the **previous reading**, not since
-this cycle opened: a cycle that left by the circuit-breaker branch or a
-rate-limit pause took no reading, so its spend is still inside the next
-diff. `cycleSeconds` is measured over that same span, so the two always
-agree.
+`spentLastCycle` is the spend since the **previous reading**, not since this
+cycle opened: a cycle that left by the circuit-breaker branch or a rate-limit
+pause took no reading, so its spend is still inside the next diff.
+`cycleSeconds` is measured over that same span, so the two always agree.
 
-A missing `readGraphqlQuota` dep or a `null` reading (the probe could
-not run) leaves today's fixed sleep unchanged, and so does the first
-cycle, which has no previous reading to diff against. A probe that
-*throws* also keeps the fixed sleep but logs a WARNING naming the
-error — a quota probe failing is not the same as one reporting plenty,
-and it is not allowed to look like it. The circuit-breaker back-off
-branch is untouched; pacing only ever lengthens the successful-cycle
-settle sleep.
+A missing `readGraphqlQuota` dep or a `null` reading (the probe could not run)
+leaves today's fixed sleep unchanged, and so does the first cycle, which has no
+previous reading to diff against. A probe that _throws_ also keeps the fixed
+sleep but logs a WARNING naming the error — a quota probe failing is not the
+same as one reporting plenty, and it is not allowed to look like it. The
+circuit-breaker back-off branch is untouched; pacing only ever lengthens the
+successful-cycle settle sleep.
 
 ### The `deferrable` tier — the sweeps that stand down in the reserve
 
-A longer sleep is not the whole answer. The fixed-cost maintenance
-sweeps spend their GraphQL calls every cycle whether or not there is
-anything for them to do, so inside the reserve they compete with the
-issue work the reserve exists to protect. Since Issue #2449 a priority
-handler may carry `budgetTier: "deferrable"`
-(`PriorityHandler`, `worker/deno/lib/run_core.ts`), and the cycle skips
-every deferrable handler while the previous cycle's reading put the
-window at or below its reserve — `isInReserve(limit, remaining)`, the
+A longer sleep is not the whole answer. The fixed-cost maintenance sweeps spend
+their GraphQL calls every cycle whether or not there is anything for them to do,
+so inside the reserve they compete with the issue work the reserve exists to
+protect. Since Issue #2449 a priority handler may carry
+`budgetTier: "deferrable"` (`PriorityHandler`, `worker/deno/lib/run_core.ts`),
+and the cycle skips every deferrable handler while the previous cycle's reading
+put the window at or below its reserve — `isInReserve(limit, remaining)`, the
 same `remaining ≤ limit·reserve` rule the pacing decision reports.
 
-Exactly five handlers are tiered, all of them sweeps whose work keeps
-until the next cycle:
+Exactly five handlers are tiered, all of them sweeps whose work keeps until the
+next cycle:
 
-| Priority | Handler                            |
-| -------- | ---------------------------------- |
-| 1.64     | Reconcile PR Body Digests          |
-| 1.67     | Close Issues for Merged PRs        |
-| 1.68     | Recover Assigned with Closed PRs   |
-| 1.7      | Milestone Completions              |
-| 1.81     | Failure-Detection Repair Resume    |
+| Priority | Handler                          |
+| -------- | -------------------------------- |
+| 1.64     | Reconcile PR Body Digests        |
+| 1.67     | Close Issues for Merged PRs      |
+| 1.68     | Recover Assigned with Closed PRs |
+| 1.7      | Milestone Completions            |
+| 1.81     | Failure-Detection Repair Resume  |
 
-The tiering above is a separate gate from the run's one-hour target: once that target has passed, no new handler starts at all, so Issue Scanning, PR Feedback, CI Fix and Auto-Merge defer to the next cycle, while work already dispatched is not interrupted. Before the target, none of these four is tiered, and the same is true of the local-only Closed Milestone Housekeeping, which spends no GraphQL budget to skip. The reconcile pass (1.64) is tiered as well: it services no
+The tiering above is a separate gate from the run's one-hour target: once that
+target has passed, no new handler starts at all, so Issue Scanning, PR Feedback,
+CI Fix and Auto-Merge defer to the next cycle, while work already dispatched is
+not interrupted. Before the target, none of these four is tiered, and the same
+is true of the local-only Closed Milestone Housekeeping, which spends no GraphQL
+budget to skip. The reconcile pass (1.64) is tiered as well: it services no
 in-flight run, and a body it skips in the reserve stays as it is until a cycle
 outside the reserve reads it.
 
-A cycle that skips says so once, at WARNING beside the pacing line that
-set the flag:
+A cycle that skips says so once, at WARNING beside the pacing line that set the
+flag:
 
 ```
 budget-pacing: in reserve — skipped deferrable sweeps: Reconcile PR Body Digests, Close Issues for Merged PRs, Recover Assigned with Closed PRs, Milestone Completions, Failure-Detection Repair Resume
 ```
 
-No reading is no evidence. The flag is **consumed** by the cycle that
-reads it, so only a fresh in-reserve reading arms it again: a missing
-`readGraphqlQuota` dep, a `null` reading, a probe that threw, the
-circuit-breaker back-off branch and a rate-limit pause all take no
-reading, and the sweeps come straight back. A skip can never outlive
-the reading that justified it by more than the one cycle it was made
-for.
+No reading is no evidence. The flag is **consumed** by the cycle that reads it,
+so only a fresh in-reserve reading arms it again: a missing `readGraphqlQuota`
+dep, a `null` reading, a probe that threw, the circuit-breaker back-off branch
+and a rate-limit pause all take no reading, and the sweeps come straight back. A
+skip can never outlive the reading that justified it by more than the one cycle
+it was made for.
 
 ```mermaid
 flowchart TD
@@ -763,30 +739,28 @@ flowchart TD
 
 ## Trade-offs
 
-- **TTL vs staleness.** A 10-minute issue-list TTL means the worker
-  may act on a label change up to 10 minutes after it was made by an
-  external actor. Worker-initiated changes invalidate eagerly, so the
-  staleness window only ever applies to *external* edits. Reducing the
-  TTL would tighten the window at a near-linear cost in `gh` call
-  volume — the current 10 minutes was chosen because the loop interval
-  is typically a few minutes, so most cached reads are still fresh.
-- **Memory vs disk cache.** `IssueCache` is file-backed so multiple
-  worker processes (and back-to-back respawns) share a single cache
-  directory. The `gh_call_metrics` counters are in-memory only because
-  they are reset every iteration and never need to outlive the
-  process.
-- **Search vs per-repo listing.** One cross-repo search replaces ~130
-  per-repo per-author listings, but search is *eventually consistent* and
-  capped at 1,000 results. The prefetch therefore covers only the periodic
-  open-PR sweeps, refuses to serve a truncated result set, and leaves both
-  the read-after-write re-check and the whole closed/merged half on the
-  per-repo path.
-- **REST vs GraphQL.** REST endpoints are well-cached by GitHub and
-  simpler to call, but the timeline endpoint returns a large payload
-  that must be filtered client-side. GraphQL lets us request only
-  `LabeledEvent` fields and batch up to 25 issues per call, at the
-  cost of more complex query construction. The batch implementation keeps
-  REST as a fallback so a GraphQL outage does not block the worker.
+- **TTL vs staleness.** A 10-minute issue-list TTL means the worker may act on a
+  label change up to 10 minutes after it was made by an external actor.
+  Worker-initiated changes invalidate eagerly, so the staleness window only ever
+  applies to _external_ edits. Reducing the TTL would tighten the window at a
+  near-linear cost in `gh` call volume — the current 10 minutes was chosen
+  because the loop interval is typically a few minutes, so most cached reads are
+  still fresh.
+- **Memory vs disk cache.** `IssueCache` is file-backed so multiple worker
+  processes (and back-to-back respawns) share a single cache directory. The
+  `gh_call_metrics` counters are in-memory only because they are reset every
+  iteration and never need to outlive the process.
+- **Search vs per-repo listing.** One cross-repo search replaces ~130 per-repo
+  per-author listings, but search is _eventually consistent_ and capped at 1,000
+  results. The prefetch therefore covers only the periodic open-PR sweeps,
+  refuses to serve a truncated result set, and leaves both the read-after-write
+  re-check and the whole closed/merged half on the per-repo path.
+- **REST vs GraphQL.** REST endpoints are well-cached by GitHub and simpler to
+  call, but the timeline endpoint returns a large payload that must be filtered
+  client-side. GraphQL lets us request only `LabeledEvent` fields and batch up
+  to 25 issues per call, at the cost of more complex query construction. The
+  batch implementation keeps REST as a fallback so a GraphQL outage does not
+  block the worker.
 
 ## Related issues
 

@@ -3,9 +3,10 @@
 ## Summary
 
 `plan_coverage_gate_bounds_1245_test.ts::runPlanCoverageGate - an oversized
-comment is skipped loudly and a real table still decides` failed on
-`milestone/fix-scan-issues-20260906`, turning `./quality.sh` red for every issue
-worked off that branch. Two faults, one in the test and one in the gate:
+comment is skipped loudly and a real table still decides`
+failed on `milestone/fix-scan-issues-20260906`, turning `./quality.sh` red for
+every issue worked off that branch. Two faults, one in the test and one in the
+gate:
 
 1. **The test's comments carried no author.** The #1244 author gate discards
    every unattributable comment, so `selectFleetAuthoredComments()` dropped the
@@ -17,7 +18,7 @@ worked off that branch. Two faults, one in the test and one in the gate:
 2. **The gate had gone silent on oversized comments** — a genuine fail-silent
    regression, not a test artefact. The #1244 candidate filter kept only
    comments where `extractCoverageTable(body) !== null`, but
-   `extractCoverageTable()` returns `null` for *any* body past
+   `extractCoverageTable()` returns `null` for _any_ body past
    `MAX_COVERAGE_SCAN_CHARS` — it rejects without scanning. So an oversized
    comment was dropped by the filter and never reached the loop that logs the
    skip. An unscanned candidate was being treated exactly like a candidate that
@@ -88,5 +89,5 @@ flowchart LR
   outsider's table still fails, an unresolved fleet still discards every
   comment).
 - Full local gate: `./quality.sh`.
-</content>
-</invoke>
+  </content>
+  </invoke>

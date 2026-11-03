@@ -67,8 +67,8 @@ third — this issue, and #879 before it.
   working host
 - **status** — `verified` — with `record_termination` disabled in `run.sh` the
   end-to-end launcher test fails on `consecutiveFailures` (actual 1, expected
-  0), and with the classification branch removed from
-  `classifyLauncherOutcome` all five recorder tests fail; both pass with the fix
+  0), and with the classification branch removed from `classifyLauncherOutcome`
+  all five recorder tests fail; both pass with the fix
 - **regression test** —
   `worker/deno/tests/run_sh_launcher_test.ts::run.sh - a signalled run declares the stop so it is not counted as a failure (Issue #1072)`
 
@@ -94,9 +94,10 @@ third — this issue, and #879 before it.
   leftover marker.
 - Full gate: `./quality.sh` — lint, type check, fmt, mermaid, markdownlint,
   semgrep and every other check pass. The `deno tests` stage reports the
-  **pre-existing** parallel-pass flakes tracked by
-  stSoftwareAU/VibeCoder#1118: `run_core_production_deps_test.ts::…static trust
-  refresh…` (named in that issue) and, on two of three runs,
+  **pre-existing** parallel-pass flakes tracked by stSoftwareAU/VibeCoder#1118:
+  `run_core_production_deps_test.ts::…static trust
+  refresh…` (named in that
+  issue) and, on two of three runs,
   `run_core_idle_detect_audit_test.ts::…Issue #2475…`. Both were reproduced on
   the base commit (`f0d67a7`) with this change absent, both pass in isolation,
   and nothing in this change is reachable from either.

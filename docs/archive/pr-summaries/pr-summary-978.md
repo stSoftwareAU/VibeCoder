@@ -32,14 +32,14 @@ flowchart LR
 
 ## Evidence
 
-Backend/CLI change with no web interface to screenshot. The evidence is the
-test suite and the quality gate:
+Backend/CLI change with no web interface to screenshot. The evidence is the test
+suite and the quality gate:
 
 - `deno test tests/container_extension_config_test.ts` — 30 cases, the full
   rejection matrix plus the happy path, the absent-key path, the config-load
   path and the launcher reader.
-- `./quality.sh` — `Result: PASSED`, `deno tests` 16 848 passed / 0 failed,
-  plus lint, type check, fmt, semgrep, markdownlint and mermaid.
+- `./quality.sh` — `Result: PASSED`, `deno tests` 16 848 passed / 0 failed, plus
+  lint, type check, fmt, semgrep, markdownlint and mermaid.
 
 ## Acceptance Criteria
 
@@ -51,8 +51,7 @@ test suite and the quality gate:
   `worker/deno/tests/container_extension_config_test.ts::container_extension is a known config key`
   — reviewer: met
 - **met** — each malformed case fails at config load with a message naming the
-  offending field — evidence:
-  `worker/deno/lib/config.ts:326`,
+  offending field — evidence: `worker/deno/lib/config.ts:326`,
   `worker/deno/tests/container_extension_config_test.ts::loadConfig - a malformed container_extension block fails loud`
   — reviewer: partial — reason: the reviewer found `containerfile`/`start`
   confinement was POSIX-only, so on a Windows deployment `..\..\Containerfile`
@@ -60,8 +59,7 @@ test suite and the quality gate:
   predicate path-style aware, covered by
   `tests/container_extension_config_test.ts::a Windows path is judged in its own spelling`
 - **met** — a `.config.json` with no `container_extension` key parses exactly as
-  it does today — evidence:
-  `worker/deno/lib/container_extension_config.ts:216`,
+  it does today — evidence: `worker/deno/lib/container_extension_config.ts:216`,
   `worker/deno/tests/container_extension_config_test.ts::loadConfig - no container_extension key parses as today`
   — reviewer: met
 - **met** — `./quality.sh` passes — evidence: full gate run after the final
@@ -69,10 +67,10 @@ test suite and the quality gate:
 - **unrequested** — `isAtOrAbove` and `isConfinedRelativePath` moved into
   `worker/deno/lib/host_path_style.ts` and shared with
   `container_tools_config.ts` — reviewer: unrequested — reason: the issue asks
-  this validator to enforce the same two rules the launcher and `container_tools`
-  already enforce; copying them would let three trust boundaries drift. Both
-  predicates moved without behaviour change for their existing callers and both
-  gained the tests they never had.
+  this validator to enforce the same two rules the launcher and
+  `container_tools` already enforce; copying them would let three trust
+  boundaries drift. Both predicates moved without behaviour change for their
+  existing callers and both gained the tests they never had.
 - **unrequested** — refusing a `path` when neither `HOME` nor `USERPROFILE` is
   set — reviewer: unrequested — reason: not in the issue's enumerated list, but
   skipping an unevaluable containment rule is the silent pass
@@ -81,9 +79,10 @@ test suite and the quality gate:
 - **unrequested** — three pre-existing test failures repaired
   (`service_account_env_test.ts`, `setup_provider_credential_flow_test.ts`,
   `setup_prerequisites_test.ts`) — reviewer: unrequested — reason: all three
-  fail on the base commit `65da20e` in this container and block the `./quality.sh`
-  criterion; each is env leakage from the surrounding container, not a change in
-  behaviour. Verified pre-existing by running them at the base commit.
+  fail on the base commit `65da20e` in this container and block the
+  `./quality.sh` criterion; each is env leakage from the surrounding container,
+  not a change in behaviour. Verified pre-existing by running them at the base
+  commit.
 
 ## Standards Review
 
@@ -101,8 +100,8 @@ test suite and the quality gate:
 - **violation** — over-engineering: `ContainerExtensionSelection.specJson`
   carried verbatim JSON no caller needs yet — evidence:
   `worker/deno/lib/container_extension_config.ts:296` (pre-fix) — reason: fixed
-  in this diff — the reader returns the validated declaration itself; the
-  reader is kept because the issue asks for it.
+  in this diff — the reader returns the validated declaration itself; the reader
+  is kept because the issue asks for it.
 - **violation** — test coverage: `isAtOrAbove` became a public export with no
   test, and the move had tightened it — evidence:
   `worker/deno/lib/host_path_style.ts:131` — reason: fixed in this diff — the
@@ -110,10 +109,10 @@ test suite and the quality gate:
   and `worker/deno/tests/host_path_style_test.ts` pins both predicates.
 - **violation** — DRY: `readContainerExtensionSelection` mirrors
   `readContainerToolsSelection` — evidence:
-  `worker/deno/lib/container_extension_config.ts:293` — reason: stands.
-  Unifying them means refactoring `container_tools_config.ts`'s public reader
-  and its error text, which is not this issue's change; the shared part (the
-  confinement predicate) was extracted instead.
+  `worker/deno/lib/container_extension_config.ts:293` — reason: stands. Unifying
+  them means refactoring `container_tools_config.ts`'s public reader and its
+  error text, which is not this issue's change; the shared part (the confinement
+  predicate) was extracted instead.
 - **violation** — a code change owes a docs change: the new operator-facing key
   is absent from `docs/CONFIGURATION.md` — evidence:
   `worker/deno/lib/config_unknown_keys.ts:200` — reason: stands. The issue puts
@@ -128,22 +127,22 @@ test suite and the quality gate:
 
 ## Test Plan
 
-- Added `worker/deno/tests/container_extension_config_test.ts` — 30 cases:
-  happy path, `containerfile` defaulting, absent `start`, absent block entry,
+- Added `worker/deno/tests/container_extension_config_test.ts` — 30 cases: happy
+  path, `containerfile` defaulting, absent `start`, absent block entry,
   non-object block, unrecognised field name, missing/empty/relative/`~` `path`,
-  traversal segment,
-  home directory and ancestor, filesystem root, unknown home directory, control
-  characters in each field, absolute and `..`-escaping `containerfile`/`start`,
-  the Windows spelling of both, `assertContainerExtension`, the known-key and
-  near-miss (`container_extensions`) registration, four `loadConfig` cases and
-  five `readContainerExtensionSelection` cases.
+  traversal segment, home directory and ancestor, filesystem root, unknown home
+  directory, control characters in each field, absolute and `..`-escaping
+  `containerfile`/`start`, the Windows spelling of both,
+  `assertContainerExtension`, the known-key and near-miss
+  (`container_extensions`) registration, four `loadConfig` cases and five
+  `readContainerExtensionSelection` cases.
 - Added `worker/deno/tests/host_path_style_test.ts` — 7 cases pinning
   `isAtOrAbove` (same directory, ancestor, sibling, non-boundary prefix, Windows
   case/separator) and `isConfinedRelativePath` (inside, absolute, `~`, NUL,
   escaping, both spellings).
-- Repaired three pre-existing failures:
-  `service_account_env_test.ts` (clears `VIBE_STATE_DIR`, which outranks
-  `TMPDIR` among staging candidates), `setup_provider_credential_flow_test.ts`
-  (clears the container's `VIBE_IMAGE_AGENT_PROVIDERS` stamp for a simulated
-  host run) and `setup_prerequisites_test.ts` (asserts the outcome and the hint
-  rather than which build input is read first).
+- Repaired three pre-existing failures: `service_account_env_test.ts` (clears
+  `VIBE_STATE_DIR`, which outranks `TMPDIR` among staging candidates),
+  `setup_provider_credential_flow_test.ts` (clears the container's
+  `VIBE_IMAGE_AGENT_PROVIDERS` stamp for a simulated host run) and
+  `setup_prerequisites_test.ts` (asserts the outcome and the hint rather than
+  which build input is read first).

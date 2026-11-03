@@ -73,16 +73,16 @@ flowchart LR
 ### Trigger closed, no trivial bypass
 
 The original trigger — a symlink at `${repoPath}/.gitignore` (or
-`.gitattributes`) — is now rejected before any file content is read: the
-`lstat` sees `isSymlink` and the pass returns an error, so neither the read nor
-the write happens. The three near-miss bypasses are closed too:
+`.gitattributes`) — is now rejected before any file content is read: the `lstat`
+sees `isSymlink` and the pass returns an error, so neither the read nor the
+write happens. The three near-miss bypasses are closed too:
 
 - **Race the check** — a link planted between the `lstat` and the `open` is
   caught by the post-open inode comparison against a fresh `lstat`, and even a
   link planted after that is only ever displaced by `rename(2)`, which does not
   follow links.
-- **Hard link instead of symlink** — refused by the `nlink > 1` check, which
-  has no link for `lstat` to see but the same integrity effect.
+- **Hard link instead of symlink** — refused by the `nlink > 1` check, which has
+  no link for `lstat` to see but the same integrity effect.
 - **Non-regular target** (directory, FIFO) — refused by the `isFile` check with
   an explicit message rather than an opaque `Is a directory` OS error.
 

@@ -42,8 +42,8 @@ Backend-only change; verified by tests below.
   staged `.env` is refused by the safety gate. The fixture pins
   `core.excludesFile` to its own empty file, so a host's global excludes cannot
   hide `.env` from any real Git call. Case C captures the post-quality warning
-  and requires the #1758 refusal diagnostic to name `.env`, while retaining
-  the no-commit and file-preservation checks.
+  and requires the #1758 refusal diagnostic to name `.env`, while retaining the
+  no-commit and file-preservation checks.
 - Red check: stubbing the helper call out of `pr_ci_processor.ts` made all 3
   tests fail; restored.
 - Modified `worker/deno/tests/pr_ci_processor_test.ts`: two tests now `git init`
@@ -52,13 +52,13 @@ Backend-only change; verified by tests below.
 - `deno task test:unit` on `pr_ci_processor_test.ts`,
   `pr_ci_processor_no_changes_test.ts`, `milestone_conflict_ladder_test.ts` and
   the new file: 76 passed, 0 failed after the review fix.
-- After the review fix, `deno task check:manifests`: 846 passed, 0 failed,
-  one existing ignore. The changed test file passes format, lint and type-check;
+- After the review fix, `deno task check:manifests`: 846 passed, 0 failed, one
+  existing ignore. The changed test file passes format, lint and type-check;
   `git diff --check` passes. The full local quality gate was not repeated for
   this test-only follow-up.
 - Initial implementation `./quality.sh`: every stage passed except deno tests,
-  which failed on 2 tests
-  in `worker/deno/tests/completion_phase_repo_formatters_test.ts` ("formatter
+  which failed on 2 tests in
+  `worker/deno/tests/completion_phase_repo_formatters_test.ts` ("formatter
   should commit the Rust fix"). The same 2 fail on the unmodified base commit,
   so they are unrelated to this change.
 - Twin copies checked: `stageAgentResolution` (now calls the shared helper) and
@@ -75,11 +75,11 @@ excludes file made it pass under the same global configuration.
 The focused review mutation bypassed only the `assertSafeToCommit` call in
 `unstageStateAndAssertSafe`, leaving worker-state unstaging intact. Case C then
 failed specifically at the missing safety-refusal diagnostic. Restoring that
-call restored the green test; production code was restored byte-for-byte and
-the follow-up changes only the test and this summary.
+call restored the green test; production code was restored byte-for-byte and the
+follow-up changes only the test and this summary.
 
-The initial broad mutation harness could not judge mutants because its
-unmutated baseline failed on the two Rust formatter tests noted above. The
-focused review mutant failed as expected and the 76-test baseline passed; the
-broad mutation harness was not repeated. CI and independent re-review remain
-outstanding for the follow-up head.
+The initial broad mutation harness could not judge mutants because its unmutated
+baseline failed on the two Rust formatter tests noted above. The focused review
+mutant failed as expected and the 76-test baseline passed; the broad mutation
+harness was not repeated. CI and independent re-review remain outstanding for
+the follow-up head.

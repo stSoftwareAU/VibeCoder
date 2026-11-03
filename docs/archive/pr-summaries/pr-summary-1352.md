@@ -5,14 +5,15 @@
 The planning processor's first pre-check recovered sub-issue URLs from
 `ctx.issueComments` — the flattened, boundary-framed blob of **every** comment
 on the planning issue, with no per-comment author. Any account that can comment
-on the repository could post a single `https://github.com/<owner>/<repo>/issues/<n>`
-URL and the next planning run would skip Claude entirely and close the parent as
-completed, citing that issue as its plan. A benign cross-reference ("related to
-#500") tripped the same path by accident.
+on the repository could post a single
+`https://github.com/<owner>/<repo>/issues/<n>` URL and the next planning run
+would skip Claude entirely and close the parent as completed, citing that issue
+as its plan. A benign cross-reference ("related to #500") tripped the same path
+by accident.
 
 The recovery now re-reads the thread through `ghClient.getIssueComments` (the
-authoritative read — it carries the author), attributes **each comment**
-through `selectFleetAuthoredComments()` against the fleet identity
+authoritative read — it carries the author), attributes **each comment** through
+`selectFleetAuthoredComments()` against the fleet identity
 (`resolveFleetMaintenanceAuthorSet` — this host's login ∪ `fleet_pr_authors` ∪
 `service_accounts`), and extracts URLs **per comment**, so an outsider's link
 elsewhere in the thread cannot ride in on a fleet comment's verification.
@@ -54,10 +55,12 @@ the full quality gate.
   markdownlint, mermaid all green).
 - `deno test tests/planning_processor_test.ts` — 117 passed, 0 failed.
 - Red-then-green: with the fix's helper present but the pre-check still reading
-  the blob, `processIssuePlanning - an outsider comment carrying an issue URL
-  does not close the parent (Issue #1352)` fails (`AssertionError` — Claude was
-  never invoked and the planted URL was published as a sub-issue); with the
-  pre-check wired to the verified read it passes.
+  the blob,
+  `processIssuePlanning - an outsider comment carrying an issue URL
+  does not close the parent (Issue #1352)`
+  fails (`AssertionError` — Claude was never invoked and the planted URL was
+  published as a sub-issue); with the pre-check wired to the verified read it
+  passes.
 
 ```mermaid
 flowchart TD
@@ -92,10 +95,10 @@ Unit coverage for the new helper:
 
 Existing tests modified (business-logic change — documented, not removed):
 
-- `processIssuePlanning - recovers when sub-issues exist from prior run`
-  (#1175) and
+- `processIssuePlanning - recovers when sub-issues exist from prior run` (#1175)
+  and
   `processIssuePlanning - recovery path repairs missing Failure Detection sections and completes`
-  (#3272) now serve the prior run's summary through the mock
-  `getIssueComments`, authored by this host (`testbot`), instead of relying on
-  the author-free `issueComments` blob. Both still assert the same behaviour:
-  the recovery closes the parent without invoking the planner.
+  (#3272) now serve the prior run's summary through the mock `getIssueComments`,
+  authored by this host (`testbot`), instead of relying on the author-free
+  `issueComments` blob. Both still assert the same behaviour: the recovery
+  closes the parent without invoking the planner.

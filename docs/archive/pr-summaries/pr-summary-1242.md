@@ -40,14 +40,14 @@ flowchart LR
     D -.replaced by.-> S
 ```
 
-| Site | Was | Now |
-| --- | --- | --- |
-| `label_operations.ts` → `label_cache.ts` | `${TMPDIR}/vibe-label-cache` | `sharedTmpStateDir("vibe-label-cache")`, read and write gated on the trust verdict |
-| `agent_mcp_config.ts` | `${TMPDIR}/vibe-playwright-mcp` | `sharedTmpStateDir("vibe-playwright-mcp")`, write refused when not private |
-| `audit_journal.ts` | `${TMPDIR}/vibe-audit` | `sharedTmpStateDir("vibe-audit")`, append refused when not private |
-| `run_core_production_deps.ts` | `${TMPDIR}/vibe-repo-failures-<pid>` | `sharedTmpStateDir("vibe-repo-failures")/failures-<pid>`, warned when not private |
-| `setup/screenshot.ts` | `/tmp/vibe-playwright-profile` (+ its sibling output dir) | `sharedTmpStateDir(...)` for both |
-| `timeline_cache.ts`, `gh_credential_stage.ts` | hand-built per-account / shared names | the same helper (surfaced by the new gate) |
+| Site                                          | Was                                                       | Now                                                                                |
+| --------------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `label_operations.ts` → `label_cache.ts`      | `${TMPDIR}/vibe-label-cache`                              | `sharedTmpStateDir("vibe-label-cache")`, read and write gated on the trust verdict |
+| `agent_mcp_config.ts`                         | `${TMPDIR}/vibe-playwright-mcp`                           | `sharedTmpStateDir("vibe-playwright-mcp")`, write refused when not private         |
+| `audit_journal.ts`                            | `${TMPDIR}/vibe-audit`                                    | `sharedTmpStateDir("vibe-audit")`, append refused when not private                 |
+| `run_core_production_deps.ts`                 | `${TMPDIR}/vibe-repo-failures-<pid>`                      | `sharedTmpStateDir("vibe-repo-failures")/failures-<pid>`, warned when not private  |
+| `setup/screenshot.ts`                         | `/tmp/vibe-playwright-profile` (+ its sibling output dir) | `sharedTmpStateDir(...)` for both                                                  |
+| `timeline_cache.ts`, `gh_credential_stage.ts` | hand-built per-account / shared names                     | the same helper (surfaced by the new gate)                                         |
 
 ## Evidence
 
@@ -72,9 +72,11 @@ After the fix: `tmp state dir check - the production tree is clean ... ok`.
 
 ### Regression test linkage (security-fix evidence)
 
-Added `worker/deno/tests/shared_tmp_state_dir_test.ts::label cache - refuses
-labels planted in a world-writable directory`, which reproduces the issue's
-stated trigger — `mkdir -m 777 ${TMPDIR:-/tmp}/vibe-label-cache` plus a planted
+Added
+`worker/deno/tests/shared_tmp_state_dir_test.ts::label cache - refuses
+labels planted in a world-writable directory`,
+which reproduces the issue's stated trigger —
+`mkdir -m 777 ${TMPDIR:-/tmp}/vibe-label-cache` plus a planted
 `owner_repo.cache` — and asserts the planted label is never returned. It **fails
 against the unfixed code and passes after the fix**: with the trust gate removed
 from `getCachedLabels` the test reported `["planted-label"]` instead of the live
@@ -85,18 +87,19 @@ from `getCachedLabels` the test reported `["planted-label"]` instead of the live
 
 The trigger requires the worker to read back a directory an attacker created.
 Both halves of that are now gone. The path is no longer guessable-shared:
-`sharedTmpStateDir()` appends the worker's own uid, so `${TMPDIR}/vibe-label-cache`
-is not a path the worker ever addresses. Even at the per-account path, every
-read and write first passes `ensureStateDir()`, which refuses a directory owned
-by another uid or carrying group/other bits, so pre-creating
-`vibe-label-cache-uid1000` at mode 777 disables the cache instead of poisoning
-it — verified by the test above and by the sibling audit-journal and MCP-config
-tests. The one path that is *not* refused is a directory this account already
-owns whose bits are group/other **readable but not writable** (`0755`): nothing
-could have been planted in it, so it is tightened to `0700` and re-verified
-rather than failing a legitimate work directory. Equivalent bypasses through a
-different name are closed by the gate: any new `${TMPDIR}/vibe-…` or
-`/tmp/vibe-…` construction in `worker/deno/{lib,commands,setup}` fails the build.
+`sharedTmpStateDir()` appends the worker's own uid, so
+`${TMPDIR}/vibe-label-cache` is not a path the worker ever addresses. Even at
+the per-account path, every read and write first passes `ensureStateDir()`,
+which refuses a directory owned by another uid or carrying group/other bits, so
+pre-creating `vibe-label-cache-uid1000` at mode 777 disables the cache instead
+of poisoning it — verified by the test above and by the sibling audit-journal
+and MCP-config tests. The one path that is _not_ refused is a directory this
+account already owns whose bits are group/other **readable but not writable**
+(`0755`): nothing could have been planted in it, so it is tightened to `0700`
+and re-verified rather than failing a legitimate work directory. Equivalent
+bypasses through a different name are closed by the gate: any new
+`${TMPDIR}/vibe-…` or `/tmp/vibe-…` construction in
+`worker/deno/{lib,commands,setup}` fails the build.
 
 ## Test Plan
 
@@ -106,7 +109,8 @@ different name are closed by the gate: any new `${TMPDIR}/vibe-…` or
   the label cache refuses planted labels in a world-writable directory and
   writes nothing into it; the label cache creates its own directory `0700` and
   serves its own entries; the audit journal refuses to append into a
-  world-writable directory; the MCP config is not written into one (and says so).
+  world-writable directory; the MCP config is not written into one (and says
+  so).
 - **Added** `worker/deno/tests/tmp_state_dir_check_test.ts` — 11 tests driving
   the scanner with literal content (inline read, variable root, method call,
   multi-line interpolation, fixed `/tmp` literal, helper accepted, bare root
@@ -121,8 +125,8 @@ different name are closed by the gate: any new `${TMPDIR}/vibe-…` or
 - **Ledger**: `docs/audits/lib-sweep-coverage.json` claims the new
   `tmp_state_dir_check.ts` under slice 12e, so the coverage test stays exact.
 - `./quality.sh` passes on the final tree — including the new
-  `tmp state dir chokepoint` check, semgrep, lint, type check and the full
-  Deno test suite.
+  `tmp state dir chokepoint` check, semgrep, lint, type check and the full Deno
+  test suite.
 - **Docs**: `docs/CONTAINER.md`, `docs/CONTAINMENT.md`, `docs/DEPLOYMENT.md`
   (browser profile path) and `docs/audits/filesystem-path-temp-sweep-1215.md`
   (SEC-1215-06 recorded as fixed, with the gate).

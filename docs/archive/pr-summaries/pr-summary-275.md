@@ -11,7 +11,7 @@ That is why the gate was silent on both of its sibling findings in this
 milestone. #267's `pr_ci_nudge` pushed a GitHub-controlled PR head branch as a
 bare positional and the gate saw nothing, because `push` was excluded outright —
 `git_ref_argv_check_test.ts` even asserted `["push", "origin", branchName]` was
-*clean*. `rebase` was worse: it was named in the module contract and had a
+_clean_. `rebase` was worse: it was named in the module contract and had a
 `buildRebaseArgs` builder, but was missing from the pattern, so the
 documentation promised a gate that did not exist.
 
@@ -20,25 +20,25 @@ This adds `push` and `rebase` to the guarded verbs.
 **Three live violations surfaced immediately** — a gate is not a gate while real
 code trips it, so they are fixed here rather than allowlisted:
 
-| Site | Was |
-| --- | --- |
-| `git_push_lease_args.ts:31` | `["push", "origin", branchName, lease]` |
-| `git_pull.ts:728` | `["push", "origin", branchName, "--force-with-lease"]` |
-| `git_push_recovery.ts:164` | `["push", "origin", branchName]` |
+| Site                        | Was                                                    |
+| --------------------------- | ------------------------------------------------------ |
+| `git_push_lease_args.ts:31` | `["push", "origin", branchName, lease]`                |
+| `git_pull.ts:728`           | `["push", "origin", branchName, "--force-with-lease"]` |
+| `git_push_recovery.ts:164`  | `["push", "origin", branchName]`                       |
 
 All three now route through `buildPushArgs`, which validates the ref with
 `assertSafeGitRef` and places `--end-of-options` before the first positional.
 The lease path needed `buildPushArgs` to learn a `forceWithLease` option,
 because the flag has to sit **ahead** of the separator: everything after
 `--end-of-options` is a positional, so the old trailing `--force-with-lease`
-would have reached git as a third refspec. The repo-wide scan now reports
-**0 violations across 721 files**.
+would have reached git as a third refspec. The repo-wide scan now reports **0
+violations across 721 files**.
 
 **The pattern itself was restructured.** It had tried to express "not
 builder-shaped" as a lookahead for `--end-of-options` in the slot immediately
 after the verb. That cannot survive `push`: `buildPushArgs` emits
 `["push", "-u", "--end-of-options", …]`, so a flag legitimately sits between the
-verb and the separator, and the lease form interpolates the branch name *into*
+verb and the separator, and the lease form interpolates the branch name _into_
 that flag ahead of it. Both safe arrays would have been reported as violations.
 It now matches the whole array literal and applies two plain predicates —
 `--end-of-options` anywhere in the array means the author used the builders and
@@ -104,36 +104,37 @@ ok | 93 passed | 0 failed
 Two of those tests asserted the old lease argv order and were updated — that
 order is precisely the bug: the branch name preceded the lease flag as a bare
 positional. A third case was added asserting `buildForceWithLeaseArgs` now
-*throws* on `--upload-pack=evil`, which is the guarantee the separator alone
+_throws_ on `--upload-pack=evil`, which is the guarantee the separator alone
 does not give.
 
 ## Test plan
 
 `worker/deno/tests/git_ref_argv_check_test.ts` — 5 new cases, 1 rewritten:
 
-| Case | Asserts |
-| --- | --- |
-| flags an unguarded push of a PR head branch | The #267 shape is now a violation |
-| flags a multi-line push argv | The #268 evasion applied to a push |
-| flags an unguarded rebase onto a PR head branch | Closes the doc/behaviour gap |
-| a builder-shaped push with a flag before the separator is clean | `-u` and `--force-with-lease=<branch>:<sha>` forms are not false positives — the case the old lookahead failed |
-| safe internal refs stay out of scope for push and rebase | `defaultBranch` / `baseBranch` / `milestoneBranch` remain out of scope; this is CWE-88, not a blanket ban |
-| *(rewritten)* non-ref git verbs are ignored | `["push", "origin", branchName]` removed from the safe list — it is now the violation the issue asks for; `git remote set-url` took its place |
+| Case                                                            | Asserts                                                                                                                                       |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| flags an unguarded push of a PR head branch                     | The #267 shape is now a violation                                                                                                             |
+| flags a multi-line push argv                                    | The #268 evasion applied to a push                                                                                                            |
+| flags an unguarded rebase onto a PR head branch                 | Closes the doc/behaviour gap                                                                                                                  |
+| a builder-shaped push with a flag before the separator is clean | `-u` and `--force-with-lease=<branch>:<sha>` forms are not false positives — the case the old lookahead failed                                |
+| safe internal refs stay out of scope for push and rebase        | `defaultBranch` / `baseBranch` / `milestoneBranch` remain out of scope; this is CWE-88, not a blanket ban                                     |
+| _(rewritten)_ non-ref git verbs are ignored                     | `["push", "origin", branchName]` removed from the safe list — it is now the violation the issue asks for; `git remote set-url` took its place |
 
 `worker/deno/tests/git_push_recovery_lease_test.ts` — 2 updated, 1 added:
 
-| Case | Asserts |
-| --- | --- |
-| pins the lease to the captured baseline *(updated)* | `["push", "--force-with-lease=feature:<sha>", "--end-of-options", "origin", "feature"]` |
-| falls back to the bare lease with no baseline *(updated)* | Same ordering with the bare flag |
-| refuses a dash-leading branch name *(new)* | `assertSafeGitRef` rejects `--upload-pack=evil` before an argv exists |
+| Case                                                      | Asserts                                                                                 |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| pins the lease to the captured baseline _(updated)_       | `["push", "--force-with-lease=feature:<sha>", "--end-of-options", "origin", "feature"]` |
+| falls back to the bare lease with no baseline _(updated)_ | Same ordering with the bare flag                                                        |
+| refuses a dash-leading branch name _(new)_                | `assertSafeGitRef` rejects `--upload-pack=evil` before an argv exists                   |
 
 Acceptance criteria from the issue:
 
-- *Teach the scanner multi-line array literals* — already landed in #268; the
+- _Teach the scanner multi-line array literals_ — already landed in #268; the
   restructure keeps it and removes the now-redundant second pass, covered by
-  `flags a multi-line push argv` and the retained `flags a multi-line fetch
+  `flags a multi-line push argv` and the retained
+  `flags a multi-line fetch
   argv`.
-- *Include `push`* — done, plus `rebase`, which the contract already claimed.
-- *Regression tests that fail on the #267 / #268 shapes* — the first two cases
+- _Include `push`_ — done, plus `rebase`, which the contract already claimed.
+- _Regression tests that fail on the #267 / #268 shapes_ — the first two cases
   above.

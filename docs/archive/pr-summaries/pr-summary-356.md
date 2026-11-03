@@ -2,10 +2,10 @@
 
 ## Summary
 
-The idle-decision census was right and the claim scan was not refusing
-anything. `stSoftwareAU/VibeCoder` did hold one claimable `work-on` issue —
-Issue #356 itself — and the scan claimed it, ten times in nine hours. Every
-claim died in phase `setup` with:
+The idle-decision census was right and the claim scan was not refusing anything.
+`stSoftwareAU/VibeCoder` did hold one claimable `work-on` issue — Issue #356
+itself — and the scan claimed it, ten times in nine hours. Every claim died in
+phase `setup` with:
 
 ```text
 Failed to create feature branch: Failed to create feature branch
@@ -13,20 +13,20 @@ Failed to create feature branch: Failed to create feature branch
 ```
 
 and released with no PR. The census kept reporting claimable work nobody was
-doing because nobody *was* doing it — the claim was being taken and thrown
-away each cycle.
+doing because nobody _was_ doing it — the claim was being taken and thrown away
+each cycle.
 
 ### The wedge
 
 Two functions disagree about what "the branch already exists" means:
 
-1. `resumeIssueBranch` (Issue #220) lists the remote `issue-<N>-*` branches
-   and, for each candidate, calls `resumeFeatureBranchFromRemote` — which
-   **checks the branch out** — and only then counts how far ahead of base it
-   is. The first attempt on #356 had pushed `issue-356-…` at exactly `main`,
-   so the candidate is 0 commits ahead, is passed over as unusable, and the
-   lookup returns `branch: null` ("start fresh from base") **with HEAD still
-   on the branch it just rejected**.
+1. `resumeIssueBranch` (Issue #220) lists the remote `issue-<N>-*` branches and,
+   for each candidate, calls `resumeFeatureBranchFromRemote` — which **checks
+   the branch out** — and only then counts how far ahead of base it is. The
+   first attempt on #356 had pushed `issue-356-…` at exactly `main`, so the
+   candidate is 0 commits ahead, is passed over as unusable, and the lookup
+   returns `branch: null` ("start fresh from base") **with HEAD still on the
+   branch it just rejected**.
 2. `createFeatureBranchFromBase` then removes any existing local branch with
    `branch -D` before `checkout -b`. Git refuses to delete the branch HEAD is
    on, that failure was unchecked, and all three `checkout -b` fallbacks then
@@ -55,25 +55,25 @@ whatever the local branch pointed at, and the remote branch is untouched.
 
 `resumeFeatureBranchFromRemote` carried the same `branch -D` + `checkout -b`
 pair and is switched to `-B` for the same reason. Its failure mode was worse
-than a wedge — with HEAD on the branch, the collision made it return "could
-not be checked out", and the caller then reported *no resumable prior work*
-over a pushed WIP commit. That is the data loss Issue #220 exists to prevent.
+than a wedge — with HEAD on the branch, the collision made it return "could not
+be checked out", and the caller then reported _no resumable prior work_ over a
+pushed WIP commit. That is the data loss Issue #220 exists to prevent.
 
 The failure message now carries git's own words. The release comment on #356
 read `Likely cause: could not be automatically determined` across all ten
-attempts because `createFeatureBranchFromBase` discarded every stderr it saw
-and returned a fixed string. It now names each command tried and what git
-said, so this class is diagnosable from the release comment alone.
+attempts because `createFeatureBranchFromBase` discarded every stderr it saw and
+returned a fixed string. It now names each command tried and what git said, so
+this class is diagnosable from the release comment alone.
 
 Closes #356.
 
 ## Not in scope, filed separately
 
-Ten identical failed claims produced no escalation of their own; the only
-alarm that fired was the idle-census inversion, which named the wrong culprit
-("the claim scan keeps refusing"). A worker that re-claims the same issue and
-dies in the same phase every cycle should say so rather than rely on a
-neighbouring detector noticing the silence — filed as a follow-up.
+Ten identical failed claims produced no escalation of their own; the only alarm
+that fired was the idle-census inversion, which named the wrong culprit ("the
+claim scan keeps refusing"). A worker that re-claims the same issue and dies in
+the same phase every cycle should say so rather than rely on a neighbouring
+detector noticing the silence — filed as a follow-up.
 
 ## Evidence
 

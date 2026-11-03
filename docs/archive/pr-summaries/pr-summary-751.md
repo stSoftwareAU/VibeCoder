@@ -22,12 +22,12 @@ contradiction — hosts `vibe-coder-83836`, `-32195`, `-9867`, `-11345`, around
 fifty minutes of worker time, no PR raised — on work that had been complete and
 correct since the first attempt.
 
-Both comments now print one shared block,
-`REVIEW_BLOCK_TEMPLATE` in `worker/deno/lib/review_block_template.ts`: both
-headings, both provenance markers, and one example per status — `met`,
-`partial`, `missing`, `unrequested`, `violation`, `clean` — in the shape
-`prompts/issue/v39.md` already documented. The independent gate's comment also
-keeps a closing line on the departure rule, which is prose, not shape.
+Both comments now print one shared block, `REVIEW_BLOCK_TEMPLATE` in
+`worker/deno/lib/review_block_template.ts`: both headings, both provenance
+markers, and one example per status — `met`, `partial`, `missing`,
+`unrequested`, `violation`, `clean` — in the shape `prompts/issue/v39.md`
+already documented. The independent gate's comment also keeps a closing line on
+the departure rule, which is prose, not shape.
 
 Closes #751.
 
@@ -94,10 +94,11 @@ sub-agents: this change was made by hand while unwedging #728, and the
 provenance markers are deliberately not claimed for a review that no independent
 context produced.
 
-- **met** — the remediation comment from either gate, copied verbatim,
-  satisfies both gates — evidence:
+- **met** — the remediation comment from either gate, copied verbatim, satisfies
+  both gates — evidence:
   `worker/deno/tests/review_block_template_test.ts::gate templates - the closure gate's template satisfies both gates (Issue #751)`
-  and `::gate templates - the independent-review gate's template satisfies both gates (Issue #751)`,
+  and
+  `::gate templates - the independent-review gate's template satisfies both gates (Issue #751)`,
   each feeding the printed block back through `validateAcceptanceClosure` and
   `validateIndependentReview`
 - **met** — a test asserts exactly that round trip — evidence: the two tests
@@ -107,7 +108,8 @@ context produced.
   — evidence: `worker/deno/lib/review_block_template.ts:29-55`, printed by both
   builders through `reviewBlockTemplateLines()`; asserted by
   `::gate templates - the block shows the two entry shapes the gates reject on (Issue #751)`
-  and `::gate templates - every status the gates parse is demonstrated (Issue #751)`
+  and
+  `::gate templates - every status the gates parse is demonstrated (Issue #751)`
 - **met** — tests and quality checks pass — evidence: 51/51 across the four
   related suites plus 5/5 new; `deno fmt --check`, `deno lint` and `deno check`
   clean. `./quality.sh` was not run in full — it is slow enough to be the CI
@@ -151,8 +153,8 @@ Added `worker/deno/tests/review_block_template_test.ts`:
 - `gate templates - the block shows the two entry shapes the gates reject on (Issue #751)`
   — `unrequested` with its `reviewer:` verdict and `violation` with labelled
   evidence, the two shapes #728 was blocked on.
-- `gate templates - every status the gates parse is demonstrated (Issue #751)`
-  — one example per status in both vocabularies.
+- `gate templates - every status the gates parse is demonstrated (Issue #751)` —
+  one example per status in both vocabularies.
 
 No existing test was modified: the independent gate's comment already satisfied
 both validators, and the closure gate's comment text is not asserted verbatim

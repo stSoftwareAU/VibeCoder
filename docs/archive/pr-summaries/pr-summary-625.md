@@ -86,7 +86,8 @@ No existing test was modified, removed or weakened.
 - **met** — A failed or mismatched pinned install fails loud, naming the tool,
   the requested version and the actual one — evidence:
   `worker/deno/tests/software_updates_test.ts::checkSoftwareUpdates - a frozen install that misses its pin fails loud`
-  and `::checkSoftwareUpdates - frozen mode without a pin for a tool fails loud`.
+  and
+  `::checkSoftwareUpdates - frozen mode without a pin for a tool fails loud`.
 - **met** — Unit tests cover dynamic and frozen paths with an injected runner;
   `./quality.sh` passes — evidence: the seven tests added to
   `worker/deno/tests/software_updates_test.ts`, all driven through `runFn`; the
@@ -135,14 +136,16 @@ dynamic-versus-frozen decision.
 `./quality.sh` is green on every check (prompt immutability, benchmark audit,
 hardcoded branch names, needs-human chokepoint, gh spawn chokepoint, host
 work-dir guard, git ref chokepoint, workflow hygiene, source targets, mermaid,
-markdownlint, docs prompt versions, deno lint, deno type check, deno fmt)
-except `deno tests`, which reports **33 pre-existing failures in files this
-change does not touch**: uncaught errors in `tests/run_core_test.ts` and
+markdownlint, docs prompt versions, deno lint, deno type check, deno fmt) except
+`deno tests`, which reports **33 pre-existing failures in files this change does
+not touch**: uncaught errors in `tests/run_core_test.ts` and
 `tests/run_core_rate_limit_resume_test.ts`
 (`gh command failed: GraphQL: API rate limit already exceeded for user ID …`)
-and `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable
-gh config dir is restaged writable`, which asserts a `/tmp` path while the
-container resolves `/home/vibe/auto-issue-work/.container-state/gh-config`.
-16,072 tests pass. Verified environmental, not caused here: reverting both
-production files to their pre-change state and re-running those three files
-reproduces the identical 33 failures.
+and
+`tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable
+gh config dir is restaged writable`,
+which asserts a `/tmp` path while the container resolves
+`/home/vibe/auto-issue-work/.container-state/gh-config`. 16,072 tests pass.
+Verified environmental, not caused here: reverting both production files to
+their pre-change state and re-running those three files reproduces the identical
+33 failures.

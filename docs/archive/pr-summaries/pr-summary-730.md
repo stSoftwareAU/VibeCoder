@@ -6,28 +6,27 @@
 whatever `.config.json` selected. On a Codex-only host the host-fatal `claude`
 prerequisite stopped the run before its configuration-writing stage, so
 `.config.json` was never created and the operator fell back to
-`VIBE_SKIP_PREREQ_CHECK=true ./setup.sh < /dev/null` plus a hand-written
-config.
+`VIBE_SKIP_PREREQ_CHECK=true ./setup.sh < /dev/null` plus a hand-written config.
 
-The selection is now resolved once, from the same seam the worker uses, and
-both surfaces follow it:
+The selection is now resolved once, from the same seam the worker uses, and both
+surfaces follow it:
 
 - **`worker/deno/setup/agent_providers.ts`** (new) resolves `agent_provider` /
   `agent_providers` — with the `VIBE_AGENT_PROVIDER(S)` overrides and the
   default — through `resolveEnabledAgentProviderIds`. A configuration file that
   exists but is broken, or names an unregistered provider, throws rather than
   falling back to Claude.
-- **The prerequisite probe** demands the `claude` CLI only where Claude is
-  among the configured providers, reports the providers it classified for, and
-  names the claude CLI in its failure advice only when that host runs Claude.
+- **The prerequisite probe** demands the `claude` CLI only where Claude is among
+  the configured providers, reports the providers it classified for, and names
+  the claude CLI in its failure advice only when that host runs Claude.
 - **`setup.sh`** runs one credential flow per configured provider, in the order
   the configuration enables them. Each flow is driven by that provider's row in
   the existing `vibe_provider_credential_table` and writes through the existing
   `provision_provider_credential`, so a provider registered in
   `worker/deno/lib/agent_provider.ts` with a table row is handled with no
-  further edit here. Claude keeps exactly today's behaviour — the CLI probe,
-  the `claude setup-token` offer, the live validation call and the OAuth
-  paste — because its subscription token has no paste-free equivalent.
+  further edit here. Claude keeps exactly today's behaviour — the CLI probe, the
+  `claude setup-token` offer, the live validation call and the OAuth paste —
+  because its subscription token has no paste-free equivalent.
 - **`setup_cli.ts agent-providers`** (new subcommand) prints the resolved ids,
   one per line, so the shell never parses `.config.json` itself (host `jq` is
   container-owned and may be absent).
@@ -75,8 +74,8 @@ flowchart TD
 ## Reproduction
 
 - **symptom** — a Codex-only `.config.json` on a host with no `claude` CLI
-  failed the host-fatal claude prerequisite, so `setup.sh` exited before
-  writing `.config.json`, and the Claude OAuth token was prompted for anyway
+  failed the host-fatal claude prerequisite, so `setup.sh` exited before writing
+  `.config.json`, and the Claude OAuth token was prompted for anyway
 - **status** — `verified` — the prerequisite stage was driven against the
   unfixed code on a host with no `claude` (stub container runtime and `gh`,
   Codex-only config) and exited 1 with `claude CLI is not installed`; the same
@@ -100,8 +99,8 @@ flowchart TD
   `worker/deno/tests/setup_provider_credential_flow_test.ts::interactive_credentials_flow - a Codex-only host is asked for the Codex credential, never Claude's`
   — reviewer: met
 - **met** — that file is written `0600` inside a `0700` directory, and an
-  existing credential file is never overwritten — evidence: the mode
-  assertions in the same test, plus
+  existing credential file is never overwritten — evidence: the mode assertions
+  in the same test, plus
   `::interactive_credentials_flow - an existing Codex credential is never overwritten`
   — reviewer: met
 - **met** — a Claude-only configuration keeps today's behaviour — evidence:
@@ -123,7 +122,7 @@ flowchart TD
 - **partial** — `.config.json` is written by a completed run; report item 1
   fixed or recorded on #722 — evidence: the regression test above (config
   present after the stages that used to abort) — reviewer: partial — reason:
-  fixed for a host that *has* a Codex-only configuration, which is the reported
+  fixed for a host that _has_ a Codex-only configuration, which is the reported
   state; a host with **no** `.config.json` at all still resolves to the default
   provider, so its first run is told to use `VIBE_AGENT_PROVIDER=codex`
   (documented in `docs/SETUP.md`, covered by
@@ -133,8 +132,8 @@ flowchart TD
   `worker/deno/setup/setup_cli.ts` (`Configured coding-agent providers: …`) and
   `setup.sh` (`Coding-agent credential flows for this host: …`), asserted in
   both new test files — reviewer: met
-- **partial** — tests and quality checks pass — evidence: the new tests pass
-  (42 in the two new files plus the credential suite); `deno lint`, `deno check`,
+- **partial** — tests and quality checks pass — evidence: the new tests pass (42
+  in the two new files plus the credential suite); `deno lint`, `deno check`,
   `deno fmt` and `shellcheck -S warning setup.sh` are clean — reviewer: partial
   — reason: `./quality.sh` reports three pre-existing test failures
   (`service_account_env_test.ts`, `run_core_test.ts`,
@@ -149,12 +148,12 @@ flowchart TD
   which is the failure this issue is about
 - **unrequested** — the setup-time resolution ignores the
   `VIBE_IMAGE_AGENT_PROVIDERS` image stamp — reviewer: unrequested — reason:
-  setup runs on the host to configure the providers the *next* image build
+  setup runs on the host to configure the providers the _next_ image build
   installs; the worker still enforces the stamp at run time inside the image
 - **unrequested** — `provider_credential_source_hint` carries per-vendor key
   URLs for codex/gemini/deepseek — reviewer: unrequested — reason: an operator
-  at the prompt needs to know where the key comes from; a provider with no
-  entry still gets a working prompt, so no edit is required to add one
+  at the prompt needs to know where the key comes from; a provider with no entry
+  still gets a working prompt, so no edit is required to add one
 - **unrequested** — new `setup_cli.ts agent-providers` subcommand and the
   exported `probedAgentProviders` helper — reviewer: unrequested — reason: the
   seam the shell reads the selection through, so `setup.sh` neither parses
@@ -175,24 +174,23 @@ flowchart TD
 - **violation** — an explicitly empty provider set fell back to Claude in
   `probedAgentProviders`, `prerequisiteSummaryLines` and `main()` — evidence:
   `worker/deno/setup/prerequisites.ts:296` — reason: fixed here — an empty set
-  now throws in Deno and exits non-zero in `setup.sh`; the *absent* option
-  still means "the default provider", which is what every pre-existing caller
-  asks for
+  now throws in Deno and exits non-zero in `setup.sh`; the _absent_ option still
+  means "the default provider", which is what every pre-existing caller asks for
 - **violation** — new fail-loud branches had no error-path test — evidence:
   `setup.sh:613` (unknown provider), `setup.sh:792`
   (`configured_agent_providers`), `worker/deno/setup/setup_cli.ts:386` — reason:
   fixed here — three error-path tests added, including the `agent-providers`
   stdout contract (non-zero exit, empty stdout)
-- **violation** — `docs/SETUP.md` gated the claude prerequisite in the
-  checklist but still told every host to install the CLI in the three manual
-  recipes — evidence: `docs/SETUP.md:431` — reason: fixed here — the recipes
-  now say the `claude` step is skippable on a host that does not run Claude
+- **violation** — `docs/SETUP.md` gated the claude prerequisite in the checklist
+  but still told every host to install the CLI in the three manual recipes —
+  evidence: `docs/SETUP.md:431` — reason: fixed here — the recipes now say the
+  `claude` step is skippable on a host that does not run Claude
 - **violation** — the comment claimed the provider set is "resolved once" when
   the probe and the shell each resolve it — evidence: `setup.sh:1291` — reason:
   fixed here — the comment now says both read the same selection through the
   same seam
-- **violation** — new provider decision logic (id → prompt variable, → hint,
-  → validation, → mint) is written in bash rather than Deno — evidence:
+- **violation** — new provider decision logic (id → prompt variable, → hint, →
+  validation, → mint) is written in bash rather than Deno — evidence:
   `setup.sh:487-598` — reason: stands. `setup.sh` owns the interactive terminal
   layer by design (it is what the Deno CLI cannot do), and the issue asks for
   the flow there. Each of those functions is a small capability lookup with a
@@ -206,12 +204,11 @@ flowchart TD
   fails the quality gate if the two drift, the same guard the credential table
   already has
 - **violation** — single-case dispatchers and a file-scope global
-  (`VIBE_MINTED_CREDENTIAL`) used as a return channel — evidence:
-  `setup.sh:533` — reason: stands. `mint_provider_credential` prints operator
-  instructions to stdout, so it cannot also return the token through stdout;
-  the global is cleared immediately after it is read, and the
-  operator-inherited variable it borrows is now restored rather than unset
-  (`setup.sh:674-690`)
+  (`VIBE_MINTED_CREDENTIAL`) used as a return channel — evidence: `setup.sh:533`
+  — reason: stands. `mint_provider_credential` prints operator instructions to
+  stdout, so it cannot also return the token through stdout; the global is
+  cleared immediately after it is read, and the operator-inherited variable it
+  borrows is now restored rather than unset (`setup.sh:674-690`)
 - **violation** — the PR summary was not committed — evidence:
   `docs/archive/pr-summaries/pr-summary-730.md` — reason: fixed here — this file
   is committed with the change
@@ -232,8 +229,8 @@ real functions in the real `setup.sh`):
   `codex/provider.env` contents, `0600` inside `0700`, no Claude prompt, no
   `claude/` directory, the pasted secret never echoed, and the worker's own
   credential preflight accepting the result
-- a Codex-only host **with** `claude` installed still sees no Claude prompt
-  (the gate is the configuration, not what happens to be on `PATH`)
+- a Codex-only host **with** `claude` installed still sees no Claude prompt (the
+  gate is the configuration, not what happens to be on `PATH`)
 - an existing Codex credential is never overwritten
 - a Claude-only host keeps today's behaviour, and is asked for nothing else
 - a two-provider host runs both flows
@@ -249,8 +246,7 @@ New — `worker/deno/tests/setup_agent_provider_gating_test.ts`:
   provider
 - `checkClaudeCli` / `checkAllPrerequisites` for Codex-only (passes with no
   claude CLI), Claude-only and both-providers hosts
-- `prerequisiteSummaryLines` names the claude CLI only when Claude is
-  configured
+- `prerequisiteSummaryLines` names the claude CLI only when Claude is configured
 
 Added after the independent reviews:
 
@@ -264,19 +260,21 @@ Added after the independent reviews:
   yet, and the failing claude probe names that escape
 - `probedAgentProviders` throws on an explicitly empty set
 
-Unchanged and still passing: `setup_credential_provisioning_test.ts` (18
-tests, including every existing Claude flow), `setup_prerequisites_test.ts`,
+Unchanged and still passing: `setup_credential_provisioning_test.ts` (18 tests,
+including every existing Claude flow), `setup_prerequisites_test.ts`,
 `multi_provider_credentials_test.ts`, `setup_cli_container_repair_test.ts`,
 `setup_parity_test.ts`.
 
 `./quality.sh`: every check passes except `deno tests`, which reports three
-failures — `service_account_env_test.ts::applyServiceAccountEnv - an unwritable
-gh config dir is restaged writable`, and uncaught errors in `run_core_test.ts`
-and `run_core_rate_limit_resume_test.ts`. The identical 33 failures were
-reproduced on the base commit `f8ae393` in a clean worktree
+failures —
+`service_account_env_test.ts::applyServiceAccountEnv - an unwritable
+gh config dir is restaged writable`,
+and uncaught errors in `run_core_test.ts` and
+`run_core_rate_limit_resume_test.ts`. The identical 33 failures were reproduced
+on the base commit `f8ae393` in a clean worktree
 (`git worktree add /tmp/base730 f8ae393 && deno task test …`), so they are
-environmental (the host's `.container-state` path and a live GitHub rate
-limit), not caused by this change.
+environmental (the host's `.container-state` path and a live GitHub rate limit),
+not caused by this change.
 
 ## Follow-up
 

@@ -9,12 +9,14 @@ time it conflicts — and the human it ended at never came.
 
 This raises the bound to **two** restarts and replaces the escalation with a
 **park**: after both restarts are spent the PR is left open carrying
-`merge-conflict`, with one comment carrying a `<!-- vibe-merge-conflict-parked
-base="<sha>" -->` marker naming the base tip it is waiting on. Every later pass
-compares the PR's live `baseRefOid` against that marker and skips it unchanged;
-the first pass they differ, the PR is attempted again with a fresh two-attempt
-budget counted from the park marker onward. No `needs-human` label and no
-comment asking anybody for anything is applied anywhere on this path.
+`merge-conflict`, with one comment carrying a
+`<!-- vibe-merge-conflict-parked
+base="<sha>" -->` marker naming the base tip it
+is waiting on. Every later pass compares the PR's live `baseRefOid` against that
+marker and skips it unchanged; the first pass they differ, the PR is attempted
+again with a fresh two-attempt budget counted from the park marker onward. No
+`needs-human` label and no comment asking anybody for anything is applied
+anywhere on this path.
 
 Closes #2312.
 
@@ -22,9 +24,9 @@ Closes #2312.
 
 Backend/CLI change with no web interface to screenshot. The evidence is the test
 suite below and the full quality gate, which passed on the final commit
-(`deno tests`, `deno lint`, `deno type check`, `deno fmt`, semgrep, markdownlint,
-mermaid and the chokepoint audits — `config integration` skipped as it always is
-without a live config).
+(`deno tests`, `deno lint`, `deno type check`, `deno fmt`, semgrep,
+markdownlint, mermaid and the chokepoint audits — `config integration` skipped
+as it always is without a live config).
 
 ```mermaid
 flowchart TD
@@ -48,8 +50,10 @@ flowchart TD
 
 The one-restart rule was confirmed red before the fix: with
 `MAX_RESTARTS_PER_ISSUE` temporarily set back to `1`, four of the new tests fail
-(`a restarted issue is restarted a second time`, `the third exhaustion is
-declined, not restarted`, `the last restart says what follows it`, and
+(`a restarted issue is restarted a second time`,
+`the third exhaustion is
+declined, not restarted`,
+`the last restart says what follows it`, and
 `one restart on the issue still allows a second`); at `2` they pass.
 
 ## Acceptance Criteria
@@ -59,39 +63,41 @@ declined, not restarted`, `the last restart says what follows it`, and
 - **met** — Second exhaustion on the same issue → second restart — evidence:
   `worker/deno/lib/conflict_abandon_restart.ts:131` (`MAX_RESTARTS_PER_ISSUE`),
   `worker/deno/tests/conflict_abandon_restart_test.ts::abandonAndRestart - a
-  restarted issue is restarted a second time` — reviewer: partial — reason: the
-  reviewer split this criterion and found the restart half met; its second half
-  is recorded separately below.
+  restarted issue is restarted a second time`
+  — reviewer: partial — reason: the reviewer split this criterion and found the
+  restart half met; its second half is recorded separately below.
 - **partial** — …with the event appended to the existing flag issue — evidence:
   `worker/deno/lib/pr_merge_conflict_scan.ts` `fileConflictFallbackFlag` →
   `fileMergeFallbackIssue` — reviewer: partial — reason: the flag's dedup title
   is keyed on the **PR**, not the originating issue
   (`merge_fallback_issue.ts::mergeFallbackTitle`), so across a restart chain
-  each fresh PR files its own flag and "appended" only happens when one PR
-  falls back twice. That per-PR keying is the invariant #2304/#2310 established
-  and the issue itself points at ("`fileMergeFallbackIssue` dedups on title");
+  each fresh PR files its own flag and "appended" only happens when one PR falls
+  back twice. That per-PR keying is the invariant #2304/#2310 established and
+  the issue itself points at ("`fileMergeFallbackIssue` dedups on title");
   re-keying it on the issue would change the milestone path too, so it is
   reported rather than silently widened.
 - **met** — Third exhaustion → PR stays open with `merge-conflict`, park marker
   posted, `parked` skip reason counted, no `needs-human` label or comment —
   evidence: `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr
   - the third exhaustion parks the PR, asking no human (Issue #2312)` —
-  reviewer: met.
+    reviewer: met.
 - **met** — A parked PR whose base tip has not moved is skipped every pass; once
   `baseRefOid` differs it is attempted again with a fresh two-run budget —
   evidence: `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr
-  - a parked PR on an unmoved base is skipped every pass` and `::a moved base
-  offers a parked PR again with a fresh budget` (asserts `attemptCount === 0`) —
-  reviewer: met.
+  - a parked PR on an unmoved base is skipped every pass`and`::a moved base
+    offers a parked PR again with a fresh budget`(asserts`attemptCount === 0`) —
+    reviewer: met.
 - **met** — The stall watchdog does not escalate a parked PR — evidence:
   `worker/deno/tests/merge_conflict_stall_watchdog_test.ts::detectConflictQueueStall
-  - a parked PR on an unmoved base is not a stall` — reviewer: met — reason: the
+  - a parked PR on an unmoved base is not a
+    stall`— reviewer: met — reason: the
   reviewer noted the suppression is narrower than the criterion's flat wording —
   once the base moves the watchdog measures that PR the ordinary way again, so a
   just-un-parked PR can be reported before the scan's next pass reaches it. That
-  is deliberate and asserted (`::a parked PR whose base moved is judged the usual
-  way`): the watchdog files work and never applies `needs-human`, and a park that
-  suppressed for ever is the silence it exists to remove.
+  is deliberate and asserted (`::a
+    parked PR whose base moved is judged the usual
+    way`): the watchdog files work and never applies`needs-human`, and a park
+    that suppressed for ever is the silence it exists to remove.
 - **met** — Regression tests in the three named files that fail against the
   one-restart rule and the `needs-human` route — evidence:
   `conflict_abandon_restart_test.ts`, `pr_merge_conflict_scan_test.ts`,
@@ -104,7 +110,7 @@ declined, not restarted`, `the last restart says what follows it`, and
   gate re-run clean before the commit under review.
 - **unrequested** — `pr_merge_conflict_processor.ts::failAttempt` no longer
   escalates an `already-restarted` decline — reviewer: unrequested — reason: the
-  issue names only the scan, but this is the *other* site that reached
+  issue names only the scan, but this is the _other_ site that reached
   `needs-human` for a spent restart budget, so "remove the `restart-exhausted`
   needs-human escalation" could not be done without it.
 - **unrequested** — `baseRefOid` added to `PrEntry` and
@@ -137,11 +143,12 @@ declined, not restarted`, `the last restart says what follows it`, and
   rewritten in this diff.
 - **violation** — `logger.error` for a park comment the code then handles and
   retries — evidence: `worker/deno/lib/pr_merge_conflict_scan.ts:1267` — reason:
-  dropped to `warn`, matching every other recoverable `gh` failure in the module.
+  dropped to `warn`, matching every other recoverable `gh` failure in the
+  module.
 - **violation** — `readParkedBase` re-encoded the sha rule as its own regex,
   laxer than the writer's — evidence:
-  `worker/deno/lib/merge_conflict_markers.ts:209` — reason: now validates through
-  `isConflictHeadSha`, the same predicate the writer uses.
+  `worker/deno/lib/merge_conflict_markers.ts:209` — reason: now validates
+  through `isConflictHeadSha`, the same predicate the writer uses.
 - **violation** — `Promise<number | undefined | null>` encoded three outcomes in
   one nullable number — evidence:
   `worker/deno/lib/pr_merge_conflict_scan.ts:1243` — reason: replaced with a
@@ -163,14 +170,14 @@ declined, not restarted`, `the last restart says what follows it`, and
   the `parked` reason is registered in every exhaustive switch and table.
 
 Two further reviewer observations were judged and kept as designed, rather than
-changed: an unreadable base tip resolves the *opposite* way in the scan (stay
+changed: an unreadable base tip resolves the _opposite_ way in the scan (stay
 parked) and in the watchdog (judge normally), because each component fails
 towards saying something — now stated in a comment at both sites; and attempt
-numbering repeats in a thread after an un-park, which is inherent to the
-budget reset the issue asks for.
+numbering repeats in a thread after an un-park, which is inherent to the budget
+reset the issue asks for.
 
 One reviewer finding was adopted as a behaviour change beyond the issue text: a
-decline whose restart claim names *this* PR is a **part-done abandon**, not a
+decline whose restart claim names _this_ PR is a **part-done abandon**, not a
 wait — the issue may never have been re-queued — so it no longer parks. It keeps
 `budget-spent`, its route on the WARN line, and its visibility to the stall
 watchdog. Parking it would have replaced the only record of that failure with a
@@ -185,9 +192,11 @@ Added in `worker/deno/tests/conflict_abandon_restart_test.ts`:
   on the one issue.
 - `abandonAndRestart - the third exhaustion is declined, not restarted`.
 - `buildRestartIssueComment - the last restart says what follows it`.
-- Rewritten: `exhaustedEscalationRoute - a burnt claim on this PR is not a failed
-  replacement` (was `describeExhaustedRoute - …`), tracking the removed
-  `restart-exhausted` route while keeping its distinction asserted.
+- Rewritten:
+  `exhaustedEscalationRoute - a burnt claim on this PR is not a failed
+  replacement`
+  (was `describeExhaustedRoute - …`), tracking the removed `restart-exhausted`
+  route while keeping its distinction asserted.
 
 Added in `worker/deno/tests/pr_merge_conflict_scan_test.ts`:
 
@@ -197,7 +206,8 @@ Added in `worker/deno/tests/pr_merge_conflict_scan_test.ts`:
 - `a parked PR on an unmoved base is skipped every pass`.
 - `a moved base offers a parked PR again with a fresh budget`.
 - `a park whose marker cannot be posted is not a park`.
-- `an unreadable base tip leaves a parked PR parked` / `…cannot park a PR either`.
+- `an unreadable base tip leaves a parked PR parked` /
+  `…cannot park a PR either`.
 - `a half-done abandon is not parked away`.
 - `an outsider's park marker cannot silence a PR`.
 - `buildParkedPrComment - says so when the flag could not be filed`.
@@ -225,7 +235,7 @@ Added in `worker/deno/tests/pr_merge_conflict_processor_test.ts`:
 - `a spent restart budget asks no human (Issue #2312)`.
 
 Existing tests changed, with the business-logic reason: two scan tests that used
-an `already-restarted` decline to produce `budget-spent` now use `other-open-pr`,
-because that decline reason no longer lands there; the abandon fake now removes a
-closed PR from the open listing so a second restart reaches the bound rather than
-the other-open-PR precondition.
+an `already-restarted` decline to produce `budget-spent` now use
+`other-open-pr`, because that decline reason no longer lands there; the abandon
+fake now removes a closed PR from the open listing so a second restart reaches
+the bound rather than the other-open-PR precondition.

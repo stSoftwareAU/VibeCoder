@@ -47,7 +47,8 @@ The evidence is the test suite and the gate:
 - `deno test tests/documentation_audit_prompt_v9_test.ts` — **34 passed, 0
   failed**. The 17 new and updated cases were observed **red** before the prompt
   and doc edits landed (17 failed / 17 passed), then green.
-- **Mutation-checked**, not merely green: reversing `it never fires on
+- **Mutation-checked**, not merely green: reversing
+  `it never fires on
   README.md` to `always` in the prompt failed
   `check 14 measures 200 physical lines per file and never on the README`, and
   deleting the mandatory-command clause from the severity guidance failed
@@ -64,14 +65,16 @@ The issue states its requirements as an "Accepted scope" list rather than a
 
 - **met** — new check 14 in the prompt, a matching section in the operator
   manual, new tests in the v9 test file, no new Deno library code — evidence:
-  `prompts/documentation_audit/prompt.md:563`, `docs/DOCUMENTATION-AUDIT-SCAN.md:155`,
+  `prompts/documentation_audit/prompt.md:563`,
+  `docs/DOCUMENTATION-AUDIT-SCAN.md:155`,
   `worker/deno/tests/documentation_audit_prompt_v9_test.ts` — reviewer: met
 - **met** — every "thirteen-check" string becomes "fourteen-check"; the manual's
   "thirteenth registered idle-task template" line is unchanged — evidence:
   `worker/deno/tests/documentation_audit_prompt_v9_test.ts::states the check counts consistently`
   and the two doc guard tests — reviewer: met
 - **met** — the check-9 hierarchy stands; no repo is asked to create a
-  `CLAUDE.md` — evidence: `prompts/documentation_audit/prompt.md:574` — reviewer: met
+  `CLAUDE.md` — evidence: `prompts/documentation_audit/prompt.md:574` —
+  reviewer: met
 - **met** — the file set is check 9's detection set plus `@path` imports —
   evidence: `prompts/documentation_audit/prompt.md:574`, Phase 1 inventory at
   `:256` — reviewer: met
@@ -124,16 +127,16 @@ The issue states its requirements as an "Accepted scope" list rather than a
   `worker/deno/tests/documentation_audit_prompt_v9_test.ts:303` — reason: fixed
   here; the slice is bounded at `## Stable finding ID recipe` and both severity
   halves are asserted. Mutation-checked.
-- **violation** — `assertStringIncludes(check, "fires on \`README.md\`")` passed
-  under the inverted rule — evidence:
-  `worker/deno/tests/documentation_audit_prompt_v9_test.ts:257` — reason: fixed
-  here; it now pins `it never fires on README.md`, and the mutation confirms it
-  fails when reversed.
+- **violation** —
+  `assertStringIncludes(check, "fires on \`README.md\`")`passed
+  under the inverted rule — evidence:`worker/deno/tests/documentation_audit_prompt_v9_test.ts:257`— reason: fixed
+  here; it now pins`it
+  never fires on README.md`, and the mutation confirms it fails when reversed.
 - **violation** — an external figure quoted with no link and no
-  `docs/REFERENCES.md` row — evidence: `prompts/documentation_audit/prompt.md:621`
-  — reason: fixed here; the guidance is credited in `docs/REFERENCES.md` and
-  linked from the operator manual (the prompt itself stays link-free, per
-  REFERENCES.md rule 1).
+  `docs/REFERENCES.md` row — evidence:
+  `prompts/documentation_audit/prompt.md:621` — reason: fixed here; the guidance
+  is credited in `docs/REFERENCES.md` and linked from the operator manual (the
+  prompt itself stays link-free, per REFERENCES.md rule 1).
 - **violation** — "an architecture document under `docs/`" is judgement, two
   lines under "do not substitute judgement" — evidence:
   `prompts/documentation_audit/prompt.md:616` — reason: fixed here; the signal
@@ -158,9 +161,9 @@ The issue states its requirements as an "Accepted scope" list rather than a
   here; the excerpt now states the style-rule absence and the reason counts
   three entries.
 - **violation** — the first commit subject omitted the issue number — evidence:
-  commit `6482f2c1` — reason: stands; the body carries `Refs #2321` and rewriting
-  a pushed commit is the more costly of the two. The follow-up commit uses the
-  house `(Issue #2321)` form.
+  commit `6482f2c1` — reason: stands; the body carries `Refs #2321` and
+  rewriting a pushed commit is the more costly of the two. The follow-up commit
+  uses the house `(Issue #2321)` form.
 - **clean** — Australian English throughout (catalogue, judgement, behaviour);
   tests load the real `loadPrompt()` rather than grepping source; no hidden
   paths staged; the renumber is swept repo-wide and guarded by negative

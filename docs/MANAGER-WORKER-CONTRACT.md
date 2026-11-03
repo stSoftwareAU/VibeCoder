@@ -109,11 +109,12 @@ the template carries only a placeholder.
   executor still running and reach the PR with no summary. The split-run
   `PreToolUse` guard also matches `Agent|Task` and denies advisor dispatches
   unless they explicitly set `run_in_background: false`. After the CLI exits,
-  the runner requires a completed synchronous result for each executor call;
-  an outstanding dispatch, launch acknowledgement or error marks the invocation
+  the runner requires a completed synchronous result for each executor call; an
+  outstanding dispatch, launch acknowledgement or error marks the invocation
   unfinished and prevents completion and PR creation. The existing failure path
   retains the work for retry. `issue_executor_enforcement_test.ts` covers the
-  guard and drives the real runner with unfinished and completed fake-CLI streams.
+  guard and drives the real runner with unfinished and completed fake-CLI
+  streams.
 - `buildPrompt` splices it into `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` when the split
   is on, and renders the empty string otherwise
   (`worker/deno/lib/prompt_builder.ts:718-728`, `:782`, `:832-834`).
@@ -435,8 +436,7 @@ unproved entitlement or exhausted quota. On that path nothing is dropped
 silently: Claude roles use CLI tool denials, a read-only Codex role has every
 change it makes to the checkout put back by the worker
 (`worker/deno/lib/orchestration/read_only_guard.ts`, Issue #4356), and Gemini
-and DeepSeek fail closed. See
-[Role configuration](ROLE-CONFIGURATION.md).
+and DeepSeek fail closed. See [Role configuration](ROLE-CONFIGURATION.md).
 
 ## 8. Rollout and safeguards
 
@@ -492,9 +492,9 @@ and DeepSeek fail closed. See
   `issue` run, so with them a host whose `issue` phase runs on `gemini` or
   `deepseek` has each such run rerouted to Claude when Claude is enabled and
   installed and the run is not on a health-gate fallback, or stripped with a
-  warning otherwise (Issue #4109), unless it
-  applies the full rollback below or opts into external orchestration. A `codex`
-  run under automatic provider routing is forced onto external orchestration
+  warning otherwise (Issue #4109), unless it applies the full rollback below or
+  opts into external orchestration. A `codex` run under automatic provider
+  routing is forced onto external orchestration
   (`worker/deno/lib/orchestration/role_config.ts:370`) and is never planned, so
   it is neither rerouted nor stripped; a `codex` run that is not on automatic
   routing and has external orchestration off is rerouted or stripped like the
