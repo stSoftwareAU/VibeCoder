@@ -176,5 +176,19 @@ together. No summary/accounting gate was added.
 
 ## Deno regression avoided
 
+CI repair: the agent-push fixture now supplies an executable repository-owned
+quality gate, with a failing-gate case asserting that publication is refused
+and the remote stays unchanged. The recovery fixture allows repeated validation
+of the original commit and rejects the distinct merged head, retaining its
+remote-preservation assertions. Both failures were reproduced with the canonical
+`deno task test` command before updating the fixtures.
+
+Repair validation: all 25 focused tests pass; manifest checks pass (847 tests),
+as do type checking, formatting, lint, Markdown, Mermaid and static policy checks
+in `quality.sh`. The full unit runner panics inside the host's Deno 2.9.5
+permission implementation; the repository pins 2.9.8. Exact CI shard launches
+require unavailable `setsid`. Semgrep, Checkov and config integration are
+unavailable locally. The current base's merged PR #4740 has 22 passing CI checks.
+
 Used Deno tasks, the frozen lockfile and repository-owned gates. No Node tool or
 dependency was added; checkpoint copying uses the runtime standard library.

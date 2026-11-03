@@ -45,6 +45,7 @@ interface Outcome {
 
 async function runScenario(
   opts: { preFlightCommands?: string[]; repo?: string },
+  qualityExit = 0,
 ): Promise<Outcome> {
   const root = await Deno.makeTempDir({ prefix: "pre_push_3394_" });
   try {
@@ -53,7 +54,12 @@ async function runScenario(
     await git(root, "init", "--bare", "-b", "main", bare);
     await git(root, "clone", bare, clone);
     await Deno.writeTextFile(`${clone}/a.txt`, "a\n");
-    await git(clone, "add", "a.txt");
+    await Deno.writeTextFile(
+      `${clone}/quality.sh`,
+      `#!/bin/sh\nexit ${qualityExit}\n`,
+    );
+    await Deno.chmod(`${clone}/quality.sh`, 0o755);
+    await git(clone, "add", "a.txt", "quality.sh");
     await git(clone, "commit", "-m", "init");
     await git(clone, "push", "origin", "HEAD:refs/heads/main");
     await Deno.writeTextFile(`${clone}/b.txt`, "b\n");
@@ -108,6 +114,19 @@ async function exists(path: string): Promise<boolean> {
 }
 
 const PERMS = { run: true, read: true, write: true, env: true };
+
+Deno.test({
+  name: "agent git push - required repository validation refuses publication",
+  permissions: PERMS,
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const o = await runScenario({ preFlightCommands: ["true"] }, 1);
+    assert(o.pushExit !== 0, "failed required validation must refuse the push");
+    assertStringIncludes(o.pushStderr, "[PRE_PUSH_BLOCKED]");
+    assertEquals(o.remoteHasFeature, false);
+    assertEquals(await exists(o.hooksDir), false, "hook dir must be cleaned");
+  },
+});
 
 Deno.test({
   name: "agent git push - refused when pre-flight fails (Issue #3394)",

@@ -800,7 +800,9 @@ Deno.test("commitAndPushPending - a push recovery merge needs a fresh verdict", 
       undefined,
       undefined,
       async () => {
-        heads.push((await runGit(["rev-parse", "HEAD"], downstream)).stdout);
+        const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout;
+        // Repeated checks of the original head pass; recovery's new head fails.
+        if (heads.at(-1) !== head) heads.push(head);
         return heads.length === 1
           ? { ok: true, value: undefined }
           : { ok: false, error: new Error("merged head not verified") };
