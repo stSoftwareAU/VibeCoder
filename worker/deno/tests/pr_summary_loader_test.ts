@@ -596,3 +596,93 @@ Deno.test("loadCommittedPrSummary - applies version-bump normalisation (Issue #4
     await cleanupDir(dir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Tests — committed read failures reach the caller as errors (Issue #4712)
+// ---------------------------------------------------------------------------
+
+const STUB_SHA = "a".repeat(40);
+
+/** A git runner that answers `ls-tree` with `listed` and `show` with `shown`. */
+function stubGit(
+  listed: Awaited<ReturnType<typeof runGitCommand>>,
+  shown: Awaited<ReturnType<typeof runGitCommand>>,
+): typeof runGitCommand {
+  return (args) => Promise.resolve(args[0] === "ls-tree" ? listed : shown);
+}
+
+const LISTED_OK = {
+  ok: true,
+  value: { code: 0, stdout: "path\0", stderr: "" },
+} as const;
+
+Deno.test("loadCommittedPrSummary - a failed ls-tree run is an error naming the cause (Issue #4712)", async () => {
+  const result = await loadCommittedPrSummary(
+    "/unused",
+    42,
+    STUB_SHA,
+    stubGit({ ok: false, error: new Error("spawn blew up") }, LISTED_OK),
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      `Failed to read PR summary at docs/archive/pr-summaries/pr-summary-42.md in commit ${STUB_SHA}: spawn blew up`,
+    );
+  }
+});
+
+Deno.test("loadCommittedPrSummary - a non-zero ls-tree exit is an error with the first stderr line (Issue #4712)", async () => {
+  const result = await loadCommittedPrSummary(
+    "/unused",
+    42,
+    STUB_SHA,
+    stubGit(
+      {
+        ok: true,
+        value: { code: 128, stdout: "", stderr: "fatal: bad\nmore" },
+      },
+      LISTED_OK,
+    ),
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message.endsWith(": fatal: bad"), true);
+  }
+});
+
+Deno.test("loadCommittedPrSummary - a failed git show run is an error, not not_found (Issue #4712)", async () => {
+  const result = await loadCommittedPrSummary(
+    "/unused",
+    42,
+    STUB_SHA,
+    stubGit(LISTED_OK, { ok: false, error: new Error("show spawn failed") }),
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      `Failed to read PR summary at docs/archive/pr-summaries/pr-summary-42.md in commit ${STUB_SHA}: show spawn failed`,
+    );
+  }
+});
+
+Deno.test("loadCommittedPrSummary - a non-zero git show exit is an error even when stdout carries content (Issue #4712)", async () => {
+  const result = await loadCommittedPrSummary(
+    "/unused",
+    42,
+    STUB_SHA,
+    stubGit(LISTED_OK, {
+      ok: true,
+      value: { code: 1, stdout: "## Summary\nPartial.\n", stderr: "" },
+    }),
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message.endsWith(": git exited 1"), true);
+  }
+});

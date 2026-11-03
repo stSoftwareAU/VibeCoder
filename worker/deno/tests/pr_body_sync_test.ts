@@ -1054,6 +1054,111 @@ Deno.test("syncPrBodyFromSummary - Issue #4712: a failed read of the committed o
   }
 });
 
+/** A logger that records each `warn` call. */
+function warnRecorder(): {
+  logger: Logger;
+  warns: Array<{ message: string; context: unknown }>;
+} {
+  const warns: Array<{ message: string; context: unknown }> = [];
+  return {
+    logger: {
+      ...logger,
+      warn: (message: string, context?: unknown) => {
+        warns.push({ message, context });
+      },
+    },
+    warns,
+  };
+}
+
+Deno.test("syncPrBodyFromSummary - Issue #4712: skips when the checkout moved off the committed head", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    // A later commit moves the checkout off the head the body was built from.
+    await Deno.writeTextFile(`${repoPath}/README.md`, "moved\n");
+    await gitIn(repoPath, "add", "README.md");
+    await gitIn(repoPath, "commit", "-q", "-m", "move head");
+    const movedSha = await gitIn(repoPath, "rev-parse", "HEAD");
+    const ghCalls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      adoptionDeps(ghCalls, movedSha, remoteAt(headSha)),
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "checkout moved off the committed head",
+      });
+    }
+    assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #4712: a non-zero ls-remote exit is not proof of the pushed head", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const { logger: recording, warns } = warnRecorder();
+    const deps = adoptionDeps(ghCalls, headSha, {
+      ok: true,
+      // Stdout names the committed head, so only the exit code can refuse it.
+      value: {
+        code: 128,
+        stdout: `${headSha}\trefs/heads/${BRANCH}\n`,
+        stderr: "fatal: could not read from remote",
+      },
+    });
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      { ...deps, logger: recording },
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "pushed head could not be verified",
+      });
+    }
+    assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+    assertEquals(warns.length, 1);
+    assertEquals(warns[0]?.context, { repo: REPO, prNumber: PR_NUMBER });
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #4712: a moved pushed head is logged with both heads", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const { logger: recording, warns } = warnRecorder();
+    const otherHead = "1".repeat(40);
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      {
+        ...adoptionDeps(ghCalls, headSha, remoteAt(otherHead)),
+        logger: recording,
+      },
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    assertEquals(warns.length, 1);
+    assertEquals(warns[0]?.context, {
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      committedHeadSha: headSha,
+      remoteHead: otherHead,
+    });
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
 // --- issueNumberFromMarker: quoted markers in the summary (PR #3353 review) ---
 
 Deno.test("sync - a summary quoting an earlier numeric worker marker is not mistaken for this PR's issue", async () => {

@@ -78,6 +78,12 @@ Docs updated: `docs/USAGE.md` (adoption paragraph), `docs/INTERNALS.md`
 - `worker/deno/tests/agent_pr_adoption_test.ts`: one new call-site test that the
   sync input carries `committedHeadSha === SHA`. Dropping
   `committedHeadSha: pushed` from `agent_pr_adoption.ts` turned it red.
+- Mutation follow-up: four more `loadCommittedPrSummary` tests (failed
+  `ls-tree` run, non-zero `ls-tree` exit, failed `git show` run, non-zero
+  `git show` exit with content on stdout) pin the error result and its message.
+  Three more `pr_body_sync_test.ts` tests pin the `checkout moved off the
+  committed head` reason, a non-zero `ls-remote` exit that still prints the
+  committed head, and the exact fields logged when the pushed head moved.
 - Existing callers checked for compatibility: `tests/pr_body_reconcile_test.ts`
   and the rest of `pr_body_sync_test.ts` pass unchanged, since they omit the
   field.
