@@ -219,12 +219,12 @@ by the creation call rather than a umask.
 The supervisor gate is the newest (Issue #1403) and the reason the other two
 exist: `loop` had no parity test, and the two supervisors drifted to 501 and 148
 lines before anyone noticed that `loop.ps1` never pulled its checkout
-(Issue #1401) or resolved its log directory (Issue #1402). It compares the never-exit
-loop, the delegated backoff, the resolved log directory, the per-cycle launch
-log and its pruning, the checkout refresh, the frozen lockfile, and the launcher
-exit statuses each supervisor tells apart — and it reports faults in one
-supervisor whatever the other does, because two supervisors that both stop
-pulling their checkout agree with each other and are both wrong.
+(Issue #1401) or resolved its log directory (Issue #1402). It compares the
+never-exit loop, the delegated backoff, the resolved log directory, the
+per-cycle launch log and its pruning, the checkout refresh, the frozen lockfile,
+and the launcher exit statuses each supervisor tells apart — and it reports
+faults in one supervisor whatever the other does, because two supervisors that
+both stop pulling their checkout agree with each other and are both wrong.
 
 Three asymmetries are intended, and each is **named with the condition that
 would end it** rather than tolerated silently:
@@ -298,7 +298,7 @@ Deno. Both launchers follow the same steps:
    itself before it so work in progress is committed and pushed.
 
 `run.sh upgrade` is the one invocation that runs none of those steps
-(Issue #691): it delegates straight to
+(Issue #691): it delegates straight to
 `deno run … mod.ts upgrade --base-dir
 <checkout>`, which rewrites `pinned_ref`
 and all three `pinned_tool_versions` in `.config.json` to what the newest
@@ -490,7 +490,7 @@ bounded by gzip-at-start plus age-based retention, not by size rotation —
 other logs (`run_core.log`, `pull.log`, `worker.log`, `cron.log`,
 `security.log`, `launch*.log`, `self-heal.jsonl`, `agent-*.jsonl`) and
 deliberately leaves `worker-<timestamp>.log` to the two modules below
-(Issue #1267).
+(Issue #1267).
 
 Worker-log lifecycle: the running process's `worker-<PID>.log` stays plain text;
 every prior run's log is gzipped at the next worker start
@@ -2111,12 +2111,12 @@ a label the worker needs. With no mappings configured the set is the same six
 labels as before.
 
 **A PR-producing label route also gets the `work-on` eligibility gates**
-(Issue #937). The operational dispatch labels above _answer_ an issue and remove their
-own label when they finish, so re-dispatch stops itself. A custom label does
-not: it stays on the issue, and `unassign_on_pr_created` hands the issue back
-unassigned, so the next cycle re-ran the whole implementation pipeline against
-the PR the previous cycle had just raised. `findIssuesByLabel` therefore takes
-an opt-in `gateNewWork`, which runs the sequence
+(Issue #937). The operational dispatch labels above _answer_ an issue and remove
+their own label when they finish, so re-dispatch stops itself. A custom label
+does not: it stays on the issue, and `unassign_on_pr_created` hands the issue
+back unassigned, so the next cycle re-ran the whole implementation pipeline
+against the PR the previous cycle had just raised. `findIssuesByLabel` therefore
+takes an opt-in `gateNewWork`, which runs the sequence
 [collect_work_on_candidates.ts](../worker/deno/lib/collect_work_on_candidates.ts)
 runs, factored into
 [new_work_eligibility.ts](../worker/deno/lib/new_work_eligibility.ts) so both
@@ -2452,7 +2452,7 @@ feedback:
 | ---------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Inline review comments**         | `repos/{repo}/pulls/{pr}/comments`  | Authorised commenters: process immediately. Others: require a thumbs-up reaction **from an authorised user** (a bare `+1` count is not trusted, since any user can self-react).                                                           |
 | **Issue/discussion comments**      | `repos/{repo}/issues/{pr}/comments` | Same as review comments.                                                                                                                                                                                                                  |
-| **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt. Only each reviewer's latest review counts, whatever commit it was left on (Issue #2697). |
+| **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt. Only each reviewer's latest review counts, whatever commit it was left on (Issue #2697). |
 
 **Processed-comment tracking** — comments are marked as processed by adding an
 "eyes" (👀) reaction. The discovery query returns every comment with its `eyes`
@@ -2481,14 +2481,14 @@ a bot's formatting or version bump, and any fleet or CI-fix commit all leave it
 outstanding. Only two things retire it: its dismissal (the processed marker,
 which is what stops a handled review being processed twice), and the same
 reviewer's later `APPROVED`, `DISMISSED` or `CHANGES_REQUESTED` review
-(Issue #2697). A live, fleet-authored claim lease holds a review rather than retiring
-it (Issue #3383): the scan skips a review a live lease covers, and only a lapsed
-lease — the run timed out, crashed or went silent — makes it actionable again.
-The history explains the rule. Under the old `commit_id !== head` rule, a base
-merge and a version bump on GRQ#5032 moved the head after the owner's review and
-hid it. Issue #2702 then skipped a review once a fleet fix commit landed after
-its `submitted_at`, but on NEAT-AI-Discovery#2443 a CI-fix commit counted as
-answering the review when nothing had answered it. CI-fix pushes are
+(Issue #2697). A live, fleet-authored claim lease holds a review rather than
+retiring it (Issue #3383): the scan skips a review a live lease covers, and only
+a lapsed lease — the run timed out, crashed or went silent — makes it actionable
+again. The history explains the rule. Under the old `commit_id !== head` rule, a
+base merge and a version bump on GRQ#5032 moved the head after the owner's
+review and hid it. Issue #2702 then skipped a review once a fleet fix commit
+landed after its `submitted_at`, but on NEAT-AI-Discovery#2443 a CI-fix commit
+counted as answering the review when nothing had answered it. CI-fix pushes are
 single-parent fleet commits that never reply to a review, so no commit can
 retire one. No commit history is read for reviews any more: the scan makes no
 `pulls/{pr}/commits` call for them. `isFleetAnswerAfter` in
@@ -2544,18 +2544,18 @@ When a comment is found:
 
 For an authorised `CHANGES_REQUESTED` review (`pr_review`), the worker also runs
 the disposable verifier after committing and formatting, before pushing
-(Issue #3784). It supplies the complete earlier problem/Fix pairs and requires one
-evidenced `fixed` verdict per numbered finding. Missing, duplicate, `partly` or
-`not fixed` verdicts become blocking findings. An unavailable verifier does not
-block this path: it is logged as not checked, the fix is pushed, and the fleet
-review of the pushed head decides (Issue #4509). One correction turn is allowed
-for a blocked verdict; a remaining block keeps the review outstanding and
-charges a failed attempt. The PR stays armed for auto-merge: GitHub holds the
-merge on the outstanding review, and PRs do not merge until they have a review
-approval and CI is green (Issue #4291). A push-recovery merge gets a fresh
-verdict before its retry push. Ordinary inline and issue comments retain their
-existing flow. The fleet reviewer applies the same verdict check before posting
-its review.
+(Issue #3784). It supplies the complete earlier problem/Fix pairs and requires
+one evidenced `fixed` verdict per numbered finding. Missing, duplicate, `partly`
+or `not fixed` verdicts become blocking findings. An unavailable verifier does
+not block this path: it is logged as not checked, the fix is pushed, and the
+fleet review of the pushed head decides (Issue #4509). One correction turn is
+allowed for a blocked verdict; a remaining block keeps the review outstanding
+and charges a failed attempt. The PR stays armed for auto-merge: GitHub holds
+the merge on the outstanding review, and PRs do not merge until they have a
+review approval and CI is green (Issue #4291). A push-recovery merge gets a
+fresh verdict before its retry push. Ordinary inline and issue comments retain
+their existing flow. The fleet reviewer applies the same verdict check before
+posting its review.
 
 The verifier judges the rebuilt description from the branch's archived summary
 and facts, using the same ownership/adoption checks and body builder as
@@ -4427,14 +4427,14 @@ branch (Issue #2125), so it is filtered before the branch probe.
 Divergence cost grows superlinearly: one day of drift is a fast-forward, three
 days is a merge, a week is an archaeology exercise because by then the two sides
 have solved the same problem twice. Two behaviours keep the window narrow — the
-cadence below (Issue #1776, which replaced the closure-driven trigger of
-Issue #1558) and the conflict triage after it.
+cadence below (Issue #1776, which replaced the closure-driven trigger of
+Issue #1558) and the conflict triage after it.
 
 **Cadence.** The sync runs on every scan cycle at priority 1.72, and syncs every
 open milestone branch on every cycle in which the **default tip moved**
-(Issue #1776). The hourly per-branch cooldown is gone: `main` takes ~27 commits a day,
-so a cooldown left a branch up to an hour behind for no reason other than the
-clock. The signal is one `git rev-parse origin/<default>` per repo — read by
+(Issue #1776). The hourly per-branch cooldown is gone: `main` takes ~27 commits
+a day, so a cooldown left a branch up to an hour behind for no reason other than
+the clock. The signal is one `git rev-parse origin/<default>` per repo — read by
 [milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts) after
 the fetch `ensureDefaultBranchCurrent` performs anyway — compared against the
 `lastSyncedDefaultSha` in each branch's ledger entry. It costs nothing against
@@ -4557,7 +4557,7 @@ folded back into one overlapping-item union
 ([rust_use_union.ts](../worker/deno/lib/rust_use_union.ts)) before that check
 runs, because rustc rejects the same name imported twice (`error[E0252]`) and
 the gate would otherwise refuse the identical union every sync cycle
-(Issue #3007).
+(Issue #3007).
 
 **Every automatic resolution is verified before it is pushed**
 ([milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)):
@@ -4574,8 +4574,9 @@ runs a superset of a unit suite. A tree that defines none of the three is still
 refused, as the next paragraph says.
 
 **A red tree goes back to the agent rung before it goes to a human**
-(Issue #1965, [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)).
-A verification failure after a resolution is rarely a bad resolution: it is a
+(Issue #1965,
+[milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)). A
+verification failure after a resolution is rarely a bad resolution: it is a
 _semantic_ conflict git never reported, where the default branch changed an
 interface the milestone branch implements somewhere no hunk overlapped. On
 `GRQ-AutoTrader#292` git reported one conflicted paragraph of
@@ -4646,10 +4647,10 @@ refused outside a merge-only cycle, because that `skipped` verdict is refused
 there (`judgeResolutionVerdict`). The third (Issue #4422) covers a Deno task
 whose remote module host this host cannot reach, in the resolution gate's tasks
 and, under the condition below, in the type check in `checkMergedTree`
-(Issue #4451). When a Deno task fails because this host cannot fetch a remote module,
-deno prints `error: Import '<url>' failed.` followed by a connection-class cause
-such as `error sending request for url`, `unsuccessful tunnel` or `dns error`.
-`detectRemoteModuleGap` in
+(Issue #4451). When a Deno task fails because this host cannot fetch a remote
+module, deno prints `error: Import '<url>' failed.` followed by a
+connection-class cause such as `error sending request for url`,
+`unsuccessful tunnel` or `dns error`. `detectRemoteModuleGap` in
 [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) recognises
 only that pair. A 404, a certificate, a checksum or a type error is still an
 ordinary failure and is refused. The unreachable task is not counted as passed
@@ -5019,34 +5020,35 @@ reads the shared budget from that PR's own trusted markers, and the sync records
 each attempt there (`pass="sync"` plus its conclusion) exactly as the ladder
 does, so the PR-marker budget takes precedence over the local ledger whenever
 one exists — including the hand-off decision on a spent budget. There is
-no #2311-style re-arm for the PR budget; only a `resolved` marker resets the PR's
-tally. A milestone branch with **no** open PR still has nowhere to write one, so
-for it the ledger is persisted per branch in `milestone_sync_failures.json`
-beside the failure streak and survives worker restarts; a PR or its comments the
-sync could not read also falls back here, with a logged warning. The sync pass
-writes `lastSyncedDefaultSha` through it for the cadence gate (Issue #1776) and
-charges the conflict _attempts_ around every merge it makes (Issue #1778). Each
-entry carries `conflictAttempts` (concluded failures), `attemptOpenedAt` (an
-attempt that opened and has not concluded), `lastAttempt` (`at`, `outcome`,
-`reason`, `defaultSha`, and — since Issue #2311 — `host`, `timings` and
-`analysis`), `failedAttempts` (every charged run of the budget currently being
-spent, which is what the `merge-fallback` flag reports), `fallbackDefaultSha`
-(the default tip a roll-back that could not merge already answered for),
-`gateRefusal` (the resolution-gate verdict the branch is repeating —
-`conflictKey`, `reason`, both tips, the consecutive `count` and whether the
-worker diagnostic has been `reported`, Issue #2388), `lastSyncedDefaultSha` and
-`rollbacks`, plus three fields Issue #4328 adds: `refusedCycles` (consecutive
-not-charged refusals, zeroed by a charged conclusion or a landed sync; a
-cycle-budget deferral or cargo-budget withhold is not a refusal and leaves it
-unchanged, Issues #4517 and #4588), `rollbackFailures` (lifetime roll-backs that
-could not merge) and `rebuilds` (lifetime milestone rebuilds on the branch), and
-`resolverDeclines` (charged verdicts for which `climbsRecoveryLadder` holds;
-only the resolver recovery ladder reads it, Issue #4587). An older file without
-`resolverDeclines` reads it as 0. Every field is optional and every malformed
-field is dropped, so a file written before the ledger existed loads as a branch
-with an unspent budget rather than failing the whole load — and a `deferUntil`
-an older worker wrote is dropped on load, so a cooldown that no longer exists
-cannot pace a branch (Issue #2305).
+no #2311-style re-arm for the PR budget; only a `resolved` marker resets the
+PR's tally. A milestone branch with **no** open PR still has nowhere to write
+one, so for it the ledger is persisted per branch in
+`milestone_sync_failures.json` beside the failure streak and survives worker
+restarts; a PR or its comments the sync could not read also falls back here,
+with a logged warning. The sync pass writes `lastSyncedDefaultSha` through it
+for the cadence gate (Issue #1776) and charges the conflict _attempts_ around
+every merge it makes (Issue #1778). Each entry carries `conflictAttempts`
+(concluded failures), `attemptOpenedAt` (an attempt that opened and has not
+concluded), `lastAttempt` (`at`, `outcome`, `reason`, `defaultSha`, and — since
+Issue #2311 — `host`, `timings` and `analysis`), `failedAttempts` (every charged
+run of the budget currently being spent, which is what the `merge-fallback` flag
+reports), `fallbackDefaultSha` (the default tip a roll-back that could not merge
+already answered for), `gateRefusal` (the resolution-gate verdict the branch is
+repeating — `conflictKey`, `reason`, both tips, the consecutive `count` and
+whether the worker diagnostic has been `reported`, Issue #2388),
+`lastSyncedDefaultSha` and `rollbacks`, plus three fields Issue #4328 adds:
+`refusedCycles` (consecutive not-charged refusals, zeroed by a charged
+conclusion or a landed sync; a cycle-budget deferral or cargo-budget withhold is
+not a refusal and leaves it unchanged, Issues #4517 and #4588),
+`rollbackFailures` (lifetime roll-backs that could not merge) and `rebuilds`
+(lifetime milestone rebuilds on the branch), and `resolverDeclines` (charged
+verdicts for which `climbsRecoveryLadder` holds; only the resolver recovery
+ladder reads it, Issue #4587). An older file without `resolverDeclines` reads it
+as 0. Every field is optional and every malformed field is dropped, so a file
+written before the ledger existed loads as a branch with an unspent budget
+rather than failing the whole load — and a `deferUntil` an older worker wrote is
+dropped on load, so a cooldown that no longer exists cannot pace a branch
+(Issue #2305).
 
 Three rules decide what the ledger does, and each is a pure helper:
 
@@ -5129,7 +5131,7 @@ is the branch's to answer for:
 | Conflicted and every rung left it undecided                    | `failed` — one attempt charged, due again next cycle                                                                                                                                      |
 | The agent ran out **its own** timeout                          | `failed` — the rung was climbed and the conflict beat it (Issue #2305)                                                                                                                    |
 | The **worker** ended the run at the cycle deadline             | `disrupted` — nothing was judged, so nothing is charged (Issues #1693, #2305)                                                                                                             |
-| Conflicted with too little of the cycle left to cover a rung   | `not-charged` — `agent deferred: cycle budget` (Issue #2309); not counted in `refusedCycles` and never climbs: the branch waits for a cycle with the runway (Issue #4517)                 |
+| Conflicted with too little of the cycle left to cover a rung   | `not-charged` — `agent deferred: cycle budget` (Issue #2309); not counted in `refusedCycles` and never climbs: the branch waits for a cycle with the runway (Issue #4517)                 |
 | Conflicted and the agent is withheld by the cargo budget       | `not-charged` — not counted in `refusedCycles` and never climbs; the branch waits for disk (Issue #4588)                                                                                  |
 | Merge gate refused the merged tree (`isMergeGateFailure`)      | `failed` — one attempt charged, as for a textual conflict (Issue #4304)                                                                                                                   |
 | Merge gate refused the resolution (`gateFailure`)              | `not-charged` — counted in `refusedCycles`, and the fourth consecutive one is `failed` and climbs to the hand-off (Issues #4328, #4517); the gate keeps its own escalation, reported once |
@@ -5162,8 +5164,8 @@ spent budget on the branch a rebuild first. Without a clone git runner the
 default still logs `budget exhausted: roll-back not yet available`.
 
 **Every behind branch is offered the agent rung; the budget decides**
-(Issue #2309). `grantAgentRun` decides it, and it is the merge-conflict drain's rule
-with **both** halves:
+(Issue #2309). `grantAgentRun` decides it, and it is the merge-conflict drain's
+rule with **both** halves:
 
 - **A floor.** A rung is not started at all unless the handler's remaining
   budget, less the `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS` a resolution spends
@@ -5590,10 +5592,10 @@ flowchart TD
 #### `clone_corrupt` is its own failure category
 
 A broken ref or a corrupt object store in the host's **shared** clone
-(Issues #2880, #1093, #2884) is a fault of the host, not of the issue: an in-process
-retry against the same damaged clone fails identically, and the same fault meets
-every other issue claimed against that repository. Charging the issue's
-`failed-once` / `failed` budget for it would park a healthy issue over
+(Issues #2880, #1093, #2884) is a fault of the host, not of the issue: an
+in-process retry against the same damaged clone fails identically, and the same
+fault meets every other issue claimed against that repository. Charging the
+issue's `failed-once` / `failed` budget for it would park a healthy issue over
 infrastructure it cannot fix.
 
 `detectFailureCategory` (`failure_diagnosis.ts`) checks for the worker-authored
@@ -5772,7 +5774,7 @@ declines it. `classifyCodingFailure` returns a `ladder` decision with cooldown
 `detectHostFault` returns `null`, so a block always gets one normal attempt and
 a failure comment carrying the gate output. Before that classification applies,
 a verdict block on the first block of a run gets one in-run recovery turn
-(Issue #4128): the agent session resumes once with the gate output in the prompt
+(Issue #4128): the agent session resumes once with the gate output in the prompt
 (`worker/deno/lib/pre_push_gate_retry.ts`, timeout
 `pre_push_retry_timeout_seconds`), the formatters and the same gate re-run, and
 the push happens only if the gate passes. A second block in the same run,
