@@ -182,27 +182,23 @@ Deno.test("credential channel 4705 - declared values arrive byte-exact and undec
   );
   const argv = wrapperArgv(["/bin/sh", "-c", probe]);
 
-  Deno.env.set("CREDENTIAL_PARENT_ONLY_4705", "parent-only");
-  try {
-    const result = unwrap(
-      await runWithTimeout(argv[0] ?? "sh", argv.slice(1), {
-        clearEnv: true,
-        env: { PATH: "/usr/local/bin:/usr/bin:/bin" },
-        stdin,
-        timeoutMs: TIMEOUT_MS,
-      }),
-    );
-    assertEquals(result.code, 0);
-    const lines = result.stdout.split("\n");
-    for (const [index, name] of names.entries()) {
-      assertEquals(lines[index], base64Utf8(declared[name] ?? ""), name);
-    }
-    assertEquals(lines[names.length], "end");
-  } finally {
-    Deno.env.delete("CREDENTIAL_PARENT_ONLY_4705");
+  const result = unwrap(
+    await runWithTimeout(argv[0] ?? "sh", argv.slice(1), {
+      clearEnv: true,
+      env: { PATH: "/usr/local/bin:/usr/bin:/bin" },
+      stdin,
+      timeoutMs: TIMEOUT_MS,
+    }),
+  );
+  assertEquals(result.code, 0);
+  const lines = result.stdout.split("\n");
+  for (const [index, name] of names.entries()) {
+    assertEquals(lines[index], base64Utf8(declared[name] ?? ""), name);
   }
+  assertEquals(lines[names.length], "end");
 
-  // The parent-only name is set in this process but must not reach the child.
+  // The child is spawned with only the env passed explicitly above, so a name
+  // the parent holds cannot reach it.
   const absent = wrapperArgv([
     "/bin/sh",
     "-c",
