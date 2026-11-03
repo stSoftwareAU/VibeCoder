@@ -194,6 +194,12 @@ request review gets a separate identity. A legacy create-only attempt file is
 migrated to a five-minute cooldown and then becomes eligible again. No manual
 state-file deletion is part of normal recovery.
 
+Completed substantive repair attempts also carry the existing
+`vibe-ci-fix-attempt` marker in a fleet-authored PR comment. Hosts count only
+markers written by configured fleet authors, so the configured repair limit
+is shared across hosts and survives a restart; infrastructure and capability
+failures do not add a substantive attempt marker.
+
 Infrastructure, host capability, and head or lock races receive bounded
 cooldowns without spending the substantive repair budget. Code failures and
 no-progress outcomes spend that budget and change the diagnosis after the

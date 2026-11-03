@@ -3,6 +3,14 @@ import { classifyPrBaseChange } from "../lib/pr_base_change_guard.ts";
 Deno.test("babysitter default heartbeat resolves its checkout revision", async () => {
   const dir = await Deno.makeTempDir();
   try {
+    const info = await new Deno.Command(Deno.execPath(), {
+      args: ["info", "--json"],
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(info.code, 0, new TextDecoder().decode(info.stderr));
+    const denoDir = JSON.parse(new TextDecoder().decode(info.stdout)).denoDir;
     const command = new Deno.Command(Deno.execPath(), {
       args: [
         "eval",
@@ -22,7 +30,7 @@ Deno.test("babysitter default heartbeat resolves its checkout revision", async (
         dir,
       ],
       clearEnv: true,
-      env: { PATH: Deno.env.get("PATH") ?? "", TMPDIR: dir },
+      env: { DENO_DIR: denoDir, PATH: Deno.env.get("PATH") ?? "", TMPDIR: dir },
       stdout: "piped",
       stderr: "piped",
     });

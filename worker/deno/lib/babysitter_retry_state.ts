@@ -1,7 +1,17 @@
 /** Durable retry and post-push reconciliation state for the PR babysitter. */
 
 import { atomicWrite } from "./file_utils.ts";
-import { computeFailureSignature } from "./auto_fix_attempt_tracker.ts";
+import {
+  computeFailureSignature,
+  type FailureSignatureInput,
+} from "./auto_fix_attempt_tracker.ts";
+import {
+  buildCiFixAttemptMarker,
+  type CiFixAttemptMarker,
+  type CiFixMarkerComment,
+  collectFleetCiFixMarkers,
+  countAttempts,
+} from "./ci_fix_attempt_markers.ts";
 
 export type BabysitterBlockerClass =
   | "infrastructure"
@@ -274,4 +284,59 @@ export function babysitterRetryEligible(
 ): boolean {
   return !record || record.nextEligibleAt === null ||
     Date.parse(record.nextEligibleAt) <= now;
+}
+
+/** Use the existing fleet-authored PR marker as the cross-host attempt tally. */
+export function sharedBabysitterAttemptCount(
+  comments: readonly CiFixMarkerComment[],
+  fleetLogins: readonly string[],
+  signature: string,
+): number {
+  const markers = collectFleetCiFixMarkers(comments, fleetLogins);
+  if (!markers.fleetResolved) {
+    throw new Error(
+      "Cannot resolve fleet authors for the babysitter attempt tally",
+    );
+  }
+  if (markers.ignoredOutsideFleet > 0) {
+    console.warn(
+      `[babysitter-retry] ignored ${markers.ignoredOutsideFleet} attempt marker comment(s) from outside the fleet`,
+    );
+  }
+  return countAttempts(markers, signature);
+}
+
+/** Build the established fleet-wide attempt marker for a repair outcome. */
+export function buildBabysitterAttemptMarker(
+  repo: string,
+  prNumber: number,
+  failureIdentity: string,
+  head: string,
+  attempt: number,
+  outcome: CiFixAttemptMarker["outcome"],
+): { signature: string; marker: string } {
+  const signature = babysitterFailureSignature(repo, prNumber, failureIdentity);
+  return {
+    signature,
+    marker: buildCiFixAttemptMarker({
+      signature,
+      checkName: failureIdentity,
+      head,
+      attempt,
+      outcome,
+    }),
+  };
+}
+
+export function babysitterFailureSignature(
+  repo: string,
+  prNumber: number,
+  failureIdentity: string,
+): string {
+  const input: FailureSignatureInput = {
+    repo,
+    locus: { kind: "pr", number: prNumber },
+    checkName: failureIdentity,
+  };
+  return computeFailureSignature(input);
 }

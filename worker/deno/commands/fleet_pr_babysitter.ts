@@ -52,14 +52,17 @@ import {
   resolveMaxAutoFixAttempts,
 } from "../lib/auto_fix_attempt_tracker.ts";
 import {
+  babysitterFailureSignature,
   babysitterRetryDelayMs,
   babysitterRetryEligible,
   type BabysitterRetryRecord,
+  buildBabysitterAttemptMarker,
   classifyBabysitterBlocker,
   clearBabysitterRetryStates,
   listBabysitterRetryStates,
   loadBabysitterRetryState,
   saveBabysitterRetryState,
+  sharedBabysitterAttemptCount,
 } from "../lib/babysitter_retry_state.ts";
 import {
   acquireBranchUpdateLock,
@@ -419,6 +422,94 @@ async function readRequestedReviews(
     throw new Error("Invalid review response");
   }
   return requestedReviews(pages.flat());
+}
+
+async function readSharedBabysitterAttempts(
+  repo: string,
+  prNumber: number,
+  failureIdentity: string,
+  fleetAuthors: string[],
+  gh: (args: string[]) => Promise<string>,
+): Promise<number> {
+  const pages = JSON.parse(
+    await gh([
+      "api",
+      `repos/${repo}/issues/${prNumber}/comments`,
+      "--paginate",
+      "--slurp",
+    ]),
+  );
+  if (!Array.isArray(pages) || !pages.every(Array.isArray)) {
+    throw new Error("Invalid PR comment pages for babysitter attempt tally");
+  }
+  const comments = pages.flat().map((comment: unknown) => {
+    if (typeof comment !== "object" || comment === null) {
+      throw new Error("Invalid PR comment in babysitter attempt tally");
+    }
+    const row = comment as Record<string, unknown>;
+    const user = row.user as Record<string, unknown> | null;
+    if (
+      !Number.isSafeInteger(row.id) || typeof row.body !== "string" ||
+      user === null || typeof user !== "object" ||
+      typeof user.login !== "string" || typeof row.created_at !== "string"
+    ) {
+      throw new Error("Malformed PR comment in babysitter attempt tally");
+    }
+    return {
+      id: row.id as number,
+      body: row.body,
+      author: user.login,
+      createdAt: row.created_at,
+    };
+  });
+  const signature = babysitterFailureSignature(
+    repo,
+    prNumber,
+    failureIdentity,
+  );
+  return sharedBabysitterAttemptCount(comments, fleetAuthors, signature);
+}
+
+async function recordSharedBabysitterAttempt(
+  repo: string,
+  prNumber: number,
+  failureIdentity: string,
+  head: string,
+  attempt: number,
+  outcome: "pushed" | "no-change",
+  gh: (args: string[]) => Promise<string>,
+): Promise<void> {
+  const { marker } = buildBabysitterAttemptMarker(
+    repo,
+    prNumber,
+    failureIdentity,
+    head,
+    attempt,
+    outcome,
+  );
+  const result = await gh([
+    "api",
+    `repos/${repo}/issues/${prNumber}/comments`,
+    "--method",
+    "POST",
+    "--field",
+    `body=Babysitter repair recorded.\n\n${marker}`,
+  ]);
+  let comment: unknown;
+  try {
+    comment = JSON.parse(result);
+  } catch (error) {
+    throw new Error(
+      "GitHub returned invalid JSON while recording babysitter attempt",
+      { cause: error },
+    );
+  }
+  if (
+    typeof comment !== "object" || comment === null ||
+    !Number.isSafeInteger((comment as Record<string, unknown>).id)
+  ) {
+    throw new Error("GitHub did not confirm the babysitter attempt comment");
+  }
 }
 
 /** Allow GitHub's PR view to catch up after a successful push. */
@@ -902,7 +993,9 @@ export async function fix(
   if (!lock.ok) throw lock.error;
   if (!lock.value.acquired || lock.value.lockCommentId === undefined) {
     console.log(
-      `${repo}#${initial.number}: deferred (another worker holds the branch lock); next action: re-read eligibility and head; next eligible at ${new Date(Date.now() + 60_000).toISOString()}`,
+      `${repo}#${initial.number}: deferred (another worker holds the branch lock); next action: re-read eligibility and head; next eligible at ${
+        new Date(Date.now() + 60_000).toISOString()
+      }`,
     );
     return;
   }
@@ -927,6 +1020,8 @@ export async function fix(
   let scratch: string | undefined;
   let retryRecord: BabysitterRetryRecord | undefined;
   let failureIdentity: string | undefined;
+  let sharedSubstantiveAttempts = 0;
+  let attemptMarkerRecorded = false;
   try {
     const pr = await readPr(repo, initial.number, gh);
     if (pr.headRefOid !== initial.headRefOid || !reason(pr)) {
@@ -946,7 +1041,9 @@ export async function fix(
       })
     ) {
       console.log(
-        `${repo}#${pr.number}: deferred (a fleet worker holds a live claim); next action: re-read the claim and PR head; next eligible at ${new Date(Date.now() + 5 * 60_000).toISOString()}`,
+        `${repo}#${pr.number}: deferred (a fleet worker holds a live claim); next action: re-read the claim and PR head; next eligible at ${
+          new Date(Date.now() + 5 * 60_000).toISOString()
+        }`,
       );
       return;
     }
@@ -963,7 +1060,9 @@ export async function fix(
       if (rerun.length > 0) {
         await rerunCancelledCi(repo, pr.number, pr.headRefOid, rerun);
         console.log(
-          `${repo}#${pr.number}: deferred after requesting cancelled CI reruns; next action: recheck CI on the same head; next eligible at ${new Date(Date.now() + 5 * 60_000).toISOString()}`,
+          `${repo}#${pr.number}: deferred after requesting cancelled CI reruns; next action: recheck CI on the same head; next eligible at ${
+            new Date(Date.now() + 5 * 60_000).toISOString()
+          }`,
         );
         return;
       }
@@ -988,7 +1087,9 @@ export async function fix(
       );
       if (!update.ok) {
         console.log(
-          `${repo}#${pr.number}: branch refresh skipped or failed: ${update.error.message}; next action: re-read branch-refresh eligibility; next eligible at ${new Date(Date.now() + 5 * 60_000).toISOString()}`,
+          `${repo}#${pr.number}: branch refresh skipped or failed: ${update.error.message}; next action: re-read branch-refresh eligibility; next eligible at ${
+            new Date(Date.now() + 5 * 60_000).toISOString()
+          }`,
         );
         return;
       }
@@ -997,7 +1098,9 @@ export async function fix(
         const updated = await readPr(repo, pr.number, gh);
         if (updated.headRefOid !== pr.headRefOid) {
           console.log(
-            `${repo}#${pr.number}: updated branch; next action: wait for CI on the new head; next eligible at ${new Date(Date.now() + 5 * 60_000).toISOString()}`,
+            `${repo}#${pr.number}: updated branch; next action: wait for CI on the new head; next eligible at ${
+              new Date(Date.now() + 5 * 60_000).toISOString()
+            }`,
           );
           return;
         }
@@ -1047,6 +1150,18 @@ export async function fix(
       pushedHead: null,
       reconciliation: "repair-needed",
     };
+    sharedSubstantiveAttempts = await readSharedBabysitterAttempts(
+      repo,
+      pr.number,
+      failureIdentity,
+      authors,
+      gh,
+    );
+    retryRecord.attempts.substantive = Math.max(
+      retryRecord.attempts.substantive,
+      sharedSubstantiveAttempts,
+    );
+    await saveBabysitterRetryState(stateDir, retryRecord);
     dir = await Deno.makeTempDir({
       prefix: `fleet-pr-babysitter-${Deno.pid}-`,
     });
@@ -1087,13 +1202,14 @@ export async function fix(
       repo,
       rtkInstruction,
     ) + (hasReachedAutoFixCap(
-        retryRecord.attempts.substantive,
+        Math.max(retryRecord.attempts.substantive, sharedSubstantiveAttempts),
         maxSubstantiveAttempts,
       )
       ? `\nPrevious substantive attempts: ${retryRecord.attempts.substantive}. Change the diagnosis and repair strategy. Prior outcome: ${retryRecord.lastOutcome}. Do not repeat the same fix or merely restate the previous result.`
       : retryRecord.attempts.substantive > 0
       ? `\nThis is substantive repair attempt ${
-        retryRecord.attempts.substantive + 1
+        Math.max(retryRecord.attempts.substantive, sharedSubstantiveAttempts) +
+        1
       }; inspect the prior outcome (${retryRecord.lastOutcome}) and adjust the diagnosis if it did not make progress.`
       : "");
     const home = Deno.env.get("HOME");
@@ -1150,9 +1266,13 @@ export async function fix(
         );
         continue;
       }
-      throw new Error(renewalFailed
-        ? "PR lock renewal failed; agent stopped before publication"
-        : `agent exited unsuccessfully with code ${result.code}${result.signal ? ` after ${result.signal}` : ""}`);
+      throw new Error(
+        renewalFailed
+          ? "PR lock renewal failed; agent stopped before publication"
+          : `agent exited unsuccessfully with code ${result.code}${
+            result.signal ? ` after ${result.signal}` : ""
+          }`,
+      );
     }
     let response: string;
     try {
@@ -1194,6 +1314,17 @@ export async function fix(
       if (body) await applyPrBody(repo, pr.number, body, scratch!);
       await dismissAddressedReviews(repo, pr.number, reviews, pr.headRefOid);
       const substantive = retryRecord!.attempts.substantive + 1;
+      await recordSharedBabysitterAttempt(
+        repo,
+        pr.number,
+        failureIdentity!,
+        pr.headRefOid,
+        sharedSubstantiveAttempts + 1,
+        "no-change",
+        gh,
+      );
+      sharedSubstantiveAttempts++;
+      attemptMarkerRecorded = true;
       retryRecord = {
         ...retryRecord!,
         blockerClass: "code",
@@ -1238,6 +1369,17 @@ export async function fix(
       dir,
     );
     const pushedHead = await run("git", ["rev-parse", "HEAD"], dir);
+    await recordSharedBabysitterAttempt(
+      repo,
+      pr.number,
+      failureIdentity!,
+      pushedHead,
+      sharedSubstantiveAttempts + 1,
+      "pushed",
+      gh,
+    );
+    sharedSubstantiveAttempts++;
+    attemptMarkerRecorded = true;
     retryRecord = {
       ...retryRecord!,
       observedHead: pushedHead,
@@ -1264,18 +1406,34 @@ export async function fix(
     if (retryRecord && failureIdentity) {
       const message = error instanceof Error ? error.message : String(error);
       const blockerClass = classifyBabysitterBlocker(message);
+      const substantiveFailure = blockerClass === "code" &&
+        !attemptMarkerRecorded;
+      if (substantiveFailure && failureIdentity && retryRecord) {
+        await recordSharedBabysitterAttempt(
+          repo,
+          initial.number,
+          failureIdentity,
+          retryRecord.observedHead,
+          sharedSubstantiveAttempts + 1,
+          "no-change",
+          gh,
+        );
+        sharedSubstantiveAttempts++;
+        attemptMarkerRecorded = true;
+      }
       const infrastructure = blockerClass === "infrastructure" ||
         blockerClass === "capability" || blockerClass === "race";
       const attempts = {
         infrastructure: retryRecord.attempts.infrastructure +
           (infrastructure ? 1 : 0),
         substantive: retryRecord.attempts.substantive +
-          (blockerClass === "code" ? 1 : 0),
+          (substantiveFailure ? 1 : 0),
       };
       const count = infrastructure
         ? attempts.infrastructure
         : attempts.substantive;
       const delay = babysitterRetryDelayMs(blockerClass, count);
+      const pushed = retryRecord.reconciliation === "waiting-for-ci-review";
       retryRecord = {
         ...retryRecord,
         blockerClass,
@@ -1286,7 +1444,9 @@ export async function fix(
         nextEligibleAt: delay === null
           ? null
           : new Date(Date.now() + delay).toISOString(),
-        nextAction: blockerClass === "owner"
+        nextAction: pushed
+          ? "retry pending publication or reconciliation against the pushed head"
+          : blockerClass === "owner"
           ? "wait for the explicit owner hold to be cleared"
           : blockerClass === "capability"
           ? "retry after host capability or disk capacity is restored"
@@ -1300,7 +1460,9 @@ export async function fix(
             )
           ? "continue with a changed repair diagnosis using the recorded diagnostics"
           : `retry with repair diagnosis strategy ${attempts.substantive + 1}`,
-        reconciliation: blockerClass === "owner"
+        reconciliation: pushed
+          ? "waiting-for-ci-review"
+          : blockerClass === "owner"
           ? "owner-hold"
           : "repair-needed",
       };
