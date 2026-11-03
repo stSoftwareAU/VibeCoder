@@ -2046,8 +2046,8 @@ export function buildPriorityDispatchTable(
           ),
     },
     {
-      // Issue #3760: a push made outside the worker never reaches the
-      // post-push sync. This pass compares digests through the contents API
+      // Issue #3760: a push made outside a worker repair path never reaches
+      // its post-push sync. This pass compares digests through the contents API
       // with no checkout, and stays silent when they match. Never claims an
       // issue. Not in the maintenance lane: it never touches the shared clone
       // (it uses a disposable clone only on a mismatch). Deferrable because it
