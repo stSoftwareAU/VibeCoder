@@ -184,3 +184,15 @@ did not run because the parallel pass failed. The milestone allowlist test that
 failed in earlier gate runs on this host now passes. Not run: the Spec and
 Standards reviewers (the issue states no acceptance-criteria heading) and
 `deno task pr-summary-check`.
+
+## Review follow-up
+
+Part of #4697
+Part of #4659
+Part of #4756
+
+Issue #4659 requires: "Add tests that a credential variable set in the parent does not reach either gate's child." The old assertion treated sudo-added environment names as inherited leaks; that behaviour is obsolete when the child proves the real sudo drop. Parent credentials must still be rejected, covered by `worker/deno/tests/milestone_resolution_gate_test.ts::verifyResolvedTree - the repository's own task sees only the allowlisted environment (Issue #4659)` and `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - the repository's own check sees only the allowlisted environment (Issue #4659)`. Issue #4697 also requires: "Regression coverage must exercise a real readable versus inaccessible checkout under the dropped account, a genuinely missing manifest, writable per-account cache, and the outcome/budget transitions."
+
+The merged #4754 checks ownership before clone reuse. Stale and tiered cleanup now also refuse rescue of untrusted clone roots or metadata before any Git command, preserving them for inspection. Coverage: `worker/deno/tests/stale_workdir_test.ts::stale_workdir - refuses foreign metadata before rescue runs git (Issue #4756)` and `worker/deno/tests/clone_ownership_test.ts::clone reuse refuses foreign git metadata before invoking git`.
+
+Validation of this follow-up: repository-wide `deno fmt --check`, `deno lint` and `deno task check` passed. The gate’s targeted `deno task test:unit` passed all 54 tests in `stale_workdir_test.ts`, `clone_ownership_test.ts` and `work_volume_tiers_test.ts`.

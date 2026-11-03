@@ -23,6 +23,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { checkCloneOwnership } from "./broken_clone.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { isProtectedBranch } from "./git_branch.ts";
 import { runGitCommand } from "./git_timeout.ts";
@@ -387,12 +388,29 @@ export interface UnpushedRescueResult {
  */
 export async function pushUnpushedBranches(
   repoDir: string,
+  deps: {
+    checkOwnership?: typeof checkCloneOwnership;
+    runGit?: typeof runGitCommand;
+  } = {},
 ): Promise<UnpushedRescueResult> {
+  const refusal = await (deps.checkOwnership ?? checkCloneOwnership)(
+    repoDir,
+    undefined,
+    undefined,
+    true,
+    true,
+  );
+  if (refusal) return { ok: false, pushedBranches: [], detail: refusal };
+
   // Routed through the shared chokepoint (Issue #1214): the rescue pushes to
   // a remote, so an untimed spawn here hangs the worker outright, and the
   // push must reach the audit journal like every other git mutation.
   const run = async (args: string[]) => {
-    const result = await runGitCommand(["-C", repoDir, ...args]);
+    const result = await (deps.runGit ?? runGitCommand)([
+      "-C",
+      repoDir,
+      ...args,
+    ]);
     if (!result.ok) {
       return { code: -1, stdout: "", stderr: result.error.message };
     }

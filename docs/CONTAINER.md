@@ -1746,9 +1746,9 @@ build artefacts.
   If one of those roots stays open, the fallback grant is withheld and a
   warning names the path; if the image already carries the grant, the warning
   says the account can read it. The same entrypoint pass makes each clone root
-  sticky and strips group and other write from its `.git` (Issue #4737), so the
-  opened path does not let `agent` replace the git metadata the worker's git
-  trusts. A gate probe that still fails names the first directory the account
+  sticky and strips group and other write from its `.git` (Issue #4737).
+  Clone reuse and stale-clone rescue check ownership before running worker git;
+  untrusted paths are refused and retained for inspection (Issues #4737, #4756). A gate probe that still fails names the first directory the account
   cannot traverse, in the form
   `untrusted account cannot use '<cwd>' (probe 1; cannot traverse '<dir>')`.
 - **An unusable root is a reported fallback, not a broken build.** If
