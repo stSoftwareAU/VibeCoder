@@ -295,3 +295,57 @@ Deno.test("retry records keep bounded evidence and a single escalation across re
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("git transport errors are infrastructure but bare numbers are code", () => {
+  for (
+    const message of [
+      "Could not resolve host",
+      "Connection reset by peer",
+      "the remote end hung up unexpectedly",
+      "RPC failed; HTTP 408",
+      "remote: Internal Server Error",
+      "Failed to connect to github.com port 443",
+      "HTTP 429",
+      "HTTP 500",
+      "HTTP 599",
+      "connection refused",
+    ]
+  ) {
+    assertEquals(
+      classifyBabysitterFailure(new Error(message)),
+      "infrastructure",
+      message,
+    );
+  }
+  assertEquals(
+    classifyBabysitterFailure(new Error("expected 500 rows")),
+    "code",
+  );
+});
+
+Deno.test("shared no-progress tally resets on pushes and ignores CI lane markers", () => {
+  const build = (attempt: number, outcome: "pushed" | "no-change") =>
+    buildBabysitterAttemptMarker(
+      "owner/repo",
+      7,
+      "failed CI",
+      "a".repeat(40),
+      attempt,
+      outcome,
+    );
+  const signature = build(1, "pushed").signature;
+  const comments = ["pushed", "pushed", "no-change"].map((outcome, i) => ({
+    id: i + 1,
+    author: "fleet",
+    body: build(i + 1, outcome as "pushed" | "no-change").marker,
+  }));
+  comments.push({
+    id: 4,
+    author: "fleet",
+    body: build(4, "no-change").marker.replace(
+      "vibe-babysitter-attempt",
+      "vibe-ci-fix-attempt",
+    ),
+  });
+  assertEquals(sharedBabysitterAttemptCount(comments, ["fleet"], signature), 1);
+});

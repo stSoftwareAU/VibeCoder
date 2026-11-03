@@ -1,157 +1,127 @@
 ## Summary
 
-Added versioned retry state, bounded backoff and legacy migration to the PR
-babysitter. Substantive attempts are tallied through fleet-authored PR markers,
-read-token sessions restart before expiry, and pushed PRs stay tracked until
-GitHub reports a merge. Failures are classified from where they are raised
-(agent killed, lock lost, head moved) with the error text only as a fallback,
-and the retry record is saved before any best-effort marker write. At the
-configured no-progress limit the record keeps redacted evidence and the
-babysitter files one deduplicated `idle-task` issue (never `needs-human`).
-That repository-scoped incident filer is documented in the issue-creation
-routing allowlist; its incident marker and fleet-author check own deduplication.
-Tracked PRs are observed each scan without a lock: CI, independent review,
-drafts, cross-repository PRs, `skip_auto_merge` and `needs-human` holds are
-recorded, and a green approved PR is recorded as handed to the worker's
-auto-merge sweep. Closes #4656.
+Replace the babysitter's permanent attempted bit with durable retry state,
+bounded cooldowns, legacy migration and post-push reconciliation. Temporary
+provider, authentication, capability and lock failures can recover without
+manual state deletion. Closes #4656.
 
-The evidence-redaction test assembles its synthetic token at runtime. The
-Gitleaks configuration permits only its two exact historical fixture lines,
-so the PR commit-range scan still checks other credentials.
+Babysitter comments use `vibe-babysitter-attempt`, separate from CI escalation
+markers, so a repair never authorises other lanes to lift a person's hold.
+Only consecutive substantive failures or no-change outcomes spend the
+no-progress budget. Successful pushes reset it. Exhausting the runner's
+90-minute budget is substantive; external kills remain infrastructure failures.
+Moved heads bypass old cooldowns without discarding attempt history.
 
-Version bump: none in this change; no release version was changed.
+Repeated no-progress persists redacted evidence and posts the existing
+auto-fix cap marker for the stall self-repair ladder. A babysitter handoff
+does not claim ownership of a human label. The existing ladder owns recovery;
+no separate escalation issue can remain open after the PR resolves. Terminal
+PRs lose their retry records, and parked closed records cause no further
+GitHub reads.
+
+Version bump: none; no release version or external extension contract changed.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Temporary provider, capability and lock failures should retry without manual
-  deletion of an attempt file.
-- Keep recovery in the existing babysitter scan and branch-lock flow.
+- Recover naturally through the existing scan and branch-lock workflow.
+- Bound repeated no-progress while preserving explicit human decisions.
+- Keep merge authority in the worker's existing auto-merge sweep.
 
 ### Essential Design Decisions
 
-- Host-local JSON stores cooldown and reconciliation state; configured fleet
-  authors' existing PR attempt markers share the substantive retry tally.
-- The agent receives a repository-scoped read token and the runner restarts its
-  session before token expiry. Runner write authority stays outside that
-  session.
-- State is cleared only after GitHub reports the PR merged.
+- Version 2 host-local state retains cooldowns and reconciliation; a legacy
+  attempt file migrates to a bounded five-minute retry.
+- A separate fleet-authored marker family shares the consecutive no-progress
+  tally. It reuses strict attribute validation, with author verification.
+- Trusted runner sessions restart before read-token expiry. The agent receives
+  no runner write token or App key.
+- The stall ladder's cap marker owns automated recovery. Evidence is redacted,
+  marker-neutralised and fenced before publication.
 
 ### Undiscoverable Facts
 
-- The task's listed related issues were checked with `gh issue view`; their
-  separate outcomes were not duplicated here.
-- `gh api repos/stSoftwareAU/VibeCoder/issues/4656/comments --paginate --slurp`
-  returned an array of page arrays with `id`, `user.login`, `created_at` and
-  `body`, which the shared-marker reader validates.
-
-### Deno regression avoided
-
-- Used Deno tasks and Deno checks; no Node tooling or lockfile dependency was
-  added.
+- The current PR checks were all successful when review repair began; there
+  were no failing check logs to diagnose and no inline review comments.
+- Issue #4656 assigns git-timeout plumbing to #4734 and body publication,
+  validation and review-dismissal work to their existing owners. This change
+  retains those boundaries.
 
 ## Evidence
 
-Backend/CLI change. `worker/deno/tests/babysitter_fix_orchestration_test.ts`
-drives the real `fix()` with in-memory GitHub, git and agent boundaries
-(`FixDeps`), and the real `observeTrackedPr` / `reconcileTrackedPr`:
+Backend/CLI change. The real `fix()` is exercised through in-memory GitHub,
+git and agent boundaries in `babysitter_fix_orchestration_test.ts`.
+Regressions reproduced before their fixes: two pushes followed by one
+no-change exhausted the old tally; SIGTERM at the runner deadline remained
+infrastructure; a moved head remained blocked; common git transport messages
+were classified as code. Diagnostic marker injection also failed its new
+regression before neutralisation was added.
 
-- Transient failure (SIGKILL) -> unchanged-head cooldown (no session) -> retry
-  after the cooldown -> checked repair pushed -> CI pending -> independent
-  review pending -> approved and clean, recorded as handed to the auto-merge
-  owner -> merged observed, which alone clears the record.
-- An old attempt file migrates to a five-minute cooldown; a restarted process
-  reads the saved v2 record and retries without deleting any file.
-- Two hosts contending: the later lock loses, starts no session and leaves no
-  lock; head movement before and during a repair; ENOSPC, a missing tool, a
-  timed-out fetch/push and `agent exited unsuccessfully with code 137` all spend
-  no substantive budget and post no marker.
-- Credential expiry restarts the session with a continue prompt.
-- Repeated no-progress persists evidence, changes the prompt at the cap and
-  escalates exactly once across three passes; a failed escalation is retried;
-  the real `escalateStuckRepair` reuses a fleet-authored issue, ignores a
-  planted marker and files one `idle-task` issue with no `needs-human` label.
-- Waits hold no repair lock (the lock list is empty after a failed repair and
-  after the push, and the observation takes no GitHub client); a `needs-human`
-  PR starts no session and stays `owner-hold` with no next eligible time.
-
-The related deliverables stay separate: the babysitter continues to use the
-existing branch updater and branch lock and never merges, arms or bypasses
-anything; the worker's auto-merge sweep owns the merge.
+The operator manual's retry and reconciliation section in
+`docs/workflows/fleet-pr-babysitter.md` now describes the separate markers,
+consecutive budget, stall-ladder handoff and terminal-record pruning.
+The direct issue-creation allowlist entry is removed because that route no
+longer exists.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Tests drive transient failure -> unchanged-head cooldown -> retry ->
-  checked repair -> CI -> independent review -> merge observed. — evidence:
-  `worker/deno/tests/babysitter_fix_orchestration_test.ts::transient failure, cooldown, retry, checked repair, CI, review and merge observed`
+- **met** — Transient failure -> unchanged-head cooldown -> retry -> checked
+  repair -> CI -> independent review -> merge observed. — evidence:
+  `babysitter_fix_orchestration_test.ts::transient failure, cooldown, retry, checked repair, CI, review and merge observed`
   — reviewer: met
-- **met** — Include process restart and migration of an old attempt file, two
-  hosts contending, head movement, missing tools/disk recovery, credential
-  expiry and repeated no-progress. — evidence:
-  `worker/deno/tests/babysitter_fix_orchestration_test.ts::an old attempt file migrates to a bounded retry across a restart`,
-  `::two hosts contending: the loser starts no session and leaves no lock`,
-  `::head movement defers, and a head that moves mid-repair spends no substantive budget`,
-  `::missing tools, a full disk, a timed-out fetch and a killed agent spend no substantive budget`,
-  `::an expired read token restarts the session and the repair continues`,
-  `::repeated no-progress persists evidence and escalates exactly once` —
-  reviewer: met
-- **met** — Show that waits hold no repair lock, one incident produces one
-  deduplicated escalation and real human gates remain paused. — evidence:
-  `worker/deno/tests/babysitter_fix_orchestration_test.ts::transient failure, cooldown, retry, checked repair, CI, review and merge observed`
-  (empty lock list),
-  `::repeated no-progress persists evidence and escalates exactly once`,
-  `::escalation reuses a fleet-authored issue, ignores a planted one and files an idle-task once`,
-  `::real human gates stay paused` — reviewer: met
-- **met** — On repeated substantive no-progress, persist the evidence and use
-  the existing automated escalation/repair mechanism from #569/#4158. —
-  evidence: `worker/deno/commands/fleet_pr_babysitter.ts::escalateStuckRepair`
-  (files one `idle-task` issue as shift-left detection does, never
-  `needs-human`),
-  `::repeated no-progress persists evidence and escalates exactly once` —
-  reviewer: met
+- **met** — Restart, legacy migration, two hosts, head movement, capability
+  recovery, credential expiry and repeated no-progress. — evidence:
+  `babysitter_fix_orchestration_test.ts` covers each scenario, including a
+  bounded tool/disk cooldown followed by a successful retry without deleting
+  state, moved-head retry and runner-budget escalation. — reviewer: met
+- **met** — Waits release locks, incidents deduplicate, and human gates remain
+  paused. — evidence: orchestration lock assertions, fleet-author handoff
+  deduplication, `stall_repair_test.ts::babysitter attempts and cap handoffs never lift an owner's needs-human hold`
+  and `conflict_needs_human_gate_test.ts::babysitter attempts and handoffs leave the conflict human gate closed`
+  — reviewer: met
+- **met** — Repeated no-progress persists evidence and uses the existing
+  automated repair mechanism. — evidence: `escalateStuckRepair` posts the
+  existing cap marker; `stall_repair_test.ts::babysitter cap handoff goes straight to the existing second-trip recovery`
+  exercises the real ladder. No independent issue is filed. — reviewer: met
 
 ## Test Plan
 
-- `issue_create_routing_check_test.ts` — checks the real tree and the
-  documented, non-stale issue-creation allowlist.
-- Gitleaks 8.24.3 PR commit-range scan with the licensed action's flags —
-  passed after reproducing the two synthetic fixture findings.
-- `worker/deno/tests/babysitter_fix_orchestration_test.ts` — 16 tests passed
-  (scenarios above, plus the hand-off matrix, closed/merged observation, the
-  shared-tally parser and the legacy attempt name).
-- `babysitter_retry_state_test.ts`, `fleet_pr_babysitter_test.ts`,
-  `fleet_babysitter_app_test.ts`, `fleet_pr_babysitter_setup_test.ts`,
-  `fleet_pr_babysitter_supervisor_test.ts` and `audit_hook_test.ts` — passed
-  together (129 tests).
-- `deno task check:manifests` — passed: 847 passed, 0 failed, 1 ignored.
-- Targeted `deno fmt --check`, `deno lint` and `deno check` — passed.
-- All commands were run with stdin redirected from `/dev/null`.
+- Orchestration: retries, cooldowns, legacy migration, locks, head movement,
+  repaired tool/disk failures, token restart, consecutive no-progress, runner
+  deadline, deduplicated handoff and closed-record reads.
+- Retry-state: transport classification, strict markers, trusted authors,
+  push-reset tally and ignored CI-lane markers.
+- Stall repair and conflict gate: babysitter attempts and cap handoffs preserve
+  manual holds; cap handoff enters the existing recovery ladder.
+- Production App fixture retains credential-boundary assertions and now
+  expects the separate babysitter marker.
+- Existing expectations changed deliberately: a push leaves zero consecutive
+  no-progress attempts; a closed PR clears records; escalation assertions
+  exercise a deduplicated PR handoff instead of the removed issue filer.
+  Every other assertion in those scenarios is retained.
+- Related babysitter, App, supervisor, audit-hook, stall, conflict-gate and
+  routing suites: **205 passed, 0 failed**.
+- `deno task check:manifests`: **847 passed, 0 failed, 1 ignored**.
+- Full-repository formatting, lint, type checks, Markdown, Mermaid,
+  completeness and chokepoint checks passed through `./quality.sh`.
+- The full parallel test pass hit a host Deno 2.9.5/macOS runtime panic:
+  `pledge test permissions called before restoring previous pledge`.
+  Its serial pass consequently did not run. This is not a full-suite pass.
+  The base commit `0a4d803a` is the merge of PR #4715, whose Quality run
+  [41555343824](https://github.com/stSoftwareAU/VibeCoder/actions/runs/41555343824)
+  passed all four unit shards and the gate; PR #4747's current CI also passes.
+- Semgrep and Checkov were unavailable on this host (neither installed nor
+  present as cached container images). Config integration was skipped because
+  this checkout has no `.config.json`.
+- `deno task pr-summary-check --base origin/main` reported zero blocked gates;
+  criteria/review checks were not checked without an issue-body file, and
+  reproduction status was not checked without labels. Summary freshness
+  remains a pushed-commit check because this repair is uncommitted.
 
-### Mutation check
+## Merge verification
 
-The eight surviving mutants are pinned by
-`babysitter_fix_orchestration_test.ts`: `attemptKey` with and without reviews
-(negated `if`), and `the shared attempt tally rejects malformed comment pages`
-(non-array pages, a page that is not an array, a null or non-object comment, a
-non-integer id and a null user). The `typeof user !== "object"` operand was
-redundant with the `typeof user.login` check, so it was removed instead of
-tested.
-
-### Pre-PR verifier findings
-
-- Escalation at the cap: evidence is persisted and one deduplicated `idle-task`
-  issue is filed (`escalateStuckRepair`), tested through `fix()`.
-- Merge hand-off: `reconcileTrackedPr` records the hand-off to the existing
-  auto-merge sweep and honours holds, drafts, cross-repository PRs and
-  `skip_auto_merge`; the babysitter does not merge itself.
-- Classification: failures raised by the agent, lock and head checks carry a
-  structured class; the record is saved before the guarded marker write.
-- Orchestration tests and `docs/workflows/fleet-pr-babysitter.md` now match the
-  behaviour.
-- Not re-run in this turn: the full `./quality.sh` (it previously reported 7
-  failures in files this change does not touch) and the coverage carry-over
-  check, whose failure was the merge-base run of the two babysitter test files,
-  not these tests, which pass at the head.
+The babysitter commits and pushes this working tree. CI must validate that
+commit, including the archived-summary freshness check.

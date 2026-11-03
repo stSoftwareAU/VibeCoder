@@ -194,31 +194,34 @@ request review gets a separate identity. A legacy create-only attempt file is
 migrated to a five-minute cooldown and then becomes eligible again. No manual
 state-file deletion is part of normal recovery.
 
-Completed substantive repair attempts also carry the existing
-`vibe-ci-fix-attempt` marker in a fleet-authored PR comment. Hosts count only
+Completed repair attempts carry a separate
+`vibe-babysitter-attempt` marker in a fleet-authored PR comment. Hosts count only
 markers written by configured fleet authors, so the configured repair limit
-is shared across hosts and survives a restart; infrastructure and capability
-failures do not add a substantive attempt marker.
+is shared across hosts and survives a restart. Only consecutive no-change or
+failed outcomes count; a successful push resets the no-progress budget.
+Infrastructure and capability failures do not add an attempt marker. These
+markers cannot be mistaken for a CI escalation that lifts a human hold.
 
 A failure is classified from where it is raised: a structured cause (agent
 killed by a signal or exit 137/143, a lock that could not be renewed, a head
 that moved) first, and the error text only as a fallback. Infrastructure, host
 capability (missing tool, full disk) and head or lock races receive bounded
 cooldowns without spending the substantive repair budget and post no attempt
-marker. Code failures and no-progress outcomes spend that budget. The retry
+marker. Code failures, runner session-budget exhaustion and no-progress
+outcomes spend that budget. A changed head bypasses the old cooldown while
+keeping the attempt history. The retry
 record is saved before any best-effort marker write, and a failed marker write
 never replaces the repair's real error.
 
 When substantive attempts reach the configured `maxAutoFixAttempts` limit, the
 next prompt tells the agent to change its diagnosis, the record keeps the newest
-five redacted evidence lines, and the babysitter files one `idle-task` issue in
-the PR's repository (the route shift-left detection uses, so the fleet picks it
-up without a human label). The issue carries a
-`BABYSITTER_STUCK_4656:<incident>` marker; a fleet-authored issue with that
-marker, or the `escalation` field in the retry record, deduplicates the
-escalation across hosts and restarts, so one incident files one issue. The
-babysitter never applies `needs-human` for a code problem; only an explicit
-`needs-human` label is an owner hold, and it stays paused until cleared. Waiting
+five redacted evidence lines, and the babysitter posts the existing auto-fix
+cap marker for the stall self-repair ladder. A fleet-authored marker for the
+incident deduplicates the handoff across hosts and restarts. The ladder skips
+its first trip and uses its existing recovery path; no separate escalation
+issue is created. The comment also identifies the babysitter handoff, so it
+does not claim ownership of a person's `needs-human` label. Explicit human
+holds stay paused until cleared. Waiting
 paths release the branch lock; the next scan logs the cause, next action, and
 eligible time.
 
@@ -231,9 +234,9 @@ what the PR waits on. A green, approved, clean PR is recorded as
 landing it, and the babysitter itself never merges, arms or bypasses anything.
 Failed checks and new requested changes return to the repair scan. A later scan
 reads tracked PRs even when they are no longer in the first page of open
-candidates, and clears retry state only after GitHub reports `MERGED`; a push, a
-hand-off or a dismissed review is never a merged outcome, and a closed unmerged
-PR is recorded separately.
+candidates, and clears retry state after GitHub reports `MERGED` or `CLOSED`.
+A push, a hand-off or a dismissed review is never a merged outcome. Closed
+records are not re-read on later scans; a reopened PR appears in the open list.
 
 ```mermaid
 stateDiagram-v2

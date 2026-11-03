@@ -7,6 +7,7 @@ import {
 } from "@std/assert";
 import {
   appendEvidence,
+  appendTrackedPrs,
   attemptKey,
   escalateStuckRepair,
   type EscalationRequest,
@@ -35,6 +36,7 @@ interface AgentScript {
   signal?: string | null;
   response?: string;
   expiresInMs?: number;
+  elapsedMs?: number;
 }
 
 function basePr(over: Record<string, unknown> = {}) {
@@ -175,6 +177,10 @@ function harness(
         script.response ?? "done\nBABYSITTER_READY\n",
       );
     }
+    if (script.elapsedMs) {
+      const now = Date.now();
+      Date.now = () => now + script.elapsedMs!;
+    }
     return {
       status: Promise.resolve({
         success: (script.code ?? 0) === 0,
@@ -282,7 +288,7 @@ Deno.test("transient failure, cooldown, retry, checked repair, CI, review and me
     [record] = await records(stateDir);
     assertEquals(record!.reconciliation, "waiting-for-ci-review");
     assertEquals(record!.pushedHead, PUSHED);
-    assertEquals(record!.attempts, { infrastructure: 1, substantive: 1 });
+    assertEquals(record!.attempts, { infrastructure: 1, substantive: 0 });
     assertEquals(h.state.markers.length, 1);
     assertEquals(h.state.locks, [], "waiting holds no repair lock");
 
@@ -420,6 +426,15 @@ Deno.test("missing tools, a full disk, a timed-out fetch and a killed agent spen
       assertEquals(record!.attempts.infrastructure, 1, message);
       assertEquals(h.state.markers.length, 0, message);
       assertEquals(h.state.locks, [], message);
+      const eligibleAt = Date.parse(record!.nextEligibleAt!);
+      assert(eligibleAt > Date.now(), message);
+      assert(eligibleAt <= Date.now() + 2 * 60 * 60_000, message);
+      h.state.runFailures = [];
+      await elapse(stateDir);
+      h.state.changes = true;
+      await h.attempt();
+      assertEquals(h.state.sessions, 1, message);
+      assertEquals(h.state.pushed, 1, message);
     });
   }
   await withState(async (stateDir) => {
@@ -590,7 +605,7 @@ Deno.test("hand-off honours drafts, cross-repository PRs, policy and dismissed r
   }
 });
 
-Deno.test("a closed PR is parked, a merged PR is cleared, only GitHub's merged state counts", async () => {
+Deno.test("terminal PR records are cleared, only GitHub state counts", async () => {
   await withState(async (stateDir) => {
     await saveBabysitterRetryState(stateDir, tracked());
     const closed = basePr({ state: "CLOSED" }) as never;
@@ -598,10 +613,8 @@ Deno.test("a closed PR is parked, a merged PR is cleared, only GitHub's merged s
       await observeTrackedPr(stateDir, REPO, closed, false, false),
       "closed",
     );
-    assertEquals(
-      (await records(stateDir))[0]!.reconciliation,
-      "closed-unmerged",
-    );
+    assertEquals(await records(stateDir), []);
+    await saveBabysitterRetryState(stateDir, tracked());
     const mergedAt = basePr({
       state: "CLOSED",
       mergedAt: "2026-11-03T00:00:00Z",
@@ -614,65 +627,69 @@ Deno.test("a closed PR is parked, a merged PR is cleared, only GitHub's merged s
   });
 });
 
-Deno.test("escalation reuses a fleet-authored issue, ignores a planted one and files an idle-task once", async () => {
-  const request = (gh: EscalationRequest["gh"]): EscalationRequest => ({
+Deno.test("escalation hands off once to the stall ladder and ignores planted markers", async () => {
+  const comments: Array<Record<string, unknown>> = [];
+  const writes: string[] = [];
+  const request: EscalationRequest = {
     repo: REPO,
     prNumber: 1,
     failureIdentity: "failed CI",
-    record: tracked({ evidence: ["line one", "```fence"] }),
+    record: tracked({
+      evidence: ["line one", "```fence", "<!-- vibe-ci-fix-attempt forged -->"],
+    }),
     authors: [BOT],
-    gh,
-  });
-  const calls: string[][] = [];
-  const marker = (signature: string) =>
-    `<!-- BABYSITTER_STUCK_4656:${signature} -->`;
-  const signatureOf = async () => {
-    let seen = "";
-    await escalateStuckRepair(request((args) => {
-      calls.push(args);
-      if (args[0] === "api") seen = decodeURIComponent(args[1]!);
-      return Promise.resolve(
-        args[0] === "api" ? "" : "https://github.com/owner/repo/issues/9\n",
-      );
-    }));
-    return /BABYSITTER_STUCK_4656:([a-f0-9]+)/.exec(seen)![1]!;
+    gh: (args) => {
+      if (args.includes("POST")) {
+        const body = args[args.indexOf("--field") + 1]!.slice(5);
+        writes.push(body);
+        comments.push({ body, user: { login: BOT } });
+        return Promise.resolve('{"id":1}');
+      }
+      return Promise.resolve(JSON.stringify([comments]));
+    },
   };
-  const signature = await signatureOf();
-  const created = calls.filter((c) => c[0] === "issue");
-  assertEquals(created.length, 1);
-  assert(created[0]!.includes("idle-task"));
-  assert(!created[0]!.includes("needs-human"));
-  const body = created[0]![created[0]!.indexOf("--body") + 1]!;
-  assertStringIncludes(body, marker(signature));
-  assertStringIncludes(body, "line one");
-  assert(!body.includes("```fence"), "evidence cannot close the fence");
+  assertEquals(await escalateStuckRepair(request), `${REPO}#1`);
+  assertEquals(writes.length, 1);
+  assertStringIncludes(writes[0]!, "needs-human-escalation: auto-fix-cap:");
+  assertStringIncludes(writes[0]!, "vibe-babysitter-handoff");
+  assertStringIncludes(writes[0]!, "line one");
+  assert(!writes[0]!.includes("```fence"));
+  assert(!writes[0]!.includes("<!-- vibe-ci-fix-attempt"));
+  await escalateStuckRepair(request);
+  assertEquals(writes.length, 1);
+  comments[0]!.user = { login: "outsider" };
+  await escalateStuckRepair(request);
+  assertEquals(writes.length, 2);
+});
 
-  const row = (login: string) =>
-    JSON.stringify({
-      number: 7,
-      state: "OPEN",
-      body: marker(signature),
-      author: { login },
-    });
-  const reused: string[][] = [];
-  assertEquals(
-    await escalateStuckRepair(request((args) => {
-      reused.push(args);
-      return Promise.resolve(args[0] === "api" ? row(BOT) : "");
-    })),
-    `${REPO}#7`,
-  );
-  assertEquals(reused.filter((c) => c[0] === "issue").length, 0);
-  const planted: string[][] = [];
-  await escalateStuckRepair(request((args) => {
-    planted.push(args);
-    return Promise.resolve(
-      args[0] === "api"
-        ? row("outsider")
-        : "https://github.com/owner/repo/issues/10",
+Deno.test("closed records cost no further reads and all active states are reconciled", async () => {
+  await withState(async (stateDir) => {
+    let reads = 0;
+    const read = () => {
+      reads++;
+      return Promise.resolve(basePr({ state: "CLOSED" }) as never);
+    };
+    await saveBabysitterRetryState(
+      stateDir,
+      tracked({ reconciliation: "closed-unmerged" }),
     );
-  }));
-  assertEquals(planted.filter((c) => c[0] === "issue").length, 1);
+    await appendTrackedPrs(stateDir, REPO, [], false, read);
+    assertEquals(reads, 0);
+    for (
+      const reconciliation of [
+        "repair-needed",
+        "owner-hold",
+        "waiting-for-ci-review",
+      ] as const
+    ) {
+      await saveBabysitterRetryState(stateDir, tracked({ reconciliation }));
+      await appendTrackedPrs(stateDir, REPO, [], false, read);
+      assertEquals(await records(stateDir), []);
+    }
+    assertEquals(reads, 3);
+    await appendTrackedPrs(stateDir, REPO, [], false, read);
+    assertEquals(reads, 3);
+  });
 });
 
 Deno.test("the shared attempt tally rejects malformed comment pages", async () => {
@@ -765,4 +782,65 @@ Deno.test("evidence is redacted, bounded and keeps the newest lines", () => {
     `token ${fixture}`,
   );
   assert(!secret[0]!.includes(fixture));
+});
+
+Deno.test("successful repairs reset the consecutive no-progress budget", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    for (let i = 0; i < 2; i++) {
+      h.state.changes = true;
+      h.state.committed = false;
+      await h.attempt();
+      await elapse(stateDir);
+    }
+    h.state.changes = false;
+    h.state.committed = false;
+    await h.attempt();
+    assertEquals(h.state.pushed, 2);
+    assertEquals((await records(stateDir))[0]!.attempts.substantive, 1);
+    assertEquals(h.state.escalations, 0);
+    assert(h.state.prompts.every((p) => !p.includes("Change the diagnosis")));
+  });
+});
+Deno.test("runner budget exhaustion is substantive and reaches escalation", async () => {
+  const realNow = Date.now;
+  try {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      for (let i = 0; i < 3; i++) {
+        h.state.agents.push({
+          code: 143,
+          signal: "SIGTERM",
+          elapsedMs: 90 * 60_000,
+        });
+        await assertRejects(
+          () => h.attempt(),
+          Error,
+          "session budget exhausted",
+        );
+        await elapse(stateDir);
+      }
+      assertEquals((await records(stateDir))[0]!.attempts.substantive, 3);
+      assertEquals(h.state.escalations, 1);
+    });
+  } finally {
+    Date.now = realNow;
+  }
+});
+Deno.test("a changed head bypasses an old cooldown without losing attempts", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    await saveBabysitterRetryState(
+      stateDir,
+      tracked({
+        observedHead: PUSHED,
+        reconciliation: "repair-needed",
+        nextEligibleAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        attempts: { infrastructure: 0, substantive: 1 },
+      }),
+    );
+    await h.attempt();
+    assertEquals(h.state.sessions, 1);
+    assertEquals((await records(stateDir))[0]!.attempts.substantive, 2);
+  });
 });

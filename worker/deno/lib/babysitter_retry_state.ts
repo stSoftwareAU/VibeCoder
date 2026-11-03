@@ -10,8 +10,10 @@ import {
   type CiFixAttemptMarker,
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
-  countAttempts,
 } from "./ci_fix_attempt_markers.ts";
+
+/** Distinguishes a stall handoff from a label the fleet applied. */
+export const BABYSITTER_HANDOFF_MARKER = "<!-- vibe-babysitter-handoff -->";
 
 export type BabysitterBlockerClass =
   | "infrastructure"
@@ -43,7 +45,7 @@ export interface BabysitterRetryRecord {
   reconciliation: BabysitterReconciliation;
   /** Bounded diagnostics from substantive no-progress attempts. */
   evidence?: string[];
-  /** The one deduplicated escalation raised for this incident. */
+  /** The deduplicated stall-ladder handoff raised for this incident. */
   escalation?: { issue: string; at: string };
 }
 
@@ -287,7 +289,7 @@ export function classifyBabysitterBlocker(
     return "race";
   }
   if (
-    /timeout|timed out|fetch failed|network|dns|econn|rate limit|401|403|bad credentials|500|502|503|504|token expired|token expires|sigkill|sigterm|out of memory|code 137|code 143/
+    /timeout|timed out|fetch failed|network|dns|econn|rate limit|http\s+(?:401|403|408|429|5\d\d)\b|resolve host|connection (?:reset|refused)|hung up|rpc failed|internal server error|failed to connect|bad credentials|token expired|token expires|sigkill|sigterm|out of memory|code 137|code 143/
       .test(text)
   ) {
     return "infrastructure";
@@ -318,18 +320,30 @@ export function babysitterRetryDelayMs(
 export function babysitterRetryEligible(
   record: BabysitterRetryRecord | undefined,
   now = Date.now(),
+  head?: string,
 ): boolean {
-  return !record || record.nextEligibleAt === null ||
+  return !record || (head !== undefined && head !== record.observedHead) ||
+    record.nextEligibleAt === null ||
     Date.parse(record.nextEligibleAt) <= now;
 }
 
-/** Use the existing fleet-authored PR marker as the cross-host attempt tally. */
+/** Count consecutive no-progress outcomes in our fleet-authored marker family. */
 export function sharedBabysitterAttemptCount(
   comments: readonly CiFixMarkerComment[],
   fleetLogins: readonly string[],
   signature: string,
 ): number {
-  const markers = collectFleetCiFixMarkers(comments, fleetLogins);
+  // Translate only our own family for the shared strict attribute parser.
+  // CI-fix markers are deliberately not evidence of babysitter attempts.
+  const isolated = [...comments].sort((a, b) => a.id - b.id).map((comment) => ({
+    ...comment,
+    body: (comment.body ?? "").replaceAll(
+      "vibe-ci-fix-attempt",
+      "ignored-ci-attempt",
+    )
+      .replaceAll("vibe-babysitter-attempt", "vibe-ci-fix-attempt"),
+  }));
+  const markers = collectFleetCiFixMarkers(isolated, fleetLogins);
   if (!markers.fleetResolved) {
     throw new Error(
       "Cannot resolve fleet authors for the babysitter attempt tally",
@@ -340,10 +354,14 @@ export function sharedBabysitterAttemptCount(
       `[babysitter-retry] ignored ${markers.ignoredOutsideFleet} attempt marker comment(s) from outside the fleet`,
     );
   }
-  return countAttempts(markers, signature);
+  let consecutive = 0;
+  for (const attempt of markers.attempts.get(signature) ?? []) {
+    consecutive = attempt.outcome === "pushed" ? 0 : consecutive + 1;
+  }
+  return consecutive;
 }
 
-/** Build the established fleet-wide attempt marker for a repair outcome. */
+/** Build a babysitter-only marker that cannot authorise lifting human holds. */
 export function buildBabysitterAttemptMarker(
   repo: string,
   prNumber: number,
@@ -361,7 +379,7 @@ export function buildBabysitterAttemptMarker(
       head,
       attempt,
       outcome,
-    }),
+    }).replace("vibe-ci-fix-attempt", "vibe-babysitter-attempt"),
   };
 }
 

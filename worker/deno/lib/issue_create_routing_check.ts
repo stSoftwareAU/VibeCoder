@@ -66,10 +66,6 @@ export interface IssueCreateRoutingCheckResult {
 export const ISSUE_CREATE_ROUTING_ALLOWLIST: ReadonlyMap<string, string> =
   new Map<string, string>([
     [
-      "worker/deno/commands/fleet_pr_babysitter.ts",
-      "#4656 stuck-repair idle task, filed in the PR's repository and deduplicated by incident marker and fleet author",
-    ],
-    [
       "worker/deno/commands/maybe_file_idle_task.ts",
       "#1963 idle-task filer CLI; files into the picked monitored repo (targetRepo) with guarded labels; not yet routed",
     ],

@@ -118,7 +118,7 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
       assertStringIncludes(result.value.stdout, "agent made no changes");
       assertStringIncludes(
         await Deno.readTextFile(`${home}/attempt-marker.txt`),
-        "vibe-ci-fix-attempt signature=",
+        "vibe-babysitter-attempt signature=",
       );
       // The repair clones through a mirror, then points origin at GitHub over
       // the protocol gh reports (ssh in the fixture).
