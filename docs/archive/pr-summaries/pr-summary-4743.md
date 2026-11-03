@@ -116,6 +116,20 @@ flowchart TD
   an unmodified base checkout in a separate run; not re-run on base here). The
   serial pass did not run because the parallel pass failed.
 
+**Mutation check:** the gate could not judge mutants, because its baseline run
+of 15 test files failed before any mutation. It listed no unpinned mutation. I
+re-ran those 15 files together (`deno test -A --parallel`): 348 passed, 4
+failed, and the failures are not in code this change touches:
+three in `tests/milestone_merge_gate_test.ts` (the real `deno check` tests,
+which report `skipped` here; the same three fail on an unmodified `main`
+checkout) and one in `tests/run_ps1_launcher_test.ts` ("short of the cargo build
+headroom", which passes alone on both `main` and this branch, so it is a
+parallel-load flake). `tests/pre_pr_verifier_release_4743_test.ts` passed
+(6 of 6) in that run and alone. The mutations that matter here were checked by
+hand: removing the `releaseBuildArtefacts` call turns three of the new tests
+red (see Branch outcomes). `skip_mutation_check` is a repo setting and was not
+changed by this branch.
+
 **Branch outcomes:**
 
 - `worker/deno/lib/pre_pr_verifier.ts` release `errors.length > 0` — warn and
