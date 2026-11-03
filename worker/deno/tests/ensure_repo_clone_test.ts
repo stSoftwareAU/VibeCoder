@@ -23,6 +23,7 @@ Deno.test(
 
     const result = await ensureRepoClone("acme/widget", "/work", {
       isDirectoryFn: (path) => Promise.resolve(path === "/work/widget"),
+      ownershipCheckFn: () => Promise.resolve(null),
       setupRepoFn: (repo, workDir) => {
         setupCalls.push([repo, workDir]);
         return Promise.resolve({ success: true, message: "/work/widget" });

@@ -70,11 +70,10 @@ flowchart LR
   fails. The entrypoint keeps the same grant as a fallback for an older image on
   a writable root, only once the state children are closed, and now warns
   instead of failing silently when the grant is absent or a child stays open.
-- Clone-root hardening from #4737 is brought in as a minimal subset (the sticky
-  bit on each clone root; group and other write stripped from `.git`), so the
-  opened path does not reach trusted git metadata. PR #4754's quarantine of
-  already-substituted clones is not brought in. It is still open; the shared
-  lines are written identically so the two merge.
+- Clone-root hardening from #4737 keeps the sticky bit on each clone root and
+  strips group and other write from `.git`, so the opened path does not reach
+  trusted git metadata. The merge with main also retains quarantine of clones
+  whose git metadata is not worker-owned, including its warning and fallback.
 - The probe is not loosened and the worker account is never selected on an
   access fault (#4659/#4705 unchanged). The probe only gains a read-only
   top-down walk of `$1`, and a code-1 refusal now reads
@@ -120,6 +119,9 @@ describing it.
 
 ## Test Plan
 
+- The merge with main combines the HOME fixture with the existing quarantine
+  and linked-worktree fixtures in `worker/deno/tests/work_root_group_grant_test.ts`;
+  both sets of assertions remain in place.
 - `worker/deno/tests/container_entrypoint_test.ts::entrypoint - a launch completes with the image layer read-only (Issue #515)`:
   the read-only-image fixture now stubs `getent` and `chgrp` to succeed, so
   the HOME fallback does not depend on the host user's group membership. The

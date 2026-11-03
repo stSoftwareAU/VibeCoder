@@ -234,6 +234,24 @@
  * nothing, and out of {@link IdleDecisionCensus.heldInversionRepos}, whose
  * note names a lease that clears itself in minutes.
  *
+ * # A repo the host cannot build yet (Issue #4751)
+ *
+ * `findNextIssue` unions `cargoClaimDeferredRepos()` (Issue #4540) into the
+ * scan's `excludeRepos` as well. A Rust repository is dropped there when the
+ * host has the disk floor but not the cargo build headroom, so no collector
+ * runs for it and it records no per-issue skip reason — the same invisibility
+ * as a back-off, from a cause that clears by itself when disk space is freed.
+ * `stSoftwareAU/GRQ-AutoTrader`, `stSoftwareAU/GRQ` and
+ * `stSoftwareAU/NEAT-AI-Discovery` — all cargo repositories — alerted together
+ * with no "what the claim scan did with them" section at all, because the scan
+ * had looked at none of them.
+ *
+ * Such a repo is recorded as `repo_cargo_deferred` and reported as
+ * {@link IdleDecisionCensus.cargoDeferredInversionRepos}: kept out of
+ * {@link IdleDecisionCensus.escalationRepos} (the scan refused nothing) and out
+ * of {@link IdleDecisionCensus.deferredInversionRepos}, whose note says the
+ * cycle stopped early, which did not happen.
+ *
  * The builder is **pure** — it takes already-fetched issues (read through
  * the existing per-iteration `IssueCache` so a quiet cycle costs no extra
  * `gh issue list` call) and returns a structured census. The caller wraps
@@ -454,6 +472,21 @@ export type RepoCensusSkipReason =
    * closed, and it is the one an operator must act on.
    */
   | "repo_backed_off"
+  /**
+   * The claim scan skipped the whole repository because the host has the disk
+   * floor but not the cargo build headroom (Issue #4751, building on #4540).
+   *
+   * `findNextIssue` unions `cargoClaimDeferredRepos()` (Issue #4540) into
+   * `findOldestIssue`'s `excludeRepos`, so a Rust repository the host cannot
+   * build yet is dropped before any collector runs and records no per-issue
+   * skip reason at all — the same invisibility as
+   * {@link RepoCensusSkipReason `repo_held_in_flight`} and
+   * {@link RepoCensusSkipReason `repo_backed_off`}, from a third cause. Unlike
+   * a fast-failure back-off it clears on its own when disk space is freed, so
+   * it is named apart from both: the work returns without anyone fixing the
+   * repository.
+   */
+  | "repo_cargo_deferred"
   | "unknown";
 
 /**
@@ -498,17 +531,33 @@ export function isRepoBackedOffSkipReason(
 }
 
 /**
+ * Whether a skip reason means the host has the disk floor but not the cargo
+ * build headroom for the repository, so the claim scan was never shown it
+ * (Issue #4751, building on #4540).
+ */
+export function isRepoCargoDeferredSkipReason(
+  reason: RepoCensusSkipReason | undefined,
+): boolean {
+  return reason === "repo_cargo_deferred";
+}
+
+/**
  * The census input for one repo's scan state (Issue #898).
  *
- * Four facts decide it, in this order:
+ * Five facts decide it, in this order:
  *
  *   1. this host has backed the repo off for fast failures (Issue #2085) —
  *      the scan drops it before any collector runs, and the back-off outlives
  *      the cycle, so it is named ahead of a lease that clears in minutes;
- *   2. the repo was excluded from the scan by an in-flight hold — it was
+ *   2. the host has the disk floor but not the cargo build headroom for the
+ *      repo (Issue #4751) — the scan drops it before any collector runs, and
+ *      it is named ahead of a lease for the same reason a back-off is, but
+ *      behind a back-off because that one is the durable fault an operator
+ *      must act on;
+ *   3. the repo was excluded from the scan by an in-flight hold — it was
  *      never evaluated, whatever the rest of the fleet did;
- *   3. the scan completed an eligibility pass — the repo was evaluated;
- *   4. otherwise the host-level reason the scan stopped (Issue #479).
+ *   4. the scan completed an eligibility pass — the repo was evaluated;
+ *   5. otherwise the host-level reason the scan stopped (Issue #479).
  *
  * Extracted so the loop's wiring is testable on its own: the census can only
  * be as honest as the scan state it is handed.
@@ -530,11 +579,21 @@ export function resolveRepoScanState(opts: {
    * behaviour.
    */
   scanBackedOffRepos?: ReadonlySet<string>;
+  /**
+   * Repos the host has the disk floor but not the cargo build headroom for,
+   * which `findNextIssue` unions into the scan's `excludeRepos` (Issue #4540)
+   * and the census names as `repo_cargo_deferred` (Issue #4751). Omitted →
+   * no repo is treated as cargo-deferred, preserving the pre-#4751 behaviour.
+   */
+  scanCargoDeferredRepos?: ReadonlySet<string>;
   /** The host-level reason the scan stopped, when it did not complete. */
   claimGateReason: () => RepoCensusSkipReason;
 }): { scannedThisCycle: boolean; skipReason?: RepoCensusSkipReason } {
   if (opts.scanBackedOffRepos?.has(opts.repo)) {
     return { scannedThisCycle: false, skipReason: "repo_backed_off" };
+  }
+  if (opts.scanCargoDeferredRepos?.has(opts.repo)) {
+    return { scannedThisCycle: false, skipReason: "repo_cargo_deferred" };
   }
   if (opts.scanExcludedRepos.has(opts.repo)) {
     return { scannedThisCycle: false, skipReason: "repo_held_in_flight" };
@@ -810,9 +869,11 @@ export interface IdleDecisionCensus {
    */
   escalationRepos: string[];
   /**
-   * The rest of {@link inversionRepos}: repos holding claimable work that
-   * the claim scan never reached this cycle (Issue #437). Reported so the
-   * deferral is visible in the log, never escalated.
+   * The inverted repos the claim scan never reached this cycle (Issue #437)
+   * and that no other skip bucket names — the cycle deadline, a shutdown, a
+   * drain. Reported so the deferral is visible in the log, never escalated.
+   * The held, backed-off, cargo-deferred and claim-gated repos are reported in
+   * their own buckets instead, so they are excluded here.
    */
   deferredInversionRepos: string[];
   /**
@@ -839,6 +900,18 @@ export interface IdleDecisionCensus {
    * issue about the same repository says nothing new.
    */
   backedOffInversionRepos: string[];
+  /**
+   * Repos with claimable work that the host cannot build yet, because it has
+   * the disk floor but not the cargo build headroom, so the claim scan skipped
+   * them before any collector ran (Issue #4751, building on #4540).
+   *
+   * Kept out of {@link escalationRepos}, because the scan refused nothing, and
+   * out of {@link deferredInversionRepos}, whose note says nothing refused the
+   * work and that the cycle stopped early — neither is what happened. The work
+   * returns when disk space is freed, not when a cycle is longer, and the
+   * repositories have no diagnostic issue of their own to file against.
+   */
+  cargoDeferredInversionRepos: string[];
   /**
    * Repos with claimable work that a host-level claim gate refused this
    * cycle (Issue #479).
@@ -1547,11 +1620,20 @@ export function buildIdleDecisionCensus(opts: {
       !r.scannedThisCycle && isRepoBackedOffSkipReason(r.skipReason)
     )
     .map((r) => r.repo);
+  // Issue #4751: the host cannot build the repo yet, so the scan skipped it
+  // before any collector ran — invisible, like a back-off, but it clears by
+  // itself when disk space is freed.
+  const cargoDeferredInversionRepos = inverted
+    .filter((r) =>
+      !r.scannedThisCycle && isRepoCargoDeferredSkipReason(r.skipReason)
+    )
+    .map((r) => r.repo);
   const deferredInversionRepos = inverted
     .filter((r) =>
       !r.scannedThisCycle && !isClaimGateSkipReason(r.skipReason) &&
       !isRepoHeldSkipReason(r.skipReason) &&
-      !isRepoBackedOffSkipReason(r.skipReason)
+      !isRepoBackedOffSkipReason(r.skipReason) &&
+      !isRepoCargoDeferredSkipReason(r.skipReason)
     )
     .map((r) => r.repo);
   const servedInversionRepos = inverted
@@ -1568,6 +1650,7 @@ export function buildIdleDecisionCensus(opts: {
     deferredInversionRepos,
     heldInversionRepos,
     backedOffInversionRepos,
+    cargoDeferredInversionRepos,
     gatedInversionRepos,
     servedInversionRepos,
   };
@@ -1667,6 +1750,21 @@ export function formatIdleDecisionCensus(
         `the claim scan skipped them before any eligibility check ran; the ` +
         `fix is the repository's own fast-failure diagnostic, not this ` +
         `backlog`,
+    );
+  }
+  // Issue #4751: the host has the disk floor but not the cargo build headroom
+  // for these repositories, so the claim scan skipped them before any
+  // eligibility check ran. Named on its own line, because it clears by itself
+  // when disk space is freed — unlike a back-off, nothing needs fixing in the
+  // repository.
+  if (census.cargoDeferredInversionRepos.length > 0) {
+    lines.push(
+      `[idle-census]${hostField} decision_point=${census.decisionPoint} ` +
+        `NOTE inversion_repo_cargo_deferred ` +
+        `repos=${census.cargoDeferredInversionRepos.join(",")} — this host ` +
+        `has the disk floor but not the cargo build headroom (Issue #4540), ` +
+        `so the claim scan skipped these repositories before any eligibility ` +
+        `check ran; the work returns when disk space is freed`,
     );
   }
   // Issue #479: a host-level gate refused this work. Said plainly, and with

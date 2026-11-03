@@ -8,7 +8,10 @@ Canonical guides — link, do not restate:
 - Google Rust Style Guide — <https://google.github.io/styleguide/rustguide.html>
 
 Apply these checks to `*.rs` files, `Cargo.toml`, and `.cargo/config.toml`
-(the build-profile checks below read the last one) only.
+(the build-profile checks below read the last one) only. The supply-chain
+section at the end also reads `Cargo.lock`, `deny.toml`,
+`.cargo/audit.toml`, `rust-toolchain.toml`, the `supply-chain/` directory,
+and the Rust steps of `.github/workflows/*.yml` — nothing else.
 
 ## Checks
 
@@ -32,10 +35,17 @@ Apply these checks to `*.rs` files, `Cargo.toml`, and `.cargo/config.toml`
    crate root carries a `///` doc comment with at least a one-line
    summary; constructors and non-trivial functions show a `# Examples`
    block. Follow the Rust API Guidelines C-EXAMPLE / C-FAILURE rules.
-6. **Lint posture.** The crate root has `#![deny(warnings)]` (or
-   per-lint denies such as `unsafe_op_in_unsafe_fn`,
-   `missing_docs` on libraries). Flag missing `#![deny(...)]` on
-   library crates.
+6. **Lint posture.** Lint levels live in a `[lints]` table in
+   `Cargo.toml` (or `[workspace.lints]` inherited with
+   `lints.workspace = true`), with per-lint denies such as
+   `unsafe_op_in_unsafe_fn` and `missing_docs` on libraries, and CI
+   turns warnings into errors (`cargo clippy -- -D warnings` or
+   `RUSTFLAGS="-D warnings"`). Flag a library crate with neither a
+   `[lints]` table nor crate-root `#![deny(...)]` attributes. Flag a
+   blanket `#![deny(warnings)]` in source as `severity:low`: every new
+   stable release adds warnings, so the fleet's toolchain bumps turn
+   into broken builds and repair runs — the deny belongs in CI, where
+   it can be changed without touching the code.
 7. **Naming conventions.** Types use `UpperCamelCase`, functions and
    modules use `snake_case`, constants use `SCREAMING_SNAKE_CASE`.
    Flag deviations on `pub` items only.
@@ -761,3 +771,103 @@ the toolchain section above).
     a finding. No clippy lint covers this. Fix: use the crate's
     documented public path. Severity: `severity:low`. Finding title:
     `Reach into <crate> internals in <file>`.
+
+## Supply chain — what the build trusts
+
+The fleet already covers two layers of dependency risk outside this
+bucket: `cargo audit` runs on every pull request against the RustSec
+database (known vulnerabilities), and the worker holds back any
+crates.io release younger than the quarantine window before adopting
+it (fresh malicious publishes, which are usually yanked within days —
+see `DESIGN-PRINCIPLES.md`). The checks below cover what neither layer
+sees: **where** crates may come from, how the tools that check them
+are themselves installed, and how exceptions are recorded. Do not
+re-file a known-vulnerability finding here; that belongs to
+`security-scan`.
+
+**Static evidence only**, as everywhere in this bucket: read the files
+named in the scope line at the top, never run `cargo deny`,
+`cargo audit` or `cargo vet`. Each finding cites a file and line range.
+
+### Checks
+
+52. **`cargo deny` covers sources, not only bans.** Gate: the repo
+    has a `deny.toml` or its CI or `quality.sh` runs `cargo deny`.
+    Flag a quality gate that runs only `cargo deny check bans` (or
+    any subset) when the repo ships a binary — the full
+    `cargo deny check` also runs `advisories`, `licenses` and
+    `sources`. Flag a `deny.toml` with no `[sources]` table, or one
+    whose `unknown-registry` or `unknown-git` is not `"deny"`: without
+    it a `git =` dependency or a `[patch]` entry can pull code from
+    any repository and nothing fails. An `allow-git` entry needs a
+    comment naming why the crate cannot come from crates.io. Flag
+    `[advisories] yanked` set to `"allow"` or `"warn"` in a binary
+    repo — a yanked release is often the first public sign of a
+    compromised one. Also flag a `[source.*]` `replace-with` in
+    `.cargo/config.toml` that points at a registry other than
+    crates.io or a documented internal mirror. Severity:
+    `severity:medium` for a missing or permissive `[sources]` table in
+    a binary repo, otherwise `severity:low`. Finding title:
+    `cargo-deny sources not enforced in <file>`.
+53. **Rust tools installed unpinned or unlocked in CI.** Always
+    applies to workflow steps. Flag `cargo install <tool>` with no
+    `--locked` or no `@<version>`: without `--locked` Cargo re-resolves
+    the tool's whole dependency tree to the newest releases on every
+    run, so it bypasses the quarantine window and `Cargo.lock`
+    entirely, and without a version the tool itself floats. Flag
+    `cargo build`, `cargo test`, `cargo clippy` and `cargo run` steps
+    without `--locked` in a repo that commits `Cargo.lock`. Fix:
+    `cargo install --locked <tool>@<x.y.z>`, or a SHA-pinned prebuilt
+    installer such as `taiki-e/install-action`, which also removes a
+    from-source compile from every run. Effect (estimated): the
+    compile step for a tool like `cargo-audit` or `cargo-deny` is
+    typically one to several minutes of runner time per run. Risk: a
+    pinned tool needs Renovate (or the worker) to move the pin.
+    Severity: `severity:medium`. Finding title:
+    `Unlocked cargo install of <tool> in <workflow>`.
+54. **Advisory ignores without a reason or an end.** Gate: the repo
+    has a `deny.toml` `[advisories] ignore` list or a
+    `.cargo/audit.toml` `ignore` list. Flag a `deny.toml` ignore entry
+    in the bare-string form (`"RUSTSEC-…"`) instead of
+    `{ id = "RUSTSEC-…", reason = "…" }`, and a `.cargo/audit.toml`
+    entry with no comment on the same or preceding line. The reason
+    names why the advisory does not reach this code and links the
+    tracking issue, so the ignore can be removed when the fix ships.
+    An ignore with no reason silently outlives the fix and hides the
+    next advisory against the same crate. Severity: `severity:low`, or
+    `severity:medium` when the ignored advisory's crate is reachable
+    from network input. Finding title: `Unexplained advisory ignore
+    <id> in <file>`.
+55. **No human-gated supply-chain checks.** The fleet runs unattended,
+    so a required check that only a person can satisfy stalls every
+    pull request it touches. `cargo vet` is the main case: it passes
+    only when each new crate version is covered by an audit, and an
+    audit is a human's attestation that they read the code. The fleet
+    does not use it; checks 52–54, `cargo audit` and the crates.io
+    quarantine window are its automated equivalent. Gate: the repo has
+    a `supply-chain/` directory, or a workflow or `quality.sh` runs
+    `cargo vet`. Flag `cargo vet` wired into a required check or the
+    quality gate, at `severity:medium`. Fix: remove the `cargo vet`
+    step and the `supply-chain/` directory, and confirm check 52's
+    `[sources]` and `yanked` settings are in place first so nothing is
+    lost. Flag an `audits.toml` entry whose `who` is a bot or
+    coding-agent identity, or that was added in a commit authored by
+    one, at `severity:medium`: an agent certifying its own dependency
+    bump looks like a review and is not one.
+
+    **Agent rule.** A worker meeting a failing `cargo vet` check never
+    runs `cargo vet certify`, `cargo vet trust` or
+    `cargo vet regenerate exemptions`, and never edits
+    `supply-chain/*.toml` to make it pass. It removes the step as above
+    in the same push as its fix. Finding title:
+    `Human-gated cargo vet check in <file>`.
+56. **Toolchain and MSRV pinned.** Gate: the repo ships a binary.
+    Flag a binary repo with no `rust-toolchain.toml` (or a
+    `rust-toolchain` file) naming a concrete release such as
+    `channel = "1.99"` — `stable` floats, so a new release can change
+    lints and fail CI on a pull request that touched nothing related.
+    The pin is moved by Renovate or the worker under the quarantine
+    window like any other dependency. Flag a published library with no
+    `rust-version` in `Cargo.toml`; check 25 owns the case where the
+    code contradicts a declared one. Severity: `severity:low`. Finding
+    title: `Rust toolchain not pinned in <repo>`.
