@@ -120,6 +120,12 @@ describing it.
 
 ## Test Plan
 
+- `worker/deno/tests/container_entrypoint_test.ts::entrypoint - a launch completes with the image layer read-only (Issue #515)`:
+  the read-only-image fixture now stubs `getent` and `chgrp` to succeed, so
+  the HOME fallback does not depend on the host user's group membership. The
+  existing launch and warning assertions remain in place; the work-root grant
+  tests separately cover the grant. The previous CI-fix run reported all 43
+  tests in this file passing.
 - `worker/deno/tests/work_root_group_grant_test.ts` (10 tests at head): six new.
   HOME gains group traverse; the grant is traverse only; the three worker-state
   children carry no group or other access; HOME stays shut, with a warning
