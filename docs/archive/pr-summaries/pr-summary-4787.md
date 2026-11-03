@@ -74,27 +74,28 @@ outside `docs/archive/` found no other hit.
 - Added to `worker/deno/tests/milestone_resolution_gate_test.ts`: a type check
   that advances the clock by 800 000 ms still leaves the first task the full
   `RESOLUTION_GATE_BUDGET_MS`.
-- One existing test edited:
-  `merge-only e2e - root Cargo cannot hide a failing
-  nested Deno resolution suite (PR #4343)`
-  in `worker/deno/tests/milestone_merge_only_4326_test.ts`. Only its
-  `web/deno.json` fixture content was reformatted (from `JSON.stringify` output
-  to a pre-formatted literal) so it passes the pre-push `deno fmt --check` gate.
-  The tasks are the same and no assertion was added, removed or changed.
+- One existing test edited: the root-Cargo-versus-nested-Deno resolution suite
+  e2e test (the PR #4343 case) in
+  `worker/deno/tests/milestone_merge_only_4326_test.ts` (20 tests at head, all
+  passing). Only its `web/deno.json` fixture content was reformatted (from
+  `JSON.stringify` output to a pre-formatted literal) so it passes the pre-push
+  `deno fmt --check` gate. The tasks are the same and no assertion was added,
+  removed or changed.
 - Red-checks: `typeCheckTimeoutMs` returning the Deno limit for cargo → the
   merge-gate tests red; deadline computed before the type check → the
   resolution-gate budget test red. Each break was applied alone and restored.
-- `deno task test:unit` over `milestone_merge_gate_test.ts`,
-  `milestone_resolution_gate_test.ts`, `milestone_sync_merge_gate_test.ts` and
-  `merge_gate_fail_closed_test.ts`: 58 passed, 0 failed.
-- Mutation check baseline: the 20 test files that import the changed modules
-  failed together on one test,
-  `merge-only e2e - root Cargo cannot hide a
-  failing nested Deno resolution suite (PR #4343)`
-  in `milestone_merge_only_4326_test.ts`. It pushed an unformatted
+- `deno task test:unit` at head, per file:
+  `worker/deno/tests/milestone_merge_gate_test.ts` (43 tests),
+  `worker/deno/tests/milestone_resolution_gate_test.ts` (35 tests),
+  `worker/deno/tests/milestone_sync_merge_gate_test.ts` (4 tests),
+  `worker/deno/tests/merge_gate_fail_closed_test.ts` (19 tests) and
+  `worker/deno/tests/milestone_merge_only_4326_test.ts` (20 tests): all passed,
+  0 failed.
+- Mutation check baseline: the test files that import the changed modules failed
+  together on the edited e2e test above. It pushed an unformatted
   `web/deno.json` and the pre-push `deno fmt --check` gate blocked the push, so
   the baseline failed before any mutant ran. The fixture now writes the file
-  already formatted; the 20 files then ran together: 402 passed, 0 failed.
+  already formatted.
 - `deno task check:manifests`: passed.
 - `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`; config
   integration and checkov were skipped by the gate itself.
