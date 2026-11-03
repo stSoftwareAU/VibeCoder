@@ -67,8 +67,20 @@ async function fakeRepo(dir: string): Promise<void> {
  * Lay out a work root that mixes tenant clones with the worker's own state,
  * run the entrypoint over it, and return the work root path.
  */
-async function runOverWorkRoot(dir: string): Promise<string> {
+async function runOverWorkRoot(
+  dir: string,
+  workerUid?: number,
+): Promise<string> {
   const binDir = await stubBin(dir);
+  if (workerUid !== undefined) {
+    // Report a uid that owns nothing in the fixture, so every git file looks
+    // like the untrusted account's (no test host can chown to another uid).
+    await Deno.writeTextFile(
+      `${binDir}/id`,
+      `#!/bin/bash\necho ${workerUid}\n`,
+    );
+    await Deno.chmod(`${binDir}/id`, 0o755);
+  }
   await fakeRepo(dir);
   const home = `${dir}/home`;
   const workRoot = `${home}/auto-issue-work`;
@@ -320,6 +332,48 @@ Deno.test("entrypoint - reserved work-root names gain no sticky bit (Issue #4737
         `${reserved} is worker state, not a clone root, so it takes no sticky bit`,
       );
     }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * A git directory the worker does not own is not trusted (Issue #4737).
+ *
+ * `chmod g-w,o-w` fails on files the untrusted account owns, so a clone whose
+ * `.git` was swapped before the hardening would stay writable and trusted via
+ * `safe.directory '*'`. The entrypoint must notice, warn, and take the clone
+ * out of service rather than rely on the silent chmod.
+ */
+Deno.test("entrypoint - a clone whose git directory the worker does not own is quarantined (Issue #4737)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const foreignUid = (Deno.uid() ?? 1000) + 4242;
+    const workRoot = await runOverWorkRoot(dir, foreignUid);
+    for (const clone of ["NEAT-AI", "LINKED"]) {
+      let stillThere = true;
+      try {
+        await Deno.stat(`${workRoot}/${clone}`);
+      } catch {
+        stillThere = false;
+      }
+      assert(!stillThere, `${clone} kept its trusted place in the work root`);
+    }
+    const quarantined = [];
+    for await (const entry of Deno.readDir(workRoot)) {
+      if (entry.name.startsWith(".untrusted-")) quarantined.push(entry.name);
+    }
+    assertEquals(quarantined.length, 2, quarantined.join(", "));
+    for (const name of quarantined) {
+      const mode = await modeAt(`${workRoot}/${name}`);
+      assertEquals(
+        mode & 0o077,
+        0,
+        `${name} must give the untrusted account no access`,
+      );
+    }
+    // A clone with no git directory of its own is not touched.
+    await Deno.stat(`${workRoot}/NEAT-AI-Discovery`);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

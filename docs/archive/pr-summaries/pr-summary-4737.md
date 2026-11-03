@@ -2,7 +2,8 @@
 
 The entrypoint now gives each shared repository clone root the sticky bit
 (`g+rwxs,+t`) and strips group/other write from the clone's git metadata at
-every launch. Closes #4737.
+every launch, then checks that the worker owns each clone's git directory and
+quarantines any clone where it does not. Closes #4737.
 
 Version bump: `VERSION` is not edited by this change; the merged commit records
 the final version.
@@ -19,6 +20,12 @@ the final version.
 - The sticky bit does not stop writes into `.git`, so the entrypoint also
   removes group/other write bits from `.git` and a linked worktree's `.git`
   pointer file.
+- That chmod fails silently on files `agent` already owns (a `.git` swapped on a
+  persistent volume before this fix). So the entrypoint also looks for any path
+  within two levels of `.git` (so `.git` itself, `config`, `hooks` and its
+  entries) not owned by the worker's uid. If it finds one it warns and moves the
+  clone to `.untrusted-<name>-<epoch>` in the work root with group and other
+  access removed. The worker re-clones it. Skipped when run as root.
 
 ### Essential Design Decisions
 
@@ -64,6 +71,14 @@ flowchart LR
   branch fails the reserved-names test.
 - `deno test` on this file and `container_entrypoint_test.ts`: 50 passed, 0
   failed.
+- New test
+  `a clone whose git directory the worker does not own is
+  quarantined`: stubs
+  `id` to report a uid that owns nothing in the fixture, and asserts both the
+  `.git`-directory clone and the linked-worktree clone leave their place in the
+  work root as mode-0 `.untrusted-*` entries, while a clone with no `.git` is
+  untouched. Run after the fix: 51 passed, 0 failed on this file plus
+  `container_entrypoint_test.ts`.
 - `./quality.sh`: FAILED on the parallel deno-test pass with 4 failures
   unrelated to this diff: two Rust-formatter tests
   (`formatter should commit the Rust fix`), one test needing a JSR download
@@ -79,6 +94,9 @@ flowchart LR
 
 - No real uid-switch test of the rename denial (needs root and a second
   account).
+- Ownership is checked to two levels below `.git`; deeper foreign-owned files
+  (for example under `objects/`) do not trigger quarantine, and are non-writable
+  to `agent` only if the chmod could reach them.
 - A clone whose `.git` is a symlink is not hardened.
 - `find` over `.git` runs on each launch and can be slow on very large object
   stores.
