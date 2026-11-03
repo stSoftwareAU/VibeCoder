@@ -105,8 +105,9 @@ emits `--volume <source>:<target>` for every dialect),
 - **met** — Test: a timeout kills the container by name and throws. — evidence:
   `worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair kills the container by name on timeout, and reports a failed kill`
   — reviewer: met
-- **met** — './quality.sh' passes. — evidence: `./quality.sh < /dev/null` on the
-  final head, see Test Plan — reviewer: met
+- **partial** — './quality.sh' passes. — evidence: the earlier run passed with
+  skips, but the review-fix run on this host failed when Deno 2.9.8 panicked in
+  the parallel test runner; the serial pass did not run. See Test Plan.
 - **unrequested** — key guard also refuses relative sources, other flag
   spellings and symlink/`..` forms; input validation of clone, scratch, key and
   token; stderr redaction; `babysitterRuntimeOnPath`, `babysitterSpawn`,
@@ -150,8 +151,13 @@ emits `--volume <source>:<target>` for every dialect),
 
 ## Test Plan
 
-Added `worker/deno/tests/fleet_babysitter_container_4738_test.ts` (36 tests). No
-existing test edited, no assertion removed.
+Added `worker/deno/tests/fleet_babysitter_container_4738_test.ts` (36 tests).
+Review follow-up strengthens the fixture and preflight assertions without
+removing coverage: the previous fixture did not distinguish the two volume
+lists, while both lists must be removed. Coverage:
+`worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair drops the named volumes and adds exactly the clone and scratch mounts`.
+The preflight tests also assert the runtime and image-inspection arguments.
+No other existing test edited, no assertion removed.
 
 - Red-checks (each guard broken alone, test file run, guard restored): ancestor
   comparison always false → key-guard refusal tests red; plan volumes kept →
@@ -184,9 +190,12 @@ existing test edited, no assertion removed.
 - `worker/deno/lib/fleet_babysitter_container.ts:147` exempt (untestable): the
   `Deno.build.os === "windows"` operand is replaced by `false`, which is
   identical on a non-Windows host; the tests cannot run as Windows.
-- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`; config
-  integration and checkov were skipped by the gate itself. An earlier run on a
-  previous head failed on the missing lib-sweep claim (fixed here) and on
-  `pr_maintenance_command_test.ts` tests that passed when re-run alone.
+- An earlier `./quality.sh < /dev/null` run passed with skipped checks. On the
+  review-fix working tree, Deno 2.9.8 panicked in the parallel test runner
+  (`pledge test permissions called before restoring previous pledge`), so the
+  gate failed and its serial pass did not run. The focused test file passed all
+  36 tests; formatter, lint, type check, completeness and markdownlint passed.
+  Config integration, semgrep and checkov were skipped on this host. The PR's
+  previous CI gate passed; the pushed fix will be checked again by CI.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

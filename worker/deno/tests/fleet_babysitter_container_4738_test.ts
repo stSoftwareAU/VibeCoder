@@ -107,7 +107,7 @@ function fakePlan(
     watchdogSeconds: 60,
     mounts: [],
     ensureDirectories: [],
-    volumes: ["vibe-work"],
+    volumes: ["vibe-work", "vibe-approval-state"],
     resettableVolumes: ["vibe-work", "vibe-agent-state"],
     initArgs: [],
     volumeRemoveArgs: [],
@@ -137,6 +137,8 @@ function fakePlan(
       "8g",
       "--volume",
       "vibe-work:/home/vibe/auto-issue-work",
+      "--volume",
+      "vibe-approval-state:/home/vibe/approval-state",
       "--volume",
       "vibe-agent-state:/home/vibe/agent",
       "--volume",
@@ -174,8 +176,8 @@ interface FakeOptions {
 interface Calls {
   built: string[];
   spawns: Spawned[];
-  onPath: number;
-  imageExists: number;
+  onPath: string[];
+  imageExists: Array<{ runtime: string; args: string[] }>;
 }
 
 /** Fake deps that record every call. Each spawn records its runtime, args, env and timeout. */
@@ -183,12 +185,12 @@ function fakeDeps(f: Fixture, options: FakeOptions = {}): {
   deps: Partial<BabysitterContainerDeps>;
   calls: Calls;
 } {
-  const calls: Calls = { built: [], spawns: [], onPath: 0, imageExists: 0 };
+  const calls: Calls = { built: [], spawns: [], onPath: [], imageExists: [] };
   const queue = [...(options.spawnResults ?? [])];
   const deps: Partial<BabysitterContainerDeps> = {
     env: options.env ?? fakeEnv,
-    onPath: () => {
-      calls.onPath++;
+    onPath: (runtime) => {
+      calls.onPath.push(runtime);
       return Promise.resolve(options.onPath ?? true);
     },
     buildPlan: (_baseDir, containerName) => {
@@ -197,8 +199,8 @@ function fakeDeps(f: Fixture, options: FakeOptions = {}): {
         fakePlan(f.root, containerName, options.extra, options.overrides),
       );
     },
-    imageExists: () => {
-      calls.imageExists++;
+    imageExists: (runtime, args) => {
+      calls.imageExists.push({ runtime, args: [...args] });
       return Promise.resolve(options.imageExists ?? true);
     },
     spawn: (runtime, args, opts) => {
@@ -331,6 +333,10 @@ Deno.test("repair drops the named volumes and adds exactly the clone and scratch
     assert(
       !args.some((arg) => arg.includes("vibe-agent-state")),
       "vibe-agent-state stays out",
+    );
+    assert(
+      !args.some((arg) => arg.includes("vibe-approval-state")),
+      "vibe-approval-state stays out",
     );
     assertEquals(volumeValues(args), [
       `${f.root}/logs:/home/vibe/logs`,
@@ -768,7 +774,8 @@ Deno.test("repair refuses when the runtime is not on PATH, and never asks for th
       "cannot run fake-runtime: the container runtime is not on PATH",
     );
     assertEquals(calls.spawns.length, 0);
-    assertEquals(calls.imageExists, 0);
+    assertEquals(calls.onPath, ["fake-runtime"]);
+    assertEquals(calls.imageExists, []);
 
     const control = fakeDeps(f, { onPath: true });
     await runBabysitterRepairContainer(inputFor(f), control.deps);
@@ -788,6 +795,11 @@ Deno.test("repair refuses when the worker image is not built, and spawns nothing
       "the worker image is not built; start the Vibe Coder (./run.sh) once to build it",
     );
     assertEquals(calls.spawns.length, 0);
+    assertEquals(calls.onPath, ["fake-runtime"]);
+    assertEquals(calls.imageExists, [{
+      runtime: "fake-runtime",
+      args: ["image", "inspect", "vibe-coder:test"],
+    }]);
 
     const control = fakeDeps(f, { imageExists: true });
     await runBabysitterRepairContainer(inputFor(f), control.deps);
