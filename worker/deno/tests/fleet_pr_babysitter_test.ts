@@ -57,6 +57,7 @@ import {
   syncPrBodyFromSummary,
   type SyncPrBodyInput,
 } from "../lib/pr_body_sync.ts";
+import type { BabysitterAppConfig } from "../lib/fleet_babysitter_app.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { buildIdempotencyMarker, closingKeywordLine } from "../lib/pr_body.ts";
 import {
@@ -86,11 +87,13 @@ import {
   recordBabysitterDeployment,
   recoverTemporaryClones,
   removeRepairDirs,
+  repairInClone,
   requestedReviews,
   resumePendingPublication,
   runRepairs,
   serialiseOnMirror,
   spawnBabysitterAgent,
+  startBabysitterAgent,
   syncBabysitterPrBodyBeforeDismissal,
   takePrBodyProposal,
   validateAndCommit,
@@ -1784,6 +1787,113 @@ Deno.test("a resumed publication for a pushed head still publishes the proposal 
     );
     assertStringIncludes(github.body(), "Rewritten description.");
     assertStringIncludes(github.body(), "Closes #4637");
+  } finally {
+    await cleanupFixture(fixture.path);
+    await cleanupFixture(state);
+  }
+});
+
+/** An agent stand-in that, like the real one, is stopped by an existing attempt marker. */
+function fakeAgentStart(
+  fixture: { path: string; scratch: string },
+  calls: { started: number; refused: number },
+) {
+  return (async (_app, _repo, _options, beforeSpawn) => {
+    if (!await beforeSpawn()) {
+      calls.refused++;
+      return undefined;
+    }
+    calls.started++;
+    await Deno.writeTextFile(
+      `${fixture.scratch}/response`,
+      "Done.\nBABYSITTER_READY",
+    );
+    await Deno.writeTextFile(
+      `${fixture.path}/.babysitter-pr-body`,
+      "Rewritten description.",
+    );
+    return { status: Promise.resolve({ success: true }) } as Deno.ChildProcess;
+  }) as typeof startBabysitterAgent;
+}
+
+Deno.test("repairInClone: a failed publication is retried at the same head through the attempt marker, without a second agent run (PR #4779 review)", async () => {
+  const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
+  const state = await Deno.makeTempDir({ prefix: "babysitter-state-" });
+  try {
+    await runGit(
+      fixture.path,
+      "update-ref",
+      "refs/remotes/origin/main",
+      "HEAD",
+    );
+    const events: string[] = [];
+    const githubOptions = {
+      headRefOid: fixture.headSha,
+      body: `Closes #4674\n\n${buildIdempotencyMarker(4674)}`,
+      failEdit: true,
+      onEdit: () => events.push("publish"),
+    };
+    const github = fakeRepairGitHub(githubOptions);
+    const reviews = changesRequestedBy();
+    const calls = { started: 0, refused: 0 };
+    const options = {
+      repo: "owner/repo",
+      pr: {
+        ...repairPrFor(fixture.headSha, 7),
+        reviewDecision: "CHANGES_REQUESTED",
+      },
+      dir: fixture.path,
+      scratch: fixture.scratch,
+      exchange: fixture.scratch,
+      login: "babysitter[bot]",
+      reviews,
+      app: {} as BabysitterAppConfig,
+      configPath: "unused",
+      gh: github.gh,
+      renewalFailed: () => false,
+      onChild: () => {},
+      stateDir: state,
+      startAgent: fakeAgentStart(fixture, calls),
+      finishDeps: repairFinishDeps({
+        headSha: fixture.headSha,
+        github,
+        events,
+      }),
+    };
+    const publication = pendingPublicationStore(
+      state,
+      "owner/repo",
+      7,
+      reviews,
+    );
+
+    // First scan: the agent runs, then the description edit fails. The store
+    // reaching the finish is what records the unfinished publication.
+    await assertRejects(
+      () => repairInClone(options),
+      Error,
+      "simulated body publication failure",
+    );
+    assertEquals(calls, { started: 1, refused: 0 });
+    assertEquals(await publication.load(fixture.headSha), {
+      proposal: "Rewritten description.",
+      pushed: false,
+    });
+    assertEquals(events, []);
+
+    // Next scan, same head and review: the attempt marker is on disk, and the
+    // publication still finishes, because it is resumed before the marker.
+    githubOptions.failEdit = false;
+    await Deno.remove(`${fixture.scratch}/pr-body.md`);
+    await repairInClone(options);
+    assertEquals(calls, { started: 1, refused: 0 });
+    assertEquals(events, ["publish", "dismiss"]);
+    assertStringIncludes(github.body(), "Part of #4674");
+    assertEquals(await publication.load(fixture.headSha), undefined);
+
+    // Positive control: with nothing pending, the marker does stop the agent.
+    await repairInClone(options);
+    assertEquals(calls, { started: 1, refused: 1 });
   } finally {
     await cleanupFixture(fixture.path);
     await cleanupFixture(state);

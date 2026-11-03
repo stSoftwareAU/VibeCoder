@@ -63,10 +63,10 @@ the final version.
   diff.
 - A repair that addresses reviews writes `<attempt key>--publication.json` (the
   proposal and whether the repair pushed) before the sync, and removes it once
-  the reviews are dismissed. `fix()` looks for it before it merges the base or
-  starts the agent (`resumePendingPublication`), so a publication that failed is
-  retried on the next scan although the attempt marker blocks a second agent run
-  at that head and review.
+  the reviews are dismissed. `fix()` runs `repairInClone`, which looks for it
+  before it merges the base or starts the agent (`resumePendingPublication`), so
+  a publication that failed is retried on the next scan although the attempt
+  marker blocks a second agent run at that head and review.
 - A no-change retry diffs the committed summary against git's empty tree, so a
   legacy worker body with no summary digest is rebuilt. The sync still edits
   only when the rebuilt body differs, so a second retry makes no edit.
@@ -156,6 +156,8 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   `a failed publication is resumed by the next scan without the agent, and the record is cleared (PR #4779 review)`
   and
   `a resumed publication for a pushed head still publishes the proposal that the push backs (PR #4779 review)`
+  and
+  `repairInClone: a failed publication is retried at the same head through the attempt marker, without a second agent run (PR #4779 review)`
   — reviewer: met
 - **partial** — On a no-code-change repair, publish only an independently
   supportable correction; a proposal is data, not authority. A proposal over a
@@ -275,7 +277,7 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   a second `Closes`; a marker-less `issue-N-...` branch is governed (with and
   without a proposal, with a no-issue branch as the positive control); and a
   marker-less branch with a fully met committed summary keeps the close. Finish
-  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 112 tests at head; one
+  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 113 tests at head; one
   unrelated environment-dependent test,
   `babysitter default heartbeat resolves its checkout revision`, fails in this
   checkout): a pushed repair whose proposal only mentions a fully met issue
@@ -290,8 +292,17 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   place of `namesClosingOrPartOf`; no branch fallback in `governingIssueNumber`;
   no-change suppression removed; `pushedByEarlierRepair` not passed on resume;
   `save` writing another head's key; `clear` removed — each went red in the
-  matching tests (per-break counts not restated; not re-run in this fix).
-  `fix()` itself is not driven (see Not done).
+  matching tests (per-break counts not restated; not re-run in this fix). The
+  order inside `fix()` is driven through `repairInClone`, which `fix()` calls
+  after the clone: with an attempt marker already on disk, a failed publication
+  is recorded (the store reaches the finish), a second scan finishes it with the
+  agent not started again, and a third scan with nothing pending is stopped by
+  the marker
+  (`repairInClone: a failed publication is retried at the
+  same head through the attempt marker, without a second agent run (PR #4779 review)`).
+  Red-checks on that test: the store dropped from the finish call → red
+  (`Values are not equal`); resume made unreachable, as if it ran after the
+  marker → red. Both re-run on this head.
 - Test changes in this round (TDD rule 3). Obsolete: with nothing pushed, a
   proposal over a governing committed summary was published; it is not now.
   Remaining: a proposal is still published through the guard when the repair
@@ -342,18 +353,12 @@ listed the post-push sync callers were updated. Issues cited as provenance:
 
 ## Not done
 
-- `fix()` passes `proposal`, `gh`, `checkBaseline`, `mergedBase` and the
-  pending-publication store into `finishBabysitterRepair`
-  (`worker/deno/commands/fleet_pr_babysitter.ts:1752`), and calls
-  `resumePendingPublication` before the base merge and the attempt marker
-  (`worker/deno/commands/fleet_pr_babysitter.ts:1665`), with no test through
-  `fix()` itself. `fix()` clones the repository, reads the PR's reviews through
-  the real `gh` and spawns the Codex agent, and the two test files that call it
-  (`worker/deno/tests/fleet_pr_babysitter_test.ts`,
-  `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`) stop before that
-  step. `finishBabysitterRepair`, `resumePendingPublication` and the store are
-  tested directly; that `fix()` calls the resume before the marker rests on the
-  code order.
+- `fix()` itself (lock, clone, `gh` reads) is not driven by a test. Everything
+  from the clone onward, which holds the resume-before-marker order and the
+  store handed to the finish, is `repairInClone`
+  (`worker/deno/commands/fleet_pr_babysitter.ts`) and is tested through it with
+  a fake agent start, GitHub and state directory. What stays unchecked is that
+  `fix()` calls `repairInClone` with the clone it cloned, which is one call.
 - Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working
   tree, as noted in #4712.
 - The pending-publication record is written only for a repair that addresses
