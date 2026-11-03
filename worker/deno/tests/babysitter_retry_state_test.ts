@@ -1,10 +1,12 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
+  BabysitterFailure,
   babysitterRetryDelayMs,
   babysitterRetryEligible,
   type BabysitterRetryRecord,
   buildBabysitterAttemptMarker,
   classifyBabysitterBlocker,
+  classifyBabysitterFailure,
   clearBabysitterRetryStates,
   listBabysitterRetryStates,
   loadBabysitterRetryState,
@@ -215,4 +217,81 @@ Deno.test("babysitter attempt tally is stable and trusts only fleet authors", ()
       error.message.includes("Cannot resolve fleet authors");
   }
   assertEquals(unresolved, true);
+});
+
+Deno.test("structured failures classify without text matching, with a text fallback", () => {
+  assertEquals(
+    classifyBabysitterFailure(new BabysitterFailure("plain words", "race")),
+    "race",
+  );
+  assertEquals(
+    classifyBabysitterFailure(
+      Object.assign(new Error("x"), { code: "ENOSPC" }),
+    ),
+    "capability",
+  );
+  assertEquals(
+    classifyBabysitterFailure(
+      new Error("agent exited unsuccessfully with code 137"),
+    ),
+    "infrastructure",
+  );
+  assertEquals(
+    classifyBabysitterFailure(
+      new Error("agent exited unsuccessfully with code 1"),
+    ),
+    "code",
+  );
+  assertEquals(
+    classifyBabysitterFailure("token expires soon"),
+    "infrastructure",
+  );
+});
+
+Deno.test("retry records keep bounded evidence and a single escalation across restarts", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const record: BabysitterRetryRecord = {
+      version: 2,
+      repo: "owner/repo",
+      prNumber: 7,
+      failureIdentity: "failed CI",
+      observedHead: "a".repeat(40),
+      blockerClass: "code",
+      lastOutcome: "no-progress",
+      attempts: { infrastructure: 0, substantive: 3 },
+      nextEligibleAt: null,
+      nextAction: "escalated",
+      pushedHead: null,
+      reconciliation: "repair-needed",
+      evidence: ["one", "two"],
+      escalation: { issue: "owner/repo#9", at: "2026-11-03T00:00:00.000Z" },
+    };
+    await saveBabysitterRetryState(dir, record);
+    const [restored] = await listBabysitterRetryStates(dir, "owner/repo");
+    assertEquals(restored, record);
+    for (
+      const broken of [
+        { ...record, evidence: "one" },
+        { ...record, evidence: [1] },
+        { ...record, escalation: "owner/repo#9" },
+        { ...record, escalation: { issue: 9, at: "x" } },
+        { ...record, escalation: { issue: "x", at: 9 } },
+      ]
+    ) {
+      await Deno.writeTextFile(
+        `${dir}/attempt-v2-${
+          (await Array.fromAsync(Deno.readDir(dir)))[0]!.name.slice(11, 27)
+        }.json`,
+        JSON.stringify(broken),
+      );
+      await assertRejects(
+        () => listBabysitterRetryStates(dir, "owner/repo"),
+        Error,
+        "Invalid babysitter retry state",
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

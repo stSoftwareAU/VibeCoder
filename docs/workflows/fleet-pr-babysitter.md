@@ -200,19 +200,40 @@ markers written by configured fleet authors, so the configured repair limit
 is shared across hosts and survives a restart; infrastructure and capability
 failures do not add a substantive attempt marker.
 
-Infrastructure, host capability, and head or lock races receive bounded
-cooldowns without spending the substantive repair budget. Code failures and
-no-progress outcomes spend that budget and change the diagnosis after the
-configured `maxAutoFixAttempts` limit. An explicit `needs-human` label remains
-an owner hold. Waiting paths release the branch lock; the next scan logs the
-cause, next action, and eligible time.
+A failure is classified from where it is raised: a structured cause (agent
+killed by a signal or exit 137/143, a lock that could not be renewed, a head
+that moved) first, and the error text only as a fallback. Infrastructure, host
+capability (missing tool, full disk) and head or lock races receive bounded
+cooldowns without spending the substantive repair budget and post no attempt
+marker. Code failures and no-progress outcomes spend that budget. The retry
+record is saved before any best-effort marker write, and a failed marker write
+never replaces the repair's real error.
 
-After a successful push the state records the pushed head and waits for CI,
-review, and the existing auto-merge owner. Failed checks and new requested
-changes return to the repair scan. A later scan reads tracked PRs even when
-they are no longer in the first page of open candidates, and clears retry state
-only after GitHub reports `MERGED`; a closed unmerged PR is recorded separately.
-The babysitter does not merge a PR itself.
+When substantive attempts reach the configured `maxAutoFixAttempts` limit, the
+next prompt tells the agent to change its diagnosis, the record keeps the newest
+five redacted evidence lines, and the babysitter files one `idle-task` issue in
+the PR's repository (the route shift-left detection uses, so the fleet picks it
+up without a human label). The issue carries a
+`BABYSITTER_STUCK_4656:<incident>` marker; a fleet-authored issue with that
+marker, or the `escalation` field in the retry record, deduplicates the
+escalation across hosts and restarts, so one incident files one issue. The
+babysitter never applies `needs-human` for a code problem; only an explicit
+`needs-human` label is an owner hold, and it stays paused until cleared. Waiting
+paths release the branch lock; the next scan logs the cause, next action, and
+eligible time.
+
+After a successful push the state records the pushed head and waits for CI and
+independent review. Each later scan observes the PR without taking a lock:
+pending CI, a pending or dismissed review, a draft, a cross-repository PR, a
+repository with `skip_auto_merge` and a `needs-human` hold are each recorded as
+what the PR waits on. A green, approved, clean PR is recorded as
+`handed-to-auto-merge-owner`: the worker's auto-merge sweep owns arming and
+landing it, and the babysitter itself never merges, arms or bypasses anything.
+Failed checks and new requested changes return to the repair scan. A later scan
+reads tracked PRs even when they are no longer in the first page of open
+candidates, and clears retry state only after GitHub reports `MERGED`; a push, a
+hand-off or a dismissed review is never a merged outcome, and a closed unmerged
+PR is recorded separately.
 
 ```mermaid
 stateDiagram-v2

@@ -41,6 +41,20 @@ export interface BabysitterRetryRecord {
   nextAction: string;
   pushedHead: string | null;
   reconciliation: BabysitterReconciliation;
+  /** Bounded diagnostics from substantive no-progress attempts. */
+  evidence?: string[];
+  /** The one deduplicated escalation raised for this incident. */
+  escalation?: { issue: string; at: string };
+}
+
+/** A repair failure whose blocker class is known where it is thrown. */
+export class BabysitterFailure extends Error {
+  readonly blockerClass: BabysitterBlockerClass;
+  constructor(message: string, blockerClass: BabysitterBlockerClass) {
+    super(message);
+    this.name = "BabysitterFailure";
+    this.blockerClass = blockerClass;
+  }
 }
 
 export interface LoadBabysitterRetryStateOptions {
@@ -107,7 +121,18 @@ function parseRecord(value: unknown, path: string): BabysitterRetryRecord {
         Number.isFinite(Date.parse(record.nextEligibleAt)))) &&
     typeof record.nextAction === "string" &&
     (record.pushedHead === null || typeof record.pushedHead === "string") &&
-    reconciliations.includes(record.reconciliation as BabysitterReconciliation);
+    reconciliations.includes(
+      record.reconciliation as BabysitterReconciliation,
+    ) &&
+    (record.evidence === undefined ||
+      (Array.isArray(record.evidence) &&
+        record.evidence.every((line) => typeof line === "string"))) &&
+    (record.escalation === undefined ||
+      (typeof record.escalation === "object" && record.escalation !== null &&
+        typeof (record.escalation as Record<string, unknown>).issue ===
+          "string" &&
+        typeof (record.escalation as Record<string, unknown>).at ===
+          "string"));
   if (!valid) throw new Error(`Invalid babysitter retry state in ${path}`);
   return record as unknown as BabysitterRetryRecord;
 }
@@ -230,6 +255,18 @@ export async function clearBabysitterRetryStates(
   }
 }
 
+/** Classify a thrown failure from its structured cause, then from its text. */
+export function classifyBabysitterFailure(
+  error: unknown,
+): BabysitterBlockerClass {
+  if (error instanceof BabysitterFailure) return error.blockerClass;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === "ENOSPC" || code === "ENOENT") return "capability";
+  return classifyBabysitterBlocker(
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
 export function classifyBabysitterBlocker(
   message: string,
 ): BabysitterBlockerClass {
@@ -250,7 +287,7 @@ export function classifyBabysitterBlocker(
     return "race";
   }
   if (
-    /timeout|timed out|fetch failed|network|dns|econn|rate limit|401|403|bad credentials|500|502|503|504|token expired|sigkill|out of memory|exit code 137/
+    /timeout|timed out|fetch failed|network|dns|econn|rate limit|401|403|bad credentials|500|502|503|504|token expired|token expires|sigkill|sigterm|out of memory|code 137|code 143/
       .test(text)
   ) {
     return "infrastructure";
