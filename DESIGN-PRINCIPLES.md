@@ -134,6 +134,39 @@ resourcing or isolation decision should follow it:
 or I/O stalls the whole fleet silently (the overnight stall), which
 costs far more than any runaway cycle a timeout will reap anyway.
 
+### Subscription quota first, metered API last
+
+Automatic routing spends fixed-price subscription quota first and treats metered
+API spend as paid overflow, with two named exceptions.
+
+- **Subscription quota is use-it-or-lose-it.** Claude, Codex and other
+  fixed-price plans waste any unused quota, so automatic routing spends it
+  first.
+- **DeepSeek is paid overflow.** It is billed per call, which the owner prefers
+  to avoid, so it is used only after every eligible subscription is exhausted.
+- **Reviewer-round overflow.** Today the round runs on the Claude credential
+  pool. Once the whole pool is exhausted, it runs once more on DeepSeek
+  (`worker/deno/lib/review_round.ts`, run from
+  `.claude/skills/review-fleet-prs/scripts/run.sh`).
+- **Fleet PR babysitter overflow.** Accepted by the owner in #4738 but planned,
+  not yet in the code: #4766 will make babysitter repairs choose their
+  subscription first and log DeepSeek as paid overflow.
+- **The worker keeps its auto-mode wait policy.** When every eligible
+  subscription is exhausted or unavailable, the worker waits for the
+  subscription reset (`retryAt` from `selectAutomaticProvider` in
+  `worker/deno/lib/provider_auto_selection.ts`) and never falls through to
+  DeepSeek or any metered or unknown-billing account. The worker gains no
+  overflow from this principle, and neither exception above changes worker
+  routing. See
+  [README — Choose your coding agent](README.md#-choose-your-coding-agent) and
+  [`agent_provider_mode` in the Configuration Reference](docs/CONFIGURATION.md#-configuration-defaults).
+- **Raising the DeepSeek API budget remains an owner action.** Nothing in the
+  fleet raises it automatically.
+
+**Rationale:** fixed-price quota is lost if it goes unused, so it is spent
+first. Metered spend is paid per call, so it is limited to the two named
+exceptions, and neither exception changes how the worker routes.
+
 ### Every slot busy, always — the fleet throughput invariant
 
 **The invariant: every issue slot in the fleet is working an issue, at every
