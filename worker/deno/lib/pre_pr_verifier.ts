@@ -428,6 +428,18 @@ export interface PrePrVerifierDeps {
   releaseBuildArtefacts: (checkoutPath: string) => Promise<ReleasedTargetDirs>;
 }
 
+/** Release the verifier's target directories without measuring the shared root. */
+export function releaseVerifierBuildArtefacts(
+  checkoutPath: string,
+  root?: string,
+): Promise<ReleasedTargetDirs> {
+  return releaseCheckoutTargetDirs(
+    checkoutPath,
+    unmeasuredEphemeralRootDeps,
+    root,
+  );
+}
+
 export const defaultPrePrVerifierDeps: PrePrVerifierDeps = {
   runGit: async (args, cwd) => {
     const r = await runGitCommand(args, { cwd });
@@ -438,8 +450,7 @@ export const defaultPrePrVerifierDeps: PrePrVerifierDeps = {
   loadTrustedCapabilityBundle: loadTrustedCapabilityBundle,
   makeTempDir: () => Deno.makeTempDir({ prefix: "vibe-pre-pr-verifier-" }),
   removeDir: (path) => Deno.remove(path, { recursive: true }),
-  releaseBuildArtefacts: (checkoutPath) =>
-    releaseCheckoutTargetDirs(checkoutPath, unmeasuredEphemeralRootDeps),
+  releaseBuildArtefacts: releaseVerifierBuildArtefacts,
 };
 
 const isDocPath = (p: string) => p.startsWith("docs/") || p.endsWith(".md");

@@ -31,6 +31,8 @@ Version bump: `VERSION` is not touched by this change.
   `unmeasuredEphemeralRootDeps`, which lists names only, because the measured
   lister runs `du` (up to two minutes each) on every directory under the shared
   root, which would be a new heavy step after every pass.
+- `releaseVerifierBuildArtefacts` owns that production wiring and accepts an
+  optional root for isolated tests; the default dependency is that function.
 - `releaseBuildArtefacts` is a required member of `PrePrVerifierDeps`, so every
   deps literal states what it does. `pr_feedback_verifier.ts` spreads
   `defaultPrePrVerifierDeps` and gets the release with no change.
@@ -59,8 +61,9 @@ flowchart TD
     R --> A["after: releaseBuildArtefacts(tmp/checkout)<br/>removes the target dir, logs duration"]
 ```
 
-- `worker/deno/tests/pre_pr_verifier_release_4743_test.ts` — 6 passed on the
-  final head.
+- `worker/deno/tests/pre_pr_verifier_release_4743_test.ts`,
+  `pre_pr_verifier_3395_test.ts` and `capability_security_review_4366_test.ts`
+  — 88 passed together after the review fix.
 - `worker/deno/tests/pre_pr_verifier_3395_test.ts` and
   `worker/deno/tests/heavy_build_gate_3178_test.ts` — passed with the new test
   file (118 passed, 0 failed).
@@ -87,7 +90,10 @@ flowchart TD
 
 ## Test Plan
 
-- Added `worker/deno/tests/pre_pr_verifier_release_4743_test.ts` (6 tests):
+- Added `worker/deno/tests/pre_pr_verifier_release_4743_test.ts` (7 tests):
+  - the default dependency is the production release function, which removes a
+    private-root target and reports zero measured bytes; replacing the lister
+    with the measured lister changes that result.
   - removes the target dir its checkout built into, keeps a sibling — red-check:
     replaced the `releaseBuildArtefacts` call with an empty result → red.
   - release runs when `removeDir` throws — same break → red.
@@ -95,18 +101,20 @@ flowchart TD
     cause text — same break → red.
   - `unmeasuredEphemeralRootDeps` lists names only; missing root rejects with
     NotFound — pins the lister; stayed green under the break above, as expected.
-- No existing test is edited: `ReleasedTargetDirs` and
+- `ReleasedTargetDirs` and
   `releaseCheckoutTargetDirs` keep their shape, so
   `worker/deno/tests/heavy_build_gate_3178_test.ts` is unchanged.
 - Callers of `releaseCheckoutTargetDirs` checked:
   `worker/deno/lib/run_core_production_deps.ts` is unchanged and still gets
   `{ bytes, errors }`.
 - Callers of `PrePrVerifierDeps` checked: `pr_feedback_verifier.ts` spreads
-  `defaultPrePrVerifierDeps`; the existing verifier tests spread it too and now
-  run the default release against the real ephemeral root, which holds no
-  directory keyed to their random checkout.
+  `defaultPrePrVerifierDeps`. The 3395 and 4366 test fixtures use a private
+  root rather than inheriting the host's shared root. The old test wiring that
+  duplicated the release call is obsolete; the required cleanup and sibling
+  preservation remain covered by
+  `worker/deno/tests/pre_pr_verifier_release_4743_test.ts::runPrePrVerifier removes the cargo target dir its checkout built into, and keeps a sibling (Issue #4743)`.
 
-- `./quality.sh` on the final head: every stage passed except `deno tests` — the
+- `./quality.sh` before the review fix: every stage passed except `deno tests` — the
   parallel pass ran 32132 passed, 4 failed. The four failures are in code this
   change does not touch, and I did not fix them: two
   `formatter should commit the Rust fix` assertions, one test that needs a

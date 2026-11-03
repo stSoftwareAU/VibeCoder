@@ -13,7 +13,6 @@ import type {
 import { loadTrustedCapabilityBundle } from "../lib/capability_security_guidance.ts";
 import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
 import {
-  releaseCheckoutTargetDirs,
   type ReleasedTargetDirs,
   unmeasuredEphemeralRootDeps,
 } from "../lib/heavy_build_gate.ts";
@@ -22,6 +21,7 @@ import {
   prePrVerifierBlocked,
   type PrePrVerifierDeps,
   type PrePrVerifierInput,
+  releaseVerifierBuildArtefacts,
   runPrePrVerifier,
 } from "../lib/pre_pr_verifier.ts";
 import type { Logger } from "../types.ts";
@@ -131,6 +131,25 @@ function makeDeps(
   };
 }
 
+Deno.test("default verifier release uses the unmeasured production wiring (Issue #4743)", async () => {
+  assertEquals(
+    defaultPrePrVerifierDeps.releaseBuildArtefacts,
+    releaseVerifierBuildArtefacts,
+  );
+  const root = await Deno.makeTempDir({ prefix: "4743-wiring-" });
+  try {
+    const checkout = `${root}/checkout`;
+    const target = cargoTargetDirForCheckout(checkout, { root });
+    await Deno.mkdir(target, { recursive: true });
+    await Deno.writeTextFile(`${target}/artefact`, "x".repeat(4096));
+    const released = await releaseVerifierBuildArtefacts(checkout, root);
+    assertEquals(released, { bytes: 0, errors: [] });
+    assertEquals(await exists(target), false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("runPrePrVerifier removes the cargo target dir its checkout built into, and keeps a sibling (Issue #4743)", async () => {
   const f = await makeRepo();
   const tmpRoot = await Deno.makeTempDir({ prefix: "4743-root-" });
@@ -158,8 +177,7 @@ Deno.test("runPrePrVerifier removes the cargo target dir its checkout built into
       makeDeps(
         ask,
         tmps,
-        (p) =>
-          releaseCheckoutTargetDirs(p, unmeasuredEphemeralRootDeps, tmpRoot),
+        (p) => releaseVerifierBuildArtefacts(p, tmpRoot),
       ),
     );
 
