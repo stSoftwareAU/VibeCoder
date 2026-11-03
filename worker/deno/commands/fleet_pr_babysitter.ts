@@ -573,13 +573,10 @@ export async function takePrBodyProposal(
   dir: string,
   currentBody: string,
 ): Promise<string | undefined> {
-  let proposal: string;
-  try {
-    proposal = await Deno.readTextFile(`${dir}/${PR_BODY_PROPOSAL}`);
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return undefined;
-    throw error;
-  }
+  const proposal = await readAgentOutput(dir, PR_BODY_PROPOSAL, {
+    maxBytes: PR_BODY_LIMIT * 4,
+  });
+  if (proposal === null) return undefined;
   await Deno.remove(`${dir}/${PR_BODY_PROPOSAL}`);
   const body = proposal.trim();
   if (!body) return undefined;
