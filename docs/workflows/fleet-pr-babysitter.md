@@ -246,7 +246,7 @@ counts as changed, and the sync still edits only when the rebuilt body differs
 from the live one. Nothing is persisted between scans: the recoverable next
 action is the thrown error and the open review. The guard is
 `worker/deno/lib/babysitter_pr_body_guard.ts`, and the close decision uses the
-#3177/#4644 close guard in `worker/deno/lib/missing_criterion_close_guard.ts`.
+close guard (#3177/#4644) in `worker/deno/lib/missing_criterion_close_guard.ts`.
 
 The profile explicitly enables network access so the agent can fetch GitHub
 feedback and check details. Host `[sandbox_workspace_write]` settings do not
