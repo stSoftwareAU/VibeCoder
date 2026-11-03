@@ -189,8 +189,11 @@ Canonical guides — link, do not restate:
     repository the one required approval comes from the fleet reviewer,
     a GitHub App, which can never be a code owner. Setup therefore turns
     "Require review from Code Owners" **off** in every ruleset, on
-    purpose, and a PR that removes or loosens tests is held for the owner
-    instead. **Never** recommend enabling code-owner review, never treat
+    purpose. A PR that removes or loosens tests is judged by the reviewer,
+    which decides whether meaningful regression protection remains: an
+    unjustified removal or loosening is sent back for changes, and only an
+    unclear product contract (or an explicit per-repo override) is held for
+    the owner. **Never** recommend enabling code-owner review, never treat
     it being off as a gap, and never describe CODEOWNERS as the control
     that blocks a malicious workflow edit: CODEOWNERS only routes review
     requests. Recommending it would undo the setting on the next setup

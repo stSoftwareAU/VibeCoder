@@ -63,6 +63,13 @@ useDefault = true
 description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1217, #1387, #1695, #1727)"
 regexTarget = "line"
 regexes = [
+  # Issue #4705: exact synthetic values in historical credential-channel
+  # tests. The PR range retains these lines even if later commits edit them.
+  '''^\s*const SECRET = "synthetic-secret-4705";\s*$''',
+  '''^\s*GH_TOKEN: "planted-4705-gh",\s*$''',
+  '''^\s*const restore = plantEnv\(\{ GH_TOKEN: "planted-4705-gh" \}\);\s*$''',
+  '''^\s*\{ NPM_TOKEN: "synthetic-4705" \},\s*$''',
+  '''^\s*const result = await runAsAgentForReal\(\{ NPM_TOKEN: "synthetic-4705" \}\);\s*$''',
   # Issue #4659: this is an environment variable NAME, not a credential value.
   # Earlier commits declare it in both gate tests before moving it to their
   # shared harness. Exempt only the exact synthetic declaration, including

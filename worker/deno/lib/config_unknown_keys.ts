@@ -38,9 +38,14 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // The GitHub App the review-fleet-prs skill reviews as; read by that
   // skill's app_token.ts, not by the worker.
   "pr_reviewer_app",
-  // Opt-in auto-release list for the review-fleet-prs skill; read by that
-  // skill's auto_release.ts, not by the worker.
+  // No longer read since Issue #4655 (the default test-change policy is an
+  // evidence review); tolerated so an existing config still loads. Read, if at
+  // all, only by the review-fleet-prs skill's test_change_policy.ts.
   "pr_reviewer_auto_release",
+  // Owner override for the review-fleet-prs skill's test-change policy
+  // (Issue #4655): repos where every meaningful test change stays an
+  // owner-comment hold. Read by that skill's test_change_policy.ts, not by the worker.
+  "pr_reviewer_test_hold_repos",
   // How many review rounds the unattended review-fleet-prs runner runs at
   // once (Issue #4395); read by that skill's run.sh, not by the worker.
   "pr_reviewer_parallel",

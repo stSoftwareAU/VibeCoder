@@ -38,6 +38,7 @@ import {
   untrustedAccountOf,
   untrustedQualityCommandEnv,
 } from "../lib/quality_gate_phase.ts";
+import { CREDENTIAL_DELIVERY_FAILURE } from "../lib/credential_channel.ts";
 import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
 
 // =============================================================================
@@ -344,6 +345,30 @@ Deno.test("runQualityGateCheck - returns fixable failure for normal test errors"
   assertEquals(result.action, "failed_fixable");
   assertStringIncludes(result.retryPrompt!, "Expected true, got false");
   assertStringIncludes(result.retryPrompt!, "Please fix all issues");
+});
+
+Deno.test("runQualityGateCheck - a credential delivery fault is infrastructure, not a fixable failure (Issue #4705)", async () => {
+  const deps = createMockDeps({
+    runCommand: async (_cmd, _opts) => ({
+      exitCode: 1,
+      output: `${CREDENTIAL_DELIVERY_FAILURE}: [vibe-credential-channel] x`,
+    }),
+  });
+  const result = await runQualityGateCheck(createParams(), deps);
+  assertEquals(result.action, "failed_credential_delivery");
+  assertEquals(result.retryPrompt, undefined);
+  assertEquals(result.failureMessage !== undefined, true);
+});
+
+Deno.test("runQualityGateCheck - the delivery sentence mid-output is still a fixable failure (Issue #4705)", async () => {
+  const deps = createMockDeps({
+    runCommand: async (_cmd, _opts) => ({
+      exitCode: 1,
+      output: `FAIL: a test\n${CREDENTIAL_DELIVERY_FAILURE}`,
+    }),
+  });
+  const result = await runQualityGateCheck(createParams(), deps);
+  assertEquals(result.action, "failed_fixable");
 });
 
 Deno.test("runQualityGateCheck - returns missing command failure", async () => {

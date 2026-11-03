@@ -217,6 +217,12 @@ mutation verdict, completion phase, deferral and review-fix paths.
   the matching-language completion/review-fix hold tests fail. Restored both
   changes before the final focused run.
 
+## Base merge conflict resolution
+
+- Preserved the mutation-gate documentation and the base branch clarification
+  that mutation children receive declared credentials through their environment,
+  while the quality gate carries them on stdin.
+
 ## CI repair on PR #4744
 
 - Review follow-up: CI package and workspace selections replace touched-crate
