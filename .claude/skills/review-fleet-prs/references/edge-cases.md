@@ -109,6 +109,27 @@ invent a drop. A new-head listing at the cap needs no rule of its own: it
 necessarily has a file the sent-back listing lacks, which gets a fresh review.
 Files present at both heads are compared as before.
 
+A Dependabot re-cut is the one force-push that can keep a sent-back PR
+`awaiting-fix` (`ownDiffUnchanged` in `scripts/gate.ts`). Dependabot never
+merges the base into its PRs; it force-pushes a fresh commit with the same
+change, so the compare status `compare/{since}...{head}` reports `diverged`
+rather than `ahead`. The skip applies only when all of these hold: the gate
+entry's kind is `dependabot`; the compare status is `diverged`; every commit in
+`compare/{base}...{head}` (the complete list) has author login
+`dependabot[bot]`; the logged findings for the exact sent-back head are known,
+number at least one, and each names a file in the sent-back own diff (a
+commit-message, history or metadata finding, or unknown or missing findings,
+gets a fresh review); and the two own diffs match on the strict path for every
+file, with `normalisePatch` equality including context lines, no version
+exception, no file dropped or added, and a sent-back listing under the 300-file
+cap. A re-cut that changes the own diff (for example a newer version), a head
+with any non-Dependabot commit (a fleet fix pushed on top), and any other
+force-push get a fresh review. The exception cannot approve anything:
+`awaiting-fix` applies only while the latest review requests changes, and
+GitHub keeps that request in force across a force-push. The held path
+([Awaiting-owner](#awaiting-owner)) is unaffected: a hold has no findings, so
+the re-cut exception never applies there.
+
 ## Awaiting-owner
 
 A PR held for the owner (rule 4 of [SKILL.md](../SKILL.md)) gets a

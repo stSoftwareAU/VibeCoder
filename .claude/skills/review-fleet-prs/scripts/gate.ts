@@ -399,7 +399,11 @@ function firstLine(message: string): string {
 interface ComparePr {
   status: string;
   total_commits: number;
-  commits: { sha: string; parents: { sha: string }[] }[];
+  commits: {
+    sha: string;
+    parents: { sha: string }[];
+    author?: { login?: string } | null;
+  }[];
 }
 
 interface CompareFile {
@@ -411,6 +415,9 @@ interface CompareFile {
 }
 
 interface CompareFiles {
+  status?: string;
+  total_commits?: number;
+  commits?: { author?: { login?: string } | null }[];
   files?: CompareFile[];
 }
 
@@ -563,6 +570,22 @@ function findingNamesFile(
     );
 }
 
+// Whether every finding, and every earlier finding in its chain, names a file
+// of the sent-back own diff (Issue #4723). Unknown or empty findings, and any
+// finding on a non-file such as a commit message, are not content findings.
+function findingsAreContent(
+  findings: readonly Pick<Finding, "file" | "earlier">[] | undefined,
+  filenames: readonly string[],
+): boolean {
+  return findings !== undefined && findings.length > 0 &&
+    findings.every((f) =>
+      filenames.some((name) =>
+        f.file === name || f.file.endsWith(`/${name}`)
+      ) &&
+      (f.earlier === undefined || findingsAreContent([f.earlier], filenames))
+    );
+}
+
 // Whether commits since `since` leave this PR's own diff (its change against
 // the base) unchanged, apart from a strict version increment in one hunk of a
 // patch while every other hunk matches (Issue #4516), so the review it got at
@@ -582,6 +605,18 @@ function findingNamesFile(
 // GitHub's 300-file cap, since a truncated one could hide a drop. A repeated
 // filename in either listing is not confirmed.
 //
+// A Dependabot re-cut (Issue #4723): Dependabot force-pushes a rebased or
+// re-created PR, so `since` is no longer an ancestor of `head` and the compare
+// is `diverged`. For a Dependabot PR, that diverged compare is accepted when
+// every commit on base...head is by dependabot[bot] and every earlier finding,
+// and each one in its earlier chain, names a file of the sent-back own diff.
+// Every file then takes the strict path: the whole patch must match, with no
+// version exception and no file dropped from the head listing. The ancestry
+// check stays for fleet PRs, since a force-push can itself be the fix, e.g. a
+// squash with an identical tree that fixes a commit-message finding (VibeCoder
+// #3772). This exception cannot approve anything: awaiting-fix applies only
+// while the latest review requests changes.
+//
 // SIMPLE-ON-PURPOSE: the three compare calls below are repeated each pass
 // while the PR awaits its fix or the owner (a held PR too, Issue #4643), fine
 // for a handful of such PRs — upgrade when awaiting-fix or held PRs exceed ~50
@@ -594,18 +629,23 @@ export async function ownDiffUnchanged(
   since: string,
   head: string,
   findings?: readonly Pick<Finding, "file" | "earlier">[],
+  kind?: ReadyPr["kind"],
 ): Promise<boolean> {
   try {
     const sinceToHead: ComparePr = JSON.parse(
       await gh(["api", `repos/${repo}/compare/${since}...${head}`]),
     );
     // "ahead" means `since` is an ancestor of `head`, so no force-push moved
-    // the history out from under it.
-    if (sinceToHead.status !== "ahead") return false;
-    if (sinceToHead.commits.length !== sinceToHead.total_commits) {
-      return false;
+    // the history out from under it. A Dependabot re-cut is the one diverged
+    // compare accepted (Issue #4723), see the doc comment above.
+    const recut = kind === "dependabot" && sinceToHead.status === "diverged";
+    if (sinceToHead.status !== "ahead" && !recut) return false;
+    if (!recut) {
+      if (sinceToHead.commits.length !== sinceToHead.total_commits) {
+        return false;
+      }
+      if (sinceToHead.commits.length === 0) return false;
     }
-    if (sinceToHead.commits.length === 0) return false;
 
     const [baseToSince, baseToHead]: [CompareFiles, CompareFiles] = [
       JSON.parse(await gh(["api", `repos/${repo}/compare/${base}...${since}`])),
@@ -624,13 +664,26 @@ export async function ownDiffUnchanged(
     }
     // A file only the head lists is a new change.
     if (b.some((fb) => !sinceByName.has(fb.filename))) return false;
+    if (recut) {
+      // Every commit on base...head must be Dependabot's, and the list must be
+      // complete: a missing or null author fails (Issue #4723).
+      const commits = baseToHead.commits ?? [];
+      if (
+        commits.length === 0 || baseToHead.total_commits !== commits.length ||
+        !commits.every((c) => c.author?.login === "dependabot[bot]")
+      ) {
+        return false;
+      }
+      if (!findingsAreContent(findings, a.map((f) => f.filename))) return false;
+    }
     for (const fa of a) {
       const fb = headByName.get(fa.filename);
       if (fb === undefined) {
         // Dropped from the own diff (Issue #4542): allowed only when the
         // earlier findings are known, there is at least one, and none names it.
+        // A re-cut allows no drop (Issue #4723).
         if (
-          findings === undefined || findings.length === 0 ||
+          recut || findings === undefined || findings.length === 0 ||
           findingNamesFile(findings, fa.filename)
         ) {
           return false;
@@ -645,7 +698,9 @@ export async function ownDiffUnchanged(
         continue;
       }
       if (fa.status !== fb.status) return false;
-      const named = findingNamesFile(findings, fa.filename);
+      // A re-cut treats every file as named: the whole patch must match, with
+      // no version exception (Issue #4723).
+      const named = recut || findingNamesFile(findings, fa.filename);
       if (
         named
           ? normalisePatch(fa.patch!) === normalisePatch(fb.patch!)
@@ -1179,6 +1234,7 @@ export async function pass(
             record.repo === repo && record.number === pr.number &&
             record.headSha === since && record.outcome === "changes_requested"
           )?.findings,
+          kind,
         ),
       (oid) => wasChangeRequestAt(log, repo, pr.number, oid),
       (oid) => heldPolicyAt(log, repo, pr.number, oid),
