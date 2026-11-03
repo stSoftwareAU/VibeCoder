@@ -12,7 +12,8 @@ flowchart LR
     G[Milestone gate task] --> P["probe as agent: test -r/-x checkout"]
     P -- "HOME 0700: exit 1" --> L["left to CI -> skipped -> refused, wedge report"]
     P -- "HOME 0710 vibework: exit 0" --> R[task runs as agent]
-    E[entrypoint] -- "chgrp vibework HOME; chmod g+x" --> P
+    I["image: HOME vibework 0710"] --> P
+    E["entrypoint: close logs + state roots; fallback grant"] -.-> P
 ```
 
 ## Reproduction
@@ -50,22 +51,36 @@ flowchart LR
   merge fast checks of #4697 included, without moving the clones.
 - Traverse-only (`g+x`, `0710`) keeps HOME unlistable. Credentials under
   `~/.vibe-coder/credentials` keep their own `0700`/`0600` modes (checked on
-  this host with `find`).
+  this host with `find`); the staged `run-config` is a `0700` read-only mount.
+- Opening HOME lets `agent` open any fixed-name child by path, so the worker
+  state children are closed first (PR #4753 review): the host log mount `~/logs`
+  and the volume roots `~/auto-issue-work-agent-state` and
+  `~/auto-issue-work-approval-state` get `chmod go-rwx`, verified with
+  `find -perm /077`. The remaining HOME children (`.cache`, `.semgrep`,
+  dotfiles) are image-layer files holding no worker state.
 
 ### Essential Design Decisions
 
-- The grant lives in `container/entrypoint.sh`, inside the existing `vibework`
-  work-root block, so it applies to an existing volume at the next launch. It
-  touches only a HOME the entrypoint's user owns and fails silently, like its
-  neighbours.
+- The grant is made in the **image** (`container/Containerfile`:
+  `chgrp vibework /home/vibe`, then `chmod 710 /home/vibe`, after the
+  recursive `chown`), because HOME is an image layer and Docker/Podman launch with
+  `--read-only` (`container_launch.ts`, Issue #516), where an entrypoint `chgrp`
+  fails. The entrypoint keeps the same grant as a fallback for an older image on
+  a writable root, only once the state children are closed, and now warns
+  instead of failing silently when the grant is absent or a child stays open.
+- Clone-root hardening from #4737 is brought in as a minimal subset (the sticky
+  bit on each clone root; group and other write stripped from `.git`), so the
+  opened path does not reach trusted git metadata. PR #4754's quarantine of
+  already-substituted clones is not brought in. It is still open; the shared
+  lines are written identically so the two merge.
 - The probe is not loosened and the worker account is never selected on an
   access fault (#4659/#4705 unchanged). The probe only gains a read-only
   top-down walk of `$1`, and a code-1 refusal now reads
   `(probe 1; cannot traverse '<dir>')`. The name is accepted only as one
   absolute path of at most 300 characters with no control characters.
 - The merge with main retains #4705's stdin credential channel: declared
-  credentials do not select the worker account, and access refusals still
-  report the first directory the untrusted account cannot traverse.
+  credentials do not select the worker account, and access refusals still report
+  the first directory the untrusted account cannot traverse.
 - Test fixtures that run the real drop (`withTempDir`, `tree()`) are made with
   `makeAgentReachableTempDir` (`worker/deno/tests/support/gate_child_env.ts`): a
   unique directory under `/tmp`, mode `0777`, so the account can use it even
@@ -85,8 +100,9 @@ flowchart LR
 - #4697 (open) tracks the same access cause for the merge fast checks. The
   entrypoint grant fixes that cause for it too; its own classification and
   budget work is not in this change. #4705 and #4680 are not touched.
-- The grant takes effect at the next container launch; it cannot be proven from
-  inside a running container other than by the scratch-tree experiment above.
+- The image grant takes effect once the new image is built and launched; the
+  state-root closing and the fallback take effect at the next launch. Neither
+  has been observed in a real container launch from this repository's tests.
 
 ## Evidence
 
@@ -94,15 +110,26 @@ Backend and container only. Call sites: `runRepositoryCommand` (the single
 helper `spawnTask` in `milestone_resolution_gate.ts` and `spawnTypeCheck` in
 `milestone_merge_gate.ts` both use). Message consumers (`GateAccountUnavailable`
 in both gates) only forward the message text. Docs: `docs/CONTAINER.md` (new
-bullet beside the argv-placement bullet). Sibling grep for the work-root grant
-(`vibework`, `setgid`) found no other doc describing it.
+bullet beside the argv-placement bullet, rewritten after the PR #4753 review for
+the image grant, the closed state roots and the clone-root hardening). Sibling
+grep for the work-root grant (`vibework`, `setgid`) found no other doc
+describing it.
 
 ## Test Plan
 
-- `worker/deno/tests/work_root_group_grant_test.ts`: two new tests (HOME gains
-  group traverse; the grant is traverse only: no group read/write, nothing for
-  others, owner `0700`). Red checks: `chmod g+x` neutralised → first test red;
-  `chmod g+rx` → second test red.
+- `worker/deno/tests/work_root_group_grant_test.ts` (10 tests at head): six new.
+  HOME gains group traverse; the grant is traverse only; the three worker-state
+  children carry no group or other access; HOME stays shut, with a warning
+  naming the path, when `chmod` cannot close the log mount root (sibling roots
+  closed as the positive control); a clone root is sticky and its `.git` takes
+  no group or other write (#4737); the Containerfile runs `chgrp vibework` and
+  `chmod 710` on HOME after the recursive `chown`. Red checks, each run on the
+  final entrypoint: closing `chmod` removed → the closing, withheld-grant and
+  traverse tests red; grant no longer conditional on closure → withheld-grant
+  test red; `+t` removed alone → clone test red; `.git` strip removed alone →
+  clone test red; `chgrp` line removed from the Containerfile → Containerfile
+  test red. Not covered: a real read-only root or a real `agent` uid; the tests
+  run the script against a writable temp HOME with a stub `chgrp`.
 - `worker/deno/tests/untrusted_gate_spawn_test.ts`: two new tests (a real probe
   run names `outer`, not `outer/inner`, when `outer` is `0000`; the message
   names the directory only for a code-1 verdict and one plausible path). Red
@@ -129,7 +156,7 @@ Results on the final head: `deno task test:unit` for
 `untrusted_gate_spawn_test.ts` (26 passed), `milestone_resolution_gate_test.ts`
 (34 passed, parallel pass) and `milestone_merge_gate_test.ts` (41 passed, serial
 pass); `work_root_group_grant_test.ts` is an integration suite and was run with
-`deno test` (6 passed). `deno fmt`, `deno lint`, `deno check` pass on the
+`deno test` (10 passed). `deno fmt`, `deno lint`, `deno check` pass on the
 touched files.
 
 After the completion-check fixes: the two milestone gate files pass under

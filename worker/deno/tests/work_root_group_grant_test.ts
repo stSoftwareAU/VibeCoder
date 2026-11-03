@@ -15,7 +15,11 @@
  * 0700, so the `agent` account could not reach the clones under
  * `~/auto-issue-work`. The entrypoint gives the `vibework` group traverse-only
  * (g+x) on HOME, and the tests assert that HOME gains exactly that and nothing
- * more.
+ * more. Opening HOME is only safe once its other children are closed, so the
+ * log mount root and the two state volume roots must carry no group or other
+ * access, and HOME stays shut when one of them cannot be closed. The same
+ * entrypoint bounds the clone roots (sticky bit; no group or other write on
+ * `.git`), so the opened path does not reach trusted git metadata.
  *
  * Every case runs the real script with a stub PATH and asserts on the mode
  * bits the volume actually ends up with, so the grant is verified rather
@@ -52,7 +56,7 @@ const OWNER_RWX = 0o700;
  * read the mode bits off the volume afterwards, so the stub records the call
  * and then hands over to the system binary.
  */
-async function stubBin(dir: string): Promise<string> {
+async function stubBin(dir: string, chmodBody?: string): Promise<string> {
   const binDir = `${dir}/bin`;
   await Deno.mkdir(binDir, { recursive: true });
   const write = async (name: string, body: string) => {
@@ -62,7 +66,10 @@ async function stubBin(dir: string): Promise<string> {
   await write("deno", "#!/bin/bash\nexit 0\n");
   await write("getent", "#!/bin/bash\nexit 0\n");
   await write("chgrp", "#!/bin/bash\nexit 0\n");
-  await write("chmod", '#!/bin/bash\nexec /bin/chmod "$@"\n');
+  await write(
+    "chmod",
+    chmodBody ?? '#!/bin/bash\nexec /bin/chmod "$@"\n',
+  );
   return binDir;
 }
 
@@ -73,19 +80,37 @@ async function fakeRepo(dir: string): Promise<void> {
   await Deno.writeTextFile(`${dir}/repo/worker/deno/deno.lock`, "{}\n");
 }
 
+/** The HOME children that hold worker state (Issue #4733 review). */
+const STATE_CHILDREN = [
+  "logs",
+  "auto-issue-work-agent-state",
+  "auto-issue-work-approval-state",
+] as const;
+
 /**
  * Lay out a work root that mixes tenant clones with the worker's own state,
- * run the entrypoint over it, and return the work root path.
+ * run the entrypoint over it, and return the work root path and its stderr.
+ *
+ * HOME starts 0700 with its state children at the 0755 a fresh mount root
+ * has, so every assertion observes a real change. A repository clone carries a
+ * world-writable git directory, so the `.git` hardening is observable too.
  */
-async function runOverWorkRoot(dir: string): Promise<string> {
-  const binDir = await stubBin(dir);
+async function runEntrypoint(
+  dir: string,
+  chmodBody?: string,
+): Promise<{ workRoot: string; stderr: string }> {
+  const binDir = await stubBin(dir, chmodBody);
   await fakeRepo(dir);
   const home = `${dir}/home`;
   const workRoot = `${home}/auto-issue-work`;
-  // The image creates HOME 0700 (Issue #4733); mirror that before the
-  // entrypoint runs so the grant is observed against the real starting mode.
+  // The image's HOME carries the grant (Issue #4733); the fixture starts at
+  // the older 0700 so the entrypoint fallback is the thing under test.
   await Deno.mkdir(home, { recursive: true });
   await Deno.chmod(home, OWNER_RWX);
+  for (const child of STATE_CHILDREN) {
+    await Deno.mkdir(`${home}/${child}`, { recursive: true });
+    await Deno.chmod(`${home}/${child}`, 0o755);
+  }
   for (
     const name of [
       "NEAT-AI",
@@ -96,6 +121,10 @@ async function runOverWorkRoot(dir: string): Promise<string> {
     await Deno.mkdir(`${workRoot}/${name}`, { recursive: true });
     await Deno.chmod(`${workRoot}/${name}`, 0o755);
   }
+  await Deno.mkdir(`${workRoot}/NEAT-AI/.git`, { recursive: true });
+  await Deno.chmod(`${workRoot}/NEAT-AI/.git`, 0o777);
+  await Deno.writeTextFile(`${workRoot}/NEAT-AI/.git/config`, "[core]\n");
+  await Deno.chmod(`${workRoot}/NEAT-AI/.git/config`, 0o666);
   await Deno.mkdir(`${dir}/tmp`, { recursive: true });
 
   const { success, stderr } = await new Deno.Command("/bin/bash", {
@@ -110,8 +139,13 @@ async function runOverWorkRoot(dir: string): Promise<string> {
     stdout: "null",
     stderr: "piped",
   }).output();
-  assert(success, new TextDecoder().decode(stderr));
-  return workRoot;
+  const text = new TextDecoder().decode(stderr);
+  assert(success, text);
+  return { workRoot, stderr: text };
+}
+
+async function runOverWorkRoot(dir: string): Promise<string> {
+  return (await runEntrypoint(dir)).workRoot;
 }
 
 /** The mode bits of one work-root entry after the entrypoint has run. */
@@ -256,4 +290,124 @@ Deno.test("entrypoint - the HOME grant is traversal only (Issue #4733)", async (
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+/** Any group or other access bit. */
+const GROUP_OTHER_ANY = 0o077;
+
+Deno.test("entrypoint - HOME's worker-state children carry no group or other access (Issue #4733)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const workRoot = await runOverWorkRoot(dir);
+    const home = workRoot.replace(/\/auto-issue-work$/, "");
+    for (const child of STATE_CHILDREN) {
+      const mode = (await Deno.stat(`${home}/${child}`)).mode;
+      assert(mode !== null, "no mode bits on this platform");
+      // Opening HOME lets the untrusted account open these by path, which
+      // HOME's 0700 used to prevent.
+      assertEquals(
+        mode & GROUP_OTHER_ANY,
+        0,
+        `${child} must be closed to group and other before HOME is opened`,
+      );
+      assertEquals(
+        mode & OWNER_RWX,
+        OWNER_RWX,
+        `${child} must stay fully usable by its owner`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - HOME stays shut, loudly, when a worker-state child cannot be closed (Issue #4733)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    // A `chmod` that refuses to narrow the log mount root, as a mount that
+    // ignores the call would: every other chmod is the real one.
+    const refuseLogs = `#!/bin/bash
+for arg in "$@"; do
+  if [[ "$arg" == */logs && "$1" == go-rwx ]]; then exit 1; fi
+done
+exec /bin/chmod "$@"
+`;
+    const { workRoot, stderr } = await runEntrypoint(dir, refuseLogs);
+    const home = workRoot.replace(/\/auto-issue-work$/, "");
+    const mode = (await Deno.stat(home)).mode;
+    assert(mode !== null, "no mode bits on this platform");
+    assertEquals(
+      mode & GROUP_TRAVERSE,
+      0,
+      "HOME must not be opened while the log mount root is still readable",
+    );
+    assert(
+      stderr.includes(`${home}/logs is still open`),
+      `the open child must be named on stderr, got: ${stderr}`,
+    );
+    assert(
+      stderr.includes("could not give the untrusted account traverse"),
+      `the withheld grant must be reported, got: ${stderr}`,
+    );
+
+    // Positive control: the sibling roots the stub does not refuse are
+    // closed, so the refusal above comes from the log mount alone.
+    for (const child of STATE_CHILDREN.filter((c) => c !== "logs")) {
+      const childMode = (await Deno.stat(`${home}/${child}`)).mode;
+      assert(childMode !== null, "no mode bits on this platform");
+      assertEquals(childMode & GROUP_OTHER_ANY, 0, child);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - a clone root is sticky and its git metadata takes no group or other write (Issue #4737)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const workRoot = await runOverWorkRoot(dir);
+    const clone = (await Deno.stat(`${workRoot}/NEAT-AI`)).mode;
+    assert(clone !== null, "no mode bits on this platform");
+    // Group write on the clone root alone lets the untrusted account rename
+    // the worker-owned `.git` aside and substitute its own.
+    assertEquals(clone & STICKY, STICKY, "the clone root must be sticky");
+    assertEquals(
+      clone & GROUP_WRITE,
+      GROUP_WRITE,
+      "the quality gate still writes build output into the clone root",
+    );
+    for (const path of ["NEAT-AI/.git", "NEAT-AI/.git/config"]) {
+      const mode = (await Deno.stat(`${workRoot}/${path}`)).mode;
+      assert(mode !== null, "no mode bits on this platform");
+      assertEquals(
+        mode & 0o022,
+        0,
+        `${path} must not be writable by group or other`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("Containerfile - HOME is made group vibework 710 after the recursive chown (Issue #4733)", async () => {
+  const text = await Deno.readTextFile(
+    new URL("../../../container/Containerfile", import.meta.url).pathname,
+  );
+  // The account-creating RUN instruction, comments dropped, continuations
+  // joined, split into its commands.
+  const run = text.split(/\n(?=[A-Z]+ )/).find((block) =>
+    block.startsWith("RUN") && block.includes("useradd")
+  );
+  assert(run, "the account-creating RUN instruction was not found");
+  const commands = run.split("\n").filter((l) => !l.trimStart().startsWith("#"))
+    .join(" ").replace(/\\\s+/g, " ").split(";").map((c) => c.trim());
+  const at = (command: string) => commands.indexOf(command);
+  const chown = at("chown -R 1000:1000 /workspace /home/vibe");
+  const chgrp = at("chgrp vibework /home/vibe");
+  const chmod = at("chmod 710 /home/vibe");
+  assert(chown >= 0, "the recursive chown of HOME is gone");
+  // The recursive chown resets the group to vibe, so the grant must follow it.
+  assert(chgrp > chown, "chgrp vibework HOME must run after the chown");
+  assert(chmod > chgrp, "chmod 710 HOME must run after the chgrp");
 });
