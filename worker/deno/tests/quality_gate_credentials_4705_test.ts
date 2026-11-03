@@ -89,3 +89,51 @@ Deno.test("a declared name that is not a plain identifier is refused, and the ou
     "a credential value must never appear in the output",
   );
 });
+
+/** The wrapper's fault line, as the channel writes it to stderr. */
+const CHANNEL_FAULT_LINE =
+  "[vibe-credential-channel] credential stream ended early";
+
+Deno.test("a channel fault on a declared-credential spawn is reported as a delivery failure, never a pass, and never shows a value (Issue #4705)", async () => {
+  if (!(await canRunAsUntrustedUser())) return;
+
+  const result = await createDefaultDeps({ NPM_TOKEN: SYNTHETIC_NPM })
+    .runCommand(
+      ["/bin/sh", "-c", `echo "${CHANNEL_FAULT_LINE}" >&2; exit 78`],
+      { cwd: "/" },
+    );
+
+  assertEquals(result.exitCode, 1);
+  assertStringIncludes(result.output, CHANNEL_FAULT_LINE);
+  assertStringIncludes(result.output, "could not be delivered");
+  assertEquals(
+    result.output.includes(SYNTHETIC_NPM),
+    false,
+    "a credential value must never appear in the output",
+  );
+});
+
+Deno.test("exit 78 without the channel marker is an ordinary failure, not a channel fault (Issue #4705)", async () => {
+  if (!(await canRunAsUntrustedUser())) return;
+
+  const result = await createDefaultDeps({ NPM_TOKEN: SYNTHETIC_NPM })
+    .runCommand(["/bin/sh", "-c", "echo plain >&2; exit 78"], { cwd: "/" });
+
+  assertEquals(result.exitCode, 78);
+  assertStringIncludes(result.output, "plain");
+  assertEquals(result.output.includes("could not be delivered"), false);
+});
+
+Deno.test("the channel marker on a spawn with no declared credentials is not a channel fault (Issue #4705)", async () => {
+  if (!(await canRunAsUntrustedUser())) return;
+
+  const result = await createDefaultDeps({})
+    .runCommand(
+      ["/bin/sh", "-c", `echo "${CHANNEL_FAULT_LINE}" >&2; exit 78`],
+      { cwd: "/" },
+    );
+
+  assertEquals(result.exitCode, 78);
+  assertStringIncludes(result.output, CHANNEL_FAULT_LINE);
+  assertEquals(result.output.includes("could not be delivered"), false);
+});

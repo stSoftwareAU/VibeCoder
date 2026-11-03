@@ -130,7 +130,7 @@ If the channel itself faults, the wrapper exits 78 and writes a
 recoverable infrastructure, never a pass: the quality gate reports a failed run
 with that line, the merge fast check reports the merge as `unverified`, and the
 milestone gates report `GateAccountUnavailable` and leave the check to CI. A
-credential that cannot be minted is treated the same way.
+credential that cannot be minted is never a pass either: the quality gate fails the phase with the mint error, and the merge conflict gate parks the merge with it.
 
 The same credentials reach the diff-scoped mutation check, which reruns the
 repository's tests; there a failed `mint` makes the check not applicable, with
