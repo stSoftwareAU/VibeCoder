@@ -24,8 +24,7 @@ import {
 import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { prBaseForSync } from "./pr_base_for_sync.ts";
-import { resolvePreFlightSpec } from "./git_push.ts";
+import { prBaseForSync, resolvePreFlightSpec } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   commentCarriesOpenPreprReview,

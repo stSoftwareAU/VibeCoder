@@ -7,8 +7,11 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { commitAndPushPending, mergeBaseBeforePush } from "../lib/git_push.ts";
-import { prBaseForSync } from "../lib/pr_base_for_sync.ts";
+import {
+  commitAndPushPending,
+  mergeBaseBeforePush,
+  prBaseForSync,
+} from "../lib/git_push.ts";
 import {
   type CheckAnnotation,
   processSpellingFailure,

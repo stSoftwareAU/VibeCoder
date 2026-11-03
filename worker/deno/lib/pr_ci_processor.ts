@@ -162,8 +162,11 @@ import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip.ts";
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
-import { prBaseForSync } from "./pr_base_for_sync.ts";
-import { resolvePreFlightSpec, unstageStateAndAssertSafe } from "./git_push.ts";
+import {
+  prBaseForSync,
+  resolvePreFlightSpec,
+  unstageStateAndAssertSafe,
+} from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
