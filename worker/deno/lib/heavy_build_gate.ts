@@ -52,7 +52,9 @@
  *   are the only space the worker can hand back.
  * - **A pass cleans up after itself.** {@link releaseCheckoutTargetDirs}
  *   removes a checkout's target directories when the maintenance pass that
- *   built in it finishes, rather than leaving them to the relaunch.
+ *   built in it finishes, rather than leaving them to the relaunch. The
+ *   pre-PR verifier's disposable checkout is released the same way when the
+ *   verifier finishes (Issue #4743).
  *
  * Pruning counts what it removes as room for the next build. That holds even
  * where the runtime refuses the trim: the blocks a guest deletes stay
@@ -622,6 +624,8 @@ export async function shouldSkipEphemeralCargoBuild(
 /** What {@link releaseCheckoutTargetDirs} removed. */
 export interface ReleasedTargetDirs {
   bytes: number;
+  /** How many directories were removed. */
+  dirs: number;
   errors: string[];
 }
 
@@ -645,25 +649,30 @@ export async function releaseCheckoutTargetDirs(
     // No root yet means nothing was built there. Any other failure — a `du`
     // that timed out among them — left this checkout's dirs in place, and
     // saying so is what keeps a leak on the disk floor visible.
-    if (err instanceof Deno.errors.NotFound) return { bytes: 0, errors: [] };
+    if (err instanceof Deno.errors.NotFound) {
+      return { bytes: 0, dirs: 0, errors: [] };
+    }
     return {
       bytes: 0,
+      dirs: 0,
       errors: [`${root}: ${err instanceof Error ? err.message : String(err)}`],
     };
   }
   let bytes = 0;
+  let removed = 0;
   const errors: string[] = [];
   for (const dir of dirs.filter((d) => belongsTo(d.path, key))) {
     try {
       await deps.removeDir(dir.path);
       bytes += dir.bytes;
+      removed++;
     } catch (err) {
       errors.push(
         `${dir.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
-  return { bytes, errors };
+  return { bytes, dirs: removed, errors };
 }
 
 /** `du` of one cargo target. Long enough for a large tree, still bounded. */
@@ -723,4 +732,27 @@ export const productionEphemeralRootDeps: EphemeralRootDeps = {
   },
   removeDir: (path: string) => Deno.remove(path, { recursive: true }),
   nowMs: () => Date.now(),
+};
+
+/**
+ * The real filesystem, without the measurement (Issue #4743).
+ *
+ * Target directories are listed by name only: no `du` and no stat, so every
+ * entry reports 0 bytes and a last write of 0. That suits a release after one
+ * verifier pass, where {@link productionEphemeralRootDeps} would `du` every
+ * directory under the shared root. Because nothing is measured, the bytes a
+ * release reports are 0. A missing root still rejects with
+ * `Deno.errors.NotFound`.
+ */
+export const unmeasuredEphemeralRootDeps: EphemeralRootDeps = {
+  listTargetDirs: async (root: string) => {
+    const dirs: EphemeralTargetDir[] = [];
+    for await (const entry of Deno.readDir(root)) {
+      if (!entry.isDirectory) continue;
+      dirs.push({ path: `${root}/${entry.name}`, bytes: 0, lastWriteMs: 0 });
+    }
+    return dirs;
+  },
+  removeDir: productionEphemeralRootDeps.removeDir,
+  nowMs: productionEphemeralRootDeps.nowMs,
 };

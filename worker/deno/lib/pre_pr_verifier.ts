@@ -90,6 +90,11 @@ import {
   parseEarlierVerdicts,
 } from "./earlier_findings.ts";
 import {
+  releaseCheckoutTargetDirs,
+  type ReleasedTargetDirs,
+  unmeasuredEphemeralRootDeps,
+} from "./heavy_build_gate.ts";
+import {
   applyCapabilityJudgement,
   CAPABILITY_BUNDLE_PATH,
   capabilityContextFromChange,
@@ -414,6 +419,13 @@ export interface PrePrVerifierDeps {
   loadTrustedCapabilityBundle?: () => Promise<CapabilityLoad>;
   makeTempDir: () => Promise<string>;
   removeDir: (path: string) => Promise<void>;
+  /**
+   * Remove the ephemeral cargo target directories the verifier's checkout
+   * built into, once the verifier has finished (Issue #4743). Required, so
+   * every deps literal states what it does. The default releases them from the
+   * shared ephemeral root.
+   */
+  releaseBuildArtefacts: (checkoutPath: string) => Promise<ReleasedTargetDirs>;
 }
 
 export const defaultPrePrVerifierDeps: PrePrVerifierDeps = {
@@ -426,6 +438,8 @@ export const defaultPrePrVerifierDeps: PrePrVerifierDeps = {
   loadTrustedCapabilityBundle: loadTrustedCapabilityBundle,
   makeTempDir: () => Deno.makeTempDir({ prefix: "vibe-pre-pr-verifier-" }),
   removeDir: (path) => Deno.remove(path, { recursive: true }),
+  releaseBuildArtefacts: (checkoutPath) =>
+    releaseCheckoutTargetDirs(checkoutPath, unmeasuredEphemeralRootDeps),
 };
 
 const isDocPath = (p: string) => p.startsWith("docs/") || p.endsWith(".md");
@@ -716,6 +730,9 @@ export async function runPrePrVerifier(
   } finally {
     // Deletes only the directory this call created; the verifier's scratch
     // edits there are meant to be lost.
+    logger.info("Pre-PR verifier removing its disposable checkout", {
+      path: tmp,
+    });
     try {
       await deps.removeDir(tmp);
     } catch (error) {
@@ -723,6 +740,33 @@ export async function runPrePrVerifier(
         path: tmp,
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+    // The checkout's cargo build wrote its target directory to the ephemeral
+    // root, keyed by the checkout path, and nothing else removes it (Issue
+    // #4743). This runs even when the removal above failed. The checkout is
+    // `${tmp}/checkout`, as in verifyInCheckout.
+    const releaseStarted = Date.now();
+    try {
+      const released = await deps.releaseBuildArtefacts(`${tmp}/checkout`);
+      if (released.errors.length > 0) {
+        logger.warn(
+          "Pre-PR verifier could not release every build artefact of its disposable checkout",
+          { path: tmp, error: released.errors.join("; ") },
+        );
+      }
+      logger.info("Pre-PR verifier released its disposable checkout", {
+        path: tmp,
+        durationMs: Date.now() - releaseStarted,
+        targetDirsRemoved: released.dirs,
+      });
+    } catch (error) {
+      logger.warn(
+        "Pre-PR verifier could not release the build artefacts of its disposable checkout",
+        {
+          path: tmp,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
   }
 

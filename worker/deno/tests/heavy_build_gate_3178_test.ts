@@ -536,7 +536,7 @@ Deno.test("releaseCheckoutTargetDirs - a missing root means nothing was built", 
     removeDir: () => Promise.resolve(),
     nowMs: () => NOW,
   }, ROOT);
-  assertEquals(released, { bytes: 0, errors: [] });
+  assertEquals(released, { bytes: 0, dirs: 0, errors: [] });
 });
 
 // ---------------------------------------------------------------------------
