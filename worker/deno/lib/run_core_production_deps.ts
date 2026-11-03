@@ -694,6 +694,19 @@ export interface ProductionDepsOptions {
   idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
 
   /**
+   * The repositories the host has the disk floor but not the cargo build
+   * headroom for, each with its reason (Issue #4751, building on #4540).
+   *
+   * Production leaves this unset and gets {@link cargoClaimDeferredRepos} from
+   * `heavy_build_gate.ts`. Tests inject a stub, because the real function reads
+   * the host disk. The idle instruments use the claim scan's snapshot.
+   */
+  cargoClaimDeferredReposFn?: (
+    repos: readonly string[],
+    cloneDirFor: (repo: string) => string,
+  ) => Promise<Map<string, string>>;
+
+  /**
    * `gh` runner the hard-kill reporter files through (Issue #4254).
    *
    * Production leaves this unset and gets {@link runGhCommandRaw}. Tests inject
@@ -1157,6 +1170,14 @@ export async function createProductionRunCoreDeps(
   // Issue #4540: cargo repositories whose claim deferral has been logged, so
   // the scan says so when it starts and when it ends, not every cycle.
   const cargoClaimDeferralLogged = new Set<string>();
+  // Issue #4751: the claim scan reads the volatile cargo gate once.
+  const cargoClaimDeferredReadFn = options.cargoClaimDeferredReposFn ??
+    cargoClaimDeferredRepos;
+  const cargoDeferredNow = () =>
+    cargoClaimDeferredReadFn(
+      config.repos ?? [],
+      (repo) => `${workDir}/${repo.split("/")[1]}`,
+    );
   // Issue #1673: dedicated TTL cache for issue-timeline label events.
   const timelineCache = new TimelineCache(
     config.timelineCacheTtlSeconds,
@@ -1861,6 +1882,7 @@ export async function createProductionRunCoreDeps(
    * about a repository the scan was deliberately not shown.
    */
   let lastScanParkedRepos: ReadonlySet<string> = new Set();
+  let lastScanCargoDeferred: ReadonlySet<string> = new Set();
   let lastScanIdleDeferred = false;
 
   /**
@@ -4451,10 +4473,8 @@ export async function createProductionRunCoreDeps(
       // the floor, short of the cargo headroom — is not claimed, so the slot
       // goes to work that can run instead of a claim the in-flight park
       // releases at once. Said once when it starts and once when it ends.
-      const cargoDeferred = await cargoClaimDeferredRepos(
-        config.repos ?? [],
-        (repo) => `${workDir}/${repo.split("/")[1]}`,
-      );
+      const cargoDeferred = await cargoDeferredNow();
+      lastScanCargoDeferred = new Set(cargoDeferred.keys());
       for (const [repo, reason] of cargoDeferred) {
         if (cargoClaimDeferralLogged.has(repo)) continue;
         cargoClaimDeferralLogged.add(repo);
@@ -6125,6 +6145,9 @@ export async function createProductionRunCoreDeps(
         // the same durable sidecar the scan reads, unioned with any open
         // fleet-wide diagnostic (Issue #2955) — the latter cached per owner
         // for 600 s, so this costs at most one `gh search issues` per owner.
+        // Issue #4751: the same holds for the cargo repositories the host
+        // cannot build yet (Issue #4540), which the scan drops before any
+        // collector runs.
         const scanBackedOff = await backedOffRepos(fastFailureOptions);
         const result = await auditClaimableState({
           repos,
@@ -6206,11 +6229,13 @@ export async function createProductionRunCoreDeps(
           // refused only the held stream, so a disagreement about the rest of
           // it is real. Issue #3628: a repo the polling gate parked was also
           // deliberately not scanned — same treatment as a lease.
-          heldRepos: scanBackedOff.size > 0 || lastScanParkedRepos.size > 0
+          heldRepos: scanBackedOff.size > 0 || lastScanCargoDeferred.size > 0 ||
+              lastScanParkedRepos.size > 0
             ? [
               ...new Set([
                 ...scanExcludedRepos,
                 ...scanBackedOff,
+                ...lastScanCargoDeferred,
                 ...lastScanParkedRepos,
               ]),
             ]
@@ -6301,6 +6326,7 @@ export async function createProductionRunCoreDeps(
         // with any open fleet-wide diagnostic (Issue #2955), exactly as the
         // run-local holds above are.
         const scanBackedOff = await backedOffRepos(fastFailureOptions);
+        // Issue #4751: use the scan's snapshot of the volatile cargo gate.
         const perRepo = await Promise.all(
           repos.map(async (repo) => {
             const issues = await fetchAllIssues(repo, issueCache);
@@ -6379,11 +6405,16 @@ export async function createProductionRunCoreDeps(
               // covered by any of them — the scan skipped the whole
               // repository, for a cause that persists across cycles and
               // already carries its own diagnostic issue.
+              //
+              // Issue #4751: and a cargo repo the host cannot build yet is
+              // not either — the scan dropped it before any collector ran,
+              // and it is named apart from a back-off, which needs fixing.
               ...resolveRepoScanState({
                 repo,
                 claimScanCompleted,
                 scanExcludedRepos: heldRepos,
                 scanBackedOffRepos: scanBackedOff,
+                scanCargoDeferredRepos: lastScanCargoDeferred,
                 claimGateReason,
               }),
               nice: getRepoNice(config.repoConfig, repo),

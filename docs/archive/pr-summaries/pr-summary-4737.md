@@ -63,6 +63,20 @@ flowchart LR
 
 ## Test Plan
 
+- Review fix: recheck ownership after setup's reuse probe and refuse a missing
+  root in the lane's ownership check. Previously an absent or replaced path
+  could be treated as reusable; trusted existing clones remain reusable.
+  Coverage: `worker/deno/tests/clone_ownership_test.ts::setup refuses a clone planted after the entry check`
+  and `worker/deno/tests/clone_ownership_test.ts::ensure refuses a clone that disappears after the directory probe`.
+  Both failed before the fix. The mocked existing-clone fixture now supplies
+  its ownership result; real trusted-clone coverage remains in
+  `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - default directory probe reuses a real clone untouched`.
+  Both clone reuse paths were checked for the same missing-root decision. The
+  broken-clone and corruption probes also check ownership before running Git;
+  `worker/deno/tests/clone_ownership_test.ts::clone probes refuse a symlinked root before running git`
+  covers both, while `worker/deno/tests/broken_clone_test.ts` covers trusted
+  clone and recovery behaviour.
+
 - CI repair: inject the Git runner into `setupRepo` so the fresh-clone
   ownership test can assert that no Git call follows a refusal without changing
   process-wide `PATH`. The safety cap test reproduced the CI failure before

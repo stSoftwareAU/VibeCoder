@@ -42,6 +42,13 @@ export async function discardBrokenClone(
     };
   }
 
+  const ownershipError = await checkCloneOwnership(
+    repoPath,
+    undefined,
+    undefined,
+    true,
+  );
+  if (ownershipError) return { ok: false, error: new Error(ownershipError) };
   const probe = await runGitCommand(["rev-parse", "--git-dir"], {
     cwd: repoPath,
     env: { GIT_CEILING_DIRECTORIES: parentDirectory(repoPath) },
@@ -89,6 +96,13 @@ export async function probeCorruptClone(
     return null;
   }
 
+  const ownershipError = await checkCloneOwnership(
+    repoPath,
+    undefined,
+    undefined,
+    true,
+  );
+  if (ownershipError) throw new Error(ownershipError);
   const probe = await runGitCommand(["rev-parse", "--git-dir"], {
     cwd: repoPath,
     env: { GIT_CEILING_DIRECTORIES: parentDirectory(repoPath) },
@@ -124,13 +138,16 @@ export async function checkCloneOwnership(
     return uid;
   },
   lstat: (path: string) => Promise<Deno.FileInfo> = Deno.lstat,
+  requireRoot = false,
 ): Promise<string | null> {
   try {
     let root: Deno.FileInfo;
     try {
       root = await lstat(path);
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) return null;
+      if (error instanceof Deno.errors.NotFound) {
+        return requireRoot ? `Refusing missing clone path ${path}` : null;
+      }
       throw error;
     }
     const uid = await uidProbe();

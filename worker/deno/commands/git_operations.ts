@@ -667,7 +667,12 @@ export async function setupRepo(
   // reuse logic below. Move it aside and re-clone, at most once per repo per
   // 24 h per host (Issue #2957) — a healthy clone is never touched.
   let recoveryAside: string | null = null;
-  const preProbe = await probeCorruptClone(repoPath);
+  let preProbe: string | null;
+  try {
+    preProbe = await probeCorruptClone(repoPath);
+  } catch (error) {
+    return { success: false, message: String(error) };
+  }
   if (preProbe !== null) {
     const recovered = await recoverCorruptClone(
       repo,
@@ -685,6 +690,10 @@ export async function setupRepo(
   try {
     const stat = await Deno.stat(repoPath);
     if (stat.isDirectory) {
+      const reuseError = ownershipCheck === checkCloneOwnership
+        ? await checkCloneOwnership(repoPath, undefined, undefined, true)
+        : await ownershipCheck(repoPath);
+      if (reuseError) return { success: false, message: reuseError };
       // Update existing repo
       const defaultBranchResult = await git(
         ["symbolic-ref", "refs/remotes/origin/HEAD"],
