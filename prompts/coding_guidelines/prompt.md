@@ -1520,8 +1520,11 @@ not a reason. An outcome the linked issue asks a test for, in its acceptance
 criteria or Definition of done, cannot be `exempt (untestable)`. Name the
 search so a reviewer can check it (Issue #3428). The diff-scoped mutation
 check (Issue #3393, `docs/mutation-check.md`) reports any added line whose
-mutation the tests do not catch; it does not stop the pull request. A fix to
-an existing PR re-checks every branch its own commits add, not only those a
+mutation the tests do not catch; it does not stop the pull request, unless the
+repository's CI runs a blocking mutation job (Issue #4617). There a survivor
+that remains after the recovery turn holds the pull request as a draft that is
+not auto-merged; on the deferral path it is parked with `draft: true` and opened as a draft by the drain
+(`docs/mutation-check.md`). A fix to an existing PR re-checks every branch its own commits add, not only those a
 review finding named.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a

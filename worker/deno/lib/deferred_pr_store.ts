@@ -52,6 +52,12 @@ export interface DeferredPrRecord {
    * it raises, so deferring the create does not lose it.
    */
   advisoryComment?: string;
+  /**
+   * Raise the PR as a draft (Issue #4617): the run held it because the
+   * repository's CI blocks on mutation survivors the run left unresolved. The
+   * drain must not open it ready for review.
+   */
+  draft?: boolean;
 }
 
 /** `owner/repo` with the character set GitHub actually allows. */
@@ -109,7 +115,9 @@ export function isDeferredPrRecord(value: unknown): value is DeferredPrRecord {
     typeof r.deferredAtEpoch === "number" &&
     typeof r.attempts === "number" &&
     typeof r.lastError === "string" &&
-    (r.advisoryComment === undefined || typeof r.advisoryComment === "string")
+    (r.advisoryComment === undefined ||
+      typeof r.advisoryComment === "string") &&
+    (r.draft === undefined || typeof r.draft === "boolean")
   );
 }
 
