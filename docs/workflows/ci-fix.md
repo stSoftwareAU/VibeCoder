@@ -116,7 +116,11 @@ flowchart TD
    (`./quality.sh` or the repository's custom quality command). If quality
    fails, Claude is retried once.
 8. **Commit and push** — Changes are committed with the message
-   `Fix CI failure ($check_name) for PR #$pr_number` and pushed.
+   `Fix CI failure ($check_name) for PR #$pr_number` and pushed. When the
+   branch is behind its base, the base is merged in just before that push, so
+   the fix and the branch update go out together and CI runs once; a conflict
+   leaves the fix to be pushed as before (see
+   [One push per fix](../INTERNALS.md#-one-push-per-fix-the-base-rides-along-git_pushts)).
 9. **Re-sync the description** — After that push is verified on the PR's own
    head, the worker rebuilds the PR description from
    `docs/archive/pr-summaries/pr-summary-<N>.md` when the summary at the head

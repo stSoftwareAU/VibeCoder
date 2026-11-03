@@ -54,6 +54,8 @@ other sentence became false.
 
 The merge conflict in the gate test imports retains both the Dependabot
 finding type and the base branch's hold-policy marker for their tests.
+The `ownDiffUnchanged` comment also states the non-empty findings requirement
+and how structured earlier-review gaps are evaluated.
 
 ## Test Plan
 

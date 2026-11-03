@@ -620,8 +620,10 @@ function findingsAreContent(
 // A Dependabot re-cut (Issue #4723): Dependabot force-pushes a rebased or
 // re-created PR, so `since` is no longer an ancestor of `head` and the compare
 // is `diverged`. For a Dependabot PR, that diverged compare is accepted when
-// every commit on base...head is by dependabot[bot] and every earlier finding,
-// and each one in its earlier chain, names a file of the sent-back own diff.
+// every commit on base...head is by dependabot[bot] and the findings for the
+// exact sent-back head are known and non-empty. Each original finding must
+// name a file of the sent-back own diff, including those carried by structured
+// earlier-review gaps. A text-only gap or a non-file finding gets a fresh review.
 // Every file then takes the strict path: the whole patch must match, with no
 // version exception and no file dropped from the head listing. The ancestry
 // check stays for fleet PRs, since a force-push can itself be the fix, e.g. a

@@ -110,7 +110,8 @@ import {
   postBranchConflictComment,
   runDeclinedRebasePass,
 } from "../branch_conflict_pass.ts";
-import { syncBranchesForPrRaise } from "../pr_raise_sync.ts";
+import { mergeOntoBase, syncBranchesForPrRaise } from "../pr_raise_sync.ts";
+import { ensureBranchCurrent } from "../branch_currency.ts";
 import { isPrimaryRateLimitMessage } from "../primary_quota_latch.ts";
 import {
   autoMergeOutcomeNeedsComment,
@@ -3575,6 +3576,31 @@ async function completionBody(
   });
   if (freshness.kind === "stale") {
     return await abortStaleClaim(freshness, ctx, state, deps);
+  }
+
+  // Owner rule 2026-11-03: the base may have moved while the gates above ran.
+  // A PR opened behind its base runs CI once on the stale head and again when
+  // the branch is updated. No PR exists yet, so this extra push starts no CI.
+  // Never fatal: a decline or an unreadable comparison raises the PR as before.
+  const lastCurrency = await ensureBranchCurrent({
+    branch: state.branchName,
+    baseBranch,
+    runGit: deps.git.runGitCommand,
+    cwd: state.repoPath,
+    rebase: mergeOntoBase,
+    log: (m: string) => logger.info(m),
+  });
+  if (lastCurrency.kind === "updated") {
+    const lastPush = await deps.git.pushUnpushedCommits(state.branchName, {
+      cwd: state.repoPath,
+    });
+    if (!lastPush.ok) {
+      logger.warn(
+        `'${state.branchName}' caught up with '${baseBranch}' locally but the ` +
+          `push failed, so the PR is raised on the earlier head: ` +
+          lastPush.error.message,
+      );
+    }
   }
 
   // Opening a PR for this branch even though something else references the
