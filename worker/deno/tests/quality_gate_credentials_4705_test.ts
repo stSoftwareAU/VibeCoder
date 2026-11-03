@@ -17,6 +17,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { createDefaultDeps } from "../lib/quality_gate_phase.ts";
+import { isCredentialDeliveryFailure } from "../lib/credential_channel.ts";
 import { canRunAsUntrustedUser } from "../lib/untrusted_command_env.ts";
 
 /** A credential value no real secret can equal. */
@@ -65,6 +66,7 @@ Deno.test("a declared name that is not a plain identifier is refused, and the ou
 
   assertEquals(result.exitCode, 1);
   assertStringIncludes(result.output, "BAD NAME");
+  assertEquals(isCredentialDeliveryFailure(result.output), true);
   assertEquals(
     result.output.includes(SYNTHETIC_NPM),
     false,
@@ -88,6 +90,7 @@ Deno.test("a channel fault on a declared-credential spawn is reported as a deliv
   assertEquals(result.exitCode, 1);
   assertStringIncludes(result.output, CHANNEL_FAULT_LINE);
   assertStringIncludes(result.output, "could not be delivered");
+  assertEquals(isCredentialDeliveryFailure(result.output), true);
   assertEquals(
     result.output.includes(SYNTHETIC_NPM),
     false,

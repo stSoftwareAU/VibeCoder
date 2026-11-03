@@ -132,7 +132,7 @@ Deno.test("credential channel 4705 - the stdin payload is a count then NAME=base
 });
 
 Deno.test("credential channel 4705 - an invalid name is refused and the error holds no value", () => {
-  for (const name of ["A B", "1X", "X;rm"]) {
+  for (const name of ["A B", "1X", "X;rm", "IFS", "_vibe_cc_count"]) {
     const message = thrownMessage(() =>
       carryCredentialsThroughSudo([...SUDO_PREFIX, "/bin/true"], {
         [name]: SECRET,
@@ -166,6 +166,15 @@ Deno.test("credential channel 4705 - declared values arrive byte-exact and undec
     SPECIAL_4705: "$HOME `x` \"q\" 'q' =",
     ENDS_X_4705: "box",
     EMPTY_4705: "",
+    // Short names the wrapper once used for itself: they must not truncate
+    // the stream or lose the entries after them.
+    count: "1",
+    i: "9",
+    line: "l",
+    name: "n",
+    enc: "e",
+    value: "v",
+    LAST_4705: "last",
   };
   const names = Object.keys(declared);
   // One base64 line per name, then a sentinel, so trimming the output cannot

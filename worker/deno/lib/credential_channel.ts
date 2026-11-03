@@ -25,6 +25,19 @@ export const CREDENTIAL_CHANNEL_MARKER = "[vibe-credential-channel]";
 /** The exit code the wrapper uses for every fault it reports. */
 export const CREDENTIAL_CHANNEL_FAULT_CODE = 78;
 
+/**
+ * The sentence that opens every report of a credential delivery fault. It is
+ * how the quality gate tells infrastructure from a code fault by output alone.
+ */
+export const CREDENTIAL_DELIVERY_FAILURE =
+  "the declared quality_credentials could not be delivered to the isolated " +
+  "account (Issue #4705)";
+
+/** True when `output` reports a credential delivery fault. */
+export function isCredentialDeliveryFailure(output: string): boolean {
+  return output.startsWith(CREDENTIAL_DELIVERY_FAILURE);
+}
+
 /** A command ready to spawn, with the stdin text it needs (if any). */
 export interface ChannelledCommand {
   argv: string[];
@@ -35,24 +48,31 @@ export interface ChannelledCommand {
 const CREDENTIAL_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
+ * Names the wrapper keeps for itself: its own variables all start with
+ * `_vibe_cc_`, and `IFS` would change how it reads the stream. A declared
+ * credential with one of these would silently corrupt the delivery.
+ */
+const RESERVED_NAME = /^(_vibe_cc_|IFS$)/;
+
+/**
  * The POSIX `sh` program that reads the credential stream, exports each
  * entry, and execs the real command. It uses no `eval`. The first line's
  * marker is the constant above, so a fault line can be recognised.
  */
 const WRAPPER_SCRIPT = [
   `fail() { printf '%s %s\\n' "${CREDENTIAL_CHANNEL_MARKER}" "$1" >&2; exit 78; }`,
-  'IFS= read -r count || fail "no credential header on stdin"',
-  "case $count in ''|*[!0-9]*) fail \"malformed credential header\";; esac",
-  "i=0",
-  'while [ "$i" -lt "$count" ]; do',
-  '  IFS= read -r line || fail "credential stream ended early"',
-  "  name=${line%%=*}",
-  "  enc=${line#*=}",
-  "  case $name in ''|[0-9]*|*[!A-Za-z0-9_]*) fail \"malformed credential name\";; esac",
-  '  value=$(printf %s "$enc" | base64 -d 2>/dev/null && printf x) || fail "undecodable credential $name"',
-  "  value=${value%x}",
-  '  export "$name=$value"',
-  "  i=$((i + 1))",
+  'IFS= read -r _vibe_cc_count || fail "no credential header on stdin"',
+  "case $_vibe_cc_count in ''|*[!0-9]*) fail \"malformed credential header\";; esac",
+  "_vibe_cc_i=0",
+  'while [ "$_vibe_cc_i" -lt "$_vibe_cc_count" ]; do',
+  '  IFS= read -r _vibe_cc_line || fail "credential stream ended early"',
+  "  _vibe_cc_name=${_vibe_cc_line%%=*}",
+  "  _vibe_cc_enc=${_vibe_cc_line#*=}",
+  "  case $_vibe_cc_name in ''|[0-9]*|*[!A-Za-z0-9_]*) fail \"malformed credential name\";; esac",
+  '  _vibe_cc_value=$(printf %s "$_vibe_cc_enc" | base64 -d 2>/dev/null && printf x) || fail "undecodable credential $_vibe_cc_name"',
+  "  _vibe_cc_value=${_vibe_cc_value%x}",
+  '  export "$_vibe_cc_name=$_vibe_cc_value"',
+  "  _vibe_cc_i=$((_vibe_cc_i + 1))",
   "done",
   'exec "$@" </dev/null',
 ].join("\n");
@@ -98,10 +118,10 @@ export function carryCredentialsThroughSudo(
     return { argv: [...spawnable] };
   }
   for (const [name, value] of entries) {
-    if (!CREDENTIAL_NAME.test(name)) {
+    if (!CREDENTIAL_NAME.test(name) || RESERVED_NAME.test(name)) {
       throw new Error(
         `refusing to carry credential ${name} through sudo: a name must be a ` +
-          `plain identifier (Issue #4705)`,
+          `plain identifier the wrapper does not reserve (Issue #4705)`,
       );
     }
     if (value.includes("\0")) {

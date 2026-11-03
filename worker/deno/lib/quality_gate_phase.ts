@@ -40,7 +40,10 @@ import { fenceQualityOutput } from "./untrusted_quality_output.ts";
 import { resolveRepoCredentials } from "./repo_credentials.ts";
 import {
   carryCredentialsThroughSudo,
+  type ChannelledCommand,
+  CREDENTIAL_DELIVERY_FAILURE,
   credentialChannelFault,
+  isCredentialDeliveryFailure,
 } from "./credential_channel.ts";
 import {
   commandOutputWithTimeout,
@@ -242,6 +245,8 @@ export interface QualityGateRunResult {
    * - "failed_fixable"        — quality failed, Claude should attempt a fix
    * - "failed_missing_command" — failed due to missing command, not fixable by Claude
    * - "failed_docker_infra"   — Docker infrastructure issue (Docker not installed, etc.)
+   * - "failed_credential_delivery" — declared credentials could not reach the
+   *                             isolated account; not fixable by Claude
    * - "failed"                — final failure (after retry or non-retryable)
    */
   action:
@@ -251,6 +256,7 @@ export interface QualityGateRunResult {
     | "failed_fixable"
     | "failed_missing_command"
     | "failed_docker_infra"
+    | "failed_credential_delivery"
     | "failed";
   /** Raw quality check output (stdout+stderr). */
   qualityOutput: string;
@@ -367,14 +373,24 @@ async function spawnRepositoryCommand(
     // `sudo`'s env_reset would also strip the declared credentials, so on a
     // dropped spawn they ride stdin instead (Issue #4705). Nothing secret is
     // in argv.
-    const channelled = dropToUntrusted
-      ? carryCredentialsThroughSudo(placed, repoCredentialEnv)
-      : { argv: placed };
-    if (options?.stdin === "inherit" && channelled.stdin !== undefined) {
-      throw new Error(
-        "refusing stdin inherit with declared quality_credentials: the " +
-          "credential channel gives the command /dev/null (Issue #4705)",
-      );
+    let channelled: ChannelledCommand;
+    try {
+      channelled = dropToUntrusted
+        ? carryCredentialsThroughSudo(placed, repoCredentialEnv)
+        : { argv: placed };
+      if (options?.stdin === "inherit" && channelled.stdin !== undefined) {
+        throw new Error(
+          "refusing stdin inherit with declared quality_credentials: the " +
+            "credential channel gives the command /dev/null",
+        );
+      }
+    } catch (error) {
+      // A configuration fault, not a code fault: the run is not retried.
+      const reason = error instanceof Error ? error.message : String(error);
+      return {
+        exitCode: 1,
+        output: `${CREDENTIAL_DELIVERY_FAILURE}: ${reason}`,
+      };
     }
     const spawnable = channelled.argv;
     const result = await commandOutputWithTimeout(spawnable[0] ?? "", {
@@ -407,8 +423,7 @@ async function spawnRepositoryCommand(
     if (fault !== undefined) {
       return {
         exitCode: 1,
-        output: `${fault} — the declared quality_credentials could not be ` +
-          `delivered to the isolated account (Issue #4705)`,
+        output: `${CREDENTIAL_DELIVERY_FAILURE}: ${fault}`,
       };
     }
     return { exitCode: result.code, output: stdout + stderr };
@@ -834,6 +849,21 @@ export async function runQualityGateCheck(
       action: "failed_docker_infra",
       qualityOutput,
       dockerImage,
+      failureMessage: deps.formatFailureMsg(
+        qualityOutput,
+        params.baselineQualityPassed,
+        params.baselineQualityOutput,
+      ),
+    };
+  }
+
+  // A credential that could not be delivered is infrastructure: a repair round
+  // cannot fix it, and it is never a pass (Issue #4705).
+  if (exitCode !== 0 && isCredentialDeliveryFailure(qualityOutput)) {
+    return {
+      action: "failed_credential_delivery",
+      qualityOutput,
+      dockerImage: dockerImage || undefined,
       failureMessage: deps.formatFailureMsg(
         qualityOutput,
         params.baselineQualityPassed,

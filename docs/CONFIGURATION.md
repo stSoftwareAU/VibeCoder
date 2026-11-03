@@ -120,15 +120,22 @@ Where the credentials go depends on the account the command runs as:
   `/dev/null`. Only this repository's declared credentials are carried; the
   worker's own GitHub and App credentials are not. The allowlist (Issue #572)
   and `clearEnv` are unchanged, and the `sudo` rule is not widened.
-- **The worker account** (`vibe`) runs a command only where the image has no
-  `agent` account at all, with the same restricted environment, and the
-  declared values are placed in that environment. A declared credential never
-  changes the account a command runs as.
+- **The worker account** (`vibe`) runs the gate commands above only where the
+  image has no `agent` account at all, with the same restricted environment,
+  and the declared values are placed in that environment. It also runs the
+  repository formatters, the mutation check and the coverage carry-over, which
+  never drop to `agent` and keep the environment route. A declared credential
+  never changes the account a gate command runs as.
+
+A declared name must be a plain identifier. `IFS` and names starting with
+`_vibe_cc_` are the wrapper's own and are refused, so a declaration can never
+silently shorten what is delivered.
 
 If the channel itself faults, the wrapper exits 78 and writes a
 `[vibe-credential-channel]` line to stderr (a short or malformed stream). That is
 recoverable infrastructure, never a pass: the quality gate reports a failed run
-with that line, the merge fast check reports the merge as `unverified`, and the
+(`failed_credential_delivery`, never sent to the agent as a code fault) with
+that line, the merge fast check reports the merge as `unverified`, and the
 milestone gates report `GateAccountUnavailable` and leave the check to CI. A
 credential that cannot be minted is never a pass either: the quality gate fails the phase with the mint error, and the merge conflict gate parks the merge with it.
 
