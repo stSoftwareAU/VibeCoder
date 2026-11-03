@@ -287,8 +287,8 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   a second `Closes`; a marker-less `issue-N-...` branch is governed (with and
   without a proposal, with a no-issue branch as the positive control); and a
   marker-less branch with a fully met committed summary keeps the close. Finish
-  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 113 tests at head; one
-  unrelated environment-dependent test,
+  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 113 tests at head; 112
+  pass and one unrelated environment-dependent test,
   `babysitter default heartbeat resolves its checkout revision`, fails in this
   checkout): a pushed repair whose proposal only mentions a fully met issue
   still closes it; nothing pushed over a governing summary publishes nothing,
@@ -386,7 +386,8 @@ listed the post-push sync callers were updated. Issues cited as provenance:
 - Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working
   tree, as noted in #4712.
 - The pending-publication record is written only for a repair that addresses
-  reviews, and cleared only when its reviews are dismissed. If the review is
+  reviews, and cleared when its reviews are dismissed, or when the proposal is refused
+  over a governing summary (the reviews then stay open). If the review is
   withdrawn first, the small file stays until the same head and review recur.
   The next scan finds it only while it still sees that requested review at that
   head (a head with failing CI is repaired for the CI first, with no reviews).

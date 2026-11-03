@@ -1134,7 +1134,9 @@ async function publishBabysitterPrBody(options: {
  * report the pushed head, since it lags behind the push. The body sync runs
  * on the committed summary at that head. Inside the sync, the guarded
  * description is published and checked, and only then are reviews dismissed.
- * Every failure throws, so reviews stay open and the next scan retries.
+ * Every failure throws, so reviews stay open. The next scan retries, except
+ * when the proposal is refused over a governing summary: that record is
+ * cleared, since a retry would refuse it again.
  */
 export async function finishBabysitterRepair(
   repo: string,

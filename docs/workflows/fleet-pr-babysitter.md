@@ -197,9 +197,10 @@ unchanged head, the description steps run in order:
    requires its head to equal the pushed head. The proposal is published on top
    of the sync, except on a repair that pushed nothing where a summary committed
    at the head governs the body: the sync already rebuilt the body from that
-   summary, so the proposal is not published and a warning says so. A
-   description change on such a PR belongs in the committed summary, which a
-   repair that pushes publishes. With no proposal, the body is edited only to
+   summary, so the proposal is not published. The finish throws
+   `ProposalOverGoverningSummaryError` and the reviews stay open. A description
+   change on such a PR belongs in the committed summary, which a repair that
+   pushes publishes. With no proposal, the body is edited only to
    withhold a close that GitHub still honours.
 3. It strips every complete hidden `<!-- vibe-… -->` marker from the proposal in
    one linear scan. A marker quoted in a Markdown code span in the live body is
@@ -247,20 +248,26 @@ appended references and markers, so a proposal under the limit can still be
 refused. A refusal leaves the review open.
 
 Any failure leaves the review open, and the next scan retries on the pushed
-head. The per-host attempt marker (below) would stop the agent from running
+head, except a proposal refused over a governing summary (step 2), which a
+retry would refuse again: its pending record is cleared and the review stays
+open until the committed summary changes. The per-host attempt marker (below) would stop the agent from running
 again at that head and review, so a repair that addresses reviews writes a
 pending-publication record, `<attempt key>--publication.json` in the same state
 directory, before the sync. It holds the proposal and whether the repair pushed
 the head. The next scan finds the record before it merges the base or starts the
 agent, and runs the publication again from a clean clone at the PR head; the
-record is removed once the reviews are dismissed. It is found only while the
+record is removed once the reviews are dismissed, or when the proposal is
+refused over a governing summary. It is found only while the
 scan still sees the same requested review at that head. The retry is idempotent:
 a body that is already current is not edited again. A legacy body that has the
 worker marker but no summary digest is synchronised through the before-push
 diff. On a no-change retry there is no earlier head, so the diff runs against
 git's empty tree: the committed summary counts as changed, and the sync still
 edits only when the rebuilt body differs from the live one. The recoverable next
-action is the thrown error, the open review and the pending-publication record.
+action is the thrown error, the open review and the pending-publication record;
+when the proposal was refused over a governing summary the record is cleared, so
+it is the error and the open review, and the fix is to change the committed
+summary and push.
 The guard is `worker/deno/lib/babysitter_pr_body_guard.ts`, and the close
 decision uses the close guard (#3177/#4644) in
 `worker/deno/lib/missing_criterion_close_guard.ts`.
