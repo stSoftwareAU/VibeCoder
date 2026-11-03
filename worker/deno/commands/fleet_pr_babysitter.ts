@@ -1421,7 +1421,11 @@ export async function finishBabysitterRepair(
       login,
       expectedHead,
       reviews,
-      deps.syncBodyDeps,
+      deps.syncBodyDeps ?? {
+        runGhCommand: gh,
+        runGitCommand: deps.runGit ?? runGitCommand,
+        logger: createLogger(),
+      },
       deps.syncBodyFn,
       async () => {
         await publishBabysitterPrBody({

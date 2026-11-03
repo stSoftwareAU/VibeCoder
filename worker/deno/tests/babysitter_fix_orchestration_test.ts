@@ -50,6 +50,8 @@ function basePr(over: Record<string, unknown> = {}) {
     state: "OPEN",
     number: 1,
     title: "fix",
+    body: "Repair fixture",
+    closingIssuesReferences: [],
     author: { login: "fleet" },
     headRefName: "feature",
     headRefOid: HEAD,
@@ -102,6 +104,17 @@ function harness(
       );
     }
     if (args[0] === "pr" && args[1] === "view") {
+      if (args[args.indexOf("--json") + 1]?.includes("body")) {
+        for (const failure of state.runFailures) {
+          if (`gh ${joined}`.includes(failure.match)) {
+            return Promise.reject(new Error(failure.message));
+          }
+        }
+        return Promise.resolve(JSON.stringify({
+          ...state.pr,
+          headRefOid: state.committed ? PUSHED : state.pr.headRefOid,
+        }));
+      }
       return Promise.resolve(JSON.stringify(state.pr));
     }
     if (args[0] === "issue" && args[1] === "comment") {

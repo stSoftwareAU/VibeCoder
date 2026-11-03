@@ -18,6 +18,12 @@ a committed summary governs the body, so it keeps the reviews open and names the
 next action (change the committed summary); and a failed publication is resumed
 by a later eligible scan without starting the agent again.
 
+CI repair (PR #4779): summary synchronisation now uses the GitHub runner
+supplied to repair completion, just as publication does. The orchestration
+fixture supplies the required body and closing-reference fields, reports the
+current repair's pushed head, and injects GitHub failures through that runner.
+This prevents the unit suite from calling the real GitHub CLI.
+
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
 
@@ -254,6 +260,25 @@ listed the post-push sync callers were updated. Issues cited as provenance:
 
 ## Test Plan
 
+- CI regression coverage:
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::transient failure, cooldown, retry, checked repair, CI, review and merge observed`
+  and
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::provider and gh network failures do not spend repair attempts`.
+  All existing assertions remain. The obsolete fixture omitted publication
+  fields and assumed its command runner handled every GitHub call; the fixture
+  now models the required PR view and the supplied GitHub runner. Retry, push,
+  escalation and infrastructure-failure contracts remain covered by these
+  tests and the rest of the 35-test suite. Before the fix, 14 tests failed;
+  after the fix all 35 pass. The 115 tests in
+  `fleet_pr_babysitter_test.ts` also pass with a canonical macOS temp path,
+  and `deno task check:manifests` passes (847 tests).
+  The unchanged workflow command cannot start on this macOS host because
+  `setsid` is unavailable. The local quality gate passes type checking, lint,
+  formatting, Markdown, Mermaid and completeness checks, but its parallel test
+  pass hits a Deno 2.9.5 runtime panic: `pledge test permissions called before
+  restoring previous pledge` (the repository pins 2.9.8). The latest merged
+  base PR #4778 passed all four CI unit shards. Semgrep and Checkov are not
+  installed here and the gate reports them skipped. No twinned rule was changed.
 - `worker/deno/tests/babysitter_pr_body_guard_test.ts` (new): the #4716 cases
   for `partial` and `missing`, an omitted association, a fully met close kept,
   other issues' references kept, negated sentences, colon and URL closing forms,
