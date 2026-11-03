@@ -14,6 +14,10 @@ so the key guard calls the existing path helpers instead of copying them. A
 lib-sweep ledger entry, `docs/audits/lib-sweep-coverage/top-up-4767.json`,
 claims the new module, as `lib_sweep_coverage_test.ts` requires. Closes #4767.
 
+The ledger records the default-branch merge base so its ancestry survives a
+squash merge. The redaction test assembles its synthetic token at run time;
+Gitleaks excludes only its exact historical fixture declaration from range scans.
+
 Version bump: `VERSION` is not touched by this change.
 
 ## Spec
