@@ -88,4 +88,4 @@ bullet beside the argv-placement bullet). Sibling grep for the work-root grant
   allowlist failure were reproduced on the base commit (a detached worktree of
   `HEAD` before these edits): the real drop hit a `0700` temp directory.
 
-RESULTS_FILLED_BELOW
+Gate result: pending, recorded below once `./quality.sh` has finished.
