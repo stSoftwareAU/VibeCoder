@@ -110,3 +110,15 @@ the repository's own task sees only the allowlisted environment" (untrusted
 parallel pass failed. A first gate run also failed `lib_sweep_coverage_test.ts`
 for the new module; `docs/audits/lib-sweep-coverage/top-up-4731.json` fixes
 that.
+
+## Mutation and coverage carry-over checks
+
+Both checks reported "failed to run", not a surviving mutant or an uncovered
+line: they require the touched test files to pass on a clean baseline, and
+`fleet_pr_babysitter_test.ts` "babysitter default heartbeat resolves its
+checkout revision" fails there and at the merge base `0a4d803a`, because
+`lib/stream_identity.ts` imports `jsr.io/@std/crypto`, which the sandbox cannot
+fetch. Re-run on the final head: 87 passed, 1 failed (that test only). No
+mutation was listed as unpinned, so no test was added for these items; they
+need a runner with `jsr.io` access, or `skip_mutation_check` and
+`skip_coverage_carryover_check` for this repo.
