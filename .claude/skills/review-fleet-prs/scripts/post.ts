@@ -530,17 +530,28 @@ export async function main() {
       live.mergeable,
     )
   ) {
-    const reviewer = Deno.args.find((a) =>
-      a.startsWith("--reviewer=")
-    )?.slice(11) ??
-      (await run("gh", ["api", "user", "--jq", ".login"])).trim();
-    branchUpdate = await updateBranchOnce(
-      { ...pr, baseRefName: pr.baseRef },
-      dir,
-      (args) => run("gh", args),
-      undefined,
-      reviewer,
+    let reviewer = Deno.args.find((a) => a.startsWith("--reviewer="))?.slice(
+      11,
     );
+    try {
+      reviewer ??= (await run("gh", ["api", "user", "--jq", ".login"])).trim();
+    } catch (error) {
+      branchUpdate = {
+        updated: false,
+        error: `branch refresh skipped: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    if (reviewer !== undefined) {
+      branchUpdate = await updateBranchOnce(
+        { ...pr, baseRefName: pr.baseRef },
+        dir,
+        (args) => run("gh", args),
+        undefined,
+        reviewer,
+      );
+    }
     if (branchUpdate?.updated === false) {
       console.error(
         `could not bring ${pr.repo}#${pr.number} up to date: ${branchUpdate.error}`,

@@ -1,4 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
+import { acquireBranchUpdateLock } from "../lib/pr_branch_lock.ts";
+import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
+import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
 import {
   acquireBaseRefreshOwner,
   type BaseRefreshOwnershipPort,
@@ -6,6 +9,95 @@ import {
   reconcileBaseRefreshOwner,
   releaseBaseRefreshOwner,
 } from "../lib/base_refresh_ownership_4613.ts";
+
+Deno.test("a refused duplicate PUT leaves ownership blocking the next PR", async () => {
+  const f = strictRefreshFixture();
+  const request = (number: number) =>
+    requestReadyBranchUpdate(
+      "owner/repo",
+      number,
+      f.gh,
+      "main",
+      f.head,
+      async () => {},
+      { fleetAuthors: ["VibeCoderST"] },
+    );
+  assertEquals((await request(30)).ok, true);
+  f.state.refusal = "HTTP 422: expected head sha changed";
+  assertEquals((await request(30)).ok, false);
+  const next = await request(31);
+  assertEquals(next.ok, false);
+  if (!next.ok) {
+    assertEquals(
+      next.error.message.includes("base refresh owned by owner/repo#30"),
+      true,
+    );
+  }
+  assertEquals(f.calls.filter((args) => args.includes("PUT")).length, 2);
+});
+
+Deno.test("base transaction on the anchor preserves an older live PR lock", async () => {
+  const f = strictRefreshFixture();
+  const now = Math.floor(Date.now() / 1000);
+  const lock = await acquireBranchUpdateLock({
+    repo: "owner/repo",
+    prNumber: 1,
+    workerId: "repair",
+    nowFn: () => now - 90,
+    ghCommandFn: f.gh,
+    sleepFn: async () => {},
+    authorOptions: { fleetAuthors: ["VibeCoderST"] },
+  });
+  if (!lock.ok || !lock.value.acquired) throw new Error("PR lock not acquired");
+  const port = makeGitHubBaseRefreshOwnershipPort({
+    workerId: "refresh",
+    ghCommandFn: f.gh,
+    sleepFn: async () => {},
+    authorOptions: { fleetAuthors: ["VibeCoderST"] },
+    anchorPrForBase: async () => 1,
+  });
+  const owner = await acquireBaseRefreshOwner(port, {
+    repo: "owner/repo",
+    base: "main",
+    prNumber: 1,
+    headSha: f.head,
+    workerId: "refresh",
+    ttlSeconds: 60,
+  });
+  assertEquals(owner.acquired, true);
+  assertEquals(
+    f.comments.some((row) => row.id === lock.value.lockCommentId),
+    true,
+  );
+});
+
+Deno.test("failed same-PR reacquisition retains the successful refresh owner", async () => {
+  const port = sharedPort();
+  const input = {
+    repo: "owner/repo",
+    base: "main",
+    prNumber: 30,
+    headSha: "a".repeat(40),
+    workerId: "host-a",
+    ttlSeconds: 60,
+  };
+  const first = await acquireBaseRefreshOwner(port, input);
+  const second = await acquireBaseRefreshOwner(port, {
+    ...input,
+    workerId: "host-b",
+  });
+  if (!first.acquired || !second.acquired) {
+    throw new Error("acquisition failed");
+  }
+  await releaseBaseRefreshOwner(port, input.repo, input.base, second.ownerId);
+  assertEquals((await port.read(input.repo, input.base)).map((r) => r.id), [
+    first.ownerId,
+  ]);
+  assertEquals(
+    (await acquireBaseRefreshOwner(port, { ...input, prNumber: 31 })).acquired,
+    false,
+  );
+});
 
 function sharedPort(now = 100): BaseRefreshOwnershipPort {
   const records: Array<{

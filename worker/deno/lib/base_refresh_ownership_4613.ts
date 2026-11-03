@@ -122,6 +122,7 @@ export function makeGitHubBaseRefreshOwnershipPort(
       prNumber,
       workerId: options.workerId,
       lockTtlSeconds: 60,
+      lockKind: "base-refresh",
       ghCommandFn: gh,
       ...(options.sleepFn ? { sleepFn: options.sleepFn } : {}),
       log,
@@ -269,9 +270,7 @@ export async function acquireBaseRefreshOwner(
       workerId: input.workerId,
       expiresAt: now + input.ttlSeconds,
     });
-    for (const record of records) {
-      if (record.expiresAt > now) await port.remove(record.id);
-    }
+    // Keep earlier successful attempts: a failed duplicate releases only its own record.
     return { acquired: true, ownerId };
   });
 }

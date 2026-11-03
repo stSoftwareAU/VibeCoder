@@ -315,9 +315,10 @@ reviewer's reply>}` to a file in the scratchpad and run, from this skill's
 `scripts/` directory:
 
 ```bash
-deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
+deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file> --reviewer=<reviewer-login> --config=<config-path>
 ```
 
+Use the reviewer login and config path from the gate command.
 When the round's prompt names a `--state-dir`, add it to that command: a
 round in the worker container keeps its state under the worker's log mount.
 
