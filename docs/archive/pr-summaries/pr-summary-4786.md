@@ -1,5 +1,12 @@
 ## Summary
 
+Part of #4326
+
+The trusted parent issue requires: "With free space between the floor and floor +
+headroom, and nothing prunable, a milestone sync still lands within one cycle
+(stubbed disk figures)." Its existing cargo budget reporting must remain accurate
+when the timeout path also leaves cargo to CI.
+
 The milestone sync's merged-tree gate (`checkMergedTree`) and resolution gate
 (`verifyResolvedTree`) now leave a **cargo step that hits its time limit** to
 the milestone PR's CI instead of refusing the resolution. Before, a cold
@@ -28,6 +35,8 @@ project (`web/deno.json`), so it lands even then.
 
 ### Essential Design Decisions
 
+- Resolution tasks run Deno projects before cargo, so a cargo test timeout
+  cannot consume the budget for a later Deno task.
 - Only a **cargo** timeout is left to CI, and only when the runner sets the new
   `timedOut` flag. A bare exit 124, a cargo compile failure (exit 101) and any
   Deno timeout stay failures, so a hung Deno check or test is still caught.
@@ -81,6 +90,10 @@ Files: `worker/deno/lib/milestone_merge_gate.ts`,
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
+- **met** — "With free space between the floor and floor + headroom, and nothing
+  prunable, a milestone sync still lands within one cycle (stubbed disk figures)."
+  — evidence: `worker/deno/tests/milestone_gate_repair_land_unverified_4326_test.ts::judgeResolutionVerdict - a skipped verdict marked landUnverified passes through unchanged (Issue #4326)`
+  — reviewer: met; the existing disk-budget path remains in place.
 - **partial** — "work out why `milestone_resolution_gate.ts` cannot verify this
   repository's merged tree, and teach it to" — evidence:
   `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - a cargo-only tree whose cargo check finishes on the retry is passed, not skipped (Issue #4786)`,
@@ -92,6 +105,14 @@ Files: `worker/deno/lib/milestone_merge_gate.ts`,
 
 ## Test Plan
 
+- The obsolete report wording assumed Deno passed and only cargo check could
+  time out. The remaining contract says which checks ran passed and leaves an
+  incomplete cargo check or test to CI. Coverage:
+  `worker/deno/tests/milestone_gate_repair_land_unverified_4326_test.ts::buildConflictEscalationComment - an unverified auto resolution says the tree was not checked, a verified one says it was (Issue #4326)`
+  and the existing Deno-left-to-CI cases in that file retain their negative
+  assertions. Both the escalation comment and commit legend were updated.
+- `worker/deno/tests/milestone_resolution_gate_test.ts::verifyResolvedTree - Deno runs before a cargo timeout exhausts the budget (Issue #4786)`
+  covers a root Cargo project and nested Deno test with an advancing clock.
 - Added to `worker/deno/tests/milestone_merge_gate_test.ts` (ten tests): a
   cargo-only tree whose check finishes on the retry is `passed`; a retry that
   fails to compile is `failed`; two timeouts are retried once then `skipped`; a

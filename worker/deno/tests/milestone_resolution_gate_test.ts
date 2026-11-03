@@ -414,6 +414,39 @@ Deno.test("verifyResolvedTree - a cargo test that times out is left to CI, not f
   }
 });
 
+Deno.test("verifyResolvedTree - Deno runs before a cargo timeout exhausts the budget (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-mixed-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    await Deno.mkdir(`${dir}/web`);
+    await Deno.writeTextFile(
+      `${dir}/web/deno.json`,
+      JSON.stringify({ tasks: { test: "deno test" } }),
+    );
+    let clock = 0;
+    const seen: string[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task.kind);
+        if (task.kind === "cargo") {
+          clock += task.timeoutMs;
+          return Promise.resolve({ code: 124, timedOut: true, output: "" });
+        }
+        return Promise.resolve({ code: 0, output: "" });
+      },
+      passingTypeCheck,
+      () => clock,
+      () => Promise.resolve(false),
+    );
+    assertEquals(seen, ["deno", "cargo"]);
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("verifyResolvedTree - a Deno task that times out is still failed (Issue #4786)", async () => {
   const { outcome } = await gate(
     { "test:unit": "deno test" },

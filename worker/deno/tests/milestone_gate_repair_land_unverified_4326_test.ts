@@ -75,6 +75,12 @@ Deno.test("buildConflictEscalationComment - an unverified auto resolution says t
     conflict: { ...conflict, cargoSkipped: true },
   });
   assertStringIncludes(partial, "does not claim the cargo half passed");
+  assertStringIncludes(
+    partial,
+    "The checks that ran passed before the merge landed",
+  );
+  assertStringIncludes(partial, "a cargo check or cargo test timed out");
+  assertEquals(partial.includes("Deno checks passed"), false);
   assertEquals(partial.includes("passed the repository's own check"), false);
   assertEquals(partial.includes("NOT checked before it landed"), false);
 });

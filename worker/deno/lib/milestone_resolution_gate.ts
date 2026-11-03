@@ -323,7 +323,12 @@ export async function verifyResolvedTree(
   let skippedCargoSuite = false;
   // Cargo steps that hit their time limit (Issue #4786).
   const cargoTimedOut: string[] = [];
-  for (const project of projects) {
+  // Run Deno first: a cargo timeout may consume the whole remaining budget.
+  const orderedProjects = [
+    ...projects.filter((project) => project.kind !== "cargo"),
+    ...projects.filter((project) => project.kind === "cargo"),
+  ];
+  for (const project of orderedProjects) {
     if (project.kind === "cargo" && skipCargo) {
       // `cargo test` fills the same ephemeral target the type check declined
       // to fill. The suite waits for CI.
