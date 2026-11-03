@@ -34,6 +34,23 @@ const TRUSTED_ASSOCIATIONS: ReadonlySet<string> = new Set([
   "MEMBER",
   "COLLABORATOR",
 ]);
+// Test files across the fleet's languages: Deno/TS, JS, Python, Go, Rust
+// integration tests, Java/Kotlin. Inline Rust #[cfg(test)] modules cannot be
+// seen from a path; the model review checks those.
+const TEST_PATH_PATTERNS: RegExp[] = [
+  /(^|\/)(tests?|__tests__|spec|specs)\//,
+  /(^|\/)src\/test\//,
+  /[._-](test|spec)\.[cm]?[jt]sx?$/,
+  /_test\.(go|py|rs|sh|ps1)$/,
+  /(^|\/)test_[^/]+\.py$/,
+  /\.(Tests?)\.ps1$/,
+  /Test\.(java|kt)$/,
+];
+
+export function isTestPath(path: string): boolean {
+  return TEST_PATH_PATTERNS.some((re) => re.test(path));
+}
+
 const MAX_GOVERNING_ISSUES = 5;
 const PART_OF_SCAN_LINES = 200;
 const MAX_PATH_LENGTH = 300;
@@ -585,6 +602,15 @@ async function checkCoverage(
     const where = name === ""
       ? plain(ref.path)
       : `${plain(ref.path)}::${plain(name)}`;
+    if (ref.role === "gone" && isTestPath(ref.path)) {
+      problems.push({
+        problem:
+          `gone coverage ${where} is a test file, so it does not show any functionality was removed`,
+        fix:
+          "Cite the removed production file or symbol, not a test the PR deletes or edits",
+      });
+      continue;
+    }
     if (ref.role !== "gone" && ctx.pr.testChanges.removed.includes(ref.path)) {
       problems.push({
         problem:
@@ -823,23 +849,24 @@ async function checkNote(
 
   const needsVerification = kind === "expected-value" || kind === "replaced" ||
     coverage.some((c) => c.role === "replacement");
-  if (needsVerification) {
-    if (!failsWithout(note.failsWithoutChange)) {
-      problems.push({
-        problem:
-          "the edited test is not shown to fail without the code change: state the observed failure with the change reverted",
-        fix:
-          "Revert the code change, run the test, and set failsWithoutChange to the observed failure",
-      });
-    }
-    if (!verificationOk(note.verification)) {
-      problems.push({
-        problem:
-          "a boolean or vacuous claim is not proof: give the command or mutation run and its observed result in verification",
-        fix:
-          "Set verification to the command or mutation you ran and the result you observed",
-      });
-    }
+  if (needsVerification && !failsWithout(note.failsWithoutChange)) {
+    problems.push({
+      problem:
+        "the edited test is not shown to fail without the code change: state the observed failure with the change reverted",
+      fix:
+        "Revert the code change, run the test, and set failsWithoutChange to the observed failure",
+    });
+  }
+  // When every coverage entry is `gone`, nothing at the head covers the
+  // behaviour, so the reviewer must show the production code is really gone
+  // (callers searched, build run) rather than assert it.
+  if ((needsVerification || allGone) && !verificationOk(note.verification)) {
+    problems.push({
+      problem:
+        "a boolean or vacuous claim is not proof: give the command or mutation run and its observed result in verification",
+      fix:
+        "Set verification to the command or mutation you ran and the result you observed",
+    });
   }
 
   if (problems.length > 0) return { problems };
@@ -895,6 +922,17 @@ export async function assessTestChanges(
     );
   }
   const notes = review.testChangeNotes;
+  const noNotes: Finding[] = review.testChanges === "meaningful" &&
+      notes.length === 0 && removed.length === 0
+    ? [{
+      file: pr.testChanges.edited[0] ?? removed[0] ?? "",
+      line: 0,
+      problem:
+        "meaningful test change has no review note: say what old behaviour is obsolete and what covers the required behaviour",
+      fix:
+        "Add a testChangeNotes entry for each meaningfully changed test file with file, kind, verdict, obsolete, remaining and coverage",
+    }]
+    : [];
   const needsIssues = removed.length > 0 ||
     notes.some((n) =>
       !BLOCKED_KINDS.has(n.kind ?? "") && n.verdict !== "owner"
@@ -915,7 +953,7 @@ export async function assessTestChanges(
     };
   }
 
-  const findings: Finding[] = [];
+  const findings: Finding[] = [...noNotes];
   for (const file of removed) {
     if (!notes.some((n) => n.file === file)) {
       findings.push({

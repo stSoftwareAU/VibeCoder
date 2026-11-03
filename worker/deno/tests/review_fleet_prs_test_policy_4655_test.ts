@@ -16,6 +16,7 @@
  *   directory is an array.
  */
 
+import { parseTestChangeNotes } from "../lib/pre_pr_verifier.ts";
 import {
   assert,
   assertEquals,
@@ -73,6 +74,7 @@ const DEFAULT_CONTENTS: Record<string, Entry> = {
 const DEFAULT_BASE: Record<string, Entry> = {
   ...DEFAULT_CONTENTS,
   "tests/legacy_export_test.ts": "test('csv export', () => {});\n",
+  "src/legacy_export.ts": "export function legacyExport() {}\n",
   "src/export.ts":
     "export function exportJson() {}\nexport function exportCsv() {}\n",
 };
@@ -653,10 +655,11 @@ Deno.test("approval: genuinely removed functionality with a gone entry (file abs
     kind: "removed-file",
     obsolete: "Checks the CSV export that issue 3416 removed.",
     remaining: undefined,
-    coverage: [{ role: "gone", path: "tests/legacy_export_test.ts" }],
+    coverage: [{ role: "gone", path: "src/legacy_export.ts" }],
     requirementQuote: undefined,
     failsWithoutChange: undefined,
-    verification: undefined,
+    verification:
+      "grep found no remaining caller of the legacy export; deno check passed",
   })], {
     pr: {
       testChanges: { removed: ["tests/legacy_export_test.ts"], edited: [] },
@@ -664,13 +667,13 @@ Deno.test("approval: genuinely removed functionality with a gone entry (file abs
   });
   assertApproved(result);
   assertEquals(result.approved[0]!.coverage, [
-    "gone: tests/legacy_export_test.ts",
+    "gone: src/legacy_export.ts",
   ]);
   // The base ref is what shows the file existed before it was removed.
   assert(
     contentsCalls(calls).some((c) =>
       c[1] ===
-        "repos/acme/widgets/contents/tests/legacy_export_test.ts?ref=main"
+        "repos/acme/widgets/contents/src/legacy_export.ts?ref=main"
     ),
   );
 });
@@ -684,7 +687,8 @@ Deno.test("approval: genuinely removed symbol with a gone entry (file present at
     coverage: [{ role: "gone", path: "src/export.ts", name: "exportCsv" }],
     requirementQuote: undefined,
     failsWithoutChange: undefined,
-    verification: undefined,
+    verification:
+      "grep found no remaining caller of the legacy export; deno check passed",
   })]);
   assertApproved(result);
   assert(
@@ -706,25 +710,26 @@ const goneNote = (coverage: TestChangeNote["coverage"]) =>
     coverage,
     requirementQuote: undefined,
     failsWithoutChange: undefined,
-    verification: undefined,
+    verification:
+      "grep found no remaining caller of the legacy export; deno check passed",
   });
 
 Deno.test("negative: a gone entry for an invented path that is absent at head and base", async () => {
   const { result } = await assess([goneNote([{
     role: "gone",
-    path: "tests/invented_test.ts",
+    path: "src/invented.ts",
   }])]);
   assertFinding(
     result,
-    "gone coverage tests/invented_test.ts never existed at the base ref, so it does not show anything was removed",
+    "gone coverage src/invented.ts never existed at the base ref, so it does not show anything was removed",
   );
   assertEquals(result.approved, []);
   assertApproved(
     (await assess(
-      [goneNote([{ role: "gone", path: "tests/invented_test.ts" }])],
+      [goneNote([{ role: "gone", path: "src/invented.ts" }])],
       {
         fx: {
-          base: { "tests/invented_test.ts": "test('invented', () => {});" },
+          base: { "src/invented.ts": "test('invented', () => {});" },
         },
       },
     )).result,
@@ -751,14 +756,14 @@ Deno.test("negative: a gone symbol absent at head and base is refused", async ()
 });
 
 Deno.test("negative: a gone entry with no valid base ref is refused without a base read", async () => {
-  const entry = { role: "gone" as const, path: "tests/legacy_export_test.ts" };
+  const entry = { role: "gone" as const, path: "src/legacy_export.ts" };
   for (const bad of [undefined, "", "a..b", "bad ref!", "x".repeat(201)]) {
     const { result, calls } = await assess([goneNote([entry])], {
       pr: { baseRef: bad },
     });
     assertFinding(
       result,
-      "gone coverage tests/legacy_export_test.ts never existed at the base ref",
+      "gone coverage src/legacy_export.ts never existed at the base ref",
     );
     assertEquals(
       contentsCalls(calls).filter((c) => (c[1] ?? "").includes("?ref=")).length,
@@ -772,11 +777,11 @@ Deno.test("negative: a gone entry with no valid base ref is refused without a ba
 });
 
 Deno.test("retry: a non-404 base read for a gone entry stops the assessment", async () => {
-  const entry = { role: "gone" as const, path: "tests/legacy_export_test.ts" };
+  const entry = { role: "gone" as const, path: "src/legacy_export.ts" };
   const { result } = await assess([goneNote([entry])], {
     fx: {
       base: {
-        "tests/legacy_export_test.ts": new Error("HTTP 500: Server Error"),
+        "src/legacy_export.ts": new Error("HTTP 500: Server Error"),
       },
     },
   });
@@ -1093,4 +1098,112 @@ Deno.test("negative: a head commit id that is not 40 hex characters", async () =
   assertFinding(result, "not a full 40-character sha");
   assertEquals(contentsCalls(calls), []);
   assertApproved((await assess([note()])).result);
+});
+
+// ----- a meaningful change needs evidence (Issue #4655 verifier findings) ---
+
+Deno.test("negative: a meaningful change with no note at all is sent back, not approved", async () => {
+  const pr = { testChanges: { removed: [], edited: ["tests/retry_test.ts"] } };
+  const { result, calls } = await assess([], { pr });
+  assertEquals(result.checked, true);
+  assertEquals(result.approved, []);
+  assertEquals(result.findings.length, 1);
+  assertEquals(result.findings[0]!.file, "tests/retry_test.ts");
+  assertFinding(result, "meaningful test change has no review note");
+  assertEquals(calls, []);
+  // Legal: the same change with one valid note.
+  assertApproved((await assess([note()], { pr })).result);
+});
+
+Deno.test("negative: a meaningful change whose only note was malformed (no file) has no usable note", async () => {
+  const notes = parseTestChangeNotes([
+    { line: 7, change: "expects 3 retries", verdict: "justified" },
+  ]);
+  assertEquals(notes, []);
+  const { result } = await assess(notes);
+  assertFinding(result, "meaningful test change has no review note");
+  assertEquals(result.approved, []);
+});
+
+Deno.test("no note is needed when the test change is not meaningful and nothing was removed", async () => {
+  for (const testChanges of ["none", "trivial", "tightened"] as const) {
+    const { result, calls } = await assess([], { testChanges });
+    assertEquals(result.checked, false);
+    assertEquals(result.findings, []);
+    assertEquals(calls, []);
+  }
+});
+
+// ----- a gone entry must name removed production code ----------------------
+
+Deno.test("negative: a gone entry naming the deleted test file itself is refused", async () => {
+  const removedTest = "tests/legacy_export_test.ts";
+  const entry = {
+    role: "gone" as const,
+    path: removedTest,
+    name: "csv export",
+  };
+  const { result, calls } = await assess([goneNote([entry])], {
+    pr: { testChanges: { removed: [removedTest], edited: [] } },
+  });
+  assertFinding(
+    result,
+    "gone coverage tests/legacy_export_test.ts::csv export is a test file",
+  );
+  assertEquals(result.approved, []);
+  // Refused before any read: nothing was probed for the test path.
+  assertEquals(
+    contentsCalls(calls).filter((c) => (c[1] ?? "").includes(removedTest))
+      .length,
+    0,
+  );
+  // Legal: the removed production file, with removal evidence.
+  assertApproved(
+    (await assess(
+      [goneNote([{ role: "gone", path: "src/legacy_export.ts" }])],
+      {
+        pr: { testChanges: { removed: [removedTest], edited: [] } },
+      },
+    )).result,
+  );
+});
+
+Deno.test("negative: a gone entry naming any test path is refused, a production path is not", async () => {
+  for (
+    const path of [
+      "tests/legacy_export_test.ts",
+      "src/export.test.ts",
+      "pkg/test/helper.ts",
+      "legacy_test.go",
+    ]
+  ) {
+    const { result } = await assess([goneNote([{ role: "gone", path }])], {
+      fx: { base: { [path]: "x" } },
+    });
+    assertFinding(result, "is a test file");
+    assertEquals(result.approved, []);
+  }
+});
+
+Deno.test("negative: when every coverage entry is gone, removal evidence in verification is required", async () => {
+  const entry = { role: "gone" as const, path: "src/legacy_export.ts" };
+  for (const verification of [undefined, "", "ok", "verified", "done it"]) {
+    const { result } = await assess([goneNote([entry])], {});
+    assertEquals(result.approved.length, 1);
+    const bare = await assess(
+      [{ ...goneNote([entry]), verification }],
+    );
+    assertFinding(bare.result, "a boolean or vacuous claim is not proof");
+    assertEquals(bare.result.approved, []);
+  }
+  // A mix with existing coverage does not need the removal evidence.
+  const mixed = await assess([{
+    ...goneNote([entry, {
+      role: "existing",
+      path: "tests/retry_test.ts",
+      name: "retries three times",
+    }]),
+    verification: undefined,
+  }]);
+  assertApproved(mixed.result);
 });

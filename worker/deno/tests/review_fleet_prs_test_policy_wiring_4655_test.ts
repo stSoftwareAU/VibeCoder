@@ -374,17 +374,18 @@ Deno.test("approval: genuinely removed functionality, a gone entry with the file
         kind: "removed-file",
         obsolete: "Checks the CSV export that issue 3416 removed.",
         remaining: undefined,
-        coverage: [{ role: "gone", path: "tests/legacy_export_test.ts" }],
+        coverage: [{ role: "gone", path: "src/legacy_export.ts" }],
         requirementQuote: undefined,
         failsWithoutChange: undefined,
-        verification: undefined,
+        verification:
+          "grep found no remaining caller of the legacy export; deno check passed",
       })],
     }),
     {
       pr: {
         testChanges: { removed: ["tests/legacy_export_test.ts"], edited: [] },
       },
-      fx: { base: { "tests/legacy_export_test.ts": GONE_FILE } },
+      fx: { base: { "src/legacy_export.ts": GONE_FILE } },
     },
   );
   assertEquals(settled(d).outcome, "approved");
@@ -396,10 +397,11 @@ const GONE_NOTE = note({
   kind: "removed-file",
   obsolete: "Checks the CSV export that issue 3416 removed.",
   remaining: undefined,
-  coverage: [{ role: "gone", path: "tests/legacy_export_test.ts" }],
+  coverage: [{ role: "gone", path: "src/legacy_export.ts" }],
   requirementQuote: undefined,
   failsWithoutChange: undefined,
-  verification: undefined,
+  verification:
+    "grep found no remaining caller of the legacy export; deno check passed",
 });
 const GONE_PR = {
   testChanges: { removed: ["tests/legacy_export_test.ts"], edited: [] },
@@ -408,7 +410,7 @@ const GONE_PR = {
 Deno.test("approval: a gone path that exists at the base ref and not at head is approved; base read by branch, head by commit", async () => {
   const { d, calls } = await decide(review({ testChangeNotes: [GONE_NOTE] }), {
     pr: GONE_PR,
-    fx: { base: { "tests/legacy_export_test.ts": GONE_FILE } },
+    fx: { base: { "src/legacy_export.ts": GONE_FILE } },
   });
   assertEquals(settled(d).outcome, "approved");
   assert(calls.some((c) => c.some((a) => a.endsWith(`?ref=${BASE_BRANCH}`))));
@@ -1295,4 +1297,35 @@ Deno.test("writeSummary writes the capitalised policy line into summary.md", asy
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("never approved: a meaningful change with no usable note is changes_requested", async () => {
+  const pr = { testChanges: { removed: [], edited: ["tests/retry_test.ts"] } };
+  for (const testChangeNotes of [[], [] as TestChangeNote[]]) {
+    const { d, calls } = await decide(review({ testChangeNotes }), { pr });
+    const s = settled(d);
+    assertEquals(s.outcome, "changes_requested");
+    assertStringIncludes(
+      problems(s),
+      "meaningful test change has no review note",
+    );
+    assertEquals(calls, []);
+  }
+});
+
+Deno.test("never approved: a gone path that names the deleted test file is changes_requested", async () => {
+  const removedTest = "tests/legacy_export_test.ts";
+  const { d } = await decide(
+    review({
+      testChangeNotes: [{
+        ...GONE_NOTE,
+        coverage: [{ role: "gone", path: removedTest, name: "useful guard" }],
+        verification: undefined,
+      }],
+    }),
+    { pr: GONE_PR, fx: { base: { [removedTest]: GONE_FILE } } },
+  );
+  const s = settled(d);
+  assertEquals(s.outcome, "changes_requested");
+  assertStringIncludes(problems(s), "is a test file");
 });

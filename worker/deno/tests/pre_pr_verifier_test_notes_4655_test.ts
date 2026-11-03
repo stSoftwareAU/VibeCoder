@@ -163,3 +163,60 @@ Deno.test("parseReviewReply: a missing or non-array testChangeNotes is no notes"
     assertEquals(parseReviewReply(JSON.stringify(body)).testChangeNotes, []);
   }
 });
+
+Deno.test("parseTestChangeNotes: every note kind is kept, an unlisted one is dropped", () => {
+  const kinds = [
+    "expected-value",
+    "removed-case",
+    "added-skip",
+    "weakened-assertion",
+    "removed-file",
+    "other",
+    "replaced",
+    "threshold-reduced",
+  ];
+  for (const kind of kinds) {
+    const [note] = parseTestChangeNotes([
+      { file: "a_test.ts", line: 1, change: "c", kind },
+    ]);
+    assertEquals(note?.kind, kind);
+  }
+  const [other] = parseTestChangeNotes([
+    { file: "a_test.ts", line: 1, change: "c", kind: "threshold_reduced" },
+  ]);
+  assertEquals(other?.kind, undefined);
+});
+
+Deno.test("parseTestChangeNotes: a blank or non-numeric line is 0, a numeric string is its number", () => {
+  const lines = parseTestChangeNotes([
+    { file: "a.ts", line: "", change: "c" },
+    { file: "a.ts", line: "   ", change: "c" },
+    { file: "a.ts", line: true, change: "c" },
+    { file: "a.ts", line: null, change: "c" },
+    { file: "a.ts", line: Infinity, change: "c" },
+    { file: "a.ts", line: " 12 ", change: "c" },
+  ]).map((n) => n.line);
+  assertEquals(lines, [0, 0, 0, 0, 0, 12]);
+});
+
+Deno.test("parseTestChangeNotes: an array or function carrying note fields is not a note", () => {
+  const arrayNote = Object.assign([], { file: "a.ts", line: 1, change: "c" });
+  const fnNote = Object.assign(() => {}, {
+    file: "b.ts",
+    line: 1,
+    change: "c",
+  });
+  assertEquals(parseTestChangeNotes([arrayNote, fnNote]), []);
+});
+
+Deno.test("parseTestChangeNotes: an array or function carrying coverage fields is not a coverage entry", () => {
+  const arrayRef = Object.assign([], { role: "existing", path: "a.ts" });
+  const fnRef = Object.assign(() => {}, { role: "existing", path: "b.ts" });
+  const [note] = parseTestChangeNotes([{
+    file: "a_test.ts",
+    line: 1,
+    change: "c",
+    coverage: [arrayRef, fnRef, { role: "existing", path: "c.ts" }],
+  }]);
+  assertEquals(note?.coverage, [{ role: "existing", path: "c.ts" }]);
+});

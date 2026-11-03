@@ -280,18 +280,23 @@ function oneOf<T extends string>(
 
 // Same coercion as parseFinding: a numeric string counts, anything else is 0.
 function coerceLine(raw: unknown): number {
-  const n = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
-  return typeof n === "number" && Number.isFinite(n) ? n : 0;
+  const n = typeof raw === "string" ? Number(raw) : raw;
+  return Number.isFinite(n) ? n as number : 0;
+}
+
+// A JSON object; an array, null or any other value is not a record.
+function plainRecord(v: unknown): Record<string, unknown> | undefined {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
+    ? v as Record<string, unknown>
+    : undefined;
 }
 
 function parseCoverage(raw: unknown): NonNullable<TestChangeNote["coverage"]> {
   if (!Array.isArray(raw)) return [];
   const refs: NonNullable<TestChangeNote["coverage"]> = [];
   for (const entry of raw) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      continue;
-    }
-    const c = entry as Record<string, unknown>;
+    const c = plainRecord(entry);
+    if (c === undefined) continue;
     const role = oneOf(c.role, COVERAGE_ROLES);
     const path = trimmedText(c.path);
     if (role === undefined || path === undefined) continue;
@@ -310,10 +315,8 @@ export function parseTestChangeNotes(raw: unknown): ReviewTestChangeNote[] {
   if (!Array.isArray(raw)) return [];
   const notes: ReviewTestChangeNote[] = [];
   for (const entry of raw) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      continue;
-    }
-    const n = entry as Record<string, unknown>;
+    const n = plainRecord(entry);
+    if (n === undefined) continue;
     const file = trimmedText(n.file);
     if (file === undefined) continue;
     const kind = oneOf(n.kind, TEST_CHANGE_KINDS);

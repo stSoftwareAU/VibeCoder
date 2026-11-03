@@ -86,6 +86,7 @@ import {
   describeTestPolicy,
   type EffectiveTestPolicy,
   effectiveTestPolicy,
+  isTestPath,
   loadTestPolicy,
 } from "./test_change_policy.ts";
 import {
@@ -287,25 +288,11 @@ interface PrFile {
   previous_filename?: string;
 }
 
-// Test files across the fleet's languages: Deno/TS, JS, Python, Go, Rust
-// integration tests, Java/Kotlin. Inline Rust #[cfg(test)] modules cannot be
-// seen from a path; the model review checks those.
-const TEST_PATH_PATTERNS: RegExp[] = [
-  /(^|\/)(tests?|__tests__|spec|specs)\//,
-  /(^|\/)src\/test\//,
-  /[._-](test|spec)\.[cm]?[jt]sx?$/,
-  /_test\.(go|py|rs|sh|ps1)$/,
-  /(^|\/)test_[^/]+\.py$/,
-  /\.(Tests?)\.ps1$/,
-  /Test\.(java|kt)$/,
-];
-
 const CODE_EXTENSIONS =
   /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|sh|ps1|rb|cs|php|sql)$/;
 
-export function isTestPath(path: string): boolean {
-  return TEST_PATH_PATTERNS.some((re) => re.test(path));
-}
+// Re-exported: the path rule lives in test_change_policy.ts (Issue #4655).
+export { isTestPath };
 
 export function existingTestChanges(
   files: PrFile[],
