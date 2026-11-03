@@ -1246,23 +1246,29 @@ The loop therefore passes `claimScanCompleted` into the census hook: `true` only
 when a scan completed an eligibility pass and claimed nothing (the "no
 eligible work" / "none claimable" stop), `false` for every lifecycle stop. The
 census records it as `scanned=<bool>` (with `skip_reason=cycle_deadline`) and
-splits the inverted repos in two:
+sorts the inverted repos into buckets, checked in the order below:
 
 ```mermaid
 flowchart TD
     S["Inversion signal on repo"] --> A{"Has this host backed<br/>this repo off?"}
     A -- yes --> N["backedOffInversionRepos<br/>→ NOTE inversion_repo_backed_off"]
-    A -- no --> B{"Did a slot on this host<br/>hold this repo?"}
+    A -- no --> K{"Does the host have the disk floor<br/>but lack the cargo build headroom?"}
+    K -- yes --> KC["cargoDeferredInversionRepos<br/>→ NOTE inversion_repo_cargo_deferred"]
+    K -- no --> B{"Did a slot on this host<br/>hold this repo?"}
     B -- yes --> G["heldInversionRepos<br/>→ NOTE inversion_repo_held"]
     B -- no --> C{"Claim scan completed<br/>an eligibility pass?"}
-    C -- no --> D["deferredInversionRepos<br/>→ NOTE inversion_not_escalated"]
+    C -- no --> Q{"Did a host-level claim gate<br/>stop the scan?"}
+    Q -- yes --> GT["gatedInversionRepos<br/>→ NOTE inversion_claim_gated"]
+    Q -- no --> D["deferredInversionRepos<br/>→ NOTE inversion_not_escalated"]
     C -- yes --> V{"Did the scan claim<br/>from this repo?"}
     V -- yes --> W["servedInversionRepos<br/>→ NOTE inversion_not_escalated_served"]
     V -- no --> E["escalationRepos<br/>→ Issue #321 streak +1"]
     E --> F["3 consecutive cycles → file an issue in VibeCoder"]
     D --> H["streak held: neither counted nor cleared"]
     G --> H
+    GT --> H
     N --> H
+    KC --> H
     W --> H2["streak cleared: the repo was served"]
     S --> I["inversionDetected → idle-task filer suppressed<br/>(unchanged: the work is real either way)"]
 ```
@@ -1388,6 +1394,41 @@ repository the scan was not shown. The claimable counts are untouched on both
 sides, so the idle-task filer stays suppressed while the backlog waits
 (Issue #2813) — and the one issue that should be worked is the repository's
 fast-failure diagnostic, which the tracker has already filed.
+
+#### A repo the host cannot build yet (Issue #4751)
+
+A third cause drops a repository before any collector runs, and it shares the
+back-off's invisibility. `findNextIssue` also unions
+`cargoClaimDeferredRepos()` (Issue #4540) into `findOldestIssue`'s
+`excludeRepos`. A Rust repository is dropped there while the host has the disk
+floor but not the cargo build headroom. No collector runs and no per-issue skip
+reason is recorded, so the census reads `scanned=true`, as it did for
+back-offs before #2085.
+
+GRQ-AutoTrader, GRQ and NEAT-AI-Discovery are all cargo repositories, and while
+the host lacked the headroom they alerted together with no "what the claim scan
+did with them" section at all, because the scan had looked at none of them.
+
+The census records such a repo as `scanned=false skip_reason=repo_cargo_deferred`
+and reports it in its own bucket, `cargoDeferredInversionRepos`. It is kept out
+of the escalation, because the scan refused nothing, and out of the deferral
+note, because the cycle did not stop early. Unlike a back-off it needs no
+diagnostic issue: it clears by itself when disk space is freed, so the note says
+the work returns then:
+
+```text
+[idle-census] … NOTE inversion_repo_cargo_deferred repos=stSoftwareAU/GRQ-AutoTrader — this host has the disk floor but not the cargo build headroom (Issue #4540), so the claim scan skipped these repositories before any eligibility check ran; the work returns when disk space is freed
+```
+
+The scan state resolves in the order given in
+[`idle_decision_census.ts`](../worker/deno/lib/idle_decision_census.ts)
+(`resolveRepoScanState`): a back-off is named ahead of the cargo deferral, and
+the cargo deferral ahead of a lease. The idle-detect audit's `heldRepos` union
+and the census both read the cargo set the claim scan reads, through the same
+helper in
+[`run_core_production_deps.ts`](../worker/deno/lib/run_core_production_deps.ts),
+so both instruments treat these repositories as not shown to the scan rather
+than as scanned.
 
 #### The escalation is filed in VibeCoder
 

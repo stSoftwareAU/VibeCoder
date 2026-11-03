@@ -1,0 +1,81 @@
+## Summary
+
+The idle-decision census and the idle-detect audit now treat a cargo repository
+the host cannot build yet as "never shown to the claim scan", not as "scanned
+and refused". That removes the false idle-inversion alert on
+`stSoftwareAU/GRQ-AutoTrader` (and on `stSoftwareAU/GRQ` and
+`stSoftwareAU/NEAT-AI-Discovery`, which alerted in the same census line).
+Version bump: no `VERSION` change in this diff; the merged commit records the
+final version. Closes #4751.
+
+```mermaid
+flowchart LR
+    H["cargoClaimDeferredRepos()<br/>(Issue #4540)"] --> N["cargoDeferredNow()<br/>one reader"]
+    N --> S["claim scan: excludeRepos"]
+    N --> A["idle-detect audit: heldRepos"]
+    N --> C["census: scanCargoDeferredRepos<br/>→ repo_cargo_deferred"]
+    C --> B["cargoDeferredInversionRepos<br/>(never escalated)"]
+```
+
+## Spec
+
+### Intent and Rationale
+
+- Since #4540 the claim scan drops a cargo repository while the host has the
+  disk floor but not the cargo headroom (`cargoClaimDeferredRepos` unioned into
+  `excludeRepos`). No collector runs, so no per-issue reason exists, yet the
+  census read `scanned=true` and counted 39 `work-on` issues as refused. That is
+  the same gap #2085 closed for fast-failure back-offs; the filed issue had no
+  "what the claim scan did with them" section, which is how the gap shows.
+- The census gets its own reason rather than reusing `repo_backed_off`: a
+  back-off needs a fix to the repository, a cargo deferral clears when disk is
+  freed, and the note text must say which.
+
+### Essential Design Decisions
+
+- The census, the audit and the scan all read the set through one local helper
+  (`cargoDeferredNow`), so they cannot disagree about it. It is injectable
+  (`cargoClaimDeferredReposFn`, production default `cargoClaimDeferredRepos`)
+  because the real function reads the host disk.
+- Order in `resolveRepoScanState`: back-off, then cargo deferral, then lease. A
+  back-off is the durable fault an operator must act on.
+- The claimable counts are untouched, so the idle-task filer stays suppressed
+  while the backlog waits (Issue #2813), exactly as for a back-off.
+
+### Undiscoverable Facts
+
+- The incident's worker log is not on this host. The cause is inferred from
+  code and from the evidence in the issue: no scan-skip section, all three
+  alerting repos hold a `Cargo.toml` (checked with `gh api`), and
+  `GRQ-AutoTraderBackTesting` had no `work-on` work to show.
+- A local `findOldestIssue` run against the live repo (fresh approval store)
+  selected a candidate, so the 39 issues are not refused by any per-issue gate
+  on GitHub state.
+
+## Evidence
+
+Backend-only change; no UI file touched. Verified by tests below.
+
+## Test Plan
+
+- Added `worker/deno/tests/idle_census_repo_cargo_deferred_4751_test.ts`:
+  resolver ordering, buckets, formatter note, predicate.
+- Added `worker/deno/tests/idle_census_cargo_deferred_wiring_4751_test.ts`:
+  drives the real `createProductionRunCoreDeps`, calls the real
+  `runIdleDetectAudit` and `runIdleDecisionCensus`, with an injected cargo set.
+- Red checks (each break restored): dropped the cargo check in
+  `resolveRepoScanState` → 2 resolver tests red; dropped
+  `!isRepoCargoDeferredSkipReason` from `deferredInversionRepos` → 2 red; removed
+  the formatter note → 1 red; removed the census `scanCargoDeferredRepos`
+  argument → the wiring `scanned=false` test red; removed the audit
+  `...scanCargoDeferred.keys()` union → the `mis_classification` test red.
+- Callers of `resolveRepoScanState` checked: `run_core_production_deps.ts` (now
+  passes the new set; the only production caller) and the 2085, 898 and 1091
+  tests, which omit the optional set and keep their behaviour.
+- Callers of the scan-exclusion set checked: the claim scan, the audit and the
+  census all call `cargoDeferredNow()`; no other reader of `backedOffRepos`
+  needs the set.
+- Docs: `docs/IDLE-TASK-FRAMEWORK.md` (decision flowchart, new section).
+  Siblings grepped: `repo_backed_off`, `repo_held_in_flight`,
+  `backedOffInversionRepos`, `inversion_repo_held`.
+- Results on the final head are recorded in the run's final message.
