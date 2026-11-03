@@ -63,6 +63,11 @@ flowchart LR
 
 ## Test Plan
 
+- CI repair: bounded the default ownership check's `id -u` subprocess with a
+  five-second timeout. A hung uid probe now reaches the existing error path
+  instead of waiting indefinitely. The spawn-timeout source check flagged the
+  previously unbounded command; `deno test --allow-all
+  tests/spawn_timeout_check_test.ts` verifies the timeout rule.
 - Review fix: test failed quarantine and access removal, foreign `.git` with a
   worker-owned root, and both clone reuse paths rejecting a foreign root.
   Both reuse paths call the shared ownership check before their git probes.
