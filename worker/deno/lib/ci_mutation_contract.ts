@@ -32,6 +32,7 @@
  * reported in `unreadable` rather than being treated as non-blocking silently,
  * so the caller can log them. Script continuation joins are linear and each
  * YAML step mapping is scanned once per file, including aliased mappings.
+ * Aggregator lookup scans each aliased needs array once.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -294,16 +295,20 @@ export function extractCargoMutantsArgs(line: string): string[] {
 }
 
 /** The first job whose `needs` lists `jobName`, if any. */
-function findAggregator(jobs: Mapping, jobName: string): string | undefined {
+export function findAggregator(
+  jobs: Mapping,
+  jobName: string,
+): string | undefined {
+  const seen = new WeakSet<object>();
   for (const [name, job] of Object.entries(jobs)) {
     if (!isMapping(job) || name === jobName) continue;
     const needs = job.needs;
-    const list = typeof needs === "string"
-      ? [needs]
-      : Array.isArray(needs)
-      ? needs
-      : [];
-    if (list.includes(jobName)) return name;
+    if (typeof needs === "string") {
+      if (needs === jobName) return name;
+    } else if (Array.isArray(needs) && !seen.has(needs)) {
+      seen.add(needs);
+      if (needs.includes(jobName)) return name;
+    }
   }
   return undefined;
 }

@@ -219,6 +219,14 @@ mutation verdict, completion phase, deferral and review-fix paths.
 
 ## CI repair on PR #4744
 
+- Review follow-up: aggregator lookup scans each shared `needs` array once,
+  preserving the first matching job. A counted regression failed before the
+  fix (100,000 element reads instead of 1,000); a YAML alias fixture exercises
+  the detector end to end. No second aggregator lookup was found. All 50
+  detector tests, the local gate's formatting, lint, type and completeness
+  checks passed. The parallel test pass hit the Deno permission-pledge panic
+  again; base Quality run 41555343824 passed its test shards. Semgrep and the
+  pinned Checkov were unavailable locally.
 - Review follow-up: charge each visited step against the shared workflow scan
   budget before deduplication. The aliased-array fixture and counted budget
   test failed before this change and pass afterwards; no duplicate detector

@@ -18,6 +18,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   blockingMutationLine,
+  findAggregator,
   findBlockingMutationJob,
 } from "../lib/ci_mutation_contract.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
@@ -834,6 +835,34 @@ Deno.test("a job another job needs is reported with its aggregator", async () =>
       },
       unreadable: [],
     });
+  });
+});
+
+Deno.test("aggregator lookup scans shared needs arrays once", () => {
+  let reads = 0;
+  const needs = new Proxy(Array(1000).fill("other"), {
+    get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const jobs: Record<string, unknown> = { mutants: {} };
+  for (let i = 0; i < 100; i++) jobs[`job${i}`] = { needs };
+  jobs.gate = { needs: ["mutants"] };
+  assertEquals(findAggregator(jobs, "mutants"), "gate");
+  assertEquals(reads, 1000);
+});
+
+Deno.test("aliased needs in a workflow retain the first aggregator", async () => {
+  const workflow =
+    "on: pull_request\njobs:\n  mutants:\n    steps:\n      - run: cargo mutants\n" +
+    "  first: {needs: &n [" + "other, ".repeat(1000) + "other]}\n" +
+    Array.from({ length: 100 }, (_, i) => `  j${i}: {needs: *n}\n`).join("") +
+    "  gate: {needs: [mutants]}\n";
+  await withRepo({ "aliases.yml": workflow }, async (repo) => {
+    const result = await findBlockingMutationJob(repo);
+    assertEquals(result.blocking?.aggregator, "gate");
+    assertEquals(result.unreadable, []);
   });
 });
 
