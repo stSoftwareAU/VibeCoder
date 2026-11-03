@@ -82,7 +82,7 @@ emits `--volume <source>:<target>` for every dialect),
 - **met** — Test: no `--volume` source is at or above the App key's directory; the key path is in no argument; the key's contents are in no argument and in no env value passed to the runtime; and `GH_TOKEN` appears only as `--env GH_TOKEN`. — evidence: `worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair keeps the key out of every mount, argument and env value`, plus the key-guard refusal tests — reviewer: met
 - **met** — Test: a missing runtime and a missing image each throw with their cause and spawn nothing. — evidence: `worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair refuses when the runtime is not on PATH, and never asks for the image` and `::repair refuses when the worker image is not built, and spawns nothing` — reviewer: met
 - **met** — Test: a timeout kills the container by name and throws. — evidence: `worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair kills the container by name on timeout, and reports a failed kill` — reviewer: met
-- **partial** — `./quality.sh` passes. — evidence: see Test Plan — reviewer: missing — reason: quality gate not yet run on the final head; the earlier run's only failures were the lib-sweep ledger claim (fixed in this diff) and `pr_maintenance_command_test.ts` tests that pass when run alone. The reviewer saw only the diff and could not run the gate.
+- **met** — `./quality.sh` passes. — evidence: full gate run on the final head, see Test Plan — reviewer: missing — reason: the reviewer saw only the diff and could not run the gate; it was run here and passed
 - **unrequested** — key guard also refuses relative sources, other flag spellings and symlink/`..` forms; input validation of clone, scratch, key and token; stderr redaction; `babysitterRuntimeOnPath`, `babysitterSpawn`, `babysitterImageExists` exports; the lib-sweep ledger file — reviewer: unrequested — reason: each fails closed on the issue's key-isolation and fail-loud requirements, or is required by `lib_sweep_coverage_test.ts` for any new module
 
 ## Standards Review
@@ -118,6 +118,6 @@ No existing test edited, no assertion removed.
 - `deno task test:unit tests/fleet_babysitter_container_4738_test.ts tests/fleet_babysitter_app_test.ts tests/lib_sweep_coverage_test.ts`: passed.
 - `deno task check:manifests`: passed.
 - Exempt (untestable): none.
-- `./quality.sh`: see the result recorded below once run on the final head.
+- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`; config integration and checkov were skipped by the gate itself. An earlier run on a previous head failed on the missing lib-sweep claim (fixed here) and on `pr_maintenance_command_test.ts` tests that passed when re-run alone.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
