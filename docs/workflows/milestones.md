@@ -483,7 +483,9 @@ loss.
 must pass the repository's own Issue #974 type check, its `check:manifests`
 task and its unit suite (`test:unit`, else `test`, else `cargo test`, else the
 repository's own `./quality.sh` — Issue #2388), inside a single 15-minute
-budget so the sync cannot block the event loop. A red tree is reset to the
+budget that starts once the type check has passed, so the sync cannot block
+the event loop. The type check has its own limit: 300 s for a Deno project and
+900 s for a Cargo project (Issue #4787). A red tree is reset to the
 pre-merge commit and escalated — with both halves: what the verification said
 *and* both sides prepared. A tree with no type check or no unit suite is
 *unverifiable*, and a resolution that cannot be verified is not a resolution —
