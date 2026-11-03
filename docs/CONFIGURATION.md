@@ -110,6 +110,28 @@ A failed `mint` fails the phase loudly rather than running the checks without
 the credential they declared — a check that runs unauthenticated fails later
 and further from the cause. Values are never logged; only names are.
 
+Where the credentials go depends on the account the command runs as:
+
+- **The `agent` account** runs the quality gate, the merge fast checks and the
+  milestone merge and resolution gates whenever the image has one. The declared
+  values travel on the stdin of that command, not in its argv and not in the
+  environment that `sudo` would strip. Each value is base64 encoded, and a fixed
+  `sh` wrapper inside `sudo` exports them and runs the command with stdin from
+  `/dev/null`. Only this repository's declared credentials are carried; the
+  worker's own GitHub and App credentials are not. The allowlist (Issue #572)
+  and `clearEnv` are unchanged, and the `sudo` rule is not widened.
+- **The worker account** (`vibe`) runs a command only where the image has no
+  `agent` account at all, with the same restricted environment, and the
+  declared values are placed in that environment. A declared credential never
+  changes the account a command runs as.
+
+If the channel itself faults, the wrapper exits 78 and writes a
+`[vibe-credential-channel]` line to stderr (a short or malformed stream). That is
+recoverable infrastructure, never a pass: the quality gate reports a failed run
+with that line, the merge fast check reports the merge as `unverified`, and the
+milestone gates report `GateAccountUnavailable` and leave the check to CI. A
+credential that cannot be minted is treated the same way.
+
 The same credentials reach the diff-scoped mutation check, which reruns the
 repository's tests; there a failed `mint` makes the check not applicable, with
 a warning, instead of failing the phase. The check also runs on review-fix

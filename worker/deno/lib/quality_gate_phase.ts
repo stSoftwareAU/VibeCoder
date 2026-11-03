@@ -39,6 +39,10 @@ import { TOOL_OUTPUT_IS_DATA_RULE } from "./prompt_delimiter.ts";
 import { fenceQualityOutput } from "./untrusted_quality_output.ts";
 import { resolveRepoCredentials } from "./repo_credentials.ts";
 import {
+  carryCredentialsThroughSudo,
+  credentialChannelFault,
+} from "./credential_channel.ts";
+import {
   commandOutputWithTimeout,
   isCommandTimeoutError,
 } from "./subprocess_timeout.ts";
@@ -134,6 +138,11 @@ const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/]+$/;
  * repository's own command. `--preserve-env` needs the tag the rule does not
  * grant. The value therefore travels in **argv** instead:
  * `sudo -n -u agent -- env NAME=value <cmd>`, which `env_reset` cannot touch.
+ * Only that non-secret placement travels this way.
+ *
+ * Declared credentials are never carried here. They ride the stdin channel of
+ * `credential_channel.ts` (Issue #4705), because a value in argv is visible to
+ * `ps` and to the sudo logs. Secrets never go in argv.
  *
  * Refuses a name or value it cannot vouch for rather than building an argv
  * element out of one: everything carried here is worker-derived, so an
@@ -318,6 +327,14 @@ export interface QualityGateParams {
  * already wrote, and the `agent` account cannot write the worktree (Issue
  * #4113). Dropping them would leave every formatting miss for the pre-push
  * gate. The quality-gate runner itself still drops.
+ *
+ * When the command drops under `sudo`, the declared credentials are carried
+ * on its stdin, not in argv and not through `sudo`'s environment (Issue
+ * #4705; see `credential_channel.ts`). The wrapper gives the repository
+ * command /dev/null for stdin, so an `"inherit"` stdin cannot be honoured
+ * alongside declared credentials; that combination is refused rather than
+ * silently dropped. A fault of the wrapper itself is reported as exit 1 with
+ * the fault line, never with a credential value.
  */
 async function spawnRepositoryCommand(
   cmd: string[],
@@ -341,12 +358,25 @@ async function spawnRepositoryCommand(
     // travels in argv instead (Issue #2247). A worker-account spawn has no
     // `sudo`, and `Deno.Command`'s env carries the placement.
     const target = env["CARGO_TARGET_DIR"];
-    const spawnable = carryEnvThroughSudo(
+    const placed = carryEnvThroughSudo(
       dropped,
       !dropToUntrusted || target === undefined
         ? {}
         : { CARGO_TARGET_DIR: target },
     );
+    // `sudo`'s env_reset would also strip the declared credentials, so on a
+    // dropped spawn they ride stdin instead (Issue #4705). Nothing secret is
+    // in argv.
+    const channelled = dropToUntrusted
+      ? carryCredentialsThroughSudo(placed, repoCredentialEnv)
+      : { argv: placed };
+    if (options?.stdin === "inherit" && channelled.stdin !== undefined) {
+      throw new Error(
+        "refusing stdin inherit with declared quality_credentials: the " +
+          "credential channel gives the command /dev/null (Issue #4705)",
+      );
+    }
+    const spawnable = channelled.argv;
     const result = await commandOutputWithTimeout(spawnable[0] ?? "", {
       args: spawnable.slice(1),
       // The declared credentials are placed AFTER the allowlist, so a
@@ -361,11 +391,26 @@ async function spawnRepositoryCommand(
       stdout: "piped",
       stderr: "piped",
       stdin: options?.stdin === "inherit" ? "inherit" : "null",
+      // With declared credentials carried, this sets stdin to piped and
+      // writes the channel text, then closes it (Issue #4705).
+      stdinText: channelled.stdin,
       cwd: options?.cwd,
       timeoutMs,
     });
     const stdout = new TextDecoder().decode(result.stdout);
     const stderr = new TextDecoder().decode(result.stderr);
+    // Only a spawn that went through the channel can produce a wrapper fault.
+    // Its fault line names the cause and never a value.
+    const fault = channelled.stdin === undefined
+      ? undefined
+      : credentialChannelFault({ code: result.code, stderr });
+    if (fault !== undefined) {
+      return {
+        exitCode: 1,
+        output: `${fault} — the declared quality_credentials could not be ` +
+          `delivered to the isolated account (Issue #4705)`,
+      };
+    }
     return { exitCode: result.code, output: stdout + stderr };
   } catch (err) {
     return { exitCode: 1, output: String(err) };
