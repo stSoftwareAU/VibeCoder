@@ -151,6 +151,25 @@ supports it, for the *presence* of `--read-only` and its scratch `tmpfs`
 mounts (see below), so the immutable root filesystem cannot be dropped by a
 later edit either.
 
+### Shared clone roots and git metadata (Issue #4737)
+
+- Clone roots on `vibe-work` are group-writable, setgid and **sticky**
+  (`g+rwxs,+t`). The `agent` account, which runs repository code, cannot rename
+  or unlink entries it does not own, so it cannot replace a clone's `.git` or a
+  top-level tracked file.
+- Git metadata under a clone's `.git` (and a linked worktree's `.git` file) is
+  stripped of group and other write at every launch, so `agent` cannot write
+  into it either.
+- `safe.directory '*'` is kept deliberately: the worker's git needs that trust
+  for the mounted clones. It is safe because `agent` can neither replace nor
+  write the git directory.
+- The cost: tooling run as `agent` can no longer rename over a vibe-owned
+  top-level file, such as a lockfile. Builds write elsewhere: on a runtime that
+  refuses trim, cargo's `target/` goes to the ephemeral layer ([`ephemeral_build_cache.ts`](../worker/deno/lib/ephemeral_build_cache.ts)),
+  and tool caches sit under `VIBE_STATE_DIR`.
+- Residual: the entrypoint is the only place these modes are set, so a clone
+  created after launch is covered only from the next launch.
+
 ## What is deliberately not exposed
 
 None of the following is mounted, and none of it exists inside the container:

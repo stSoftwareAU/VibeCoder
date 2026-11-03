@@ -29,6 +29,9 @@ const GROUP_WRITE = 0o020;
 const GROUP_READ_EXECUTE = 0o050;
 const SETGID = 0o2000;
 const STICKY = 0o1000;
+const OTHER_WRITE = 0o002;
+/** Group and other read: what the untrusted account needs to read `.git`. */
+const GROUP_OTHER_READ = 0o044;
 
 /**
  * A stub PATH the entrypoint's work-root block can actually run through.
@@ -79,6 +82,18 @@ async function runOverWorkRoot(dir: string): Promise<string> {
     await Deno.mkdir(`${workRoot}/${name}`, { recursive: true });
     await Deno.chmod(`${workRoot}/${name}`, 0o755);
   }
+  // A clone's git metadata at the group- and other-writable modes a careless
+  // clone would leave it at, so the hardening has something to strip
+  // (Issue #4737).
+  await fakeGitDir(`${workRoot}/NEAT-AI/.git`);
+  // A linked worktree: `.git` is a file holding a `gitdir:` pointer.
+  await Deno.mkdir(`${workRoot}/LINKED`, { recursive: true });
+  await Deno.chmod(`${workRoot}/LINKED`, 0o755);
+  await Deno.writeTextFile(
+    `${workRoot}/LINKED/.git`,
+    "gitdir: /nonexistent/worktrees/LINKED\n",
+  );
+  await Deno.chmod(`${workRoot}/LINKED/.git`, 0o664);
   await Deno.mkdir(`${dir}/tmp`, { recursive: true });
 
   const { success, stderr } = await new Deno.Command("/bin/bash", {
@@ -103,6 +118,43 @@ async function modeOf(workRoot: string, name: string): Promise<number> {
   const mode = stat.mode;
   assert(mode !== null, "no mode bits on this platform");
   return mode;
+}
+
+/** Create a git directory with the modes a careless clone would leave it at. */
+async function fakeGitDir(gitDir: string): Promise<void> {
+  await Deno.mkdir(`${gitDir}/hooks`, { recursive: true });
+  await Deno.mkdir(`${gitDir}/objects`, { recursive: true });
+  await Deno.writeTextFile(`${gitDir}/config`, "[core]\n\tbare = false\n");
+  await Deno.writeTextFile(
+    `${gitDir}/hooks/pre-commit`,
+    "#!/bin/sh\nexit 0\n",
+  );
+  for (const path of [gitDir, `${gitDir}/hooks`, `${gitDir}/objects`]) {
+    await Deno.chmod(path, 0o775);
+  }
+  await Deno.chmod(`${gitDir}/config`, 0o666);
+  await Deno.chmod(`${gitDir}/hooks/pre-commit`, 0o666);
+}
+
+/** The mode bits of an absolute path after the entrypoint has run. */
+async function modeAt(path: string): Promise<number> {
+  const mode = (await Deno.stat(path)).mode;
+  assert(mode !== null, "no mode bits on this platform");
+  return mode;
+}
+
+/** Every path under `root`, `root` itself included. */
+async function pathsUnder(root: string): Promise<string[]> {
+  const found = [root];
+  for await (const entry of Deno.readDir(root)) {
+    const path = `${root}/${entry.name}`;
+    if (entry.isDirectory) {
+      found.push(...(await pathsUnder(path)));
+    } else {
+      found.push(path);
+    }
+  }
+  return found;
 }
 
 Deno.test("entrypoint - a repository clone stays writable by the untrusted account", async () => {
@@ -170,6 +222,104 @@ Deno.test("entrypoint - the work root carries the sticky bit (Issue #1442)", asy
       GROUP_WRITE,
       "removing group write would break the tier-2 sibling clone the gate makes",
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * Clone roots are sticky as well as group-writable (Issue #4737).
+ *
+ * Write permission on a directory governs renaming and unlinking the entries
+ * inside it. The kernel's documented behaviour for a sticky directory is that
+ * only the owner of an entry, the owner of the directory, or root may rename
+ * or unlink that entry. This test checks the mode bits that produce that
+ * denial, `+t` on each clone root with group write and setgid kept. It does not
+ * exercise the denial itself, which would need a second uid.
+ */
+Deno.test("entrypoint - clone roots are sticky as well as group-writable (Issue #4737)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const workRoot = await runOverWorkRoot(dir);
+    for (const clone of ["NEAT-AI", "NEAT-AI-Discovery", "LINKED"]) {
+      const mode = await modeOf(workRoot, clone);
+      assertEquals(
+        mode & STICKY,
+        STICKY,
+        `${clone} must be sticky, so agent cannot rename its .git aside`,
+      );
+      assertEquals(
+        mode & GROUP_WRITE,
+        GROUP_WRITE,
+        `${clone} lost the group write the quality gate needs`,
+      );
+      assertEquals(
+        mode & SETGID,
+        SETGID,
+        `${clone} lost setgid, so new directories stop inheriting the group`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * Git metadata takes no group or other write (Issue #4737).
+ *
+ * The sticky bit stops `agent` renaming `.git`, but not writing into it. So
+ * every file and directory under a clone's `.git`, and a linked worktree's
+ * `.git` file, must carry no group or other write bit, and must stay readable
+ * by them. Like the sticky-bit test, this asserts the mode bits that produce
+ * the protection, not the kernel's denial itself.
+ */
+Deno.test("entrypoint - git metadata has no group or other write bits (Issue #4737)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const workRoot = await runOverWorkRoot(dir);
+    const gitPaths = [
+      ...(await pathsUnder(`${workRoot}/NEAT-AI/.git`)),
+      `${workRoot}/LINKED/.git`,
+    ];
+    assert(
+      gitPaths.length >= 6,
+      `the .git fixture was not walked in full: ${gitPaths.join(", ")}`,
+    );
+    for (const path of gitPaths) {
+      const mode = await modeAt(path);
+      assertEquals(
+        mode & (GROUP_WRITE | OTHER_WRITE),
+        0,
+        `${path} is writable by the untrusted account`,
+      );
+      assertEquals(
+        mode & GROUP_OTHER_READ,
+        GROUP_OTHER_READ,
+        `${path} must stay readable by the untrusted account`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * The reserved work-root names gain no sticky bit (Issue #4737). The sticky
+ * requirement applies to clone roots only; the reserved-names branch is
+ * unchanged from before it.
+ */
+Deno.test("entrypoint - reserved work-root names gain no sticky bit (Issue #4737)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const workRoot = await runOverWorkRoot(dir);
+    for (const reserved of RESERVED_WORKDIR_NAMES) {
+      const mode = await modeOf(workRoot, reserved);
+      assertEquals(
+        mode & STICKY,
+        0,
+        `${reserved} is worker state, not a clone root, so it takes no sticky bit`,
+      );
+    }
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
