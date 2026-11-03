@@ -15,7 +15,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
   blockingMutationLine,
   findBlockingMutationJob,
@@ -38,6 +38,54 @@ Deno.test("symlinked workflows outside the checkout are unreadable", async () =>
       });
     });
   });
+});
+
+Deno.test("symlinked workflow directories are unreadable", async () => {
+  await withRepo(
+    { "outside.yml": prWorkflow("cargo mutants") },
+    async (outside) => {
+      for (const component of [".github", ".github/workflows"]) {
+        await withRepo(undefined, async (repo) => {
+          if (component.endsWith("workflows")) {
+            await Deno.mkdir(`${repo}/.github`);
+          }
+          const target = component.endsWith("workflows")
+            ? `${outside}/.github/workflows`
+            : `${outside}/.github`;
+          await Deno.symlink(target, `${repo}/${component}`);
+          assertEquals(await findBlockingMutationJob(repo), {
+            blocking: null,
+            unreadable: [component],
+          });
+        });
+      }
+    },
+  );
+});
+
+Deno.test("aliased run strings exceeding the scan budget are unreadable", async () => {
+  const workflow =
+    "on: pull_request\njobs:\n  check:\n    steps:\n      - run: &r |\n" +
+    "          echo x\n".repeat(5000) + "      - run: *r\n".repeat(100);
+  await withRepo({ "aliases.yml": workflow }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: ["aliases.yml"],
+    });
+  });
+});
+
+Deno.test("scan budget counts run characters across jobs", () => {
+  const budget = { remaining: 10 };
+  const seen = new WeakSet<object>();
+  assertEquals(
+    blockingMutationLine({ steps: [{ run: "echo x" }] }, seen, budget),
+    null,
+  );
+  assertEquals(budget.remaining, 4);
+  assertThrows(() =>
+    blockingMutationLine({ steps: [{ run: "echo x" }] }, seen, budget)
+  );
 });
 
 Deno.test("oversized workflows are unreadable before parsing", async () => {

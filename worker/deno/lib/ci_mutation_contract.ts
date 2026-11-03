@@ -69,6 +69,7 @@ export interface CiMutationContract {
 }
 
 type Mapping = Record<string, unknown>;
+class WorkflowScanBudgetExceeded extends Error {}
 
 const CARGO_MUTANTS = /(?:^|[;&|])\s*cargo(?:\s+\+\S+)?[ -]mutants\b/;
 const DENO_MUTATION_TASK = /\bdeno\s+task\s+\S*mutat\S*/i;
@@ -100,6 +101,12 @@ async function listWorkflowFiles(
   const dir = `${repoPath}/${WORKFLOWS_DIR}`;
   const names: string[] = [];
   try {
+    for (const component of [".github", ".github/workflows"]) {
+      if (!(await Deno.lstat(`${repoPath}/${component}`)).isDirectory) {
+        unreadable.push(component);
+        return [];
+      }
+    }
     for await (const entry of Deno.readDir(dir)) {
       if (!isWorkflowName(entry.name)) continue;
       if (entry.isFile) names.push(entry.name);
@@ -179,6 +186,7 @@ function logicalLines(run: string): string[] {
 export function blockingMutationLine(
   job: Mapping,
   seen = new WeakSet<object>(),
+  budget = { remaining: MAX_WORKFLOW_BYTES },
 ): string | null {
   if (isTrueFlag(job["continue-on-error"])) return null;
   const steps = job.steps;
@@ -192,7 +200,10 @@ export function blockingMutationLine(
       typeof step.run !== "string" ||
       isTrueFlag(step["continue-on-error"])
     ) continue;
-    const line = logicalLines(step.run).find((l) =>
+    const run = step.run;
+    budget.remaining -= run.length;
+    if (budget.remaining < 0) throw new WorkflowScanBudgetExceeded();
+    const line = logicalLines(run).find((l) =>
       !isNonFailing(l) && (CARGO_MUTANTS.test(l) || DENO_MUTATION_TASK.test(l))
     );
     if (line !== undefined) return line;
@@ -334,8 +345,16 @@ export async function findBlockingMutationJob(
     if (!isMapping(doc.jobs)) continue;
 
     const seen = new WeakSet<object>();
+    const budget = { remaining: MAX_WORKFLOW_BYTES };
     for (const [jobName, job] of Object.entries(doc.jobs)) {
-      const line = isMapping(job) ? blockingMutationLine(job, seen) : null;
+      let line: string | null;
+      try {
+        line = isMapping(job) ? blockingMutationLine(job, seen, budget) : null;
+      } catch (error) {
+        if (!(error instanceof WorkflowScanBudgetExceeded)) throw error;
+        unreadable.push(name);
+        break;
+      }
       if (line !== null) {
         const aggregator = findAggregator(doc.jobs, jobName);
         blocking = {

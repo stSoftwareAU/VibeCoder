@@ -52,7 +52,8 @@ flowchart TD
   Only regular files up to 1 MiB are read, with bounded reads if a file grows;
   skipped symlinks and oversized files are reported as unreadable. Continued
   lines are collected and joined once, and YAML step aliases are scanned only
-  once per file, including aliases shared across jobs.
+  once per file, including aliases shared across jobs. Directory symlinks are
+  rejected and a cumulative 1 MiB script scan budget bounds string aliases.
 - On a blocking-CI repository a survivor for the matching language, or a check
   that cannot finish (runner error, missing tool, baseline failure, worker fault, exhausted budget or
   mutant cap), holds the PR as a draft. The incomplete case carries an
@@ -94,6 +95,9 @@ mutation verdict, completion phase, deferral and review-fix paths.
   joining has an N/4N growth guard; a getter counts reads across repeated step
   aliases and jobs. A real YAML fixture combines 40000 continued lines with
   100 aliases. The detector suite runs in the serial pass for its growth guard.
+  Directory-symlink fixtures cover both path components; repeated scalar aliases
+  exceed the scan budget and are reported unreadable, with a counted-work check
+  across jobs.
 - `worker/deno/tests/mutation_gate_test.ts`: matching CI ignores summary
   exemptions; mismatched tools retain exemptions in both language directions;
   errors, budget, cap and hostile job labels retain their coverage.
@@ -157,6 +161,9 @@ mutation verdict, completion phase, deferral and review-fix paths.
 
 ## Test Plan
 
+- Review follow-up: the detector suite passed 46 tests through the local gate's
+  serial runner, including both directory symlinks and the scalar-alias scan
+  budget. Full-tree Deno formatting, lint and frozen-lockfile type checks passed.
 - Focused local tests use `deno task test:unit` from `worker/deno`, with the
   detector, gate, completion, review-fix, deferred store and secondary-limit
   files named in Evidence. Formatter, linter, type check and manifest checks
