@@ -940,7 +940,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
   ]);
   assertEquals(call.options.stdin, "null");
   assertEquals(call.options.stdout, "inherit");
-  assertEquals(call.options.stderr, "inherit");
+  assertEquals(call.options.stderr, "piped");
 });
 
 Deno.test("codex agent is not given the workspace-write sandbox and cannot read the credential paths", () => {

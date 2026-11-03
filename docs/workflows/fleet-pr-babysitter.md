@@ -224,7 +224,11 @@ killed by a signal or exit 137/143, a lock that could not be renewed, a head
 that moved) first, and the error text only as a fallback. Infrastructure, host
 capability (missing tool, full disk) and head or lock races receive bounded
 cooldowns without spending the substantive repair budget and post no attempt
-marker. Code failures, runner session-budget exhaustion and no-progress
+marker. Codex diagnostics classify provider, authentication, quota, rate-limit,
+network and memory failures as infrastructure; an unreadable or empty
+diagnostic on a non-zero exit is also infrastructure. A reported quota reset
+or retry-after time delays the next attempt. Code failures, runner
+session-budget exhaustion and no-progress
 outcomes spend that budget. A changed head bypasses the old cooldown while
 keeping the attempt history. The retry
 record is saved before any best-effort marker write, and a failed marker write
@@ -249,11 +253,12 @@ it does not claim ownership of a human `needs-human` label. Explicit human
 holds stay paused until cleared. Waiting paths release the branch lock; the
 next scan logs the cause, next action, and eligible time.
 
-Local git validation, staging and commit failures are code failures even when
-the diagnostic contains transport words in file paths or source text. Only
-clone, fetch and push failures use git transport diagnostics for classification.
-The chokepoint's timeout prefix counts as infrastructure for those transport
-operations. Git disk-full and spawn failures count as capability failures for
+Local git validation, staging, commit and merge failures are code failures even
+when the diagnostic contains transport words in file paths or source text.
+Clone, fetch and push failures default to infrastructure after capability
+checks. A push `[rejected]` is a race; `[remote rejected]`, a declined
+pre-receive hook and GH0xx rule violations are code failures. Git disk-full
+and spawn failures count as capability failures for
 every operation. A pending-CI observation preserves an escalated incident's
 handoff head until repair consumes the head change. Handoff markers use that
 incident head, independent of any older successful push on a host.

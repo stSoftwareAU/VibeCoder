@@ -36,6 +36,7 @@ const APP = { appId: "1", installationId: "1", privateKeyPath: "/unused" };
 
 interface AgentScript {
   code?: number;
+  stderr?: string;
   signal?: string | null;
   response?: string;
   expiresInMs?: number;
@@ -195,6 +196,14 @@ function harness(
       Date.now = () => now + script.elapsedMs!;
     }
     return {
+      stderr: new ReadableStream({
+        start(controller) {
+          if (script.stderr) {
+            controller.enqueue(new TextEncoder().encode(script.stderr));
+          }
+          controller.close();
+        },
+      }),
       status: Promise.resolve({
         success: (script.code ?? 0) === 0,
         code: script.code ?? 0,
@@ -534,7 +543,7 @@ Deno.test("a failed escalation is retried on the next no-progress pass", async (
 Deno.test("a failed marker write keeps the retry record and the repair's real error", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir, { markerFails: true });
-    h.state.agents.push({ code: 1 });
+    h.state.agents.push({ code: 1, stderr: "task failed: invalid source" });
     await assertRejects(
       () => h.attempt(),
       Error,
@@ -546,6 +555,59 @@ Deno.test("a failed marker write keeps the retry record and the repair's real er
     assertEquals(record!.lastOutcome, "repair-failed");
     assertEquals(record!.evidence?.length, 1);
   });
+});
+
+Deno.test("provider and gh network failures do not spend repair attempts", async () => {
+  for (
+    const diagnostic of [
+      "usage limit reached",
+      "HTTP 429 rate limit",
+      "stream disconnected",
+    ]
+  ) {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.agents.push({ code: 1, stderr: diagnostic });
+      await assertRejects(() => h.attempt());
+      const [record] = await records(stateDir);
+      assertEquals(record!.blockerClass, "infrastructure");
+      assertEquals(record!.attempts.substantive, 0);
+      assertEquals(h.state.markers.length, 0);
+      assert(record!.nextEligibleAt !== null);
+    });
+  }
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.runFailures.push({
+      match: "gh pr view",
+      message: "gh command failed (exit 1): error connecting to api.github.com",
+    });
+    await assertRejects(() => h.attempt());
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "infrastructure");
+    assertEquals(record!.attempts.substantive, 0);
+    assertEquals(h.state.markers.length, 0);
+    assert(record!.nextEligibleAt !== null);
+  });
+});
+
+Deno.test("an empty agent diagnostic retries and a reported retry-after is honoured", async () => {
+  for (const stderr of ["", "HTTP 429 rate limit retry-after: 300"]) {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      const before = Date.now();
+      h.state.agents.push({ code: 1, stderr });
+      await assertRejects(() => h.attempt());
+      const [record] = await records(stateDir);
+      assertEquals(record!.attempts.substantive, 0);
+      assertEquals(record!.blockerClass, "infrastructure");
+      assertEquals(h.state.markers.length, 0);
+      assert(
+        Date.parse(record!.nextEligibleAt!) >=
+          before + (stderr ? 300_000 : 60_000),
+      );
+    });
+  }
 });
 
 Deno.test("real human gates stay paused", async () => {

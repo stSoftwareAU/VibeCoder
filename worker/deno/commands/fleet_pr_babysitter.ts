@@ -5,6 +5,7 @@ import { isFleetAuthor } from "../lib/fleet_authors.ts";
 import { BABYSITTER_HANDOFF_MARKER } from "../lib/babysitter_retry_state.ts";
 import { resolveBuildCommitStamp } from "../lib/worker_build_info.ts";
 import { fileURLToPath } from "node:url";
+import { CODEX_OUTPUT_ADAPTER } from "../lib/codex_output_adapter.ts";
 /** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
@@ -1048,7 +1049,7 @@ export function spawnBabysitterAgent(
     ],
     stdin: "null",
     stdout: "inherit",
-    stderr: "inherit",
+    stderr: "piped",
     env: babysitterAgentEnv(options.scratch, options.agentToken),
   });
 }
@@ -1825,7 +1826,12 @@ export async function fix(
         },
       );
       if (!child) return;
+      const diagnostics = child.stderr
+        ? new Response(child.stderr).text().catch(() => "")
+        : Promise.resolve("");
       const result = await child.status;
+      const stderr = await diagnostics;
+      await Deno.writeTextFile(`${scratch}/codex-stderr`, stderr);
       child = undefined;
       if (result.success && !renewalFailed) break;
       if (
@@ -1851,15 +1857,23 @@ export async function fix(
       if (Date.now() >= sessionStartedAt + 90 * 60_000) {
         throw new BabysitterFailure("agent session budget exhausted", "code");
       }
-      // A signal or an out-of-memory/timeout exit is the host or provider
-      // ending the session, not the agent failing to fix the code.
+      const failure = CODEX_OUTPUT_ADAPTER.classify(
+        { exitCode: result.code, stderr, stdout: "" },
+        CODEX_OUTPUT_ADAPTER.decode(""),
+      );
+      const retryAt = failure?.quota?.resetEpochMs ??
+        (failure?.retryAfterSeconds === undefined
+          ? undefined
+          : Date.now() + failure.retryAfterSeconds * 1000);
       throw new BabysitterFailure(
         `agent exited unsuccessfully with code ${result.code}${
           result.signal ? ` after ${result.signal}` : ""
         }`,
-        result.signal || result.code === 137 || result.code === 143
-          ? "infrastructure"
-          : "code",
+        stderr && failure?.category === "task-failure" && !result.signal &&
+          result.code !== 137 && result.code !== 143
+          ? "code"
+          : "infrastructure",
+        retryAt,
       );
     }
     let response: string;
@@ -2005,6 +2019,9 @@ export async function fix(
           ? attempts.infrastructure
           : attempts.substantive;
         const delay = babysitterRetryDelayMs(blockerClass, count);
+        const retryAt = error instanceof BabysitterFailure
+          ? error.retryAt
+          : undefined;
         const pushed = retryRecord.reconciliation === "waiting-for-ci-review";
         retryRecord = {
           ...retryRecord,
@@ -2015,7 +2032,8 @@ export async function fix(
           attempts,
           nextEligibleAt: delay === null
             ? null
-            : new Date(Date.now() + delay).toISOString(),
+            : new Date(Math.max(Date.now() + delay, retryAt ?? 0))
+              .toISOString(),
           nextAction: pushed
             ? "retry pending publication or reconciliation against the pushed head"
             : blockerClass === "owner"

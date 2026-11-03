@@ -52,7 +52,11 @@ export interface BabysitterRetryRecord {
 /** A repair failure whose blocker class is known where it is thrown. */
 export class BabysitterFailure extends Error {
   readonly blockerClass: BabysitterBlockerClass;
-  constructor(message: string, blockerClass: BabysitterBlockerClass) {
+  constructor(
+    message: string,
+    blockerClass: BabysitterBlockerClass,
+    readonly retryAt?: number,
+  ) {
     super(message);
     this.name = "BabysitterFailure";
     this.blockerClass = blockerClass;
@@ -289,6 +293,7 @@ export function classifyBabysitterBlocker(
     return "race";
   }
   if (
+    isTransientNetworkFailure(message) ||
     /timeout|timed out|fetch failed|network|dns|econn|rate limit|http\s+(?:401|403|408|429|5\d\d)\b|resolve host|connection (?:reset|refused)|hung up|rpc failed|internal server error|failed to connect|bad credentials|token expired|token expires|sigkill|sigterm|out of memory|code 137|code 143/
       .test(text)
   ) {
@@ -395,3 +400,4 @@ export function babysitterFailureSignature(
   };
   return computeFailureSignature(input);
 }
+import { isTransientNetworkFailure } from "./transient_network_failure.ts";

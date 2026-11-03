@@ -252,7 +252,26 @@ substantive. `worker/deno/tests/babysitter_fix_orchestration_test.ts::git transp
 covers the reported macOS, TLS, fetch and HTTP/2 diagnostics, unknown failures,
 push races and rule rejections. The local-validation test retains coverage of
 substantive local failures. No twinned operation-boundary classifier was found.
-The PR description identifies #4656 as partial work without closing it.
+The proposed PR description identifies #4656 as partial work and removes its
+closing references; the babysitter applies the proposal after validation.
+
+## Provider failure review follow-up
+
+Codex stderr is classified by the existing output adapter, and reported quota
+reset and retry-after times inform the cooldown. Empty diagnostics on a failed
+session are infrastructure. The shared transient-network classifier also
+covers GitHub CLI connection failures. The operator manual now describes both
+provider failures and the transport-operation defaults and push exceptions.
+The previous exit-1 test treated an empty diagnostic as code; that behaviour is
+obsolete. Explicit task failures still spend the substantive budget, covered by
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::a failed marker write keeps the retry record and the repair's real error`.
+Provider and GitHub CLI failures are covered by
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::provider and gh network failures do not spend repair attempts`.
+Empty diagnostics and provider retry timing are covered by
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::an empty agent diagnostic retries and a reported retry-after is honoured`.
+The spawn fixture's inherited-stderr expectation is obsolete because the
+session now captures diagnostics; its credential and sandbox assertions remain
+covered by `worker/deno/tests/fleet_pr_babysitter_test.ts::codex agent gets its own read-only token instead of the runner's GH_TOKEN`.
 
 The 28 orchestration tests pass. The local quality gate passes formatting,
 lint, type checking, completeness and static checks; its parallel test pass
