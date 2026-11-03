@@ -25,8 +25,8 @@ flowchart LR
 - **status** — `verified` — the regression test was observed failing against the
   unfixed code and passing after the fix: against the base-branch
   `container/entrypoint.sh` (no HOME grant, no closing of the state roots) the
-  HOME-traverse test is red, and on the head all 10 tests in the file pass. The access
-  fault itself was also checked on this host: with `/home/vibe` at
+  HOME-traverse test is red, and on the head all 10 tests in the file pass. The
+  access fault itself was also checked on this host: with `/home/vibe` at
   `700 vibe:vibe`, `sudo -n -u agent -- test -x /home/vibe` exits 1 and
   `sudo -n -u agent -- test -r …/GRQ-AutoTrader/Cargo.toml` exits 1. In a
   scratch tree of the same shape (parent `0700`), `chgrp vibework` + `chmod g+x`
@@ -48,8 +48,9 @@ flowchart LR
 
 - The refusals are a host-layout fault, not a bad resolution: the probe asks the
   real `agent` account, and it cannot enter `/home/vibe`. Granting the group
-  traverse-only on HOME (in the image, with an entrypoint fallback) fixes the cause for every repository, the
-  merge fast checks of #4697 included, without moving the clones.
+  traverse-only on HOME (in the image, with an entrypoint fallback) fixes the
+  cause for every repository, the merge fast checks of #4697 included, without
+  moving the clones.
 - Traverse-only (`g+x`, `0710`) keeps HOME unlistable. Credentials under
   `~/.vibe-coder/credentials` keep their own `0700`/`0600` modes (checked on
   this host with `find`); the staged `run-config` is a `0700` read-only mount.
@@ -63,8 +64,8 @@ flowchart LR
 ### Essential Design Decisions
 
 - The grant is made in the **image** (`container/Containerfile`:
-  `chgrp vibework /home/vibe`, then `chmod 710 /home/vibe`, after the
-  recursive `chown`), because HOME is an image layer and Docker/Podman launch with
+  `chgrp vibework /home/vibe`, then `chmod 710 /home/vibe`, after the recursive
+  `chown`), because HOME is an image layer and Docker/Podman launch with
   `--read-only` (`container_launch.ts`, Issue #516), where an entrypoint `chgrp`
   fails. The entrypoint keeps the same grant as a fallback for an older image on
   a writable root, only once the state children are closed, and now warns
@@ -98,9 +99,10 @@ flowchart LR
 
 - The 2026-11-02 and 2026-11-03 refusals in the issue are `probe 1`; the first
   one in the issue body (cargo exit 101) is a different, test-level failure.
-- #4697 (open) tracks the same access cause for the merge fast checks. The
-  HOME grant (image, with the entrypoint fallback) fixes that cause for it too; its own classification and
-  budget work is not in this change. #4705 and #4680 are not touched.
+- #4697 (open) tracks the same access cause for the merge fast checks. The HOME
+  grant (image, with the entrypoint fallback) fixes that cause for it too; its
+  own classification and budget work is not in this change. #4705 and #4680 are
+  not touched.
 - The image grant takes effect once the new image is built and launched; the
   state-root closing and the fallback take effect at the next launch. Neither
   has been observed in a real container launch from this repository's tests.
@@ -156,10 +158,10 @@ describing it.
 Results on the final head, `deno task test:unit`:
 `worker/deno/tests/untrusted_gate_spawn_test.ts` (34 tests at head),
 `worker/deno/tests/milestone_resolution_gate_test.ts` (34 tests at head) and
-`worker/deno/tests/milestone_merge_gate_test.ts` (41 tests at head), all passing;
-`worker/deno/tests/work_root_group_grant_test.ts` (10 tests at head) is an
-integration suite and was run with `deno test -A`, all passing. `deno fmt`, `deno lint`, `deno check` pass on the
-touched files.
+`worker/deno/tests/milestone_merge_gate_test.ts` (41 tests at head), all
+passing; `worker/deno/tests/work_root_group_grant_test.ts` (10 tests at head) is
+an integration suite and was run with `deno test -A`, all passing. `deno fmt`,
+`deno lint`, `deno check` pass on the touched files.
 
 After the completion-check fixes: the two milestone gate files pass under
 `deno task test:unit` (41 and 34 passed) and under `deno test -A` with a `0700`
