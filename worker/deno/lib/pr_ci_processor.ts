@@ -163,7 +163,11 @@ import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip.ts";
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
-import { resolvePreFlightSpec, unstageStateAndAssertSafe } from "./git_push.ts";
+import {
+  prBaseForSync,
+  resolvePreFlightSpec,
+  unstageStateAndAssertSafe,
+} from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
@@ -2208,10 +2212,27 @@ async function _processCiWithHeartbeat(
     }
     return { ok: true as const, value: undefined };
   };
+  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
+  // pushed, so the fix and the branch update reach GitHub in one push and CI
+  // runs once. Not for a gated head's fix branch, whose PR targets the head.
+  const syncBaseBranch = fixBranch === undefined
+    ? await prBaseForSync(
+      input.baseRef,
+      repo,
+      prNumber,
+      (args) => deps.github.runGhCommand(args),
+      (message) => logger.warn(message),
+    )
+    : undefined;
+  const pushOptions = {
+    cwd: processorDeps.workDir,
+    expectedAncestor: beforeSha,
+    ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
+  };
   const finaliseResult = await deps.git.commitAndPushPending(
     pushBranch,
     `Fix CI failure: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
-    { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+    pushOptions,
     false,
     preFlight,
     undefined,
@@ -2287,7 +2308,7 @@ async function _processCiWithHeartbeat(
         const retryFinalise = await deps.git.commitAndPushPending(
           pushBranch,
           `Fix CI failure: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
-          { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+          pushOptions,
           false,
           preFlight,
           undefined,

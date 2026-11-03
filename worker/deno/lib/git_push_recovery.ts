@@ -36,6 +36,12 @@ import type { GitCommandOptions } from "./git_timeout.ts";
  */
 export interface PushLineageOptions extends GitCommandOptions {
   expectedAncestor?: string;
+  /**
+   * The open PR's base branch. When set, {@link commitAndPushPending} merges
+   * it in just before pushing a fix, so the fix and the branch update reach
+   * GitHub in one push and CI runs once (owner rule 2026-11-03).
+   */
+  syncBaseBranch?: string;
 }
 
 /** Whether HEAD still extends the commit a pass started from. */

@@ -383,3 +383,6 @@ unavailable/recovery assertion while adding separate absent-default coverage.
 - Incorporated the base's single-push repair flow: compare staged changes to
   the merged-tree baseline, retain the merge context in the prompt and commit,
   and arm auto-merge while keeping runner validation and checkpoint cleanup.
+- Retained base synchronisation for CI and feedback repair pushes, and run the
+  publication callback after the base merge so it validates the merged head.
+  The callback remains at the push boundary, including rejection recovery.
