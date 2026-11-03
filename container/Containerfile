@@ -433,12 +433,13 @@ ENV QUALITY_SKIP_RUST_UPDATE="1"
 RUN set -eu; \
     groupadd --gid 1000 vibe; \
     useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash vibe; \
-    groupadd --gid 1002 vibework; \
+    groupadd -g 1002 vibework; \
     useradd --uid 1001 --gid 1002 --create-home --shell /bin/bash agent; \
     usermod --append --groups vibework vibe; \
     mkdir -p /workspace "${DENO_DIR}"; \
     chown -R 1000:1000 /workspace /home/vibe; \
-    chgrp vibework /home/vibe; chmod 710 /home/vibe
+    chgrp vibework /home/vibe; \
+    chmod 0710 /home/vibe
 
 # The only mechanism that can change uid here: the container holds NO
 # capabilities (`CapEff: 0000000000000000`), so an unprivileged process cannot

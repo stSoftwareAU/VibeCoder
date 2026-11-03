@@ -64,7 +64,7 @@ flowchart LR
 ### Essential Design Decisions
 
 - The grant is made in the **image** (`container/Containerfile`:
-  `chgrp vibework /home/vibe`, then `chmod 710 /home/vibe`, after the recursive
+  `chgrp vibework /home/vibe`, then `chmod 0710 /home/vibe`, after the recursive
   `chown`), because HOME is an image layer and Docker/Podman launch with
   `--read-only` (`container_launch.ts`, Issue #516), where an entrypoint `chgrp`
   fails. The entrypoint keeps the same grant as a fallback for an older image on
@@ -121,7 +121,11 @@ describing it.
 
 - The merge with main combines the HOME fixture with the existing quarantine
   and linked-worktree fixtures in `worker/deno/tests/work_root_group_grant_test.ts`;
-  both sets of assertions remain in place.
+  both sets of assertions remain in place. The later merge also retains main's
+  read-only-root Containerfile check alongside the PR's HOME grant coverage,
+  using main's `0710` spelling for the same permission bits. The entrypoint
+  fixture starts HOME at `0700` to keep exercising the older-image fallback;
+  the Containerfile checks cover the image's `0710` grant.
 - `worker/deno/tests/container_entrypoint_test.ts::entrypoint - a launch completes with the image layer read-only (Issue #515)`:
   the read-only-image fixture now stubs `getent` and `chgrp` to succeed, so
   the HOME fallback does not depend on the host user's group membership. The
@@ -134,7 +138,7 @@ describing it.
   naming the path, when `chmod` cannot close the log mount root (sibling roots
   closed as the positive control); a clone root is sticky and its `.git` takes
   no group or other write (#4737); the Containerfile runs `chgrp vibework` and
-  `chmod 710` on HOME after the recursive `chown`. Red checks, each run on the
+  `chmod 0710` on HOME after the recursive `chown`. Red checks, each run on the
   final entrypoint: closing `chmod` removed → the closing, withheld-grant and
   traverse tests red; grant no longer conditional on closure → withheld-grant
   test red; `+t` removed alone → clone test red; `.git` strip removed alone →

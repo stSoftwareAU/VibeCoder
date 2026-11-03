@@ -23,12 +23,12 @@
  *
  * Every case runs the real script with a stub PATH and asserts on the mode
  * bits the volume actually ends up with, so the grant is verified rather
- * than described.
+ * than described. The image grants search on the worker home (Issue #4761).
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertMatch } from "@std/assert";
 import { RESERVED_WORKDIR_NAMES } from "../lib/stale_workdir.ts";
 
 const ENTRYPOINT = new URL("../../../container/entrypoint.sh", import.meta.url)
@@ -49,6 +49,17 @@ const GROUP_TRAVERSE = 0o010;
 const GROUP_RW_OTHER_ALL = 0o067;
 /** Owner read, write and traverse. */
 const OWNER_RWX = 0o700;
+
+Deno.test("Containerfile - worker home is searchable by vibework on a read-only root (Issue #4761)", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../../../container/Containerfile", import.meta.url),
+  );
+  // The recursive chown resets the group, so the grant must follow it.
+  assertMatch(
+    source,
+    /chown -R 1000:1000 \/workspace \/home\/vibe;\s*\\\s*\n\s*chgrp vibework \/home\/vibe;\s*\\\s*\n\s*chmod 0710 \/home\/vibe/,
+  );
+});
 
 /**
  * A stub PATH the entrypoint's work-root block can actually run through.
@@ -646,7 +657,7 @@ Deno.test("entrypoint - a clone root is sticky and its git metadata takes no gro
   }
 });
 
-Deno.test("Containerfile - HOME is made group vibework 710 after the recursive chown (Issue #4733)", async () => {
+Deno.test("Containerfile - HOME is made group vibework 0710 after the recursive chown (Issue #4733)", async () => {
   const text = await Deno.readTextFile(
     new URL("../../../container/Containerfile", import.meta.url).pathname,
   );
@@ -661,9 +672,9 @@ Deno.test("Containerfile - HOME is made group vibework 710 after the recursive c
   const at = (command: string) => commands.indexOf(command);
   const chown = at("chown -R 1000:1000 /workspace /home/vibe");
   const chgrp = at("chgrp vibework /home/vibe");
-  const chmod = at("chmod 710 /home/vibe");
+  const chmod = at("chmod 0710 /home/vibe");
   assert(chown >= 0, "the recursive chown of HOME is gone");
   // The recursive chown resets the group to vibe, so the grant must follow it.
   assert(chgrp > chown, "chgrp vibework HOME must run after the chown");
-  assert(chmod > chgrp, "chmod 710 HOME must run after the chgrp");
+  assert(chmod > chgrp, "chmod 0710 HOME must run after the chgrp");
 });
