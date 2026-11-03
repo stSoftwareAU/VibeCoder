@@ -16,6 +16,16 @@ import {
   resolveCiCheckStateDir,
 } from "../lib/pr_ci_processor.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
+import { commitAndPushPending } from "../lib/git_push.ts";
+import { recoverFromPushRejection } from "../lib/git_push_recovery.ts";
+import {
+  branchHeadChanged,
+  captureBranchHead,
+} from "../lib/branch_head_tracker.ts";
+import {
+  PublicationValidationUnavailableError,
+  type validateRepositoryForPublication,
+} from "../lib/publication_validation.ts";
 import {
   getCiCheckRetryCount,
   recordCiCheckRetry,
@@ -3440,5 +3450,298 @@ Deno.test("processCiFailure - refuses history rebuild when commit authors cannot
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ============================================================================
+// Repository-checks guard on every CI-fix publication (Issue #4625)
+// ============================================================================
+
+/** The verdict name a `beforePush` guard returned, or "ok". */
+function verdictName(verdict: { ok: boolean; error?: Error }): string {
+  return verdict.ok ? "ok" : verdict.error?.name ?? "unnamed";
+}
+
+Deno.test("processCiFailure - the final push, its recovery and its retry all carry the repository-checks guard (Issue #4625)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    let mode: "failed" | "unavailable" | "passed" = "failed";
+    const commitBeforePush: unknown[] = [];
+    let recoverBeforePush: unknown;
+    let commitCalls = 0;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: { runGhCommand: openPrGh() },
+      git: {
+        commitAndPushPending: ((
+          _branch: string,
+          _message: string,
+          _opts: unknown,
+          _allowDefault: unknown,
+          _preFlight: unknown,
+          _runId: unknown,
+          _format: unknown,
+          beforePush: unknown,
+        ) => {
+          commitCalls++;
+          commitBeforePush.push(beforePush);
+          return Promise.resolve(
+            commitCalls === 1
+              ? {
+                ok: true,
+                value: {
+                  committedNewChanges: true,
+                  commitsPushed: 0,
+                  finalUnpushedCount: 1,
+                },
+              }
+              : {
+                ok: true,
+                value: {
+                  committedNewChanges: false,
+                  commitsPushed: 1,
+                  finalUnpushedCount: 0,
+                },
+              },
+          );
+        }) as unknown as GitDeps["commitAndPushPending"],
+        recoverFromPushRejection: ((
+          _branch: string,
+          _opts: unknown,
+          _errText: unknown,
+          beforePush: unknown,
+        ) => {
+          recoverBeforePush = beforePush;
+          return Promise.resolve({ ok: true, value: "recovered" });
+        }) as unknown as GitDeps["recoverFromPushRejection"],
+      },
+    });
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      validatePublication: (() =>
+        Promise.resolve(
+          mode === "failed"
+            ? { status: "failed", head: null, output: "GATE OUTPUT" }
+            : mode === "unavailable"
+            ? {
+              status: "unavailable",
+              head: null,
+              reason: "docker is not running",
+            }
+            : { status: "passed", head: "0".repeat(40), gate: "absent" },
+        )) as unknown as typeof validateRepositoryForPublication,
+    };
+    await processCiFailure(makeInput(), processorDeps);
+
+    assertEquals(
+      commitBeforePush.length,
+      2,
+      "the final push and its retry are both publications",
+    );
+    assertEquals(
+      typeof recoverBeforePush,
+      "function",
+      "the recovery from a rejected push is a publication",
+    );
+    const guards = [...commitBeforePush, recoverBeforePush] as Array<
+      () => Promise<{ ok: boolean; error?: Error }>
+    >;
+    mode = "failed";
+    for (const guard of guards) {
+      assertEquals(
+        verdictName(await guard()),
+        "PublicationValidationFailedError",
+      );
+    }
+    mode = "unavailable";
+    for (const guard of guards) {
+      assertEquals(
+        verdictName(await guard()),
+        "PublicationValidationUnavailableError",
+      );
+    }
+    mode = "passed";
+    for (const guard of guards) {
+      assertEquals(verdictName(await guard()), "ok");
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - an unavailable repository check defers the push and is not counted as a content failure (Issue #4625)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const warnings: string[] = [];
+    const logger = makeSilentLogger();
+    logger.warn = (message) => {
+      warnings.push(message);
+    };
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: { runGhCommand: openPrGh() },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: false,
+            error: new PublicationValidationUnavailableError(
+              "docker is not running",
+            ),
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+    const result = await processCiFailure(makeInput(), {
+      promptsDir: PROMPTS_DIR,
+      logger,
+      deps,
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.changesPushed, false);
+    }
+    assertEquals(
+      warnings.some((w) =>
+        w.includes("Publication deferred: repository checks could not run")
+      ),
+      true,
+      `deferral must be logged; got: ${warnings.join(" | ")}`,
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+/** Run `git` in `cwd` with the worker's test identity; returns stdout. */
+async function gitIn(cwd: string, args: string[]): Promise<string> {
+  const out = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+    env: {
+      GIT_CONFIG_COUNT: "0",
+      GIT_AUTHOR_NAME: "test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+    },
+  }).output();
+  if (!out.success) {
+    throw new Error(
+      `git ${args.join(" ")} failed: ${new TextDecoder().decode(out.stderr)}`,
+    );
+  }
+  return new TextDecoder().decode(out.stdout);
+}
+
+Deno.test("processCiFailure - a CI fix that fails the repository checks leaves origin unmoved and the cause reaches the comment (Issue #4625)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "ci-publication-" });
+  try {
+    const branch = "issue-4625-ci-fix";
+    const upstream = `${tmp}/upstream.git`;
+    const seed = `${tmp}/seed`;
+    const downstream = `${tmp}/downstream`;
+    await gitIn(tmp, ["init", "--bare", "-q", "-b", "main", upstream]);
+    await gitIn(tmp, ["clone", "-q", upstream, seed]);
+    await Deno.writeTextFile(`${seed}/README.md`, "seed\n");
+    await gitIn(seed, ["add", "README.md"]);
+    await gitIn(seed, ["commit", "-q", "-m", "seed"]);
+    await gitIn(seed, ["push", "-q", "origin", "main"]);
+    await gitIn(tmp, ["clone", "-q", upstream, downstream]);
+    await gitIn(downstream, ["checkout", "-q", "-b", branch]);
+    await gitIn(downstream, ["push", "-q", "-u", "origin", branch]);
+    const remoteHead = async () =>
+      (await gitIn(downstream, ["ls-remote", "origin", `refs/heads/${branch}`]))
+        .trim();
+    const beforeRemote = await remoteHead();
+
+    const comments: string[] = [];
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: openPrGh((args) => {
+          if (args[0] === "pr" && args[1] === "comment") {
+            comments.push(args[args.indexOf("--body") + 1] ?? "");
+          }
+          return Promise.resolve("");
+        }),
+      },
+      claude: {
+        runClaudeWithRetry: (async () => {
+          // The agent commits its fix locally; the push must never leave.
+          await Deno.writeTextFile(`${downstream}/fix.txt`, "fixed\n");
+          await gitIn(downstream, ["add", "fix.txt"]);
+          await gitIn(downstream, ["commit", "-q", "-m", "agent fix"]);
+          return {
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          };
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      git: {
+        captureBranchHead,
+        branchHeadChanged,
+        commitAndPushPending,
+        recoverFromPushRejection,
+      } as unknown as Partial<GitDeps>,
+    });
+
+    const result = await processCiFailure(makeInput({ branchName: branch }), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${tmp}/state`,
+      workDir: downstream,
+      workRoot: tmp,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      qualityGateFn: () =>
+        Promise.resolve({ action: "passed", qualityOutput: "ok" }),
+      validatePublication: (() =>
+        Promise.resolve({
+          status: "failed",
+          head: null,
+          output: "GATE OUTPUT: lint failed in lib/x.ts",
+        })) as unknown as typeof validateRepositoryForPublication,
+    });
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.changesPushed, false);
+    }
+    assertEquals(
+      await remoteHead(),
+      beforeRemote,
+      "origin's branch must not move when the repository checks reject the head",
+    );
+    assertEquals(
+      comments.some((c) =>
+        c.includes("Repository checks failed before publication") &&
+        c.includes("GATE OUTPUT: lint failed in lib/x.ts")
+      ),
+      true,
+      `the gate output must reach the comment; got: ${comments.join(" | ")}`,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
   }
 });

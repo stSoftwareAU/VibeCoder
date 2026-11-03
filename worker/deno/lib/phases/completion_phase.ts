@@ -61,8 +61,12 @@ import { resolveRepoCredentials } from "../repo_credentials.ts";
 import {
   PRE_PUSH_GATE_REASON_HEAD_CHARS,
   PRE_PUSH_GATE_REASON_TAIL_CHARS,
+  PrePushGateBlockedError,
+  type PrePushGateOutcome,
   resolvePreFlightSpec,
 } from "../git_push.ts";
+import type { PrePushGateInfrastructureError } from "../pre_push_gate.ts";
+import { PublicationValidationUnavailableError } from "../publication_validation.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
@@ -1859,7 +1863,12 @@ async function completionBody(
   const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
     { commands: [] };
   const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
-    const runGateOnce = async () => {
+    const runGateOnce = async (): Promise<
+      Result<
+        PrePushGateOutcome,
+        PrePushGateBlockedError | PrePushGateInfrastructureError
+      >
+    > => {
       // The repo's own formatters first (part of #2932): a formatting-only
       // miss is fixed and committed here rather than failing the gate, or
       // shipping to review and CI. Same files as the gate. Agent-authored
@@ -1871,13 +1880,42 @@ async function completionBody(
         state.repoPath,
         comparableBase.ok ? comparableBase.value : undefined,
       );
-      return await deps.git.gateUnpushedCommits(
+      const fast = await deps.git.gateUnpushedCommits(
         state.branchName,
         { cwd: state.repoPath },
         prePushSpec,
         false,
         comparableBase.ok ? comparableBase.value : undefined,
       );
+      // Issue #4625: the repository's own gate must pass on the committed head
+      // before anything is published. A noop has nothing ahead of base to
+      // publish, so there is nothing to validate.
+      if (!fast.ok || fast.value.kind === "noop") return fast;
+      const validation = await deps.git.validatePublication({
+        cwd: state.repoPath,
+        repo,
+        repoConfigs: config.repoConfig,
+      });
+      if (validation.status === "passed") {
+        logger.info(
+          `Publication check passed on ${validation.head} ` +
+            `(repository gate: ${validation.gate})`,
+        );
+        return fast;
+      }
+      // A failed verdict goes back to the agent like a fast-gate block, so the
+      // one repair turn and the re-run decide. An unavailable gate is
+      // infrastructure: it is retried, never pushed.
+      if (validation.status === "failed") {
+        return {
+          ok: false,
+          error: new PrePushGateBlockedError(validation.output),
+        };
+      }
+      return {
+        ok: false,
+        error: new PublicationValidationUnavailableError(validation.reason),
+      };
     };
     let gate = await runGateOnce();
     // Issue #4128: a verdict block gets one in-run agent turn, once per run.
@@ -3591,15 +3629,35 @@ async function completionBody(
     log: (m: string) => logger.info(m),
   });
   if (lastCurrency.kind === "updated") {
-    const lastPush = await deps.git.pushUnpushedCommits(state.branchName, {
+    // Issue #4625: the merged head is published only once the repository's own
+    // gate passes on it. Otherwise the PR is raised on the earlier, validated head.
+    const mergedCheck = await deps.git.validatePublication({
       cwd: state.repoPath,
+      repo,
+      repoConfigs: config.repoConfig,
     });
-    if (!lastPush.ok) {
+    if (mergedCheck.status !== "passed") {
+      const detail = mergedCheck.status === "failed"
+        ? mergedCheck.output
+        : mergedCheck.reason;
       logger.warn(
         `'${state.branchName}' caught up with '${baseBranch}' locally but the ` +
-          `push failed, so the PR is raised on the earlier head: ` +
-          lastPush.error.message,
+          `repository checks ${mergedCheck.status} on the merged head, so it ` +
+          `was not pushed and the PR is raised on the earlier head: ` +
+          redactedHeadTail(detail, PRE_PUSH_GATE_REASON_HEAD_CHARS, 0)
+            .split("\n").slice(0, 5).join(" | "),
       );
+    } else {
+      const lastPush = await deps.git.pushUnpushedCommits(state.branchName, {
+        cwd: state.repoPath,
+      });
+      if (!lastPush.ok) {
+        logger.warn(
+          `'${state.branchName}' caught up with '${baseBranch}' locally but the ` +
+            `push failed, so the PR is raised on the earlier head: ` +
+            lastPush.error.message,
+        );
+      }
     }
   }
 

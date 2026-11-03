@@ -17,6 +17,7 @@ import {
   summariseLargeComment,
 } from "../lib/pr_feedback_processor.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
+import type { validateRepositoryForPublication } from "../lib/publication_validation.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -51,6 +52,18 @@ const FLEET_AUTHOR = "vibe-coder-bot";
 const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] } as const;
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+
+/**
+ * A repository-checks stub that always passes (Issue #4625). The test
+ * checkouts are not git repositories, so the real validator would report
+ * `unavailable` and defer before any verifier ran.
+ */
+const passingPublication: typeof validateRepositoryForPublication =
+  async () => ({
+    status: "passed",
+    head: "0".repeat(40),
+    gate: "absent",
+  });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2035,6 +2048,7 @@ Deno.test("feedback turn limit stops drift and verifier recovery before publishi
             await verifierDeps.ask({ prompt: "verify" });
             return { ok: true, value: undefined };
           },
+          validatePublication: passingPublication,
         },
       );
       assertEquals(result.ok, false);
@@ -2056,4 +2070,200 @@ Deno.test("feedback turn limit stops drift and verifier recovery before publishi
       await Deno.remove(dir, { recursive: true });
     }
   }
+});
+
+// ============================================================================
+// Repository-checks guard ahead of the AI verifier (Issue #4625)
+// ============================================================================
+
+/**
+ * One feedback round whose repository checks return `validation`. The git mock
+ * runs the lane's `beforePush` exactly as the real push does, so the checks and
+ * the verifier are observed in their real order.
+ */
+async function runPublicationRound(
+  commentType: "pr_review" | "issue",
+  validation: typeof validateRepositoryForPublication,
+) {
+  const dir = await Deno.makeTempDir();
+  const ghCalls: string[][] = [];
+  const verdicts: string[] = [];
+  const counts = { claude: 0, verifications: 0, pushes: 0, marks: 0 };
+  try {
+    await Deno.writeTextFile(
+      `${dir}/.pr_response_message`,
+      "A complete rebuttal.",
+    );
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: openPrGh((args) => {
+          ghCalls.push(args);
+          // The acting login and an empty reaction list let the claim-release
+          // path read its own eyes reaction and find nothing to take back.
+          if (args[0] === "api" && args[1] === "user") {
+            return Promise.resolve("fleet-bot");
+          }
+          return Promise.resolve(
+            args.some((arg) => arg.includes("reactions")) ? "[]" : "",
+          );
+        }),
+      },
+      claude: {
+        runClaudeWithRetry: async () => {
+          counts.claude++;
+          return {
+            ok: true,
+            value: { output: "fixed", exitCode: 0, timedOut: false },
+          };
+        },
+      },
+      pr: {
+        markCommentProcessed: async () => {
+          counts.marks++;
+          return { ok: true, value: undefined };
+        },
+      },
+      git: {
+        commitAndPushPending: async (
+          _branch,
+          _message,
+          _options,
+          _allow,
+          _gate,
+          _run,
+          _format,
+          beforePush,
+        ) => {
+          if (beforePush) {
+            const verdict = await beforePush();
+            verdicts.push(
+              verdict.ok ? "ok" : verdict.error.name,
+            );
+            if (!verdict.ok) return verdict;
+          }
+          counts.pushes++;
+          return {
+            ok: true,
+            value: {
+              committedNewChanges: true,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+              finalUnpushedSource: "remote-head",
+            },
+          };
+        },
+      },
+    });
+    const result = await processPrFeedback(makeInput({ commentType }), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      workDir: dir,
+      workRoot: dir,
+      qualityInstructions: "",
+      driftCheckFn: async () => ({ status: "clean", checked: [] }),
+      feedbackVerifierFn: async (_input, verifierDeps) => {
+        counts.verifications++;
+        await verifierDeps.ask({ prompt: "verify" });
+        return { ok: true, value: undefined };
+      },
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      validatePublication: validation,
+    });
+    return { result, counts, ghCalls, verdicts };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const failedPublication: typeof validateRepositoryForPublication =
+  async () => ({
+    status: "failed",
+    head: "0".repeat(40),
+    output: "GATE OUTPUT: lint failed in lib/x.ts",
+  });
+
+const unavailablePublication: typeof validateRepositoryForPublication =
+  async () => ({
+    status: "unavailable",
+    head: "0".repeat(40),
+    reason: "docker is not running",
+  });
+
+Deno.test("feedback publication - the repository checks run before the AI verifier, which never sees a rejected head (Issue #4625)", async () => {
+  const { result, counts, verdicts } = await runPublicationRound(
+    "pr_review",
+    failedPublication,
+  );
+  assertEquals(verdicts[0], "PublicationValidationFailedError");
+  assertEquals(counts.verifications, 0, "the verifier must not run");
+  assertEquals(counts.pushes, 0, "a rejected head is not pushed");
+  assertEquals(counts.marks, 0, "a rejected head is not marked addressed");
+  assertEquals(
+    counts.claude > 1,
+    true,
+    "the gate output goes back through the single correction round",
+  );
+  assertEquals(result.ok, true);
+});
+
+Deno.test("feedback publication - a head the checks pass reaches the verifier exactly once, then publishes (Issue #4625)", async () => {
+  const { result, counts, verdicts } = await runPublicationRound(
+    "pr_review",
+    passingPublication,
+  );
+  assertEquals(verdicts, ["ok"]);
+  assertEquals(
+    counts.verifications,
+    1,
+    "the verifier runs once, after the checks",
+  );
+  assertEquals(counts.pushes, 1);
+  assertEquals(result.ok, true);
+});
+
+Deno.test("feedback publication - an unavailable repository check defers the pr_review: no push, no verifier, no addressed mark (Issue #4625)", async () => {
+  const { result, counts, verdicts } = await runPublicationRound(
+    "pr_review",
+    unavailablePublication,
+  );
+  assertEquals(verdicts[0], "PublicationValidationUnavailableError");
+  assertEquals(counts.verifications, 0, "the verifier must not run");
+  assertEquals(counts.pushes, 0, "nothing is pushed");
+  assertEquals(
+    counts.marks,
+    0,
+    "the review is not marked addressed or charged",
+  );
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.processed, false);
+    assertEquals(result.value.changesPushed, false);
+  }
+});
+
+Deno.test("feedback publication - an unavailable repository check releases a non-review claim for retry (Issue #4625)", async () => {
+  const { result, counts, ghCalls } = await runPublicationRound(
+    "issue",
+    unavailablePublication,
+  );
+  assertEquals(counts.pushes, 0, "nothing is pushed");
+  assertEquals(
+    ghCalls.some((args) => args.join(" ").includes("reactions")),
+    true,
+    "the processed mark is taken back so the next scan rediscovers the comment",
+  );
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.processed, false);
+  }
+});
+
+Deno.test("feedback publication - a rejected head on a non-review comment is not pushed (Issue #4625)", async () => {
+  const { counts, verdicts } = await runPublicationRound(
+    "issue",
+    failedPublication,
+  );
+  assertEquals(verdicts[0], "PublicationValidationFailedError");
+  assertEquals(counts.pushes, 0, "a rejected head is not pushed");
 });
