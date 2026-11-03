@@ -1577,6 +1577,15 @@ Deno.test("entrypoint - a launch completes with the image layer read-only (Issue
       "github.com:\n    user: vibe-bot\n",
     );
     await Deno.chmod(home, 0o555);
+    // Group membership is the host's, not the case's: CI runs this as a
+    // uid with no `vibework` group (Issue #4733). Fake the group lookup and
+    // the chgrp as successes — as work_root_group_grant_test.ts does — so the
+    // HOME traverse fallback runs the same on every host.
+    for (const name of ["getent", "chgrp"]) {
+      await Deno.writeTextFile(`${dir}/bin/${name}`, "#!/bin/bash\nexit 0\n", {
+        mode: 0o755,
+      });
+    }
 
     let outcome;
     try {
