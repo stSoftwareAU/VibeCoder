@@ -26,7 +26,11 @@
 
 import { setupRepo as defaultSetupRepo } from "../commands/git_operations.ts";
 import type { CommandResult } from "../types.ts";
-import { discardBrokenClone, probeCorruptClone } from "./broken_clone.ts";
+import {
+  checkCloneOwnership,
+  discardBrokenClone,
+  probeCorruptClone,
+} from "./broken_clone.ts";
 
 /** Outcome of {@link ensureRepoClone}. */
 export interface EnsureRepoCloneResult {
@@ -46,6 +50,7 @@ export interface EnsureRepoCloneDeps {
   setupRepoFn?: (repo: string, workDir: string) => Promise<CommandResult>;
   /** Directory probe. Defaults to a `Deno.stat` check. */
   isDirectoryFn?: (path: string) => Promise<boolean>;
+  ownershipCheckFn?: (path: string) => Promise<string | null>;
 }
 
 /** Default directory probe — a missing path is simply "not a directory". */
@@ -118,6 +123,13 @@ async function ensureRepoCloneLocked(
     repoName === ".." || repoName.includes("/") || repoName.includes("\\");
 
   if (!unsafeSegment && await isDirectory(repoPath)) {
+    const ownershipError = await (deps.ownershipCheckFn ??
+      ((path) => checkCloneOwnership(path, undefined, undefined, true)))(
+        repoPath,
+      );
+    if (ownershipError) {
+      return { ok: false, repoPath, cloned: false, message: ownershipError };
+    }
     const discarded = await discardBrokenClone(repoPath);
     if (!discarded.ok) {
       return {
@@ -132,7 +144,12 @@ async function ensureRepoCloneLocked(
       // place with the Issue #2957 corrupt-clone recovery. A bad `.git/config`
       // was reused as-is and wedged every lane run at setup (Issue #3708), so
       // a corrupt clone is handed to setupRepo to move aside and re-clone.
-      const corruption = await probeCorruptClone(repoPath);
+      let corruption: string | null;
+      try {
+        corruption = await probeCorruptClone(repoPath);
+      } catch (error) {
+        return { ok: false, repoPath, cloned: false, message: String(error) };
+      }
       if (corruption === null) return { ok: true, repoPath, cloned: false };
       console.warn(
         `[setup-repo] ${repoPath} is a corrupt clone (${corruption}) — handing it to setupRepo to move aside and re-clone (Issue #3708)`,
