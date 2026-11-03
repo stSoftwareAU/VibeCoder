@@ -139,6 +139,17 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
         arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={`)
       );
       assert(profile);
+      assertEquals(
+        await Deno.readTextFile(`${home}/applied-body`),
+        "Reviewed PR description",
+      );
+      const bodyFile = await Deno.readTextFile(`${home}/body-file`);
+      const writablePaths = [...profile.matchAll(/"([^"]+)" = "write"/g)]
+        .map((match) => match[1]!);
+      assertEquals(writablePaths.length, 2, "clone and scratch write grants");
+      for (const writable of writablePaths) {
+        assert(bodyFile !== writable && !bodyFile.startsWith(`${writable}/`));
+      }
       for (
         const path of [
           privateKeyPath,

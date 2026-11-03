@@ -34,6 +34,8 @@ flowchart LR
   `readTextFileNoFollow`), `writeExchangeFile` (`createNew`, 0600).
 - `readTextFileNoFollow` gains optional `maxBytes`, `openTimeoutMs` and an
   `open` seam, a descriptor regular-file check, and a `dev` check beside `ino`.
+  The descriptor must have at most one hard link and match both the pre-open
+  and post-open path identities (inode and device).
   One-argument callers behave as before, apart from the extra descriptor checks.
 - `spawnBabysitterAgent` and `startBabysitterAgent` take a required
   `responseFile`; spawn refuses a relative path or one inside the clone or
@@ -109,7 +111,30 @@ symlink test red; `--output-last-message` back inside the clone → spawn-args
 test red; responseFile guard removed → refusal test red; `applyPrBody` writing
 with `Deno.writeTextFile` → planted-symlink test red; `maxBytes` pre-check
 removed and the open-timeout race removed → their `file_utils_test.ts` cases
-red. The `dev` comparison is not testable on one filesystem (unreached).
+red. Review repair adds an open-seam device-stat test with the same inode and
+a different device; removing the device comparisons makes it fail.
+
+Review repair for PR #4752 also adds real hard-link and regular-file rename
+races between lstat and open. Both tests fail before the fix. The reader now
+refuses multiple links on the opened descriptor and checks it against the
+original lstat as well as the fresh one. The production CLI repair fixture
+writes a PR body proposal and records the actual `gh pr edit --body-file`
+path and contents. It asserts that staging is outside both write grants
+(clone and scratch). Changing `fix()` back to scratch staging makes this
+end-to-end test fail. Existing assertions remain intact; no tests were removed.
+
+Review-repair validation: the four targeted babysitter and file-utils suites
+pass (134 tests), as do the shared reader's gh-wrapper and gitignore-enforcer
+callers (52 tests). `deno task check:manifests` passes (847 tests).
+The full `./quality.sh < /dev/null` passes completeness,
+formatting, lint, whole-tree type checking, Markdown, Mermaid and static
+checks. Its parallel unit pass crashes in host Deno 2.9.5 on macOS with
+`pledge test permissions called before restoring previous pledge`; the serial
+pass consequently does not run. Semgrep and Checkov are not installed, and
+config integration has no local configuration. All four test shards pass in
+base PR #4742's CI run 41550561600, verified with `gh`; all current PR #4752
+checks are also green. The summary CI command reports zero blocked gates
+(three issue-context gates not checked). No tests or checks were weakened.
 
 Implementation-session results before the CI repair: `deno task test:unit` for `file_utils_test.ts` (30
 passed), `fleet_babysitter_exchange_test.ts` (13 passed),

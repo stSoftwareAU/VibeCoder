@@ -474,6 +474,58 @@ Deno.test("readTextFileNoFollow - refuses a descriptor for a different inode swa
   });
 });
 
+Deno.test("readTextFileNoFollow - refuses a hard link raced in before open", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/target`;
+    const other = `${dir}/other`;
+    await Deno.writeTextFile(target, "proposal");
+    await Deno.writeTextFile(other, "private contents");
+    const result = await readTextFileNoFollow(target, {
+      open: async (path, options) => {
+        await Deno.link(other, `${dir}/replacement`);
+        await Deno.rename(`${dir}/replacement`, target);
+        return Deno.open(path, options);
+      },
+    });
+    assert(!result.ok, "a raced hard link must never be read");
+  });
+});
+
+Deno.test("readTextFileNoFollow - refuses a replacement matching the fresh lstat", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/target`;
+    await Deno.writeTextFile(target, "proposal");
+    const result = await readTextFileNoFollow(target, {
+      open: async (path, options) => {
+        await Deno.writeTextFile(`${dir}/replacement`, "replacement");
+        await Deno.rename(`${dir}/replacement`, target);
+        return Deno.open(path, options);
+      },
+    });
+    assert(!result.ok, "the pre-open identity must match too");
+  });
+});
+
+Deno.test("readTextFileNoFollow - refuses the same inode on a different device", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/target`;
+    await Deno.writeTextFile(target, "proposal");
+    const result = await readTextFileNoFollow(target, {
+      open: async (path, options) => {
+        const file = await Deno.open(path, options);
+        const stat = file.stat.bind(file);
+        file.stat = async () => {
+          const info = await stat();
+          assert(info.dev !== null);
+          return { ...info, dev: info.dev + 1 };
+        };
+        return file;
+      },
+    });
+    assert(!result.ok, "different devices must be refused");
+  });
+});
+
 Deno.test("readTextFileNoFollow - refuses an opened descriptor that is not a regular file", async () => {
   await withTempDir(async (dir) => {
     // The path is a regular file at the lstat; the seam hands back a

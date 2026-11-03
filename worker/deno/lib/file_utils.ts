@@ -513,9 +513,9 @@ export async function readTextFileNoFollow(
   }
 
   try {
-    // Close the lstat→open window, exactly as appendNoFollow does: the
-    // descriptor must still be the path's own inode and device, and must be
-    // a regular file rather than a directory or device swapped in.
+    // Close the lstat→open window: a singly-linked regular descriptor must
+    // match both the original path identity and the fresh lstat. Comparing
+    // only the fresh lstat would accept a replacement raced in before open.
     const opened = await file.stat();
     if (!opened.isFile) {
       return {
@@ -523,9 +523,19 @@ export async function readTextFileNoFollow(
         error: new Error(`${fn} — target is not a regular file: ${targetFile}`),
       };
     }
+    if (opened.nlink !== null && opened.nlink > 1) {
+      return {
+        ok: false,
+        error: new Error(`${fn} — refusing to read a hard link: ${targetFile}`),
+      };
+    }
     const current = await lstatOrNull(targetFile, fn);
     if (!current.ok) return current;
     const swapped = current.value === null || current.value.isSymlink ||
+      (opened.ino !== null && existing.value.ino !== null &&
+        opened.ino !== existing.value.ino) ||
+      (opened.dev !== null && existing.value.dev !== null &&
+        opened.dev !== existing.value.dev) ||
       (opened.ino !== null && current.value.ino !== null &&
         opened.ino !== current.value.ino) ||
       (opened.dev !== null && current.value.dev !== null &&

@@ -27,6 +27,15 @@ function commandOutput(
 ): string {
   const args = options.args?.map(String) ?? [];
   if (executable === "gh") {
+    if (args[0] === "pr" && args[1] === "edit") {
+      const path = args[args.indexOf("--body-file") + 1]!;
+      Deno.writeTextFileSync(`${root}/body-file`, path);
+      Deno.writeTextFileSync(
+        `${root}/applied-body`,
+        Deno.readTextFileSync(path),
+      );
+      return "";
+    }
     if (args[0] === "pr" && args[1] === "view") return JSON.stringify(pr);
     if (args[0] === "issue" && args[1] === "comment") {
       lock = {
@@ -81,6 +90,10 @@ function commandOutput(
   if (executable === "codex") {
     if (args[0] === "--version") return "codex-cli 0.164.0";
     if (args[0] === "exec") {
+      Deno.writeTextFileSync(
+        `${args[args.indexOf("--cd") + 1]}/.babysitter-pr-body`,
+        "Reviewed PR description\n",
+      );
       Deno.writeTextFileSync(`${root}/agent-spawn.json`, JSON.stringify(args));
       Deno.writeTextFileSync(
         args[args.indexOf("--output-last-message") + 1]!,
