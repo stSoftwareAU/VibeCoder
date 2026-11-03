@@ -52,7 +52,7 @@ const COMMENT_OPENER = "<!--";
 const COMMENT_CLOSER = "-->";
 
 /** The name a worker marker opens with, after `<!--` and optional whitespace. */
-const VIBE_NAME = "vibe-";
+const MARKER_NAME_PREFIX = "vibe-";
 
 /** One whitespace character, as `\s` matches it. */
 const WHITESPACE_RE = /\s/;
@@ -72,6 +72,31 @@ const NEGATED_CLOSE_RE =
 
 /** Any `#N` reference, whether same-repository or qualified. */
 const ISSUE_MENTION_RE = /#(\d+)\b/g;
+
+/**
+ * A colon closing phrase such as `Closes: #N` or `resolved : owner/repo#N`.
+ * GitHub honours it, and {@link CLOSING_KEYWORD_RE} does not match it.
+ * Groups: the lead character, the keyword with its separator, the optional
+ * repository qualifier, and the issue number.
+ *
+ * No two quantifiers overlap: the keyword is a fixed word set, the two runs of
+ * whitespace sit either side of a literal `:`, and the qualifier's two runs are
+ * split by a literal `/`, so a hostile run is read in linear time.
+ */
+const COLON_CLOSE_RE =
+  /(^|[^\w/])((?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:\s*)(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
+
+/**
+ * A full-URL closing phrase such as `Fixes https://github.com/owner/repo/issues/N`.
+ * GitHub honours it, and {@link CLOSING_KEYWORD_RE} does not match it.
+ * Groups: the lead character, the keyword with its whitespace, the owner, the
+ * repository, and the issue number.
+ *
+ * No two quantifiers overlap: the owner and repository runs are split by a
+ * literal `/`, and the keyword's whitespace run is followed by a literal `h`.
+ */
+const URL_CLOSE_RE =
+  /(^|[^\w/])((?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+)https:\/\/github\.com\/([a-z0-9_.-]+)\/([a-z0-9_.-]+)\/issues\/(\d+)\b/gi;
 
 /** Inputs to {@link guardPrBodyProposal}. */
 export interface PrBodyGuardInput {
@@ -194,7 +219,11 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
       }
     } else {
       text = withholdIssueClose(
-        withholdNegatedClose(text, issueNumber, repo),
+        withholdNegatedClose(
+          withholdColonAndUrlClose(text, issueNumber, repo),
+          issueNumber,
+          repo,
+        ),
         issueNumber,
         identity,
       );
@@ -282,13 +311,17 @@ function completeVibeMarkerSpans(text: string): Array<[number, number]> {
     const opener = text.indexOf(COMMENT_OPENER, from);
     if (opener === -1) break;
     const name = skipWhitespace(text, opener + COMMENT_OPENER.length);
-    const isVibe = text.slice(name, name + VIBE_NAME.length).toLowerCase() ===
-      VIBE_NAME;
+    const isVibe =
+      text.slice(name, name + MARKER_NAME_PREFIX.length).toLowerCase() ===
+        MARKER_NAME_PREFIX;
     if (!isVibe) {
       from = opener + 1;
       continue;
     }
-    const close = text.indexOf(COMMENT_CLOSER, name + VIBE_NAME.length);
+    const close = text.indexOf(
+      COMMENT_CLOSER,
+      name + MARKER_NAME_PREFIX.length,
+    );
     if (close === -1) break;
     const end = close + COMMENT_CLOSER.length;
     spans.push([opener, end]);
@@ -361,13 +394,84 @@ function withholdNegatedClose(
   );
 }
 
+/**
+ * The `[start, end)` offsets of each colon or full-URL closing phrase that
+ * names `issueNumber` in `repo`, covering only the keyword and its separator
+ * (Issue #4637). Phrases are found in the masked body, and a match that
+ * reaches into code is skipped, so a phrase inside a code span or block is
+ * never rewritten.
+ */
+function governingColonAndUrlCloses(
+  text: string,
+  issueNumber: number,
+  repo: string,
+): Array<[number, number]> {
+  const masked = maskMarkdownCode(text);
+  const repoKey = repo.toLowerCase();
+  const spans: Array<[number, number]> = [];
+  for (const match of masked.matchAll(COLON_CLOSE_RE)) {
+    if (Number(match[4]) !== issueNumber) continue;
+    const qualifier = match[3]?.toLowerCase();
+    if (qualifier !== undefined && qualifier !== repoKey) continue;
+    const span = proseSpan(text, masked, match, match[2]!.length);
+    if (span) spans.push(span);
+  }
+  for (const match of masked.matchAll(URL_CLOSE_RE)) {
+    if (Number(match[5]) !== issueNumber) continue;
+    if (`${match[3]}/${match[4]}`.toLowerCase() !== repoKey) continue;
+    const span = proseSpan(text, masked, match, match[2]!.length);
+    if (span) spans.push(span);
+  }
+  return spans.sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * The keyword span of a match, when every character from the keyword to the
+ * end of the match is prose. The masked and original texts have the same
+ * length, so a match that touched code differs between them.
+ */
+function proseSpan(
+  text: string,
+  masked: string,
+  match: RegExpMatchArray,
+  partLength: number,
+): [number, number] | undefined {
+  const start = (match.index ?? 0) + match[1]!.length;
+  const end = (match.index ?? 0) + match[0].length;
+  if (text.slice(start, end) !== masked.slice(start, end)) return undefined;
+  return [start, start + partLength];
+}
+
+/**
+ * Replace the keyword and separator of each colon or full-URL closing phrase
+ * that names the withheld issue with `Part of `, so GitHub no longer reads it
+ * as a closing reference (Issue #4637). A phrase naming another issue or
+ * another repository is left alone, and so is one inside code.
+ */
+function withholdColonAndUrlClose(
+  text: string,
+  issueNumber: number,
+  repo: string,
+): string {
+  let out = "";
+  let at = 0;
+  for (
+    const [start, end] of governingColonAndUrlCloses(text, issueNumber, repo)
+  ) {
+    out += `${text.slice(at, start)}Part of `;
+    at = end;
+  }
+  return out + text.slice(at);
+}
+
 /** Fail loud if a closing keyword for the withheld issue survives the rewrite. */
 function assertWithheld(body: string, issueNumber: number, repo: string): void {
   const masked = maskMarkdownCode(body);
   const survives = closingKeywordLine(masked, issueNumber) !== null ||
     closingRefs(masked, repo).some((ref) =>
       ref.sameRepo && ref.issueNumber === issueNumber
-    );
+    ) ||
+    governingColonAndUrlCloses(body, issueNumber, repo).length > 0;
   if (survives) {
     throw new Error(
       `proposed PR description still closes #${issueNumber} after the withhold; refusing to publish`,

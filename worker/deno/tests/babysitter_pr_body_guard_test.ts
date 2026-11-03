@@ -553,3 +553,101 @@ Deno.test("a complete benign HTML comment in a proposal is made inert, not left 
   assertStringIncludes(output, "Note <!- - benign - -> here.");
   assertNoHiddenComment(output);
 });
+
+Deno.test("a colon or full-URL closing form for the withheld issue becomes Part of (Issue #4637)", () => {
+  const output = guardPrBodyProposal({
+    proposal: [
+      "Closes: #4674",
+      "closes : #4674",
+      "Fixes https://github.com/owner/repo/issues/4674",
+      "Resolved: owner/repo#4674",
+    ].join("\n"),
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertEquals(
+    output,
+    [
+      "Part of #4674",
+      "Part of #4674",
+      "Part of https://github.com/owner/repo/issues/4674",
+      "Part of owner/repo#4674",
+      "",
+      buildIdempotencyMarker(4674),
+    ].join("\n"),
+  );
+});
+
+Deno.test("a colon or full-URL form naming another issue or repository is left as written (Issue #4637)", () => {
+  const proposal = [
+    "Closes: #99",
+    "Fixes https://github.com/owner/repo/issues/99",
+    "Fixes https://github.com/other/repo/issues/4674",
+  ].join("\n");
+  const output = guardPrBodyProposal({
+    proposal,
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertEquals(output, `${proposal}${partialSuffix()}`);
+  const otherRepo = guardPrBodyProposal({
+    proposal: "Resolved: other/repo#4674",
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertStringIncludes(otherRepo, "Resolved: other/repo#4674");
+});
+
+Deno.test("a colon or full-URL closing form inside code is left as written (Issue #4637)", () => {
+  const proposal = [
+    "Use `Closes: #4674` and `Fixes https://github.com/owner/repo/issues/4674` here.",
+    "",
+    "```",
+    "Resolved: owner/repo#4674",
+    "```",
+  ].join("\n");
+  const output = guardPrBodyProposal({
+    proposal,
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertEquals(output, `${proposal}${partialSuffix()}`);
+});
+
+Deno.test("with the close allowed, a colon or full-URL closing form is left as written (Issue #4637)", () => {
+  const proposal =
+    "Rewritten.\n\nCloses: #4637\nFixes https://github.com/owner/repo/issues/4637";
+  const output = guardPrBodyProposal({
+    proposal,
+    liveBody: liveBodyFor(4637, "Closes #4637"),
+    summary: FULLY_MET_SUMMARY,
+    repo: REPO,
+  });
+  assertEquals(output, `${proposal}\n\n${buildIdempotencyMarker(4637)}`);
+});
+
+Deno.test("a run of 30,000 spaces and colons after Closes with no issue number is guarded in linear time (Issue #4637)", () => {
+  const hostile = "Closes" + " :".repeat(15_000) + "x";
+  const output = guardPrBodyProposal({
+    proposal: hostile,
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertSameText(output, `${hostile}${partialSuffix()}`, "colon run");
+});
+
+Deno.test("a run of 30,000 owner characters after a full-URL Closes with no issue number is guarded in linear time (Issue #4637)", () => {
+  const hostile = "Closes https://github.com/" + "a".repeat(30_000) + "x";
+  const output = guardPrBodyProposal({
+    proposal: hostile,
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertSameText(output, `${hostile}${partialSuffix()}`, "URL owner run");
+});

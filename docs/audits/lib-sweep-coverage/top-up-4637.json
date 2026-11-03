@@ -1,0 +1,12 @@
+{
+  "issue": 4637,
+  "chunk": "top-up-4637",
+  "title": "top-up: babysitter PR description guard",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4637",
+  "definition": "The pure guard that decides the closing form and strips and restores markers for a babysitter's proposed PR description.",
+  "status": "claimed",
+  "sweptAt": "5ab202a7222902fc0aebf0ba8f2afaf9b56bdeee",
+  "paths": [
+    "worker/deno/lib/babysitter_pr_body_guard.ts"
+  ]
+}

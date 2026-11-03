@@ -8,6 +8,8 @@ const pr = {
   state: "OPEN",
   number: 1,
   title: "repair fixture",
+  body: "A description with no worker marker.",
+  closingIssuesReferences: [],
   author: { login: "fleet" },
   headRefName: "feature",
   headRefOid: "abc",
