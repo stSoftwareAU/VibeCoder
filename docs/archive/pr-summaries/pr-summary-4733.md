@@ -17,9 +17,24 @@ flowchart LR
 
 ## Reproduction
 
-- **symptom** — `untrusted account cannot use '/home/vibe/auto-issue-work/GRQ-AutoTrader' (probe 1) — left to CI`, then "the Issue #974 type check did not run", then the resolution is refused (the two 2026-11-02/03 comments on #4733).
-- **status** — `verified` for the access fault on this host: with `/home/vibe` at `700 vibe:vibe`, `sudo -n -u agent -- test -x /home/vibe` exits 1 and `sudo -n -u agent -- test -r …/GRQ-AutoTrader/Cargo.toml` exits 1. In a scratch tree of the same shape (parent `0700`), `chgrp vibework` + `chmod g+x` on the parent made the same read, traverse and write checks exit 0 for `agent`, and `ls` of the parent still gave "Permission denied". `partial` for the first (historic) refusal in the issue body, a `cargo test --workspace` exit 101 in `grq-lambda`'s integration suite: the log is truncated before the failing assertion and the tips named there have moved, so it cannot be diagnosed from this repository.
-- **regression test** — `worker/deno/tests/work_root_group_grant_test.ts::entrypoint - the untrusted account can traverse HOME to reach the work root (Issue #4733)`; it is red with the `chmod g+x "${HOME}"` line removed (the base-branch entrypoint).
+- **symptom** —
+  `untrusted account cannot use '/home/vibe/auto-issue-work/GRQ-AutoTrader' (probe 1) — left to CI`,
+  then "the Issue #974 type check did not run", then the resolution is refused
+  (the two 2026-11-02/03 comments on #4733).
+- **status** — `verified` for the access fault on this host: with `/home/vibe`
+  at `700 vibe:vibe`, `sudo -n -u agent -- test -x /home/vibe` exits 1 and
+  `sudo -n -u agent -- test -r …/GRQ-AutoTrader/Cargo.toml` exits 1. In a
+  scratch tree of the same shape (parent `0700`), `chgrp vibework` + `chmod g+x`
+  on the parent made the same read, traverse and write checks exit 0 for
+  `agent`, and `ls` of the parent still gave "Permission denied". `partial` for
+  the first (historic) refusal in the issue body, a `cargo test --workspace`
+  exit 101 in `grq-lambda`'s integration suite: the log is truncated before the
+  failing assertion and the tips named there have moved, so it cannot be
+  diagnosed from this repository.
+- **regression test** —
+  `worker/deno/tests/work_root_group_grant_test.ts::entrypoint - the untrusted account can traverse HOME to reach the work root (Issue #4733)`;
+  it is red with the `chmod g+x "${HOME}"` line removed (the base-branch
+  entrypoint).
 
 ## Spec
 
@@ -30,8 +45,8 @@ flowchart LR
   traverse-only on HOME at launch fixes the cause for every repository, the
   merge fast checks of #4697 included, without moving the clones.
 - Traverse-only (`g+x`, `0710`) keeps HOME unlistable. Credentials under
-  `~/.vibe-coder/credentials` keep their own `0700`/`0600` modes (checked on this
-  host with `find`).
+  `~/.vibe-coder/credentials` keep their own `0700`/`0600` modes (checked on
+  this host with `find`).
 
 ### Essential Design Decisions
 
@@ -76,9 +91,9 @@ bullet beside the argv-placement bullet). Sibling grep for the work-root grant
   `chmod g+rx` → second test red.
 - `worker/deno/tests/untrusted_gate_spawn_test.ts`: two new tests (a real probe
   run names `outer`, not `outer/inner`, when `outer` is `0000`; the message
-  names the directory only for a code-1 verdict and one plausible path).
-  Red checks: walk removed → red; walk prints `$1` → red; message suffix dropped
-  → red; absolute-path check removed → red; code-1 guard removed → red.
+  names the directory only for a code-1 verdict and one plausible path). Red
+  checks: walk removed → red; walk prints `$1` → red; message suffix dropped →
+  red; absolute-path check removed → red; code-1 guard removed → red.
 - `worker/deno/tests/milestone_merge_gate_test.ts` and
   `milestone_resolution_gate_test.ts`: fixture directories are `0777`; no
   assertion removed or changed. `worker/deno/tests/support/gate_child_env.ts`:
@@ -88,12 +103,12 @@ bullet beside the argv-placement bullet). Sibling grep for the work-root grant
   allowlist failure were reproduced on the base commit (a detached worktree of
   `HEAD` before these edits): the real drop hit a `0700` temp directory.
 
-Results on the final head:
-`deno task test:unit` for `untrusted_gate_spawn_test.ts` (26 passed),
-`milestone_resolution_gate_test.ts` (34 passed, parallel pass) and
-`milestone_merge_gate_test.ts` (41 passed, serial pass); `work_root_group_grant_test.ts`
-is an integration suite and was run with `deno test` (6 passed). `deno fmt`,
-`deno lint`, `deno check` pass on the touched files.
+Results on the final head: `deno task test:unit` for
+`untrusted_gate_spawn_test.ts` (26 passed), `milestone_resolution_gate_test.ts`
+(34 passed, parallel pass) and `milestone_merge_gate_test.ts` (41 passed, serial
+pass); `work_root_group_grant_test.ts` is an integration suite and was run with
+`deno test` (6 passed). `deno fmt`, `deno lint`, `deno check` pass on the
+touched files.
 
 `./quality.sh` on the final head: every stage passes except `deno tests`
 (parallel pass: 31980 passed, 1 failed). The one failure is
