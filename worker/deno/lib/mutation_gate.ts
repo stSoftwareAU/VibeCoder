@@ -29,31 +29,34 @@ export interface DenoMutant extends Mutant {
 }
 
 export type MutationCheckResult =
-  | { kind: "not_applicable"; reason: string }
-  | {
-    kind: "completed";
-    language: MutationLanguage;
-    survivors: Mutant[];
-    killed: number;
-    total: number;
-  }
-  | {
-    kind: "budget_exhausted";
-    language: MutationLanguage;
-    survivors: Mutant[];
-    killed: number;
-    tested: number;
-    /** Every candidate mutant, those not tried included. */
-    total: number;
-    budgetSeconds: number;
-    /**
-     * What ran out: absent means the wall-clock budget; `"mutant_cap"` means
-     * the run finished inside its budget but candidate mutants beyond the cap
-     * (or on over-long lines) were never tried.
-     */
-    limit?: "mutant_cap";
-  }
-  | { kind: "error"; reason: string };
+  & (
+    | { kind: "not_applicable"; reason: string }
+    | {
+      kind: "completed";
+      language: MutationLanguage;
+      survivors: Mutant[];
+      killed: number;
+      total: number;
+    }
+    | {
+      kind: "budget_exhausted";
+      language: MutationLanguage;
+      survivors: Mutant[];
+      killed: number;
+      tested: number;
+      /** Every candidate mutant, those not tried included. */
+      total: number;
+      budgetSeconds: number;
+      /**
+       * What ran out: absent means the wall-clock budget; `"mutant_cap"` means
+       * the run finished inside its budget but candidate mutants beyond the cap
+       * (or on over-long lines) were never tried.
+       */
+      limit?: "mutant_cap";
+    }
+    | { kind: "error"; reason: string }
+  )
+  & { ciOutsideScope?: true };
 
 /**
  * Worker-written opening of a runner `error` reason when the run's own
@@ -1504,7 +1507,7 @@ export function evaluateMutationGate(
   }
   const matchesLanguage = result.kind === "error" ||
     result.language === (ciBlock?.tool === "cargo" ? "rust" : "deno");
-  const ci = ciBlock && matchesLanguage
+  const ci = ciBlock && matchesLanguage && !result.ciOutsideScope
     ? { workflow: ciLabel(ciBlock.workflow), job: ciLabel(ciBlock.job) }
     : undefined;
   if (result.kind === "error") {

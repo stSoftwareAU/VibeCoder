@@ -79,8 +79,11 @@ The `cargo mutants` flags that choose the mutants or the build (`--package`,
 `--workspace`, `--features`, `--all-features`, `--no-default-features`,
 `--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`,
 `--regex`, `--examine-re`, `--examine-regex`, `-F`, `-f`, `--file`) are
-read from the job's command line and passed to the worker's own run, so it tries
-the mutants CI tries; diff, output, jobs and shuffle flags stay the worker's.
+read from the job's command line and passed to the worker's own run; diff,
+output, jobs and shuffle flags stay the worker's. Explicit CI package or
+workspace selection replaces the worker's touched-package selection. When all
+changed crates are known to be outside an explicit CI package list, the worker
+checks them separately as advisory and honours summary exemptions.
 Not evaluated or read: reusable-workflow `uses:` jobs, other mutation tools, job
 `if:` and path filters, flags of a `deno task`, and the repository's branch
 protection (required-check names).
@@ -232,7 +235,7 @@ directory on the work volume (`WORK_DIR`, else `$HOME/auto-issue-work`)
 (Issue #4127). The worker image ships `cargo-mutants` 27.1.0 (amd64 from the release
 tarball, checksum-verified; arm64 built with `cargo install --locked`).
 
-The run is limited to the packages the diff touches: for each changed `.rs` file
+Absent CI package or workspace selection, the run is limited to the packages the diff touches: for each changed `.rs` file
 the nearest ancestor `Cargo.toml` with a `[package]` section supplies a
 `--package <name>` argument (names failing `^[A-Za-z0-9_-]+$` are skipped; none
 found means no package arguments). A `mutants.out` already in the repository is

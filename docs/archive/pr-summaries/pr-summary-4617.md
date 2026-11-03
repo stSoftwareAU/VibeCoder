@@ -219,6 +219,11 @@ mutation verdict, completion phase, deferral and review-fix paths.
 
 ## CI repair on PR #4744
 
+- Review follow-up: CI package and workspace selections replace touched-crate
+  arguments. When every changed crate is known to be outside CI's explicit
+  package list, the local check remains advisory and honours exemptions. The
+  review-fix invocation also passes CI flags to the runner. The runner and gate
+  tests cover the outside-scope exemption and package/workspace arguments.
 - Review follow-up: aggregator lookup scans each shared `needs` array once,
   preserving the first matching job. A counted regression failed before the
   fix (100,000 element reads instead of 1,000); a YAML alias fixture exercises
