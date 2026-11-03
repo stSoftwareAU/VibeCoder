@@ -22,6 +22,7 @@
  */
 
 import { brokenRefsIn, removeBrokenRef } from "./broken_ref_repair.ts";
+import { checkCloneOwnership } from "./broken_clone.ts";
 import { assertSafeRefComponent } from "./git_ref_args.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
@@ -61,6 +62,8 @@ export interface SharedCloneRefSweepDeps {
   logError: (message: string) => void;
   /** Injectable git runner. Defaults to {@link runGitCommand}. */
   runGit?: typeof runGitCommand;
+  /** Injectable ownership check. Defaults to {@link checkCloneOwnership}. */
+  checkOwnership?: typeof checkCloneOwnership;
   /** Injectable lease. Defaults to {@link acquireMaintenanceRepoLease}. */
   acquireLease?: (repo: string) => RepoLease | null;
   /** Injectable event sink. Defaults to {@link emitSelfHealEvent}. */
@@ -176,6 +179,13 @@ export async function sweepSharedClone(
   const clone = clonePath(repo, workDir);
   if (!(await hasGitDir(clone))) {
     return { ...outcome, skipped: "no-clone" };
+  }
+
+  const refusal = await (deps.checkOwnership ?? checkCloneOwnership)(clone);
+  if (refusal) {
+    outcome.failures.push(refusal);
+    deps.logError(refusal);
+    return outcome;
   }
 
   const lease = acquire(repo);

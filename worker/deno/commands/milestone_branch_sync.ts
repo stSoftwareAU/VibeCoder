@@ -18,6 +18,7 @@ import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { ensureDefaultBranchCurrent } from "../lib/git_push.ts";
 import { getRepoDefaultBranch } from "../lib/shell_helpers.ts";
+import { trustedLocalCloneExists } from "../lib/broken_clone.ts";
 
 export const milestoneBranchSyncCommand: Command = {
   name: "sync-milestone-branches",
@@ -51,13 +52,11 @@ export const milestoneBranchSyncCommand: Command = {
     // sync is a local-git operation and running git against a missing
     // working directory is reported as a sync failure otherwise.
     const localCloneExistsFn = async (repo: string): Promise<boolean> => {
-      const path = `${workDir}/${repo.split("/")[1]}/.git`;
-      try {
-        const info = await Deno.stat(path);
-        return info.isDirectory || info.isFile;
-      } catch {
-        return false;
-      }
+      const path = `${workDir}/${repo.split("/")[1]}`;
+      return await trustedLocalCloneExists(
+        path,
+        (message) => logs.push(message),
+      );
     };
 
     // Issue #3912: repair first — a milestone that gained open children after
