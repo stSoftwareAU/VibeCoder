@@ -1024,8 +1024,17 @@ export async function fix(
   let attemptMarkerRecorded = false;
   try {
     const pr = await readPr(repo, initial.number, gh);
-    if (pr.headRefOid !== initial.headRefOid || !reason(pr)) {
-      console.log(`${repo}#${pr.number}: changed while waiting; skipped`);
+    const currentReason = reason(pr);
+    if (pr.headRefOid !== initial.headRefOid || !currentReason) {
+      if (pr.headRefOid !== initial.headRefOid && currentReason) {
+        console.log(
+          `${repo}#${pr.number}: deferred (head changed while waiting); next action: rescan the current head; next eligible at ${
+            new Date(Date.now() + 60_000).toISOString()
+          }`,
+        );
+      } else {
+        console.log(`${repo}#${pr.number}: no longer actionable; skipped`);
+      }
       return;
     }
     // Issue #4689: a worker's live PR-feedback lease means it is editing this
@@ -1175,7 +1184,9 @@ export async function fix(
     if (pr.mergeable === "CONFLICTING") {
       if (await baseAlreadyMerged(dir, pr.baseRefName)) {
         console.log(
-          `${repo}#${pr.number}: GitHub reports a conflict but ${pr.baseRefName} is already merged into the head; skipped until GitHub recomputes`,
+          `${repo}#${pr.number}: deferred (GitHub reports a stale conflict after ${pr.baseRefName} merged); next action: recheck mergeability; next eligible at ${
+            new Date(Date.now() + 60_000).toISOString()
+          }`,
         );
         return;
       }
