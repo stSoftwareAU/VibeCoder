@@ -323,8 +323,8 @@ export function babysitterRetryEligible(
   head?: string,
 ): boolean {
   return !record || (head !== undefined && head !== record.observedHead) ||
-    record.nextEligibleAt === null ||
-    Date.parse(record.nextEligibleAt) <= now;
+    (!record.escalation && (record.nextEligibleAt === null ||
+      Date.parse(record.nextEligibleAt) <= now));
 }
 
 /** Count consecutive no-progress outcomes in our fleet-authored marker family. */

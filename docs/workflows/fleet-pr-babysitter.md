@@ -214,16 +214,26 @@ record is saved before any best-effort marker write, and a failed marker write
 never replaces the repair's real error.
 
 When substantive attempts reach the configured `maxAutoFixAttempts` limit, the
-next prompt tells the agent to change its diagnosis, the record keeps the newest
-five redacted evidence lines, and the babysitter posts the existing auto-fix
-cap marker for the stall self-repair ladder. A fleet-authored marker for the
-incident deduplicates the handoff across hosts and restarts. The ladder skips
-its first trip and uses its existing recovery path; no separate escalation
-issue is created. The comment also identifies the babysitter handoff, so it
-does not claim ownership of a person's `needs-human` label. Explicit human
-holds stay paused until cleared. Waiting
-paths release the branch lock; the next scan logs the cause, next action, and
-eligible time.
+record keeps the newest five redacted evidence lines, and the babysitter posts
+the existing auto-fix cap marker. Further sessions for that incident stop until
+the head or requested review changes, including green review-feedback and
+merge-conflict incidents. A failed handoff is retried without another agent
+session. The shared tally also bounds sessions on a different host. A moved
+head retains the attempt history and receives a changed-diagnosis prompt with
+fenced, redacted prior evidence.
+
+A fleet-authored marker deduplicates the handoff across hosts and restarts.
+The stall self-repair ladder consumes the cap for eligible red-CI stalls and
+skips its first trip. Green review-feedback and conflict lanes do not consume
+that cap; their safety bound is the paused babysitter incident. No separate
+escalation issue is created. The comment identifies the babysitter handoff, so
+it does not claim ownership of a human `needs-human` label. Explicit human
+holds stay paused until cleared. Waiting paths release the branch lock; the
+next scan logs the cause, next action, and eligible time.
+
+Local git validation, staging and commit failures are code failures even when
+the diagnostic contains transport words in file paths or source text. Only
+clone, fetch and push failures use git transport diagnostics for classification.
 
 After a successful push the state records the pushed head and waits for CI and
 independent review. Each later scan observes the PR without taking a lock:

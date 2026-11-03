@@ -9,6 +9,7 @@ import {
   appendEvidence,
   appendTrackedPrs,
   attemptKey,
+  classifyBabysitterGitFailure,
   escalateStuckRepair,
   type EscalationRequest,
   fix,
@@ -80,10 +81,20 @@ function harness(
     pushed: 0,
     escalations: 0,
     escalateFails: 0,
+    reviewId: 10,
   };
   let nextId = 100;
   const gh = (args: string[]): Promise<string> => {
     const joined = args.join(" ");
+    if (joined.includes("pulls/1/reviews")) {
+      return Promise.resolve(
+        JSON.stringify([[{
+          id: state.reviewId,
+          state: "CHANGES_REQUESTED",
+          user: { login: "reviewer" },
+        }]]),
+      );
+    }
     if (args[0] === "pr" && args[1] === "view") {
       return Promise.resolve(JSON.stringify(state.pr));
     }
@@ -473,13 +484,14 @@ Deno.test("repeated no-progress persists evidence and escalates exactly once", a
       await elapse(stateDir);
     }
     const [record] = await records(stateDir);
-    assertEquals(record!.attempts.substantive, 3);
-    assertEquals(record!.evidence?.length, 3);
+    assertEquals(record!.attempts.substantive, 2);
+    assertEquals(record!.evidence?.length, 2);
     assertStringIncludes(record!.evidence![0]!, "agent made no changes");
     assertEquals(record!.escalation?.issue, `${REPO}#900`);
     assertEquals(h.state.escalations, 1, "one incident, one escalation");
-    assertStringIncludes(h.state.prompts[2]!, "Change the diagnosis");
-    assertEquals(h.state.sessions, 3);
+    assertStringIncludes(h.state.prompts[1]!, "agent made no changes");
+    assertStringIncludes(h.state.prompts[1]!, "untrusted diagnostics");
+    assertEquals(h.state.sessions, 2);
     assertEquals(record!.reconciliation, "repair-needed");
     assert(!record!.nextAction.includes("needs-human"));
   });
@@ -494,6 +506,8 @@ Deno.test("a failed escalation is retried on the next no-progress pass", async (
     await elapse(stateDir);
     await h.attempt(1);
     assertEquals(h.state.escalations, 1);
+    assertEquals(h.state.sessions, 1);
+    assertEquals(h.state.markers.length, 1);
     assertEquals(
       (await records(stateDir))[0]!.escalation?.issue,
       `${REPO}#900`,
@@ -837,10 +851,113 @@ Deno.test("a changed head bypasses an old cooldown without losing attempts", asy
         reconciliation: "repair-needed",
         nextEligibleAt: new Date(Date.now() + 60 * 60_000).toISOString(),
         attempts: { infrastructure: 0, substantive: 1 },
+        escalation: { issue: `${REPO}#900`, at: new Date().toISOString() },
+        evidence: ["prior failed repair diagnostic"],
       }),
     );
-    await h.attempt();
+    await h.attempt(1);
     assertEquals(h.state.sessions, 1);
+    assertStringIncludes(h.state.prompts[0]!, "prior failed repair diagnostic");
+    assertStringIncludes(h.state.prompts[0]!, "Change the diagnosis");
     assertEquals((await records(stateDir))[0]!.attempts.substantive, 2);
+  });
+});
+
+Deno.test("local validation diagnostics spend the budget even in timeout paths", async () => {
+  const message =
+    "git failed: worker/deno/lib/git_timeout.ts:42: leftover conflict marker";
+  for (
+    const args of [["diff", "--check"], ["add", "-A"], [
+      "-c",
+      "user.name=bot",
+      "commit",
+    ], ["merge", "--no-commit"]]
+  ) {
+    assertEquals(
+      classifyBabysitterGitFailure(args, new Error(message)).blockerClass,
+      "code",
+    );
+  }
+  assertEquals(
+    classifyBabysitterGitFailure(
+      ["fetch"],
+      new Error("fatal: Could not resolve host: github.com"),
+    ).blockerClass,
+    "infrastructure",
+  );
+  assertEquals(
+    classifyBabysitterGitFailure(["push"], new Error(message)).blockerClass,
+    "code",
+  );
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.changes = true;
+    h.state.runFailures.push({ match: "diff --check", message });
+    for (let i = 0; i < 2; i++) {
+      await assertRejects(
+        () => h.attempt(2),
+        Error,
+        "leftover conflict marker",
+      );
+      await elapse(stateDir);
+    }
+    await h.attempt(2);
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "code");
+    assertEquals(record!.attempts.substantive, 2);
+    assertEquals(h.state.markers.length, 2);
+    assertEquals(h.state.escalations, 1);
+    assertEquals(h.state.sessions, 2);
+  });
+});
+
+Deno.test("green review incidents stop sessions after handoff until a new review", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS", status: "COMPLETED" }],
+    });
+    // No ready signal: leave the review outstanding, without dismissal calls.
+    for (let i = 0; i < 3; i++) {
+      h.state.agents.push({ response: "cannot complete this repair" });
+      await assertRejects(() => h.attempt(3));
+      await elapse(stateDir);
+    }
+    for (let i = 0; i < 5; i++) {
+      await h.attempt(3);
+      await elapse(stateDir);
+    }
+    assertEquals(h.state.sessions, 3);
+    assertEquals(h.state.escalations, 1);
+    h.state.reviewId++;
+    h.state.agents.push({ response: "new review diagnostic" });
+    await assertRejects(() => h.attempt(3));
+    assertEquals(h.state.sessions, 4);
+    assertEquals(h.state.locks.length, 0);
+  });
+});
+
+Deno.test("conflict incidents stay paused after handoff even past the cooldown", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({ mergeable: "CONFLICTING" });
+    await saveBabysitterRetryState(
+      stateDir,
+      tracked({
+        failureIdentity: "merge conflict",
+        observedHead: HEAD,
+        attempts: { infrastructure: 0, substantive: 3 },
+        escalation: { issue: `${REPO}#900`, at: new Date().toISOString() },
+        reconciliation: "repair-needed",
+      }),
+    );
+    for (let i = 0; i < 4; i++) {
+      await elapse(stateDir);
+      await h.attempt();
+    }
+    assertEquals(h.state.sessions, 0);
+    assertEquals(h.state.locks.length, 0);
+    assertEquals((await records(stateDir))[0]!.attempts.substantive, 3);
   });
 });

@@ -14,7 +14,7 @@ Moved heads bypass old cooldowns without discarding attempt history.
 
 Repeated no-progress persists redacted evidence and posts the existing
 auto-fix cap marker for the stall self-repair ladder. A babysitter handoff
-does not claim ownership of a human label. The existing ladder owns recovery;
+does not claim ownership of a human label. Eligible red-CI stalls use the existing ladder; other incidents pause until the head or review changes;
 no separate escalation issue can remain open after the PR resolves. Terminal
 PRs lose their retry records, and parked closed records cause no further
 GitHub reads.
@@ -37,7 +37,7 @@ Version bump: none; no release version or external extension contract changed.
   tally. It reuses strict attribute validation, with author verification.
 - Trusted runner sessions restart before read-token expiry. The agent receives
   no runner write token or App key.
-- The stall ladder's cap marker owns automated recovery. Evidence is redacted,
+- The stall ladder cap marker owns eligible red-CI recovery; green review and conflict incidents stop sessions until the head or review changes. Evidence is redacted,
   marker-neutralised and fenced before publication.
 
 ### Undiscoverable Facts
@@ -85,7 +85,7 @@ longer exists.
 - **met** — Repeated no-progress persists evidence and uses the existing
   automated repair mechanism. — evidence: `escalateStuckRepair` posts the
   existing cap marker; `stall_repair_test.ts::babysitter cap handoff goes straight to the existing second-trip recovery`
-  exercises the real ladder. No independent issue is filed. — reviewer: met
+  exercises the real red-CI ladder. Green review and conflict incidents pause after handoff until the head or review changes; orchestration verifies bounded green-review sessions. No independent issue is filed. — reviewer: met
 
 ## Test Plan
 
@@ -125,3 +125,32 @@ longer exists.
 
 The babysitter commits and pushes this working tree. CI must validate that
 commit, including the archived-summary freshness check.
+
+## Follow-up review repair
+
+Local git diff checks, staging, merge and commit failures declare code at the
+operation boundary. Transport operations recognise git transport phrases, never
+bare path keywords. A leftover marker in `worker/deno/lib/git_timeout.ts` now
+spends the substantive budget, posts an attempt marker and reaches the cap.
+
+After handoff the unchanged incident starts no more sessions, even after its
+cooldown expires. A changed review has its own identity; a changed head permits
+one new diagnosis with fenced prior evidence while retaining attempt history.
+Failed handoffs retry publication without running another repair session.
+The existing max-two test now expects two sessions/evidence lines rather than
+three: the requested bound makes the former third session invalid. Its prompt
+assertion now checks prior evidence on the second session; changed-diagnosis
+coverage remains on the moved-head scenario. No twinned classifier rule found.
+
+Validation for this follow-up: all six focused babysitter, retry-state, App,
+stall-repair and conflict-gate suites passed (**139 tests, zero failures**).
+Removing the classification and pause guards made the local-validation,
+repeated-no-progress and green-review regressions fail; the guards were
+restored before the final passing run. The complete local gate passed
+formatting, lint, type checking, Markdown, Mermaid, completeness and all
+chokepoints. Its parallel suite again hit the Deno 2.9.5/macOS permission-pledge
+runtime panic quoted above, so the serial pass did not run. Base PR #4715
+Quality run 41555343824 passed all unit shards and its gate (verified with gh).
+Semgrep and Checkov remain unavailable; config integration has no config file.
+The summary CLI reports zero blocked gates; its three missing-input checks
+remain not checked. Commit-history freshness runs after the babysitter commits.
