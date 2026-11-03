@@ -48,6 +48,7 @@
  */
 
 import { createMilestoneBranchName } from "./git_branch.ts";
+import { checkCloneOwnership } from "./broken_clone.ts";
 import { runGhCommand } from "./github.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { runGitCommand } from "./git_timeout.ts";
@@ -105,6 +106,8 @@ export interface ClosedMilestoneSweepOptions {
 
 /** Injectable seam — every side effect this module has. */
 export interface ClosedMilestoneSweepDeps {
+  /** Refuse a clone owned by another account before running git. */
+  checkOwnership(path: string): Promise<string | null>;
   /** Run `gh`, returning stdout. */
   gh: GhCommandFn;
   /** Run git in `cwd`. */
@@ -204,6 +207,7 @@ function parseIssueNumbers(raw: string): number[] {
 /** The production dependency set. */
 export function createDefaultSweepDeps(): ClosedMilestoneSweepDeps {
   return {
+    checkOwnership: checkCloneOwnership,
     // The shared chokepoint, not a second raw spawn: it carries the timeout,
     // the retry/backoff and the rate-limit short-circuit every other `gh`
     // caller in the worker gets.
@@ -269,6 +273,13 @@ export async function sweepClosedMilestones(
     result.errors.push(
       `Could not inspect the checkout ${repoPath}: ${message}`,
     );
+    return result;
+  }
+
+  const refusal = await deps.checkOwnership(repoPath);
+  if (refusal) {
+    result.errors.push(refusal);
+    deps.log(`milestone-close housekeeping: ${refusal}`);
     return result;
   }
 

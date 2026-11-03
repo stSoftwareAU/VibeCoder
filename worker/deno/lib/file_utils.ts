@@ -419,6 +419,23 @@ export async function appendNoFollow(
   return { ok: true, value: undefined };
 }
 
+/** Options for {@link readTextFileNoFollow}. All optional; unset = today's read. */
+export interface ReadTextFileNoFollowOptions {
+  /**
+   * Refuse a file larger than this many bytes. The read itself stops at
+   * maxBytes+1, so a file that grows after the stat is still refused. Unset =
+   * today's unbounded read of the stat size.
+   */
+  maxBytes?: number;
+  /**
+   * Give up on the open after this many ms. Opens read-write so a FIFO raced
+   * in after lstat cannot block on Unix. Unset = read-only and wait.
+   */
+  openTimeoutMs?: number;
+  /** Test seam; defaults to Deno.open. */
+  open?: typeof Deno.open;
+}
+
 /**
  * Read a file's text, refusing to follow a link at the path (Issue #1234).
  *
@@ -427,28 +444,69 @@ export async function appendNoFollow(
  * read-modify-write caller then copies that content into the file it writes
  * back. The same guards as {@link appendNoFollow} apply: an `lstat` refuses a
  * symlink, a hard link or any non-regular target before the open, and the
- * descriptor's inode is re-checked against a fresh `lstat` afterwards so a
- * link swapped into the check→open window is caught before the bytes are used.
+ * descriptor is re-checked against a fresh `lstat` afterwards so a link swapped
+ * into the check→open window is caught before the bytes are used. The check
+ * compares inode and device (each when both sides report one), and the
+ * descriptor itself must be a regular file (`fstat`).
+ *
+ * Because the file may be AGENT-WRITABLE, two further bounds apply when set:
+ *  - `maxBytes` refuses a file over the cap (by its stat, and by a read that
+ *    stops at maxBytes+1 so growth after the stat is caught too); and
+ *  - `openTimeoutMs` opens read-write to prevent a raced FIFO from blocking on
+ *    Unix, and stops waiting if the open itself stalls.
+ *
+ * Residual: an open that times out is abandoned, not cancelled. If it later
+ * completes, its descriptor is closed, not used. A pending open can keep the
+ * process alive; the babysitter's non-watch entry point explicitly exits after
+ * its pass. Read-write opens also require write permission on the file.
  *
  * An absent file is reported as a `null` value, not an error — callers that
  * treat "missing" as "empty" ask for that case explicitly.
  *
  * @param targetFile - Path to read
+ * @param options - Optional size cap, open timeout and open seam
  * @returns Result with the file's text, or `null` when the file is absent
  */
 export async function readTextFileNoFollow(
   targetFile: string,
+  options: ReadTextFileNoFollowOptions = {},
 ): Promise<Result<string | null>> {
   const fn = "readTextFileNoFollow";
+  const { maxBytes, openTimeoutMs, open = Deno.open } = options;
   const existing = await lstatOrNull(targetFile, fn);
   if (!existing.ok) return existing;
   if (existing.value === null) return { ok: true, value: null };
   const refusal = refuseNonRegular(targetFile, existing.value, fn, "read");
   if (refusal) return { ok: false, error: refusal };
+  if (maxBytes !== undefined && existing.value.size > maxBytes) {
+    return {
+      ok: false,
+      error: new Error(
+        `${fn} — file exceeds ${maxBytes} bytes: ${targetFile}`,
+      ),
+    };
+  }
 
   let file: Deno.FsFile;
   try {
-    file = await Deno.open(targetFile, { read: true });
+    const opening = open(targetFile, {
+      read: true,
+      ...(openTimeoutMs === undefined ? {} : { write: true }),
+    });
+    if (openTimeoutMs === undefined) {
+      file = await opening;
+    } else {
+      const won = await openWithin(opening, openTimeoutMs);
+      if (won === null) {
+        return {
+          ok: false,
+          error: new Error(
+            `${fn} — timed out opening ${targetFile} after ${openTimeoutMs}ms`,
+          ),
+        };
+      }
+      file = won;
+    }
   } catch (err) {
     return {
       ok: false,
@@ -459,14 +517,33 @@ export async function readTextFileNoFollow(
   }
 
   try {
-    // Close the lstat→open window, exactly as appendNoFollow does: the
-    // descriptor must still be the path's own inode.
+    // Close the lstat→open window: a singly-linked regular descriptor must
+    // match both the original path identity and the fresh lstat. Comparing
+    // only the fresh lstat would accept a replacement raced in before open.
     const opened = await file.stat();
+    if (!opened.isFile) {
+      return {
+        ok: false,
+        error: new Error(`${fn} — target is not a regular file: ${targetFile}`),
+      };
+    }
+    if (opened.nlink !== null && opened.nlink > 1) {
+      return {
+        ok: false,
+        error: new Error(`${fn} — refusing to read a hard link: ${targetFile}`),
+      };
+    }
     const current = await lstatOrNull(targetFile, fn);
     if (!current.ok) return current;
     const swapped = current.value === null || current.value.isSymlink ||
+      (opened.ino !== null && existing.value.ino !== null &&
+        opened.ino !== existing.value.ino) ||
+      (opened.dev !== null && existing.value.dev !== null &&
+        opened.dev !== existing.value.dev) ||
       (opened.ino !== null && current.value.ino !== null &&
-        opened.ino !== current.value.ino);
+        opened.ino !== current.value.ino) ||
+      (opened.dev !== null && current.value.dev !== null &&
+        opened.dev !== current.value.dev);
     if (swapped) {
       return {
         ok: false,
@@ -476,12 +553,24 @@ export async function readTextFileNoFollow(
       };
     }
 
-    const buffer = new Uint8Array(opened.size);
+    // Bounded: read at most maxBytes+1 so one extra byte proves "over cap".
+    // Unbounded: the stat size, as before.
+    const buffer = new Uint8Array(
+      maxBytes === undefined ? opened.size : maxBytes + 1,
+    );
     let read = 0;
     while (read < buffer.length) {
       const n = await file.read(buffer.subarray(read));
       if (n === null) break;
       read += n;
+    }
+    if (maxBytes !== undefined && read > maxBytes) {
+      return {
+        ok: false,
+        error: new Error(
+          `${fn} — file exceeds ${maxBytes} bytes: ${targetFile}`,
+        ),
+      };
     }
     return {
       ok: true,
@@ -498,6 +587,35 @@ export async function readTextFileNoFollow(
     try {
       file.close();
     } catch { /* already closed */ }
+  }
+}
+
+/**
+ * Await an open for at most `ms`: resolves to the file, or to null when the
+ * timer wins. An open abandoned by the timer is closed if it ever completes.
+ */
+async function openWithin(
+  opening: Promise<Deno.FsFile>,
+  ms: number,
+): Promise<Deno.FsFile | null> {
+  const timedOut = Symbol("timedOut");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const winner = await Promise.race([
+      opening,
+      new Promise<typeof timedOut>((resolve) => {
+        timer = setTimeout(() => resolve(timedOut), ms);
+      }),
+    ]);
+    if (winner === timedOut) {
+      // The caller already has the timeout error; the abandoned descriptor
+      // must not leak, so close it when the open eventually settles.
+      opening.then((f) => f.close(), () => {});
+      return null;
+    }
+    return winner;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
