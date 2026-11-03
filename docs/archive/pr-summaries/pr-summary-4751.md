@@ -78,4 +78,10 @@ Backend-only change; no UI file touched. Verified by tests below.
 - Docs: `docs/IDLE-TASK-FRAMEWORK.md` (decision flowchart, new section).
   Siblings grepped: `repo_backed_off`, `repo_held_in_flight`,
   `backedOffInversionRepos`, `inversion_repo_held`.
-- Results on the final head are recorded in the run's final message.
+- `./quality.sh` on the final head: every stage passed except `deno tests`
+  (32207 passed, 2 failed, parallel pass): `babysitter default heartbeat
+  resolves its checkout revision` (the host cannot download `@std/crypto` from
+  JSR) and `verifyResolvedTree - the repository's own task sees only the
+  allowlisted environment (Issue #4659)` (the temp checkout is not readable by
+  the `agent` account here). Neither touches the census. The serial pass did not
+  run after the parallel failure, so CI covers it.
