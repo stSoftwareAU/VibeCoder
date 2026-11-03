@@ -15,6 +15,7 @@ import {
 import type { RepoConfig, Result } from "../types.ts";
 import {
   createPublicationGuard,
+  PUBLICATION_GATE_TIMEOUT_SECONDS,
   type PublicationValidation,
   PublicationValidationFailedError,
   PublicationValidationUnavailableError,
@@ -328,6 +329,24 @@ Deno.test("the repository's qualityCommand is the gate script", async (t) => {
       );
       assertEquals(firstCall(calls).params.qualityScript, "./quality.sh");
     });
+  });
+});
+
+Deno.test("the gate gets the 30-minute publication timeout", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const calls: GateCall[] = [];
+    const repoConfigs: Record<string, RepoConfig> = {
+      [REPO]: { qualityCheckTimeout: 5 },
+    };
+    await validateRepositoryForPublication(
+      { cwd: dir, repo: REPO, repoConfigs },
+      { runGate: stubGate(PASS, calls) },
+    );
+    const params = firstCall(calls).params;
+    assertEquals(params.defaultTimeoutSeconds, 1800);
+    assertEquals(PUBLICATION_GATE_TIMEOUT_SECONDS, 1800);
+    // The repository's own timeout still rides along and overrides the default.
+    assertEquals(params.repoConfigs?.[REPO]?.qualityCheckTimeout, 5);
   });
 });
 

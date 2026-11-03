@@ -5853,7 +5853,10 @@ The four lanes apply it as follows:
   resumes.
 
 A `passed` verdict is reused only while the checkout is clean and the head is
-unchanged. Any new commit or uncommitted edit is validated afresh.
+unchanged. Any new commit or uncommitted edit is validated afresh. The gate's
+timeout defaults to 30 minutes (`PUBLICATION_GATE_TIMEOUT_SECONDS`), not the
+quality-gate phase's 10 minutes, and a repository's own `quality_check_timeout`
+still overrides it.
 
 Known limits: commits an agent pushes itself in the CI and feedback lanes go
 through the agent's pre-push hook, which checks changed files only, not this

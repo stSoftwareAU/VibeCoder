@@ -62,6 +62,14 @@ export interface PublicationValidationDeps {
 const OUTPUT_HEAD_CHARS = 4_000;
 const OUTPUT_TAIL_CHARS = 8_000;
 
+/**
+ * The gate's timeout when the repository sets no `quality_check_timeout`. The
+ * quality-gate phase's 600-second default kills a repository whose own gate
+ * takes longer, and that kill would then read as a content failure. A
+ * repository's own `quality_check_timeout` still overrides this value.
+ */
+export const PUBLICATION_GATE_TIMEOUT_SECONDS = 1800;
+
 /** The gate rejected the head; the message carries its output for repair. */
 export class PublicationValidationFailedError extends Error {
   constructor(message: string) {
@@ -181,7 +189,12 @@ export async function validateRepositoryForPublication(
       command !== "./quality.sh",
     );
     const result = await (deps.runGate ?? runQualityGateCheck)(
-      { repo, qualityScript: command, repoConfigs },
+      {
+        repo,
+        qualityScript: command,
+        repoConfigs,
+        defaultTimeoutSeconds: PUBLICATION_GATE_TIMEOUT_SECONDS,
+      },
       gateDeps,
     );
     const after = await inspectCheckout(cwd);
