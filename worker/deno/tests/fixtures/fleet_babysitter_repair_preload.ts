@@ -4,13 +4,17 @@ export {};
 const root = Deno.env.get("BABYSITTER_REPAIR_FIXTURE");
 if (!root) throw new Error("BABYSITTER_REPAIR_FIXTURE is required");
 
+const NativeCommand = Deno.Command;
+const repairScenario = Deno.env.get("BABYSITTER_REPAIR_SCENARIO");
 const pr = {
   state: "OPEN",
   number: 1,
   title: "repair fixture",
   author: { login: "fleet" },
   headRefName: "feature",
-  headRefOid: "abc",
+  headRefOid: repairScenario
+    ? Deno.readTextFileSync(`${root}/head`).trim()
+    : "abc",
   baseRefName: "main",
   isCrossRepository: false,
   isDraft: false,
@@ -20,6 +24,7 @@ const pr = {
   statusCheckRollup: [{ conclusion: "FAILURE" }],
 };
 let lock: Record<string, unknown> | undefined;
+let repairDir: string | undefined;
 
 function commandOutput(
   executable: string,
@@ -27,7 +32,22 @@ function commandOutput(
 ): string {
   const args = options.args?.map(String) ?? [];
   if (executable === "gh") {
-    if (args[0] === "pr" && args[1] === "view") return JSON.stringify(pr);
+    if (args[0] === "pr" && args[1] === "view") {
+      if (args.includes(".body")) return "fixture body";
+      if (repairScenario === "stale" && repairDir) {
+        try {
+          Deno.statSync(`${root}/gate-runs`);
+          Deno.writeTextFileSync(
+            `${repairDir}/changed.txt`,
+            "changed after validation\n",
+          );
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+      }
+      return JSON.stringify(pr);
+    }
+    if (args.includes("users/babysitter%5Bbot%5D")) return "123";
     if (args[0] === "issue" && args[1] === "comment") {
       lock = {
         id: 100,
@@ -53,7 +73,7 @@ function commandOutput(
     // No cancelled runs, so the failed-CI repair proceeds to the agent.
     if (
       args[0] === "api" &&
-      args[1]?.startsWith("repos/owner/repo/actions/runs?head_sha=abc")
+      args[1]?.startsWith("repos/owner/repo/actions/runs?head_sha=")
     ) {
       return "[]";
     }
@@ -82,6 +102,13 @@ function commandOutput(
     if (args[0] === "--version") return "codex-cli 0.164.0";
     if (args[0] === "exec") {
       Deno.writeTextFileSync(`${root}/agent-spawn.json`, JSON.stringify(args));
+      if (repairScenario) {
+        repairDir = args[args.indexOf("--cd") + 1];
+        Deno.writeTextFileSync(
+          `${args[args.indexOf("--cd") + 1]}/changed.txt`,
+          "agent repair\n",
+        );
+      }
       Deno.writeTextFileSync(
         args[args.indexOf("--output-last-message") + 1]!,
         "BABYSITTER_READY\n",
@@ -94,7 +121,7 @@ function commandOutput(
   );
 }
 
-// No real subprocess can escape the fixture, including gh writes or Codex.
+// GitHub writes and Codex stay offline; repair scenarios run local Git and gates.
 Deno.Command = class {
   constructor(
     private executable: string,
@@ -102,6 +129,39 @@ Deno.Command = class {
   ) {}
 
   async output(): Promise<Deno.CommandOutput> {
+    const args = this.options.args?.map(String) ?? [];
+    if (repairScenario && this.executable === "git") {
+      Deno.writeTextFileSync(`${root}/git-calls.log`, args.join(" ") + "\n", {
+        append: true,
+      });
+      if (args[0] === "remote" && args[1] === "set-url") {
+        Deno.writeTextFileSync(`${root}/origin-url`, args[3]!);
+        args[3] = `${root}/remote.git`;
+        return await new NativeCommand("git", { ...this.options, args })
+          .output();
+      }
+      if (args[0] === "clone") {
+        Deno.writeTextFileSync(
+          `${root}/clone-calls.log`,
+          args.join(" ") + "\n",
+          { append: true },
+        );
+        if (args.includes("--bare")) args[2] = `${root}/remote.git`;
+      }
+      const localArgs = args.map((arg) =>
+        arg === "git@github.com:owner/repo.git" ||
+          arg === "https://github.com/owner/repo.git"
+          ? `${root}/remote.git`
+          : arg
+      );
+      return await new NativeCommand("git", {
+        ...this.options,
+        args: localArgs,
+      }).output();
+    }
+    if (repairScenario && !["gh", "codex", "rtk"].includes(this.executable)) {
+      return await new NativeCommand(this.executable, this.options).output();
+    }
     return {
       success: true,
       code: 0,

@@ -988,13 +988,6 @@ export async function commitAndPushPending(
     }
   }
 
-  // Issue #3784: inspect the committed, formatted head before it leaves the host.
-  // Unlike formatting, this callback is a gate: an error prevents the push.
-  if (beforePush) {
-    const verified = await beforePush();
-    if (!verified.ok) return verified;
-  }
-
   // Step 2 — push any unpushed commits. pushUnpushedCommits handles
   // first-time push and non-fast-forward recovery internally. The
   // default-branch guard already ran above, so skip the redundant re-check

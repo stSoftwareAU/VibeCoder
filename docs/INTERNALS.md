@@ -137,10 +137,11 @@ repair pushes, `publication_validation.ts` runs the target repository's trusted
 `untrusted_gate_spawn.ts`. The agent's pre-push hook uses the same validator,
 so agent self-pushes also require the checks. A zero exit with no executed Deno
 tests cannot pass. The runner discovers Deno projects through the existing
-project-manifest helper and executes each repository's full `test:unit` or
-`test` task independently of an impacted filter in the quality command. Those
-tasks own permissions and parallel, serial or shard selection; this repository
-uses the same unit-test manifests as its four CI shards.
+project-manifest helper and supplements empty or explicitly filtered gate runs
+with each repository's full `test:unit` or `test` task. Complete gate output
+owns executed-test evidence: a manifest task alone does not establish CI
+permissions. This repository uses the same unit-test manifests as its four CI
+shards.
 
 The result binds success to checkout contents, the resolved commands and
 working directories, environment, and installed Bash and Deno versions. Every
@@ -150,11 +151,16 @@ execution defers the repair without consuming CI or review allowances. The
 babysitter releases its per-head attempt and retains the committed checkout in
 its state directory for unavailable validation. There is at most one checkpoint
 per PR, replaced on the next deferral and removed after a successful push.
+Each pass prunes checkpoints when the PR closes, its head changes, or another
+lane completes the repair; legacy checkpoints without ownership records are
+removed. Copy failures retain one original source per PR by renaming it on the
+same filesystem, outside interrupted-clone recovery, with the same pruning
+policy and no duplicate copy.
 Checkpoints exclude ignored build products, accept only regular files inside
 the checkout, and are limited to 10,000 entries and 128 MiB. Copying checks disk
 space and enforces the byte budget while streaming; a failed copy releases the
-attempt and retains the source. Actionable output is redacted,
-and substantive failures take precedence over simultaneous infrastructure
+attempt and retains the original source by rename. Actionable output is
+redacted, and substantive failures take precedence over simultaneous infrastructure
 messages. Test names and assertion data cannot classify an outage. This shared
 implementation addresses Issue #4625.
 

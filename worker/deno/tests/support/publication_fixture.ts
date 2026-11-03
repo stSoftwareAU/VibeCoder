@@ -26,7 +26,7 @@ export async function writePublicationFixture(
   );
   await Deno.writeTextFile(
     `${cwd}/first_test.ts`,
-    'Deno.test("passing", () => {});\n',
+    'Deno.test("passing", () => {}); Deno.test("excluded", () => {});\n',
   );
   await Deno.writeTextFile(
     `${cwd}/required_test.ts`,

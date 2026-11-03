@@ -801,8 +801,7 @@ Deno.test("commitAndPushPending - a push recovery merge needs a fresh verdict", 
       undefined,
       async () => {
         const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout;
-        // Repeated checks of the original head pass; recovery's new head fails.
-        if (heads.at(-1) !== head) heads.push(head);
+        heads.push(head);
         return heads.length === 1
           ? { ok: true, value: undefined }
           : { ok: false, error: new Error("merged head not verified") };
@@ -818,6 +817,32 @@ Deno.test("commitAndPushPending - a push recovery merge needs a fresh verdict", 
       )).stdout;
       assert(actual.startsWith(remote));
     }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending invokes the verifier once for an unrejected push", async () => {
+  const branch = "issue-single-verdict";
+  const { tmp, downstream } = await makeRepo("review_once_", branch);
+  try {
+    await Deno.writeTextFile(`${downstream}/local.txt`, "repair\n");
+    let calls = 0;
+    const result = await commitAndPushPending(
+      branch,
+      "repair",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        calls++;
+        return Promise.resolve({ ok: true as const, value: undefined });
+      },
+    );
+    assert(result.ok);
+    assertEquals(calls, 1);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

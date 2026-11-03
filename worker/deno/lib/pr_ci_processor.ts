@@ -2398,6 +2398,7 @@ async function _processCiWithHeartbeat(
   // re-commits the same correction until the attempt cap and ends at
   // `needs-human`, a wedge caused entirely by the wrong model of the check.
   let historyRewritten = false;
+  let historyRebuildDetail: string | undefined;
   if (
     failureClassification.category === "history-rewrite-required" &&
     hasChanges && pushSucceeded
@@ -2508,10 +2509,7 @@ async function _processCiWithHeartbeat(
               );
             }
           } else {
-            const deferred = await deferUnavailableValidation(rebuild.error);
-            if (deferred) return deferred;
-            pushSucceeded = false;
-            pushFailureDetail = rebuild.error.message;
+            historyRebuildDetail = redactSecrets(rebuild.error.message);
             // The corrected content is already pushed, so the PR is no worse
             // than before — it will simply fail the same check again. Say why
             // rather than letting the next cycle rediscover it.
@@ -2719,6 +2717,9 @@ async function _processCiWithHeartbeat(
     // claim is falsifiable at a glance rather than by a human comparing the
     // comment against `git log`.
     const body = withFixPr +
+      (historyRebuildDetail
+        ? `\n\nThe content fix was pushed, but the optional history rebuild was refused: ${historyRebuildDetail}`
+        : "") +
       (pushVerification ? formatVerifiedPushSuffix(pushVerification) : "") +
       markerSuffix;
     await replyToComment(repo, prNumber, body, deps);

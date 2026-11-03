@@ -16,9 +16,9 @@ Version bump: no version file changed.
   passed its repository's required checks before publication.
 - The shared runner uses the trusted configured `quality_command`, preserving
   its flags and working directory, or `./quality.sh` by default.
-- Repository Deno unit tasks own test policy, permissions and manifests. The
-  runner executes the full task even when the quality entry point uses an
-  impacted filter; an empty execution cannot pass.
+- The repository gate owns test permissions and selection. An empty or
+  explicitly filtered run is supplemented with its full Deno task; a complete
+  gate is not followed by an assumed CI-equivalent manifest task.
 
 ### Essential Design Decisions
 
@@ -28,8 +28,9 @@ Version bump: no version file changed.
 - The agent hook applies the same validator. Validation refusals retain their
   typed gate/infrastructure outcome through internal and outer recovery;
   recovery and retry pushes receive the guard too.
-- Unavailable CI validation refunds its retry and writes no failed-attempt
-  marker. Feedback releases its claim without charging a review failure.
+- Unavailable validation before publication refunds its retry and writes no
+  failed-attempt marker. A refused optional history rebuild after a content
+  push retains the successful push outcome and its retry charge. Feedback releases its claim without charging a review failure.
   Babysitter releases the per-head attempt and retains its committed checkout,
   including when the state directory is on another filesystem.
 - Project discovery and unit-task priority reuse the merge gates' owners. The
@@ -51,8 +52,9 @@ Version bump: no version file changed.
 ## Evidence
 
 Backend/worker changes; no screenshot applies. No dependency, workflow or
-cross-repository check policy was added. Deno projects use their own
-`test:unit`, then `test` task, or their configured quality entry point where no task exists.
+cross-repository check policy was added. Deno projects use their configured
+quality entry point; empty or explicitly filtered runs additionally use their
+`test:unit`, then `test` task where present.
 The runner requires a positive executed-test count. This repository's unit task
 uses the same parallel/serial manifests that CI divides across four shards.
 
@@ -247,3 +249,57 @@ and type checks, but its full parallel test pass hit the host Deno 2.9.5 panic
 repository pins 2.9.8. Config integration, Semgrep and Checkov were unavailable.
 GitHub confirms the base's merged PR #4740 passed all four unit-test shards.
 The Linux-only cross-filesystem fixture is inapplicable on this macOS host.
+
+
+## Review corrections for the current requested changes
+
+- Moved verifier ownership to the immediate push boundary. An unrejected push
+  invokes it once; rejection recovery invokes it again for the changed head.
+  Restored the recovery test to record every invocation, retaining exactly two
+  calls and distinct-head assertions.
+- Complete gate runs own their test permissions. A fixture with a narrower
+  manifest task requires real write and subprocess permissions: its gate passes,
+  its manifest task fails, and publication passes. Impacted fixtures now include
+  an actually filtered test, while retaining their failing required regression.
+  Their full-run expected count increases from two to three for that added test.
+- A refused history rebuild preserves the already-published content outcome,
+  retry charge, body synchronisation and auto-merge path. The result comment
+  distinguishes the refused rebuild from the successful content push. Tests
+  cover foreign authors and failed/unavailable replacement-commit validation.
+- Production CLI repair tests now make an agent change, run a real configured
+  gate, and push only to a local bare remote. They cover failed checks,
+  unavailable checks across two consecutive passes followed by recovery,
+  configured flags, and a checkout changed between validation and push.
+- Deferred checkpoints record their original PR head. Each pass removes them
+  for changed heads, closed PRs or repairs completed elsewhere. Legacy records
+  without ownership metadata are discarded. A failed bounded copy retains one
+  original source by same-filesystem rename, outside interrupted-clone cleanup;
+  repeated failures replace that source without copying it again. Both source
+  and copied checkpoint are removed after success or by the same stale-state
+  pruning. The caller clears its clone only after successful retention.
+
+Read the agent/testing standards and the publication-gate sections of
+`docs/CONFIGURATION.md` and `docs/INTERNALS.md`; updated both operator references
+and this archived summary. No new dependency or test exclusion was added.
+
+
+Validation of the current review corrections:
+
+- Focused suites: 290 passed, 0 failed, one existing Linux-only cross-filesystem
+  test inapplicable on macOS. This includes 184 validator, Git push, CI,
+  babysitter and production App tests, and 106 completion/feedback/push tests.
+  The final CI/babysitter rerun passed 116 tests; the final production App rerun
+  passed all 22 tests and checks the actual bare remote before and after repair.
+- Deliberately restoring the duplicate verifier call made its one-invocation
+  regression fail. Restoring unconditional manifest-task execution made the
+  complete-gate permission regression fail. The corrected implementations pass.
+- `deno fmt --check`, `deno lint`, frozen `deno check`, and manifest checks
+  passed (847 manifest tests, one ignored). The full `./quality.sh` run passed
+  static policies, completeness, formatting, lint, type checking, Markdown and
+  Mermaid. Its full parallel unit pass hit Deno 2.9.5's internal panic:
+  `pledge test permissions called before restoring previous pledge`.
+  The repository pins Deno 2.9.8. GitHub confirms the current base commit
+  `0a4d803ab862753bd35fcf39f5df4b3c91545504` came from merged PR #4715,
+  whose four unit shards and required gate passed. Config integration lacks a
+  local `.config.json`; Semgrep and pinned Checkov are not installed. These
+  unavailable checks were not represented as passing.

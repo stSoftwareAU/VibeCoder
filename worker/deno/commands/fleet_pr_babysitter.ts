@@ -866,6 +866,53 @@ async function deferredCheckpoint(
   return `${stateDir}/deferred/${safeKey}`;
 }
 
+async function retainedCheckpoint(root: string, key: string): Promise<string> {
+  const hash = (await deferredCheckpoint(root, key)).split("/").at(-1);
+  return `${root}/fleet-pr-babysitter-retained-${hash}`;
+}
+
+/** Remove checkpoints whose PR closed, changed head, or no longer needs repair.
+ * Legacy checkpoints have no ownership record and are discarded as well.
+ */
+export async function pruneDeferredCheckpoints(
+  stateDir: string,
+  gh: (args: string[]) => Promise<string> = (args) => run("gh", args),
+  temporaryRoot = Deno.env.get("TMPDIR") || "/tmp",
+): Promise<void> {
+  const root = `${stateDir}/deferred`;
+  const paths: string[] = [];
+  for (const directory of [root, temporaryRoot]) {
+    try {
+      for await (const entry of Deno.readDir(directory)) {
+        if (!entry.isDirectory || entry.name.startsWith("pending-")) continue;
+        if (
+          directory === temporaryRoot &&
+          !/^fleet-pr-babysitter-retained-[a-f0-9]{64}$/.test(entry.name)
+        ) continue;
+        paths.push(`${directory}/${entry.name}`);
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+  for (const path of paths) {
+    let record: { repo: string; number: number; head: string };
+    try {
+      record = JSON.parse(
+        await Deno.readTextFile(`${path}/.babysitter-checkpoint.json`),
+      );
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      await Deno.remove(path, { recursive: true });
+      continue;
+    }
+    const pr = await readPr(record.repo, record.number, gh);
+    if (pr.headRefOid !== record.head || !reason(pr)) {
+      await Deno.remove(path, { recursive: true });
+    }
+  }
+}
+
 /** Keep one bounded checkpoint per PR, excluding ignored build products. */
 export async function deferBabysitterValidation(
   dir: string,
@@ -873,6 +920,7 @@ export async function deferBabysitterValidation(
   stateDir = babysitterStateDir(),
   key = attemptFile.split("/").at(-1)!,
   maxBytes = 128 * 1024 * 1024,
+  owner?: { repo: string; number: number; head: string },
 ): Promise<string> {
   const deferredDir = `${stateDir}/deferred`;
   let pending: string | undefined;
@@ -976,11 +1024,49 @@ export async function deferBabysitterValidation(
     await Deno.remove(checkpoint, { recursive: true }).catch((error) => {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     });
+    if (owner) {
+      await Deno.writeTextFile(
+        `${pending}/.babysitter-checkpoint.json`,
+        JSON.stringify(owner),
+      );
+    }
     await Deno.rename(pending, checkpoint);
-    await Deno.remove(dir, { recursive: true });
+    pending = undefined;
+    await removeRepairDirs([
+      await retainedCheckpoint(dir.slice(0, dir.lastIndexOf("/")), key),
+    ]);
+    await removeRepairDirs([dir]);
     return checkpoint;
   } catch (error) {
     if (pending) await Deno.remove(pending, { recursive: true });
+    if (owner) {
+      // A refused copy must not orphan a useful commit under a recoverable
+      // temporary-clone name. Retain the original by same-filesystem rename:
+      // no second copy, at most one source per PR, pruned with its checkpoint.
+      const checkpoint = await deferredCheckpoint(stateDir, key);
+      const retained = await retainedCheckpoint(
+        dir.slice(0, dir.lastIndexOf("/")),
+        key,
+      );
+      try {
+        await Deno.writeTextFile(
+          `${dir}/.babysitter-checkpoint.json`,
+          JSON.stringify(owner),
+        );
+        await removeRepairDirs([retained, checkpoint]);
+        await Deno.rename(dir, retained);
+        console.warn(
+          `Checkpoint copy unavailable; original retained at ${retained}: ${
+            String(error)
+          }`,
+        );
+        return retained;
+      } catch (retentionError) {
+        console.warn(
+          `Could not retain original checkout: ${String(retentionError)}`,
+        );
+      }
+    }
     console.warn(
       `Checkpoint unavailable; source retained at ${dir}: ${String(error)}`,
     );
@@ -1278,12 +1364,13 @@ export async function fix(
       buildPushCreateBranchArgs("origin", "HEAD", pr.headRefName),
       dir,
     );
-    await Deno.remove(
+    await removeRepairDirs([
       await deferredCheckpoint(babysitterStateDir(), `${repo}#${pr.number}`),
-      { recursive: true },
-    ).catch((error) => {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    });
+      await retainedCheckpoint(
+        dir.slice(0, dir.lastIndexOf("/")),
+        `${repo}#${pr.number}`,
+      ),
+    ]);
     console.log(`${repo}#${pr.number}: pushed fix as ${login}`);
     if (body) await applyPrBody(repo, pr.number, body, scratch!);
     if (reviews.length > 0) {
@@ -1301,10 +1388,16 @@ export async function fix(
         attemptFile,
         babysitterStateDir(),
         `${repo}#${initial.number}`,
+        undefined,
+        { repo, number: initial.number, head: initial.headRefOid },
       );
-      dir = undefined;
+      if (checkpoint !== repairDir) dir = undefined;
       console.warn(
-        `${repo}#${initial.number}: validation unavailable; attempt released, repair retained at ${checkpoint}: ${error.message}`,
+        `${repo}#${initial.number}: validation unavailable; attempt released, ${
+          checkpoint === repairDir
+            ? "checkpoint failed; temporary source will be cleaned"
+            : `repair retained at ${checkpoint}`
+        }: ${error.message}`,
       );
       return;
     }
@@ -1470,6 +1563,7 @@ async function pass(
   prFilter?: number,
 ): Promise<void> {
   await recoverTemporaryClones(Deno.env.get("TMPDIR") || "/tmp");
+  if (execute) await pruneDeferredCheckpoints(babysitterStateDir());
   const authors = [
     ...new Set([login, ...config.fleetPrAuthors, ...config.serviceAccounts]),
   ];

@@ -22,145 +22,295 @@ import { BABYSITTER_FILESYSTEM_KEY } from "../lib/fleet_babysitter_sandbox.ts";
 import { startBabysitterAgent } from "../commands/fleet_pr_babysitter.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 
-Deno.test("production repair forwards CONFIG_PATH and denies canonical credential targets", async () => {
-  const info = await runWithTimeout(Deno.execPath(), ["info", "--json"], {
-    timeoutMs: 10_000,
-  });
-  assert(info.ok);
-  assertEquals(info.value.success, true, info.value.stderr);
-  const { denoDir } = JSON.parse(info.value.stdout);
-  assertEquals(typeof denoDir, "string");
-  // The repair below runs with --cached-only, so make sure the babysitter's
-  // whole graph (including every JSR manifest) is cached first. A shard's
-  // cache may hold only what that shard's own tests loaded, which left
-  // '@std/crypto/meta.json' missing and failed the run on CI.
-  const warm = await runWithTimeout(Deno.execPath(), [
-    "cache",
-    "--config",
-    new URL("../deno.json", import.meta.url).pathname,
-    new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
-  ], { timeoutMs: 120_000, env: { DENO_DIR: denoDir } });
-  assert(warm.ok);
-  assertEquals(warm.value.success, true, warm.value.stderr);
-  await withTestKey(async (privateKeyPath) => {
-    const home = await Deno.makeTempDir();
-    try {
-      await Deno.chmod(privateKeyPath, 0o600);
-      await writeBabysitterAppConfig(home, {
-        appId: "123",
-        installationId: "456",
-        privateKeyPath,
-      });
-      await Deno.mkdir(`${home}/tmp`);
-      await Deno.mkdir(`${home}/target/nested`, { recursive: true });
-      await Deno.mkdir(`${home}/links`);
-      await Deno.symlink(`${home}/target/nested`, `${home}/links/directory`);
-      await Deno.symlink(`${home}/target`, `${home}/links/credentials`);
-      await Deno.writeTextFile(`${home}/target/ssh.pem`, "test credential");
-      await Deno.writeTextFile(
-        `${home}/lexical-key.pem`,
-        "test credential alias",
-      );
-      await Deno.symlink(`${home}/lexical-key.pem`, `${home}/links/ssh.pem`);
-      const configPath = `${home}/operator-config.json`;
-      const config = {
-        repos: ["owner/repo"],
-        fleet_pr_authors: ["babysitter[bot]"],
-        github_app_private_key_path: `${home}/worker-app.pem`,
-        pr_reviewer_app: {
-          private_key_path: `${home}/links/credentials/missing/reviewer.pem`,
-        },
-        ssh_key_path: `${home}/links/directory/../ssh.pem`,
-        gh_config_dir: `${home}/host-gh`,
-      };
-      await Deno.writeTextFile(configPath, JSON.stringify(config));
-      await Deno.writeTextFile(
-        `${home}/.config.json`,
-        JSON.stringify({
-          ...config,
-          github_app_private_key_path: `${home}/decoy-worker.pem`,
-          pr_reviewer_app: { private_key_path: `${home}/decoy-reviewer.pem` },
-          ssh_key_path: `${home}/decoy-ssh.pem`,
-          gh_config_dir: `${home}/decoy-gh`,
-        }),
-      );
-      const result = await runWithTimeout(Deno.execPath(), [
-        "run",
-        // Match the host launcher: Deno's narrower permission checks can
-        // normalise '..' before realPath reaches the filesystem.
-        "--allow-all",
-        "--cached-only",
-        "--config",
-        new URL("../deno.json", import.meta.url).pathname,
-        "--preload",
-        new URL(
-          "./fixtures/fleet_babysitter_repair_preload.ts",
-          import.meta.url,
-        ).pathname,
-        new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
-        "--repo=owner/repo",
-        "--pr=1",
-      ], {
-        cwd: home,
-        timeoutMs: 20_000,
-        clearEnv: true,
-        env: {
-          HOME: home,
-          CONFIG_PATH: configPath,
-          TMPDIR: `${home}/tmp`,
-          BABYSITTER_REPAIR_FIXTURE: home,
-          // Reuse the populated module cache without inheriting host settings.
-          DENO_DIR: denoDir,
-        },
-      });
-      assert(result.ok);
-      assertEquals(result.value.success, true, result.value.stderr);
-      assertStringIncludes(result.value.stdout, "agent made no changes");
-      // The repair clones through a mirror, then points origin at GitHub over
-      // the protocol gh reports (ssh in the fixture).
-      assertEquals(
-        await Deno.readTextFile(`${home}/origin-url`),
-        "git@github.com:owner/repo.git",
-      );
-      const cloneCalls = (await Deno.readTextFile(`${home}/clone-calls.log`))
-        .trim().split("\n");
-      assertEquals(cloneCalls.length, 2);
-      assert(
-        cloneCalls[0]!.startsWith(
-          "clone --bare git@github.com:owner/repo.git ",
-        ),
-        cloneCalls[0],
-      );
-      assert(cloneCalls[1]!.startsWith("clone --no-checkout --no-hardlinks "));
-      const args: string[] = JSON.parse(
-        await Deno.readTextFile(`${home}/agent-spawn.json`),
-      );
-      const profile = args.find((arg) =>
-        arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={`)
-      );
-      assert(profile);
-      for (
-        const path of [
+for (
+  const scenario of ["unchanged", "failed", "unavailable", "passed", "stale"]
+) {
+  Deno.test(`production repair forwards CONFIG_PATH and validates ${scenario} repairs`, async () => {
+    const info = await runWithTimeout(Deno.execPath(), ["info", "--json"], {
+      timeoutMs: 10_000,
+    });
+    assert(info.ok);
+    assertEquals(info.value.success, true, info.value.stderr);
+    const { denoDir } = JSON.parse(info.value.stdout);
+    assertEquals(typeof denoDir, "string");
+    // The repair below runs with --cached-only, so make sure the babysitter's
+    // whole graph (including every JSR manifest) is cached first. A shard's
+    // cache may hold only what that shard's own tests loaded, which left
+    // '@std/crypto/meta.json' missing and failed the run on CI.
+    const warm = await runWithTimeout(Deno.execPath(), [
+      "cache",
+      "--config",
+      new URL("../deno.json", import.meta.url).pathname,
+      new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
+    ], { timeoutMs: 120_000, env: { DENO_DIR: denoDir } });
+    assert(warm.ok);
+    assertEquals(warm.value.success, true, warm.value.stderr);
+    await withTestKey(async (privateKeyPath) => {
+      const home = await Deno.makeTempDir();
+      try {
+        await Deno.chmod(privateKeyPath, 0o600);
+        await writeBabysitterAppConfig(home, {
+          appId: "123",
+          installationId: "456",
           privateKeyPath,
-          `${home}/host-gh`,
-          `${home}/worker-app.pem`,
-          `${home}/links/credentials/missing/reviewer.pem`,
-          `${await Deno.realPath(`${home}/target`)}/missing/reviewer.pem`,
-          `${home}/links/ssh.pem`,
-          await Deno.realPath(`${home}/lexical-key.pem`),
-          await Deno.realPath(`${home}/target/ssh.pem`),
-        ]
-      ) {
-        assertStringIncludes(profile, `${JSON.stringify(path)} = "none"`);
+        });
+        await Deno.mkdir(`${home}/tmp`);
+        await Deno.mkdir(`${home}/target/nested`, { recursive: true });
+        await Deno.mkdir(`${home}/links`);
+        await Deno.symlink(`${home}/target/nested`, `${home}/links/directory`);
+        await Deno.symlink(`${home}/target`, `${home}/links/credentials`);
+        await Deno.writeTextFile(`${home}/target/ssh.pem`, "test credential");
+        await Deno.writeTextFile(
+          `${home}/lexical-key.pem`,
+          "test credential alias",
+        );
+        await Deno.symlink(`${home}/lexical-key.pem`, `${home}/links/ssh.pem`);
+        const configPath = `${home}/operator-config.json`;
+        if (scenario !== "unchanged") {
+          const git = async (args: string[], cwd = home) => {
+            const output = await new Deno.Command("git", {
+              args,
+              cwd,
+              stdout: "piped",
+              stderr: "piped",
+            }).output();
+            assertEquals(
+              output.code,
+              0,
+              new TextDecoder().decode(output.stderr),
+            );
+            return new TextDecoder().decode(output.stdout).trim();
+          };
+          await git(["init", "--bare", `${home}/remote.git`]);
+          await git(["clone", `${home}/remote.git`, `${home}/seed`]);
+          await Deno.writeTextFile(`${home}/mode`, scenario);
+          await Deno.writeTextFile(
+            `${home}/seed/configured-gate.sh`,
+            `#!/bin/sh
+set -eu
+test "$1" = "--required"
+printf gate >> "${home}/gate-runs"
+case "$(cat ${home}/mode)" in
+failed) exit 1;;
+unavailable) exec missing-babysitter-fixture-tool;;
+esac
+`,
+          );
+          await Deno.chmod(`${home}/seed/configured-gate.sh`, 0o755);
+          await git(["add", "."], `${home}/seed`);
+          await git([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "fixture",
+          ], `${home}/seed`);
+          await git(["branch", "-M", "feature"], `${home}/seed`);
+          await git(["push", "origin", "feature", "HEAD:main"], `${home}/seed`);
+          await Deno.writeTextFile(
+            `${home}/head`,
+            await git(["rev-parse", "HEAD"], `${home}/seed`),
+          );
+        }
+        const config = {
+          repos: ["owner/repo"],
+          repo_config: {
+            "owner/repo": {
+              quality_command: "./configured-gate.sh --required",
+            },
+          },
+          fleet_pr_authors: ["babysitter[bot]"],
+          github_app_private_key_path: `${home}/worker-app.pem`,
+          pr_reviewer_app: {
+            private_key_path: `${home}/links/credentials/missing/reviewer.pem`,
+          },
+          ssh_key_path: `${home}/links/directory/../ssh.pem`,
+          gh_config_dir: `${home}/host-gh`,
+        };
+        await Deno.writeTextFile(configPath, JSON.stringify(config));
+        await Deno.writeTextFile(
+          `${home}/.config.json`,
+          JSON.stringify({
+            ...config,
+            github_app_private_key_path: `${home}/decoy-worker.pem`,
+            pr_reviewer_app: { private_key_path: `${home}/decoy-reviewer.pem` },
+            ssh_key_path: `${home}/decoy-ssh.pem`,
+            gh_config_dir: `${home}/decoy-gh`,
+          }),
+        );
+        const remoteHead = async () => {
+          const result = await new Deno.Command("git", {
+            args: [
+              "--git-dir",
+              `${home}/remote.git`,
+              "rev-parse",
+              "refs/heads/feature",
+            ],
+            stdout: "piped",
+            stderr: "piped",
+          }).output();
+          assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+          return new TextDecoder().decode(result.stdout).trim();
+        };
+        const runRepair = () =>
+          runWithTimeout(Deno.execPath(), [
+            "run",
+            // Match the host launcher: Deno's narrower permission checks can
+            // normalise '..' before realPath reaches the filesystem.
+            "--allow-all",
+            "--cached-only",
+            "--config",
+            new URL("../deno.json", import.meta.url).pathname,
+            "--preload",
+            new URL(
+              "./fixtures/fleet_babysitter_repair_preload.ts",
+              import.meta.url,
+            ).pathname,
+            new URL("../commands/fleet_pr_babysitter.ts", import.meta.url)
+              .pathname,
+            "--repo=owner/repo",
+            "--pr=1",
+          ], {
+            cwd: home,
+            timeoutMs: 20_000,
+            clearEnv: true,
+            env: {
+              HOME: home,
+              PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+              CONFIG_PATH: configPath,
+              TMPDIR: `${home}/tmp`,
+              BABYSITTER_REPAIR_FIXTURE: home,
+              ...(scenario === "unchanged"
+                ? {}
+                : { BABYSITTER_REPAIR_SCENARIO: scenario }),
+              // Reuse the populated module cache without inheriting host settings.
+              DENO_DIR: denoDir,
+            },
+          });
+        const result = await runRepair();
+        assert(result.ok);
+        if (scenario === "unchanged") {
+          assertEquals(result.value.success, true, result.value.stderr);
+          assertStringIncludes(result.value.stdout, "agent made no changes");
+        } else {
+          const calls = await Deno.readTextFile(`${home}/git-calls.log`);
+          assert(
+            await Deno.stat(`${home}/gate-runs`).then(() => true).catch(() =>
+              false
+            ),
+            result.value.stderr + result.value.stdout,
+          );
+          assertStringIncludes(
+            await Deno.readTextFile(`${home}/gate-runs`),
+            "gate",
+          );
+          const pushed = calls.split("\n").some((line) =>
+            line.startsWith("push ")
+          );
+          assertEquals(pushed, scenario === "passed", result.value.stderr);
+          const initialHead = await Deno.readTextFile(`${home}/head`);
+          assertEquals(
+            (await remoteHead()) !== initialHead.trim(),
+            scenario === "passed",
+          );
+          if (scenario === "passed") {
+            assertEquals(result.value.success, true, result.value.stderr);
+            assertStringIncludes(result.value.stdout, "pushed fix");
+          }
+
+          if (scenario === "stale") {
+            assertStringIncludes(
+              result.value.stderr,
+              "checkout changed after quality validation",
+            );
+          }
+          if (scenario === "failed") {
+            assertStringIncludes(
+              result.value.stderr,
+              "required quality checks failed",
+            );
+          }
+          if (scenario === "unavailable") {
+            assertStringIncludes(result.value.stderr, "attempt released");
+            const state = `${home}/.local/state/vibe-coder/fleet-pr-babysitter`;
+            const entries = Array.from(Deno.readDirSync(state));
+            assertEquals(
+              entries.filter((entry) =>
+                entry.isFile && entry.name !== "deployment-health.json"
+              ).length,
+              0,
+            );
+          }
+        }
+        // The repair clones through a mirror, then points origin at GitHub over
+        // the protocol gh reports (ssh in the fixture).
+        assertEquals(
+          await Deno.readTextFile(`${home}/origin-url`),
+          "git@github.com:owner/repo.git",
+        );
+        const cloneCalls = (await Deno.readTextFile(`${home}/clone-calls.log`))
+          .trim().split("\n");
+        assertEquals(cloneCalls.length, 2);
+        assert(
+          cloneCalls[0]!.startsWith(
+            "clone --bare git@github.com:owner/repo.git ",
+          ),
+          cloneCalls[0],
+        );
+        assert(
+          cloneCalls[1]!.startsWith("clone --no-checkout --no-hardlinks "),
+        );
+        const args: string[] = JSON.parse(
+          await Deno.readTextFile(`${home}/agent-spawn.json`),
+        );
+        const profile = args.find((arg) =>
+          arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={`)
+        );
+        assert(profile);
+        for (
+          const path of [
+            privateKeyPath,
+            `${home}/host-gh`,
+            `${home}/worker-app.pem`,
+            `${home}/links/credentials/missing/reviewer.pem`,
+            `${await Deno.realPath(`${home}/target`)}/missing/reviewer.pem`,
+            `${home}/links/ssh.pem`,
+            await Deno.realPath(`${home}/lexical-key.pem`),
+            await Deno.realPath(`${home}/target/ssh.pem`),
+          ]
+        ) {
+          assertStringIncludes(profile, `${JSON.stringify(path)} = "none"`);
+        }
+        for (const name of ["worker.pem", "reviewer.pem", "ssh.pem", "gh"]) {
+          assert(!profile.includes(`${home}/decoy-${name}`));
+        }
+        if (scenario === "unavailable") {
+          const repeated = await runRepair();
+          assert(repeated.ok);
+          assertStringIncludes(repeated.value.stderr, "attempt released");
+          const deferred =
+            `${home}/.local/state/vibe-coder/fleet-pr-babysitter/deferred`;
+          assertEquals(Array.from(Deno.readDirSync(deferred)).length, 1);
+          await Deno.writeTextFile(`${home}/mode`, "passed");
+          const recovered = await runRepair();
+          assert(recovered.ok);
+          assertStringIncludes(recovered.value.stdout, "pushed fix");
+          assert(
+            (await remoteHead()) !==
+              (await Deno.readTextFile(`${home}/head`)).trim(),
+          );
+          assertEquals(Array.from(Deno.readDirSync(deferred)).length, 0);
+        }
+      } finally {
+        await Deno.remove(home, { recursive: true });
       }
-      for (const name of ["worker.pem", "reviewer.pem", "ssh.pem", "gh"]) {
-        assert(!profile.includes(`${home}/decoy-${name}`));
-      }
-    } finally {
-      await Deno.remove(home, { recursive: true });
-    }
+    });
   });
-});
+}
 
 Deno.test("agent launch mints a scoped token and passes it to Codex", async () => {
   if (Deno.env.get("BABYSITTER_TOKEN_TEST_CHILD") !== "1") {

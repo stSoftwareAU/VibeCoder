@@ -3256,7 +3256,7 @@ async function runHistoryRewriteCase(
     },
   );
   assertEquals(result.ok, true);
-  return { calls, warnings, warningEntries, infoEntries, comments };
+  return { calls, warnings, warningEntries, infoEntries, comments, result };
 }
 
 const BASE = "b".repeat(40);
@@ -3264,12 +3264,18 @@ const BASE = "b".repeat(40);
 Deno.test("processCiFailure - refuses to rewrite a branch with a foreign author (Issue #4554)", async () => {
   const dir = await Deno.makeTempDir();
   try {
-    const { calls } = await runHistoryRewriteCase(dir, {
+    const { calls, comments, result } = await runHistoryRewriteCase(dir, {
       authors: "worker@example.com\nother@example.com\n",
     });
     assertEquals(
       calls.some((args) => ["reset", "commit", "push"].includes(args[0] ?? "")),
       false,
+    );
+    assert(result.ok && result.value.changesPushed);
+    if (result.ok) assertEquals(result.value.retryCount, 1);
+    assert(!comments.some((body) => body.includes("failed to push")));
+    assert(
+      comments.some((body) => body.includes("history rebuild was refused")),
     );
     assertEquals(calls.some((args) => args[0] === "var"), true);
     assertEquals(calls.some((args) => args[0] === "log"), true);
@@ -3649,7 +3655,15 @@ Deno.test("CI history rewrite refuses failed and unavailable replacement commit 
   for (const validationStatus of ["failed", "unavailable"] as const) {
     const dir = await Deno.makeTempDir();
     try {
-      const { calls } = await runHistoryRewriteCase(dir, { validationStatus });
+      const { calls, comments, result } = await runHistoryRewriteCase(dir, {
+        validationStatus,
+      });
+      assert(result.ok && result.value.changesPushed);
+      if (result.ok) assertEquals(result.value.retryCount, 1);
+      assert(!comments.some((body) => body.includes("failed to push")));
+      assert(
+        comments.some((body) => body.includes("history rebuild was refused")),
+      );
       assert(calls.some((args) => args[0] === "commit"));
       assert(calls.some((args) => args[0] === "validate"));
       assert(!calls.some((args) => args[0] === "push"));

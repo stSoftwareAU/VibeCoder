@@ -4945,9 +4945,10 @@ flowchart TD
 
 The hook also runs the shared publication validator after these changed-file
 and pre-flight checks. It resolves the trusted repository `quality_command`
-(`./quality.sh` by default), runs the repository's full Deno unit task
-where present, and requires executed tests. A missing, failed or unavailable
-required check blocks the agent's push. Worker pushes use the same validator
+(`./quality.sh` by default), requires executed Deno tests, and supplements an
+empty or explicitly filtered run with the repository's full Deno unit task where
+present. A complete gate owns its permissions and selection; a manifest task is
+not assumed to match CI. A missing, failed or unavailable required check blocks the agent's push. Worker pushes use the same validator
 at their final publication boundary and again after rejection recovery; an
 unavailable check defers repairs without consuming their failure allowance.
 

@@ -79,6 +79,7 @@ import {
   fix,
   loadConfigAndPublishDeployment,
   prBodyEditArgs,
+  pruneDeferredCheckpoints,
   publishBabysitterDeployment,
   reason,
   recordBabysitterDeployment,
@@ -1735,6 +1736,108 @@ Deno.test("babysitter repeated deferrals retain one bounded checkpoint and omit 
       "preserve source\n",
     );
     assertEquals(Array.from(Deno.readDirSync(`${state}/deferred`)).length, 1);
+  } finally {
+    await Deno.remove(state, { recursive: true });
+  }
+});
+
+Deno.test("babysitter prunes checkpoints after head changes, closure or another repair", async () => {
+  const state = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${state}/deferred/legacy`, { recursive: true });
+    await pruneDeferredCheckpoints(state, () => {
+      throw new Error("legacy record must not query GitHub");
+    }, state);
+    await assertRejects(
+      () => Deno.stat(`${state}/deferred/legacy`),
+      Deno.errors.NotFound,
+    );
+    for (const change of ["unchanged", "head", "closed", "repaired"]) {
+      const dir = `${state}/source`;
+      await Deno.mkdir(dir);
+      await fixtureGit(["init", "-q"], dir);
+      await commitFile(dir, "fixed.txt", "repair");
+      const attempt = `${state}/attempt`;
+      await Deno.writeTextFile(attempt, "attempt");
+      const checkpoint = await deferBabysitterValidation(
+        dir,
+        attempt,
+        state,
+        "owner/repo#1",
+        undefined,
+        { repo: "owner/repo", number: 1, head: "original" },
+      );
+      await pruneDeferredCheckpoints(state, (args) => {
+        assert(args.includes("owner/repo"));
+        return Promise.resolve(JSON.stringify({
+          state: change === "closed" ? "CLOSED" : "OPEN",
+          headRefOid: change === "head" ? "new" : "original",
+          isDraft: false,
+          isCrossRepository: false,
+          statusCheckRollup: [{
+            conclusion: change === "repaired" ? "SUCCESS" : "FAILURE",
+          }],
+        }));
+      }, state);
+      if (change === "unchanged") {
+        assertEquals(
+          await Deno.readTextFile(`${checkpoint}/fixed.txt`),
+          "repair\n",
+        );
+      } else {
+        await assertRejects(() => Deno.stat(checkpoint), Deno.errors.NotFound);
+      }
+    }
+  } finally {
+    await Deno.remove(state, { recursive: true });
+  }
+});
+
+Deno.test("babysitter failed checkpoint copies retain one original outside temporary clone recovery", async () => {
+  const state = await Deno.makeTempDir();
+  try {
+    let retained = "";
+    for (let round = 0; round < 2; round++) {
+      const dir = `${state}/source-${round}`;
+      await Deno.mkdir(dir);
+      await fixtureGit(["init", "-q"], dir);
+      await commitFile(dir, "fixed.txt", `repair ${round}`);
+      const attempt = `${state}/attempt`;
+      await Deno.writeTextFile(attempt, "attempt");
+      retained = await deferBabysitterValidation(
+        dir,
+        attempt,
+        state,
+        "owner/repo#1",
+        1,
+        { repo: "owner/repo", number: 1, head: "head" },
+      );
+      assert(retained !== dir);
+      await recoverTemporaryClones(state);
+      assertEquals(
+        await Deno.readTextFile(`${retained}/fixed.txt`),
+        `repair ${round}\n`,
+      );
+    }
+    assertEquals(
+      Array.from(Deno.readDirSync(state)).filter((entry) =>
+        entry.name.startsWith("fleet-pr-babysitter-retained-")
+      ).length,
+      1,
+    );
+    await pruneDeferredCheckpoints(
+      state,
+      () =>
+        Promise.resolve(
+          JSON.stringify({
+            state: "CLOSED",
+            headRefOid: "head",
+            statusCheckRollup: [],
+          }),
+        ),
+      state,
+    );
+    await assertRejects(() => Deno.stat(retained), Deno.errors.NotFound);
   } finally {
     await Deno.remove(state, { recursive: true });
   }

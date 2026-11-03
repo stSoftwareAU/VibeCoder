@@ -427,7 +427,7 @@ for (const task of ["test:unit", "test"]) {
       );
       await Deno.writeTextFile(
         `${cwd}/first_test.ts`,
-        'Deno.test("passing", () => {});\n',
+        'Deno.test("passing", () => {}); Deno.test("excluded", () => {});\n',
       );
       await Deno.writeTextFile(
         `${cwd}/required_test.ts`,
@@ -449,7 +449,7 @@ for (const task of ["test:unit", "test"]) {
       });
       assertEquals(passed.status, "passed");
       if (passed.status === "passed") {
-        assertEquals(passed.deno?.[0]?.executedTests, 2);
+        assertEquals(passed.deno?.[0]?.executedTests, 3);
       }
     } finally {
       await Deno.remove(cwd, { recursive: true });
@@ -558,6 +558,36 @@ Deno.test("publication missing executable defers and then recovers", async () =>
         .status,
       "unavailable",
     );
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("publication uses complete gate permissions instead of a narrower manifest task", async () => {
+  const cwd = await checkout("#!/bin/sh\nexec deno test -A --no-lock\n");
+  try {
+    await Deno.writeTextFile(
+      `${cwd}/deno.json`,
+      JSON.stringify({ tasks: { test: "deno test --allow-read --no-lock" } }),
+    );
+    await Deno.writeTextFile(
+      `${cwd}/permissions_test.ts`,
+      `Deno.test("requires write and run", async () => {
+      const path = await Deno.makeTempFile();
+      await Deno.remove(path);
+      const result = await new Deno.Command("bash", {args: ["-c", "true"]}).output();
+      if (!result.success) throw new Error("bash failed");
+    });`,
+    );
+    const result = await validateRepositoryForPublication(cwd, {
+      run: shellRunner(),
+    });
+    assertEquals(result.status, "passed");
+    const narrow = await shellRunner()("deno", ["task", "test"], {
+      cwd,
+      timeoutMs: 10000,
+    });
+    assert(narrow.ok && narrow.value.code !== 0);
   } finally {
     await Deno.remove(cwd, { recursive: true });
   }

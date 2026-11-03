@@ -168,13 +168,16 @@ export async function validateRepositoryForPublication(
         "required Deno selection executed no tests; a zero exit is insufficient",
     };
   }
-  // Execute the repository's full Deno task independently of any impacted
-  // filter in the quality command. Its task owns CI permissions/manifests and
-  // full versus serial/sharded selection; exit zero still needs executed tests.
+  // A complete gate owns its permissions and selection. Only supplement an
+  // empty or explicitly filtered run; a manifest task alone does not establish
+  // that CI uses the same permissions.
   const deno: { command: string; cwd: string; executedTests: number }[] = [];
   let plans: Awaited<ReturnType<typeof requiredDenoTasks>>;
   try {
-    plans = await requiredDenoTasks(cwd);
+    plans = executedDenoTests(fullOutput) === 0 ||
+        /\b[1-9]\d* filtered out\b/.test(stripAnsi(fullOutput))
+      ? await requiredDenoTasks(cwd)
+      : [];
   } catch (error) {
     return {
       status: "unavailable",
@@ -290,7 +293,7 @@ function executedDenoTests(output: string): number {
   return count;
 }
 
-/** The full unit task is the repository's CI-equivalent selection owner.
+/** Fallback selection for an empty or filtered repository gate.
  * Reuse the merge gate's project discovery and task priority, including nested
  * projects. Projects without a unit task or Deno test files have no test target.
  */
