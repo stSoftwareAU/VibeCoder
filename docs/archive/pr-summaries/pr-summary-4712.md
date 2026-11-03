@@ -47,6 +47,10 @@ Doc comment on `commitRecoveredSummary` (`worker/deno/lib/summary_rule_gate_retr
 - Existing callers checked for compatibility: `tests/pr_body_reconcile_test.ts` and the rest of `pr_body_sync_test.ts` pass unchanged, since they omit the field.
 - Ran `deno task test:unit tests/pr_body_sync_test.ts tests/agent_pr_adoption_test.ts tests/pr_body_reconcile_test.ts tests/pr_summary_loader_test.ts` from `worker/deno`: passed.
 
+- `./quality.sh` was started in the foreground but stopped by the 590 s tool cap partway through (the earlier stages up to the release-tag ruleset check passed; the remaining stages did not run). `deno fmt --check`, `deno lint` and `deno check` on the seven changed TypeScript files and `deno task pr-summary-check` passed.
+
+<!-- vibe-quality-gate-skipped reason="full gate exceeded the tool's 590 s foreground cap and was cut off; CI runs the same checks" -->
+
 ## Not done
 
 - Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working tree; an uncommitted summary there is not addressed and is left to #4637.
