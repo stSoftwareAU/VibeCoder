@@ -254,3 +254,32 @@ and retry), spelling (final and retry) pass the guard;
 `gateBeforePush` and validates before `pushUnpushedCommits`; the completion
 recovery turns (`summary_rule_gate_retry.ts`, `screenshot_gate_retry.ts`,
 `pr_body_length.ts`) pass the guard too.
+
+## CI repair: orchestration fixture
+
+The new publication check exposed a stale orchestration harness: its clone and
+Git operations are mocked, so running the real validator against that synthetic
+checkout fails before the scenarios reach their intended push and retry paths.
+Supply a passed publication verdict through the existing `FixDeps.validate` seam.
+No assertions or supported behaviour were removed. The obsolete fixture
+assumption was that mocking clone and commit alone covered publication; retry,
+head movement, transport failure and push-marker behaviour remain asserted by
+`worker/deno/tests/babysitter_fix_orchestration_test.ts` (all 35 tests).
+Real failed, unavailable and passed repository gates remain covered by
+`worker/deno/tests/fleet_pr_babysitter_validation_test.ts::the fleet PR babysitter repair-validation scenarios all pass in a child deno test run (Issue #4625)`.
+
+Before the fixture fix, `deno task test tests/babysitter_fix_orchestration_test.ts`
+reproduced all nine CI failures (26 passed). After the fix all 35 pass.
+The exact workflow command `.github/scripts/deno-test-shard.sh 2 4` cannot launch
+on this macOS host because `setsid` is unavailable; CI runs it on Linux.
+
+Validation of this CI repair: the orchestration suite and real-gate scenario
+wrapper pass together (36 tests); `deno task check:manifests` passes (847 passed,
+1 ignored). `./quality.sh < /dev/null` passes every available static stage,
+including completeness, type checking, lint, formatting, Markdown and Mermaid.
+Its parallel test process aborts inside Deno 2.9.5 on macOS aarch64 with
+`pledge test permissions called before restoring previous pledge`; the serial
+pass consequently does not run. Config integration, Semgrep and Checkov are
+reported skipped by the gate on this host (the latter tools are unavailable).
+The workflow shard was retried after the fix and still cannot start without
+`setsid`. No tests, assertions or quality thresholds were removed or weakened.
