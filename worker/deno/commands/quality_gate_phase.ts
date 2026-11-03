@@ -83,6 +83,7 @@ export const qualityGatePhaseCommand: Command = {
     if (
       result.action === "failed_missing_command" ||
       result.action === "failed_docker_infra" ||
+      result.action === "failed_credential_delivery" ||
       result.action === "failed_missing_tools"
     ) {
       // These already have failureMessage set

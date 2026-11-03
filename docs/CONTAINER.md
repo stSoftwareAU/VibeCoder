@@ -1719,6 +1719,15 @@ build artefacts.
   sudo rule carries no `SETENV` tag, so `env_reset` strips a variable handed to
   `sudo` in the child environment; the quality gate's spawn therefore becomes
   `sudo -n -u agent -- env CARGO_TARGET_DIR=… bash -c './quality.sh'`.
+  A repository's declared `quality_credentials` are the exception: they do not
+  travel in argv. They travel on the stdin of the same dropped command, where a
+  fixed `sh -c` wrapper inside `sudo` reads them, exports them and `exec`s the
+  real command with stdin from `/dev/null`
+  (`worker/deno/lib/credential_channel.ts`, Issue #4705). Argv is visible to
+  `ps` and to the sudo logs, and a file would need a path the `agent` account
+  can read, so the values are kept out of both and out of the wrapper text and
+  the logs. The channel needs no `SETENV` or `env_keep` grant, so the sudo rule
+  is unchanged.
 - **An unusable root is a reported fallback, not a broken build.** If
   `/var/tmp/vibe-cargo-target` cannot be created `1777`, the launch says so and
   the build stays on the volume.
