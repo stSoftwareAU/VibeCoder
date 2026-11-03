@@ -2768,6 +2768,7 @@ export async function recordBabysitterDeployment(
       codeRevision,
       policyFingerprint,
       observedAt,
+      host,
     }) + "\n",
   });
   if (!result.ok) {

@@ -2953,7 +2953,11 @@ Deno.test("collect - a malformed host skips its deployment row with a note, neve
       );
       assertStringIncludes(
         snapshot.coverageNotes.join("\n"),
-        `${component === "babysitter" ? "deployment-health.json" : "review-run.json"}: host is not a host identifier; skipped`,
+        `${
+          component === "babysitter"
+            ? "deployment-health.json"
+            : "review-run.json"
+        }: host is not a host identifier; skipped`,
       );
     }
   });

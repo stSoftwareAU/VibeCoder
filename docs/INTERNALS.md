@@ -1327,16 +1327,24 @@ can call it stale. Review-run and ledger rows older than the heartbeat window
 are not counted, and one note says how many were excluded. A ledger row is
 timed by its `recordedAt`.
 
-A lifecycle-ledger row names its host, so ledger rows group per component and
-host (`component@host`). Review-run records and babysitter heartbeats name none,
-so they group per component. With `--expected-host`, each expected host needs a
-fresh row for every expected component, or it is listed in
-`deployment.missingHostHeartbeats` as `component@host`. A host whose latest row
-is stale is listed in `staleHosts`, and one whose latest row has a different
-revision or policy fingerprint is listed in `mismatchedHosts`. Because review-run
-and babysitter rows carry no host, the default components list
-`reviewer@<host>` and `babysitter@<host>` as missing for every expected host
-until those sources name one.
+Lifecycle-ledger rows, review-run records and babysitter heartbeats each name
+their host in an optional `host` field: the sanitised hostname, matching
+`/^[A-Za-z0-9._-]{1,64}$/`. The ledger already names its host. The review-run
+record names the host its round ran on, and the babysitter heartbeat names its
+own machine. Both use the same sanitised hostname, which replaces other
+characters with `_` but does not truncate, so a longer name is skipped as
+described below. A row with a `host` groups per component and host
+(`component@host`). A row without one, such as a record written before the field
+existed, groups per component only. The snapshot reader validates `host` on
+every source. A malformed `host` makes that record skipped, with a note, and it
+is not counted. A record with no `host` still yields a host-less row. With
+`--expected-host`, each expected host needs a fresh row for every expected
+component, or it is listed in `deployment.missingHostHeartbeats` as
+`component@host`. A host-less row never satisfies a host. So a host that runs no
+babysitter, or whose babysitter has not yet written a `host`, is listed as
+`babysitter@<host>` missing, and the same applies to `reviewer@<host>`. A host
+whose latest row is stale is listed in `staleHosts`, and one whose latest row
+has a different revision or policy fingerprint is listed in `mismatchedHosts`.
 
 **Rollout check** (`--rollout-verified-at`). A stranded PR was created before
 the verification instant, was still open at it (no merge or close at or before
@@ -1370,9 +1378,10 @@ counts CI only for delivered changes.
   told apart. A merge by any other account is not attributed to the fleet: it is
   `unknown`, or `human` when that account is declared with `--human-actor-id`.
 - Per-host heartbeat checks run only with `--expected-host`, and hosts it does not
-  name are not checked. Review-run records and babysitter heartbeats carry no
-  host, so the default components list `reviewer@<host>` and
-  `babysitter@<host>` as missing. The operator supplies per-host state
+  name are not checked. Review-run records and babysitter heartbeats written
+  before they carried a `host` are host-less, so they satisfy only the
+  per-component check. A host whose rows are all host-less is listed as missing
+  until it writes a new record. The operator supplies per-host state
   directories and checks the `coverage notes`.
 - Builds older than this change cannot verify journal entries that carry the
   new fields, nor read ledger rows that carry `reviewPolicyFingerprint`. Upgrade

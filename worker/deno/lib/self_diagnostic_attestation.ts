@@ -224,7 +224,8 @@ export async function recordSelfDiagnosticFiling(
   if (!isAuditJournalEnabled(env)) {
     log(
       `[self-diagnostic] no filing attestation for ${target}: audit ` +
-        `journalling is not enabled (WORK_DIR unset, or VIBE_AUDIT_DISABLED) ` +
+        `journalling is not enabled (neither WORK_DIR nor VIBE_AUDIT_DIR set, or ` +
+        `VIBE_AUDIT_DISABLED) ` +
         `— the diagnostic waits for a human \`work-on\``,
     );
     return false;
@@ -396,8 +397,8 @@ export async function verifySelfDiagnosticFilings(
 
   if (!isAuditJournalEnabled(env)) {
     return unavailable(
-      "audit journalling is not enabled (WORK_DIR unset, or " +
-        "VIBE_AUDIT_DISABLED), so no filing attestation can be verified",
+      "audit journalling is not enabled (neither WORK_DIR nor " +
+        "VIBE_AUDIT_DIR set, or VIBE_AUDIT_DISABLED), so no filing attestation can be verified",
     );
   }
 

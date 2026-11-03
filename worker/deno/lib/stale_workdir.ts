@@ -44,7 +44,8 @@ export const DEFAULT_STALE_WORKDIR_DAYS = 7;
  *   worker (uid 1000) cannot remove it, and trying produced a
  *   Permission-denied SELF-HEALING warning every cycle (Issue #4212).
  * - `audit` — `audit_journal.ts` writes the hash-chained mutation journals
- *   to `${WORK_DIR}/audit/`. It has no `.git` and sits untouched between
+ *   to the audit base directory (`VIBE_AUDIT_DIR`, else `${WORK_DIR}/audit`).
+ *   It has no `.git` and sits untouched between
  *   sweeps, so every housekeeping path treated it as a disposable clone and
  *   deleted the worker's own tamper-evident record — `audit-chain-verify`
  *   then reported `AUDIT_CHAIN_BROKEN` on every swept host (Issue #337).

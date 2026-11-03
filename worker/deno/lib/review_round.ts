@@ -159,6 +159,7 @@ export async function runReviewRound(
     deployment: NonNullable<ReviewRoundOptions["deployment"]>,
   ): ReviewRunDeployment => ({
     ...deployment,
+    ...(deps.host === undefined ? {} : { host: deps.host }),
     observedAt: new Date().toISOString(),
   });
   const record: ReviewRunRecord = {

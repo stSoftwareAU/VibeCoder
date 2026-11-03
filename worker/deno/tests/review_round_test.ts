@@ -312,7 +312,12 @@ Deno.test("runReviewRound stamps the host its deps name into the deployment bloc
     },
   };
   const named = recordingDeps([{ code: 0, output: "Round done" }]);
-  await runReviewRound("p", ROUND_ARGS, { ...named.deps, host: "round-host" }, options);
+  await runReviewRound(
+    "p",
+    ROUND_ARGS,
+    { ...named.deps, host: "round-host" },
+    options,
+  );
   const withHost: Record<string, unknown> = { ...named.final().deployment };
   assertEquals(withHost.host, "round-host");
 
