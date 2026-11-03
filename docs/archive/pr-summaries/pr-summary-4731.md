@@ -67,6 +67,27 @@ below.
 Docs: `docs/workflows/fleet-pr-babysitter.md` (exchange directory paragraph and
 the write-grants sentence).
 
+The sweep top-up records merge base
+`0a4d803ab862753bd35fcf39f5df4b3c91545504` as `sweptAt`, following the
+workflow's default-branch ancestry requirement. The previous feature-branch
+commit failed `Sweep ledger sweptAt ancestry` in PR #4752 and in the local
+reproduction. After repointing, the exact workflow command passes:
+`deno run --frozen --lock=deno.lock --allow-read --allow-env --allow-run mod.ts sweep-drift --repo ../.. --default-branch origin/main`
+from `worker/deno`. No runtime code or tests changed in this CI repair.
+
+CI repair validation: 39 `lib_sweep_coverage_test.ts` tests and 13
+`sweep_drift_command_test.ts` tests pass. `deno task pr-summary-ci --base main
+--head-branch issue-4731-babysitter-runner-follows-agent-planted-symlinks-w`
+reports no blocked gates (closure, independent review and reproduction are
+not checked without issue context). The local quality gate passes completeness,
+markdownlint, Mermaid, lint, type checking, formatting and its static checks.
+Semgrep and Checkov are unavailable locally; config integration has no local
+configuration. The full parallel unit pass cannot finish: host Deno 2.9.5 on
+macOS panics in `cli/ops/testing.rs` with "pledge test permissions called before
+restoring previous pledge"; the repository pins 2.9.8. The serial pass therefore
+does not run. All four CI test shards passed on the latest merged main PR
+#4742 (Actions run 41550561600), confirmed through `gh`.
+
 ## Test Plan
 
 New: `worker/deno/tests/fleet_babysitter_exchange_test.ts` (13 tests: symlink,
@@ -90,7 +111,7 @@ with `Deno.writeTextFile` → planted-symlink test red; `maxBytes` pre-check
 removed and the open-timeout race removed → their `file_utils_test.ts` cases
 red. The `dev` comparison is not testable on one filesystem (unreached).
 
-Results on the final head: `deno task test:unit` for `file_utils_test.ts` (30
+Implementation-session results before the CI repair: `deno task test:unit` for `file_utils_test.ts` (30
 passed), `fleet_babysitter_exchange_test.ts` (13 passed),
 `fleet_babysitter_app_test.ts` and `fleet_pr_babysitter_test.ts` (69 passed, 1
 failed: `babysitter default heartbeat resolves its checkout revision`, which
@@ -99,7 +120,7 @@ fetched in the sandbox), `gh_wrapper_test.ts` and `gitignore_enforcer_test.ts`
 (52 passed). `deno fmt --check`, `deno lint`, `deno check` pass on the touched
 files.
 
-`./quality.sh` on the final head: every stage passes (completeness checks, lint,
+Implementation-session `./quality.sh`: every stage passes (completeness checks, lint,
 type check, fmt, semgrep, markdownlint) except `deno tests` (parallel pass),
 which fails two tests in files this change does not touch:
 `fleet_pr_babysitter_test.ts` "babysitter default heartbeat resolves its
