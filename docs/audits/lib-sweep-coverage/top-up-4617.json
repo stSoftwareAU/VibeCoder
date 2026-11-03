@@ -1,0 +1,12 @@
+{
+  "issue": 4617,
+  "chunk": "top-up-4617",
+  "title": "top-up: CI mutation contract detector",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4617",
+  "definition": "module added so the diff-scoped mutation check can tell whether the repository's CI blocks on a mutants job: ci_mutation_contract.ts (#4617); it reads only workflow YAML files under the checkout and runs no repository code",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/ci_mutation_contract.ts"
+  ],
+  "sweptAt": "a9dcdc3792313a96b714bf09083aafa839511053"
+}
