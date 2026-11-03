@@ -1536,6 +1536,36 @@ Deno.test("with nothing pushed, a proposal over a governing committed summary is
   }
 });
 
+Deno.test("a pushed repair whose proposal only mentions a fully met issue still closes it (PR #4779 review)", async () => {
+  const fixture = await makeCommittedSummaryRepo(4637, closingSummary(4637));
+  try {
+    const events: string[] = [];
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      body: `Closes #4637\n\n${buildIdempotencyMarker(4637)}`,
+      onEdit: () => events.push("publish"),
+    });
+    const pushed = pushedRepair(fixture, github, events);
+    await finishBabysitterRepair(
+      "owner/repo",
+      pushed.repairPr,
+      fixture.path,
+      "babysitter[bot]",
+      changesRequestedBy(),
+      pushed.deps,
+      {
+        exchange: fixture.scratch,
+        proposal: "Rewritten. This addresses the review on Issue #4637.",
+      },
+    );
+    assertEquals(events, ["push", "publish", "dismiss"]);
+    assertStringIncludes(github.body(), "addresses the review on Issue #4637");
+    assertEquals(closingKeywordLine(github.body(), 4637), "Closes #4637");
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
 Deno.test("with nothing pushed and no committed summary, a proposal is published through the guard and never closes the issue (PR #4779 review)", async () => {
   // The only committed summary is for another issue, so #4674 has none.
   const fixture = await makeCommittedSummaryRepo(1, closingSummary(1));
