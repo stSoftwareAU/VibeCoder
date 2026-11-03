@@ -48,7 +48,7 @@ flowchart TD
 - Governing issues come from `closingIssuesReferences`, the `issue-<N>-…` branch
   of a fleet PR, or an anchored `Part of #N` line. The issue itself is fetched;
   it counts only if its author is trusted (`author_association`
-  OWNER/MEMBER/COLLABORATOR or a login in
+  OWNER/MEMBER/COLLABORATOR in the PR repository, or an explicitly trusted login in
   `allowed_authors`/`authorized_commenters`/`pr_reviewers`). PR prose never
   authorises anything. The five-word minimum is gone; a supplied quote must be
   verbatim in the issue and `expected-value` requires one.
@@ -145,9 +145,35 @@ only when the earlier record says the skill added it.
 
 ## Known gaps
 
-- No unit test drives `post.ts` `main()` (log-record assignment, exit 3 print,
-  legacy-key stderr line) or the gate `main()` fail-loud exit; their building
-  blocks are tested.
+- Retry exit 3, the legacy-key stderr line and the gate main fail-loud exit
+  still have building-block coverage only.
 - Held-review notes and `review.summary` in a hold body are still raw text, as
   before this change.
 - The worker's pre-PR verifier ignores `owner` verdicts.
+
+## PR #4746 review repair
+
+- Cross-repository closing references require an explicitly trusted author
+  login; OWNER/MEMBER/COLLABORATOR associations authorise only within the PR
+  repository. The policy test pairs cross-repository rejection with explicit
+  login approval; existing same-repository approval remains covered.
+- The post.ts subprocess harness now runs a moving second head read and
+  asserts posted:false, the new head reason and no review or label mutation.
+  Policy-1 hold records replay through evidence assessment and actual posting,
+  approving justified test changes and removing only reviewer-owned holds.
+- Babysitter repair prompts follow CODING-STANDARDS.md TDD rule 3 and require
+  obsolete behaviour, remaining behaviour and covering path::test evidence
+  for review-requested test replacements. All repair modes are checked.
+- Existing subprocess assertions remain; HEAD now uses a full commit SHA so
+  coverage verification runs. The log assertion reads the newest JSONL record
+  because replay retains the old hold record. No regression checks are removed.
+
+Validation for this repair: 181 targeted tests pass (172 policy/wiring/babysitter
+plus 9 posting subprocess tests). Removing the repository trust guard fails the
+cross-repository negative; removing the second live-head read fails the moved
+head subprocess test. Both guards were restored and the targeted suites passed.
+The full local gate passes formatter, lint, type checking, completeness,
+Markdown and Mermaid checks, but its parallel test process panics in Deno 2.9.5
+on macOS (`pledge test permissions called before restoring previous pledge`);
+the serial pass is consequently not run. Semgrep and Checkov are unavailable
+on this host; CI runs both.

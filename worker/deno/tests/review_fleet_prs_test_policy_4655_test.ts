@@ -351,6 +351,38 @@ const FLEET = { repo: "acme/widgets", number: 42, kind: "fleet" as const };
 const DEPENDABOT = { ...FLEET, kind: "dependabot" as const };
 const TRUST = { trustedLogins: [] as string[] };
 
+Deno.test("governing issues: cross-repo OWNER needs an explicitly trusted login", async () => {
+  const fx = {
+    pr: {
+      ...PR_VIEW,
+      closingIssuesReferences: [{
+        number: 3416,
+        repository: {
+          name: "other",
+          owner: { login: "stranger" },
+        },
+      }],
+    },
+    issues: {
+      "stranger/other#3416": {
+        ...ISSUE_3416,
+        user: { login: "stranger" },
+        author_association: "OWNER",
+      },
+    },
+  };
+  const denied = await resolveGoverningIssues(FLEET, TRUST, fakeGh(fx).runGh);
+  assertEquals(denied.issues, []);
+  assert(denied.problems.some((p) => p.includes("not by a trusted author")));
+  const allowed = await resolveGoverningIssues(
+    FLEET,
+    { trustedLogins: ["Stranger"] },
+    fakeGh(fx).runGh,
+  );
+  assertEquals(allowed.issues.map((i) => i.repo), ["stranger/other"]);
+  assertEquals(allowed.problems, []);
+});
+
 Deno.test("governing issues: closing reference, read with title and body only", async () => {
   const g = fakeGh();
   const r = await resolveGoverningIssues(FLEET, TRUST, g.runGh);

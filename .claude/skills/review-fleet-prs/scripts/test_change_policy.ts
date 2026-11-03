@@ -417,7 +417,8 @@ export async function resolveGoverningIssues(
       continue;
     }
     const login = asRecord(x.user)?.login;
-    const byAssociation = typeof x.author_association === "string" &&
+    const byAssociation = c.repo.toLowerCase() === pr.repo.toLowerCase() &&
+      typeof x.author_association === "string" &&
       TRUSTED_ASSOCIATIONS.has(x.author_association);
     const byLogin = typeof login === "string" &&
       trusted.has(normaliseLogin(login));
