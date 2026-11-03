@@ -1648,8 +1648,8 @@ export function spawnBabysitterAgent(
     stderr: "piped",
     env: {
       ...babysitterAgentEnv(options.scratch, options.agentToken),
-      // Issue #2400: the agent's own test suites must not journal into the
-      // babysitter's audit directory, which start-up sets in this process.
+      // Issue #2400: the agent's own test suites must not journal.
+      [AUDIT_JOURNAL_OFF_ENV_VAR]: "1",
     },
   });
 }
@@ -2852,7 +2852,7 @@ export async function prepareBabysitterStartUp(
     "VIBE_GITHUB_QUOTA_WORK_DIR",
     `${home}/.vibe-coder/fleet-pr-babysitter`,
   );
-  void ensureBabysitterAuditDir;
+  await ensureBabysitterAuditDir(stateDir, env, setEnv, log);
 }
 
 /**

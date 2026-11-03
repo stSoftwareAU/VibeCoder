@@ -2980,7 +2980,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     XDG_CACHE_HOME: scratch,
     GH_TOKEN: agentToken,
     GH_CONFIG_DIR: `${scratch}/gh-config`,
-    // Issue #2400: the agent's child suites never journal (Issue #4658 sets VIBE_AUDIT_DIR).
+    // Issue #2400: the agent's child suites never journal.
     VIBE_AUDIT_DISABLED: "1",
   });
   assertEquals(call.options.timeoutMs, 90 * 60_000);

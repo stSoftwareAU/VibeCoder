@@ -467,7 +467,7 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the per-host state directory the launcher creates",
   },
-  VIBE_AUDIT_DIR_BROKEN: {
+  VIBE_AUDIT_DIR: {
     role: "launch_plumbing",
     note:
       "the audit journal directory, used verbatim when absolute; the fleet babysitter sets it at start-up to `<state dir>/audit` when neither it nor WORK_DIR is set (Issue #4658)",
