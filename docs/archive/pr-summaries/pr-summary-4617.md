@@ -53,7 +53,8 @@ flowchart TD
   skipped symlinks and oversized files are reported as unreadable. Continued
   lines are collected and joined once, and YAML step aliases are scanned only
   once per file, including aliases shared across jobs. Directory symlinks are
-  rejected and a cumulative 1 MiB script scan budget bounds string aliases.
+  rejected and a cumulative scan budget charges script characters and every
+  visited step, bounding both string and steps-array aliases across jobs.
 - On a blocking-CI repository a survivor for the matching language, or a check
   that cannot finish (runner error, missing tool, baseline failure, worker fault, exhausted budget or
   mutant cap), holds the PR as a draft. The incomplete case carries an
@@ -98,6 +99,8 @@ mutation verdict, completion phase, deferral and review-fix paths.
   Directory-symlink fixtures cover both path components; repeated scalar aliases
   exceed the scan budget and are reported unreadable, with a counted-work check
   across jobs.
+  A shared steps-array fixture and a counted budget test cover repeated visits
+  to aliased mappings and non-mappings across jobs.
 - `worker/deno/tests/mutation_gate_test.ts`: matching CI ignores summary
   exemptions; mismatched tools retain exemptions in both language directions;
   errors, budget, cap and hostile job labels retain their coverage.
@@ -216,6 +219,10 @@ mutation verdict, completion phase, deferral and review-fix paths.
 
 ## CI repair on PR #4744
 
+- Review follow-up: charge each visited step against the shared workflow scan
+  budget before deduplication. The aliased-array fixture and counted budget
+  test failed before this change and pass afterwards; no duplicate detector
+  was found.
 - Reproduced the completion test failure locally: a regular file at
   `.github/workflows` is now reported as unreadable by the directory guard,
   rather than throwing into completion's catch branch. Updated the diagnostic

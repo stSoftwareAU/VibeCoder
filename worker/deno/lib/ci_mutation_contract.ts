@@ -192,6 +192,9 @@ export function blockingMutationLine(
   const steps = job.steps;
   if (!Array.isArray(steps)) return null;
   for (const step of steps) {
+    // Charge even aliases and non-mappings: an aliased array can be revisited
+    // by many jobs without adding any new mappings or run characters.
+    if (--budget.remaining < 0) throw new WorkflowScanBudgetExceeded();
     // YAML aliases share object identity, including across jobs. Scan each
     // eligible mapping once per file so aliases cannot multiply run work.
     if (!isMapping(step) || seen.has(step)) continue;

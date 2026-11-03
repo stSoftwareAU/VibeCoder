@@ -76,7 +76,7 @@ Deno.test("aliased run strings exceeding the scan budget are unreadable", async 
 });
 
 Deno.test("scan budget counts run characters across jobs", () => {
-  const budget = { remaining: 10 };
+  const budget = { remaining: 11 };
   const seen = new WeakSet<object>();
   assertEquals(
     blockingMutationLine({ steps: [{ run: "echo x" }] }, seen, budget),
@@ -85,6 +85,33 @@ Deno.test("scan budget counts run characters across jobs", () => {
   assertEquals(budget.remaining, 4);
   assertThrows(() =>
     blockingMutationLine({ steps: [{ run: "echo x" }] }, seen, budget)
+  );
+});
+
+Deno.test("aliased steps arrays exhaust the shared scan budget", async () => {
+  const workflow = "on: pull_request\njobs:\n  j0:\n    steps: &s [" +
+    "{},".repeat(2000) + "{}]\n" +
+    Array.from({ length: 600 }, (_, i) => `  j${i + 1}: {steps: *s}\n`)
+      .join("");
+  await withRepo({ "aliases.yml": workflow }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: ["aliases.yml"],
+    });
+  });
+});
+
+Deno.test("scan budget charges every visited step before deduplication", () => {
+  const step = {};
+  const budget = { remaining: 3 };
+  const seen = new WeakSet<object>();
+  assertEquals(
+    blockingMutationLine({ steps: [step, null] }, seen, budget),
+    null,
+  );
+  assertEquals(budget.remaining, 1);
+  assertThrows(() =>
+    blockingMutationLine({ steps: [step, null] }, seen, budget)
   );
 });
 
