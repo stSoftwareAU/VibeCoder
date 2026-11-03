@@ -3119,6 +3119,30 @@ flowchart TD
     style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
+### ⏩ One push per fix: the base rides along (`git_push.ts`)
+
+Every push to an open, ready PR runs the whole CI (`pull_request`
+`synchronize`). A fix pushed onto a branch that is behind its base leaves the
+PR `BEHIND`, and the update-branch request that follows runs CI a second time
+for the same fix. Pushes before `gh pr create` start no workflow, so the new-PR
+path can merge and push freely; once the PR exists, the base must go out in the
+same push as the fix (owner rule 2026-11-03).
+
+- **Repair passes** (CI fix, review feedback, spelling) pass the PR's base as
+  `syncBaseBranch` to `commitAndPushPending`. After its gates and just before
+  the push, `mergeBaseBeforePush` merges that base in through the PR-raise
+  sync's own `ensureBranchCurrent` and `mergeOntoBase`: a plain merge commit,
+  never a rebase or force-push. It acts only when there is a fix to push to a
+  branch already on origin, so a pass with no fix pushes nothing. A conflict
+  is aborted and the fix is pushed as before; the conflict lane takes over. A
+  gated head's milestone-fix branch is left alone, because its PR targets the
+  head, not the head's base. `prBaseForSync` supplies the base: the one the
+  caller knows, else `gh pr view --json baseRefName`, else none.
+- **New PRs** are brought up to date by the PR-raise sync before the first
+  push, and checked once more just before `gh pr create`: the base can move
+  while the gates run. When it has, the base is merged in and pushed then,
+  while no PR exists and the push costs no CI.
+
 ### 🔁 One-pass merge for a declined branch (`branch_conflict_pass.ts`)
 
 `ensureBranchCurrent` in `branch_currency.ts` is deliberately not a
@@ -6152,8 +6176,8 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts)                                                 | Dependency resolution and cycle detection                                                                                                                                                                                       |
 | **PR management**           |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                                                            |
-|                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from its pr-summary file after a fix run when the summary differs from the digest recorded in the body (Issues #3089, #3315; Issue #3678: files the follow-up when a fix run newly reports a gap); also adopts a marker-less agent-raised PR on the run's own `issue-<N>` branch (Issue #3804), and is called by the Priority 1.64 reconcile pass (Issue #3760) |
-|                             | [agent_pr_adoption.ts](../worker/deno/lib/agent_pr_adoption.ts) | Adopts the agent-raised PR on the run's own `issue-<N>` branch at every issue-run completion exit, rebuilding its body with the worker marker and digest (Issue #3804) and repairing a noncanonical title reference (Issue #4621) |
+|                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from its pr-summary file after a fix run when the summary differs from the digest recorded in the body (Issues #3089, #3315; Issue #3678: files the follow-up when a fix run newly reports a gap); also adopts a marker-less agent-raised PR on the run's own `issue-<N>` branch (Issue #3804) from the summary committed at the verified pushed head, skipping if that head moved or the commit has no summary (Issue #4712), and is called by the Priority 1.64 reconcile pass (Issue #3760) |
+|                             | [agent_pr_adoption.ts](../worker/deno/lib/agent_pr_adoption.ts) | Adopts the agent-raised PR on the run's own `issue-<N>` branch at every issue-run completion exit, rebuilding its body with the worker marker and digest (Issue #3804) from the summary committed at the verified pushed head, not the working tree, and skipping if that head moved or the commit has no summary (Issue #4712), and repairing a noncanonical title reference (Issue #4621) |
 |                             | [pr_body_reconcile.ts](../worker/deno/lib/pr_body_reconcile.ts)                                                   | Priority 1.64 sweep: re-syncs an open fleet-authored PR body whose recorded `vibe-pr-summary` digest differs from the summary at its head after a push the worker did not make, rebuilding in a disposable shallow clone (Issue #3760) |
 |                             | [pr_body_sync_follow_up.ts](../worker/deno/lib/pr_body_sync_follow_up.ts)                                         | Files or reuses the parent's `idle-task` follow-up when a PR-body re-sync finds that a fix run newly reports a `partial` or `missing` criterion, after re-verifying the issue's content (Issue #3678)                           |
 |                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts) | Post-agent drift check on review-fix runs: model pass, change-request quotes, Test Plan recount and a mutation check, one recovery turn (Issues #3143, #3244, #3750). Docs-sweep and branch-outcome citation checks were removed (Issue #4234). |
