@@ -63,6 +63,13 @@ flowchart LR
 
 ## Test Plan
 
+- Review fix: the shared-clone ref sweep checks ownership before running Git,
+  records and logs refusals, and continues to sweep trusted clones. The
+  obsolete behaviour ran Git in any path with a `.git` entry. Coverage:
+  `worker/deno/tests/shared_clone_ref_sweep_test.ts::#4737 - foreign-owned clone is refused before git`
+  injects a foreign uid into the shared check and asserts no Git call. The
+  closed-milestone and milestone-sync checks use the same ownership policy.
+
 - Review fix: closed-milestone housekeeping now checks clone ownership before
   any git call and logs and records a refusal. The obsolete behaviour ran git
   in any existing checkout; trusted checkouts remain eligible for sweeping.
