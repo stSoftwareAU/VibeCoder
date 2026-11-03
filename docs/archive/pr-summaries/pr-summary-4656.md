@@ -328,3 +328,16 @@ The moved-head fixtures explicitly model unpublished attempts; their changed
 diagnosis and bounded handoff assertions remain intact. Authentication
 diagnostics are covered by
 `worker/deno/tests/babysitter_fix_orchestration_test.ts::agent stderr preserves the symlink target and reports authentication`.
+
+## Review follow-up: pending push reset and prompt safety
+
+A successful push persists a pending shared reset until publication succeeds.
+The next repair retries the reset before counting shared attempts. Records without
+the optional field remain readable. Prior outcomes are omitted from repair prompts;
+substantive evidence remains fenced, and redacted diagnoses remain in logs.
+The PR body leaves issue #4656 open while automated recovery remains partial.
+
+The obsolete behaviour allowed a failed push-marker publication to restore old
+no-progress attempts and inserted raw outcome text into the prompt. The remaining
+behaviour resets the tally after a push and keeps untrusted diagnostics out of
+instruction text. Coverage: `worker/deno/tests/babysitter_fix_orchestration_test.ts::failed push marker is retried before counting prior attempts` and `worker/deno/tests/babysitter_fix_orchestration_test.ts::prior diagnostic cannot inject instructions into the next prompt`.

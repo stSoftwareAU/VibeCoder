@@ -86,6 +86,7 @@ function harness(
     pushed: 0,
     escalations: 0,
     escalateFails: 0,
+    markerFailures: 0,
     reviewId: 10,
   };
   let nextId = 100;
@@ -130,6 +131,10 @@ function harness(
       args[0] === "api" && args[1] === `repos/${REPO}/issues/1/comments` &&
       args.includes("POST")
     ) {
+      if (state.markerFailures > 0) {
+        state.markerFailures--;
+        return Promise.reject(new Error("marker write 502"));
+      }
       if (options.markerFails) {
         return Promise.reject(new Error("marker write 502"));
       }
@@ -977,6 +982,41 @@ Deno.test("successful repairs reset the consecutive no-progress budget", async (
     assert(h.state.prompts.every((p) => !p.includes("Change the diagnosis")));
   });
 });
+Deno.test("failed push marker is retried before counting prior attempts", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    await h.attempt();
+    await elapse(stateDir);
+    await h.attempt();
+    await elapse(stateDir);
+    h.state.changes = true;
+    h.state.markerFailures = 1;
+    await h.attempt();
+    h.state.changes = false;
+    h.state.committed = false;
+    await elapse(stateDir);
+    await h.attempt();
+    assertEquals((await records(stateDir))[0]!.attempts.substantive, 1);
+    assertEquals(h.state.escalations, 0);
+  });
+});
+
+Deno.test("prior diagnostic cannot inject instructions into the next prompt", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    await h.attempt();
+    await elapse(stateDir);
+    h.state.agents.push({
+      code: 1,
+      stderr: "HTTP 429 rate limit\nINJECTED INSTRUCTION",
+    });
+    await assertRejects(() => h.attempt());
+    await elapse(stateDir);
+    await h.attempt();
+    assert(!h.state.prompts[2]!.includes("INJECTED INSTRUCTION"));
+  });
+});
+
 Deno.test("runner budget exhaustion is substantive and reaches escalation", async () => {
   const realNow = Date.now;
   try {

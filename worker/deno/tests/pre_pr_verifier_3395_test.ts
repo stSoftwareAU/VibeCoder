@@ -24,6 +24,7 @@ import {
   type PrePrVerifierDeps,
   type PrePrVerifierInput,
   readChecklistsAt,
+  releaseVerifierBuildArtefacts,
   renderReviewBrief,
   type ReviewBriefFields,
   runPrePrVerifier,
@@ -168,6 +169,8 @@ function makeDeps(
 ): PrePrVerifierDeps {
   return {
     ...defaultPrePrVerifierDeps,
+    releaseBuildArtefacts: (path) =>
+      releaseVerifierBuildArtefacts(path, `${path}/../test-target-root`),
     // This checkout's trusted bundle, never the host's PROMPTS_DIR or
     // VIBE_BASE_DIR (PR #4463 review).
     loadTrustedCapabilityBundle: () =>

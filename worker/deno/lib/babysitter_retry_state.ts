@@ -41,6 +41,8 @@ export interface BabysitterRetryRecord {
   attempts: { infrastructure: number; substantive: number };
   /** Local no-progress attempts whose shared marker could not be published. */
   unpublishedAttempts?: number;
+  /** A push reset awaiting publication to the shared tally. */
+  pendingPushReset?: string;
   nextEligibleAt: string | null;
   nextAction: string;
   pushedHead: string | null;
@@ -127,6 +129,8 @@ function parseRecord(value: unknown, path: string): BabysitterRetryRecord {
     (record.unpublishedAttempts === undefined ||
       (Number.isSafeInteger(record.unpublishedAttempts) &&
         (record.unpublishedAttempts as number) >= 0)) &&
+    (record.pendingPushReset === undefined ||
+      typeof record.pendingPushReset === "string") &&
     (record.nextEligibleAt === null ||
       (typeof record.nextEligibleAt === "string" &&
         Number.isFinite(Date.parse(record.nextEligibleAt)))) &&

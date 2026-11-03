@@ -1560,7 +1560,7 @@ export async function fix(
   const markSharedAttempt = async (
     head: string,
     outcome: "pushed" | "no-change",
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     try {
       await recordSharedBabysitterAttempt(
         repo,
@@ -1576,17 +1576,20 @@ export async function fix(
         : sharedSubstantiveAttempts + 1;
       attemptMarkerRecorded = true;
       if (retryRecord) {
+        if (outcome === "pushed") retryRecord.pendingPushReset = undefined;
         retryRecord.unpublishedAttempts = outcome === "pushed"
           ? 0
           : Math.max(0, (retryRecord.unpublishedAttempts ?? 0) - 1);
         await saveBabysitterRetryState(stateDir, retryRecord);
       }
+      return true;
     } catch (error) {
       console.warn(
         `${repo}#${initial.number}: could not publish the attempt marker: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      return false;
     }
   };
   /** Publish the marker, then escalate once when the no-progress cap is reached. */
@@ -1776,6 +1779,15 @@ export async function fix(
         nextAction: "start the repair under the PR branch lock",
       };
     }
+    if (retryRecord.pendingPushReset) {
+      if (!await markSharedAttempt(retryRecord.pendingPushReset, "pushed")) {
+        throw new BabysitterFailure(
+          "Could not publish the pending push reset",
+          "infrastructure",
+        );
+      }
+      attemptMarkerRecorded = false;
+    }
     sharedSubstantiveAttempts = await readSharedBabysitterAttempts(
       repo,
       pr.number,
@@ -1846,12 +1858,12 @@ export async function fix(
         Math.max(retryRecord.attempts.substantive, sharedSubstantiveAttempts),
         maxSubstantiveAttempts,
       )
-      ? `\nPrevious substantive attempts: ${retryRecord.attempts.substantive}. Change the diagnosis and repair strategy. Prior outcome: ${retryRecord.lastOutcome}. Do not repeat the same fix or merely restate the previous result.`
+      ? `\nPrevious substantive attempts: ${retryRecord.attempts.substantive}. Change the diagnosis and repair strategy. Inspect the fenced evidence below. Do not repeat the same fix or merely restate the previous result.`
       : retryRecord.attempts.substantive > 0
       ? `\nThis is substantive repair attempt ${
         Math.max(retryRecord.attempts.substantive, sharedSubstantiveAttempts) +
         1
-      }; inspect the prior outcome (${retryRecord.lastOutcome}) and adjust the diagnosis if it did not make progress.`
+      }; inspect the fenced evidence below and adjust the diagnosis if it did not make progress.`
       : "");
     const evidence = retryRecord.evidence?.length
       ? "\n" +
@@ -2057,6 +2069,7 @@ export async function fix(
       ...retryRecord!,
       observedHead: pushedHead,
       pushedHead,
+      pendingPushReset: pushedHead,
       unpublishedAttempts: 0,
       blockerClass: "unknown",
       lastOutcome: "pushed",
