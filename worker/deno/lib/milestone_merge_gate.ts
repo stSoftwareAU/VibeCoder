@@ -110,9 +110,11 @@ export interface MergeGateOutcome {
    */
   landUnverified?: boolean;
   /**
-   * Set when a cargo project was left to CI (Issue #4326). A `passed` outcome
-   * with this set has verified only the Deno half; the report must not claim
-   * the cargo half passed. A `skipped` outcome with this set verified nothing.
+   * Set when a cargo project was left to CI (Issue #4326) — skipped for the
+   * host's budget, or because its `cargo check` timed out (Issue #4786). A
+   * `passed` outcome with this set has verified only the Deno half; the report
+   * must not claim the cargo half passed. A `skipped` outcome with this set
+   * verified nothing.
    */
   cargoSkipped?: boolean;
   /**
@@ -164,7 +166,18 @@ export type MergeGateFn = (repoDir: string) => Promise<MergeGateOutcome>;
 /** Runs the resolved check. Injected in tests; spawns `deno` in production. */
 export type TypeCheckRunner = (
   project: TypeCheckProject,
-) => Promise<{ code: number; output: string; accountUnavailable?: string }>;
+) => Promise<
+  {
+    code: number;
+    output: string;
+    accountUnavailable?: string;
+    /**
+     * Set when the check hit its time limit (Issue #4786), so the caller can
+     * tell a timeout from a failing check. Set by the production runner only.
+     */
+    timedOut?: boolean;
+  }
+>;
 
 /**
  * Which arguments run this project's type check.
@@ -471,6 +484,7 @@ const spawnTypeCheck: TypeCheckRunner = async (project) => {
       code: 124,
       output: `${output}\nType check timed out after ${MERGE_GATE_TIMEOUT_MS}ms`
         .trim(),
+      timedOut: true,
     };
   }
   return { code, output };
@@ -524,6 +538,8 @@ export async function checkMergedTree(
 
   const checked: string[] = [];
   const leftToCi: string[] = [];
+  // Cargo checks that hit their time limit (Issue #4786).
+  const cargoTimedOut: string[] = [];
   const skipCargo = await skipCargoBuild();
   let skippedCargo = false;
   for (const project of projects) {
@@ -535,7 +551,12 @@ export async function checkMergedTree(
       continue;
     }
     const where = `${describeProject(project)} in ${project.dir}`;
-    let result: { code: number; output: string; accountUnavailable?: string };
+    let result: {
+      code: number;
+      output: string;
+      accountUnavailable?: string;
+      timedOut?: boolean;
+    };
     try {
       result = await runner(project);
     } catch (err) {
@@ -553,6 +574,15 @@ export async function checkMergedTree(
       continue;
     }
     if (result.code !== 0) {
+      // A cargo check that hit its time limit says nothing about the merged
+      // tree: on a cold ephemeral target it is the build that ran out of
+      // time, not a bad resolution. It is left to CI, as a skipped cargo
+      // build is (Issue #4786). A Deno timeout stays a failure.
+      if (project.kind === "cargo" && result.timedOut) {
+        skippedCargo = true;
+        cargoTimedOut.push(where);
+        continue;
+      }
       // A Deno check that could not reach its module host says nothing about
       // the merged tree: it is left to CI, as the resolution gate leaves it
       // (Issue #4422). Refusing here charged a conflict attempt for a network
@@ -587,6 +617,9 @@ export async function checkMergedTree(
   }
 
   const notes = [
+    ...cargoTimedOut.map((where) =>
+      `${where} timed out after ${MERGE_GATE_TIMEOUT_MS}ms — left to CI (Issue #4786)`
+    ),
     ...(skippedCargo ? [`${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`] : []),
     ...leftToCi.map((note) => `${note} — left to CI (Issue #4422)`),
   ];

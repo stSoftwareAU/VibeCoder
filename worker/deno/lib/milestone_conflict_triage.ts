@@ -777,7 +777,9 @@ export function buildResolutionCommitMessage(o: {
     `module host, so that project's type check was left to that CI (Issue ` +
     `#4441). ${n.suiteLeftToCi} means a Deno task of the resolution gate was ` +
     `left to that CI for the same reason (Issue #4422). ${n.cargoSkipped} ` +
-    `means the Deno half passed and cargo was left to that CI. None of them ` +
+    `means the Deno half passed and cargo did not complete: it was skipped ` +
+    `for the host's budget (Issue #4326) or its check timed out (Issue ` +
+    `#4786), and was left to that CI. None of them ` +
     `means the check it names passed. No ` +
     `conflicted test file was resolved by taking a side that drops cases ` +
     `(Issue #1559).`;

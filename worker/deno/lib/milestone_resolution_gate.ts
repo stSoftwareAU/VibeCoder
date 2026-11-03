@@ -144,7 +144,18 @@ export async function cargoTestArgs(dir: string): Promise<string[]> {
 /** Runs one task. Injected in tests; spawns `deno task <name>` in production. */
 export type ResolutionTaskRunner = (
   task: ResolutionTask,
-) => Promise<{ code: number; output: string; accountUnavailable?: string }>;
+) => Promise<
+  {
+    code: number;
+    output: string;
+    accountUnavailable?: string;
+    /**
+     * Set when the task hit its time limit (Issue #4786), so the caller can
+     * tell a timeout from a failing task. Set by the production runner only.
+     */
+    timedOut?: boolean;
+  }
+>;
 
 /** Longest task output carried into a log line or an escalation comment. */
 const MAX_OUTPUT_LINES = 40;
@@ -222,6 +233,7 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
         describeTask(task)
       }' timed out after ${task.timeoutMs}ms`
         .trim(),
+      timedOut: true,
     };
   }
   return { code, output };
@@ -236,7 +248,10 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
  *   the host could not fetch its remote modules (Issue #4422) is not run, so
  *   the passed outcome names it in `suiteLeftToCi` and in its detail. A type
  *   check left to CI the same way is carried through as `checkLeftToCi`
- *   (Issue #4441), so the report does not claim it passed. `skipped` when the
+ *   (Issue #4441), so the report does not claim it passed. A Cargo step (check
+ *   carried through, or `cargo test`) that hit its time limit (Issue #4786) is
+ *   left to CI the same way and named as timed out in the passed detail; a Deno
+ *   task that times out is still a failure. `skipped` when the
  *   tree defines nothing to run, which the caller must treat as a refusal. That
  *   refusal is fail closed: an all-left-to-CI tree where no unit suite or
  *   quality script ran is still `skipped`, and the early `skipped` return (the
@@ -299,11 +314,15 @@ export async function verifyResolvedTree(
   let unitSuiteLeftToCi = false;
   // Re-read the budget. A mixed tree's type check returns `passed` after it
   // skips cargo, and parsing that detail would miss a budget that flipped
-  // between the two gates (Issue #4326).
+  // between the two gates (Issue #4326). The type check's own `cargoSkipped`
+  // is honoured as well: a `cargo check` that timed out (Issue #4786) fills
+  // the same cold target as `cargo test`, so the suite waits for CI too.
   const projects = await findProjectManifests(repoDir);
   const skipCargo = projects.some((project) => project.kind === "cargo") &&
-    await skipCargoBuild();
+    (typed.cargoSkipped === true || await skipCargoBuild());
   let skippedCargoSuite = false;
+  // Cargo steps that hit their time limit (Issue #4786).
+  const cargoTimedOut: string[] = [];
   for (const project of projects) {
     if (project.kind === "cargo" && skipCargo) {
       // `cargo test` fills the same ephemeral target the type check declined
@@ -343,7 +362,12 @@ export async function verifyResolvedTree(
           output: "",
         };
       }
-      let result: { code: number; output: string; accountUnavailable?: string };
+      let result: {
+        code: number;
+        output: string;
+        accountUnavailable?: string;
+        timedOut?: boolean;
+      };
       try {
         result = await runner({ ...step, timeoutMs });
       } catch (err) {
@@ -362,6 +386,14 @@ export async function verifyResolvedTree(
         continue;
       }
       if (result.code !== 0) {
+        // Issue #4786: a cargo step that hit its time limit on a cold ephemeral
+        // target says nothing about the resolution, so it is left to CI. A
+        // Deno task that times out is still a failure, below.
+        if (step.kind === "cargo" && result.timedOut) {
+          skippedCargoSuite = true;
+          cargoTimedOut.push(`${where} timed out after ${timeoutMs}ms`);
+          continue;
+        }
         // Issue #4422: a Deno task that could not fetch a remote module ran on
         // a host with no route to the module host. That is an environment
         // fault, so the task is left to CI rather than failed or passed.
@@ -480,9 +512,12 @@ export async function verifyResolvedTree(
   const suiteNote = leftToCi.length > 0
     ? `; ${leftToCi.join("; ")} — left to the milestone PR's CI (Issue #4422)`
     : "";
+  const timeoutNote = cargoTimedOut.map((note) =>
+    `; ${note} — left to CI (Issue #4786)`
+  ).join("");
   return {
     status: "passed",
-    detail: `${ran.join("; ")} passed${cargoNote}${suiteNote}`,
+    detail: `${ran.join("; ")} passed${cargoNote}${timeoutNote}${suiteNote}`,
     output: "",
     ...(cargoLeftToCi ? { cargoSkipped: true } : {}),
     ...(leftToCi.length > 0 ? { suiteLeftToCi: leftToCi.join("; ") } : {}),

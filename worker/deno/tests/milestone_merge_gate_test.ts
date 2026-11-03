@@ -474,6 +474,133 @@ Deno.test("checkMergedTree - a mixed tree passes its Deno check and does not cla
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #4786 — a cargo check that hits its time limit is left to CI, not
+// refused: a timeout on a cold ephemeral target says nothing about the
+// resolution
+// ---------------------------------------------------------------------------
+
+Deno.test("checkMergedTree - a cargo check that times out is left to CI, not failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      () =>
+        Promise.resolve({
+          code: 124,
+          timedOut: true,
+          output: "Type check timed out after 300000ms",
+        }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "skipped", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(outcome.detail, "timed out");
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+    assertStringIncludes(outcome.detail, CARGO_BUILD_SKIPPED_FOR_MERGE);
+  });
+});
+
+Deno.test("checkMergedTree - a mixed tree whose cargo check times out passes its Deno half and names the timeout (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      (project) =>
+        Promise.resolve(
+          project.kind === "cargo"
+            ? { code: 124, timedOut: true, output: "" }
+            : { code: 0, output: "" },
+        ),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(outcome.detail, "deno check");
+    assertStringIncludes(outcome.detail, "timed out");
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check that exits 124 without the timeout flag is still failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      () => Promise.resolve({ code: 124, output: "x" }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, undefined);
+  });
+});
+
+Deno.test("checkMergedTree - a cargo compile failure (exit 101) is still failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      () =>
+        Promise.resolve({
+          code: 101,
+          output: "error[E0425]: cannot find value `x` in this scope",
+        }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.detail, "failed (exit 101)");
+  });
+});
+
+Deno.test("checkMergedTree - a Deno check that times out is still failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    const outcome = await checkMergedTree(
+      dir,
+      () => Promise.resolve({ code: 124, timedOut: true, output: "" }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, undefined);
+  });
+});
+
+Deno.test("checkMergedTree - a mixed tree whose Deno check fails is failed even when its cargo check times out (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      (project) =>
+        Promise.resolve(
+          project.kind === "cargo"
+            ? { code: 124, timedOut: true, output: "" }
+            : { code: 1, output: "error: TS2304 Cannot find name 'x'." },
+        ),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.detail, "deno check");
+    assertStringIncludes(outcome.detail, "failed (exit 1)");
+  });
+});
+
 Deno.test("findTypeCheckProjects - toolchain coverage cannot hide a nested project of the other kind (PR #4343)", async () => {
   for (const rootKind of ["cargo", "deno"]) {
     await withTempDir(async (dir) => {

@@ -111,14 +111,17 @@ Deno.test("buildConflictEscalationComment - a Deno task left to CI says it did n
   assertStringIncludes(leftToCi, "does not claim it passed (Issue #4422)");
   assertStringIncludes(leftToCi, "milestone PR's CI runs it");
   assertEquals(leftToCi.includes("passed the repository's own check"), false);
-  assertEquals(leftToCi.includes("Cargo was not run either"), false);
+  assertEquals(leftToCi.includes("Cargo did not complete either"), false);
 
   const withCargo = buildConflictEscalationComment({
     ...base,
     conflict: { ...conflict, suiteLeftToCi: left, cargoSkipped: true },
   });
   assertStringIncludes(withCargo, "did NOT run");
-  assertStringIncludes(withCargo, "Cargo was not run either (Issue #4326).");
+  assertStringIncludes(
+    withCargo,
+    "Cargo did not complete either (Issues #4326, #4786)",
+  );
   assertEquals(withCargo.includes("passed the repository's own check"), false);
 });
 
@@ -172,5 +175,8 @@ Deno.test("buildConflictEscalationComment - a type check left to CI says it did 
     ...base,
     conflict: { ...conflict, checkLeftToCi: left, cargoSkipped: true },
   });
-  assertStringIncludes(withCargo, "Cargo was not run either (Issue #4326).");
+  assertStringIncludes(
+    withCargo,
+    "Cargo did not complete either (Issues #4326, #4786)",
+  );
 });
