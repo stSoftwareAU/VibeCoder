@@ -200,3 +200,7 @@ Issue #4659 requires: "Add tests that a credential variable set in the parent do
 The merged #4754 checks ownership before clone reuse. Stale and tiered cleanup now also refuse rescue of untrusted clone roots or metadata before any Git command, preserving them for inspection. Coverage: `worker/deno/tests/stale_workdir_test.ts::stale_workdir - refuses foreign metadata before rescue runs git (Issue #4756)` and `worker/deno/tests/clone_ownership_test.ts::clone reuse refuses foreign git metadata before invoking git`.
 
 Validation of this follow-up: repository-wide `deno fmt --check`, `deno lint` and `deno task check` passed. The gate’s targeted `deno task test:unit` passed all 54 tests in `stale_workdir_test.ts`, `clone_ownership_test.ts` and `work_volume_tiers_test.ts`.
+
+## CI repair
+
+Break the milestone tracker import cycle by moving its canonical marker to a leaf module. Use the built-in synchronous SHA-256 implementation for stream keys so entry points invoked with `--no-config` resolve without an import map; existing key values remain unchanged. Coverage: `worker/deno/tests/collect_idle_task_candidates_test.ts`, `worker/deno/tests/claude_runner_pre_push_3394_test.ts` and `worker/deno/tests/stream_identity_test.ts`.
