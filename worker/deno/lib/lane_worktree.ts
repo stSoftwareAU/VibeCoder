@@ -434,7 +434,9 @@ export async function detachLaneWorktreeHead(
  * builds. A branch held by anything else (a developer's own worktree, a path
  * git names that this module does not recognise) is reported rather than
  * wrenched away: the repair is for the fleet's own contention, not for
- * whatever else happens to share the clone.
+ * whatever else happens to share the clone. The shared clone's own primary
+ * worktree is the one other holder the issue path also releases, via
+ * {@link primaryCloneHoldingBranch} (Issue #4789); the PR passes do not.
  *
  * Shared by the issue path (`createFeatureBranchFromBase`) and the PR
  * passes (`preparePrBranch`, `checkoutPrBranchAtRemoteHead`): before #1677
@@ -446,8 +448,7 @@ export async function detachLaneWorktreeHead(
  *   a held branch or the holder is not one of this host's lane worktrees
  */
 export function laneWorktreeHoldingBranch(stderr: string): string | undefined {
-  const match = stderr.match(/is already used by worktree at '([^']+)'/);
-  const path = match?.[1];
+  const path = heldWorktreePath(stderr);
   if (path === undefined) return undefined;
 
   // `<...>/<LANE_WORKTREE_ROOT>/<lane>/<repo>`: the lane root must be the
@@ -457,4 +458,60 @@ export function laneWorktreeHoldingBranch(stderr: string): string | undefined {
   return segments[segments.length - 3] === LANE_WORKTREE_ROOT
     ? path
     : undefined;
+}
+
+/**
+ * The worktree path git names in a "branch already used by a worktree"
+ * refusal, or `undefined` when the stderr is not that refusal (Issue #1564).
+ *
+ * @param stderr - git's stderr from the refused checkout
+ * @returns The quoted path git reports as holding the branch
+ */
+function heldWorktreePath(stderr: string): string | undefined {
+  return stderr.match(/is already used by worktree at '([^']+)'/)?.[1];
+}
+
+/**
+ * The shared clone's own primary worktree, when it is the holder of a branch
+ * git refused to check out (Issue #4789).
+ *
+ * {@link laneWorktreeHoldingBranch} only recognises lane worktrees, so a
+ * branch left checked out in the clone's primary worktree
+ * (`<work root>/<repo>`) was never released: the refusal was not recognised
+ * and the issue died in phase `setup` on every re-claim. The primary clone is
+ * the worker's own shared clone, not a developer's checkout, and the claim
+ * guarantees no other run owns this issue's branch, so releasing its hold is
+ * the same host-internal contention repair. `checkout --detach` keeps the
+ * working tree, only the branch pointer is released.
+ *
+ * Anything else git names — a lane worktree (handled by
+ * {@link laneWorktreeHoldingBranch}), or a developer's own linked worktree —
+ * is not this clone's primary and returns `undefined`, so it is reported
+ * rather than touched.
+ *
+ * @param stderr - git's stderr from the refused checkout
+ * @param cwd - A directory inside the shared clone, used to list its worktrees
+ * @param run - The git runner; production passes nothing, tests pass a mock
+ * @returns The primary worktree's path as git reported it, or `undefined`
+ */
+export async function primaryCloneHoldingBranch(
+  stderr: string,
+  cwd: string | undefined,
+  run: typeof runGitCommand = runGitCommand,
+): Promise<string | undefined> {
+  const held = heldWorktreePath(stderr);
+  if (held === undefined) return undefined;
+
+  // `git worktree list` names the main worktree first, so the first
+  // `worktree <path>` line is this clone's primary.
+  const listing = await run(["worktree", "list", "--porcelain"], { cwd });
+  if (!listing.ok || listing.value.code !== 0) return undefined;
+  const line = listing.value.stdout.split("\n").find((entry) =>
+    entry.startsWith("worktree ")
+  );
+  if (line === undefined) return undefined;
+  const primary = line.slice("worktree ".length);
+
+  const matches = await realPathOrSelf(held) === await realPathOrSelf(primary);
+  return matches ? held : undefined;
 }

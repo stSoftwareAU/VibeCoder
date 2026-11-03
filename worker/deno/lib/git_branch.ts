@@ -15,6 +15,7 @@ import { runGitCommand } from "./git_timeout.ts";
 import {
   detachLaneWorktreeHead,
   laneWorktreeHoldingBranch,
+  primaryCloneHoldingBranch,
 } from "./lane_worktree.ts";
 import type { GitCommandOptions, GitCommandOutput } from "./git_timeout.ts";
 import {
@@ -118,7 +119,8 @@ function heldByLaneWorktree(
 
 /**
  * One fetch-then-checkout attempt for {@link createFeatureBranchFromBase},
- * including the Issue #1564 lane-worktree `heldBy` handling.
+ * including the Issue #1564 held-branch repair (lane worktrees) and the
+ * Issue #4789 extension to the shared clone's primary worktree.
  *
  * Failure text and detail is appended to `failures` (for the eventual error
  * message) and `stderrTexts` (scanned for broken refs by the caller) rather
@@ -176,6 +178,7 @@ async function attemptCreateFeatureBranch(
     : [baseBranch, `origin/${baseBranch}`];
 
   let heldBy: string | undefined;
+  const refusals: string[] = [];
   for (const startPoint of startPoints) {
     const args = buildCheckoutResetBranchArgs(branchName, startPoint);
     const checkout = await runGitCommand(args, options);
@@ -183,8 +186,22 @@ async function attemptCreateFeatureBranch(
       return `Created feature branch '${branchName}' from '${startPoint}'`;
     }
     failures.push(describeGitFailure(args, checkout));
-    if (checkout.ok) stderrTexts.push(checkout.value.stderr);
+    if (checkout.ok) {
+      stderrTexts.push(checkout.value.stderr);
+      refusals.push(checkout.value.stderr);
+    }
     heldBy ??= heldByLaneWorktree(checkout);
+  }
+
+  // Issue #4789: a branch left checked out in the shared clone's own primary
+  // worktree is refused the same way, and is not a lane worktree. Only when
+  // no lane worktree holds it, the primary is the holder, and it is released
+  // by the same detach-and-retry below.
+  if (heldBy === undefined) {
+    for (const stderr of refusals) {
+      heldBy = await primaryCloneHoldingBranch(stderr, options.cwd);
+      if (heldBy !== undefined) break;
+    }
   }
 
   // Issue #1564: branches are shared between the worktrees of one clone, so
@@ -198,6 +215,12 @@ async function attemptCreateFeatureBranch(
   // Detaching the holder is exactly what `detachLaneWorktreeHead` exists for;
   // it was only ever called on the happy path, after a lane finished with a
   // PR. Calling it here closes the loop for the lane that *didn't* finish.
+  //
+  // Issue #4789: the holder can also be the shared clone's primary worktree
+  // (`<work root>/<repo>`), not a lane — a run's own setup left the issue
+  // branch checked out there, and `laneWorktreeHoldingBranch` does not
+  // recognise it. `primaryCloneHoldingBranch` admits only that primary, so a
+  // developer's own worktree still falls through and is reported unchanged.
   if (heldBy !== undefined) {
     if (await detachLaneWorktreeHead(heldBy)) {
       for (const startPoint of startPoints) {
@@ -205,7 +228,7 @@ async function attemptCreateFeatureBranch(
         const retry = await runGitCommand(args, options);
         if (retry.ok && retry.value.code === 0) {
           return `Created feature branch '${branchName}' from ` +
-            `'${startPoint}' after releasing it from the lane worktree at ` +
+            `'${startPoint}' after releasing it from the worktree at ` +
             `${heldBy}`;
         }
         failures.push(describeGitFailure(args, retry));
@@ -255,6 +278,11 @@ const MAX_REPAIRED_REFS_PER_CALL = 10;
  * retries the whole attempt — bounded at
  * {@link MAX_REPAIRED_REFS_PER_CALL} repaired refs, and stopping as soon as a
  * retry names no new ref.
+ *
+ * A branch held by another worktree of the clone is released on the same
+ * retry path (Issue #1564), when that holder is one of this host's lane
+ * worktrees or the shared clone's own primary worktree (Issue #4789). A
+ * developer's own worktree is never detached: the refusal is returned as is.
  *
  * @param branchName - The feature branch name to create
  * @param baseBranch - The branch to create from (e.g., "main" or "milestone/oidc")
