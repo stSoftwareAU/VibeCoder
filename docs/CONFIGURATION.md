@@ -127,6 +127,14 @@ Where the credentials go depends on the account the command runs as:
   never drop to `agent` and keep the environment route. A declared credential
   never changes the account a gate command runs as.
 
+The `agent` account can only run a gate command in a checkout it can reach. The
+container entrypoint therefore gives group `vibework` search-only (`g+x`)
+permission on the worker's home, which the image creates `0700`, so the work
+root beneath it is reachable. A checkout the account still cannot read, write
+(cargo target aside) or traverse leaves the command to CI rather than running as
+the worker (Issue #4659). A milestone resolution whose every check is left to CI
+this way verified nothing and is refused as unverified (Issue #1559, #4761).
+
 A declared name must be a plain identifier. `IFS` and names starting with
 `_vibe_cc_` are the wrapper's own and are refused, so a declaration can never
 silently shorten what is delivered.
