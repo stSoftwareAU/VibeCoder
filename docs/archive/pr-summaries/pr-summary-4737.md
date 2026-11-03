@@ -63,6 +63,13 @@ flowchart LR
 
 ## Test Plan
 
+- Review fix: closed-milestone housekeeping now checks clone ownership before
+  any git call and logs and records a refusal. The obsolete behaviour ran git
+  in any existing checkout; trusted checkouts remain eligible for sweeping.
+  `worker/deno/tests/milestone_close_housekeeping_test.ts::sweepClosedMilestones - refuses a foreign-owned clone before git`
+  injects a foreign uid into the shared ownership check and verifies no git
+  invocation. The milestone sync twins already use the same ownership check.
+
 - Review fix: both milestone maintenance entry points use the shared clone
   ownership check before running git, logging and skipping a refused clone.
   The obsolete behaviour reused any path with a `.git` entry; trusted clones
