@@ -69,8 +69,15 @@ export interface CollectOptions {
   lifecycleLedgers?: string[];
   /** Babysitter state directories holding `deployment-health.json`. */
   babysitterStateDirs?: string[];
-  /** The deployment the fleet is expected to run. */
-  expected: PrCompletionInput["expectedDeployment"];
+  /**
+   * The deployment the fleet is expected to run. `expectedHosts`, when set, is
+   * passed through as `expectedDeployment.hosts`.
+   */
+  expected: Omit<PrCompletionInput["expectedDeployment"], "hosts"> & {
+    expectedHosts?: string[];
+  };
+  /** Numeric GitHub user ids declared as people; their unmatched events are human. */
+  humanActorIds?: readonly string[];
   /** When set, the rollout check runs against this verification instant. */
   rolloutVerifiedAt?: string;
   /** Cap on PRs kept per repository in the cohort (default 500). */
@@ -91,6 +98,9 @@ type DeploymentRow = PrCompletionInput["deployments"][number];
 type CiRun = PrCompletionInput["ciRuns"][number];
 type Blocker = PrCompletionInput["blockers"][number];
 type Regression = PrCompletionInput["regressions"][number];
+type PostMergeFailure = NonNullable<
+  PrCompletionInput["postMergeFailures"]
+>[number];
 
 /** Run identity for actions observed on GitHub rather than journalled. */
 const GITHUB_OBSERVATION_RUN = "github-observation";
@@ -133,9 +143,28 @@ const REVERT_TITLE = /^Revert "[^"\n]{1,300}"/;
 const REVERT_REFERENCE = /\bReverts?\s+#(\d{1,7})\b/gi;
 /** A parenthesised PR number, as a squash merge title ends with `(#N)`. */
 const QUOTED_PR_REFERENCE = /\(#(\d{1,7})\)/g;
+/** The most recent commits of one PR whose check runs are read. */
+const CI_COMMIT_LIMIT = 20;
+/** Check-run conclusions that count as a failed run. */
+const FAILED_CONCLUSIONS: ReadonlySet<string> = new Set([
+  "failure",
+  "timed_out",
+]);
+/** Auto-merge enable events; the account they name armed the merge. */
+const AUTO_MERGE_ARM_EVENTS: ReadonlySet<string> = new Set([
+  "auto_merge_enabled",
+  "auto_squash_enabled",
+  "auto_rebase_enabled",
+]);
+/** The event that disarms auto-merge. */
+const AUTO_MERGE_DISARM_EVENT = "auto_merge_disabled";
+/** A numeric GitHub user id, as the operator declares it. */
+const USER_ID_PATTERN = /^\d{1,20}$/;
+/** A host or worker identifier: a bounded hostname-like token. */
+const HOST_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/;
 /** Shown once per collection: the CI scope limit, for the coverage notes. */
 const CI_SCOPE_NOTE =
-  "CI runs are read from each merged PR's final head SHA only; check runs on earlier pushes are not counted";
+  `CI runs are read from each PR's final head and its last ${CI_COMMIT_LIMIT} commits; check runs on older commits are not counted`;
 
 /** A PR observed in the cohort, with the text the regressions and rollups read. */
 interface ObservedPr {
@@ -153,12 +182,16 @@ interface Stamped {
 interface Review extends Stamped {
   id: string;
   state: string;
+  /** The reviewer's account id; null for a deleted account. */
+  actorId: string | null;
 }
 
 interface IssueEvent extends Stamped {
   id: string;
   event: string;
   label: string | null;
+  /** The account that caused the event; null when GitHub names none. */
+  actorId: string | null;
 }
 
 interface Commit extends Stamped {
@@ -175,6 +208,12 @@ interface PrEvidence {
 interface GitHubEvent extends Stamped {
   kind: PrActionKind;
   id: string;
+  /** The account GitHub names: the merger for a merge, the actor otherwise. */
+  actorId: string | null;
+  /** Merge only: an auto-merge arm precedes the merge, even if later disarmed. */
+  armSeen?: boolean;
+  /** Merge only: the account whose arm still stands at the merge, or null. */
+  armerId?: string | null;
 }
 
 function keyOf(repo: string, number: number): string {
@@ -218,6 +257,16 @@ function stamped(value: unknown, what: string): Stamped {
   const at = asText(value);
   if (at === null) throw new Error(`${what} is missing`);
   return { at, ms: utcMillis(at, what) };
+}
+
+/**
+ * The numeric account id of the GitHub actor under `key`. An absent or null
+ * actor (a deleted account) is null; an actor present without an id is malformed.
+ */
+function actorIdOf(raw: Json, key: string, what: string): string | null {
+  if (raw[key] === undefined || raw[key] === null) return null;
+  const actor = asObject(raw[key], `${what}.${key}`);
+  return asId(requiredKey(actor, "id", `${what}.${key}`), `${what}.${key}`);
 }
 
 function byTime<T extends Stamped>(a: T, b: T): number {
@@ -451,6 +500,7 @@ function parseReview(raw: unknown, what: string): Review | null {
   return {
     id: asId(o.id, what),
     state,
+    actorId: actorIdOf(o, "user", what),
     at: submitted,
     ms: utcMillis(submitted, `${what} submitted_at`),
   };
@@ -465,6 +515,7 @@ function parseIssueEvent(raw: unknown, what: string): IssueEvent {
     id: asId(o.id, what),
     event: asText(o.event) ?? "",
     label,
+    actorId: actorIdOf(o, "actor", what),
     ...stamped(o.created_at, `${what} created_at`),
   };
 }
@@ -530,7 +581,8 @@ async function fetchEvidence(
  * Blocker intervals for one PR. `needs-human` is open from a label until its
  * removal. `changes-requested` is open from a CHANGES_REQUESTED review until
  * the next approval, dismissal or commit. An interval that never closes has
- * `endedAt: null`. CI-failing and hold blockers are not produced yet.
+ * `endedAt: null`. `ci-failing` blockers come from {@link ciChecksFor}; hold
+ * blockers are not produced yet.
  */
 function blockersFor(
   record: PrCompletionRecord,
@@ -612,19 +664,59 @@ function blockersFor(
  * The GitHub-observed events for one PR: submitted reviews, dismissals, the
  * merge, and each commit. Commit delivery requires a verified push's recorded range.
  */
+/**
+ * Who merged the PR, and the auto-merge arm standing before it. The merger is
+ * the actor of the one `merged` event, or null when there is not exactly one.
+ * `armSeen` is set by any auto-merge enable before the merge; `armerId` is the
+ * account whose arm is still standing at the merge, null after a disarm.
+ */
+function mergeHistory(
+  evidence: PrEvidence,
+  mergedMs: number,
+): { mergerId: string | null; armSeen: boolean; armerId: string | null } {
+  const merges = evidence.issueEvents.filter((e) => e.event === "merged");
+  let armSeen = false;
+  let armerId: string | null = null;
+  for (const event of [...evidence.issueEvents].sort(byTime)) {
+    if (event.ms > mergedMs) break;
+    if (AUTO_MERGE_ARM_EVENTS.has(event.event)) {
+      armSeen = true;
+      armerId = event.actorId;
+    } else if (event.event === AUTO_MERGE_DISARM_EVENT) {
+      armerId = null;
+    }
+  }
+  return {
+    mergerId: merges.length === 1 ? merges[0]!.actorId : null,
+    armSeen,
+    armerId,
+  };
+}
+
+/**
+ * The GitHub-observed events for one PR: submitted reviews, dismissals, the
+ * merge, and each commit. Commit delivery requires a verified push's recorded range.
+ */
 function gitHubEvents(
   observed: ObservedPr,
   evidence: PrEvidence,
 ): GitHubEvent[] {
   const out: GitHubEvent[] = [];
   for (const review of evidence.reviews) {
-    out.push({ kind: "review", id: review.id, at: review.at, ms: review.ms });
+    out.push({
+      kind: "review",
+      id: review.id,
+      actorId: review.actorId,
+      at: review.at,
+      ms: review.ms,
+    });
   }
   for (const event of evidence.issueEvents) {
     if (event.event === "review_dismissed") {
       out.push({
         kind: "dismissal",
         id: event.id,
+        actorId: event.actorId,
         at: event.at,
         ms: event.ms,
       });
@@ -632,17 +724,23 @@ function gitHubEvents(
   }
   const { record } = observed;
   if (record.mergedAt !== null) {
+    const mergedMs = utcMillis(record.mergedAt, "PR mergedAt");
+    const history = mergeHistory(evidence, mergedMs);
     out.push({
       kind: "merge",
       id: observed.mergeCommitSha ?? "none",
+      actorId: history.mergerId,
+      armSeen: history.armSeen,
+      armerId: history.armerId,
       at: record.mergedAt,
-      ms: utcMillis(record.mergedAt, "PR mergedAt"),
+      ms: mergedMs,
     });
   }
   evidence.commits.forEach((commit, index) => {
     out.push({
       kind: index === 0 ? "implementation" : "repair",
       id: commit.sha,
+      actorId: null,
       at: commit.at,
       ms: commit.ms,
     });
@@ -651,22 +749,38 @@ function gitHubEvents(
 }
 
 /**
+ * Whether a fleet merge action may account for a GitHub merge. The merger must
+ * be named. After an auto-merge arm, only the arming account's merge counts,
+ * because GitHub attributes an auto-merge to the account that enabled it. A
+ * person merging with the arming account is indistinguishable: a residual limit.
+ */
+function mergeAccountable(event: GitHubEvent): boolean {
+  if (event.actorId === null) return false;
+  return event.armSeen === true ? event.armerId === event.actorId : true;
+}
+
+/**
  * Match reviews, dismissals and merges one-to-one; commits can share the first
  * confirmed implementation or repair push whose delivered range contains them.
  * Branch updates match one commit within MATCH_WINDOW_MS either side of the call.
- * Matched events add nothing: the audit action already stands for them. Unmatched events become `unknown` actions, never attributed
- * to a human or the fleet.
+ * Matched events add nothing: the audit action already stands for them.
+ * Unmatched events become `unknown` actions, or `human` actions when their
+ * account is in `humanIds`; a declared human id is trusted input, so the action
+ * is verified.
  *
  * A review or dismissal matches within {@link MATCH_WINDOW_MS} of it. A merge
- * matches from the PR's creation to {@link MATCH_WINDOW_MS} after `mergedAt`:
- * the fleet merges with `gh pr merge --auto`, so the audit entry is stamped
- * when auto-merge is armed, possibly hours before GitHub records the merge.
+ * matches only when {@link mergeAccountable} allows it. After an auto-merge arm,
+ * the fleet's `gh pr merge --auto` action is stamped at arming, possibly hours
+ * before GitHub records the merge, so it matches from the PR's creation to
+ * {@link MATCH_WINDOW_MS} after `mergedAt`. Without an arm the merge must sit
+ * within {@link MATCH_WINDOW_MS} of the action.
  */
 function unmatchedActions(
   observed: ObservedPr,
   events: GitHubEvent[],
   verifiedFleet: TrustedPrAction[],
   used: Set<TrustedPrAction>,
+  humanIds: ReadonlySet<string>,
 ): TrustedPrAction[] {
   const { record } = observed;
   const createdMs = utcMillis(record.createdAt, "PR createdAt");
@@ -674,7 +788,10 @@ function unmatchedActions(
   for (const event of events) {
     let best: TrustedPrAction | undefined;
     let bestGap = Number.POSITIVE_INFINITY;
-    for (const action of verifiedFleet) {
+    const candidates = event.kind === "merge" && !mergeAccountable(event)
+      ? []
+      : verifiedFleet;
+    for (const action of candidates) {
       const isCommit = event.kind === "implementation" ||
         event.kind === "repair";
       if (action.outcome !== "confirmed") continue;
@@ -694,7 +811,9 @@ function unmatchedActions(
       const actionMs = utcMillis(action.timestamp, "action timestamp");
       const gap = Math.abs(actionMs - event.ms);
       const inWindow = event.kind === "merge"
-        ? actionMs >= createdMs && actionMs <= event.ms + MATCH_WINDOW_MS
+        ? event.armSeen === true
+          ? actionMs >= createdMs && actionMs <= event.ms + MATCH_WINDOW_MS
+          : gap <= MATCH_WINDOW_MS
         : isCommit && action.kind === "branch-update"
         ? gap <= MATCH_WINDOW_MS
         : isCommit
@@ -713,6 +832,7 @@ function unmatchedActions(
       used.add(best);
       continue;
     }
+    const human = event.actorId !== null && humanIds.has(event.actorId);
     out.push({
       actionId: `gh:${record.repo}#${record.number}:${event.kind}:${event.id}`,
       runId: GITHUB_OBSERVATION_RUN,
@@ -721,46 +841,169 @@ function unmatchedActions(
       prNumber: record.number,
       kind: event.kind,
       timestamp: event.at,
-      outcome: "unknown",
-      actor: "unknown",
-      verified: false,
+      outcome: human ? "confirmed" : "unknown",
+      actor: human ? "human" : "unknown",
+      verified: human,
     });
   }
   return out;
 }
 
-/** CI duration per check run; `null` when the run is not completed or lacks a time. */
-async function ciRunsFor(
+/** The check runs listed for one commit; a partial list is noted, never silent. */
+async function checkRunsAt(
   gh: GhJson,
-  record: PrCompletionRecord,
+  repo: string,
+  sha: string,
+  label: string,
   notes: string[],
-): Promise<CiRun[]> {
-  const path =
-    `repos/${record.repo}/commits/${record.headSha}/check-runs?per_page=${PER_PAGE}`;
+): Promise<Json[]> {
+  const path = `repos/${repo}/commits/${sha}/check-runs?per_page=${PER_PAGE}`;
   const body = asObject(await gh(path), path);
   const runs = asList(body.check_runs, path).map((run) =>
     asObject(run, `${path} check run`)
   );
   const total = body.total_count;
-  const label = keyOf(record.repo, record.number);
   if (typeof total === "number" && total > runs.length) {
     notes.push(`${label}: ${runs.length} of ${total} check runs listed`);
   }
-  return runs.map((run) => {
-    const started = asText(run.started_at);
-    const completed = asText(run.completed_at);
-    const duration = run.status === "completed" && started !== null &&
-        completed !== null
-      ? (utcMillis(completed, `${label} check completed_at`) -
-        utcMillis(started, `${label} check started_at`)) / MINUTE_MS
-      : null;
-    return {
+  return runs;
+}
+
+/**
+ * A check run's id and, when it failed, its completion time. A failed run
+ * without a completion time is malformed and throws.
+ */
+function checkOutcome(
+  run: Json,
+  label: string,
+): { runId: string; failedAt: Stamped | null } {
+  const what = `${label} check run`;
+  const runId = String(asId(requiredKey(run, "id", what), what));
+  const conclusion = requiredKey(run, "conclusion", `${what} ${runId}`);
+  const failed = typeof conclusion === "string" &&
+    FAILED_CONCLUSIONS.has(conclusion);
+  return {
+    runId,
+    failedAt: failed
+      ? stamped(run.completed_at, `${what} ${runId} completed_at`)
+      : null,
+  };
+}
+
+/**
+ * CI for one PR, read from its final head and its last {@link CI_COMMIT_LIMIT}
+ * commits, each run counted once. A failed run opens a `ci-failing` interval at
+ * the earliest failure on its head. It closes at the next commit's committer
+ * date, or at `mergedAt` with no later commit; with neither it stays open.
+ * CI duration is `null` when a run is not completed or lacks a time.
+ */
+async function ciChecksFor(
+  gh: GhJson,
+  record: PrCompletionRecord,
+  evidence: PrEvidence,
+  notes: string[],
+): Promise<{ runs: CiRun[]; blockers: Blocker[] }> {
+  const label = keyOf(record.repo, record.number);
+  const { commits } = evidence;
+  if (commits.length > CI_COMMIT_LIMIT) {
+    notes.push(
+      `${label}: check runs read for the last ${CI_COMMIT_LIMIT} of ${commits.length} commits only`,
+    );
+  }
+  const heads = commits.slice(-CI_COMMIT_LIMIT).map((commit) => commit.sha);
+  if (!heads.includes(record.headSha)) heads.push(record.headSha);
+  const seen = new Set<string>();
+  const runs: CiRun[] = [];
+  const blockers: Blocker[] = [];
+  for (const sha of heads) {
+    let failedAt: Stamped | null = null;
+    for (const run of await checkRunsAt(gh, record.repo, sha, label, notes)) {
+      const outcome = checkOutcome(run, label);
+      if (seen.has(outcome.runId)) continue;
+      seen.add(outcome.runId);
+      const started = asText(run.started_at);
+      const completed = asText(run.completed_at);
+      const duration = run.status === "completed" && started !== null &&
+          completed !== null
+        ? (utcMillis(completed, `${label} check completed_at`) -
+          utcMillis(started, `${label} check started_at`)) / MINUTE_MS
+        : null;
+      runs.push({
+        repo: record.repo,
+        prNumber: record.number,
+        runId: outcome.runId,
+        durationMinutes: duration !== null && duration >= 0 ? duration : null,
+      });
+      if (
+        outcome.failedAt !== null &&
+        (failedAt === null || outcome.failedAt.ms < failedAt.ms)
+      ) {
+        failedAt = outcome.failedAt;
+      }
+    }
+    if (failedAt === null) continue;
+    const index = commits.findIndex((commit) => commit.sha === sha);
+    const next = index === -1 ? undefined : commits[index + 1];
+    const endText = next?.at ?? record.mergedAt;
+    // A commit or merge dated before the failure closes it at the failure.
+    const endedAt = endText !== null &&
+        utcMillis(endText, `${label} ci-failing end`) < failedAt.ms
+      ? failedAt.at
+      : endText;
+    blockers.push({
       repo: record.repo,
       prNumber: record.number,
-      runId: String(asId(run.id, `${label} check run`)),
-      durationMinutes: duration !== null && duration >= 0 ? duration : null,
-    };
-  });
+      blocker: "ci-failing",
+      startedAt: failedAt.at,
+      endedAt,
+    });
+  }
+  return { runs, blockers };
+}
+
+/**
+ * Failed check runs on the merge commit of each merged PR into the default
+ * branch. Milestone-branch merges are skipped. `resolved` is always false for
+ * now: a later green run is not yet matched to the failure.
+ */
+async function postMergeFailuresFor(
+  gh: GhJson,
+  observed: ObservedPr[],
+  notes: string[],
+): Promise<PostMergeFailure[]> {
+  const out: PostMergeFailure[] = [];
+  for (const { record, mergeCommitSha } of observed) {
+    if (record.state !== "merged" || record.baseRef !== record.defaultBranch) {
+      continue;
+    }
+    const label = keyOf(record.repo, record.number);
+    if (mergeCommitSha === null) {
+      notes.push(
+        `${label}: merged to ${record.defaultBranch} with no merge commit sha; post-merge checks not read`,
+      );
+      continue;
+    }
+    for (
+      const run of await checkRunsAt(
+        gh,
+        record.repo,
+        mergeCommitSha,
+        label,
+        notes,
+      )
+    ) {
+      const outcome = checkOutcome(run, label);
+      if (outcome.failedAt === null) continue;
+      out.push({
+        repo: record.repo,
+        prNumber: record.number,
+        runId: outcome.runId,
+        failedAt: outcome.failedAt.at,
+        resolved: false,
+      });
+    }
+  }
+  return out;
 }
 
 /** Revert targets named by a PR's title or body, each read over its bounded slice. */
@@ -815,12 +1058,16 @@ function regressionsFor(observed: ObservedPr[]): Regression[] {
   return [...earliest.values()].map(({ createdAt: _createdAt, ...row }) => row);
 }
 
-/** One deployment row, or the reason the record is unusable. */
+/**
+ * One deployment row, or the reason the record is unusable. `host` is set only
+ * when the source record names one; otherwise the row has no host.
+ */
 function deploymentRow(
   component: unknown,
   revision: unknown,
   fingerprint: unknown,
   observedAt: unknown,
+  host?: string,
 ): DeploymentRow | string {
   if (typeof component !== "string" || !COMPONENT_PATTERN.test(component)) {
     return "component is not a component identifier";
@@ -839,12 +1086,16 @@ function deploymentRow(
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-  return {
+  if (host !== undefined && !HOST_PATTERN.test(host)) {
+    return "host is not a host identifier";
+  }
+  const row: DeploymentRow = {
     component,
     revision,
     policyFingerprint: fingerprint,
     observedAt,
   };
+  return host === undefined ? row : { ...row, host };
 }
 
 type JsonRead =
@@ -995,7 +1246,7 @@ async function collectDeployments(
     }
     for (const event of events) {
       if (event.kind !== "assignment") continue;
-      const { treatment } = event as AssignmentEvent;
+      const { treatment, host } = event as AssignmentEvent;
       if (!treatment.workerCommit || !treatment.reviewPolicyFingerprint) {
         continue;
       }
@@ -1004,6 +1255,7 @@ async function collectDeployments(
         treatment.workerCommit,
         treatment.reviewPolicyFingerprint,
         event.recordedAt,
+        host,
       );
       if (typeof row === "string") {
         notes.push(`lifecycle ledger ${path}: ${row}; row skipped`);
@@ -1327,6 +1579,19 @@ export async function collectPrCompletionSnapshot(
   if (!Number.isSafeInteger(maxPrs) || maxPrs < 1) {
     throw new Error("maxPrsPerRepo must be a positive integer");
   }
+  for (const id of options.humanActorIds ?? []) {
+    if (!USER_ID_PATTERN.test(id)) {
+      throw new Error(
+        `humanActorIds entry ${id} is not a numeric GitHub user id`,
+      );
+    }
+  }
+  for (const host of options.expected.expectedHosts ?? []) {
+    if (!HOST_PATTERN.test(host)) {
+      throw new Error(`expectedHosts entry ${host} is not a host identifier`);
+    }
+  }
+  const humanIds: ReadonlySet<string> = new Set(options.humanActorIds ?? []);
 
   const notes: string[] = [];
   const truncatedRepos: string[] = [];
@@ -1346,9 +1611,7 @@ export async function collectPrCompletionSnapshot(
     openPrsBeforeCohort += repoObservation.openBeforeCohort;
   }
   for (const o of observed) o.record.actionsComplete = audit.complete;
-  if (observed.some((o) => o.record.state === "merged")) {
-    notes.push(CI_SCOPE_NOTE);
-  }
+  if (observed.length > 0) notes.push(CI_SCOPE_NOTE);
 
   const evidenceByPr = new Map<string, PrEvidence>();
   for (const { record } of observed) {
@@ -1427,12 +1690,18 @@ export async function collectPrCompletionSnapshot(
         gitHubEvents(o, evidence),
         fleetByPr.get(keyOf(record.repo, record.number)) ?? [],
         used,
+        humanIds,
       ),
     );
-    if (record.state === "merged") {
-      ciRuns.push(...await ciRunsFor(options.gh, record, notes));
-    }
+    const ci = await ciChecksFor(options.gh, record, evidence, notes);
+    blockers.push(...ci.blockers);
+    if (record.state === "merged") ciRuns.push(...ci.runs);
   }
+  const postMergeFailures = await postMergeFailuresFor(
+    options.gh,
+    observed,
+    notes,
+  );
   if ((options.reviewLogs ?? []).length === 0 && reviewEvents > 0) {
     const events = reviewEvents === 1 ? "review event" : "review events";
     const prs = prsWithReviewEvents === 1 ? "PR" : "PRs";
@@ -1483,6 +1752,7 @@ export async function collectPrCompletionSnapshot(
     ],
     blockers,
     ciRuns,
+    postMergeFailures,
     regressions: regressionsFor(observed),
     deployments,
     expectedDeployment: {
@@ -1490,6 +1760,9 @@ export async function collectPrCompletionSnapshot(
       revision: options.expected.revision,
       policyFingerprint: options.expected.policyFingerprint,
       maxHeartbeatAgeHours: options.expected.maxHeartbeatAgeHours,
+      ...(options.expected.expectedHosts === undefined
+        ? {}
+        : { hosts: [...options.expected.expectedHosts] }),
     },
     ...(rollout ? { rollout } : {}),
     truncatedRepos: [...truncatedRepos],

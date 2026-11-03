@@ -82,6 +82,7 @@ Deno.test("collect - failed merge attempts cannot match events but do not taint 
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1), pull(2)] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
           commits: {
             [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")],
             [pk(2)]: [commit("sha2", "2026-10-20T00:25:00Z")],
@@ -136,6 +137,7 @@ Deno.test("collect - a confirmed update-branch accounts for its GitHub commit wi
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1)] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
           commits: {
             [pk(1)]: [
               commit("sha1", "2026-10-20T00:25:00Z"),
@@ -153,6 +155,7 @@ Deno.test("collect - a confirmed update-branch accounts for its GitHub commit wi
       const manual = await collectPrCompletionSnapshot(options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1)] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
           commits: {
             [pk(1)]: [
               commit("sha1", "2026-10-20T00:25:00Z"),
@@ -212,6 +215,7 @@ Deno.test("collect - a failed review cannot account for a GitHub approval", asyn
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1)] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
           commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
           reviews: { [pk(1)]: [review(601, "2026-10-20T01:00:00Z")] },
         })),
@@ -275,6 +279,7 @@ Deno.test("collect - a rejected repair push followed by recovery is one confirme
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1)] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
           commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
         })),
         { auditDirs: [dir] },
@@ -313,6 +318,7 @@ Deno.test("collect - pre-PR checkpoints and delayed completion deliver all commi
     ]);
     const fixture = emptyFixture({
       pulls: { [REPO]: [pull(1, { created_at: "2026-10-20T00:53:00Z" })] },
+      events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
       commits: {
         [pk(1)]: [10, 20, 30, 40].map((minute) =>
           commit(`sha-${minute}`, `2026-10-20T00:${minute}:00Z`)
@@ -363,6 +369,7 @@ Deno.test("collect - all pushes may precede PR creation by more than ten minutes
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1, { created_at: "2026-10-20T01:05:00Z" })] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
           commits: {
             [pk(1)]: [10, 30].map((minute) =>
               commit(`sha-${minute}`, `2026-10-20T00:${minute}:00Z`)
@@ -418,6 +425,7 @@ Deno.test("collect - a journalled disarm cannot account for a GitHub merge", asy
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1)] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
           commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:30:00Z")] },
         })),
         { auditDirs: [dir] },
@@ -467,6 +475,7 @@ Deno.test("collect - later fleet repair cannot absorb an earlier owner commit", 
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1)] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
           commits: {
             [pk(1)]: [
               commit("initial", "2026-10-20T00:25:00Z"),
@@ -512,6 +521,7 @@ Deno.test("collect - an edited non-audit JSONL is never chain verified", async (
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1)] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
         })),
         { auditDirs: [dir] },
       ),
@@ -556,6 +566,7 @@ Deno.test("collect - legacy push records cannot prove commit delivery", async ()
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1)] },
+          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
           commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
         })),
         { auditDirs: [dir] },
@@ -617,6 +628,31 @@ Deno.test("collect - a later re-arm or failed disarm preserves merge evidence", 
         options(
           fakeGh(emptyFixture({
             pulls: { [REPO]: [pull(1)] },
+            events: {
+              [pk(1)]: [
+                autoEvent(
+                  1,
+                  "auto_squash_enabled",
+                  FLEET_ID,
+                  "2026-10-20T01:00:00Z",
+                ),
+                ...(failed ? [] : [
+                  autoEvent(
+                    2,
+                    "auto_merge_disabled",
+                    FLEET_ID,
+                    "2026-10-20T01:15:00Z",
+                  ),
+                  autoEvent(
+                    3,
+                    "auto_squash_enabled",
+                    FLEET_ID,
+                    "2026-10-20T01:30:00Z",
+                  ),
+                ]),
+                mergedEvent(FLEET_ID),
+              ],
+            },
             commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
           })),
           { auditDirs: [dir] },
@@ -818,6 +854,7 @@ Deno.test("collect - a GitHub merge matched to a verified fleet action is unatte
     ]);
     const fixture = emptyFixture({
       pulls: { [REPO]: [pull(1)] },
+      events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
       commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
     });
     const snapshot = await collectPrCompletionSnapshot(
@@ -1019,6 +1056,12 @@ Deno.test("collect - a merge armed hours before GitHub records it matches; armed
     ]);
     // PR 14 was armed before it existed; PRs 13 and 15 existed since 19 Oct.
     const fixture = emptyFixture({
+      events: {
+        [pk(13)]: [
+          autoEvent(1, "auto_squash_enabled", FLEET_ID, "2026-10-19T23:00:00Z"),
+          mergedEvent(FLEET_ID),
+        ],
+      },
       pulls: {
         [REPO]: [
           pull(13, { created_at: "2026-10-19T12:00:00Z" }),
@@ -1059,13 +1102,13 @@ Deno.test("collect - unmatched GitHub merges and approvals are unknown, never hu
           id: 501,
           state: "APPROVED",
           submitted_at: "2026-10-20T01:00:00Z",
-          user: { login: "release-bot[bot]" },
+          user: { id: 3_001, login: "release-bot[bot]" },
         },
         {
           id: 502,
           state: "COMMENTED",
           submitted_at: "2026-10-20T01:10:00Z",
-          user: { login: "alice" },
+          user: { id: 3_002, login: "alice" },
         },
       ],
     },
@@ -1186,6 +1229,7 @@ Deno.test("collect - an action repeated across two audit directories is counted 
 Deno.test("collect - a CI run without a completion time has no duration", async () => {
   const fixture = emptyFixture({
     pulls: { [REPO]: [pull(1)] },
+    events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
     checks: {
       sha1: {
         total_count: 3,
@@ -1193,18 +1237,21 @@ Deno.test("collect - a CI run without a completion time has no duration", async 
           {
             id: 11,
             status: "completed",
+            conclusion: "success",
             started_at: "2026-10-20T00:00:00Z",
             completed_at: "2026-10-20T00:10:00Z",
           },
           {
             id: 12,
             status: "in_progress",
+            conclusion: null,
             started_at: "2026-10-20T00:00:00Z",
             completed_at: null,
           },
           {
             id: 13,
             status: "completed",
+            conclusion: "success",
             started_at: "2026-10-20T00:00:00Z",
             completed_at: null,
           },
@@ -1832,8 +1879,32 @@ function review(id: number, submittedAt: string): Json {
     id,
     state: "APPROVED",
     submitted_at: submittedAt,
-    user: { login: "review-bot[bot]" },
+    user: { id: 3_001, login: "review-bot[bot]" },
   };
+}
+
+/** The fleet account's GitHub user id, and a person's: two different accounts. */
+const FLEET_ID = 1;
+const OWNER_ID = 2;
+
+/** GitHub's `merged` issue event, naming the account that merged the PR. */
+function mergedEvent(actorId: number, at = "2026-10-20T02:00:00Z"): Json {
+  return {
+    id: 9_000 + actorId,
+    event: "merged",
+    created_at: at,
+    actor: { id: actorId },
+  };
+}
+
+/** GitHub's auto-merge enable or disable event, naming the account that did it. */
+function autoEvent(
+  id: number,
+  event: string,
+  actorId: number,
+  at: string,
+): Json {
+  return { id, event, created_at: at, actor: { id: actorId } };
 }
 
 /** One review-log line, as the review-fleet-prs skill appends it. */
@@ -1891,6 +1962,7 @@ async function reviewedPr(
   ]);
   const fixture = emptyFixture({
     pulls: { [REPO]: [pull(1)] },
+    events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
     reviews: { [pk(1)]: [review(601, REVIEW_AT)] },
     commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
   });
@@ -2107,6 +2179,7 @@ Deno.test("collect - a page-truncated event list and a partial check-run list ar
         check_runs: [{
           id: 9,
           status: "completed",
+          conclusion: "success",
           started_at: "2026-10-20T00:10:00Z",
           completed_at: "2026-10-20T00:20:00Z",
         }],
@@ -2235,6 +2308,7 @@ Deno.test("collect - human-looking logins on a matched PR never downgrade it fro
       },
     ]);
     const fixture = emptyFixture({
+      events: { [pk(31)]: [mergedEvent(FLEET_ID)] },
       pulls: {
         [REPO]: [pull(31, {
           user: { login: "alice", type: "User" },

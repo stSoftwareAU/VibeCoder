@@ -760,3 +760,256 @@ Deno.test("open PRs from before the cohort are published, defaulting to none, an
     );
   }
 });
+
+type PostMergeFailure = NonNullable<
+  PrCompletionInput["postMergeFailures"]
+>[number];
+const healthy = {
+  revision: "abcdef0123456789",
+  policyFingerprint: "a".repeat(64),
+};
+
+Deno.test("legacy input without the new fields reports the same values as explicit empty ones", () => {
+  const legacy = input({
+    prs: [pr(70)],
+    actions: [
+      action(70, "impl-legacy", "implementation", "fleet"),
+      action(70, "merge-legacy", "merge", "fleet"),
+    ],
+    deployments: ["worker", "reviewer", "babysitter"].map((component) => ({
+      component,
+      ...healthy,
+      observedAt,
+    })),
+  });
+  const report = buildPrCompletionReport(legacy);
+  assertEquals(report.completion.unattendedMerged, 1);
+  assertEquals(report.regressions.postMergeCiFailures, 0);
+  assertEquals(report.regressions.unresolvedPostMergeCiFailures, 0);
+  assertEquals(report.deployment.status, "verified");
+  assertEquals(report.deployment.missingHostHeartbeats, []);
+  assertEquals(report.deployment.staleHosts, []);
+  assertEquals(report.deployment.mismatchedHosts, []);
+  assertEquals(
+    buildPrCompletionReport({
+      ...legacy,
+      postMergeFailures: [],
+      expectedDeployment: { ...legacy.expectedDeployment, hosts: [] },
+    }),
+    report,
+  );
+});
+
+Deno.test("post-merge CI failures are distinct runs, separate from reverts and window-bounded", () => {
+  const report = buildPrCompletionReport(input({
+    regressions: [{
+      repo: "org/repo",
+      prNumber: 80,
+      detectedAt: "2026-10-25T00:00:00.000Z",
+      resolved: true,
+    }],
+    postMergeFailures: [
+      {
+        repo: "org/repo",
+        prNumber: 80,
+        runId: "run-1",
+        failedAt: "2026-10-25T00:00:00.000Z",
+        resolved: false,
+      },
+      {
+        repo: "org/repo",
+        prNumber: 80,
+        runId: "run-1",
+        failedAt: "2026-10-25T00:05:00.000Z",
+        resolved: false,
+      },
+      {
+        repo: "org/repo",
+        prNumber: 80,
+        runId: "run-2",
+        failedAt: "2026-10-26T00:00:00.000Z",
+        resolved: true,
+      },
+      {
+        repo: "org/repo",
+        prNumber: 81,
+        runId: "run-1",
+        failedAt: "2026-10-26T00:00:00.000Z",
+        resolved: false,
+      },
+      {
+        repo: "org/repo",
+        prNumber: 82,
+        runId: "old",
+        failedAt: "2026-09-30T23:59:59.000Z",
+        resolved: false,
+      },
+    ],
+  }));
+  assertEquals(report.regressions.observed, 1);
+  assertEquals(report.regressions.unresolved, 0);
+  assertEquals(report.regressions.postMergeCiFailures, 3);
+  assertEquals(report.regressions.unresolvedPostMergeCiFailures, 2);
+});
+
+Deno.test("malformed post-merge CI failure entries are rejected, naming the field", () => {
+  const good = {
+    repo: "org/repo",
+    prNumber: 80,
+    runId: "run-1",
+    failedAt: "2026-10-25T00:00:00.000Z",
+    resolved: false,
+  };
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ ...good, repo: "not-a-repo" }, "postMergeFailures.repo"],
+    [{ ...good, prNumber: 0 }, "postMergeFailures.prNumber"],
+    [{ ...good, runId: "" }, "postMergeFailures.runId"],
+    [
+      { ...good, failedAt: "2026-10-25T00:00:00" },
+      "postMergeFailures.failedAt",
+    ],
+    [{ ...good, resolved: "no" }, "postMergeFailures.resolved"],
+  ];
+  for (const key of ["repo", "prNumber", "runId", "failedAt", "resolved"]) {
+    const missing: Record<string, unknown> = { ...good };
+    delete missing[key];
+    cases.push([missing, `postMergeFailures.${key}`]);
+  }
+  for (const [entry, field] of cases) {
+    assertThrows(
+      () =>
+        buildPrCompletionReport(input({
+          postMergeFailures: [entry as unknown as PostMergeFailure],
+        })),
+      Error,
+      field,
+    );
+  }
+});
+
+Deno.test("a stale host is reported by host even when a fresh host keeps the component's latest row fresh", () => {
+  const report = buildPrCompletionReport(input({
+    expectedDeployment: {
+      components: ["worker"],
+      ...healthy,
+      maxHeartbeatAgeHours: 2,
+    },
+    deployments: [
+      { component: "worker", host: "host-a", ...healthy, observedAt },
+      {
+        component: "worker",
+        host: "host-b",
+        ...healthy,
+        observedAt: "2026-10-01T00:00:00.000Z",
+      },
+    ],
+  }));
+  assertEquals(report.deployment.staleHosts, ["worker@host-b"]);
+  assertEquals(report.deployment.staleComponents, ["worker"]);
+  assertEquals(report.deployment.status, "degraded");
+});
+
+Deno.test("an expected host with no fresh row is reported missing per component and host", () => {
+  const expectedDeployment = {
+    components: ["worker", "reviewer"],
+    hosts: ["host-a", "host-b"],
+    ...healthy,
+    maxHeartbeatAgeHours: 2,
+  };
+  const report = buildPrCompletionReport(input({
+    expectedDeployment,
+    deployments: [
+      { component: "worker", host: "host-a", ...healthy, observedAt },
+      { component: "reviewer", host: "host-a", ...healthy, observedAt },
+      { component: "worker", host: "host-b", ...healthy, observedAt },
+    ],
+  }));
+  assertEquals(report.deployment.missingHostHeartbeats, ["reviewer@host-b"]);
+  assertEquals(report.deployment.missingComponents, []);
+  assertEquals(report.deployment.status, "degraded");
+  const complete = buildPrCompletionReport(input({
+    expectedDeployment,
+    deployments: [
+      { component: "worker", host: "host-a", ...healthy, observedAt },
+      { component: "reviewer", host: "host-a", ...healthy, observedAt },
+      { component: "worker", host: "host-b", ...healthy, observedAt },
+      { component: "reviewer", host: "host-b", ...healthy, observedAt },
+    ],
+  }));
+  assertEquals(complete.deployment.missingHostHeartbeats, []);
+  assertEquals(complete.deployment.status, "verified");
+});
+
+Deno.test("a mismatched host is reported by host and degrades the deployment", () => {
+  const report = buildPrCompletionReport(input({
+    expectedDeployment: {
+      components: ["worker"],
+      ...healthy,
+      maxHeartbeatAgeHours: 2,
+    },
+    deployments: [
+      { component: "worker", host: "host-a", ...healthy, observedAt },
+      {
+        component: "worker",
+        host: "host-b",
+        revision: "old",
+        policyFingerprint: "a".repeat(64),
+        observedAt,
+      },
+    ],
+  }));
+  assertEquals(report.deployment.mismatchedHosts, ["worker@host-b"]);
+  assertEquals(report.deployment.mismatchedComponents, ["worker"]);
+  assertEquals(report.deployment.status, "degraded");
+});
+
+Deno.test("host names are validated and expected hosts must be unique", () => {
+  assertThrows(
+    () =>
+      buildPrCompletionReport(input({
+        deployments: [{
+          component: "worker",
+          host: "bad host",
+          ...healthy,
+          observedAt,
+        }],
+      })),
+    Error,
+    "deployment.host must be a host name",
+  );
+  assertThrows(
+    () =>
+      buildPrCompletionReport(input({
+        expectedDeployment: {
+          components: ["worker"],
+          hosts: ["host-a", "host-a"],
+          ...healthy,
+          maxHeartbeatAgeHours: 2,
+        },
+      })),
+    Error,
+    "expectedDeployment.hosts must be unique host names",
+  );
+});
+
+Deno.test("a merge by a recorded human actor after a verified fleet arm is human-assisted, never unattended", () => {
+  const report = buildPrCompletionReport(input({
+    prs: [pr(90)],
+    actions: [
+      action(90, "impl-fleet", "implementation", "fleet"),
+      action(90, "merge-human", "merge", "human"),
+    ],
+  }));
+  assertEquals(report.completion.humanAssistedMerged, 1);
+  assertEquals(report.completion.unattendedMerged, 0);
+  assertEquals(report.completion.unattendedWithin24Hours, 0);
+  // An unverified human merge is not evidence of unattended completion either.
+  const unverified = buildPrCompletionReport(input({
+    prs: [pr(91)],
+    actions: [
+      action(91, "impl-fleet-2", "implementation", "fleet"),
+      { ...action(91, "merge-human-2", "merge", "human"), verified: false },
+    ],
+  }));
+  assertEquals(unverified.completion.unattendedMerged, 0);
+});

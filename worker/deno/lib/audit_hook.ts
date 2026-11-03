@@ -135,10 +135,21 @@ function resolveCaller(): string | undefined {
 }
 
 /**
+ * True when the caller's file is exactly one of `names` (module names without `.ts`).
+ *
+ * Whole-file equality, not a substring: `declared_handoff_phase.ts` is not
+ * `declared_handoff.ts`, and `fleet_pr_babysitter_setup.ts` is not the babysitter.
+ */
+function isNamedIn(caller: string, names: ReadonlyArray<string>): boolean {
+  const file = caller.slice(caller.lastIndexOf("/") + 1);
+  return names.some((name) => file === `${name}.ts`);
+}
+
+/**
  * Modules that positively identify the worker as the requester.
  *
  * Only these name the worker. Any other caller, or none, is `unknown`
- * rather than assumed to be the worker.
+ * rather than assumed to be the worker. Matched by whole file name.
  */
 const WORKER_CALLERS: ReadonlyArray<string> = [
   "wip_checkpoint",
@@ -150,6 +161,12 @@ const WORKER_CALLERS: ReadonlyArray<string> = [
   "pr_ci_processor",
   "pr_feedback_processor",
   "pr_maintenance",
+  // Issue #4658: the milestone sync's own pushes and its sync-PR arming.
+  "git_pull",
+  // Issue #4658: the cross-host sync claim push (`refs/vibe/sync-claims/`).
+  "milestone_sync_claim",
+  // Issue #4658: pushes unpushed branches before a stale worktree is removed.
+  "stale_workdir",
 ];
 
 /**
@@ -161,9 +178,9 @@ const WORKER_CALLERS: ReadonlyArray<string> = [
  */
 export function componentFor(caller?: string): AuditComponent {
   if (!caller) return "unknown";
-  if (caller.includes("fleet_pr_babysitter")) return "babysitter";
-  if (caller.includes("review_round")) return "reviewer";
-  if (WORKER_CALLERS.some((name) => caller.includes(name))) return "worker";
+  if (isNamedIn(caller, ["fleet_pr_babysitter"])) return "babysitter";
+  if (isNamedIn(caller, ["review_round"])) return "reviewer";
+  if (isNamedIn(caller, WORKER_CALLERS)) return "worker";
   return "unknown";
 }
 
@@ -174,6 +191,9 @@ const REPAIR_PUSH_CALLERS: ReadonlyArray<string> = [
   "pr_feedback_processor",
   "pr_merge_conflict_processor",
   "pr_spelling_processor",
+  // Issue #4658: a sync merge of the default branch into a milestone or sync
+  // branch (direct push, or the sync PR's push) is a repair, not a new branch.
+  "git_pull",
 ];
 
 /**
@@ -229,20 +249,16 @@ export function actionKindFor(
       .test(info.target ?? "") &&
     args.some((arg) => /^state=DISMISSED$/i.test(arg))
   ) return "dismissal";
-  // The worker's own dismissal (`markCommentProcessed` in pr_comments.ts) PUTs
-  // the `/dismissals` sub-endpoint with a `message=` field, not `state=`.
+  // `markCommentProcessed` (pr_comments.ts) PUTs the `/dismissals` sub-endpoint
+  // with a `message=` field, not `state=`.
   if (
     info.verb === "api-put" &&
     /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/reviews\/[1-9]\d*\/dismissals$/
       .test(info.target ?? "")
   ) return "dismissal";
   if (info.verb === "git-push" && caller) {
-    if (REPAIR_PUSH_CALLERS.some((name) => caller.includes(name))) {
-      return "repair";
-    }
-    if (IMPLEMENTATION_PUSH_CALLERS.some((name) => caller.includes(name))) {
-      return "implementation";
-    }
+    if (isNamedIn(caller, REPAIR_PUSH_CALLERS)) return "repair";
+    if (isNamedIn(caller, IMPLEMENTATION_PUSH_CALLERS)) return "implementation";
   }
   return "unknown";
 }

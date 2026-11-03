@@ -383,12 +383,31 @@ Deno.test("audit_hook - componentFor names the babysitter, reviewer and worker f
     componentFor(callerIn("lib", "phases/completion_phase.ts")),
     "worker",
   );
+  // Issue #4658: the milestone sync, its claim and the stale-worktree rescue.
+  assertEquals(componentFor(callerIn("lib", "git_pull.ts")), "worker");
+  assertEquals(
+    componentFor(callerIn("lib", "milestone_sync_claim.ts")),
+    "worker",
+  );
+  assertEquals(componentFor(callerIn("lib", "stale_workdir.ts")), "worker");
 });
 
 Deno.test("audit_hook - componentFor is unknown when the caller is unresolved or unlisted", () => {
   assertEquals(componentFor(undefined), "unknown");
   // An unlisted module is not assumed to be the worker.
   assertEquals(componentFor(callerIn("lib", "recent_activity.ts")), "unknown");
+});
+
+Deno.test("audit_hook - componentFor matches whole file names, not substrings (Issue #4658)", () => {
+  // Each sibling contains a listed name, but is a different module.
+  assertEquals(
+    componentFor(callerIn("commands", "fleet_pr_babysitter_setup.ts")),
+    "unknown",
+  );
+  assertEquals(
+    componentFor(callerIn("lib", "phases/declared_handoff_phase.ts")),
+    "unknown",
+  );
 });
 
 Deno.test("audit_hook - callerFromStack skips the audit and gh/git chokepoints to the requesting module", () => {
@@ -483,6 +502,67 @@ Deno.test("audit_hook - callerFromStack keeps a lib subdirectory caller", () => 
     callerFromStack(stack),
     "worker/deno/lib/phases/completion_phase.ts",
   );
+});
+
+// Issue #4658: the milestone sync and claim pushes, and the stale-worktree
+// rescue push. Frames mirror the real chains: gateThenPushMilestoneBranch calls
+// pushSyncedMilestoneBranch (git_pull.ts:460, :241); a sync-PR push reaches the
+// hook through the `git` adapter git_pull.ts builds for raiseMilestoneSyncPr
+// (git_pull.ts:314), so that adapter's module is the first frame, not
+// milestone_sync_pr.ts (milestone_sync_pr.ts:409, :442).
+
+Deno.test("audit_hook - a milestone sync's direct push is a worker repair", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at pushSyncedMilestoneBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:241:21)",
+    "    at async gateThenPushMilestoneBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:460:20)",
+  ].join("\n");
+  const caller = callerFromStack(stack);
+  assertEquals(caller, "worker/deno/lib/git_pull.ts");
+  assertEquals(componentFor(caller), "worker");
+  assertEquals(pushKind(caller), "repair");
+});
+
+Deno.test("audit_hook - a milestone sync-PR push is attributed to git_pull.ts through its git adapter", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at git (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:314:22)",
+    "    at pushBranch (file:///srv/VibeCoder/worker/deno/lib/milestone_sync_pr.ts:409:12)",
+    "    at async pushWithStaleRetry (file:///srv/VibeCoder/worker/deno/lib/milestone_sync_pr.ts:442:20)",
+    "    at async pushSyncedMilestoneBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:308:20)",
+  ].join("\n");
+  const caller = callerFromStack(stack);
+  assertEquals(caller, "worker/deno/lib/git_pull.ts");
+  assertEquals(componentFor(caller), "worker");
+  assertEquals(pushKind(caller), "repair");
+});
+
+Deno.test("audit_hook - the milestone sync claim push is the worker's but not a repair", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at async claimMilestoneSync (file:///srv/VibeCoder/worker/deno/lib/milestone_sync_claim.ts:138:21)",
+    "    at claimSyncFn (file:///srv/VibeCoder/worker/deno/lib/run_core_production_deps.ts:7028:7)",
+  ].join("\n");
+  const caller = callerFromStack(stack);
+  assertEquals(caller, "worker/deno/lib/milestone_sync_claim.ts");
+  assertEquals(componentFor(caller), "worker");
+  assertEquals(pushKind(caller), "unknown");
+});
+
+Deno.test("audit_hook - a stale-worktree rescue push is the worker's but not a repair", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at run (file:///srv/VibeCoder/worker/deno/lib/stale_workdir.ts:422:44)",
+    "    at async pushUnpushedBranches (file:///srv/VibeCoder/worker/deno/lib/stale_workdir.ts:498:20)",
+  ].join("\n");
+  const caller = callerFromStack(stack);
+  assertEquals(caller, "worker/deno/lib/stale_workdir.ts");
+  assertEquals(componentFor(caller), "worker");
+  assertEquals(pushKind(caller), "unknown");
 });
 
 function mutationFor(verb: string, target?: string): MutationInfo {
@@ -637,10 +717,16 @@ Deno.test("audit_hook - actionKindFor names a repair push from the babysitter an
 
 Deno.test("audit_hook - actionKindFor leaves a push from an unresolved or unlisted caller unknown", () => {
   assertEquals(pushKind(undefined), "unknown");
-  // A milestone sync push is reached through the `git` adapter in git_pull.ts
-  // (raiseMilestoneSyncPr's deps), not through milestone_sync_pr.ts, so the
-  // first module above the hook is git_pull.ts and it stays unknown.
-  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "unknown");
+  // An unlisted module is not assumed to be the worker, or a repair.
+  assertEquals(pushKind(callerIn("lib", "recent_activity.ts")), "unknown");
+  // The claim push is the worker's, but a claim ref is neither a repair nor an
+  // implementation branch (Issue #4658).
+  assertEquals(pushKind(callerIn("lib", "milestone_sync_claim.ts")), "unknown");
+  // A sibling that extends an implementation-listed name is not that module (Issue #4658).
+  assertEquals(
+    pushKind(callerIn("lib", "phases/declared_handoff_phase.ts")),
+    "unknown",
+  );
 });
 
 Deno.test("audit_hook - a push with no resolved caller is journalled as component and kind unknown", async () => {

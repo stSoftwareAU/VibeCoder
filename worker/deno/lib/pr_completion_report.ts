@@ -77,14 +77,26 @@ export interface PrCompletionInput {
     detectedAt: string;
     resolved: boolean;
   }>;
+  /** Failed post-merge CI runs; absent means none. Separate from `regressions`. */
+  postMergeFailures?: Array<{
+    repo: string;
+    prNumber: number;
+    runId: string;
+    failedAt: string;
+    resolved: boolean;
+  }>;
   deployments: Array<{
     component: string;
+    /** Host the heartbeat came from; absent rows are grouped per component. */
+    host?: string;
     revision?: string;
     policyFingerprint?: string;
     observedAt: string;
   }>;
   expectedDeployment: {
     components: string[];
+    /** Hosts that must each report every expected component; absent means none. */
+    hosts?: string[];
     revision: string;
     policyFingerprint: string;
     maxHeartbeatAgeHours: number;
@@ -146,6 +158,9 @@ export interface PrCompletionReport {
     unresolved: number;
     attributed: number;
     unattributed: number;
+    /** Distinct failed post-merge CI runs; not revert-based. */
+    postMergeCiFailures: number;
+    unresolvedPostMergeCiFailures: number;
   };
   deployment: {
     status: "verified" | "degraded";
@@ -156,6 +171,10 @@ export interface PrCompletionReport {
     mismatchedComponents: string[];
     mixedRevisions: string[];
     mixedPolicies: string[];
+    /** Entries are `component@host`, sorted. */
+    missingHostHeartbeats: string[];
+    staleHosts: string[];
+    mismatchedHosts: string[];
   };
   rollout: {
     eligibleStrandedPrs: number;
@@ -187,6 +206,9 @@ export interface PrCompletionReport {
 
 /** The repository pattern every PR observation must satisfy. */
 export const PR_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/** The host name pattern for heartbeat rows and expected hosts. */
+const HOST_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
 const keyOf = (repo: string, number: number) => `${repo}#${number}`;
 
@@ -272,12 +294,29 @@ function deploymentReport(
   ) {
     throw new Error("expectedDeployment.maxHeartbeatAgeHours must be positive");
   }
+  const expectedHosts = expected.hosts ?? [];
+  if (
+    new Set(expectedHosts).size !== expectedHosts.length ||
+    expectedHosts.some((host) => !HOST_PATTERN.test(host))
+  ) {
+    throw new Error("expectedDeployment.hosts must be unique host names");
+  }
   const observedAt = timestamp(cohort.observedAt, "cohort.observedAt");
-  const byComponent = new Map<string, typeof input.deployments>();
+  const maxAgeMs = expected.maxHeartbeatAgeHours * 3_600_000;
+  type DeploymentRow = PrCompletionInput["deployments"][number];
+  const rowsByComponent = new Map<string, DeploymentRow[]>();
+  // Rows group per component, or per component@host when they name a host.
+  const groups = new Map<
+    string,
+    { component: string; host?: string; rows: DeploymentRow[] }
+  >();
   for (const deployment of input.deployments) {
     timestamp(deployment.observedAt, "deployment.observedAt");
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(deployment.component)) {
       throw new Error("deployment.component must be a component identifier");
+    }
+    if (deployment.host !== undefined && !HOST_PATTERN.test(deployment.host)) {
+      throw new Error("deployment.host must be a host name");
     }
     if (
       deployment.policyFingerprint !== undefined &&
@@ -287,34 +326,52 @@ function deploymentReport(
         "deployment.policyFingerprint must be a SHA-256 fingerprint",
       );
     }
-    const rows = byComponent.get(deployment.component) ?? [];
+    const rows = rowsByComponent.get(deployment.component) ?? [];
     rows.push(deployment);
-    byComponent.set(deployment.component, rows);
+    rowsByComponent.set(deployment.component, rows);
+    const id = deployment.host === undefined
+      ? deployment.component
+      : `${deployment.component}@${deployment.host}`;
+    const group = groups.get(id) ??
+      { component: deployment.component, host: deployment.host, rows: [] };
+    group.rows.push(deployment);
+    groups.set(id, group);
   }
+  const latestOf = (rows: DeploymentRow[]) =>
+    rows.reduce((a, b) =>
+      timestamp(a.observedAt, "deployment.observedAt") >
+          timestamp(b.observedAt, "deployment.observedAt")
+        ? a
+        : b
+    );
+  const isStale = (row: DeploymentRow) =>
+    observedAt - timestamp(row.observedAt, "deployment.observedAt") > maxAgeMs;
+  const isMismatched = (row: DeploymentRow) =>
+    row.revision !== expected.revision ||
+    row.policyFingerprint !== expected.policyFingerprint;
+  const expectedComponents = new Set(expected.components);
+  const latestGroups = [...groups.values()]
+    .filter((group) => expectedComponents.has(group.component))
+    .map((group) => ({ ...group, latest: latestOf(group.rows) }));
   const missingComponents = expected.components.filter((component) =>
-    !byComponent.has(component)
+    !rowsByComponent.has(component)
   ).sort();
   const staleComponents: string[] = [];
   const mismatchedComponents: string[] = [];
   const mixedRevisions: string[] = [];
   const mixedPolicies: string[] = [];
   for (const component of expected.components) {
-    const rows = byComponent.get(component) ?? [];
+    const rows = rowsByComponent.get(component) ?? [];
     if (!rows.length) continue;
-    const latest = rows.reduce((a, b) =>
-      timestamp(a.observedAt, "deployment.observedAt") >
-          timestamp(b.observedAt, "deployment.observedAt")
-        ? a
-        : b
+    const componentGroups = latestGroups.filter((group) =>
+      group.component === component
     );
-    if (
-      observedAt - timestamp(latest.observedAt, "deployment.observedAt") >
-        expected.maxHeartbeatAgeHours * 3_600_000
-    ) staleComponents.push(component);
-    if (
-      latest.revision !== expected.revision ||
-      latest.policyFingerprint !== expected.policyFingerprint
-    ) mismatchedComponents.push(component);
+    if (componentGroups.some((group) => isStale(group.latest))) {
+      staleComponents.push(component);
+    }
+    if (componentGroups.some((group) => isMismatched(group.latest))) {
+      mismatchedComponents.push(component);
+    }
     if (new Set(rows.map((row) => row.revision)).size > 1) {
       mixedRevisions.push(component);
     }
@@ -322,12 +379,30 @@ function deploymentReport(
       mixedPolicies.push(component);
     }
   }
+  const staleHosts: string[] = [];
+  const mismatchedHosts: string[] = [];
+  for (const group of latestGroups) {
+    if (group.host === undefined) continue;
+    const id = `${group.component}@${group.host}`;
+    if (isStale(group.latest)) staleHosts.push(id);
+    if (isMismatched(group.latest)) mismatchedHosts.push(id);
+  }
+  // Every expected host needs a fresh row for every expected component.
+  const missingHostHeartbeats: string[] = [];
+  for (const host of expectedHosts) {
+    for (const component of expected.components) {
+      const group = groups.get(`${component}@${host}`);
+      if (!group || isStale(latestOf(group.rows))) {
+        missingHostHeartbeats.push(`${component}@${host}`);
+      }
+    }
+  }
+  const degraded = missingComponents.length || staleComponents.length ||
+    mismatchedComponents.length || mixedRevisions.length ||
+    mixedPolicies.length || missingHostHeartbeats.length ||
+    staleHosts.length || mismatchedHosts.length;
   return {
-    status: missingComponents.length || staleComponents.length ||
-        mismatchedComponents.length || mixedRevisions.length ||
-        mixedPolicies.length
-      ? "degraded"
-      : "verified",
+    status: degraded ? "degraded" : "verified",
     observedAt: cohort.observedAt,
     expectedComponents: [...expected.components].sort(),
     missingComponents,
@@ -335,6 +410,9 @@ function deploymentReport(
     mismatchedComponents: mismatchedComponents.sort(),
     mixedRevisions: mixedRevisions.sort(),
     mixedPolicies: mixedPolicies.sort(),
+    missingHostHeartbeats: missingHostHeartbeats.sort(),
+    staleHosts: staleHosts.sort(),
+    mismatchedHosts: mismatchedHosts.sort(),
   };
 }
 
@@ -630,6 +708,27 @@ export function buildPrCompletionReport(
   const attributed =
     regressionRows.filter((row) => prMap.has(keyOf(row.repo, row.prNumber)))
       .length;
+  // Failed runs are distinct by repo, PR and run; any unresolved entry keeps a run open.
+  const postMergeRuns = new Map<string, boolean>();
+  for (const failure of input.postMergeFailures ?? []) {
+    if (!PR_REPO_PATTERN.test(failure.repo)) {
+      throw new Error("postMergeFailures.repo must be owner/name");
+    }
+    if (!Number.isSafeInteger(failure.prNumber) || failure.prNumber < 1) {
+      throw new Error("postMergeFailures.prNumber must be a positive integer");
+    }
+    if (typeof failure.runId !== "string" || failure.runId === "") {
+      throw new Error("postMergeFailures.runId must be a non-empty string");
+    }
+    const failedAt = timestamp(failure.failedAt, "postMergeFailures.failedAt");
+    requireBoolean(failure.resolved, "postMergeFailures.resolved");
+    if (failedAt < start || failedAt >= observedAt) continue;
+    const id = `${failure.repo}#${failure.prNumber}#${failure.runId}`;
+    postMergeRuns.set(id, (postMergeRuns.get(id) ?? true) && failure.resolved);
+  }
+  const postMergeCiFailures = postMergeRuns.size;
+  const unresolvedPostMergeCiFailures =
+    [...postMergeRuns.values()].filter((resolved) => !resolved).length;
   const deployment = deploymentReport(input);
   const incompleteObservationWindow = observedAt < end;
   const stranded = input.rollout?.strandedPrs ?? [];
@@ -757,6 +856,8 @@ export function buildPrCompletionReport(
       unresolved: regressionRows.filter((row) => !row.resolved).length,
       attributed,
       unattributed: regressionRows.length - attributed,
+      postMergeCiFailures,
+      unresolvedPostMergeCiFailures,
     },
     deployment,
     rollout,

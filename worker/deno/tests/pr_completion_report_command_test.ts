@@ -395,3 +395,140 @@ Deno.test("pr-completion-report --input refuses a non-string value as a missing 
     assertStringIncludes(result.message, "--input <path> is required");
   }
 });
+
+Deno.test("pr-completion-report --collect rejects an --expected-host that is not a host name, naming the flag", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (const value of ["bad host", "host/a", "a".repeat(65), true]) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "expected-host": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false, `value ${String(value)}`);
+    assertStringIncludes(result.message, "--expected-host");
+  }
+});
+
+Deno.test("pr-completion-report --collect rejects a --human-actor-id that is not digits, naming the flag", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (const value of ["octocat", "12a", "-1", true]) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "human-actor-id": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false, `value ${String(value)}`);
+    assertStringIncludes(result.message, "--human-actor-id");
+  }
+});
+
+Deno.test("pr-completion-report --collect passes --human-actor-id to the collector, which counts that account's merge as human-assisted", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const auditDir = `${dir}/audit`;
+    await Deno.mkdir(auditDir);
+    const merged = {
+      number: 1,
+      state: "closed",
+      created_at: "2026-10-20T00:00:00Z",
+      merged_at: "2026-10-20T02:00:00Z",
+      closed_at: "2026-10-20T02:00:00Z",
+      title: "Change 1",
+      body: "",
+      labels: [],
+      base: { ref: "main" },
+      head: { ref: "issue-1", sha: "sha1" },
+    };
+    const gh: GhJson = async (path) => {
+      if (path === "repos/org/repo") return { default_branch: "main" };
+      if (path.startsWith("repos/org/repo/pulls?")) {
+        return path.includes("page=1") ? [merged] : [];
+      }
+      if (path.startsWith("repos/org/repo/pulls/1/reviews")) return [];
+      if (path.startsWith("repos/org/repo/pulls/1/commits")) return [];
+      if (path.startsWith("repos/org/repo/commits/sha1/check-runs")) {
+        return { total_count: 0, check_runs: [] };
+      }
+      if (path.startsWith("repos/org/repo/issues/1/events")) {
+        return path.includes("page=1")
+          ? [{
+            id: 7,
+            event: "merged",
+            actor: { id: 42, login: "owner" },
+            created_at: "2026-10-20T02:00:00Z",
+          }]
+          : [];
+      }
+      throw new Error(`unrouted gh path: ${path}`);
+    };
+    const run = (extra: Record<string, unknown>) =>
+      runPrCompletionCollect(
+        {
+          collect: true,
+          "audit-dir": auditDir,
+          repos: "org/repo",
+          "expected-revision": "rev1",
+          start: "2026-10-01T00:00:00Z",
+          end: "2026-11-01T00:00:00Z",
+          ...extra,
+        },
+        { repos: ["org/repo"] } as unknown as WorkerConfig,
+        gh,
+      );
+    const unlisted = await run({});
+    assertEquals(unlisted.success, true);
+    assertEquals(unlisted.data?.report.completion.humanAssistedMerged, 0);
+    const listed = await run({ "human-actor-id": "42,43" });
+    assertEquals(listed.success, true);
+    assertEquals(listed.data?.report.completion.humanAssistedMerged, 1);
+    assertEquals(listed.data?.report.completion.unattendedMerged, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("pr-completion-report --collect passes --expected-host to the collector, which reports each host without a heartbeat", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const auditDir = `${dir}/audit`;
+    await Deno.mkdir(auditDir);
+    const gh: GhJson = async (path) => {
+      if (path === "repos/org/repo") return { default_branch: "main" };
+      if (path.startsWith("repos/org/repo/pulls?")) return [];
+      throw new Error(`unrouted gh path: ${path}`);
+    };
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        "audit-dir": auditDir,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "expected-components": "worker",
+        "expected-host": "host-a,host-b,host-a",
+        start: "2026-10-01T00:00:00Z",
+        end: "2026-11-01T00:00:00Z",
+      },
+      { repos: ["org/repo"] } as unknown as WorkerConfig,
+      gh,
+    );
+    assertEquals(result.success, true);
+    assertEquals(result.data?.report.deployment.missingHostHeartbeats, [
+      "worker@host-a",
+      "worker@host-b",
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

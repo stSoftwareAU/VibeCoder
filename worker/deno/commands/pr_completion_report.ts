@@ -13,6 +13,11 @@
  * later `--input` run can reproduce the report, and whatever `verifyAllChains`
  * settles in an audit directory it sweeps (an interrupted append, Issue #1074).
  *
+ * `--collect` also takes `--human-actor-id <id,...>` (numeric GitHub user ids
+ * whose merges count as human-assisted) and `--expected-host <name,...>` (hosts
+ * that must each report every expected component). Both are comma-separated;
+ * the top-level parser keeps only the last value of a repeated flag.
+ *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */
 
@@ -38,6 +43,8 @@ const DAY_MS = 86_400_000;
 const DEFAULT_WINDOW_DAYS = 14;
 const DEFAULT_EXPECTED_COMPONENTS = ["worker", "reviewer", "babysitter"];
 const DEFAULT_HEARTBEAT_HOURS = 24;
+const HOST_NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+const DIGITS_PATTERN = /^\d+$/;
 
 /** Data returned by `--collect`: the report plus everything it could not see. */
 export interface PrCompletionCollectData {
@@ -67,6 +74,11 @@ function asList(value: unknown): string[] | undefined {
   if (text === undefined) return undefined;
   const items = splitList(text);
   return items.length > 0 ? items : undefined;
+}
+
+/** Drop repeated entries, keeping first occurrences; `undefined` passes through. */
+function uniqueList(items: string[] | undefined): string[] | undefined {
+  return items === undefined ? undefined : [...new Set(items)];
 }
 
 /**
@@ -142,6 +154,36 @@ export async function runPrCompletionCollect(
         "pr-completion-report failed: --review-log <log.jsonl,...> must name at least one file",
     };
   }
+  const expectedHostsRaw = args["expected-host"];
+  const expectedHosts = expectedHostsRaw === undefined
+    ? undefined
+    : uniqueList(asList(expectedHostsRaw));
+  if (
+    expectedHostsRaw !== undefined &&
+    (expectedHosts === undefined ||
+      expectedHosts.some((host) => !HOST_NAME_PATTERN.test(host)))
+  ) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --expected-host must name hosts matching /^[A-Za-z0-9._-]{1,64}$/",
+    };
+  }
+  const humanActorRaw = args["human-actor-id"];
+  const humanActorIds = humanActorRaw === undefined
+    ? undefined
+    : uniqueList(asList(humanActorRaw));
+  if (
+    humanActorRaw !== undefined &&
+    (humanActorIds === undefined ||
+      humanActorIds.some((id) => !DIGITS_PATTERN.test(id)))
+  ) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --human-actor-id must be a numeric GitHub user id (digits only)",
+    };
+  }
   const rolloutVerifiedAt = asText(args["rollout-verified-at"]);
   const writeSnapshot = asText(args["write-snapshot"]);
 
@@ -161,7 +203,9 @@ export async function runPrCompletionCollect(
         revision: expectedRevision,
         policyFingerprint,
         maxHeartbeatAgeHours: hours,
+        ...(expectedHosts !== undefined ? { expectedHosts } : {}),
       },
+      ...(humanActorIds !== undefined ? { humanActorIds } : {}),
       ...(rolloutVerifiedAt !== undefined ? { rolloutVerifiedAt } : {}),
       ...(maxPrsPerRepo !== undefined ? { maxPrsPerRepo } : {}),
       gh,
