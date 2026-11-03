@@ -868,7 +868,11 @@ async function syncBabysitterRepairBody(
     repo,
     prNumber: pr.number,
     repoPath,
-    beforeSha: pr.headRefOid,
+    // A retry that pushes nothing has no earlier head to diff the summary
+    // against, so a legacy body (no digest marker) would never be refreshed.
+    // The empty tree makes the committed summary count as changed; the sync
+    // still edits only when the rebuilt body differs, so a retry is idempotent.
+    beforeSha: expectedHead === pr.headRefOid ? EMPTY_TREE_SHA : pr.headRefOid,
     workerName: login,
     githubUser: login,
     runId: getRunId(),
@@ -887,6 +891,9 @@ async function syncBabysitterRepairBody(
     syncFn,
   );
 }
+
+/** Git's well-known empty tree, a base every committed file differs from. */
+const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /** The `gh` runner a repair's reads and its description edit go through. */
 export type GhRunner = (args: string[]) => Promise<string>;
@@ -1018,7 +1025,7 @@ async function publishBabysitterPrBody(options: {
     : await committedPrSummary(repoPath, issueNumber, expectedHead, runGit);
   const closeAllowed = issueNumber === undefined
     ? undefined
-    : isIssueCloseAllowed({ summary, issueNumber, proposal: change.proposal });
+    : isIssueCloseAllowed({ summary, proposal: change.proposal });
   const withheldButOpen = issueNumber !== undefined &&
     closeAllowed === false &&
     githubClosesIssue(live.closingIssuesReferences, issueNumber, repo);

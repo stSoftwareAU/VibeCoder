@@ -7,8 +7,8 @@ dismisses an addressed review only after the head, the published text and
 GitHub's closing references are checked. The guard keeps the worker's hidden
 markers, keeps an association the proposal dropped, and never lets a proposal
 restore a close that an unmet (`partial` / `missing`) criterion withholds (the
-#4716 regression). One acceptance item is only partly delivered (see Acceptance
-Criteria), so this is Part of #4637.
+#4716 regression). A no-change retry now also refreshes a legacy worker body
+that has no summary digest.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
@@ -30,13 +30,14 @@ the final version.
   with no summary is a harmless skip; `pushed head moved`,
   `could not be verified` and `checkout moved off the committed head` throw, so
   the review stays open and the next scan retries.
-- Unknown evidence never closes: no committed summary, an unmet criterion in the
-  summary or in the proposal, or no closing keyword in the committed summary all
-  give `Part of #N`. This is stricter than `assemblePrBody`, which appends
-  `Closes #N` for an all-met summary that omits it; the babysitter then rewrites
-  a close GitHub still shows to `Part of`, and the final state is the
-  conservative one. Kept on purpose: the issue says an old closing keyword is
-  not evidence.
+- Unknown evidence never closes: no committed summary, or an unmet criterion in
+  the summary or in the proposal, gives `Part of #N`. The summary's own wording
+  does not decide it: a fully met summary with no closing keyword keeps the
+  close (`Closes #N` is appended), exactly as `assemblePrBody` does, so the
+  guard and the assembler agree.
+- A no-change retry diffs the committed summary against git's empty tree, so a
+  legacy worker body with no summary digest is rebuilt. The sync still edits
+  only when the rebuilt body differs, so a second retry makes no edit.
 - Negated sentences ("does not close #N"), `Closes: #N` and full-URL closing
   forms for the governing issue are rewritten, because GitHub honours them.
 - The proposal is rejected at intake over 65,536 characters (agent files are
@@ -217,6 +218,12 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   missing `closingIssuesReferences`, an unreadable committed summary, a summary
   only at the legacy path, and intake rejection of an oversized proposal. Each
   production branch was broken once and the matching test went red.
+- Added after the pre-PR verifier: `isIssueCloseAllowed` no longer needs a
+  closing keyword (guard tests for a fully met summary with no keyword, with and
+  without a proposal; a `finishBabysitterRepair` test for the same); a
+  marker-bearing stale-digest body rebuilt before dismissal with a
+  no-second-edit retry; a legacy digest-less body rebuilt on a no-change retry
+  (red when the empty-tree base is reverted).
 - Existing test edits: `fakePrBodyService` answers `git ls-remote` with the fake
   PR head; the oversized-proposal test now asserts rejection at intake (the
   original assertion); `tests/fixtures/fleet_babysitter_repair_preload.ts` gains
@@ -251,9 +258,16 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   test files that call it (`worker/deno/tests/fleet_pr_babysitter_test.ts`,
   `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`) stop before the
   post-agent step. `finishBabysitterRepair` is tested directly.
-- A legacy worker-marker body with no summary digest is not refreshed on a
-  no-change retry; it needs a repair that changes the summary.
 - Fix-run syncs (feedback, CI, merge-conflict, reconcile) still read the working
   tree, as noted in #4712.
-- The recoverable next action is the thrown error and the open review; nothing
-  is persisted.
+- Nothing is persisted between scans: the recoverable next action for a failed
+  publication is the thrown error and the review that stays open, and the next
+  scan retries idempotently on the pushed head.
+- The mutation and coverage carry-over checks could not run: their baseline
+  includes `babysitter default heartbeat resolves its checkout revision`, which
+  fails at the merge base too because the sandbox cannot download JSR metadata
+  (`https://jsr.io/@std/crypto/meta.json`). It is unrelated to this change;
+  every other test in `fleet_babysitter_app_test.ts`,
+  `fleet_pr_babysitter_single_push_test.ts` and `fleet_pr_babysitter_test.ts`
+  passes. Neither check can be fixed in this change, since both flags are
+  repository settings.

@@ -13,7 +13,7 @@
  *
  * ```mermaid
  * flowchart TD
- *     S["Summary committed at the pushed head"] --> M{"Unmet criterion, no committed<br/>summary, or no closing phrase?"}
+ *     S["Summary committed at the pushed head"] --> M{"Unmet criterion or<br/>no committed summary?"}
  *     P["Proposal's own closure block<br/>(a missing or partial entry)"] --> M
  *     M -- yes --> W["Withhold: negated phrases become complete,<br/>closing keywords become Part of"]
  *     M -- no --> C["Keep the closing keyword, or add Closes #N<br/>when the proposal dropped the issue"]
@@ -129,26 +129,23 @@ interface ClosingRef {
 
 /**
  * Whether the governing issue may be closed. Unknown evidence is not enough:
- * the committed summary must exist, must have no unmet criterion, and must
- * carry a closing keyword for the issue. The close is also withheld when the
- * proposal carries its own unmet criterion: a `missing` or `partial` entry in
- * its closure block, even when the committed summary is fully met.
+ * the committed summary must exist and must have no unmet criterion. The close
+ * is also withheld when the proposal carries its own unmet criterion: a
+ * `missing` or `partial` entry in its closure block, even when the committed
+ * summary is fully met. The summary's own wording does not decide it: a fully
+ * met summary with no closing keyword gets `Closes #N` appended, as
+ * `assemblePrBody` does, so the guard and the assembler agree.
  *
  * @param input.summary - The summary committed at the pushed head.
- * @param input.issueNumber - The governing issue.
  * @param input.proposal - The agent's proposed description, if any.
  */
 export function isIssueCloseAllowed(input: {
   summary: string | undefined;
-  issueNumber: number;
   proposal: string | undefined;
 }): boolean {
-  const { summary, issueNumber, proposal } = input;
+  const { summary, proposal } = input;
   if (summary === undefined) return false;
   if (findMissingCriteria(summary).length > 0) return false;
-  if (closingKeywordLine(maskMarkdownCode(summary), issueNumber) === null) {
-    return false;
-  }
   return proposal === undefined || findMissingCriteria(proposal).length === 0;
 }
 
@@ -212,7 +209,7 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
 
   let closeAllowed: boolean | undefined;
   if (issueNumber !== undefined) {
-    closeAllowed = isIssueCloseAllowed({ summary, issueNumber, proposal });
+    closeAllowed = isIssueCloseAllowed({ summary, proposal });
     if (closeAllowed) {
       if (!mentionsIssue(maskMarkdownCode(text), issueNumber)) {
         appended.unshift(`Closes #${issueNumber}`);

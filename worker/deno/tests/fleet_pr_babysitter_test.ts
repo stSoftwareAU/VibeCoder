@@ -51,6 +51,8 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import { createLogger } from "../lib/logger.ts";
 import {
+  buildSummaryDigestMarker,
+  prSummaryDigest,
   type SyncPrBodyDeps,
   syncPrBodyFromSummary,
   type SyncPrBodyInput,
@@ -371,6 +373,106 @@ Deno.test("the production clean-tree completion path syncs before review dismiss
     assertEquals(service.edits(), 1);
     assertEquals(events, ["publish", "dismiss"]);
     assertStringIncludes(service.getBody(), "Closes #4637");
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a marker-bearing body with a stale summary digest is rebuilt before dismissal, and a retry at the same head makes no second edit (Issue #4637)", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const events: string[] = [];
+    const staleDigest = await prSummaryDigest(
+      "## Summary\n\nOld summary. Part of #4637.\n",
+    );
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      body: [
+        staleMarkerlessBody.trimEnd(),
+        "",
+        buildSummaryDigestMarker(staleDigest),
+        buildIdempotencyMarker(4637),
+      ].join("\n"),
+      onEdit: () => events.push("publish"),
+    });
+    const repair = () =>
+      finishBabysitterRepair(
+        "owner/repo",
+        {
+          ...pr,
+          number: 7,
+          headRefName: "issue-4637-review-fix",
+          headRefOid: fixture.headSha,
+        },
+        fixture.path,
+        "babysitter[bot]",
+        [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
+        cleanTreeFinishDeps(fixture.headSha, service, () => {
+          events.push("dismiss");
+          return Promise.resolve();
+        }),
+        { scratch: fixture.scratch },
+      );
+    await repair();
+    assertEquals(events, ["publish", "dismiss"]);
+    assertEquals(service.edits(), 1);
+    assertStringIncludes(service.getBody(), "Repaired summary.");
+    assertStringIncludes(service.getBody(), "Closes #4637");
+    assertEquals(service.getBody().includes("Old summary."), false);
+    assertEquals(
+      service.getBody().includes(
+        buildSummaryDigestMarker(
+          await prSummaryDigest(
+            "## Summary\n\nRepaired summary. Closes #4637.\n",
+          ),
+        ),
+      ),
+      true,
+    );
+    await repair();
+    assertEquals(service.edits(), 1);
+    assertEquals(events, ["publish", "dismiss", "dismiss"]);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a legacy worker body with no summary digest is rebuilt on a no-change retry, and a second retry makes no edit (Issue #4637)", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const events: string[] = [];
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      body: `${staleMarkerlessBody.trimEnd()}\n\n${
+        buildIdempotencyMarker(4637)
+      }`,
+      onEdit: () => events.push("publish"),
+    });
+    const repair = () =>
+      finishBabysitterRepair(
+        "owner/repo",
+        {
+          ...pr,
+          number: 7,
+          headRefName: "issue-4637-review-fix",
+          headRefOid: fixture.headSha,
+        },
+        fixture.path,
+        "babysitter[bot]",
+        [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
+        cleanTreeFinishDeps(fixture.headSha, service, () => {
+          events.push("dismiss");
+          return Promise.resolve();
+        }),
+        { scratch: fixture.scratch },
+      );
+    await repair();
+    assertEquals(events, ["publish", "dismiss"]);
+    assertStringIncludes(service.getBody(), "Repaired summary.");
+    assertEquals(service.getBody().includes("Old summary."), false);
+    await repair();
+    assertEquals(service.edits(), 1);
+    assertEquals(events, ["publish", "dismiss", "dismiss"]);
   } finally {
     await cleanupFixture(fixture.path);
   }
@@ -1155,6 +1257,36 @@ Deno.test("a proposal that omits a fully met issue gets Closes #N", async () => 
     assertStringIncludes(github.body(), "Closes #4637");
   } finally {
     await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a fully met summary with no closing keyword keeps the close after a repair, with or without a proposal (Issue #4637)", async () => {
+  const summary = closingSummary(4637).replace("Closes #4637.", "All done.");
+  for (const proposal of [undefined, "Rewritten description."]) {
+    const fixture = await makeCommittedSummaryRepo(4637, summary);
+    try {
+      const events: string[] = [];
+      const github = fakeRepairGitHub({
+        headRefOid: fixture.headSha,
+        body: `Closes #4637\n\n${buildIdempotencyMarker(4637)}`,
+        onEdit: () => events.push("publish"),
+      });
+      await finishBabysitterRepair(
+        "owner/repo",
+        repairPrFor(fixture.headSha, 7),
+        fixture.path,
+        "babysitter[bot]",
+        changesRequestedBy(),
+        repairFinishDeps({ headSha: fixture.headSha, github, events }),
+        { scratch: fixture.scratch, proposal },
+      );
+      assertStringIncludes(github.body(), "Closes #4637");
+      assertEquals(github.body().includes("Part of #4637"), false);
+      assertEquals(events.at(-1), "dismiss");
+      if (proposal === undefined) assertEquals(github.edits(), 0);
+    } finally {
+      await cleanupFixture(fixture.path);
+    }
   }
 });
 

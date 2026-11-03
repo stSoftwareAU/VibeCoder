@@ -348,11 +348,10 @@ Deno.test("a 50,000-character run of spaces and close fragments returns with the
   assertEquals(closingKeywordLine(output, 4674), null);
 });
 
-Deno.test("a close is allowed only with committed evidence, no unmet criterion and a closing keyword", () => {
+Deno.test("a close is allowed only with committed evidence and no unmet criterion", () => {
   assertEquals(
     isIssueCloseAllowed({
       summary: FULLY_MET_SUMMARY,
-      issueNumber: 4637,
       proposal: undefined,
     }),
     true,
@@ -360,7 +359,6 @@ Deno.test("a close is allowed only with committed evidence, no unmet criterion a
   assertEquals(
     isIssueCloseAllowed({
       summary: undefined,
-      issueNumber: 4637,
       proposal: undefined,
     }),
     false,
@@ -368,7 +366,6 @@ Deno.test("a close is allowed only with committed evidence, no unmet criterion a
   assertEquals(
     isIssueCloseAllowed({
       summary: partSummary("partial"),
-      issueNumber: 4674,
       proposal: undefined,
     }),
     false,
@@ -376,19 +373,48 @@ Deno.test("a close is allowed only with committed evidence, no unmet criterion a
   assertEquals(
     isIssueCloseAllowed({
       summary: FULLY_MET_SUMMARY,
-      issueNumber: 4637,
       proposal: "## Acceptance Criteria\n\n- **missing** — x — reason: y",
     }),
     false,
   );
+  // The summary's own wording does not decide it (the assembler appends
+  // `Closes #N` to a fully met summary that omits it).
   assertEquals(
     isIssueCloseAllowed({
       summary: "## Summary\n\nPart of #4637.\n",
-      issueNumber: 4637,
       proposal: undefined,
     }),
-    false,
+    true,
   );
+});
+
+Deno.test("a fully met summary with no closing keyword keeps the close, as the assembler does", () => {
+  const summary = [
+    "## Summary",
+    "",
+    "Nothing here names a closing keyword.",
+    "",
+    "## Acceptance Criteria",
+    "",
+    "- **met** — the criterion — evidence: `deno task test:unit` — reviewer: met",
+    "",
+  ].join("\n");
+  const dropped = guardPrBodyProposal({
+    proposal: "Rewritten description.",
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary,
+    repo: REPO,
+  });
+  assertStringIncludes(dropped, "Closes #4674");
+  assertEquals(dropped.includes("Part of #4674"), false);
+  const kept = guardPrBodyProposal({
+    proposal: undefined,
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary,
+    repo: REPO,
+  });
+  assertStringIncludes(kept, "Closes #4674");
+  assertEquals(kept.includes("Part of #4674"), false);
 });
 
 Deno.test("GitHub's closing references name this issue only in this repository", () => {
@@ -451,7 +477,7 @@ Deno.test("an unmet criterion withholds the close even when the summary's own cl
     "",
   ].join("\n");
   assertEquals(
-    isIssueCloseAllowed({ summary, issueNumber: 4674, proposal: undefined }),
+    isIssueCloseAllowed({ summary, proposal: undefined }),
     false,
   );
   const output = guardPrBodyProposal({
