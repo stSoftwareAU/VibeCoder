@@ -98,4 +98,13 @@ fetched in the sandbox), `gh_wrapper_test.ts` and `gitignore_enforcer_test.ts`
 (52 passed). `deno fmt --check`, `deno lint`, `deno check` pass on the touched
 files.
 
-Full gate: running; result recorded below.
+`./quality.sh` on the final head: every stage passes (completeness checks, lint,
+type check, fmt, semgrep, markdownlint) except `deno tests` (parallel pass), which
+fails two tests in files this change does not touch:
+`fleet_pr_babysitter_test.ts` "babysitter default heartbeat resolves its checkout
+revision" (cannot fetch `jsr.io/@std/crypto`; it fails the same way on base
+`0a4d803a`) and `milestone_resolution_gate_test.ts` "verifyResolvedTree - the
+repository's own task sees only the allowlisted environment" (untrusted `/tmp`
+account; not re-run on base). The serial pass did not run because the parallel
+pass failed. A first gate run also failed `lib_sweep_coverage_test.ts` for the
+new module; `docs/audits/lib-sweep-coverage/top-up-4731.json` fixes that.
