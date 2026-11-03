@@ -838,29 +838,29 @@ named in the scope line at the top, never run `cargo deny`,
     `severity:medium` when the ignored advisory's crate is reachable
     from network input. Finding title: `Unexplained advisory ignore
     <id> in <file>`.
-55. **`cargo vet` posture — opt-in, human-owned.** Gate: the repo has
-    a `supply-chain/` directory (`config.toml`, `audits.toml`,
-    `imports.lock`). Absence is **never** a finding — the fleet does
-    not require `cargo vet`. When present, flag:
-    - CI that does not run `cargo vet --locked`, so the audit set is
-      decorative;
-    - a `config.toml` with no `[imports]` from the published audit
-      sets (Mozilla, Google, Bytecode Alliance, ISRG and the others in
-      the `cargo vet` registry) — imports are what make the exemption
-      list shrink instead of grow;
-    - an `audits.toml` entry whose `who` is a bot or coding-agent
-      identity, or an entry added in a commit authored by one. An
-      audit is a human's attestation that they read the code; an agent
-      certifying its own dependency bump is worse than no audit,
-      because it looks like one. This is `severity:medium`.
-    - exemptions with no `notes`, at `severity:low`.
+55. **No human-gated supply-chain checks.** The fleet runs unattended,
+    so a required check that only a person can satisfy stalls every
+    pull request it touches. `cargo vet` is the main case: it passes
+    only when each new crate version is covered by an audit, and an
+    audit is a human's attestation that they read the code. The fleet
+    does not use it; checks 52–54, `cargo audit` and the crates.io
+    quarantine window are its automated equivalent. Gate: the repo has
+    a `supply-chain/` directory, or a workflow or `quality.sh` runs
+    `cargo vet`. Flag `cargo vet` wired into a required check or the
+    quality gate, at `severity:medium`. Fix: remove the `cargo vet`
+    step and the `supply-chain/` directory, and confirm check 52's
+    `[sources]` and `yanked` settings are in place first so nothing is
+    lost. Flag an `audits.toml` entry whose `who` is a bot or
+    coding-agent identity, or that was added in a commit authored by
+    one, at `severity:medium`: an agent certifying its own dependency
+    bump looks like a review and is not one.
 
-    **Agent rule.** A worker resolving a failing `cargo vet` check
-    never runs `cargo vet certify`, `cargo vet trust` or
+    **Agent rule.** A worker meeting a failing `cargo vet` check never
+    runs `cargo vet certify`, `cargo vet trust` or
     `cargo vet regenerate exemptions`, and never edits
-    `supply-chain/*.toml` by hand. It reports which crates and
-    versions need an audit, labels the PR for a human, and stops.
-    Finding title: `cargo vet <gap> in <file>`.
+    `supply-chain/*.toml` to make it pass. It removes the step as above
+    in the same push as its fix. Finding title:
+    `Human-gated cargo vet check in <file>`.
 56. **Toolchain and MSRV pinned.** Gate: the repo ships a binary.
     Flag a binary repo with no `rust-toolchain.toml` (or a
     `rust-toolchain` file) naming a concrete release such as
