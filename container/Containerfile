@@ -425,7 +425,7 @@ ENV QUALITY_SKIP_RUST_UPDATE="1"
 # group-owned and setgid — applied by the entrypoint at run time, since the
 # work tree is a volume rather than an image layer.
 #
-# HOME itself is group `vibework` mode 0710 (Issue #4733): the `agent` account
+# HOME itself is group `vibework` mode 0710 (Issue #4761, PR #4778): the `agent` account
 # must traverse it to reach the clones under ~/auto-issue-work, and HOME is an
 # image layer that the entrypoint cannot change under `--read-only`, so the
 # grant is made here. It is traverse only; the entrypoint closes the other

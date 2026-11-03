@@ -617,10 +617,47 @@ Deno.test("stale_workdir - refuses foreign metadata before rescue runs git (Issu
         throw new Error("git must not run");
       },
     });
+    assertEquals(result.untrusted, true);
     assertEquals(result.ok, false);
     assert(result.detail.includes(".git is not owned"));
     assertEquals(gitCalls, 0);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("stale cleanup keeps untrusted metadata without push advice", async () => {
+  const workDir = await makeTempWorkDir();
+  const warnings: string[] = [];
+  const warn = console.warn;
+  try {
+    const repo = await makeRepoClone(workDir, "foreign");
+    const now = Math.floor(Date.now() / 1000);
+    await setMtime(repo, 30, now);
+    const { pushUnpushedBranches } = await import("../lib/stale_workdir.ts");
+    const { checkCloneOwnership } = await import("../lib/broken_clone.ts");
+    const uid = (await Deno.lstat(repo)).uid!;
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    const result = await scanAndCleanupStaleWorkDirs({
+      workDir,
+      nowFn: () => now,
+      rescue: (path) =>
+        pushUnpushedBranches(path, {
+          checkOwnership: (p) =>
+            checkCloneOwnership(p, () => Promise.resolve(uid), async (name) => {
+              const info = await Deno.lstat(name);
+              return name.endsWith("/.git") ? { ...info, uid: uid + 1 } : info;
+            }),
+        }),
+    });
+    assertEquals(result.removedStale, []);
+    assert((await Deno.stat(repo)).isDirectory);
+    const message = [...result.errors, ...warnings].join(" ");
+    assertStringIncludes(message, "untrusted");
+    assert(!message.includes("unpushed commits"));
+    assert(!message.includes("push it manually"));
+  } finally {
+    console.warn = warn;
+    await Deno.remove(workDir, { recursive: true });
   }
 });

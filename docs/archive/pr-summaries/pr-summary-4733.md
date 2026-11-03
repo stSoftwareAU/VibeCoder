@@ -2,10 +2,12 @@
 
 The milestone resolution gate kept refusing GRQ-AutoTrader's resolution because
 the dropped `agent` account could not reach the checkout: the fleet image
-creates `/home/vibe` mode `0700`, and nothing gave the `vibework` group a way
-through it. Every `runRepositoryCommand` probe exited 1, every task was "left to
-CI", nothing ran, and the gate refused the resolution as unverifiable. This
-change fixes that cause and makes the refusal name it. Closes #4733.
+previously created `/home/vibe` mode `0700`, blocking the `vibework` group.
+PR #4778 (Issue #4761, commit 91ef183d4), already on the base, gives HOME
+group traverse in the image. This PR adds an entrypoint fallback for older
+writable images, closes logs and the two state roots, names blocked directories
+in probe refusals, refuses rescue of untrusted clones, and makes gate fixtures
+reachable by the dropped account. Closes #4733.
 
 ```mermaid
 flowchart LR
@@ -39,7 +41,7 @@ flowchart LR
 - **regression test** —
   `worker/deno/tests/work_root_group_grant_test.ts::entrypoint - the untrusted account can traverse HOME to reach the work root (Issue #4733)`;
   it is red against the base-branch entrypoint, which makes no HOME grant (on
-  the head the grant is made in the image, with the entrypoint as a fallback;
+  the base provides the image grant via #4778, and this PR adds the fallback;
   see the Test Plan for the red checks on the final entrypoint).
 
 ## Spec
@@ -63,7 +65,7 @@ flowchart LR
 
 ### Essential Design Decisions
 
-- The grant is made in the **image** (`container/Containerfile`:
+- The base's #4778 grant is made in the **image** (`container/Containerfile`:
   `chgrp vibework /home/vibe`, then `chmod 0710 /home/vibe`, after the recursive
   `chown`), because HOME is an image layer and Docker/Podman launch with
   `--read-only` (`container_launch.ts`, Issue #516), where an entrypoint `chgrp`
@@ -102,7 +104,7 @@ flowchart LR
   grant (image, with the entrypoint fallback) fixes that cause for it too; its
   own classification and budget work is not in this change. #4705 and #4680 are
   not touched.
-- The image grant takes effect once the new image is built and launched; the
+- The base image grant takes effect once its image is built and launched; the
   state-root closing and the fallback take effect at the next launch. Neither
   has been observed in a real container launch from this repository's tests.
 
@@ -137,13 +139,13 @@ describing it.
   children carry no group or other access; HOME stays shut, with a warning
   naming the path, when `chmod` cannot close the log mount root (sibling roots
   closed as the positive control); a clone root is sticky and its `.git` takes
-  no group or other write (#4737); the Containerfile runs `chgrp vibework` and
-  `chmod 0710` on HOME after the recursive `chown`. Red checks, each run on the
+  no group or other write (#4737); the base's Containerfile runs `chgrp vibework` and
+  `chmod 0710` on HOME after the recursive `chown` (#4778). Red checks, each run on the
   final entrypoint: closing `chmod` removed → the closing, withheld-grant and
   traverse tests red; grant no longer conditional on closure → withheld-grant
   test red; `+t` removed alone → clone test red; `.git` strip removed alone →
-  clone test red; `chgrp` line removed from the Containerfile → Containerfile
-  test red. Not covered: a real read-only root or a real `agent` uid; the tests
+  clone test red. The base's Containerfile check goes red when its
+  `chgrp` line is removed. Not covered: a real read-only root or a real `agent` uid; the tests
   run the script against a writable temp HOME with a stub `chgrp`.
 - `worker/deno/tests/untrusted_gate_spawn_test.ts`: two new tests (a real probe
   run names `outer`, not `outer/inner`, when `outer` is `0000`; the message
@@ -167,7 +169,7 @@ describing it.
   allowlist failure were reproduced on the base commit (a detached worktree of
   `HEAD` before these edits): the real drop hit a `0700` temp directory.
 
-Results on the final head, `deno task test:unit`:
+Earlier results before the latest review follow-up, `deno task test:unit`:
 `worker/deno/tests/untrusted_gate_spawn_test.ts` (34 tests at head),
 `worker/deno/tests/milestone_resolution_gate_test.ts` (34 tests at head) and
 `worker/deno/tests/milestone_merge_gate_test.ts` (41 tests at head), all
@@ -204,3 +206,12 @@ Validation of this follow-up: repository-wide `deno fmt --check`, `deno lint` an
 ## CI repair
 
 Break the milestone tracker import cycle by moving its canonical marker to a leaf module. Use the built-in synchronous SHA-256 implementation for stream keys so entry points invoked with `--no-config` resolve without an import map; existing key values remain unchanged. Coverage: `worker/deno/tests/collect_idle_task_candidates_test.ts`, `worker/deno/tests/claude_runner_pre_push_3394_test.ts` and `worker/deno/tests/stream_identity_test.ts`.
+
+## Latest review follow-up
+
+Ownership refusals now retain untrusted clones for inspection without claiming
+unpushed commits or recommending a manual push. The old failed-push message
+was misleading for ownership refusals; genuine push failures retain their
+existing handling. Coverage: `worker/deno/tests/stale_workdir_test.ts::stale cleanup keeps untrusted metadata without push advice` and `worker/deno/tests/work_volume_tiers_test.ts::tier reclaim keeps untrusted metadata without push advice`. The image HOME grant is from #4778 (Issue #4761), already on the base; the entrypoint test covers this PR's fallback, not that image change.
+
+Latest review validation: `deno fmt --check`, `deno lint`, and `deno task check --quiet` passed; `deno task test:unit tests/stale_workdir_test.ts tests/work_volume_tiers_test.ts` passed 48 tests. The archived-summary freshness check reads commit history and will see this update after the babysitter commits.
