@@ -2,29 +2,35 @@
 
 The mutation check runs at two call points. At PR raise it is an advisory
 completion gate (Issue #3393, Issue #4234): the first report is one in-session
-note, and a survivor that remains is one comment on the pull request, which
-is still raised with auto-merge armed. In every review-fix (PR feedback) run it is
-part of the post-agent drift check (Issue #3750) and reports survivors in the
-PR reply without blocking the push; see
-[Review-fix runs](#review-fix-runs-issue-3750). At both it mutates only the
-lines the change adds or changes, re-runs the tests that cover them, and
-treats a survivor as a mutation the suite stays green through although the
-behaviour was changed on purpose.
+note, and a survivor that remains is one comment on the pull request, which is
+still raised with auto-merge armed. That is the rule where CI runs no blocking
+mutation job. Where it does (Issue #4617), a surviving mutant holds the change:
+the recovery turn names that job, and a survivor that remains raises the pull
+request as a draft that is not auto-merged, on the secondary-rate-limit deferral
+path too; see
+[Repositories with a blocking CI mutation job](#repositories-with-a-blocking-ci-mutation-job).
+In every review-fix (PR feedback) run it is part of the post-agent drift check
+(Issue #3750) and reports survivors in the PR reply without blocking the push;
+see [Review-fix runs](#review-fix-runs-issue-3750). At both it mutates only the
+lines the change adds or changes, re-runs the tests that cover them, and treats
+a survivor as a mutation the suite stays green through although the behaviour
+was changed on purpose.
 
 ## Why line coverage is not enough
 
-A test can execute a line without asserting on it. Line coverage rests on
-the agent's own account of which test reaches which line. A mutation check measures the
-outcome instead: flip the line, run the tests, and see whether anything goes
+A test can execute a line without asserting on it. Line coverage rests on the
+agent's own account of which test reaches which line. A mutation check measures
+the outcome instead: flip the line, run the tests, and see whether anything goes
 red. A survivor is concrete evidence that no test pins that behaviour.
 
 ## Flow
 
 At PR raise, the gate runs in the issue-run completion phase, after the PR
 summary is final and before the PR is raised. It joins the other advisory
-completion gates (placeholders, [coverage carry-over](coverage-carryover-check.md),
-the pre-PR verifier, and the acceptance, review and reproduction gates) and
-feeds the same single in-session note.
+completion gates (placeholders,
+[coverage carry-over](coverage-carryover-check.md), the pre-PR verifier, and the
+acceptance, review and reproduction gates) and feeds the same single in-session
+note.
 
 ```mermaid
 flowchart TD
@@ -36,7 +42,9 @@ flowchart TD
     C -- "neither Deno nor Cargo" --> N["Not applicable: log the reason"]
     N --> Z
     C --> E["Mutate added lines, run covering tests"]
-    E -- "runner error" --> X
+    E -- "runner error, no blocking CI job" --> X
+    E -- "runner error, blocking CI job: held" --> N2["Draft: validation incomplete, next action named"]
+    N2 --> Z
     E --> F{"Unexempted survivor?"}
     F -- yes --> X
     F -- no --> G{"Budget exhausted or mutant cap hit?"}
@@ -48,11 +56,100 @@ flowchart TD
 ```
 
 The recovery turn is told each surviving `file:line` and the mutation applied,
-so the agent adds the assertion that kills it, or records an exemption. Unlike
-the documentation gates, whose recovery prompt says the code is final, a
-blocked mutation item makes the prompt allow test changes (the quality gate and
-completion re-run afterwards); an exemption is reserved for a line no test can
-reach.
+so the agent adds the assertion that kills it, or records an exemption. On a
+repository with a blocking CI mutation job an exemption does not clear it, and
+the turn names that CI job instead (see below). Unlike the documentation gates,
+whose recovery prompt says the code is final, a blocked mutation item makes the
+prompt allow test changes (the quality gate and completion re-run afterwards);
+an exemption is reserved for a line no test can reach.
+
+## Repositories with a blocking CI mutation job
+
+The worker looks for this job in the repository's `.github/workflows/*.yml` and
+`*.yaml` files, using `worker/deno/lib/ci_mutation_contract.ts`. A job counts
+when a workflow is triggered by `pull_request`, neither the job nor the step is
+`continue-on-error`, and one of its steps runs `cargo mutants`,
+`cargo +toolchain
+mutants`, `cargo-mutants` or `deno task` with a task name
+containing `mutat`. A line that ends in `|| true`, `|| :` or `|| exit 0` cannot
+fail the step, so it is skipped; `\` continuations are joined before this check.
+This approximates "a required check or the job feeding it": a job that another
+job in the same workflow lists under `needs` is reported with that aggregator.
+The `cargo mutants` flags that choose the mutants or the build (`--package`,
+`--workspace`, `--features`, `--all-features`, `--no-default-features`,
+`--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`,
+`--regex`, `--examine-re`, `--examine-regex`, `-F`, `-f`, `--file`) are
+read from the job's command line and passed to the worker's own run; diff,
+output, jobs and shuffle flags stay the worker's. Explicit CI package or
+workspace selection replaces the worker's touched-package selection. When all
+changed crates are known to be outside an explicit CI package list, the worker
+checks them separately as advisory and honours summary exemptions.
+Not evaluated or read: reusable-workflow `uses:` jobs, other mutation tools, job
+`if:` and path filters, flags of a `deno task`, and the repository's branch
+protection (required-check names).
+
+Only regular workflow files up to 1 MiB are read. Symlinked workflow directory
+components, symlinked files and oversized files are reported as unreadable,
+leaving their contract unknown. Reads are
+bounded even if a file grows after its size check. Continued script lines are
+joined once, and each YAML step mapping is scanned once per file. A cumulative
+1 MiB script scan budget per file also bounds repeated YAML string aliases;
+exceeding it reports the workflow as unreadable.
+
+The CI tool must match the mutation result: cargo-mutants checks Rust, and a
+Deno mutation task checks Deno. A result for the other language stays advisory
+and retains summary exemptions, at completion and during review fixes. Runner
+errors carry no language, so an identified CI job still holds an incomplete
+check.
+
+On such a repository the PR-raise gate treats genuine surviving mutants as
+blocking, because CI fails on them whatever the PR summary says:
+
+1. **Exemptions do not clear a survivor.** CI does not read the PR summary, so
+   an `exempt (untestable)` line does not count. The survivor must be killed by
+   a test, or excluded the way the CI job allows, such as the tool's own skip
+   attribute or configuration (for cargo-mutants, `#[mutants::skip]`).
+2. **The one recovery turn is told so.** The turn is told that the CI job names
+   the change as held, and that a summary exemption will not clear a survivor.
+3. **A survivor that remains raises a draft.** If survivors remain after that
+   turn, the pull request is raised with `Part of #N` in its body (no closing
+   keyword, so the issue stays open), the unmet validation stated in the body,
+   and an advisory comment. On the normal path, the existing-PR path and the
+   REST fallback it is a draft, auto-merge is not armed and it is not marked
+   ready. The pending issue note names the CI job, says mutation validation is
+   incomplete and the PR will open as a draft, and says the next run continues
+   the branch. On the secondary-rate-limit deferral path the parked record
+   carries `draft: true`, and `worker/deno/lib/deferred_pr_drain.ts` opens the pull
+   request as a draft over REST (it never arms auto-merge). The next run
+   continues the branch and marks the pull request ready once no survivor is
+   left.
+4. **Validation that cannot finish is held too.** A runner error, an unavailable
+   tool, a baseline build or test failure, a worker fault (the temporary
+   directory) or a budget or mutant cap that leaves mutants untested holds the
+   pull request as a draft, with no recovery turn for the budget case (a turn
+   cannot add mutants). The draft body and comment say validation is incomplete,
+   that the change is unvalidated (not passed), and name the next action: fix
+   the baseline or install the tool, free the temporary directory, or re-run
+   with a larger budget or a narrower change. The issue stays open and the next
+   run continues the branch.
+
+A repository without such a job is unchanged: survivors are notes, auto-merge
+stays armed and summary exemptions still work.
+
+```mermaid
+flowchart TD
+    A["Blocking CI mutation job: PR raise"] --> B{"Survivor found?"}
+    B -- no --> C{"Runner error, unavailable tool or baseline failure?"}
+    C -- no --> K{"Budget or cap left mutants untested?"}
+    K -- no --> Z["Raise PR, auto-merge armed"]
+    K -- yes --> L["Draft: validation incomplete, next action named"]
+    C -- yes --> N["Draft: validation incomplete, next action named"]
+    B -- yes --> R["One recovery turn, naming the CI job; exemptions do not count"]
+    R --> S{"Survivor left after the turn?"}
+    S -- no --> Z
+    S -- yes --> D["Draft PR: Part of the issue, unmet validation in body, advisory comment; auto-merge not armed"]
+    D --> I["Issue stays open; next run continues the branch and marks ready once no survivor is left"]
+```
 
 ## Review-fix runs (Issue #3750)
 
@@ -61,38 +158,37 @@ post-agent drift check (`runPrFeedbackDriftCheck`): after the agent's turn and
 before the worker's final commit-and-push and the PR reply. Nothing blocks the
 push on this path.
 
-**Scope.** Only lines this run itself added are mutated. The diff is the
-working tree (uncommitted edits included) plus untracked files, compared with
-the branch head captured before the agent ran (`beforeSha`). When the run
-merged another branch (for example `git merge origin/main`), the baseline is
-instead `git merge-tree --write-tree <beforeSha> <merged parent>`, the
-before-run head plus the merged branch, so lines that came in from the merge
-are not mutated. A conflict resolution counts as the run's own lines. If the
-run merged more than one unrelated history (an earlier merged parent not
-contained in the newest one), its lines cannot be separated and the check is
-reported as unable to run.
+**Scope.** Only lines this run itself added are mutated. The diff is the working
+tree (uncommitted edits included) plus untracked files, compared with the branch
+head captured before the agent ran (`beforeSha`). When the run merged another
+branch (for example `git merge origin/main`), the baseline is instead
+`git merge-tree --write-tree <beforeSha> <merged parent>`, the before-run head
+plus the merged branch, so lines that came in from the merge are not mutated. A
+conflict resolution counts as the run's own lines. If the run merged more than
+one unrelated history (an earlier merged parent not contained in the newest
+one), its lines cannot be separated and the check is reported as unable to run.
 
 The runner, mutator and mutant cap (40) are the PR-raise ones. So are
-`skip_mutation_check`, `mutation_check_budget_seconds`, the `quality_credentials`
-handling and the `exempt (untestable)` exemptions, which are read from the PR
-summary. The skip, runner, budget and credential sequence is shared with the
-PR-raise gate (`invokeMutationCheck`).
+`skip_mutation_check`, `mutation_check_budget_seconds`, the
+`quality_credentials` handling and the `exempt (untestable)` exemptions, which
+are read from the PR summary. On a repository with a blocking CI mutation job,
+summary exemptions are ignored in review-fix runs too; the push is not blocked. The skip, runner, budget and credential sequence
+is shared with the PR-raise gate (`invokeMutationCheck`).
 
 **Recovery.** An unexempted survivor is a drift-check hit. It goes into the
 drift check's one recovery turn, with the same survivor wording as the PR-raise
 gate. That turn kills each survivor with a test, and may remove or fix a line a
-survivor shows is dead or wrong; the other drift items still say change no
-code. When survivors were found and the turn ran, the mutation check is re-run
-once.
+survivor shows is dead or wrong; the other drift items still say change no code.
+When survivors were found and the turn ran, the mutation check is re-run once.
 
 **Report.** Survivors still left after that are appended to
 `.pr_response_message` in the drift-check residual, under their own heading
-`#### Mutation check`. A review-fix push is not blocked by
-survivors; they are reported in the PR reply and the push still happens.
+`#### Mutation check`. A review-fix push is not blocked by survivors; they are
+reported in the PR reply and the push still happens.
 
-A budget-exhausted or mutant-cap run is reported under that heading as such,
-as not passed, never as a pass, and does not trigger a recovery turn by
-itself. A runner error or an uncollectable diff is reported there as
+A budget-exhausted or mutant-cap run is reported under that heading as such, as
+not passed, never as a pass, and does not trigger a recovery turn by itself. A
+runner error or an uncollectable diff is reported there as
 `mutation check failed to run (…)`, and a temporary directory that could not be
 created as `mutation check could not run: …` (a worker fault, Issue #4127). A
 check that is not applicable (no Deno project and no `Cargo.toml`, skipped,
@@ -123,32 +219,32 @@ project such as VibeCoder's `worker/deno/` counts. Each module's tests run from
 that directory, so the project's own `deno.json` applies, and only tests inside
 it are run.
 
-| Found                                                          | Mutator                                                                                      |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `deno.json`, `deno.jsonc` or `deno.lock` above a changed file  | Built-in Deno mutator (below)                                                                |
-| `Cargo.toml` at the repository root                            | `cargo mutants --in-diff <diff> --output <temp dir> --no-shuffle --jobs N`, with N = min(4, CPUs) |
-| neither                                                        | Not applicable: the gate passes without running and logs the reason                          |
+| Found                                                         | Mutator                                                                                           |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `deno.json`, `deno.jsonc` or `deno.lock` above a changed file | Built-in Deno mutator (below)                                                                     |
+| `Cargo.toml` at the repository root                           | `cargo mutants --in-diff <diff> --output <temp dir> --no-shuffle --jobs N`, with N = min(4, CPUs) |
+| neither                                                       | Not applicable: the gate passes without running and logs the reason                               |
 
 For Cargo `--output` points at a fresh temporary directory outside the
 repository; the outcomes are read from its `mutants.out/outcomes.json` and the
-directory is removed afterwards, so nothing of cargo-mutants' output reaches
-the working tree (a recovery commit stages it with `git add -A`). That
-temporary directory is created in the system temp directory (`TMPDIR`, else
-Deno's default) or, when that refuses, in a private (`0700`) `.mutation-scratch`
+directory is removed afterwards, so nothing of cargo-mutants' output reaches the
+working tree (a recovery commit stages it with `git add -A`). That temporary
+directory is created in the system temp directory (`TMPDIR`, else Deno's
+default) or, when that refuses, in a private (`0700`) `.mutation-scratch`
 directory on the work volume (`WORK_DIR`, else `$HOME/auto-issue-work`)
-(Issue #4127). The worker image ships `cargo-mutants` 27.1.0 (amd64 from the
-release tarball, checksum-verified; arm64 built with `cargo install --locked`).
+(Issue #4127). The worker image ships `cargo-mutants` 27.1.0 (amd64 from the release
+tarball, checksum-verified; arm64 built with `cargo install --locked`).
 
-The run is limited to the packages the diff touches: for each changed `.rs`
-file the nearest ancestor `Cargo.toml` with a `[package]` section supplies a
+Absent CI package or workspace selection, the run is limited to the packages the diff touches: for each changed `.rs` file
+the nearest ancestor `Cargo.toml` with a `[package]` section supplies a
 `--package <name>` argument (names failing `^[A-Za-z0-9_-]+$` are skipped; none
 found means no package arguments). A `mutants.out` already in the repository is
 neither read nor touched. cargo-mutants writes `outcomes.json` only after its
 clean build and baseline test run, so a run killed at the budget before then
-leaves none; that is reported as budget exhausted (nothing tried, a warning),
-as a Deno baseline timeout is, not as an error. A normal exit that leaves no
-parseable `outcomes.json`, or exit code 3 (some mutants timed out) with none,
-is an error, except in one case: when the diff touches no mutant at all,
+leaves none; that is reported as budget exhausted (nothing tried, a warning), as
+a Deno baseline timeout is, not as an error. A normal exit that leaves no
+parseable `outcomes.json`, or exit code 3 (some mutants timed out) with none, is
+an error, except in one case: when the diff touches no mutant at all,
 cargo-mutants logs "No mutants to filter" on stderr and exits 0 without writing
 `outcomes.json`, and that is "Not applicable".
 
@@ -159,42 +255,42 @@ under `TMPDIR`, which the runner sets to the run's own temporary directory (the
 `--output` directory; where that is created is described above), so removing
 that directory clears any copy a killed run leaves behind.
 
-Every path the runner writes (mutated Deno files, the Rust diff under
-`target/`) is resolved through symlinks and must stay inside the repository;
-a file that escapes is skipped, and an escaping `target/` is an error.
+Every path the runner writes (mutated Deno files, the Rust diff under `target/`)
+is resolved through symlinks and must stay inside the repository; a file that
+escapes is skipped, and an escaping `target/` is an error.
 
 ## The diff
 
-At PR raise the diff is `origin/<base>...HEAD`, falling back to
-`<base>...HEAD`. Only added or changed lines are mutated. When no diff can be
-computed the gate fails closed and the finding is noted, rather than passing an unmeasured
-change. A review-fix run uses its own diff instead; see
+At PR raise the diff is `origin/<base>...HEAD`, falling back to `<base>...HEAD`.
+Only added or changed lines are mutated. When no diff can be computed the gate
+fails closed and the finding is noted, rather than passing an unmeasured change.
+A review-fix run uses its own diff instead; see
 [Review-fix runs](#review-fix-runs-issue-3750).
 
 ## Built-in Deno mutations
 
 The mutator works on added lines of non-test source files.
 
-| Mutation                   | Effect                                                   |
-| -------------------------- | -------------------------------------------------------- |
-| Negate an `if` condition   | `if (c)` becomes `if (!(c))`                             |
+| Mutation                   | Effect                                                                                                                                                                             |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Negate an `if` condition   | `if (c)` becomes `if (!(c))`                                                                                                                                                       |
 | Negate a ternary condition | `c ? a : b` becomes `!(c) ? a : b`, `c` being the whole condition; none is made when the condition holds a statement keyword or an unbalanced bracket (`if (x) return a ? b : c;`) |
-| Swap booleans              | `true` becomes `false` and the reverse                   |
-| Replace a return value     | `return x` becomes `return undefined;`; `true`/`false`, numbers and plain strings flip to `false`/`true`, `0`/`1` and `""` |
-| Delete a call statement    | A single call statement is removed                       |
-| Delete an object property  | A property line (`repo,`, `key: value,`, `...rest,`) directly inside an object literal is removed, or one entry of a single-line `f({ repo, ...rest })` argument (Issue #3601) |
-| Delete an array element    | A string or identifier element alone on its line in an array literal is removed, such as one name in a `--json` field list (Issue #3601) |
-| Revert a property value    | `key: otherName,` becomes `key,` when `key` is a name used just above, undoing a renamed value at a call site (Issue #3601) |
+| Swap booleans              | `true` becomes `false` and the reverse                                                                                                                                             |
+| Replace a return value     | `return x` becomes `return undefined;`; `true`/`false`, numbers and plain strings flip to `false`/`true`, `0`/`1` and `""`                                                         |
+| Delete a call statement    | A single call statement is removed                                                                                                                                                 |
+| Delete an object property  | A property line (`repo,`, `key: value,`, `...rest,`) directly inside an object literal is removed, or one entry of a single-line `f({ repo, ...rest })` argument (Issue #3601)     |
+| Delete an array element    | A string or identifier element alone on its line in an array literal is removed, such as one name in a `--json` field list (Issue #3601)                                           |
+| Revert a property value    | `key: otherName,` becomes `key,` when `key` is a name used just above, undoing a renamed value at a call site (Issue #3601)                                                        |
 
 The last three perform the revert the call-site rule asks for ("drop the new
 argument and watch a test go red"), so a surviving one means a caller's new
 wiring has no test that notices it is gone. They apply only to lines that a scan
 of the whole file places directly inside an object or array literal, never to a
 type, an interface, an annotation or a generic argument: mutants run with
-`--no-check`, so a mutant of a type-only line could never be caught and would
-be reported rather than passed. A file whose brackets the scan cannot balance gets none of these
-three, only the kinds above. They count towards the same mutant cap, after the
-other kinds on each line.
+`--no-check`, so a mutant of a type-only line could never be caught and would be
+reported rather than passed. A file whose brackets the scan cannot balance gets
+none of these three, only the kinds above. They count towards the same mutant
+cap, after the other kinds on each line.
 
 A test file is one named `*_test.*` or `*.test.*`, or one that the nearest
 `deno.json` or `deno.jsonc` above it matches under `test.include` and does not
@@ -204,24 +300,25 @@ paths relative to the config file's directory: a file path or a glob with `*`
 braces. A directory in `test.include` does not add unsuffixed files; a directory
 in `test.exclude` matches everything beneath it. If either list contains a `!`
 negation, both lists fall back to the suffix rule and a warning is logged. A
-test imports a module when it names it by a relative specifier (`./`, `../`), or by a bare specifier that the same
-project's `imports` map resolves to a local path: with `"@neat/": "./src/NEAT/"`,
-`@neat/Neat.ts` is `src/NEAT/Neat.ts`. A `jsr:`, `npm:` or remote target names no
-local file, so it counts for nothing. The `importMap` files and `scopes` are not
-read, and only direct imports count.
+test imports a module when it names it by a relative specifier (`./`, `../`), or
+by a bare specifier that the same project's `imports` map resolves to a local
+path: with `"@neat/": "./src/NEAT/"`, `@neat/Neat.ts` is `src/NEAT/Neat.ts`. A
+`jsr:`, `npm:` or remote target names no local file, so it counts for nothing.
+The `importMap` files and `scopes` are not read, and only direct imports count.
 
 Each mutant runs only the test files that import the mutated module
 (`deno test --no-check -A <those files>`). `--no-check` is deliberate: a mutant
 such as `return undefined;` in a `: boolean` function fails type-checking, and
-that exit code would otherwise count as a test going red. Before any mutant, the unmutated baseline run
-must pass; if it does not, the gate reports an error. The file is restored
-after every mutant, even when the run fails. A changed module that no test
-imports has its mutants counted as survivors. A mutant that does not parse
-(`deno test` fails with `error: SyntaxError:` on stderr, before any test
-runs; the colour codes Deno adds to `error` are stripped first) ran no test, so it is counted as neither killed nor survived. A run is capped at 40 mutants.
-Candidates past the cap, and added lines over 400 characters (never mutated),
-are counted as untested: the run is reported as capped, with the number
-untested, never as a clean pass.
+that exit code would otherwise count as a test going red. Before any mutant, the
+unmutated baseline run must pass; if it does not, the gate reports an error. The
+file is restored after every mutant, even when the run fails. A changed module
+that no test imports has its mutants counted as survivors. A mutant that does
+not parse (`deno test` fails with `error: SyntaxError:` on stderr, before any
+test runs; the colour codes Deno adds to `error` are stripped first) ran no
+test, so it is counted as neither killed nor survived. A run is capped at 40
+mutants. Candidates past the cap, and added lines over 400 characters (never
+mutated), are counted as untested: the run is reported as capped, with the
+number untested, never as a clean pass.
 
 ## Budget
 
@@ -250,9 +347,9 @@ never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
 credentials are not inherited by it (Issue #572, the same control as the quality
 gate). The only additions are the declared credentials described below and
 `TMPDIR`, which every child gets set to the run's own temporary directory
-(Issue #4127): for `cargo mutants` the `--output` directory, for `deno test` a
-per-run directory created before the first child runs and removed afterwards. A
-declared `TMPDIR` cannot override it.
+(Issue #4127): for `cargo mutants` the `--output` directory, for `deno test` a per-run
+directory created before the first child runs and removed afterwards. A declared
+`TMPDIR` cannot override it.
 
 The credentials the repository declared in `quality_credentials` (Issues #573
 and #574) are resolved once per run, in the completion phase at PR raise and in
@@ -269,15 +366,18 @@ PR raise that is reported; on a review-fix run it is logged and not reported.
 
 ## Exemptions
 
-A survivor that no test can reasonably kill may be exempted by a PR-summary
-line naming the location and giving a non-empty reason:
+A survivor that no test can reasonably kill may be exempted by a PR-summary line
+naming the location and giving a non-empty reason:
 
 ```text
 - `worker/deno/lib/example.ts:42` — exempt (untestable): <reason>
 ```
 
-An empty reason does not exempt. Every other survivor is reported on the
-pull request, which is still raised (Issue #4234).
+An empty reason does not exempt. On a repository without a blocking CI mutation
+job, every other survivor is reported on the pull request, which is still raised
+(Issue #4234). On a repository with one, the line does not clear a survivor at
+PR raise, because CI does not read the PR summary (see
+[Repositories with a blocking CI mutation job](#repositories-with-a-blocking-ci-mutation-job)).
 
 ## Configuration
 
@@ -285,10 +385,10 @@ Both keys are per-repo options, set operator-side under
 `repo_config["owner/repo"]` in `.config.json`, beside `skip_security_fix_check`
 (see [Configuration](CONFIGURATION.md)).
 
-| Key                               | Type    | Default | Effect                                              |
-| --------------------------------- | ------- | ------- | --------------------------------------------------- |
-| `skip_mutation_check`             | boolean | `false` | `true` disables the gate for the repository         |
-| `mutation_check_budget_seconds`   | integer | `300`   | Time budget for one run; positive, at most `3600`   |
+| Key                             | Type    | Default | Effect                                            |
+| ------------------------------- | ------- | ------- | ------------------------------------------------- |
+| `skip_mutation_check`           | boolean | `false` | `true` disables the gate for the repository       |
+| `mutation_check_budget_seconds` | integer | `300`   | Time budget for one run; positive, at most `3600` |
 
 ```json
 "repo_config": {
@@ -300,14 +400,14 @@ Both keys are per-repo options, set operator-side under
 
 ## Outcomes
 
-| Outcome                | Meaning                                                | Blocks the PR?            |
-| ---------------------- | ------------------------------------------------------ | ------------------------- |
-| Not applicable         | No Deno config above a changed file and no root `Cargo.toml`, check disabled, the repository's `quality_credentials` could not be resolved, or cargo-mutants finds no mutants on the changed lines ("No mutants to filter") | No                        |
-| Completed, no survivor | Every mutant was killed, or the survivor is exempted   | No                        |
-| Completed, survivors   | At least one unexempted survivor                       | Yes                       |
-| Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass | Only if a survivor found  |
-| Error                  | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable | Yes, with a remedy |
-| Error (worker fault)   | The temporary directory could not be created, in the system temp directory or on the work volume (Issue #4127). Reported as `mutation check could not run` (a worker fault on this host, not a verdict on the code); at PR raise recorded as `internal_error`, never `quality_check` | Yes, no repository remedy (no `skip_mutation_check`) |
+| Outcome                    | Meaning                                                                                                                                                                                                                                                                              | Blocks the PR?                                                                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Not applicable             | No Deno config above a changed file and no root `Cargo.toml`, check disabled, the repository's `quality_credentials` could not be resolved, or cargo-mutants finds no mutants on the changed lines ("No mutants to filter")                                                          | No                                                                                                                                      |
+| Completed, no survivor     | Every mutant was killed, or the survivor is exempted (an exemption does not count on a blocking-CI repository)                                                                                                                                                                       | No                                                                                                                                      |
+| Completed, survivors       | At least one unexempted survivor                                                                                                                                                                                                                                                     | Yes; on a blocking-CI repository a draft PR, not auto-merged, if one remains after the recovery turn (a draft on the deferral path too) |
+| Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass                                                                                                                                                                                                          | Only if a survivor found; on a blocking-CI repository a draft PR, validation incomplete                                                 |
+| Error                      | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable                                                                                                                                                                                        | Yes, with a remedy; on a blocking-CI repository a draft PR that says the change is unvalidated (not passed) and names the next action   |
+| Error (worker fault)       | The temporary directory could not be created, in the system temp directory or on the work volume (Issue #4127). Reported as `mutation check could not run` (a worker fault on this host, not a verdict on the code); at PR raise recorded as `internal_error`, never `quality_check` | Yes, no repository remedy (no `skip_mutation_check`)                                                                                    |
 
 In a review-fix run nothing blocks the push. Survivors, budget exhaustion, the
 mutant cap and runner errors are reported in the PR reply instead, under the
@@ -332,8 +432,8 @@ A Rust run killed at the budget before cargo-mutants finishes its baseline is
   [Built-in Deno mutations](#built-in-deno-mutations)).
 - **Budget exhausted too often.** Raise `mutation_check_budget_seconds` (up to
   3600), or narrow the PR.
-- **Diff unavailable.** Make sure the base branch is fetched so
-  `origin/<base>` resolves.
+- **Diff unavailable.** Make sure the base branch is fetched so `origin/<base>`
+  resolves.
 - **Temporary directory not writable.** The check first creates its temporary
   directory in the system temp directory (`TMPDIR`, else Deno's default). When
   that is read-only (for example `Read-only file system (os error 30)`), it
