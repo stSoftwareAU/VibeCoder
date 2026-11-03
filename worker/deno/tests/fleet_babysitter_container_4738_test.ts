@@ -988,16 +988,25 @@ Deno.test("babysitterRuntimeOnPath skips a PATH entry that cannot be stat'd and 
 Deno.test("babysitterSpawn runs the runtime from an empty environment", async () => {
   const dir = await Deno.makeTempDir();
   try {
-    // Exits 0 only when PATH is absent from the child, i.e. the env was cleared.
+    // Exits 0 only when the child's environment holds nothing beyond DENO_DIR
+    // and the keys deno itself sets (its Node compatibility shim adds PATH and
+    // DENO_NODE_SHIM_ACTIVE to any child). A host variable such as HOME, which
+    // the test process has, would make it exit 3.
+    const code =
+      "const ok = new Set(['DENO_DIR','DENO_NODE_SHIM_ACTIVE','PATH']);" +
+      "Deno.exit(Object.keys(Deno.env.toObject()).every((k) => ok.has(k)) ? 0 : 3)";
     const result = await babysitterSpawn(Deno.execPath(), [
       "eval",
       "--allow-env",
-      "Deno.exit(Deno.env.get('PATH') === undefined ? 0 : 3)",
-    ], { env: { DENO_DIR: dir }, timeoutMs: 60_000 });
+      code,
+    ], {
+      env: { DENO_DIR: dir },
+      timeoutMs: 60_000,
+    });
     assertEquals(
       result.success,
       true,
-      `child saw PATH: exit ${result.code} ${result.stderr}`,
+      `child saw host variables: exit ${result.code} ${result.stderr}`,
     );
     assertEquals(result.code, 0);
   } finally {
