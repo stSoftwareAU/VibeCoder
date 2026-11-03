@@ -63,6 +63,9 @@ flowchart LR
   top-down walk of `$1`, and a code-1 refusal now reads
   `(probe 1; cannot traverse '<dir>')`. The name is accepted only as one
   absolute path of at most 300 characters with no control characters.
+- The merge with main retains #4705's stdin credential channel: declared
+  credentials do not select the worker account, and access refusals still
+  report the first directory the untrusted account cannot traverse.
 - Test fixtures that run the real drop (`withTempDir`, `tree()`) are made with
   `makeAgentReachableTempDir` (`worker/deno/tests/support/gate_child_env.ts`): a
   unique directory under `/tmp`, mode `0777`, so the account can use it even

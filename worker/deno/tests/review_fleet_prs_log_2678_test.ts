@@ -42,21 +42,23 @@ Deno.test("parseFableReview accepts the reply JSON, even wrapped in prose, and r
   );
 });
 
-Deno.test("decideOutcome: findings send it back, meaningful or removed tests hold it, else approve", () => {
+Deno.test("decideOutcome: findings send it back, an owner hold holds it, else approve; a test change is never itself a hold (Issue #4655)", () => {
   assertEquals(decideOutcome(review(), []), "approved");
   assertEquals(
     decideOutcome(review({ testChanges: "trivial" }), []),
     "approved",
   );
+  // Was "held" before #4655: the evidence review decides a meaningful change.
   assertEquals(
     decideOutcome(review({ testChanges: "meaningful" }), []),
-    "held",
+    "approved",
   );
   assertEquals(
     decideOutcome(review({ testChanges: "tightened" }), []),
     "approved",
   );
-  assertEquals(decideOutcome(review(), ["tests/x_test.ts"]), "held");
+  // Was "held" before #4655: a removed file is explained by a note, not held.
+  assertEquals(decideOutcome(review(), ["tests/x_test.ts"]), "approved");
   assertEquals(
     decideOutcome(
       review({ findings: [finding], testChanges: "meaningful" }),
@@ -64,6 +66,7 @@ Deno.test("decideOutcome: findings send it back, meaningful or removed tests hol
     ),
     "changes_requested",
   );
+  assertEquals(decideOutcome(review(), [], { hold: true }), "held");
 });
 
 Deno.test("reviewBody: every body ends with the marker; change requests list each finding and its fix", () => {

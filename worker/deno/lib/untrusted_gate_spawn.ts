@@ -10,8 +10,10 @@
  *
  * Access failures leave commands to CI and never select the worker account.
  * A refusal names the topmost directory the account cannot traverse (Issue #4733).
- * Only operator-declared credentials or absence of an agent account select the
- * restricted worker environment. Tree-controlled layouts and permissions cannot.
+ * Only the absence of an agent account selects the restricted worker
+ * environment. Declared credentials cannot, and neither can tree-controlled
+ * layouts or permissions. Declared credentials reach an agent command through
+ * the stdin channel of credential_channel.ts (Issue #4705).
  * Unwritable cargo targets use the configured, persistent per-account cache.
  *
  * Australian English spelling used throughout.
@@ -23,6 +25,11 @@ import {
   untrustedQualityCommandEnv,
   untrustedSpawn,
 } from "./quality_gate_phase.ts";
+import {
+  carryCredentialsThroughSudo,
+  credentialChannelFault,
+} from "./credential_channel.ts";
+import type { ChannelledCommand } from "./credential_channel.ts";
 import { cargoTargetDirForCheckout } from "./ephemeral_build_cache.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 
@@ -188,8 +195,9 @@ function probeScript(manifests: readonly string[], tail: string): string {
 
 /**
  * Run a repository command with the allowlisted environment and explicitly
- * declared credentials, as `agent` when it can use the checkout and no
- * credentials need to cross sudo's environment reset.
+ * declared credentials, as `agent` when it can use the checkout. Declared
+ * credentials cross sudo's environment reset on the stdin channel (Issue
+ * #4705), so they never select the worker account.
  *
  * The account is probed with a command of its own. Access faults leave the
  * command to CI, without changing its account. A refusal names the topmost
@@ -297,20 +305,7 @@ export async function runRepositoryCommand(
 
   let privateTarget: string | undefined;
   {
-    let spawnable = await drop([executable, ...args]);
-    if (
-      Object.keys(declared).length > 0 &&
-      untrustedAccountOf(spawnable) !== undefined
-    ) {
-      // sudo's env_reset discards declared credentials. Until the agent
-      // credential channel exists (#4705), preserve the operator's explicit
-      // grant using the restricted worker environment. Never put secrets in argv.
-      console.error(
-        `[SECURITY] '${executable}' requires declared quality_credentials — ` +
-          `running as the worker with the allowlisted environment (Issue #4705)`,
-      );
-      spawnable = [executable, ...args];
-    }
+    const spawnable = await drop([executable, ...args]);
     if (untrustedAccountOf(spawnable) !== undefined) {
       const writesTarget = executable === "cargo" &&
         buildEnv(spawnable)["CARGO_TARGET_DIR"] === undefined;
@@ -372,12 +367,36 @@ export async function runRepositoryCommand(
       spawnable,
       target === undefined ? {} : { CARGO_TARGET_DIR: target },
     );
-    const [command = "", ...commandArgs] = final;
-    return await spawn(command, commandArgs, {
+    let channelled: ChannelledCommand;
+    try {
+      channelled = carryCredentialsThroughSudo(final, declared);
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error : new Error(String(error)),
+      };
+    }
+    const [command = "", ...commandArgs] = channelled.argv;
+    const result = await spawn(command, commandArgs, {
       cwd: options.cwd,
       timeoutMs: options.timeoutMs,
       env,
       clearEnv: true,
+      stdin: channelled.stdin,
     });
+    const fault = result.ok && channelled.stdin !== undefined
+      ? credentialChannelFault(result.value)
+      : undefined;
+    if (fault !== undefined) {
+      return {
+        ok: false,
+        error: new GateAccountUnavailable(
+          `the repository's declared quality_credentials could not be ` +
+            `delivered to the untrusted account (${fault}) — left to CI ` +
+            `(Issue #4705)`,
+        ),
+      };
+    }
+    return result;
   }
 }

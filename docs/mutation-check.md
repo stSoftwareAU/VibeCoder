@@ -256,9 +256,12 @@ declared `TMPDIR` cannot override it.
 
 The credentials the repository declared in `quality_credentials` (Issues #573
 and #574) are resolved once per run, in the completion phase at PR raise and in
-the drift check on a review-fix run, and added to each child's environment, the
-same way the quality gate does, so tests that need them (for example minted AWS
-credentials) pass their baseline here too. Apart from `TMPDIR`, which every
+the drift check on a review-fix run, and added to each child's environment, so
+tests that need them (for example minted AWS credentials) pass their baseline
+here too. These children run as the worker account, not through `sudo`, so the
+environment is their route; the quality gate carries the same credentials on
+stdin instead, because its command runs as `agent`
+([Configuration](CONFIGURATION.md)). Apart from `TMPDIR`, which every
 child (both `deno test` and `cargo mutants`) gets set to the run's own
 temporary directory, only the declared variables are added. If the mint fails,
 the check is not applicable with a warning instead of running without them. At

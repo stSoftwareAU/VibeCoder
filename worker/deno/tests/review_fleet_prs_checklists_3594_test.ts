@@ -338,11 +338,16 @@ Deno.test("decideOutcome: a missing checklist item sends it back; met and not ap
     decideOutcome(review({ checklist: [verdicts[0], verdicts[2]] }), []),
     "approved",
   );
+  // Was "held" before #4655: a meaningful test change is not a hold by itself.
   assertEquals(
     decideOutcome(
       review({ checklist: [verdicts[0]], testChanges: "meaningful" }),
       [],
     ),
+    "approved",
+  );
+  assertEquals(
+    decideOutcome(review({ checklist: [verdicts[0]] }), [], { hold: true }),
     "held",
   );
 });
