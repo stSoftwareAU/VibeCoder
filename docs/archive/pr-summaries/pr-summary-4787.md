@@ -77,6 +77,6 @@ outside `docs/archive/` found no other hit.
   `milestone_resolution_gate_test.ts`, `milestone_sync_merge_gate_test.ts` and
   `merge_gate_fail_closed_test.ts`: 58 passed, 0 failed.
 - `deno task check:manifests`: passed.
-- `./quality.sh < /dev/null`: result recorded below after the run.
+- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`; config integration and checkov were skipped by the gate itself.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
