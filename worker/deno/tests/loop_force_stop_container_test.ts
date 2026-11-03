@@ -48,6 +48,7 @@ case "$1" in
 esac
 `,
   );
+  // Fabricated PIDs exceed the host PID range, so real subprocesses cannot collide.
   await writeExecutable(
     "pgrep",
     `#!/bin/bash
@@ -59,10 +60,10 @@ case "$*" in
     printf '%s\\n' "$count" >"${tmpDir}/client-pgrep-count"
     case "${scenario}:$count" in
       exit-after-term:3|changed-owner-before-term:2) exit 1 ;;
-      *) echo 5555 ;;
+      *) echo 999999991 ;;
     esac
     ;;
-  *Virtualization.VirtualMachine*) printf '6661\\n6662\\n' ;;
+  *Virtualization.VirtualMachine*) printf '999999992\\n999999993\\n' ;;
   *) exit 1 ;;
 esac
 `,
@@ -74,7 +75,7 @@ esac
     "ps",
     `#!/bin/bash
 case " $* " in
-  *' -p 5555 -o lstart= '*)
+  *' -p 999999991 -o lstart= '*)
     count=0
     [ ! -f "${tmpDir}/client-ps-count" ] || read count < "${tmpDir}/client-ps-count"
     count=$((count + 1))
@@ -94,7 +95,7 @@ case " $* " in
   *' -A -o pid=,args= '*) printf '%s container-runtime-linux vibe-coder-worker\\n%s container-runtime-linux vibe-coder-other\\n%s Virtualization.VirtualMachine\\n' "${
       helpers[0].pid
     }" "${helpers[1].pid}" "${helpers[2].pid}" ;;
-  *' -p 6661 '*|*' -p 6662 '*) echo 1 ;;
+  *' -p 999999992 '*|*' -p 999999993 '*) echo 1 ;;
   *) exec /bin/ps "$@" ;;
 esac
 `,
@@ -105,7 +106,7 @@ esac
     "bash_env",
     `kill() {
   case " $* " in
-    *' 5555 '*|*' 6661 '*|*' 6662 '*) printf '%s\\n' "$*" >>"${tmpDir}/signals.log"; return 0 ;;
+    *' 999999991 '*|*' 999999992 '*|*' 999999993 '*) printf '%s\\n' "$*" >>"${tmpDir}/signals.log"; return 0 ;;
     *) builtin kill "$@" ;;
   esac
 }
@@ -179,7 +180,7 @@ esac
     assertEquals(
       signals,
       expectedSignals[scenario],
-      `${scenario}: only expected client signals may be sent; unrelated Virtualization VM PIDs 6661 and 6662 must remain untouched: ${signals}`,
+      `${scenario}: only expected client signals may be sent; unrelated Virtualization VM PIDs 999999992 and 999999993 must remain untouched: ${signals}`,
     );
   } finally {
     await killProcessTree(child);
@@ -194,10 +195,10 @@ esac
 }
 
 const expectedSignals: Record<string, string> = {
-  "unchanged-client": "-TERM 5555\n-KILL 5555\n",
-  "exit-after-term": "-TERM 5555\n",
-  "missing-start-after-term": "-TERM 5555\n",
-  "reused-after-term": "-TERM 5555\n",
+  "unchanged-client": "-TERM 999999991\n-KILL 999999991\n",
+  "exit-after-term": "-TERM 999999991\n",
+  "missing-start-after-term": "-TERM 999999991\n",
+  "reused-after-term": "-TERM 999999991\n",
   "missing-start": "",
   "changed-start-before-term": "",
   "changed-owner-before-term": "",

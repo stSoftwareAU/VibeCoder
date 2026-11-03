@@ -6,9 +6,10 @@ slot busy, always". It states that subscription quota is use-it-or-lose-it and
 spent first, that DeepSeek is per-call paid overflow, and names the two places
 that accept metered spend. It also states that the worker keeps its auto-mode
 wait policy by default and that an explicit fallback can use metered providers.
-Documentation only; no code, test or config changed. Closes #4772.
+The CI repair also isolates fabricated process IDs in the launcher integration
+test from real host process IDs. Closes #4772.
 
-Version bump: `VERSION` is not touched by this documentation-only change.
+Version bump: `VERSION` is not touched by this documentation and test-fixture change.
 
 ## Spec
 
@@ -38,7 +39,7 @@ Version bump: `VERSION` is not touched by this documentation-only change.
 
 ## Evidence
 
-Docs-only change; there is no UI. Cited code was read at the head:
+The design change has no UI. Cited code was read at the head:
 
 - Reviewer overflow: `worker/deno/lib/review_round.ts` module comment (Claude
   pool, then DeepSeek once the whole pool is exhausted); `run.sh` runs the
@@ -90,7 +91,7 @@ Docs-only change; there is no UI. Cited code was read at the head:
   `docs/CONFIGURATION.md` (`agent_provider_fallback`).
 - **clean** — link anchors resolve; cited files and symbols exist; babysitter
   overflow marked planned; Australian English; insertion point checked; no
-  tests, stubs or workflows touched
+  stubs or workflows touched by the design change
 
 ## Test Plan
 
@@ -100,7 +101,7 @@ the full Deno test pass hit a Deno 2.9.0 permission-pledge panic on this host.
 Checkov was skipped because the installed version differs from the CI pin.
 The base commit was merged via PR #4747, whose CI checks passed.
 
-No test added or edited. Applying the rule on claims about other components to
+The design change added no test. Applying the rule on claims about other components to
 this PR's own diff: the two Standards findings above were the result and are
 fixed.
 
@@ -115,3 +116,17 @@ fixed.
   `DESIGN-PRINCIPLES.md`; not re-run on base, so "pre-existing" is unverified.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+### CI repair
+
+- The integration fixture uses fabricated PIDs above host PID ranges, preventing
+  real subprocess probes from being mistaken for signals to the fake processes.
+  The existing identity and unrelated-VM assertions remain in
+  `worker/deno/tests/loop_force_stop_container_test.ts::loop.sh verifies client identity before TERM and KILL`.
+- All seven identity scenarios passed locally and in the integration rerun.
+  The full integration run could not finish on this host: macOS `mktemp -t`
+  and process launches were refused by the sandbox. The base PR #4747
+  integration check passed in CI.
+- `quality.sh` passed formatting, lint, type checking, Markdown and completeness
+  checks; its Deno tests failed on this host, Checkov timed out and Semgrep was
+  unavailable. The affected base PR checks passed in CI.
