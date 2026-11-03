@@ -55,9 +55,10 @@ outside `docs/archive/` found no other hit.
 - **symptom** — the gate refused the resolution with `cargo check --workspace
   --all-targets --locked ... failed (exit 124)` and `Type check timed out after
   300000ms`, twice for the same Develop tip.
-- **status** — `partial` — the real cargo timeout was not reproduced; the
-  workspace is another repository and a cold build is not runnable here. The
-  tests drive the limit passed to the command runner and the budget ordering.
+- **status** — `partial`
+- **reason:** the real cargo timeout was not reproduced; the workspace is another
+  repository and a cold build is not runnable here. The tests drive the limit
+  passed to the command runner and the budget ordering.
 - **regression test** — `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - each toolchain's check gets its own limit, and a timeout names that limit (Issue #4787)`
 
 ## Test Plan
