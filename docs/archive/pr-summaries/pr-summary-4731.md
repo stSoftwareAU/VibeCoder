@@ -65,6 +65,9 @@ flowchart LR
 Backend only. The retry session named in the issue is not on `main`; the only
 response read is the initial one in `fix`, now `readAgentResponse`.
 
+Merge conflict resolution retains the base's merged-base push log and stages
+the PR description in the runner-owned exchange directory on that path too.
+
 Call sites changed: `takePrBodyProposal` (`.babysitter-pr-body`), `applyPrBody`
 (both callers in `fix`), `readAgentResponse` (`fix`),
 `spawnBabysitterAgent`/`startBabysitterAgent` (all callers, including

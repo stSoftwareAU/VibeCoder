@@ -610,6 +610,8 @@ for (const decision of ["REVIEW_REQUIRED", "APPROVED"]) {
       { appId: "1", installationId: "1", privateKeyPath: "/unused" },
       "/unused",
       gh,
+      undefined,
+      async () => {},
     );
     assertEquals(updated, decision === "APPROVED");
     assertEquals(
