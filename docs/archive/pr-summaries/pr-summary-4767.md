@@ -100,9 +100,8 @@ emits `--volume <source>:<target>` for every dialect),
 - **met** — Test: a timeout kills the container by name and throws. — evidence:
   `worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair kills the container by name on timeout, and reports a failed kill`
   — reviewer: met
-- **met** — `./quality.sh` passes. — evidence: full gate run on the final head,
-  see Test Plan — reviewer: missing — reason: the reviewer saw only the diff and
-  could not run the gate; it was run here and passed
+- **met** — './quality.sh' passes. — evidence: `./quality.sh < /dev/null` on
+  the final head, see Test Plan — reviewer: met
 - **unrequested** — key guard also refuses relative sources, other flag
   spellings and symlink/`..` forms; input validation of clone, scratch, key and
   token; stderr redaction; `babysitterRuntimeOnPath`, `babysitterSpawn`,
@@ -146,7 +145,7 @@ emits `--volume <source>:<target>` for every dialect),
 
 ## Test Plan
 
-Added `worker/deno/tests/fleet_babysitter_container_4738_test.ts` (31 tests). No
+Added `worker/deno/tests/fleet_babysitter_container_4738_test.ts` (36 tests). No
 existing test edited, no assertion removed.
 
 - Red-checks (each guard broken alone, test file run, guard restored): ancestor
@@ -163,7 +162,19 @@ existing test edited, no assertion removed.
 - `deno task test:unit tests/fleet_babysitter_container_4738_test.ts tests/fleet_babysitter_app_test.ts tests/lib_sweep_coverage_test.ts`:
   passed.
 - `deno task check:manifests`: passed.
-- Exempt (untestable): none.
+- Mutation survivors (13) from the completion check, each now killed by a new
+  test and re-checked by applying the mutation alone: each allowlisted variable
+  deleted (`HOME`, `USER`, `LOGNAME`, `TMPDIR`, `DOCKER_HOST`,
+  `XDG_RUNTIME_DIR`, `CONTAINER_HOST`) → `repair passes exactly the allowlisted
+  host variables to the image check, repair and kill` red; `processEnv`
+  returning undefined → `repair reads the process environment by default` red;
+  `env` deleted from `babysitterSpawn` / `babysitterImageExists` →
+  `babysitterSpawn passes the given env to the child` and `babysitterImageExists
+  passes the given env, and only that, to the inspect` red; `clearEnv` deleted
+  or set false in `babysitterImageExists` → the latter red.
+- `worker/deno/lib/fleet_babysitter_container.ts:147` exempt (untestable): the
+  `Deno.build.os === "windows"` operand is replaced by `false`, which is
+  identical on a non-Windows host; the tests cannot run as Windows.
 - `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`; config
   integration and checkov were skipped by the gate itself. An earlier run on a
   previous head failed on the missing lib-sweep claim (fixed here) and on

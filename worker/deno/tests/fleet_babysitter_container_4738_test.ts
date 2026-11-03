@@ -1063,3 +1063,123 @@ Deno.test("babysitterImageExists throws when the inspect cannot be started, rath
     "cannot inspect the worker image with /nonexistent/runtime-4767",
   );
 });
+
+Deno.test("repair passes exactly the allowlisted host variables to the image check, repair and kill", async () => {
+  const f = await makeFixture();
+  try {
+    const host: Record<string, string> = {
+      PATH: "/usr/bin",
+      HOME: "/home/fake",
+      USER: "fake-user",
+      LOGNAME: "fake-logname",
+      TMPDIR: "/tmp/fake",
+      DOCKER_HOST: "unix:///fake/docker.sock",
+      XDG_RUNTIME_DIR: "/run/user/fake",
+      CONTAINER_HOST: "unix:///fake/podman.sock",
+      [SENTINEL]: "leaked",
+    };
+    const { PATH: _path, ...rest } = host;
+    const expected: Record<string, string> = { PATH: host.PATH ?? "" };
+    for (const [name, value] of Object.entries(rest)) {
+      if (name !== SENTINEL) expected[name] = value;
+    }
+    const timedOut: BabysitterSpawnResult = {
+      success: false,
+      code: 124,
+      stderr: "",
+      timedOut: true,
+    };
+    const { deps, calls } = fakeDeps(f, {
+      env: (name) => host[name],
+      spawnResults: [timedOut, OK],
+    });
+    let inspectEnv: Record<string, string> | undefined;
+    deps.imageExists = (_runtime, _args, env) => {
+      inspectEnv = { ...env };
+      return Promise.resolve(true);
+    };
+    await assertRejects(
+      () => runBabysitterRepairContainer(inputFor(f), deps),
+      Error,
+      "killed",
+    );
+    assertEquals(inspectEnv, expected, "the image check env");
+    assertEquals(
+      spawnAt(calls, 0).env,
+      { ...expected, GH_TOKEN: TOKEN },
+      "the repair env",
+    );
+    assertEquals(spawnAt(calls, 1).env, expected, "the kill env");
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair reads the process environment by default", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps, calls } = fakeDeps(f);
+    delete deps.env;
+    let inspectEnv: Record<string, string> | undefined;
+    deps.imageExists = (_runtime, _args, env) => {
+      inspectEnv = { ...env };
+      return Promise.resolve(true);
+    };
+    await runBabysitterRepairContainer(inputFor(f), deps);
+    const path = Deno.env.get("PATH");
+    assert(path !== undefined && path !== "", "the test process has a PATH");
+    assertEquals(inspectEnv?.PATH, path);
+    assertEquals(spawnAt(calls, 0).env.PATH, path);
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test({
+  name: "babysitterRuntimeOnPath reads the process PATH by default",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    assertEquals(await babysitterRuntimeOnPath("sh"), true);
+    assertEquals(await babysitterRuntimeOnPath("absent-runtime-4767"), false);
+  },
+});
+
+/** Exits 0 only when the child holds PROBE=yes and no variable but the shim's own. */
+const PROBE_CODE =
+  "const ok = new Set(['PROBE','DENO_DIR','DENO_NODE_SHIM_ACTIVE','PATH']);" +
+  "const all = Deno.env.toObject();" +
+  "Deno.exit(all.PROBE === 'yes' && Object.keys(all).every((k) => ok.has(k)) ? 0 : 3)";
+
+Deno.test("babysitterSpawn passes the given env to the child", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const result = await babysitterSpawn(Deno.execPath(), [
+      "eval",
+      "--allow-env",
+      PROBE_CODE,
+    ], {
+      env: { DENO_DIR: dir, PROBE: "yes" },
+      timeoutMs: 60_000,
+    });
+    assertEquals(result.code, 0, `child env wrong: ${result.stderr}`);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("babysitterImageExists passes the given env, and only that, to the inspect", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    assertEquals(
+      await babysitterImageExists(
+        Deno.execPath(),
+        ["eval", "--allow-env", PROBE_CODE],
+        { DENO_DIR: dir, PROBE: "yes" },
+      ),
+      true,
+      "the inspect sees the given env and no host variable",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
