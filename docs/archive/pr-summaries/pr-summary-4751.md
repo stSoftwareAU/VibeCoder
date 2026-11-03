@@ -10,10 +10,9 @@ final version. Closes #4751.
 
 ```mermaid
 flowchart LR
-    H["cargoClaimDeferredRepos()<br/>(Issue #4540)"] --> N["cargoDeferredNow()<br/>one reader"]
-    N --> S["claim scan: excludeRepos"]
-    N --> A["idle-detect audit: heldRepos"]
-    N --> C["census: scanCargoDeferredRepos<br/>→ repo_cargo_deferred"]
+    H["cargoClaimDeferredRepos()<br/>(Issue #4540)"] --> S["claim scan: excludeRepos and snapshot"]
+    S --> A["idle-detect audit: heldRepos"]
+    S --> C["census: scanCargoDeferredRepos<br/>→ repo_cargo_deferred"]
     C --> B["cargoDeferredInversionRepos<br/>(never escalated)"]
 ```
 
@@ -33,8 +32,8 @@ flowchart LR
 
 ### Essential Design Decisions
 
-- The census, the audit and the scan all read the set through one local helper
-  (`cargoDeferredNow`), so they cannot disagree about it. It is injectable
+- The scan snapshots its cargo set for the census and audit, so disk changes
+  after the scan cannot change their verdict. The reader is injectable
   (`cargoClaimDeferredReposFn`, production default `cargoClaimDeferredRepos`)
   because the real function reads the host disk.
 - Order in `resolveRepoScanState`: back-off, then cargo deferral, then lease. A
@@ -80,9 +79,12 @@ Backend-only change; no UI file touched. Verified by tests below.
 - Callers of `resolveRepoScanState` checked: `run_core_production_deps.ts` (now
   passes the new set; the only production caller) and the 2085, 898 and 1091
   tests, which omit the optional set and keep their behaviour.
-- Callers of the scan-exclusion set checked: the claim scan, the audit and the
-  census all call `cargoDeferredNow()`; no other reader of `backedOffRepos`
-  needs the set.
+- The scan reads `cargoDeferredNow()` once; the audit and census use its
+  snapshot. `idle_census_cargo_deferred_wiring_4751_test.ts::production deps -
+  the census reads a cargo-deferred repo as not scanned` and `::production deps -
+  a cargo-deferred repo raises no mis_classification ALERT` cover a gate that
+  changes after the scan. The obsolete live reread is replaced by the scan's
+  verdict; the remaining behaviour reports the actual exclusion in both hooks.
 - Docs: `docs/IDLE-TASK-FRAMEWORK.md` (decision flowchart, new section).
   Siblings grepped: `repo_backed_off`, `repo_held_in_flight`,
   `backedOffInversionRepos`, `inversion_repo_held`.

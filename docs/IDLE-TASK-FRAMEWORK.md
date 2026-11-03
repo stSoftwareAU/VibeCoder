@@ -1424,8 +1424,7 @@ The scan state resolves in the order given in
 [`idle_decision_census.ts`](../worker/deno/lib/idle_decision_census.ts)
 (`resolveRepoScanState`): a back-off is named ahead of the cargo deferral, and
 the cargo deferral ahead of a lease. The idle-detect audit's `heldRepos` union
-and the census both read the cargo set the claim scan reads, through the same
-helper in
+and the census both use the cargo set recorded by the claim scan in
 [`run_core_production_deps.ts`](../worker/deno/lib/run_core_production_deps.ts),
 so both instruments treat these repositories as not shown to the scan rather
 than as scanned.

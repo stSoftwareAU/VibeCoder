@@ -699,8 +699,7 @@ export interface ProductionDepsOptions {
    *
    * Production leaves this unset and gets {@link cargoClaimDeferredRepos} from
    * `heavy_build_gate.ts`. Tests inject a stub, because the real function reads
-   * the host disk. The claim scan, the idle-detect audit and the census all
-   * read it through the same helper, so they cannot disagree about it.
+   * the host disk. The idle instruments use the claim scan's snapshot.
    */
   cargoClaimDeferredReposFn?: (
     repos: readonly string[],
@@ -1171,8 +1170,7 @@ export async function createProductionRunCoreDeps(
   // Issue #4540: cargo repositories whose claim deferral has been logged, so
   // the scan says so when it starts and when it ends, not every cycle.
   const cargoClaimDeferralLogged = new Set<string>();
-  // Issue #4751: the one reader of the cargo-deferred set, shared by the claim
-  // scan, the idle-detect audit and the census (Issue #4540 names the source).
+  // Issue #4751: the claim scan reads the volatile cargo gate once.
   const cargoClaimDeferredReadFn = options.cargoClaimDeferredReposFn ??
     cargoClaimDeferredRepos;
   const cargoDeferredNow = () =>
@@ -1884,6 +1882,7 @@ export async function createProductionRunCoreDeps(
    * about a repository the scan was deliberately not shown.
    */
   let lastScanParkedRepos: ReadonlySet<string> = new Set();
+  let lastScanCargoDeferred: ReadonlySet<string> = new Set();
   let lastScanIdleDeferred = false;
 
   /**
@@ -4475,6 +4474,7 @@ export async function createProductionRunCoreDeps(
       // goes to work that can run instead of a claim the in-flight park
       // releases at once. Said once when it starts and once when it ends.
       const cargoDeferred = await cargoDeferredNow();
+      lastScanCargoDeferred = new Set(cargoDeferred.keys());
       for (const [repo, reason] of cargoDeferred) {
         if (cargoClaimDeferralLogged.has(repo)) continue;
         cargoClaimDeferralLogged.add(repo);
@@ -6149,7 +6149,6 @@ export async function createProductionRunCoreDeps(
         // cannot build yet (Issue #4540), which the scan drops before any
         // collector runs.
         const scanBackedOff = await backedOffRepos(fastFailureOptions);
-        const scanCargoDeferred = await cargoDeferredNow();
         const result = await auditClaimableState({
           repos,
           workerUser: githubUser,
@@ -6230,13 +6229,13 @@ export async function createProductionRunCoreDeps(
           // refused only the held stream, so a disagreement about the rest of
           // it is real. Issue #3628: a repo the polling gate parked was also
           // deliberately not scanned — same treatment as a lease.
-          heldRepos: scanBackedOff.size > 0 || scanCargoDeferred.size > 0 ||
+          heldRepos: scanBackedOff.size > 0 || lastScanCargoDeferred.size > 0 ||
               lastScanParkedRepos.size > 0
             ? [
               ...new Set([
                 ...scanExcludedRepos,
                 ...scanBackedOff,
-                ...scanCargoDeferred.keys(),
+                ...lastScanCargoDeferred,
                 ...lastScanParkedRepos,
               ]),
             ]
@@ -6327,9 +6326,7 @@ export async function createProductionRunCoreDeps(
         // with any open fleet-wide diagnostic (Issue #2955), exactly as the
         // run-local holds above are.
         const scanBackedOff = await backedOffRepos(fastFailureOptions);
-        // Issue #4751: the cargo repositories the claim scan dropped before
-        // any eligibility check, read once per cycle like `scanBackedOff`.
-        const scanCargoDeferred = await cargoDeferredNow();
+        // Issue #4751: use the scan's snapshot of the volatile cargo gate.
         const perRepo = await Promise.all(
           repos.map(async (repo) => {
             const issues = await fetchAllIssues(repo, issueCache);
@@ -6417,7 +6414,7 @@ export async function createProductionRunCoreDeps(
                 claimScanCompleted,
                 scanExcludedRepos: heldRepos,
                 scanBackedOffRepos: scanBackedOff,
-                scanCargoDeferredRepos: new Set(scanCargoDeferred.keys()),
+                scanCargoDeferredRepos: lastScanCargoDeferred,
                 claimGateReason,
               }),
               nice: getRepoNice(config.repoConfig, repo),

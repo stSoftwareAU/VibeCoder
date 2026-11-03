@@ -105,15 +105,27 @@ async function idleRunWith(
           ]),
         }),
       idleDetectGhCommandFn: stubGh,
+      graphqlQuotaProbe: () =>
+        Promise.resolve({
+          ok: false,
+          error: new Error("fixture quota unavailable"),
+        }),
       cargoClaimDeferredReposFn: (repos, cloneDirFor) => {
         seamCalls.push({
           repos: [...repos],
           clonePaths: repos.map((repo) => cloneDirFor(repo)),
         });
-        return Promise.resolve(new Map(cargoDeferred));
+        return Promise.resolve(
+          seamCalls.length === 1 ? new Map(cargoDeferred) : new Map(),
+        );
       },
     });
     assertEquals((await deps.refreshTrustedAuthors!()).ok, true);
+    // Keep the real finder offline while exercising its cargo gate.
+    assertEquals(
+      (await deps.findNextIssue({ excludeRepos: new Set(REPOS) })).ok,
+      true,
+    );
     // The audit first, so its stubbed probes warm the shared issue and PR
     // caches the census reads — the production ordering, and what keeps this
     // test offline.
@@ -161,6 +173,7 @@ Deno.test(
     );
     // Positive control: the seam is asked about the work directory's clone of
     // each repository, under the same name the claim scan maps it to.
+    assertEquals(seamCalls.length, 1, "only the scan reads the volatile gate");
     const [firstCall] = seamCalls;
     assert(firstCall !== undefined, "the seam was never called");
     assertEquals(firstCall.repos, REPOS);
