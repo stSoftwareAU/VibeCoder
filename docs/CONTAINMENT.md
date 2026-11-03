@@ -711,8 +711,8 @@ deno run --allow-read --allow-env --allow-net worker/deno/mod.ts egress-proxy \
   established tunnel is closed on both ends with no log line. A route that takes
   a client after `200` owns that connection, so this idle guard does not bound
   it.
-- **Footprint.** The proxy module (`egress_proxy.ts`) opens no files and keeps
-  no cache. Started through `mod.ts`, the command needs
+- **Footprint.** The proxy module (`egress_proxy.ts`)
+  opens no files and keeps no cache. Started through `mod.ts`, the command needs
   `--allow-read --allow-env --allow-net` (`mod.ts` reads `deno.json` when it
   loads) and no `--allow-write`. With the image's modules already cached it runs
   against a read-only Deno cache (`--cached-only`), as checked with a read-only

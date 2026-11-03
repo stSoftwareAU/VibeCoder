@@ -61,6 +61,22 @@ flowchart LR
 
 ## Test Plan
 
+- CI repair for PR #4754: kept the egress-proxy footprint phrase
+  `opens no files and keeps no cache` on one line in `docs/CONTAINMENT.md`.
+  Rewrapping had split the phrase and broken the existing documentation
+  contract test; no runtime behaviour or tests changed. Reproduced with
+  `deno task test tests/containment_docs_test.ts` (11 passed, 1 failed), then
+  reran the same command after the fix (12 passed, 0 failed).
+  The exact CI command, `.github/scripts/deno-test-shard.sh 2 4`, cannot start
+  on this macOS host because `setsid` is unavailable; CI runs that shard on
+  Linux after the babysitter commits the fix and this summary together.
+  Local Markdown lint, Mermaid validation, manifest checks, type checking,
+  lint and formatting passed. The full local gate's parallel test process
+  panicked inside Deno 2.9.5 on macOS with `pledge test permissions called
+  before restoring previous pledge`; its serial pass did not run. All four
+  unit shards and integration tests passed on base-producing PR #4715
+  (Actions run 41555343824). Semgrep and Checkov were unavailable locally;
+  config integration had no local configuration and was skipped.
 - `worker/deno/tests/work_root_group_grant_test.ts`: added tests for clone roots
   (sticky, group write, setgid, including a linked-worktree clone), for git
   metadata having no group/other write while staying readable, and for reserved
