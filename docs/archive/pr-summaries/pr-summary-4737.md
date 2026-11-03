@@ -63,6 +63,14 @@ flowchart LR
 
 ## Test Plan
 
+- Review fix: fresh clones are checked again before any subsequent git call;
+  a foreign-owned clone is moved into a private quarantine and setup fails.
+  The obsolete behaviour trusted the destination after cloning; trusted clones
+  still proceed normally. The corrupt-clone and object-store recovery paths
+  both use `setupRepo`. Coverage:
+  `worker/deno/tests/clone_ownership_test.ts::fresh clone refuses and quarantines a foreign root before git`.
+  The test failed before the guard because the second check was never made.
+
 - Review fix: the shared-clone ref sweep checks ownership before running Git,
   records and logs refusals, and continues to sweep trusted clones. The
   obsolete behaviour ran Git in any path with a `.git` entry. Coverage:

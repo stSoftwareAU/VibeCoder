@@ -894,6 +894,28 @@ export async function setupRepo(
     return { success: false, message };
   }
 
+  // A different account can create the destination while gh resolves the
+  // repository. Never run git in the resulting clone until ownership is checked.
+  const cloneOwnershipError = await ownershipCheck(repoPath);
+  if (cloneOwnershipError) {
+    try {
+      const quarantine = await Deno.makeTempDir({
+        dir: workDir,
+        prefix: `.untrusted-${repoName}-`,
+      });
+      await Deno.rename(repoPath, `${quarantine}/${repoName}`);
+      return {
+        success: false,
+        message: `${cloneOwnershipError}; moved clone to ${quarantine}`,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `${cloneOwnershipError}; could not quarantine clone: ${error}`,
+      };
+    }
+  }
+
   // Sanity check: confirm remote refs are reachable after the shallow clone.
   // Non-fatal — a network glitch should not abort the setup since we already
   // have a working clone. Failure is logged for observability.

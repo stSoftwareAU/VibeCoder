@@ -11,6 +11,11 @@
  * checkout's HEAD equal to the pushed head, is adopted. Nothing here throws to
  * the caller.
  *
+ * Issue #4712: HEAD equal to the pushed head is not proof that the working tree
+ * is clean. A recovery turn can leave uncommitted summary edits on that same
+ * HEAD. So the adopted body is built from the summary committed at the pushed
+ * head, and the publish is skipped if that head has moved since.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -58,6 +63,10 @@ export interface AdoptAgentPrDeps {
  * Cheap local checks run first. Title and body adoption happen only when this
  * checkout's HEAD is the pushed head: local state not yet on the remote must
  * never describe the PR. Title-edit faults are logged; body sync still runs.
+ *
+ * The body is built from the summary committed at the pushed head (Issue #4712),
+ * not from the working tree. HEAD == pushed head is not proof the working tree
+ * is clean, so an uncommitted recovery edit must never reach the PR body.
  *
  * @param syncFn Injected for tests; defaults to {@link syncPrBodyFromSummary}.
  */
@@ -190,6 +199,8 @@ export async function adoptAgentRaisedPrBody(
         runId: input.runId,
         branchName: input.branchName,
         adoptOnly: true,
+        // Issue #4712: the body describes the summary committed at this sha.
+        committedHeadSha: pushed,
       },
       {
         runGhCommand: deps.runGhCommand,
