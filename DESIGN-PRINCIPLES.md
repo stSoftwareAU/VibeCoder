@@ -137,14 +137,15 @@ costs far more than any runaway cycle a timeout will reap anyway.
 ### Subscription quota first, metered API last
 
 Automatic routing spends fixed-price subscription quota first. Metered API spend
-is accepted as paid overflow in two named places only, and never in the worker's
-own automatic routing.
+is accepted as paid overflow in the reviewer round and the
+planned babysitter routing. The worker's auto-mode selection waits by default;
+an explicit fallback can also select a metered provider.
 
 - **Subscription quota is use-it-or-lose-it.** Claude, Codex and other
   fixed-price plans waste any unused quota, so automatic routing spends it
   first.
 - **DeepSeek is paid overflow.** It is billed per call, which the owner prefers
-  to avoid. Where overflow is accepted (the two places below), it is used only
+  to avoid. In the reviewer round and planned babysitter routing, it is used only
   after every eligible subscription is exhausted. An operator who names DeepSeek
   explicitly as a provider is making a separate, deliberate choice, which is not
   overflow.
@@ -156,20 +157,23 @@ own automatic routing.
   not yet in the code: #4766 will make babysitter repairs choose their
   subscription first and log DeepSeek as paid overflow.
 - **The worker keeps its auto-mode wait policy.** When every eligible
-  subscription is exhausted or unavailable, the worker waits for the
+  subscription is exhausted or unavailable, auto-mode selection waits for the
   subscription reset (`retryAt` from `selectAutomaticProvider` in
   `worker/deno/lib/provider_auto_selection.ts`, when a reset time is known) and
-  never falls through to DeepSeek or any metered or unknown-billing account. The
-  worker gains no overflow from this principle, and neither exception above
-  changes worker routing. See
+  does not select a metered or unknown-billing account. With the default empty
+  `agent_provider_fallback`, the worker gains no overflow from this principle.
+  An operator can explicitly opt in to fallback providers, including metered
+  providers such as DeepSeek; this can switch the worker after subscription
+  exhaustion or a model refusal. See
   [README — Choose your coding agent](README.md#-choose-your-coding-agent) and
-  [`agent_provider_mode` in the Configuration Reference](docs/CONFIGURATION.md#-configuration-defaults).
+  [`agent_provider_mode` and `agent_provider_fallback` in the Configuration Reference](docs/CONFIGURATION.md#-configuration-defaults).
 - **Raising the DeepSeek API budget remains an owner action.** Nothing in the
   fleet raises it automatically.
 
 **Rationale:** fixed-price quota is lost if it goes unused, so it is spent
-first. Metered spend is paid per call, so overflow is limited to the two named
-places, and neither changes how the worker routes.
+first. Metered spend is paid per call, so the reviewer and planned babysitter
+overflow do not change the worker's default wait policy. An explicit fallback
+is a separate operator choice.
 
 ### Every slot busy, always — the fleet throughput invariant
 

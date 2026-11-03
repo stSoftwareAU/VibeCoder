@@ -5,8 +5,8 @@ Adds the design principle `### Subscription quota first, metered API last` to
 slot busy, always". It states that subscription quota is use-it-or-lose-it and
 spent first, that DeepSeek is per-call paid overflow, and names the two places
 that accept metered spend. It also states that the worker keeps its auto-mode
-wait policy and gains no overflow. Documentation only; no code, test or config
-changed. Closes #4772.
+wait policy by default and that an explicit fallback can use metered providers.
+Documentation only; no code, test or config changed. Closes #4772.
 
 Version bump: `VERSION` is not touched by this documentation-only change.
 
@@ -24,12 +24,12 @@ Version bump: `VERSION` is not touched by this documentation-only change.
   #4766 will …"), because no babysitter file selects DeepSeek today; the issue
   called it an existing place, and the standard against describing another
   issue's deliverable as present wins.
-- Overflow is scoped to the two named places, and an operator who names DeepSeek
-  explicitly is described as a separate deliberate choice, because `deepseek` is
-  also a directly selectable provider.
+- Reviewer and planned babysitter overflow are named alongside the existing
+  explicit operator choices: direct provider selection and
+  `agent_provider_fallback`, which can switch the worker to a metered provider.
 - The worker bullet links README's "Choose your coding agent" section (the
   auto-mode policy) and adds the Configuration Reference row for
-  `agent_provider_mode`.
+  `agent_provider_mode` and `agent_provider_fallback`.
 
 ### Undiscoverable Facts
 
@@ -82,13 +82,23 @@ Docs-only change; there is no UI. Cited code was read at the head:
 - **violation** — intro sentence and rationale answered "is metered overflow
   allowed in automatic routing" inconsistently with the worker bullet —
   evidence: `DESIGN-PRINCIPLES.md:139` — reason: fixed in this diff (intro,
-  bullets and rationale all say overflow is limited to the two named places and
-  never in worker routing)
+  bullets and rationale distinguish default worker routing from explicit fallback)
+- **violation** — an explicit `agent_provider_fallback` can use a metered
+  provider after exhaustion or model refusal. The principle now names this
+  exception and scopes the wait policy to the empty default. Evidence:
+  `worker/deno/lib/run_core.ts`, `worker/deno/lib/claude_runner.ts`, and
+  `docs/CONFIGURATION.md` (`agent_provider_fallback`).
 - **clean** — link anchors resolve; cited files and symbols exist; babysitter
   overflow marked planned; Australian English; insertion point checked; no
   tests, stubs or workflows touched
 
 ## Test Plan
+
+Review follow-up: the same three focused documentation test files passed (11
+tests). `quality.sh` passed formatting, lint, type checking and Markdown checks;
+the full Deno test pass hit a Deno 2.9.0 permission-pledge panic on this host.
+Checkov was skipped because the installed version differs from the CI pin.
+The base commit was merged via PR #4747, whose CI checks passed.
 
 No test added or edited. Applying the rule on claims about other components to
 this PR's own diff: the two Standards findings above were the result and are
