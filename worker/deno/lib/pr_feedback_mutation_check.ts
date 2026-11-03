@@ -23,6 +23,7 @@
 
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import { invokeMutationCheck } from "./mutation_check_invocation.ts";
+import { findBlockingMutationJob } from "./ci_mutation_contract.ts";
 import type { MutationCheckResult } from "./mutation_gate.ts";
 import type { MutationRunInput } from "./mutation_runner.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
@@ -240,16 +241,26 @@ export interface ReviewFixMutationDeps {
  * The review-fix run's mutation verdict input: the shared invocation (Issue
  * #3393) fed with the lines this run added (Issue #3750).
  */
-export function runReviewFixMutationCheck(
+export async function runReviewFixMutationCheck(
   input: ReviewFixMutationInput,
   deps: ReviewFixMutationDeps,
 ): Promise<MutationCheckResult> {
+  let cargoMutantsArgs: string[] = [];
+  try {
+    cargoMutantsArgs = (await findBlockingMutationJob(input.repoPath)).blocking
+      ?.cargoArgs ?? [];
+  } catch (error) {
+    deps.logger.warn("Could not read CI mutation arguments for review-fix", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   return invokeMutationCheck({
     repo: input.repo,
     repoPath: input.repoPath,
     repoConfigs: input.repoConfigs,
     runner: deps.runner,
     logger: deps.logger,
+    cargoMutantsArgs,
     collectDiff: () => collectRunOwnDiff(deps.runGit, input.beforeSha),
   });
 }
