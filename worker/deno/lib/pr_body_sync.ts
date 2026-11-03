@@ -245,10 +245,22 @@ export function assemblePrBody(input: {
  */
 export async function finalisePrBodyImages(
   body: string,
-  opts: { repoPath: string; githubRepo: string; headSha: string | undefined },
+  opts: {
+    repoPath: string;
+    githubRepo: string;
+    headSha: string | undefined;
+    committedFiles?: string[];
+  },
   logger: Logger,
 ): Promise<string> {
-  const imageResolution = await resolveImagePaths(body, opts.repoPath);
+  const committedFiles = opts.committedFiles;
+  const imageResolution = await resolveImagePaths(
+    body,
+    opts.repoPath,
+    committedFiles === undefined
+      ? undefined
+      : { listFilesFn: () => Promise.resolve(committedFiles) },
+  );
   let result = imageResolution.body;
   for (const rewrite of imageResolution.rewrites) {
     logger.info("Repaired evidence image path", {
@@ -268,6 +280,10 @@ export async function finalisePrBodyImages(
       repoPath: opts.repoPath,
       githubRepo: opts.githubRepo,
       commitSha: opts.headSha,
+      ...(committedFiles === undefined ? {} : {
+        fileExistsFn: (_root: string, path: string) =>
+          Promise.resolve(committedFiles.includes(path)),
+      }),
     });
     result = conversion.content;
     for (const converted of conversion.conversions) {
@@ -801,15 +817,34 @@ export async function syncPrBodyFromSummary(
     );
   }
 
-  // Image resolution reads the working tree, so do not use it when the
-  // summary is pinned to a commit. Leave its image paths unchanged.
-  if (input.committedHeadSha === undefined) {
-    body = await finalisePrBodyImages(
-      body,
-      { repoPath: input.repoPath, githubRepo: input.repo, headSha },
-      logger,
+  let committedFiles: string[] | undefined;
+  if (input.committedHeadSha !== undefined) {
+    const tree = await deps.runGitCommand(
+      ["ls-tree", "-r", "-z", "--name-only", input.committedHeadSha],
+      { cwd: input.repoPath },
     );
+    if (!tree.ok || tree.value.code !== 0) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to list committed files for PR #${input.prNumber}: ${
+            tree.ok ? tree.value.stderr : tree.error.message
+          }`,
+        ),
+      };
+    }
+    committedFiles = tree.value.stdout.split("\0").filter(Boolean);
   }
+  body = await finalisePrBodyImages(
+    body,
+    {
+      repoPath: input.repoPath,
+      githubRepo: input.repo,
+      headSha: input.committedHeadSha ?? headSha,
+      committedFiles,
+    },
+    logger,
+  );
 
   // Issue #4359: `gh pr edit` rejects a body over the same limit as create.
   // The summarise turn runs in completion, which commits the rewritten

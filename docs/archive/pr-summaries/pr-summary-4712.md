@@ -29,10 +29,9 @@ delivered. Version bump: `VERSION` is not changed by this PR. Closes #4712.
   with a reason, or `ok: false`), which `runPrBodySync` logs.
 - The head recheck is a fresh `git ls-remote` immediately before `gh pr edit`,
   not GitHub's `headRefOid` (which lags after a push).
-- Committed-summary adoption leaves evidence image paths unchanged: image path
-  resolution and raw URL conversion inspect the working tree, which may have
-  images absent from the pushed commit. Other sync callers retain that
-  rewriting.
+- Committed-summary adoption resolves and converts evidence images using the
+  pushed commit's file list. Images only in the working tree remain relative;
+  other sync callers retain their working-tree image resolution.
 
 ### Undiscoverable Facts
 
@@ -99,10 +98,16 @@ for `Issue #3804` and `agent-raised`; the other hit,
   field.
 - Review fix:
   `worker/deno/tests/pr_body_sync_test.ts::syncPrBodyFromSummary - committed adoption leaves an uncommitted evidence image path unchanged`
-  covers the removed working-tree image rewriting on committed adoption. The
-  remaining behaviour leaves the committed summary's relative image path as-is;
-  the test failed before the fix when it became a raw URL to an absent image.
-  Other sync paths retain image rewriting.
+  covers the removal of working-tree image rewriting on committed adoption.
+  An uncommitted image remains relative; the test failed before the fix when it
+  became a raw URL to an absent image. Other sync paths retain image rewriting.
+- The later review replaced the blanket removal of image rewriting on committed
+  adoption: committed images must still render, while working-tree-only images
+  remain relative. `worker/deno/tests/pr_body_sync_test.ts::syncPrBodyFromSummary - committed adoption resolves images against the pushed commit`
+  covers both cases and path repair; it failed before this fix. The earlier
+  uncommitted-image test remains in place. The test
+  `worker/deno/tests/pr_body_sync_test.ts::syncPrBodyFromSummary - committed image listing failure prevents publication`
+  covers a failed tree read. No twinned rule was found.
 - Ran
   `deno task test:unit tests/pr_body_sync_test.ts tests/agent_pr_adoption_test.ts tests/pr_body_reconcile_test.ts tests/pr_summary_loader_test.ts`
   from `worker/deno`: passed.

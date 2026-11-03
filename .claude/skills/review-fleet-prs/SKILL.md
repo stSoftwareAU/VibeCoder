@@ -108,7 +108,12 @@ escalation.
    fixed, and approves once they are. When a PR was sent back and the only
    commits since leave its own diff unchanged apart from the file drop
    described below, the gate skips it as `awaiting-fix` until the fleet
-   pushes its fix. When a PR was held for the owner (rule 4) and the only
+   pushes its fix. Any other force-push gets a fresh review, since it can itself
+   be the fix. The one exception is a Dependabot re-cut, where Dependabot
+   force-pushes the same change again: it keeps the skip only when every commit
+   since is by `dependabot[bot]` and the own diff matches strictly (see
+   [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).
+   When a PR was held for the owner (rule 4) and the only
    commits since leave its own diff unchanged since the hold, the gate skips
    it as `awaiting-owner` until the own diff changes. The hold policy is now
    version 2 (`HOLD_POLICY_VERSION`): a hold made under an older policy is

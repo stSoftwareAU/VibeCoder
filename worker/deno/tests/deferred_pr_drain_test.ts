@@ -15,6 +15,7 @@ import {
   drainDeferredPrs,
   MAX_DEFERRED_PR_AGE_SECONDS,
   MAX_DEFERRED_PR_ATTEMPTS,
+  restCreateOptions,
 } from "../lib/deferred_pr_drain.ts";
 import type { Result } from "../types.ts";
 
@@ -399,4 +400,33 @@ Deno.test("deferred drain - a record with no advisory posts only the PR-raised n
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
+});
+
+Deno.test("deferred drain - a record held for mutation survivors is raised as a draft (Issue #4617)", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    await recordDeferredPr(workDir, record({ draft: true }));
+    const created: DeferredPrRecord[] = [];
+    await drainDeferredPrs({
+      workDir,
+      findOpenPr: noPr,
+      createPr: (r) => {
+        created.push(r);
+        return Promise.resolve({
+          ok: true,
+          value: "https://github.com/stSoftwareAU/VibeCoder/pull/1971",
+        });
+      },
+    });
+    assertEquals(created.length, 1, "the held record reached the create");
+    assertEquals(created[0]!.draft, true, "the draft flag survives the store");
+    assertEquals(restCreateOptions(created[0]!).draft, true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("deferred drain - an ordinary record is not made a draft (Issue #4617)", () => {
+  assertEquals("draft" in restCreateOptions(record()), false);
+  assertEquals("draft" in restCreateOptions(record({ draft: false })), false);
 });

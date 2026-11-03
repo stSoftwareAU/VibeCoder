@@ -976,6 +976,77 @@ Deno.test("syncPrBodyFromSummary - committed adoption leaves an uncommitted evid
   }
 });
 
+Deno.test("syncPrBodyFromSummary - committed adoption resolves images against the pushed commit", async () => {
+  const { repoPath } = await committedSummaryRepo();
+  try {
+    await Deno.mkdir(`${repoPath}/evidence`);
+    await Deno.writeFile(
+      `${repoPath}/evidence/committed.png`,
+      new Uint8Array([1]),
+    );
+    await Deno.writeTextFile(
+      `${repoPath}/${SUMMARY_REL}`,
+      `## Summary\n\n${COMMITTED_TEXT}\n\n![Committed](committed.png)\n\n![Uncommitted](evidence/uncommitted.png)\n`,
+    );
+    await gitIn(repoPath, "add", SUMMARY_REL, "evidence/committed.png");
+    await gitIn(repoPath, "commit", "-q", "-m", "committed evidence");
+    const headSha = await gitIn(repoPath, "rev-parse", "HEAD");
+    await Deno.writeFile(
+      `${repoPath}/evidence/uncommitted.png`,
+      new Uint8Array([2]),
+    );
+    const calls: GhCall[] = [];
+    const deps = adoptionDeps(calls, headSha, remoteAt(headSha));
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      {
+        ...deps,
+        runGhCommand: (args) =>
+          args[0] === "pr" && args[1] === "view"
+            ? Promise.resolve(
+              viewJson(AGENT_DRAFT, ["evidence/committed.png"], headSha),
+            )
+            : stubGh(calls)(args),
+      },
+    );
+    assert(result.ok);
+    const body = calls[0]?.bodyFileContent ?? "";
+    assertStringIncludes(
+      body,
+      `https://github.com/${REPO}/raw/${headSha}/evidence/committed.png`,
+    );
+    assertStringIncludes(body, "![Uncommitted](evidence/uncommitted.png)");
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - committed image listing failure prevents publication", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    const calls: GhCall[] = [];
+    const deps = adoptionDeps(calls, headSha, remoteAt(headSha));
+    const result = await syncPrBodyFromSummary(
+      adoptionInput(repoPath, headSha),
+      {
+        ...deps,
+        runGitCommand: (args, options) =>
+          args[0] === "ls-tree" && args.includes("-r")
+            ? Promise.resolve({
+              ok: true,
+              value: { code: 128, stdout: "", stderr: "tree unavailable" },
+            })
+            : deps.runGitCommand(args, options),
+      },
+    );
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "tree unavailable");
+    assertEquals(calls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
 Deno.test("syncPrBodyFromSummary - Issue #4712: without committedHeadSha the working-tree summary is still read", async () => {
   const { repoPath, headSha } = await committedSummaryRepo();
   try {
