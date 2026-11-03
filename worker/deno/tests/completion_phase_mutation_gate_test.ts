@@ -1013,9 +1013,9 @@ Deno.test("completion - an ordinary PR parked by the secondary limit is not a dr
   assertEquals("draft" in outcome.deferred[0]!, false);
 });
 
-Deno.test("completion - a workflow lookup that throws is noted as non-blocking and the PR is raised ready", async () => {
-  // listWorkflowFiles rethrows a non-NotFound read error, so the completion
-  // phase's catch branch must log it and leave the survivor advisory.
+Deno.test("completion - a non-directory workflow path is noted as unknown and the PR is raised ready", async () => {
+  // The reader rejects non-directory workflow paths before listing them.
+  // Completion must name that unreadable path and leave the survivor advisory.
   const outcome = await runCompletion({
     mutation: completed([SURVIVOR]),
     workflowsDirIsFile: true,
@@ -1026,7 +1026,12 @@ Deno.test("completion - a workflow lookup that throws is noted as non-blocking a
   assertEquals(outcome.prCreateCalls, 1);
   assertEquals(createCall(outcome).includes("--draft"), false, "raised ready");
   assertEquals(
-    outcome.warnings.some((w) => w.includes("treated as non-blocking")),
+    outcome.warnings.some((w) =>
+      w.includes(
+        "Workflow file .github/workflows could not be read or parsed",
+      ) &&
+      w.includes("CI's mutation contract is unknown")
+    ),
     true,
     `warnings: ${JSON.stringify(outcome.warnings)}`,
   );

@@ -214,6 +214,27 @@ mutation verdict, completion phase, deferral and review-fix paths.
   the matching-language completion/review-fix hold tests fail. Restored both
   changes before the final focused run.
 
+## CI repair on PR #4744
+
+- Reproduced the completion test failure locally: a regular file at
+  `.github/workflows` is now reported as unreadable by the directory guard,
+  rather than throwing into completion's catch branch. Updated the diagnostic
+  expectation to require both the exact unreadable path and the unknown CI
+  contract warning. Kept all readiness, recovery, comment and auto-merge
+  assertions; the supported non-blocking behaviour is unchanged.
+- The completion and workflow-detector suites pass together: 85 tests.
+- The exact CI command, `.github/scripts/deno-test-shard.sh 2 4`, was attempted
+  before and after the edit but cannot launch on this host because `setsid`
+  is missing. CI will run the shard on the pushed head.
+- Local gate type-check, lint, formatting, Markdown, Mermaid and completeness
+  checks passed; the separate manifest run passed 847 tests (one existing
+  ignored case). The full gate hit the same Deno 2.9.5 macOS permission-pledge
+  runtime panic documented above in its parallel test pass; its serial pass
+  did not run. Reconfirmed the base Quality run 41555343824 passed all four
+  CI test shards. Semgrep and Checkov were unavailable locally and config
+  integration had no local configuration. The PR-summary check reported zero
+  blocked gates (three checks require issue-body/label inputs).
+
 ## Known gaps
 
 - Detection approximates the required-check contract from workflow files and
