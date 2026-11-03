@@ -232,7 +232,7 @@ change carry none of them:
   action can be referred to on its own.
 - `component` — the runtime component that requested the mutation: `worker`,
   `reviewer`, `babysitter`, or `unknown` when the caller is not one the hook
-  names.
+  names. Callers match by whole file name.
 - `prNumber` — the PR number the mutation targets. It is present only when the
   target is a PR: a `pr-` verb with a numeric target, or a `/pulls/N` API path.
 - `headSha` — the PR head SHA, when a caller records one. No production writer
@@ -248,7 +248,12 @@ change carry none of them:
   `dismissal`, `merge`, or `unknown`. `branch-update` records a PUT to
   `repos/<repo>/pulls/<n>/update-branch`.
   A `git push` is `implementation` or `repair` only when its caller
-  is a module the hook names; any other push is `unknown`.
+  is a module the hook names; any other push is `unknown`. The milestone sync's
+  own pushes (`git_pull.ts`) are `repair` by the worker. The sync-claim and
+  stale-worktree pushes (`milestone_sync_claim.ts`, `stale_workdir.ts`) are the
+  worker's, with kind `unknown`. A milestone rollback push goes through
+  `run_core_production_deps.ts`, which the hook does not name, so it stays
+  `unknown`.
 
 An absent field does not change an entry's hash: the canonical payload leaves
 out every field that is not set, so an entry written before these fields

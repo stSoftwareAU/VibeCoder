@@ -33,6 +33,7 @@ import {
   type AuditHookOptions,
   callerFromStack,
   componentFor,
+  isAuditJournalEnabled,
   prNumberFor,
 } from "../lib/audit_hook.ts";
 import {
@@ -742,4 +743,71 @@ Deno.test("audit_hook - a push with no resolved caller is journalled as componen
     assertEquals(entry?.caller, undefined);
     assert(entry?.actionId !== undefined);
   });
+});
+
+Deno.test("audit_hook - isAuditJournalEnabled is on for the babysitter's VIBE_AUDIT_DIR (Issue #4658)", () => {
+  assertEquals(
+    isAuditJournalEnabled(envFrom({ VIBE_AUDIT_DIR: "/srv/babysitter/audit" })),
+    true,
+  );
+});
+
+Deno.test("audit_hook - isAuditJournalEnabled stays on for WORK_DIR alone (Issue #4658)", () => {
+  assertEquals(isAuditJournalEnabled(envFrom({ WORK_DIR: "/work" })), true);
+});
+
+Deno.test("audit_hook - isAuditJournalEnabled is off with neither WORK_DIR nor VIBE_AUDIT_DIR (Issue #4658)", () => {
+  assertEquals(isAuditJournalEnabled(envFrom({})), false);
+});
+
+Deno.test("audit_hook - VIBE_AUDIT_DISABLED beats VIBE_AUDIT_DIR (Issue #4658)", () => {
+  for (const value of ["1", "true", "yes"]) {
+    assertEquals(
+      isAuditJournalEnabled(
+        envFrom({
+          VIBE_AUDIT_DIR: "/srv/babysitter/audit",
+          VIBE_AUDIT_DISABLED: value,
+        }),
+      ),
+      false,
+      value,
+    );
+  }
+  // `0` and `false` leave journalling on, as they always have.
+  assertEquals(
+    isAuditJournalEnabled(
+      envFrom({
+        VIBE_AUDIT_DIR: "/srv/babysitter/audit",
+        VIBE_AUDIT_DISABLED: "0",
+      }),
+    ),
+    true,
+  );
+});
+
+Deno.test("audit_hook - a git push through VIBE_AUDIT_DIR lands a journal in that directory (Issue #4658)", async () => {
+  const auditDir = await Deno.makeTempDir();
+  try {
+    const env = envFrom({
+      VIBE_AUDIT_DIR: auditDir,
+      WORKER_UNIQUE_ID: WORKER_ID,
+      VIBE_RUN_ID: RUN_ID,
+    });
+    _resetAuditCaches();
+    await auditGitMutation(["push", "origin", "feature-branch"], 0, { env });
+
+    const journalPath = auditFilePath({ env });
+    assert(
+      journalPath.startsWith(`${auditDir}/`),
+      `journal ${journalPath} should sit in ${auditDir}`,
+    );
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok, "the journal should be written under VIBE_AUDIT_DIR");
+    if (!loaded.ok) return;
+    assertEquals(loaded.value.length, 1);
+    assertEquals(loaded.value[0]?.verb, "git-push");
+    assertEquals(loaded.value[0]?.target, "feature-branch");
+  } finally {
+    await Deno.remove(auditDir, { recursive: true });
+  }
 });

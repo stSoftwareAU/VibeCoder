@@ -2394,3 +2394,492 @@ Deno.test("collect - open PRs from before the cohort are counted, whether on the
   assertEquals(capped.input.openPrsBeforeCohort, 100);
   assertEquals(capped.truncatedRepos, [REPO]);
 });
+
+/** A GitHub check run as the check-runs endpoint returns it, completed. */
+function checkRun(id: number, conclusion: string, completedAt: string): Json {
+  return {
+    id,
+    status: "completed",
+    conclusion,
+    started_at: "2026-10-20T00:00:00Z",
+    completed_at: completedAt,
+  };
+}
+
+/**
+ * PR 1 armed by the fleet at 00:35 (journalled and on GitHub), then merged at
+ * 02:00 by `mergerId`. An optional disarm at 00:40 follows the arm.
+ */
+async function armedThenMerged(
+  dir: string,
+  mergerId: number,
+  disarmed = false,
+  humanActorIds: string[] = [],
+  withReview = false,
+): Promise<CollectedSnapshot> {
+  await journal(dir, [
+    {
+      verb: "git-push",
+      actionKind: "implementation",
+      actionId: "push",
+      deliveredCommits: ["sha1"],
+      target: "issue-1",
+      timestamp: "2026-10-20T00:30:00Z",
+    },
+    {
+      verb: "pr-merge",
+      actionKind: "merge",
+      actionId: "arm",
+      repo: REPO,
+      prNumber: 1,
+      timestamp: "2026-10-20T00:35:00Z",
+    },
+  ]);
+  return await collectPrCompletionSnapshot(
+    options(
+      fakeGh(emptyFixture({
+        pulls: { [REPO]: [pull(1)] },
+        commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+        reviews: withReview
+          ? {
+            [pk(1)]: [{
+              id: 702,
+              state: "APPROVED",
+              submitted_at: "2026-10-20T01:00:00Z",
+              user: { id: OWNER_ID, login: "owner" },
+            }],
+          }
+          : {},
+        events: {
+          [pk(1)]: [
+            autoEvent(
+              1,
+              "auto_squash_enabled",
+              FLEET_ID,
+              "2026-10-20T00:35:00Z",
+            ),
+            ...(disarmed
+              ? [
+                autoEvent(
+                  2,
+                  "auto_merge_disabled",
+                  FLEET_ID,
+                  "2026-10-20T00:40:00Z",
+                ),
+              ]
+              : []),
+            mergedEvent(mergerId),
+          ],
+        },
+      })),
+      { auditDirs: [dir], humanActorIds },
+    ),
+  );
+}
+
+Deno.test("collect - an auto-merge armed by one account and merged by another is not a fleet merge", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await armedThenMerged(dir, OWNER_ID);
+    assertEquals(
+      snapshot.input.actions.find((a) =>
+        a.actionId === "gh:org/repo#1:merge:merge1"
+      )?.actor,
+      "unknown",
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
+});
+
+Deno.test("collect - an auto-merge merged by the arming account is accounted by the fleet", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await armedThenMerged(dir, FLEET_ID);
+    assert(
+      !snapshot.input.actions.some((a) =>
+        a.actionId === "gh:org/repo#1:merge:merge1"
+      ),
+      "the arming account's merge must match the fleet's arm",
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.completion.unknownMerged, 0);
+  });
+});
+
+Deno.test("collect - a disarmed auto-merge cannot account for a later merge", async () => {
+  for (const mergerId of [FLEET_ID, OWNER_ID]) {
+    await withDir(async (dir) => {
+      const snapshot = await armedThenMerged(dir, mergerId, true);
+      assertEquals(
+        snapshot.input.actions.find((a) =>
+          a.actionId === "gh:org/repo#1:merge:merge1"
+        )?.actor,
+        "unknown",
+        `merger ${mergerId} after a disarm`,
+      );
+      assertEquals(
+        buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+        0,
+      );
+    });
+  }
+});
+
+Deno.test("collect - a merge with no merged event is unknown, even within the window", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "push",
+        deliveredCommits: ["sha1"],
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "direct",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:55:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    assertEquals(
+      snapshot.input.actions.find((a) =>
+        a.actionId === "gh:org/repo#1:merge:merge1"
+      )?.actor,
+      "unknown",
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
+});
+
+Deno.test("collect - a direct merge is accounted only within the match window of its merge", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "push-1",
+        deliveredCommits: ["sha1"],
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "near",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:55:00Z",
+      },
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "push-2",
+        deliveredCommits: ["sha2"],
+        target: "issue-2",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "far",
+        repo: REPO,
+        prNumber: 2,
+        timestamp: "2026-10-20T01:20:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1), pull(2)] },
+          commits: {
+            [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")],
+            [pk(2)]: [commit("sha2", "2026-10-20T00:25:00Z")],
+          },
+          events: {
+            [pk(1)]: [mergedEvent(FLEET_ID)],
+            [pk(2)]: [mergedEvent(FLEET_ID)],
+          },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    assert(
+      !snapshot.input.actions.some((a) =>
+        a.actionId === "gh:org/repo#1:merge:merge1"
+      ),
+      "a direct merge five minutes away must account for the merge",
+    );
+    assertEquals(
+      snapshot.input.actions.find((a) =>
+        a.actionId === "gh:org/repo#2:merge:merge2"
+      )?.actor,
+      "unknown",
+      "a direct merge forty minutes away must not account for the merge",
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
+});
+
+Deno.test("collect - a merge by a declared human id after a fleet arm is human-assisted, and unknown without the id", async () => {
+  await withDir(async (declaredDir) => {
+    const declared = await armedThenMerged(
+      declaredDir,
+      OWNER_ID,
+      false,
+      [String(OWNER_ID)],
+      true,
+    );
+    const declaredReport = buildPrCompletionReport(declared.input);
+    assertEquals(declaredReport.completion.humanAssistedMerged, 1);
+    assertEquals(declaredReport.completion.unknownMerged, 0);
+    const merge = declared.input.actions.find((a) =>
+      a.actionId === "gh:org/repo#1:merge:merge1"
+    );
+    assertEquals(merge?.actor, "human");
+    assertEquals(merge?.verified, true);
+    assertEquals(
+      declared.input.actions.find((a) =>
+        a.actionId === "gh:org/repo#1:review:702"
+      )?.actor,
+      "human",
+    );
+  });
+  await withDir(async (undeclaredDir) => {
+    const undeclared = await armedThenMerged(
+      undeclaredDir,
+      OWNER_ID,
+      false,
+      [],
+      true,
+    );
+    const undeclaredReport = buildPrCompletionReport(undeclared.input);
+    assertEquals(undeclaredReport.completion.humanAssistedMerged, 0);
+    assertEquals(undeclaredReport.completion.unknownMerged, 1);
+    assertEquals(
+      undeclared.input.actions.find((a) =>
+        a.actionId === "gh:org/repo#1:merge:merge1"
+      )?.actor,
+      "unknown",
+    );
+  });
+});
+
+Deno.test("collect - a failed head closes as ci-failing at the next commit", async () => {
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [pull(1, { head: { ref: "issue-1", sha: "c2" } })],
+    },
+    commits: {
+      [pk(1)]: [
+        commit("c1", "2026-10-20T00:10:00Z"),
+        commit("c2", "2026-10-20T01:00:00Z"),
+      ],
+    },
+    checks: {
+      c1: {
+        total_count: 1,
+        check_runs: [checkRun(501, "failure", "2026-10-20T00:20:00Z")],
+      },
+      c2: {
+        total_count: 1,
+        check_runs: [checkRun(502, "success", "2026-10-20T01:30:00Z")],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(
+    snapshot.input.blockers.filter((b) => b.blocker === "ci-failing"),
+    [{
+      repo: REPO,
+      prNumber: 1,
+      blocker: "ci-failing",
+      startedAt: "2026-10-20T00:20:00Z",
+      endedAt: "2026-10-20T01:00:00Z",
+    }],
+  );
+});
+
+Deno.test("collect - CI runs are counted from every head, and a run listed on two heads once", async () => {
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [pull(1, { head: { ref: "issue-1", sha: "c2" } })],
+    },
+    commits: {
+      [pk(1)]: [
+        commit("c1", "2026-10-20T00:10:00Z"),
+        commit("c2", "2026-10-20T01:00:00Z"),
+      ],
+    },
+    checks: {
+      c1: {
+        total_count: 2,
+        check_runs: [
+          checkRun(501, "success", "2026-10-20T00:20:00Z"),
+          checkRun(503, "success", "2026-10-20T00:40:00Z"),
+        ],
+      },
+      c2: {
+        total_count: 2,
+        check_runs: [
+          checkRun(502, "success", "2026-10-20T01:30:00Z"),
+          checkRun(503, "success", "2026-10-20T00:40:00Z"),
+        ],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(
+    snapshot.input.ciRuns.map((run) => run.runId).sort(),
+    ["501", "502", "503"],
+  );
+});
+
+Deno.test("collect - a failed check run on a default-branch merge commit is a post-merge failure", async () => {
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [
+        pull(1),
+        pull(2, { base: { ref: "milestone/4658" } }),
+        pull(3),
+      ],
+    },
+    checks: {
+      merge1: {
+        total_count: 1,
+        check_runs: [checkRun(601, "failure", "2026-10-20T02:30:00Z")],
+      },
+      merge2: {
+        total_count: 1,
+        check_runs: [checkRun(602, "failure", "2026-10-20T02:30:00Z")],
+      },
+      merge3: {
+        total_count: 1,
+        check_runs: [checkRun(603, "success", "2026-10-20T02:30:00Z")],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(snapshot.input.postMergeFailures, [{
+    repo: REPO,
+    prNumber: 1,
+    runId: "601",
+    failedAt: "2026-10-20T02:30:00Z",
+    resolved: false,
+  }]);
+});
+
+Deno.test("collect - a ledger deployment carries its host, a review-run deployment carries none", async () => {
+  await withDir(async (dir) => {
+    const ledger = `${dir}/ledger.jsonl`;
+    const event = buildLifecycleEvent({
+      kind: "assignment",
+      assignmentId: "3f2c9a1e-4b5d-4c6e-8f70-1a2b3c4d5e02",
+      runId: "run-1",
+      host: "host-a",
+      repo: REPO,
+      issueNumber: 1,
+      recordedAt: "2026-11-01T21:00:00Z",
+      assignedAt: "2026-11-01T21:00:00Z",
+      cohort: "control",
+      reused: false,
+      treatment: {
+        roles: [{ role: "executor", provider: "claude" }],
+        workerCommit: "rev1",
+        reviewPolicyFingerprint: FP,
+      },
+    });
+    await Deno.writeTextFile(ledger, serialiseLifecycleEvent(event) + "\n");
+    const rounds = `${dir}/rounds`;
+    await Deno.mkdir(`${rounds}/20261101-100000`, { recursive: true });
+    await Deno.writeTextFile(
+      `${rounds}/20261101-100000/review-run.json`,
+      JSON.stringify({
+        round: "20261101-100000",
+        attempts: [],
+        deployment: {
+          component: "reviewer",
+          codeRevision: "rev1",
+          policyFingerprint: FP,
+          observedAt: "2026-11-01T22:00:00Z",
+        },
+      }),
+    );
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture()),
+      {
+        reviewRunDirs: [rounds],
+        lifecycleLedgers: [ledger],
+        expected: {
+          components: ["worker", "reviewer"],
+          revision: "rev1",
+          policyFingerprint: FP,
+          maxHeartbeatAgeHours: 24,
+          expectedHosts: ["host-a"],
+        },
+      },
+    ));
+    const byComponent = new Map(
+      snapshot.input.deployments.map((row) => [row.component, row]),
+    );
+    assertEquals(byComponent.get("worker")?.host, "host-a");
+    assertEquals("host" in byComponent.get("reviewer")!, false);
+    assertEquals(snapshot.input.expectedDeployment.hosts, ["host-a"]);
+  });
+});
+
+Deno.test("collect - an event actor without an id is refused by name, and a null actor is accepted", async () => {
+  const withoutId = emptyFixture({
+    pulls: { [REPO]: [pull(1)] },
+    events: {
+      [pk(1)]: [{
+        id: 801,
+        event: "merged",
+        created_at: "2026-10-20T02:00:00Z",
+        actor: { login: "ghost" },
+      }],
+    },
+  });
+  await assertRejects(
+    () => collectPrCompletionSnapshot(options(fakeGh(withoutId))),
+    Error,
+    "event.actor is missing id",
+  );
+  const nullActor = emptyFixture({
+    pulls: { [REPO]: [pull(1)] },
+    events: {
+      [pk(1)]: [{
+        id: 802,
+        event: "merged",
+        created_at: "2026-10-20T02:00:00Z",
+        actor: null,
+      }],
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(nullActor)),
+  );
+  assertEquals(
+    snapshot.input.actions.find((a) =>
+      a.actionId === "gh:org/repo#1:merge:merge1"
+    )?.actor,
+    "unknown",
+  );
+});

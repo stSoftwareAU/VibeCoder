@@ -8,7 +8,12 @@
  * Uses Australian English throughout.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   _resetAuditCaches,
   type AuditEntry,
@@ -16,10 +21,12 @@ import {
   computeEntryHash,
   loadEntries,
   recordMutation,
+  resolveBaseDir,
   verifyAllChains,
   verifyChain,
 } from "../lib/audit_journal.ts";
 import { anchorPath, rosterPath } from "../lib/audit_anchor.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** Build a fresh isolated journal location for a test. */
 async function freshOpts(): Promise<
@@ -566,5 +573,77 @@ Deno.test("audit_journal - a journal awaiting --adopt is not quarantined out fro
       throw new Error("no segment should have been opened");
     },
     () => {},
+  );
+});
+
+Deno.test("audit_journal - resolveBaseDir prefers an explicit override over VIBE_AUDIT_DIR (Issue #4658)", () => {
+  const env = envFrom({
+    VIBE_AUDIT_DIR: "/srv/babysitter/audit",
+    WORK_DIR: "/work",
+  });
+  assertEquals(resolveBaseDir("/explicit", env), "/explicit");
+});
+
+Deno.test("audit_journal - resolveBaseDir uses VIBE_AUDIT_DIR verbatim ahead of WORK_DIR (Issue #4658)", () => {
+  const env = envFrom({
+    VIBE_AUDIT_DIR: "/srv/babysitter/audit",
+    WORK_DIR: "/work",
+  });
+  assertEquals(resolveBaseDir(undefined, env), "/srv/babysitter/audit");
+});
+
+Deno.test("audit_journal - resolveBaseDir still falls back to WORK_DIR/audit when VIBE_AUDIT_DIR is unset (Issue #4658)", () => {
+  assertEquals(
+    resolveBaseDir(undefined, envFrom({ WORK_DIR: "/work" })),
+    "/work/audit",
+  );
+  // An empty VIBE_AUDIT_DIR is unset, as an empty WORK_DIR always was.
+  assertEquals(
+    resolveBaseDir(
+      undefined,
+      envFrom({ VIBE_AUDIT_DIR: "", WORK_DIR: "/work" }),
+    ),
+    "/work/audit",
+  );
+});
+
+Deno.test("audit_journal - resolveBaseDir uses the shared temporary directory with neither variable set (Issue #4658)", () => {
+  const resolved = resolveBaseDir(
+    undefined,
+    envFrom({ TMPDIR: "/scratch" }),
+  );
+  assert(
+    resolved.startsWith("/scratch/vibe-audit"),
+    `expected the shared temporary audit directory, got ${resolved}`,
+  );
+});
+
+Deno.test("audit_journal - resolveBaseDir refuses a relative VIBE_AUDIT_DIR, naming the variable (Issue #4658)", () => {
+  assertThrows(
+    () =>
+      resolveBaseDir(
+        undefined,
+        envFrom({ VIBE_AUDIT_DIR: "audit/babysitter" }),
+      ),
+    Error,
+    "VIBE_AUDIT_DIR",
+  );
+});
+
+Deno.test("audit_journal - resolveBaseDir refuses a VIBE_AUDIT_DIR with a '..' segment (Issue #4658)", () => {
+  for (const value of ["/srv/audit/../escape", "/srv/audit/.."]) {
+    assertThrows(
+      () => resolveBaseDir(undefined, envFrom({ VIBE_AUDIT_DIR: value })),
+      Error,
+      "VIBE_AUDIT_DIR",
+      value,
+    );
+  }
+});
+
+Deno.test("audit_journal - resolveBaseDir accepts '..' inside a segment name (Issue #4658)", () => {
+  assertEquals(
+    resolveBaseDir(undefined, envFrom({ VIBE_AUDIT_DIR: "/srv/a..b" })),
+    "/srv/a..b",
   );
 });

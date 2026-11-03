@@ -14,6 +14,8 @@ import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { runGitArgv } from "../lib/git_timeout.ts";
+import { isAuditJournalSwitchedOff } from "../lib/audit_hook.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   createWriteRepoAllowlistContext,
   seedWriteRepoAllowlist,
@@ -2791,6 +2793,37 @@ export async function publishBabysitterDeployment(
 }
 
 /**
+ * Journal the babysitter's repair pushes and dismissals into its own state
+ * directory (Issue #4658), as `${stateDir}/audit`, on a host that sets no
+ * `WORK_DIR`. Does nothing when `VIBE_AUDIT_DIR` or `WORK_DIR` already locates
+ * the journal, or when `VIBE_AUDIT_DISABLED` switches it off.
+ *
+ * Best-effort but loud, as {@link publishBabysitterDeployment}: if the
+ * directory cannot be created the cause is logged and the variable stays
+ * unset. Returns the directory it set, or undefined.
+ */
+export async function ensureBabysitterAuditDir(
+  stateDir: string,
+  env: EnvLookup = processEnvLookup,
+  setEnv: (name: string, value: string) => void = (name, value) =>
+    Deno.env.set(name, value),
+  log: (message: string) => void = console.error,
+): Promise<string | undefined> {
+  if (env("VIBE_AUDIT_DIR") || env("WORK_DIR")) return undefined;
+  if (isAuditJournalSwitchedOff(env)) return undefined;
+  const dir = `${stateDir}/audit`;
+  try {
+    await Deno.mkdir(dir, { recursive: true });
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    log(`[babysitter] audit journal directory not created: ${cause}`);
+    return undefined;
+  }
+  setEnv("VIBE_AUDIT_DIR", dir);
+  return dir;
+}
+
+/**
  * Load the worker config for one babysitter pass and record the deployment
  * heartbeat for it, so every pass is stamped with the config it ran under.
  */
@@ -3005,6 +3038,7 @@ if (import.meta.main) {
     "VIBE_GITHUB_QUOTA_WORK_DIR",
     `${home}/.vibe-coder/fleet-pr-babysitter`,
   );
+  await ensureBabysitterAuditDir(babysitterStateDir());
   console.log(`Using GitHub App ${login} for babysitter requests.`);
   do {
     try {

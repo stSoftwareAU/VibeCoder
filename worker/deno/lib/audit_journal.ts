@@ -128,7 +128,7 @@ export class AuditChainAnchorError extends Error {
 
 /** Options controlling where an entry is written. */
 export interface RecordOptions {
-  /** Base directory override (default: `${WORK_DIR}/audit`). */
+  /** Base directory override (default: `VIBE_AUDIT_DIR`, else `${WORK_DIR}/audit`). */
   baseDir?: string;
   /** Worker partition override (default: resolved from env). */
   workerId?: string;
@@ -253,15 +253,29 @@ function sanitiseWorkerId(id: string): string {
 /**
  * Resolve the default audit base directory from the environment.
  *
+ * Precedence: `override`, then `VIBE_AUDIT_DIR` (Issue #4658, used verbatim),
+ * then `${WORK_DIR}/audit`, then the per-account shared temporary directory.
+ *
  * @param override - Explicit directory, used verbatim when supplied.
- * @param env - Environment lookup for the `WORK_DIR`/`TMPDIR` fallback
- *   (Issue #963). Defaults to the real process environment.
+ * @param env - Environment lookup for the `VIBE_AUDIT_DIR`, `WORK_DIR` and
+ *   `TMPDIR` fallbacks (Issue #963). Defaults to the real process environment.
+ * @throws When `VIBE_AUDIT_DIR` is relative or contains a `..` segment.
  */
 export function resolveBaseDir(
   override?: string,
   env: EnvLookup = processEnvLookup,
 ): string {
   if (override) return override;
+  const auditDir = env("VIBE_AUDIT_DIR");
+  if (auditDir) {
+    // Issue #4658: an absolute path with no `..` segment, or the journal is refused.
+    if (!auditDir.startsWith("/") || auditDir.split("/").includes("..")) {
+      throw new Error(
+        `VIBE_AUDIT_DIR must be an absolute path with no '..' segment: ${auditDir}`,
+      );
+    }
+    return auditDir;
+  }
   const workDir = env("WORK_DIR");
   if (workDir) return `${workDir}/audit`;
   // Issue #1242: per-account, not the fixed `${TMPDIR}/vibe-audit` every

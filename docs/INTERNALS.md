@@ -1135,8 +1135,9 @@ out under **Review-fleet-prs log** below:
 - **GitHub**, through `gh api` GETs only, for each repository in `--repos`
   (default `config.repos`): the default branch; the pull requests created in
   `[start, end)` (`--start` and `--end`, default the fourteen days ending now),
-  paged newest first; each cohort PR's reviews, issue events and commits; and
-  check runs for merged PRs.
+  paged newest first; each cohort PR's reviews, issue events and commits; check
+  runs on each cohort PR's final head and last twenty commits; and check runs on
+  the merge commit of each merged PR into the default branch.
 - **Audit journals** in each `--audit-dir` (default the resolved audit
   directory). Each directory's chains are verified with `verifyAllChains`, the
   sweep `audit-chain-verify` runs at startup, and each journal is read with
@@ -1153,7 +1154,9 @@ The expected deployment comes from `--expected-components` (default
 `worker,reviewer,babysitter`), `--expected-revision` (default
 `VIBE_BUILD_COMMIT`; the command fails when neither is set), the policy
 fingerprint from `fingerprintWorkerReviewPolicy(config)`, and
-`--max-heartbeat-age-hours` (default 24).
+`--max-heartbeat-age-hours` (default 24). `--expected-host <name,...>` is
+optional; when given, each named host is checked for every expected component
+(see **Deployments**).
 
 **Cross-host evidence.** The command reads only the audit directories it is
 given. To include another host, export that host's journal directory and pass
@@ -1187,12 +1190,20 @@ delivery evidence, unsupported push forms and shallow or unavailable history
 leave commits unknown rather than falling back to time-based attribution.
 
 **Merge window.** Auto-merge journals the merge when it is armed, which can be
-hours before GitHub records `mergedAt`. So a fleet `merge` action matches a
-merge event when its timestamp lies from the PR's creation to ten minutes after
-`mergedAt`. An armed merge stamped before the PR existed does not match, nor
-does one stamped more than ten minutes after the merge. A verified, successful
-fleet disarm between the arm and GitHub's merge invalidates that arm. A later
-re-arm can match; failed disarms do not withdraw an arm.
+hours before GitHub records `mergedAt`, so arming alone does not account for a
+merge. A fleet `merge` action matches a GitHub merge only when the merge names a
+merger: the actor of the PR's single `merged` event. A PR with no `merged` event,
+or with more than one, has no merger, and its merge stays `unknown`. When an
+auto-merge enable event (`auto_merge_enabled`, `auto_squash_enabled` or
+`auto_rebase_enabled`) precedes the merge, the action matches only if the merger's
+account id equals the id of the account that made the latest such enable, and
+then only when its timestamp lies from the PR's creation to ten minutes after
+`mergedAt`. A GitHub `auto_merge_disabled` event after that enable clears the
+arm, so a merge after it matches only once a later enable is made; a failed
+disarm produces no such event and leaves the arm standing. With no arm observed,
+the action matches only a direct merge within ten minutes. The two accounts are
+compared as GitHub ids; no login is read. Residual limit: a person who merges
+through the arming account is indistinguishable from the fleet.
 
 **Push linking.** Production writes `git-push` entries with no repository, only
 the push target. Such a push links across every supplied repository by branch
@@ -1247,23 +1258,32 @@ once its run reaches a conclusive outcome (`retireReview` in
 through `defaultGhCommand`, `runGhOrThrow` and `spawnGh`, the `gh` chokepoint
 the audit hook sits on, so it is journalled. `actionKindFor` in `audit_hook.ts`
 labels that PUT (`…/reviews/<id>/dismissals`) as kind `dismissal`, and records
-the PR number. A PUT to `…/reviews/<id>` with `state=DISMISSED` is also kind
+the PR number. The caller is `pr_comments.ts`, which the worker and the
+babysitter both use and which the hook does not name, so the component is
+`unknown`. A PUT to `…/reviews/<id>` with `state=DISMISSED` is also kind
 `dismissal`. The review-fleet-prs skill makes no dismissal call, so it has none
 to journal.
 
-**Unknown, never human.** A GitHub event with no matching verified fleet action
-becomes an `unknown` action: unverified, outcome unknown, with the ID
-`gh:<repo>#<number>:<kind>:<id>`. GitHub logins are never read, so no login
-makes an action human or fleet.
+**Unknown, or human when declared.** A GitHub review, dismissal or merge with no
+matching verified fleet action becomes an `unknown` action: unverified, outcome
+unknown, with the ID `gh:<repo>#<number>:<kind>:<id>`. When its account id is one
+the operator declares with `--human-actor-id` (comma-separated numeric GitHub
+user ids, `--collect` only), the action is `human` instead: verified, outcome
+confirmed, recording a human intervention. The declaration is trusted operator
+input. GitHub logins are never read, so no login makes an action human or fleet.
+Commits carry no actor and stay `unknown` when unmatched. A PR with such an
+action is not counted as unattended.
 
 **Owner gates.** `ownerGateVerified` is always false today, because no hold
 marker is recorded yet. A PR labelled `needs-human` is recorded as
 `ownerGated` but stays in the eligible denominator.
 
-**Blockers produced.** `needs-human` (from the label, open until it is removed)
-and `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
-commit, approval or dismissal). CI-failing and hold blockers are not produced
-yet.
+**Blockers produced.** `needs-human` (from the label, open until it is removed),
+`changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
+commit, approval or dismissal) and `ci-failing`. A failed check run on a commit's
+head opens `ci-failing` at the earliest failure on that head. It closes at the
+next commit's committer date, or at `mergedAt` when there is no later commit, and
+stays open when neither exists. Hold blockers are not produced yet.
 
 **Regression heuristic.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
@@ -1290,14 +1310,32 @@ into `--write-snapshot`, so an `--input` replay reports the truncation too.
 Paged event lists stop after ten pages, which is a coverage note. Every missing,
 unreadable or malformed local file is a coverage note, not a silent drop.
 
-**CI scope.** CI minutes come only from the final head SHA's check runs of each
-merged PR. Check runs on earlier pushes are not counted. A coverage note says so
-whenever a merged PR is collected.
+**CI scope.** For each cohort PR, check runs are read from its final head and its
+last twenty commits, each run counted once. Only merged PRs contribute CI
+minutes. A coverage note states the scope once per collection, and a PR with more
+than twenty commits gets its own note naming the cut-off.
+
+**Post-merge CI.** A PR merged into the default branch has the check runs on its
+merge commit read. Each failed run is one `regressions.postMergeCiFailures` entry,
+keyed by PR and run id. Milestone-branch merges are skipped, and a merge with no
+merge commit SHA gets a coverage note. No later green run is matched to a
+failure yet, so each one is counted in `unresolvedPostMergeCiFailures` as well.
 
 **Deployments.** A babysitter heartbeat is kept whatever its age, so the report
 can call it stale. Review-run and ledger rows older than the heartbeat window
 are not counted, and one note says how many were excluded. A ledger row is
 timed by its `recordedAt`.
+
+A lifecycle-ledger row names its host, so ledger rows group per component and
+host (`component@host`). Review-run records and babysitter heartbeats name none,
+so they group per component. With `--expected-host`, each expected host needs a
+fresh row for every expected component, or it is listed in
+`deployment.missingHostHeartbeats` as `component@host`. A host whose latest row
+is stale is listed in `staleHosts`, and one whose latest row has a different
+revision or policy fingerprint is listed in `mismatchedHosts`. Because review-run
+and babysitter rows carry no host, the default components list
+`reviewer@<host>` and `babysitter@<host>` as missing for every expected host
+until those sources name one.
 
 **Rollout check** (`--rollout-verified-at`). A stranded PR was created before
 the verification instant, was still open at it (no merge or close at or before
@@ -1313,7 +1351,8 @@ them widens `--start`.
 **Limits.** `verifyAllChains` is the sweep `audit-chain-verify` runs at
 startup. It can settle an interrupted append in a journal it sweeps
 (Issue #1074), so `--collect` does not promise zero writes to a journal left
-mid-append. CI durations are fetched only for merged PRs, because the report
+mid-append. Check runs are read for every cohort PR so that `ci-failing` can be
+reported, but CI minutes are counted only for merged PRs, because the report
 counts CI only for delivered changes.
 
 **Accepted limits.** These are known and not mitigated in this change:
@@ -1323,11 +1362,15 @@ counts CI only for delivered changes.
   journalled, so babysitter-repaired PRs stay unknown under `--collect`.
   Deployment heartbeats do not provide mutation provenance.
 - A merge armed by the fleet (`gh pr merge --auto`) and completed later by a
-  person is attributed to the fleet. The audit entry cannot see who clicked
-  merge, so verified human-merge detection is not produced.
-- Deployment rows are grouped per component, not per host. One host's missing
-  heartbeat is hidden while another host of the same component reports. The
-  operator supplies per-host state directories and checks the `coverage notes`.
+  person through the arming account is attributed to the fleet. GitHub
+  attributes the auto-merge to the account that enabled it, so the two cannot be
+  told apart. A merge by any other account is not attributed to the fleet: it is
+  `unknown`, or `human` when that account is declared with `--human-actor-id`.
+- Per-host heartbeat checks run only with `--expected-host`, and hosts it does not
+  name are not checked. Review-run records and babysitter heartbeats carry no
+  host, so the default components list `reviewer@<host>` and
+  `babysitter@<host>` as missing. The operator supplies per-host state
+  directories and checks the `coverage notes`.
 - Builds older than this change cannot verify journal entries that carry the
   new fields, nor read ledger rows that carry `reviewPolicyFingerprint`. Upgrade
   every host before exporting journals across them.
@@ -1351,7 +1394,8 @@ at, so a verified repair at an earlier head still counts toward the PR's history
 Absent source coverage remains unknown. A report labels a merged PR unattended only when the recorded action
 history is complete, verified, contains both implementation or repair and
 merge actions, and contains no verified human action. A GitHub user login does
-not change that result. Older ledger entries remain readable but do not gain
+not change that result; a declared human id does, because its unmatched events
+become verified human actions. Older ledger entries remain readable but do not gain
 fabricated provenance.
 
 The report keeps stalled and closed-unmerged PRs in the eligible denominator,
@@ -1378,7 +1422,7 @@ report as a policy mismatch until each component writes a new one. Review-run
 records written before the `deployment` field existed contribute no row, and one
 note counts them. Missing or stale heartbeats,
 unknown revisions, policy mismatches and mixed observations make deployment
-status degraded. The report never repairs deployment state or changes the ordinary discovery
+status degraded, and so do missing, stale or mismatched hosts. The report never repairs deployment state or changes the ordinary discovery
 path. The trusted update route remains the existing
 [`worker-checkout-update` launcher step](#-entry-point-runsh--runps1).
 

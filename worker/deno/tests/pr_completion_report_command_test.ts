@@ -157,6 +157,12 @@ Deno.test("pr-completion-report --collect passes --max-prs-per-repo to the colle
       if (path.startsWith("repos/org/repo/pulls?")) {
         return path.includes("page=1") ? [open(1), open(2)] : [];
       }
+      if (
+        path.startsWith("repos/org/repo/commits/") &&
+        path.includes("/check-runs")
+      ) {
+        return { total_count: 0, check_runs: [] };
+      }
       if (path.startsWith("repos/org/repo/pulls/")) return [];
       if (path.startsWith("repos/org/repo/issues/")) return [];
       throw new Error(`unrouted gh path: ${path}`);
@@ -273,8 +279,14 @@ Deno.test("pr-completion-report --collect notes a --review-log it cannot read, a
           id: 601,
           state: "APPROVED",
           submitted_at: "2026-10-20T01:00:00Z",
-          user: { login: "review-bot[bot]" },
+          user: { id: 9001, login: "review-bot[bot]" },
         }];
+      }
+      if (
+        path.startsWith("repos/org/repo/commits/") &&
+        path.includes("/check-runs")
+      ) {
+        return { total_count: 0, check_runs: [] };
       }
       if (path.startsWith("repos/org/repo/pulls/")) return [];
       if (path.startsWith("repos/org/repo/issues/")) return [];

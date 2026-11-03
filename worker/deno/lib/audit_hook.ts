@@ -8,11 +8,12 @@
  * journal. Every failure is swallowed so journalling can never abort — or
  * even perturb — the mutation it is recording.
  *
- * Gating: auditing is active in production (where `WORK_DIR` is set) and
- * can be force-disabled with `VIBE_AUDIT_DISABLED=1`. Unit tests that do
- * not set `WORK_DIR` therefore incur no journalling side-effects.
+ * Gating: auditing is active in production (where `WORK_DIR` or the babysitter's
+ * `VIBE_AUDIT_DIR` is set, Issue #4658) and can be force-disabled with
+ * `VIBE_AUDIT_DISABLED=1`. Unit tests that set neither therefore incur no
+ * journalling side-effects.
  *
- * Both gating variables, the worker partition and the run id are read through
+ * The gating variables, the worker partition and the run id are read through
  * {@link AuditHookOptions} rather than straight off the process (Issue #963),
  * so a test drives the hooks with a fixed map instead of mutating the process
  * environment out from under every other test in the run (Issue #880).
@@ -38,7 +39,7 @@ import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
  *
  * The gating flags, the worker partition and the run id were all read
  * straight from the process, so the only way to drive the hooks was to set
- * `WORK_DIR`, `VIBE_AUDIT_DISABLED`, `WORKER_UNIQUE_ID` and `VIBE_RUN_ID` on
+ * `WORK_DIR`, `VIBE_AUDIT_DIR`, `VIBE_AUDIT_DISABLED`, `WORKER_UNIQUE_ID` and `VIBE_RUN_ID` on
  * the process — which races every other test running at that moment and is
  * what keeps the gate's `deno test` stage serial (Issue #880). Every field is
  * optional and defaults to exactly what the hook read before, so production
@@ -56,24 +57,39 @@ export interface AuditHookOptions extends RecordOptions {
 }
 
 /**
+ * True when `VIBE_AUDIT_DISABLED` switches journalling off.
+ *
+ * `0`, `false` and the empty string leave it on. Shared by
+ * {@link isAuditJournalEnabled} and the babysitter's start-up (Issue #4658),
+ * so both read the switch the same way.
+ *
+ * @param env - Environment lookup. Defaults to the real process environment.
+ */
+export function isAuditJournalSwitchedOff(
+  env: EnvLookup = processEnvLookup,
+): boolean {
+  const disabled = env("VIBE_AUDIT_DISABLED");
+  return Boolean(
+    disabled && disabled !== "0" && disabled.toLowerCase() !== "false",
+  );
+}
+
+/**
  * True when audit journalling should run for the current process.
  *
  * Exported so other journalling call sites (e.g. `gh_guard_shim.ts`) share one
  * gating rule rather than each re-deriving it.
  *
- * @param env - Environment lookup for the two gating variables (Issue #963).
+ * @param env - Environment lookup for the gating variables (Issue #963).
  *   Defaults to the real process environment.
  */
 export function isAuditJournalEnabled(
   env: EnvLookup = processEnvLookup,
 ): boolean {
-  const disabled = env("VIBE_AUDIT_DISABLED");
-  if (disabled && disabled !== "0" && disabled.toLowerCase() !== "false") {
-    return false;
-  }
-  // Journalling is a production-runtime feature keyed to WORK_DIR. Without
-  // it there is no stable out-of-tree location to write to, so stay inert.
-  return Boolean(env("WORK_DIR"));
+  if (isAuditJournalSwitchedOff(env)) return false;
+  // Journalling needs a stable out-of-tree location: `VIBE_AUDIT_DIR` (Issue
+  // #4658) or `WORK_DIR`'s `audit/`. With neither there is nowhere to write.
+  return Boolean(env("VIBE_AUDIT_DIR") || env("WORK_DIR"));
 }
 
 /**
