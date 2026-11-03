@@ -32,8 +32,8 @@ sequenceDiagram
 - `env_reset` discards the environment, argv is visible to `ps` and the sudo
   log, and a file would need an agent-readable path. A stdin pipe is the one
   channel that survives sudo, stays private and needs no new sudo grant.
-- One module (`credential_channel.ts`) is called by all three callers, so
-  there is a single transport and a single fault contract.
+- One module (`credential_channel.ts`) is called by all three callers, so there
+  is a single transport and a single fault contract.
 
 ### Essential Design Decisions
 
@@ -51,8 +51,8 @@ sequenceDiagram
   caller already maps to `unverified`; the milestone gates return
   `GateAccountUnavailable` (left to CI). A malformed declared name or a value
   with a NUL byte is refused before anything is spawned.
-- With an available `agent` account a command always runs as `agent`. The
-  worker account runs it only where the image has no `agent` account.
+- With an available `agent` account a command always runs as `agent`. The worker
+  account runs it only where the image has no `agent` account.
 
 ### Undiscoverable Facts
 
@@ -75,8 +75,8 @@ synthetic credentials:
 
 The production implementation the sudo tests stand in for is the real sudo; the
 property relied on (stdin passes through, the environment is reset) was
-observed, not assumed. The wrapper's own fault contract is tested through a
-real `sh`.
+observed, not assumed. The wrapper's own fault contract is tested through a real
+`sh`.
 
 Docs: `docs/CONTAINER.md` ("The placement travels in argv…" bullet),
 `docs/CONFIGURATION.md` (`quality_credentials` section), `SECURITY.md` (6b and
@@ -91,7 +91,8 @@ Sibling names grepped: `carryEnvThroughSudo`, `untrustedQualityCommandEnv`,
 The issue states no `## Acceptance Criteria` list, so no reviewer was
 dispatched. Every requirement in its reconciliation paragraph was done:
 
-- Include the milestone gate callers as well as the quality gate and fast checks: done.
+- Include the milestone gate callers as well as the quality gate and fast
+  checks: done.
 - One safe credential channel: `worker/deno/lib/credential_channel.ts`.
 - Remove the credential-triggered fallback with an available untrusted account:
   done in `untrusted_gate_spawn.ts`.
@@ -110,46 +111,50 @@ dispatched. Every requirement in its reconciliation paragraph was done:
   the `stdin` option of `runWithTimeout`/`commandOutputWithTimeout`, real sudo).
 - `worker/deno/tests/quality_gate_credentials_4705_test.ts` (real sudo through
   `createDefaultDeps`, bad name, channel fault, no-marker and no-channel twins).
-- `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts` (argv and stdin,
-  fault throws, no-marker twin, no credentials, real sudo).
+- `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts` (argv and
+  stdin, fault throws, no-marker twin, no credentials, real sudo).
 - `worker/deno/tests/untrusted_gate_spawn_test.ts` (replaces the fallback test;
   agent account kept, decoded payload holds exactly the declared names, fault →
   `GateAccountUnavailable`, no-marker twin, invalid name, no credentials, two
   real-sudo tests).
 - Ran from `worker/deno`: `deno task test:unit` over those files plus
   `quality_gate_phase_test.ts`, `untrusted_command_env_test.ts`,
-  `merge_fast_checks_test.ts` (159 passed, 0 failed); `deno task
-  check:manifests` passed; `deno fmt`, `deno lint`, `deno check` clean.
+  `merge_fast_checks_test.ts` (159 passed, 0 failed);
+  `deno task
+  check:manifests` passed; `deno fmt`, `deno lint`, `deno check`
+  clean.
 - Full `./quality.sh`: every stage passed except `deno tests` (parallel pass:
   32014 passed, 2 failed). The two failures are host-related and not from this
   diff: `babysitter default heartbeat resolves its checkout revision` (JSR
-  download of `@std/crypto`) and `verifyResolvedTree - the repository's own task
-  sees only the allowlisted environment (Issue #4659)` (the test's temp checkout
-  is mode 700, so the `agent` probe cannot read it; it fails identically on the
-  unmodified `0a4d803a`). The serial pass did not run after the parallel
-  failure; CI runs it. The first gate run also needed a sweep-ledger entry
-  (`docs/audits/lib-sweep-coverage/top-up-4705.json`) and no
+  download of `@std/crypto`) and
+  `verifyResolvedTree - the repository's own task
+  sees only the allowlisted environment (Issue #4659)`
+  (the test's temp checkout is mode 700, so the `agent` probe cannot read it; it
+  fails identically on the unmodified `0a4d803a`). The serial pass did not run
+  after the parallel failure; CI runs it. The first gate run also needed a
+  sweep-ledger entry (`docs/audits/lib-sweep-coverage/top-up-4705.json`) and no
   `Deno.env` mutation in the new tests (fixed; second run is clean for both).
 - Red checks (break, run, restore): removing the `carryCredentialsThroughSudo`
   call in `quality_gate_phase.ts` → the real-sudo test and the bad-name test
   red; in `merge_fast_checks.ts` → the argv/stdin test and real-sudo test red;
   in `untrusted_gate_spawn.ts` → 4 tests red; making a declared credential
-  return the un-dropped argv (the old fallback) → 5 tests red (the
-  "account stays agent" test is the one that catches it); disabling the fault
-  branch in `spawnRepositoryCommand` → the fault test red; dropping the
-  wrapper's `export` line → the byte-exact and real-sudo tests red.
-- Removed from `worker/deno/tests/untrusted_gate_spawn_test.ts` (test
-  "declared credentials survive an available agent account", replaced):
-  - Removed: `assertEquals(calls.length, 1)`; `assertEquals(final.executable, "/bin/sh")`;
+  return the un-dropped argv (the old fallback) → 5 tests red (the "account
+  stays agent" test is the one that catches it); disabling the fault branch in
+  `spawnRepositoryCommand` → the fault test red; dropping the wrapper's `export`
+  line → the byte-exact and real-sudo tests red.
+- Removed from `worker/deno/tests/untrusted_gate_spawn_test.ts` (test "declared
+  credentials survive an available agent account", replaced):
+  - Removed: `assertEquals(calls.length, 1)`;
+    `assertEquals(final.executable, "/bin/sh")`;
     `assertEquals(result.value.stdout, "declared")`;
-    `assertEquals(final.options.env?.NPM_TOKEN, "declared")`.
-    Required by: "remove the credential-triggered fallback on hosts with an available untrusted account"
-    (these asserted that the declared credential made the command run as the worker).
-    Replaced by: `untrustedAccountOf` is `agent` for the final spawn; the decoded
-    stdin payload holds the declared names; the real-sudo test prints
-    `synthetic-4705|unset`.
-  - Kept (moved into the new tests): `GH_TOKEN` absent from env, `clearEnv` true,
-    no declared value in args, `result.ok` and exit code 0.
+    `assertEquals(final.options.env?.NPM_TOKEN, "declared")`. Required by:
+    "remove the credential-triggered fallback on hosts with an available
+    untrusted account" (these asserted that the declared credential made the
+    command run as the worker). Replaced by: `untrustedAccountOf` is `agent` for
+    the final spawn; the decoded stdin payload holds the declared names; the
+    real-sudo test prints `synthetic-4705|unset`.
+  - Kept (moved into the new tests): `GH_TOKEN` absent from env, `clearEnv`
+    true, no declared value in args, `result.ok` and exit code 0.
 - Callers checked for the shared `untrustedSpawn`/`carryEnvThroughSudo` change:
   `spawnRepositoryCommand` (formatters stay un-dropped and keep the env route),
   `spawnFastCheck`, `runRepositoryCommand`; the mutation check and coverage
@@ -161,12 +166,12 @@ dispatched. Every requirement in its reconciliation paragraph was done:
 
 ## Known gaps
 
-- `PROCESS_STATE_MUTATOR_TEST_FILES` is unchanged (still empty): the
-  `Deno.env` mutation was removed from the new tests instead. As a result the
-  quality-gate real-sudo test can no longer plant an ambient `GH_TOKEN` and
-  asserts only the declared prefix; the merge fast-check and module tests do
-  plant it through their spawn seam.
-- The values are also in the environment handed to `sudo` itself (as they
-  were); `env_reset` discards them there.
+- `PROCESS_STATE_MUTATOR_TEST_FILES` is unchanged (still empty): the `Deno.env`
+  mutation was removed from the new tests instead. As a result the quality-gate
+  real-sudo test can no longer plant an ambient `GH_TOKEN` and asserts only the
+  declared prefix; the merge fast-check and module tests do plant it through
+  their spawn seam.
+- The values are also in the environment handed to `sudo` itself (as they were);
+  `env_reset` discards them there.
 - Stdin `"inherit"` with declared credentials on the dropped quality-gate path
   is refused rather than supported.
