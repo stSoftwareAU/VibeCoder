@@ -28,6 +28,10 @@ import {
   type MutationCheckResult,
 } from "../lib/mutation_gate.ts";
 import type { MutationRunInput } from "../lib/mutation_runner.ts";
+import {
+  type DeferredPrRecord,
+  listDeferredPrs,
+} from "../lib/deferred_pr_store.ts";
 import { DRAFT_CONTINUATION_MARKER } from "../lib/draft_continuation_pr.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
@@ -123,6 +127,8 @@ interface Scenario {
   existingPrForBranch?: boolean;
   /** `gh pr create` fails on the primary quota, so the REST fallback opens the PR (Issue #4617). */
   prCreateRateLimited?: boolean;
+  /** `gh pr create` and the REST fallback both hit the secondary limit, so the PR is parked (Issue #4617). */
+  prCreateDeferred?: boolean;
 }
 
 interface Outcome {
@@ -141,6 +147,8 @@ interface Outcome {
   runnerInputs: MutationRunInput[];
   warnings: string[];
   infos: string[];
+  /** The records parked for the deferral drain. */
+  deferred: DeferredPrRecord[];
 }
 
 async function runCompletion(scenario: Scenario): Promise<Outcome> {
@@ -211,11 +219,27 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         ghCalls.push(args);
         if (args[0] === "pr" && args[1] === "create") {
           prCreateCalls++;
+          if (scenario.prCreateDeferred) {
+            return Promise.reject(
+              new Error(
+                "gh command skipped: GitHub secondary rate limit cool-down " +
+                  "(API rate limit already exceeded on a burst)",
+              ),
+            );
+          }
           if (scenario.prCreateRateLimited) {
             return Promise.reject(
               new Error("GraphQL: API rate limit exceeded for user ID 1."),
             );
           }
+        }
+        if (scenario.prCreateDeferred && args[0] === "api") {
+          return Promise.reject(
+            new Error(
+              "HTTP 403: You have exceeded a secondary rate limit and have " +
+                "been temporarily blocked from content creation.",
+            ),
+          );
         }
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(
@@ -304,8 +328,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   });
 
   let result;
+  let deferred: DeferredPrRecord[] = [];
   try {
     result = await workOnIssueCompletion(ctx, state, deps);
+    deferred = await listDeferredPrs(workDir);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
     await Deno.remove(workDir, { recursive: true });
@@ -326,6 +352,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     ghCalls,
     finalisePrCalls,
     comments,
+    deferred,
     runnerInputs,
     warnings,
     infos,
@@ -766,7 +793,7 @@ Deno.test("completion - a CI-blocking mutants job with every mutant killed raise
   assertEquals(outcome.comments.length, 0);
 });
 
-Deno.test("completion - a runner error with a blocking CI job is noted, unvalidated, and the PR is raised ready", async () => {
+Deno.test("completion - a runner error with a blocking CI job holds the PR as an incomplete-validation draft", async () => {
   const outcome = await runCompletion({
     mutation: { kind: "error", reason: "cargo mutants crashed" },
     workflow: CI_BLOCKING_WORKFLOW,
@@ -774,8 +801,47 @@ Deno.test("completion - a runner error with a blocking CI job is noted, unvalida
 
   assertEquals(outcome.status, "continue");
   assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(createCall(outcome).includes("--draft"), true);
+  const body = flagValue(createCall(outcome), "--body");
+  assertStringIncludes(body, DRAFT_CONTINUATION_MARKER);
+  assertStringIncludes(body, "could not finish");
+  assertStringIncludes(body, "Next action:");
+  assertStringIncludes(body, "unvalidated, not passed");
+  assertEquals(outcome.finalisePrCalls, 0, "auto-merge is not armed");
+});
+
+Deno.test("completion - a runner error without a blocking CI job is noted and the PR is raised ready", async () => {
+  const outcome = await runCompletion({
+    mutation: { kind: "error", reason: "cargo mutants crashed" },
+  });
+
+  assertEquals(outcome.status, "continue");
   assertEquals(createCall(outcome).includes("--draft"), false);
-  assertStringIncludes(outcome.comments[0] ?? "", "unvalidated, not passed");
+  assertEquals(outcome.finalisePrCalls, 1);
+});
+
+Deno.test("completion - an exhausted mutation budget with a blocking CI job holds the PR as a draft", async () => {
+  const outcome = await runCompletion({
+    mutation: {
+      kind: "budget_exhausted",
+      language: "deno",
+      survivors: [],
+      killed: 1,
+      tested: 1,
+      total: 5,
+      budgetSeconds: 300,
+    },
+    workflow: CI_BLOCKING_WORKFLOW,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.claudeCalls, 0, "no recovery turn can add mutants");
+  assertEquals(createCall(outcome).includes("--draft"), true);
+  assertStringIncludes(
+    flagValue(createCall(outcome), "--body"),
+    "Next action:",
+  );
+  assertEquals(outcome.finalisePrCalls, 0);
 });
 
 Deno.test("completion - a CI mutants job marked continue-on-error does not hold the PR", async () => {
@@ -859,6 +925,64 @@ Deno.test("completion - a held PR the REST fallback opens is converted to a draf
     "auto-merge is not armed",
   );
   assertEquals(outcome.finalisePrCalls, 0, "finalisePr is never called");
+});
+
+Deno.test("completion - the CI job's cargo mutants flags reach the worker's runner", async () => {
+  const outcome = await runCompletion({
+    mutation: completed([]),
+    workflow: CI_BLOCKING_WORKFLOW.replace(
+      "cargo mutants --in-diff x",
+      "cargo mutants --in-diff x --exclude-re 'impl Drop' --package core",
+    ),
+  });
+
+  assertEquals(outcome.runnerInputs.length, 1);
+  assertEquals(outcome.runnerInputs[0]!.cargoMutantsArgs, [
+    "--exclude-re",
+    "impl Drop",
+    "--package",
+    "core",
+  ]);
+});
+
+Deno.test("completion - without a blocking CI job no extra flags reach the runner", async () => {
+  const outcome = await runCompletion({ mutation: completed([]) });
+  assertEquals(outcome.runnerInputs.length, 1);
+  assertEquals("cargoMutantsArgs" in outcome.runnerInputs[0]!, false);
+});
+
+Deno.test("completion - a held PR parked by the secondary limit is recorded as a draft for the drain", async () => {
+  const outcome = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow: CI_BLOCKING_WORKFLOW,
+    prCreateDeferred: true,
+  });
+
+  assertEquals(outcome.status, "early_exit", outcome.reason);
+  assertEquals(outcome.deferred.length, 1, "the held PR is parked");
+  assertEquals(
+    outcome.deferred[0]!.draft,
+    true,
+    "the drain opens it as a draft",
+  );
+  assertStringIncludes(
+    outcome.deferred[0]!.body,
+    DRAFT_CONTINUATION_MARKER,
+    "the parked body is the hold body",
+  );
+  assertEquals(prVerbCalls(outcome, "merge").length, 0);
+  assertEquals(outcome.finalisePrCalls, 0);
+});
+
+Deno.test("completion - an ordinary PR parked by the secondary limit is not a draft", async () => {
+  const outcome = await runCompletion({
+    mutation: completed([]),
+    workflow: CI_BLOCKING_WORKFLOW,
+    prCreateDeferred: true,
+  });
+
+  assertEquals(outcome.deferred.length, 1);
+  assertEquals("draft" in outcome.deferred[0]!, false);
 });
 
 Deno.test("completion - a workflow lookup that throws is noted as non-blocking and the PR is raised ready", async () => {

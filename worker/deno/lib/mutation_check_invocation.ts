@@ -65,6 +65,8 @@ export interface MutationCheckInvocation {
    * a test injects its own so a low reading does not depend on process state.
    */
   parkBuild?: (cwd: string) => Promise<string | null>;
+  /** `cargo mutants` flags from the repository's CI job (Issue #4617). */
+  cargoMutantsArgs?: readonly string[];
 }
 
 /**
@@ -129,6 +131,9 @@ export async function invokeMutationCheck(
       diff: diff.value,
       budgetSeconds,
       credentialEnv: credentials.value.env,
+      ...(opts.cargoMutantsArgs && opts.cargoMutantsArgs.length > 0
+        ? { cargoMutantsArgs: opts.cargoMutantsArgs }
+        : {}),
     });
   } catch (error) {
     return {

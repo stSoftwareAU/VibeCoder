@@ -114,6 +114,12 @@ export interface MutationRunInput {
    * nothing else beyond the allowlist does.
    */
   credentialEnv?: Record<string, string>;
+  /**
+   * `cargo mutants` flags taken from the repository's own CI job (Issue
+   * #4617): package, features and exclude/examine patterns, so the worker
+   * tries the mutants CI tries. Rust only.
+   */
+  cargoMutantsArgs?: readonly string[];
 }
 
 const DENO_MARKERS = ["deno.json", "deno.jsonc", "deno.lock"];
@@ -848,6 +854,7 @@ async function runCargoMutants(
     [
       "mutants",
       ...packages.flatMap((p) => ["--package", p]),
+      ...(input.cargoMutantsArgs ?? []),
       "--in-diff",
       diffPath,
       "--output",

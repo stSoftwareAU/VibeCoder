@@ -22,6 +22,12 @@
  *   `cargo mutants; echo done || true` is treated as non-failing even though
  *   the `cargo mutants` failure would stop the step.
  *
+ * A mutation job that another job in the workflow lists under `needs` feeds
+ * that aggregator, so a required check on the aggregator fails with it; the
+ * aggregator is named in the result. The `cargo mutants` flags of the job's
+ * command (package, features, exclude patterns) are carried so the worker's
+ * run uses them (see `extractCargoMutantsArgs`).
+ *
  * Files that cannot be read or parsed are reported in `unreadable` rather than
  * being treated as non-blocking silently, so the caller can log them.
  *
@@ -37,6 +43,17 @@ export interface BlockingMutationJob {
   workflow: string;
   /** Job key under `jobs:`. */
   job: string;
+  /**
+   * The first job in the same workflow whose `needs` lists this job (the
+   * aggregator that feeds a required check), when there is one.
+   */
+  aggregator?: string;
+  /**
+   * The `cargo mutants` flags of the job's command that change which mutants
+   * are tried or how the tree builds (see `extractCargoMutantsArgs`), so the
+   * worker's own run can use the same ones. Empty for other tools.
+   */
+  cargoArgs: string[];
 }
 
 /** Result of scanning a repository's workflows for a blocking mutation job. */
@@ -145,28 +162,112 @@ function logicalLines(run: string): string[] {
 }
 
 /**
- * Whether one `run` script contains a mutation-tool invocation that can fail
- * the step. Each logical line (see `logicalLines`) is checked unless it is
- * non-failing (see `isNonFailing`).
+ * The first blocking mutation command line of a job (the line `cargoArgs` is
+ * read from), or `null` when no step of the job runs the tool in a way that
+ * can fail it.
  */
-function runFailsOnMutation(run: string): boolean {
-  return logicalLines(run).some((line) =>
-    !isNonFailing(line) &&
-    (CARGO_MUTANTS.test(line) || DENO_MUTATION_TASK.test(line))
-  );
+function blockingMutationLine(job: Mapping): string | null {
+  if (isTrueFlag(job["continue-on-error"])) return null;
+  const steps = job.steps;
+  if (!Array.isArray(steps)) return null;
+  for (const step of steps) {
+    if (
+      !isMapping(step) || typeof step.run !== "string" ||
+      isTrueFlag(step["continue-on-error"])
+    ) continue;
+    const line = logicalLines(step.run).find((l) =>
+      !isNonFailing(l) && (CARGO_MUTANTS.test(l) || DENO_MUTATION_TASK.test(l))
+    );
+    if (line !== undefined) return line;
+  }
+  return null;
 }
 
-/** Whether a job runs the mutation tool in a step that can fail the job. */
-function jobRunsBlockingMutation(job: Mapping): boolean {
-  if (isTrueFlag(job["continue-on-error"])) return false;
-  const steps = job.steps;
-  if (!Array.isArray(steps)) return false;
-  return steps.some((step) =>
-    isMapping(step) &&
-    typeof step.run === "string" &&
-    !isTrueFlag(step["continue-on-error"]) &&
-    runFailsOnMutation(step.run)
-  );
+/** Longest flag value taken from a workflow file. */
+const MAX_FLAG_VALUE_LENGTH = 500;
+
+/** `cargo mutants` flags that take a value, as `--flag value` or `--flag=value`. */
+const VALUE_FLAGS = new Set([
+  "--package",
+  "-p",
+  "--exclude",
+  "--exclude-re",
+  "-E",
+  "--examine-re",
+  "-F",
+  "--features",
+  "--exclude-file",
+]);
+
+/** `cargo mutants` flags without a value. */
+const BOOLEAN_FLAGS = new Set([
+  "--workspace",
+  "--all-features",
+  "--no-default-features",
+]);
+
+/**
+ * The `cargo mutants` flags in one command line that decide which mutants are
+ * tried or how the tree builds: package, workspace, feature and the
+ * exclude/examine patterns. Output, diff, jobs, timeout and shuffle flags are
+ * left to the worker. Values are passed as separate argv words (never through
+ * a shell); a value that is empty, starts with `-`, holds a shell
+ * metacharacter outside a quoted pair, or exceeds the length cap drops that
+ * flag.
+ */
+export function extractCargoMutantsArgs(line: string): string[] {
+  const at = line.search(CARGO_MUTANTS);
+  if (at < 0) return [];
+  // A quoted value may hold spaces; the quotes are removed by `clean`.
+  const words = line.slice(at).match(/(?:[^\s"']|"[^"]*"|'[^']*')+/g) ?? [];
+  const out: string[] = [];
+  const clean = (raw: string): string | null => {
+    const value = raw.replace(/^(["'])(.*)\1$/, "$2");
+    if (
+      value === "" || value.length > MAX_FLAG_VALUE_LENGTH ||
+      value.startsWith("-") || /[;&|`$<>\\]/.test(value)
+    ) return null;
+    return value;
+  };
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!;
+    if (word === ";" || word === "&&" || word === "||" || word === "|") break;
+    if (BOOLEAN_FLAGS.has(word)) {
+      out.push(word);
+      continue;
+    }
+    const eq = word.indexOf("=");
+    if (eq > 0 && VALUE_FLAGS.has(word.slice(0, eq))) {
+      const value = clean(word.slice(eq + 1));
+      if (value !== null) out.push(word.slice(0, eq), value);
+      continue;
+    }
+    // A following flag is not this flag's value; it is read on its own turn.
+    if (
+      VALUE_FLAGS.has(word) && i + 1 < words.length &&
+      !words[i + 1]!.startsWith("-")
+    ) {
+      const value = clean(words[i + 1]!);
+      i++;
+      if (value !== null) out.push(word, value);
+    }
+  }
+  return out;
+}
+
+/** The first job whose `needs` lists `jobName`, if any. */
+function findAggregator(jobs: Mapping, jobName: string): string | undefined {
+  for (const [name, job] of Object.entries(jobs)) {
+    if (!isMapping(job) || name === jobName) continue;
+    const needs = job.needs;
+    const list = typeof needs === "string"
+      ? [needs]
+      : Array.isArray(needs)
+      ? needs
+      : [];
+    if (list.includes(jobName)) return name;
+  }
+  return undefined;
 }
 
 /**
@@ -205,8 +306,15 @@ export async function findBlockingMutationJob(
     if (!isMapping(doc.jobs)) continue;
 
     for (const [jobName, job] of Object.entries(doc.jobs)) {
-      if (isMapping(job) && jobRunsBlockingMutation(job)) {
-        blocking = { workflow: name, job: jobName };
+      const line = isMapping(job) ? blockingMutationLine(job) : null;
+      if (line !== null) {
+        const aggregator = findAggregator(doc.jobs, jobName);
+        blocking = {
+          workflow: name,
+          job: jobName,
+          ...(aggregator !== undefined ? { aggregator } : {}),
+          cargoArgs: extractCargoMutantsArgs(line),
+        };
         break;
       }
     }

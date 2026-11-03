@@ -384,6 +384,11 @@ export interface PhaseState {
     workflow: string;
     /** The mutation gate's comment, carried into the draft body. */
     comment: string;
+    /**
+     * The check could not finish (no genuine survivor): the draft says
+     * validation is incomplete and names the next action.
+     */
+    incomplete?: { nextAction: string };
   };
   /**
    * Review-style findings from the pre-PR verifier that

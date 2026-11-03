@@ -414,3 +414,33 @@ Deno.test("findMergedPrUrlViaRest - a closed-but-unmerged PR is not the run's PR
   assert(!result.ok);
   assertStringIncludes(result.error.message, "No merged PR");
 });
+
+Deno.test("createPullRequestViaRest - a draft is sent as a boolean field (Issue #4617)", async () => {
+  const rec = recorder(() => "https://github.com/acme/widgets/pull/8\n");
+  const result = await createPullRequestViaRest({
+    repo: "acme/widgets",
+    title: "t",
+    body: "b",
+    head: "h",
+    base: "main",
+    draft: true,
+  }, { ghCommandFn: rec.fn });
+  assert(result.ok);
+  const args = rec.calls[0]!;
+  const at = args.indexOf("draft=true");
+  assert(at > 0, args.join(" "));
+  assertEquals(args[at - 1], "-F");
+});
+
+Deno.test("createPullRequestViaRest - no draft field unless asked (Issue #4617)", async () => {
+  const rec = recorder(() => "https://github.com/acme/widgets/pull/9\n");
+  await createPullRequestViaRest({
+    repo: "acme/widgets",
+    title: "t",
+    body: "b",
+    head: "h",
+    base: "main",
+    draft: false,
+  }, { ghCommandFn: rec.fn });
+  assertEquals(rec.calls[0]!.some((a) => a.startsWith("draft=")), false);
+});

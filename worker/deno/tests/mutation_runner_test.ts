@@ -1687,3 +1687,26 @@ Deno.test("makeMutationTempDir - a fallback root whose temp dir is refused rejec
     await Deno.remove(testRoot, { recursive: true });
   }
 });
+
+Deno.test("runMutationCheck rust - the CI job's flags reach cargo mutants (Issue #4617)", async () => {
+  const f = rustFake(outcomesJson([["CaughtMutant", 2]]), ok(0));
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--exclude-re", "impl Drop", "--features", "a,b"],
+  }, f.seams);
+  assert(r.kind === "completed", JSON.stringify(r));
+  assertEquals(f.calls[0]?.args, [
+    "mutants",
+    "--exclude-re",
+    "impl Drop",
+    "--features",
+    "a,b",
+    "--in-diff",
+    `${REPO}/target/vibe-mutation-check.diff`,
+    "--output",
+    "/tmp/vibe-mutation-1",
+    "--no-shuffle",
+    "--jobs",
+    "2",
+  ]);
+});

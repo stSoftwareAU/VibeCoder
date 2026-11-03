@@ -58,7 +58,7 @@ Deno.test("cargo mutants on a pull_request job is blocking", async () => {
     ].join("\n"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutants.yml", job: "mutants" },
+      blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: [],
     });
   });
@@ -76,7 +76,11 @@ Deno.test("cargo-mutants (hyphen form) is blocking", async () => {
     ].join("\n"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutation.yaml", job: "mutation" },
+      blocking: {
+        workflow: "mutation.yaml",
+        job: "mutation",
+        cargoArgs: ["--workspace"],
+      },
       unreadable: [],
     });
   });
@@ -94,7 +98,7 @@ Deno.test("deno task mutation-check is blocking", async () => {
     ].join("\n"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "check.yml", job: "check" },
+      blocking: { workflow: "check.yml", job: "check", cargoArgs: [] },
       unreadable: [],
     });
   });
@@ -188,7 +192,7 @@ Deno.test("trigger shapes: push, pull_request_target, array and object", async (
     "mutants.yml": ["on: [push, pull_request]", ...job].join("\n"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutants.yml", job: "mutants" },
+      blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: [],
     });
   });
@@ -197,7 +201,7 @@ Deno.test("trigger shapes: push, pull_request_target, array and object", async (
     "mutants.yml": ["on:", "  push:", "  pull_request:", ...job].join("\n"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutants.yml", job: "mutants" },
+      blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: [],
     });
   });
@@ -208,7 +212,7 @@ Deno.test("trigger shapes: push, pull_request_target, array and object", async (
     "mutants.yml": ["true:", "  pull_request:", ...job].join("\n"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutants.yml", job: "mutants" },
+      blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: [],
     });
   });
@@ -236,7 +240,7 @@ Deno.test("malformed workflow is reported unreadable; valid sibling still found"
     ].join("\n"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "a_mutants.yml", job: "mutants" },
+      blocking: { workflow: "a_mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: ["z_broken.yml"],
     });
   });
@@ -276,7 +280,7 @@ Deno.test("cargo mutants on the second line of a run block is blocking", async (
     ].join("\n"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutants.yml", job: "mutants" },
+      blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: [],
     });
   });
@@ -347,7 +351,7 @@ Deno.test("a no-op tail after a comment marker does not exempt cargo mutants", a
     { "mutants.yml": prWorkflow("cargo mutants # || true") },
     async (repo) => {
       assertEquals(await findBlockingMutationJob(repo), {
-        blocking: { workflow: "mutants.yml", job: "mutants" },
+        blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
         unreadable: [],
       });
     },
@@ -371,7 +375,7 @@ Deno.test("a no-op tail on a different command does not exempt cargo mutants", a
     "mutants.yml": prWorkflow('echo "|| true" ; cargo mutants'),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutants.yml", job: "mutants" },
+      blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: [],
     });
   });
@@ -382,7 +386,7 @@ Deno.test("cargo +toolchain mutants is blocking", async () => {
     "mutants.yml": prWorkflow("cargo +nightly mutants --in-place"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutants.yml", job: "mutants" },
+      blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: [],
     });
   });
@@ -393,7 +397,7 @@ Deno.test("a line continuation joins cargo and mutants", async () => {
     "mutants.yml": prWorkflow(["cargo \\", "  mutants --in-place"].join("\n")),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutants.yml", job: "mutants" },
+      blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: [],
     });
   });
@@ -449,8 +453,203 @@ Deno.test("hostile: a 200000-space run before a non-no-op tail returns promptly"
     "mutants.yml": prWorkflow("cargo mutants" + " ".repeat(200000) + "|| x"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
-      blocking: { workflow: "mutants.yml", job: "mutants" },
+      blocking: { workflow: "mutants.yml", job: "mutants", cargoArgs: [] },
       unreadable: [],
     });
   });
+});
+
+import { extractCargoMutantsArgs } from "../lib/ci_mutation_contract.ts";
+
+Deno.test("a workflow entry that is a directory named like a workflow is skipped", async () => {
+  await withRepo(undefined, async (repo) => {
+    await Deno.mkdir(`${repo}/.github/workflows/mutants.yml`, {
+      recursive: true,
+    });
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("only .yml and .yaml files are workflows", async () => {
+  await withRepo({
+    "mutants.txt": prWorkflow("cargo mutants"),
+    "mutants.yml.bak": prWorkflow("cargo mutants"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a document that is a list, null or a scalar is unreadable, not blocking", async () => {
+  await withRepo({
+    "a.yml": "- on: pull_request\n",
+    "b.yml": "null\n",
+    "c.yml": "just text\n",
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: ["a.yml", "b.yml", "c.yml"],
+    });
+  });
+});
+
+Deno.test("jobs that are not a mapping are ignored", async () => {
+  await withRepo({
+    "a.yml": "on: pull_request\njobs:\n  - cargo mutants\n",
+    "b.yml": "on: pull_request\njobs:\n  m: cargo mutants\n",
+    "c.yml":
+      "on: pull_request\njobs:\n  m:\n    steps:\n      - cargo mutants\n",
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test('continue-on-error: "true" (a string) is also not blocking, at job and step level', async () => {
+  const job = (flagAt: "job" | "step") =>
+    [
+      "on: pull_request",
+      "jobs:",
+      "  m:",
+      ...(flagAt === "job" ? ['    continue-on-error: "true"'] : []),
+      "    steps:",
+      "      - run: cargo mutants",
+      ...(flagAt === "step" ? ['        continue-on-error: "true"'] : []),
+      "",
+    ].join("\n");
+  await withRepo(
+    { "a.yml": job("job"), "b.yml": job("step") },
+    async (repo) => {
+      assertEquals(await findBlockingMutationJob(repo), {
+        blocking: null,
+        unreadable: [],
+      });
+    },
+  );
+});
+
+Deno.test("a trigger that is neither string, array nor mapping does not count", async () => {
+  await withRepo({
+    "a.yml": "on: 5\njobs:\n  m:\n    steps:\n      - run: cargo mutants\n",
+    "b.yml": "on:\njobs:\n  m:\n    steps:\n      - run: cargo mutants\n",
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a job another job needs is reported with its aggregator", async () => {
+  await withRepo({
+    "ci.yml": [
+      "on: pull_request",
+      "jobs:",
+      "  mutants:",
+      "    steps:",
+      "      - run: cargo mutants --exclude-re 'impl Drop' --package core",
+      "  gate:",
+      "    needs: [lint, mutants]",
+      "    steps:",
+      "      - run: echo ok",
+      "",
+    ].join("\n"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: {
+        workflow: "ci.yml",
+        job: "mutants",
+        aggregator: "gate",
+        cargoArgs: ["--exclude-re", "impl Drop", "--package", "core"],
+      },
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a string needs also names the aggregator; an unrelated needs does not", async () => {
+  const wf = (needs: string) =>
+    [
+      "on: pull_request",
+      "jobs:",
+      "  mutants:",
+      "    steps:",
+      "      - run: cargo mutants",
+      "  gate:",
+      `    needs: ${needs}`,
+      "    steps:",
+      "      - run: echo ok",
+      "",
+    ].join("\n");
+  await withRepo({ "ci.yml": wf("mutants") }, async (repo) => {
+    assertEquals(
+      (await findBlockingMutationJob(repo)).blocking?.aggregator,
+      "gate",
+    );
+  });
+  await withRepo({ "ci.yml": wf("lint") }, async (repo) => {
+    assertEquals(
+      (await findBlockingMutationJob(repo)).blocking?.aggregator,
+      undefined,
+    );
+  });
+});
+
+Deno.test("extractCargoMutantsArgs keeps scope flags and drops the rest", () => {
+  assertEquals(
+    extractCargoMutantsArgs(
+      "cargo mutants --in-diff pr.diff --jobs 4 --workspace --all-features --no-default-features -F serde -E=skip_me --features=a,b --output out",
+    ),
+    [
+      "--workspace",
+      "--all-features",
+      "--no-default-features",
+      "-F",
+      "serde",
+      "-E",
+      "skip_me",
+      "--features",
+      "a,b",
+    ],
+  );
+});
+
+Deno.test("extractCargoMutantsArgs unquotes values and refuses unsafe ones", () => {
+  assertEquals(
+    extractCargoMutantsArgs(`cargo mutants --exclude-re "tracing"`),
+    ["--exclude-re", "tracing"],
+  );
+  assertEquals(extractCargoMutantsArgs("cargo mutants -p $(evil)"), []);
+  assertEquals(extractCargoMutantsArgs("cargo mutants -p --workspace"), [
+    "--workspace",
+  ]);
+  assertEquals(extractCargoMutantsArgs("cargo mutants -p a;b"), []);
+  assertEquals(
+    extractCargoMutantsArgs(`cargo mutants -p ${"x".repeat(501)}`),
+    [],
+  );
+  assertEquals(extractCargoMutantsArgs("cargo mutants -p "), []);
+});
+
+Deno.test("extractCargoMutantsArgs stops at a command separator and ignores other tools", () => {
+  assertEquals(
+    extractCargoMutantsArgs("cargo mutants && cargo build --features x"),
+    [],
+  );
+  assertEquals(
+    extractCargoMutantsArgs("cargo mutants ; cargo test -p x"),
+    [],
+  );
+  assertEquals(extractCargoMutantsArgs("deno task mutation -p x"), []);
+  assertEquals(extractCargoMutantsArgs("echo hi && cargo mutants -p core"), [
+    "-p",
+    "core",
+  ]);
 });

@@ -38,6 +38,8 @@ export interface RestPrCreateOptions {
   base: string;
   /** Reviewers to request — best-effort, never fails the creation. */
   reviewers?: readonly string[];
+  /** Open the pull request as a draft (Issue #4617: a mutation-held PR). */
+  draft?: boolean;
 }
 
 /** Injection seams. */
@@ -270,6 +272,8 @@ export async function createPullRequestViaRest(
       `head=${head}`,
       "-f",
       `base=${base}`,
+      // `-F` sends a JSON boolean; `-f` would send the string "true".
+      ...(options.draft === true ? ["-F", "draft=true"] : []),
       "--jq",
       ".html_url",
     ]);

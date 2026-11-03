@@ -742,8 +742,11 @@ async function postCompletionAdvisory(
   const intro = state.mutationHold
     ? "The implementing run could not finish validation: the repository's " +
       `CI job \`${state.mutationHold.job}\` blocks on surviving mutants and ` +
-      "the worker's mutation check still reports them after the one " +
-      "in-session recovery turn. This pull request is a draft and auto-merge " +
+      (state.mutationHold.incomplete
+        ? "the worker's mutation check could not finish. "
+        : "the worker's mutation check still reports them after the one " +
+          "in-session recovery turn. ") +
+      "This pull request is a draft and auto-merge " +
       "is not armed; the next run continues this branch."
     : "The implementing run was told about these findings once, in that same " +
       "session. They did not block this pull request, and auto-merge stays " +
@@ -2768,9 +2771,38 @@ async function completionBody(
   // ---------------------------------------------------------------------
   let mutationVerdict: LateSummaryVerdict;
   {
+    // Issue #4617: a PR-triggered job in the repository's own CI that runs the
+    // mutation tool and can fail. Read before the check so the worker runs
+    // `cargo mutants` with the flags CI uses. A lookup fault is logged and
+    // read as non-blocking, so it cannot crash the phase.
+    let ciBlock: CiMutationBlock | undefined;
+    let ciCargoArgs: string[] = [];
+    try {
+      const contract = await findBlockingMutationJob(state.repoPath);
+      for (const workflow of contract.unreadable) {
+        logger.warn(
+          `Workflow file ${workflow} could not be read or parsed, so CI's mutation contract is unknown (Issue #4617)`,
+          { repo, issueNumber, workflow },
+        );
+      }
+      ciBlock = contract.blocking
+        ? { workflow: contract.blocking.workflow, job: contract.blocking.job }
+        : undefined;
+      ciCargoArgs = contract.blocking?.cargoArgs ?? [];
+    } catch (error: unknown) {
+      logger.warn(
+        "Could not read the repository's CI workflows, so the mutation check is treated as non-blocking (Issue #4617)",
+        {
+          repo,
+          issueNumber,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
     const mutationResult = await invokeMutationCheck({
       repo,
       repoPath: state.repoPath,
+      cargoMutantsArgs: ciCargoArgs,
       repoConfigs: config.repoConfig,
       runner: deps.quality.runMutationCheck,
       logger,
@@ -2810,31 +2842,6 @@ async function completionBody(
       const fault = hostDiskInfrastructureFailure(mutationResult.reason);
       if (fault) return fault;
     }
-    // Issue #4617: a PR-triggered job in the repository's own CI that runs the
-    // mutation tool and can fail. A lookup fault is logged and read as
-    // non-blocking, so it cannot crash the phase.
-    let ciBlock: CiMutationBlock | undefined;
-    if (mutationResult.kind !== "not_applicable") {
-      try {
-        const contract = await findBlockingMutationJob(state.repoPath);
-        for (const workflow of contract.unreadable) {
-          logger.warn(
-            `Workflow file ${workflow} could not be read or parsed, so CI's mutation contract is unknown (Issue #4617)`,
-            { repo, issueNumber, workflow },
-          );
-        }
-        ciBlock = contract.blocking ?? undefined;
-      } catch (error: unknown) {
-        logger.warn(
-          "Could not read the repository's CI workflows, so the mutation check is treated as non-blocking (Issue #4617)",
-          {
-            repo,
-            issueNumber,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-      }
-    }
     const gate = evaluateMutationGate(mutationResult, prBody, ciBlock);
     if (gate.budgetExhausted) {
       logger.warn(gate.note, { repo, issueNumber });
@@ -2860,6 +2867,7 @@ async function completionBody(
         job: gate.ciBlock.job,
         workflow: gate.ciBlock.workflow,
         comment: buildMutationGateComment(gate),
+        ...(gate.incomplete ? { incomplete: gate.incomplete } : {}),
       }
       : undefined;
     mutationVerdict = {
@@ -3566,9 +3574,8 @@ async function completionBody(
   // Issue #4617: a held pull request is raised as a draft whose body says
   // validation is incomplete. The REST fallback below converts the PR to a
   // draft after creation. The deferred-creation path (a GitHub secondary rate
-  // limit parked the PR; `lib/deferred_pr_drain.ts` opens it later over REST)
-  // cannot open a draft, so a held PR created that way is raised ready for
-  // review. This is a known gap.
+  // limit parked the PR) records `draft: true`, so `lib/deferred_pr_drain.ts`
+  // opens it later over REST as a draft; the drain never arms auto-merge.
   const createBody = state.mutationHold
     ? buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold)
     : prBody;
@@ -3627,6 +3634,7 @@ async function completionBody(
       base: baseBranch,
       reviewers: prReviewers,
       advisoryComment: "",
+      ...(state.mutationHold ? { draft: true } : {}),
     });
   }
 
@@ -3704,6 +3712,7 @@ async function completionBody(
             base: baseBranch,
             reviewers: prReviewers,
             advisoryComment: "",
+            ...(state.mutationHold ? { draft: true } : {}),
           },
         );
       } else {

@@ -82,9 +82,17 @@ export interface MutationGateVerdict {
   note: string;
   /**
    * The repository's CI job blocks on the surviving mutants, so PR-summary
-   * exemptions do not apply. Set only when genuine survivors hold the PR.
+   * exemptions do not apply. Set when genuine survivors hold the PR, and also
+   * (with `incomplete`) when the check could not finish on such a repository.
    */
   ciBlock?: CiMutationBlock;
+  /**
+   * The check could not finish (a run error, or a budget or cap that left
+   * mutants untested) on a repository whose CI blocks on the mutation job, so
+   * the change is unvalidated, not passed (Issue #4617). `nextAction` names
+   * what to do before re-running.
+   */
+  incomplete?: { nextAction: string };
   /**
    * The check could not run because of a host fault (its temporary directory),
    * so the comment reports a worker fault rather than judging the code.
@@ -1471,6 +1479,10 @@ export function parseMutationExemptions(
 // Verdict and comment
 // ---------------------------------------------------------------------------
 
+/** What to do when the mutation check errors before it can judge anything. */
+const ERROR_NEXT_ACTION =
+  "fix the baseline build or test failure or install the missing tool, then re-run";
+
 /**
  * Verdict for a mutation-check result, honouring PR-summary exemptions unless
  * a blocking repository CI job (`ciBlock`) reads the survivors instead.
@@ -1490,6 +1502,9 @@ export function evaluateMutationGate(
       note: `mutation check not applicable: ${result.reason}`,
     };
   }
+  const ci = ciBlock
+    ? { workflow: ciLabel(ciBlock.workflow), job: ciLabel(ciBlock.job) }
+    : undefined;
   if (result.kind === "error") {
     if (result.reason.startsWith(MUTATION_TEMP_DIR_UNWRITABLE)) {
       // Still blocks (fail closed), but names the host fault rather than
@@ -1503,12 +1518,19 @@ export function evaluateMutationGate(
         budgetExhausted: false,
         note: "",
         workerFault: true,
+        ...(ci
+          ? {
+            ciBlock: ci,
+            incomplete: {
+              nextAction:
+                "free or fix the worker's temporary directory, then re-run",
+            },
+          }
+          : {}),
       };
     }
-    const ciNote = ciBlock
-      ? ` — the repository's CI job '${
-        ciLabel(ciBlock.job)
-      }' will run the same check, so this change is unvalidated, not passed; fix the baseline build or test failure or the missing tool, then re-run`
+    const ciNote = ci
+      ? ` — the repository's CI job '${ci.job}' will run the same check, so this change is unvalidated, not passed; ${ERROR_NEXT_ACTION}`
       : "";
     return {
       blocked: true,
@@ -1518,11 +1540,14 @@ export function evaluateMutationGate(
       exempted: [],
       budgetExhausted: false,
       note: "",
+      ...(ci
+        ? {
+          ciBlock: ci,
+          incomplete: { nextAction: ERROR_NEXT_ACTION },
+        }
+        : {}),
     };
   }
-  const ci = ciBlock
-    ? { workflow: ciLabel(ciBlock.workflow), job: ciLabel(ciBlock.job) }
-    : undefined;
   // A blocking CI job never reads the PR summary, so no exemption applies.
   const exemptions: ReturnType<typeof parseMutationExemptions> = ci
     ? []
@@ -1571,6 +1596,23 @@ export function evaluateMutationGate(
   if (ci && result.kind === "budget_exhausted") {
     note +=
       ` — the repository's CI job '${ci.job}' will still try every mutant`;
+    // Untested mutants are unvalidated, not passed: the PR is held as a draft
+    // so the next run can finish the check (Issue #4617). Not `blocked`, since
+    // a recovery turn cannot add mutants to the budget.
+    return {
+      blocked: false,
+      reason: "",
+      survivors,
+      exempted,
+      budgetExhausted,
+      note,
+      ciBlock: ci,
+      incomplete: {
+        nextAction: result.limit === "mutant_cap"
+          ? "re-run once the change is narrower than the mutant cap, or run the CI job's own command to try the untested mutants"
+          : "re-run with a larger mutation budget, or run the CI job's own command to try the untested mutants",
+      },
+    };
   }
   return {
     blocked: false,
@@ -1597,11 +1639,21 @@ export function buildMutationGateComment(verdict: MutationGateVerdict): string {
   const out: string[] = [
     verdict.workerFault
       ? "## Mutation check: could not run (worker fault)"
+      : verdict.incomplete && verdict.survivors.length === 0
+      ? "## Mutation check: validation incomplete"
       : "## Mutation check: changed lines are not pinned",
     "",
   ];
   out.push(verdict.reason ? mdSafe(verdict.reason) + "." : "");
   out.push("");
+  if (verdict.incomplete && verdict.survivors.length === 0) {
+    out.push(
+      `Validation did not finish, so this change is unvalidated, not passed. Next action: ${
+        mdSafe(verdict.incomplete.nextAction)
+      }.`,
+      "",
+    );
+  }
   if (verdict.survivors.length > 0) {
     out.push(
       "No test went red when each of these mutations was applied to the changed line:",

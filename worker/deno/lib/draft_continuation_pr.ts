@@ -193,18 +193,30 @@ export function buildUnmetDraftBody(issueNumber: number, body: string): string {
 export function buildMutationHoldDraftBody(
   issueNumber: number,
   body: string,
-  hold: { job: string; workflow: string; comment: string },
+  hold: {
+    job: string;
+    workflow: string;
+    comment: string;
+    incomplete?: { nextAction: string };
+  },
 ): string {
   const job = mdSafe(hold.job);
   const workflow = mdSafe(hold.workflow);
   return [
     DRAFT_CONTINUATION_MARKER,
     "",
-    `> **Draft — validation incomplete.** The worker's mutation check still ` +
-    "reports surviving mutants on the changed lines, and this repository's " +
-    `CI job \`${job}\` (${workflow}) blocks on them. Part of #${issueNumber}. ` +
+    `> **Draft — validation incomplete.** ${
+      hold.incomplete
+        ? "The worker's mutation check could not finish on the changed lines, " +
+          `so they are unvalidated, not passed, and this repository's `
+        : "The worker's mutation check still reports surviving mutants on " +
+          "the changed lines, and this repository's "
+    }` +
+    `CI job \`${job}\` (${workflow}) blocks on ${
+      hold.incomplete ? "that check" : "them"
+    }. Part of #${issueNumber}. ` +
     "The next run continues this branch; the pull request is marked ready " +
-    "only when no survivor is left.",
+    "only when the mutation check finishes with no survivor left.",
     "",
     hold.comment,
     "",
