@@ -88,4 +88,19 @@ bullet beside the argv-placement bullet). Sibling grep for the work-root grant
   allowlist failure were reproduced on the base commit (a detached worktree of
   `HEAD` before these edits): the real drop hit a `0700` temp directory.
 
-Gate result: pending, recorded below once `./quality.sh` has finished.
+Results on the final head:
+`deno task test:unit` for `untrusted_gate_spawn_test.ts` (26 passed),
+`milestone_resolution_gate_test.ts` (34 passed, parallel pass) and
+`milestone_merge_gate_test.ts` (41 passed, serial pass); `work_root_group_grant_test.ts`
+is an integration suite and was run with `deno test` (6 passed). `deno fmt`,
+`deno lint`, `deno check` pass on the touched files.
+
+`./quality.sh` on the final head: every stage passes except `deno tests`
+(parallel pass: 31980 passed, 1 failed). The one failure is
+`fleet_pr_babysitter_test.ts` "babysitter default heartbeat resolves its
+checkout revision", which cannot fetch `jsr.io/@std/crypto` in the sandbox and
+fails the same way on the base commit; it is not touched here. The serial pass
+did not run because the parallel pass failed. The milestone allowlist test that
+failed in earlier gate runs on this host now passes. Not run: the Spec and
+Standards reviewers (the issue states no acceptance-criteria heading) and
+`deno task pr-summary-check`.
