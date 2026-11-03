@@ -30,9 +30,6 @@ export function dependabotAction(
   if (pr.mergeable === "CONFLICTING") {
     return { kind: "none", reason: "conflicting, waiting on Dependabot" };
   }
-  if (pr.mergeStateStatus === "BEHIND") {
-    return { kind: "none", reason: "branch update follows approval" };
-  }
   if (pr.autoMergeRequest) return { kind: "none", reason: "auto-merge armed" };
   const approvedByReviewer = pr.reviews.nodes.some((r) =>
     sameLogin(r.author?.login, reviewer) && r.state === "APPROVED" &&

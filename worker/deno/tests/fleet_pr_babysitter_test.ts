@@ -64,6 +64,7 @@ import {
   type CloneForRepairDeps,
   defaultRemoteUrl,
   eligibleAuthor,
+  fix,
   loadConfigAndPublishDeployment,
   prBodyEditArgs,
   publishBabysitterDeployment,
@@ -562,6 +563,59 @@ const pr = {
   reviewDecision: null,
   statusCheckRollup: [{ conclusion: "SUCCESS" }],
 };
+
+import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
+
+for (const decision of ["REVIEW_REQUIRED", "APPROVED"]) {
+  Deno.test(`babysitter behind anchor uses strict readiness: ${decision}`, async () => {
+    const f = strictRefreshFixture();
+    f.state.decision = decision;
+    const initial = { ...pr, headRefOid: f.head, mergeStateStatus: "BEHIND" };
+    let updated = false;
+    const gh = async (args: string[]) => {
+      if (
+        args[0] === "pr" && args[1] === "view" &&
+        args.at(-1)?.includes("statusCheckRollup")
+      ) {
+        return JSON.stringify({
+          ...initial,
+          headRefOid: updated ? "d".repeat(40) : f.head,
+        });
+      }
+      if (args.includes("PUT")) {
+        // The anchor's repair lock must be gone, while shared ownership remains.
+        assertEquals(
+          f.comments.some((row) =>
+            row.body.includes("<!-- BRANCH_UPDATE_LOCK:")
+          ),
+          false,
+        );
+        assertEquals(
+          f.comments.some((row) =>
+            row.body.includes("<!-- BASE_REFRESH_OWNER_4613:")
+          ),
+          true,
+        );
+        updated = true;
+      }
+      return await f.gh(args);
+    };
+    await fix(
+      "owner/repo",
+      initial,
+      ["VibeCoderST"],
+      "VibeCoderST",
+      { appId: "1", installationId: "1", privateKeyPath: "/unused" },
+      "/unused",
+      gh,
+    );
+    assertEquals(updated, decision === "APPROVED");
+    assertEquals(
+      f.calls.filter((args) => args.includes("PUT")).length,
+      decision === "APPROVED" ? 1 : 0,
+    );
+  });
+}
 Deno.test("author filter permits an explicit PR without widening fleet scans", () => {
   assert(eligibleAuthor("VibeCoderST", ["vibecoderst"], false));
   assert(!eligibleAuthor("human", ["VibeCoderST"], false));
@@ -576,7 +630,7 @@ Deno.test("babysitter selects only conflicts and failed CI", () => {
       mergeStateStatus: "BEHIND",
       statusCheckRollup: [{ status: "IN_PROGRESS" }],
     }),
-    null,
+    "branch behind base",
   );
   assertEquals(
     reason({ ...pr, mergeStateStatus: "BEHIND" }),

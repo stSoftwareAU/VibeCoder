@@ -1,8 +1,16 @@
 /** Evaluate the effective branch-check contract against the current head. */
 
 import type { Result } from "../types.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import {
+  acquireBaseRefreshOwner,
+  type BaseRefreshStatus,
+  makeGitHubBaseRefreshOwnershipPort,
+  reconcileBaseRefreshOwner,
+  releaseBaseRefreshOwner,
+} from "./base_refresh_ownership_4613.ts";
 
 type ObjectValue = Record<string, unknown>;
 interface RequiredCheck {
@@ -74,6 +82,21 @@ function requiredChecks(rules: unknown, protection: unknown): RequiredCheck[] {
     }
   }
   return required;
+}
+
+function classicChecksFromBranch(branch: ObjectValue): ObjectValue | null {
+  if (!("protection" in branch)) {
+    throw new Error("branch response has no branch protection summary");
+  }
+  if (branch.protection === null) return null;
+  const summary = object(branch.protection, "branch protection summary");
+  if (!("required_status_checks" in summary)) {
+    throw new Error("branch protection summary has no required checks field");
+  }
+  if (summary.required_status_checks === null) {
+    return null;
+  }
+  return object(summary.required_status_checks, "classic required checks");
 }
 
 /** Fail closed on malformed rules; optional check runs do not affect the result. */
@@ -262,17 +285,7 @@ export async function readRequiredChecksPassed(
     ),
     "branch",
   );
-  const protectionSummary = object(
-    branchInfo.protection,
-    "branch protection summary",
-  );
-  if (typeof protectionSummary.enabled !== "boolean") {
-    throw new Error("branch protection summary has no enabled flag");
-  }
-  const protection = object(
-    protectionSummary.required_status_checks,
-    "classic required checks",
-  );
+  const protection = classicChecksFromBranch(branchInfo);
   const flatRules = rules.flat();
   const names = new Set(
     requiredChecks(flatRules, protection).map((c) => c.context),
@@ -295,6 +308,58 @@ export async function readRequiredChecksPassed(
     source.checkRuns,
     source.statuses,
   );
+}
+
+/** True only when a present required context has a terminal failing result. */
+export async function readRequiredChecksFailed(
+  repo: string,
+  base: string,
+  head: string,
+  gh: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  const branch = encodeURIComponent(base);
+  const pages = JSON.parse(
+    await gh([
+      "api",
+      `repos/${repo}/rules/branches/${branch}?per_page=100`,
+      "--paginate",
+      "--slurp",
+    ]),
+  );
+  if (!Array.isArray(pages) || !pages.every(Array.isArray)) {
+    throw new Error("effective rules pages are malformed");
+  }
+  const branchInfo = object(
+    JSON.parse(
+      await gh([
+        "api",
+        `repos/${repo}/branches/${branch}`,
+      ]),
+    ),
+    "branch",
+  );
+  const protection = classicChecksFromBranch(branchInfo);
+  const required = requiredChecks(pages.flat(), protection);
+  const checkNames = new Set(required.map(({ context }) => context));
+  const checks = await readCommitChecks(repo, head, checkNames, gh);
+  return required.some(({ context, appId }) => {
+    const runs = checks.checkRuns.filter((run) =>
+      run.name === context &&
+      (appId === undefined ||
+        object(run.app, "required check app").id === appId)
+    );
+    const statuses = checks.statuses.filter((status) =>
+      status.context === context
+    );
+    return statuses.some((status) =>
+      status.state === "failure" || status.state === "error"
+    ) ||
+      runs.some((run) =>
+        run.status === "completed" &&
+        run.conclusion !== "success" && run.conclusion !== "neutral" &&
+        run.conclusion !== "skipped"
+      );
+  });
 }
 
 /** Confirm GitHub's test merge belongs to the same PR head and current base. */
@@ -344,6 +409,9 @@ export async function requestReadyBranchUpdate(
   prNumber: number,
   gh: (args: string[]) => Promise<string>,
   expectedBase?: string,
+  expectedHead?: string,
+  ownershipSleepFn?: (ms: number) => Promise<void>,
+  ownershipAuthorOptions?: AlertDedupAuthorOptions,
 ): Promise<Result<void>> {
   if (
     !/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(prNumber) ||
@@ -365,41 +433,142 @@ export async function requestReadyBranchUpdate(
             "--repo",
             repo,
             "--json",
-            "state,baseRefName,headRefOid,autoMergeRequest,reviewDecision,mergeable,mergeStateStatus",
+            "state,isDraft,baseRefName,headRefOid,autoMergeRequest,reviewDecision,mergeable,mergeStateStatus",
           ]),
         ),
         "live PR",
       );
+    const hasCurrentTarget = (pr: ObjectValue) =>
+      pr.state === "OPEN" && typeof pr.baseRefName === "string" &&
+      (expectedBase === undefined || pr.baseRefName === expectedBase) &&
+      typeof pr.headRefOid === "string" &&
+      (expectedHead === undefined || pr.headRefOid === expectedHead);
     const ready = (pr: ObjectValue) =>
-      pr.state === "OPEN" && !!pr.autoMergeRequest &&
+      pr.state === "OPEN" && pr.isDraft === false && !!pr.autoMergeRequest &&
       pr.mergeable === "MERGEABLE" && pr.mergeStateStatus === "BEHIND" &&
       (pr.reviewDecision === "APPROVED" || pr.reviewDecision === "" ||
         pr.reviewDecision === null) &&
       typeof pr.baseRefName === "string" &&
-      (expectedBase === undefined || pr.baseRefName === expectedBase) &&
       typeof pr.headRefOid === "string";
     const current = await readLivePr();
-    if (
-      !ready(current) || typeof current.baseRefName !== "string" ||
-      typeof current.headRefOid !== "string"
-    ) {
+    if (!hasCurrentTarget(current)) {
+      return {
+        ok: false,
+        error: new Error("PR base or head changed before branch update"),
+      };
+    }
+    const baseRefName = current.baseRefName as string;
+    const headRefOid = current.headRefOid as string;
+    const policy = await readStrictBasePolicy(
+      repo,
+      baseRefName,
+      gh,
+    );
+    if (policy.mergeQueue) {
+      return {
+        ok: false,
+        error: new Error("merge-queue base is exempt from behind-only refresh"),
+      };
+    }
+    if (!policy.strict) {
+      return await requestBranchUpdate(
+        repo,
+        prNumber,
+        gh,
+        headRefOid,
+      );
+    }
+    if (!ready(current)) {
       return {
         ok: false,
         error: new Error("PR no longer ready for a branch update"),
       };
     }
+    const workerId = `refresh-${crypto.randomUUID()}`;
+    const stableAnchorPr = async (ownerRepo: string, _ownerBase: string) => {
+      const payload = await gh([
+        "api",
+        `repos/${ownerRepo}/pulls?state=all&sort=created&direction=asc&per_page=1`,
+        "--jq",
+        "map(.number) | .[]",
+      ]);
+      const value = payload.trim();
+      if (!/^\d+$/.test(value)) {
+        throw new Error("stable PR anchor lookup did not return one PR");
+      }
+      const number = Number(value);
+      if (!Number.isSafeInteger(number) || number <= 0) {
+        throw new Error("stable PR anchor has no valid number");
+      }
+      return number;
+    };
+    const port = makeGitHubBaseRefreshOwnershipPort({
+      workerId,
+      ghCommandFn: gh,
+      anchorPrForBase: stableAnchorPr,
+      ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
+      ...(ownershipAuthorOptions
+        ? { authorOptions: ownershipAuthorOptions }
+        : {}),
+      log: (message) => console.warn(message),
+    });
+    await reconcileBaseRefreshOwner(
+      port,
+      repo,
+      baseRefName,
+      async (owner): Promise<BaseRefreshStatus> => {
+        try {
+          const live = object(
+            JSON.parse(
+              await gh([
+                "pr",
+                "view",
+                String(owner.prNumber),
+                "--repo",
+                repo,
+                "--json",
+                "state,headRefOid",
+              ]),
+            ),
+            "refresh owner PR",
+          );
+          if (live.state === "MERGED") return "merged";
+          if (live.state === "CLOSED") return "closed";
+          if (live.state !== "OPEN" || typeof live.headRefOid !== "string") {
+            return "failed";
+          }
+          return await readRequiredChecksFailed(
+              repo,
+              owner.base,
+              live.headRefOid,
+              gh,
+            )
+            ? "failed"
+            : "active";
+        } catch (error) {
+          console.warn(
+            `Refresh owner state is unreadable for ${repo}#${owner.prNumber}; retaining ownership for retry: ${
+              redactSecrets(
+                error instanceof Error ? error.message : String(error),
+              )
+            }`,
+          );
+          return "active";
+        }
+      },
+    );
     const merge = await readTestMerge(
       repo,
       prNumber,
-      current.baseRefName,
-      current.headRefOid,
+      baseRefName,
+      headRefOid,
       gh,
     );
     if (
       !await readRequiredChecksPassed(
         repo,
-        current.baseRefName,
-        current.headRefOid,
+        baseRefName,
+        headRefOid,
         gh,
         merge.mergeSha,
       )
@@ -411,8 +580,8 @@ export async function requestReadyBranchUpdate(
     }
     const fresh = await readLivePr();
     if (
-      !ready(fresh) || fresh.baseRefName !== current.baseRefName ||
-      fresh.headRefOid !== current.headRefOid
+      !ready(fresh) || fresh.baseRefName !== baseRefName ||
+      fresh.headRefOid !== headRefOid
     ) {
       return {
         ok: false,
@@ -422,8 +591,8 @@ export async function requestReadyBranchUpdate(
     const freshMerge = await readTestMerge(
       repo,
       prNumber,
-      current.baseRefName,
-      current.headRefOid,
+      baseRefName,
+      headRefOid,
       gh,
     );
     if (
@@ -437,7 +606,77 @@ export async function requestReadyBranchUpdate(
         ),
       };
     }
-    return await requestBranchUpdate(repo, prNumber, gh, current.headRefOid);
+    const ownership = await acquireBaseRefreshOwner(port, {
+      repo,
+      base: baseRefName,
+      prNumber,
+      headSha: headRefOid,
+      workerId,
+      ttlSeconds: 6 * 60 * 60,
+    });
+    if (!ownership.acquired) {
+      return {
+        ok: false,
+        error: new Error(
+          `base refresh owned by ${repo}#${ownership.ownerPrNumber} (${ownership.ownerWorkerId})`,
+        ),
+      };
+    }
+    try {
+      const immediatelyFresh = await readLivePr();
+      if (
+        !ready(immediatelyFresh) ||
+        immediatelyFresh.baseRefName !== baseRefName ||
+        immediatelyFresh.headRefOid !== headRefOid
+      ) {
+        throw new Error("PR base or head changed before branch update");
+      }
+      const immediateMerge = await readTestMerge(
+        repo,
+        prNumber,
+        baseRefName,
+        headRefOid,
+        gh,
+      );
+      if (
+        immediateMerge.mergeSha !== merge.mergeSha ||
+        immediateMerge.baseSha !== merge.baseSha ||
+        !await readRequiredChecksPassed(
+          repo,
+          baseRefName,
+          headRefOid,
+          gh,
+          immediateMerge.mergeSha,
+        )
+      ) {
+        throw new Error(
+          "PR test merge or required checks changed before branch update",
+        );
+      }
+    } catch (error) {
+      await releaseBaseRefreshOwner(
+        port,
+        repo,
+        baseRefName,
+        ownership.ownerId,
+      );
+      throw error;
+    }
+    const update = await requestBranchUpdate(
+      repo,
+      prNumber,
+      gh,
+      headRefOid,
+    );
+    if (!update.ok) {
+      await releaseBaseRefreshOwner(
+        port,
+        repo,
+        baseRefName,
+        ownership.ownerId,
+      );
+    }
+    return update;
   } catch (error) {
     return {
       ok: false,
@@ -448,4 +687,89 @@ export async function requestReadyBranchUpdate(
       ),
     };
   }
+}
+
+async function readStrictBasePolicy(
+  repo: string,
+  base: string,
+  gh: (args: string[]) => Promise<string>,
+): Promise<{ strict: boolean; mergeQueue: boolean }> {
+  const encoded = encodeURIComponent(base);
+  const pages = JSON.parse(
+    await gh([
+      "api",
+      `repos/${repo}/rules/branches/${encoded}?per_page=100`,
+      "--paginate",
+      "--slurp",
+    ]),
+  );
+  if (!Array.isArray(pages) || !pages.every(Array.isArray)) {
+    throw new Error("base rules pages are malformed");
+  }
+  const rules = pages.flat();
+  const mergeQueue = rules.some((raw) =>
+    object(raw, "branch rule").type === "merge_queue"
+  );
+  let strict = false;
+  for (const strictRule of rules) {
+    if (object(strictRule, "branch rule").type !== "required_status_checks") {
+      continue;
+    }
+    const parameters = object(
+      object(strictRule, "required checks rule").parameters,
+      "required checks parameters",
+    );
+    if (typeof parameters.strict_required_status_checks_policy !== "boolean") {
+      throw new Error("strict required-status-check policy is unreadable");
+    }
+    strict ||= parameters.strict_required_status_checks_policy;
+  }
+  const branch = object(
+    JSON.parse(
+      await gh([
+        "api",
+        `repos/${repo}/branches/${encoded}`,
+      ]),
+    ),
+    "base branch",
+  );
+  let protection = classicChecksFromBranch(branch);
+  if (protection !== null && typeof protection.strict !== "boolean") {
+    if (
+      protection.enforcement_level === "off" &&
+      Array.isArray(protection.contexts) && protection.contexts.length === 0 &&
+      Array.isArray(protection.checks) && protection.checks.length === 0
+    ) {
+      protection = null;
+    } else {
+      try {
+        protection = object(
+          JSON.parse(
+            await gh([
+              "api",
+              `repos/${repo}/branches/${encoded}/protection/required_status_checks`,
+            ]),
+          ),
+          "classic required-check protection",
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          /404/.test(message) &&
+          /branch not protected|required status checks not enabled/i.test(
+            message,
+          )
+        ) {
+          protection = null;
+        } else throw error;
+      }
+    }
+  }
+  if (protection !== null) {
+    if (typeof protection.strict !== "boolean") {
+      throw new Error("classic strict up-to-date policy is unreadable");
+    }
+    strict ||= protection.strict;
+  }
+  return { strict, mergeQueue };
 }

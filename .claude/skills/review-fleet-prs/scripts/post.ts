@@ -14,8 +14,8 @@ import {
 // refreshes the summary, files an issue for each problem Fable noticed outside
 // the PR's scope (skipping one an open issue already covers), labels a held
 // PR `needs-human` and removes that label on a later approve/send-back only
-// when its log shows it added it, brings an approved fleet or Dependabot PR that is behind
-// its base up to date (review first, then update: Issue #3225), and raises a
+// when its log shows it added it, routes approved behind PRs through the shared
+// strict-base refresh policy after review (Issue #4613), and raises a
 // desktop notification when a PR is sent back or held for the owner.
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
@@ -82,6 +82,7 @@ interface Input {
     title: string;
     url: string;
     headSha: string;
+    baseRef: string;
     kind?: "dependabot" | "fleet";
     testChanges: { removed: string[]; edited: string[] };
     // From the gate entry; required, so a stale entry fails loudly rather
@@ -359,10 +360,10 @@ export async function decidePostOutcome(
   };
 }
 
-// Review first, then up to date (Issue #3225): every fleet PR is armed with
-// auto-merge on CI green, approved and branch up to date, so an approval of
-// a PR that is behind its base would otherwise sit unmerged until something
-// else brought it up to date. Dependabot follows the same leased update.
+// Review first, then ask the shared refresh policy (Issue #4613). On strict,
+// non-queue bases it refreshes only an armed, approved, mergeable PR whose
+// required checks passed on its current head. Other bases keep their existing
+// path; Dependabot follows the same per-PR lease.
 export function shouldUpdateBranch(
   outcome: Outcome,
   mergeStateStatus: string | undefined,
@@ -529,7 +530,28 @@ export async function main() {
       live.mergeable,
     )
   ) {
-    branchUpdate = await updateBranchOnce(pr, dir, (args) => run("gh", args));
+    let reviewer = Deno.args.find((a) => a.startsWith("--reviewer="))?.slice(
+      11,
+    );
+    try {
+      reviewer ??= (await run("gh", ["api", "user", "--jq", ".login"])).trim();
+    } catch (error) {
+      branchUpdate = {
+        updated: false,
+        error: `branch refresh skipped: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    if (reviewer !== undefined) {
+      branchUpdate = await updateBranchOnce(
+        { ...pr, baseRefName: pr.baseRef },
+        dir,
+        (args) => run("gh", args),
+        undefined,
+        reviewer,
+      );
+    }
     if (branchUpdate?.updated === false) {
       console.error(
         `could not bring ${pr.repo}#${pr.number} up to date: ${branchUpdate.error}`,

@@ -341,8 +341,9 @@ decision keeps a human-tuned queue, and then only its parameters are kept
 `strict_required_status_checks_policy` is `mergeQueue === undefined`).
 
 **Falling back** leaves the worker on the behaviour it has without a queue: a
-behind PR is updated, and the direct-merge gate refuses while it is behind. The
-setup run prints one line per repository with the reason for the fallback. The
+strict base refreshes only a ready PR under the shared per-base owner, and the
+direct-merge gate refuses while a branch is behind. The setup run prints one
+line per repository with the reason for the fallback. The
 detection result is not written to `.config.json`: it is recomputed at each setup
 run, and the live ruleset is the record. (No write to `.config.json` in
 [`merge_queue.ts`](../worker/deno/lib/merge_queue.ts),
@@ -828,10 +829,10 @@ worker keeps working it until it does.
 | ------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------------ |
 | Merged, or native auto-merge armed                     | `landed`        | Nothing — the PR will land unattended                                                            |
 | Checks pending or failed                               | `await_checks`  | Log and wait; the CI-fix loop owns a red check; its 3-attempt cap closes the PR and redoes its issue (Issue #4304)           |
-| Branch behind its base                                 | `update_branch` | `PUT .../update-branch` so the checks re-run against the merged state                            |
-| No checks at all on the head commit                    | `retry`         | Branch update requested so checks run on a fresh head; logged as a warning, retried next cycle   |
+| Branch behind its base                                 | `update_branch` | Shared readiness policy requests a refresh only when eligible; otherwise logs the reason and retries next cycle |
+| No checks at all on the head commit                    | `retry`         | Readiness policy checks current-head and test-merge required contexts; a missing required result is not refreshed |
 | Head moved after its checks were read                  | `await_checks`  | Log and wait; the new head's checks are on their way and the next cycle re-evaluates             |
-| Merge refused (protection rule, conflict, unmergeable) | `retry`         | Branch update requested; logged as a warning, retried next cycle                                 |
+| Merge refused (protection rule, conflict, unmergeable) | `retry`         | Guarded refresh is requested when eligible; conflict resolution stays on the merge-conflict ladder |
 
 A failed branch update is retried the same way. A PR that conflicts with its
 base is the merge-conflict ladder's, which finds it by its mergeable state; no
@@ -839,8 +840,8 @@ comment and no `needs-human` label is ever posted by this path.
 
 Review requests are **informational**: a requested reviewer never blocks a fix
 PR. Only branch protection can require an approval, and that is a per-repo
-setting. The one place `reviewDecision` is consulted is branch upkeep
-(Issue #2702): a PR at `CHANGES_REQUESTED` is **never branch-updated** — not by
+setting. Branch upkeep (Issue #2702) and strict-base refresh readiness consult
+`reviewDecision`: a PR at `CHANGES_REQUESTED` is **never branch-updated** — not by
 the auto-merge sweep's armed-and-behind rule (Issue #2462), nor by the
 Priority 1.6 branch-update pass. It cannot merge until the review is answered,
 so the update unblocks nothing, and on GRQ#5032 it moved the head underneath
@@ -876,7 +877,9 @@ flowchart TD
     B -- other failure --> E
     C -- merged --> L
     C -- "pending / failed" --> W[await_checks<br/>log and wait]
-    C -- behind target --> U[update-branch<br/>checks re-run]
+    C -- behind target --> R[Shared readiness and base owner]
+    R -- ready and selected --> U[update-branch<br/>checks re-run]
+    R -- waiting or not ready --> W
     C -- "merge-queued default branch" --> Q[await_checks<br/>the queue lands it]
     C -- refused --> E[retry:<br/>update-branch, warn,<br/>try again next cycle]
     U -- update fails --> E
@@ -1293,7 +1296,8 @@ default tip never refills the attempt count.
 | --------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | Required CI check **pending**                       | Backstop returns blocked; PR left open                     | Next cycle re-checks once CI completes                                         |
 | Required CI check **failed**                        | Backstop returns blocked; PR left open                     | Fix lands on the feature branch; CI re-runs; re-evaluated next cycle           |
-| Feature branch **behind target** (no merge queue)   | Backstop defers; PR left open                              | Branch-update maintenance merges the target in → CI re-runs → merge-if-green   |
+| Feature branch **behind target** on a strict base without a queue | Backstop defers; PR left open | Only an otherwise-ready PR is refreshed; one persisted owner per base holds through merge or failure |
+| Feature branch **behind target** on a non-strict base | Backstop defers; PR left open | Existing branch updater requests the refresh |
 | Default branch has a **merge queue**                | Direct-merge fallback returns `blocked: merge_queue`; a PR that is only behind is not updated | The queue tests the PR against its future head and lands it once green |
 | Head **moves** between the check read and the merge | SHA-pinned merge refused by GitHub; deferred, PR left open | The new head's checks run; next cycle re-evaluates the gate                    |
 | Green PR **refused by the merge**                   | Branch update requested; warning logged                    | Retried every cycle (Issue #4304) — never handed to a human                    |
@@ -1304,6 +1308,19 @@ default tip never refills the attempt count.
 | Required check is **unsatisfiable** on the repo     | Check is dropped from the required set                     | The merge is never blocked by a check that can never pass                      |
 | PR head is a **ruleset-gated** `milestone/**` branch (spelling pass) | Pass stands down before the agent runs; one comment names the rule | Changes land through a PR into the milestone branch, or an operator adds a bypass actor |
 | PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while an open fix PR for the head exists that the fleet opened from this repository (a same-repository head), or when the check for one fails | The fix PR's own CI runs and it auto-merges into the gated head once green |
+
+### Strict-base branch refresh ownership (Issue #4613)
+
+On a strict base without a merge queue, every behind-only updater checks the
+live PR, review decision, effective required-check rules, current-head and
+verified test-merge results before requesting `update-branch`. Pending,
+missing, failed or unreadable required checks do not qualify; optional jobs do
+not block selection. A GitHub comment owner record keyed by repository and base
+serialises different PRs across hosts and lanes. The selected PR keeps that
+owner while its refreshed checks and merge are pending; a later pass releases
+it after merge, closure, required-check failure or the six-hour expiry. A
+merge-queue base is not refreshed merely for being behind. Conflict resolution
+continues through the explicit conflict-repair path.
 
 ## Related implementation
 
