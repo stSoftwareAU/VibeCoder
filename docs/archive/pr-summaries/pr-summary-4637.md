@@ -270,7 +270,8 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   a second `Closes`; a marker-less `issue-N-...` branch is governed (with and
   without a proposal, with a no-issue branch as the positive control); and a
   marker-less branch with a fully met committed summary keeps the close. Finish
-  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 111 tests at head):
+  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 112 tests at head): a
+  pushed repair whose proposal only mentions a fully met issue still closes it;
   nothing pushed over a governing summary does not publish the proposal, and the
   same proposal is published once a push backs it; nothing pushed with no
   committed summary publishes through the guard; a marker-less worker branch
@@ -279,7 +280,7 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   head still publishes its proposal; the store keeps one record per head and
   review and ignores a damaged one. Red-checks, each by breaking only that
   branch and running the `PR #4779 review` tests: `mentionsIssue` in place of
-  `namesClosingOrPartOf` (2 red); no branch fallback in `governingIssueNumber`
+  `namesClosingOrPartOf` (3 red); no branch fallback in `governingIssueNumber`
   (3 red); no-change suppression removed (1 red); `pushedByEarlierRepair` not
   passed on resume (1 red); `save` writing another head's key (2 red); `clear`
   removed (1 red). `fix()` itself is not driven (see Not done).
