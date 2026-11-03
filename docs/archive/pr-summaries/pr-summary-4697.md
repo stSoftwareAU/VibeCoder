@@ -6,11 +6,11 @@ could reach the clone. When it could not, cargo reported a missing `Cargo.toml`,
 the result was classed `failed`, and both repair rounds plus the PR's
 merge-conflict attempt were spent on an environment fault. `spawnFastCheck` now
 runs each check through `runRepositoryCommand` (the access probe and per-account
-cargo target of Issues #4659 / #4733), so an account that cannot use the checkout
-makes the check `unverified`. `verifyMergeBeforePush` then returns `deferred`, and
-the processor discards the local merge and withdraws the attempt without charging
-it. A manifest the worker can see is genuinely absent from the merged tree stays
-a failing check. Closes #4697.
+cargo target of Issues #4659 / #4733), so an account that cannot use the
+checkout makes the check `unverified`. `verifyMergeBeforePush` then returns
+`deferred`, and the processor discards the local merge and withdraws the attempt
+without charging it. A manifest the worker can see is genuinely absent from the
+merged tree stays a failing check. Closes #4697.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
@@ -66,30 +66,30 @@ Backend change; no UI file is touched. The real-sudo test in
 
 - New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (7 tests):
   blocked directory refused and the command never spawned; `runMergeFastChecks`
-  gives `unverified` and `verifyMergeBeforePush` gives `deferred` with the repair
-  agent never called; a genuinely missing `Cargo.toml` is `{code: 1}` while a
-  present one with a failing probe rejects; a passing probe followed by cargo's
-  own "could not find `Cargo.toml`" output is still `failed`; probe exit 2 runs
-  with a private `CARGO_TARGET_DIR`; real `agent` readable versus inaccessible
-  checkout.
+  gives `unverified` and `verifyMergeBeforePush` gives `deferred` with the
+  repair agent never called; a genuinely missing `Cargo.toml` is `{code: 1}`
+  while a present one with a failing probe rejects; a passing probe followed by
+  cargo's own "could not find `Cargo.toml`" output is still `failed`; probe exit
+  2 runs with a private `CARGO_TARGET_DIR`; real `agent` readable versus
+  inaccessible checkout.
 - Red checks: returning exit 1 directly for `GateAccountUnavailable` turned the
-  `unverified`/`deferred` test red (5 of 7 failed); always throwing for an absent
-  manifest turned the missing-manifest test red. Both restored.
+  `unverified`/`deferred` test red (5 of 7 failed); always throwing for an
+  absent manifest turned the missing-manifest test red. Both restored.
 - Edited existing tests: `tests/merge_fast_checks_test.ts` gained `isProbeCall`
-  and `probePassed` helpers and the "isolates credentials" test returns early for
-  the probe call. `tests/merge_fast_checks_credentials_4705_test.ts`:
+  and `probePassed` helpers and the "isolates credentials" test returns early
+  for the probe call. `tests/merge_fast_checks_credentials_4705_test.ts`:
   `recordingSpawn` answers the probe with exit 0 without recording it, and the
   channel-fault test uses a temporary checkout holding a `Cargo.toml` instead of
   `/tmp`, because a checkout without one is now the missing-manifest case. No
   assertion was removed or weakened.
 - Passed: `deno task test:unit` over those three files plus
-  `tests/untrusted_gate_spawn_test.ts` and `tests/pr_merge_conflict_processor_test.ts`
-  (191 passed, 0 failed).
+  `tests/untrusted_gate_spawn_test.ts` and
+  `tests/pr_merge_conflict_processor_test.ts` (191 passed, 0 failed).
 - Docs updated: `docs/workflows/merge-conflicts.md` (the Issue #4616 bullet) and
   `docs/CONFIGURATION.md` (the `agent` account checkout paragraph).
-- Callers of `spawnFastCheck` checked: `verifyMergeBeforePush` default runner and
-  `runMergeFastChecks` default runner; both pass through unchanged and handle the
-  thrown error as `unverified`.
+- Callers of `spawnFastCheck` checked: `verifyMergeBeforePush` default runner
+  and `runMergeFastChecks` default runner; both pass through unchanged and
+  handle the thrown error as `unverified`.
 
 ## Not done
 
