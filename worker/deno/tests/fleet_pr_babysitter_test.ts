@@ -65,6 +65,7 @@ import {
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
+  applyPrBody,
   attemptKey,
   babysitterRtkInstruction,
   baseAlreadyMerged,
@@ -79,6 +80,7 @@ import {
   loadConfigAndPublishDeployment,
   prBodyEditArgs,
   publishBabysitterDeployment,
+  readAgentResponse,
   reason,
   recordBabysitterDeployment,
   recoverTemporaryClones,
@@ -219,7 +221,7 @@ async function makeBabysitterSyncFixture(): Promise<{
   await runGit(path, "add", ".");
   await runGit(path, "commit", "-m", "repair summary");
   const headSha = await runGit(path, "rev-parse", "HEAD");
-  const scratch = `${path}/.git/babysitter-scratch`;
+  const scratch = `${await Deno.realPath(path)}/.git/babysitter-scratch`;
   await Deno.mkdir(scratch);
   return { path, beforeSha, headSha, scratch };
 }
@@ -368,7 +370,7 @@ Deno.test("the production clean-tree completion path syncs before review dismiss
         events.push("dismiss");
         return Promise.resolve();
       }),
-      { scratch: fixture.scratch },
+      { exchange: fixture.scratch },
     );
     assertEquals(service.edits(), 1);
     assertEquals(events, ["publish", "dismiss"]);
@@ -411,7 +413,7 @@ Deno.test("a marker-bearing body with a stale summary digest is rebuilt before d
           events.push("dismiss");
           return Promise.resolve();
         }),
-        { scratch: fixture.scratch },
+        { exchange: fixture.scratch },
       );
     await repair();
     assertEquals(events, ["publish", "dismiss"]);
@@ -464,7 +466,7 @@ Deno.test("a legacy worker body with no summary digest is rebuilt on a no-change
           events.push("dismiss");
           return Promise.resolve();
         }),
-        { scratch: fixture.scratch },
+        { exchange: fixture.scratch },
       );
     await repair();
     assertEquals(events, ["publish", "dismiss"]);
@@ -533,7 +535,7 @@ Deno.test("a pushed fix syncs the legacy body from its original head before dism
           events.push("dismiss");
         },
       },
-      { scratch: fixture.scratch },
+      { exchange: fixture.scratch },
     );
     assertEquals(events, ["commit", "push", "publish", "dismiss"]);
     assert(pushArgs[0]?.some((arg) => arg.includes("issue-4637-review-fix")));
@@ -572,7 +574,7 @@ Deno.test("a failed body publication keeps reviews open and a retry publishes be
             dismissed = true;
             return Promise.resolve();
           }),
-          { scratch: fixture.scratch },
+          { exchange: fixture.scratch },
         ),
       Error,
       "simulated body publication failure",
@@ -591,7 +593,7 @@ Deno.test("a failed body publication keeps reviews open and a retry publishes be
         dismissed = true;
         return Promise.resolve();
       }),
-      { scratch: fixture.scratch },
+      { exchange: fixture.scratch },
     );
     assertEquals(service.edits(), 2);
     assertStringIncludes(service.getBody(), "Closes #4637");
@@ -704,7 +706,7 @@ Deno.test("Issue #4637: a pushed repair pins its body sync to the verified pushe
         syncBodyFn,
         dismiss: async () => {},
       },
-      { scratch: fixture.scratch },
+      { exchange: fixture.scratch },
     );
     assertEquals(captured.length, 1);
     assertEquals(captured[0]?.committedHeadSha, fixture.headSha);
@@ -754,7 +756,7 @@ Deno.test("Issue #4637: a no-change repair pins its body sync to the unchanged P
         syncBodyFn,
         dismiss: async () => {},
       },
-      { scratch: fixture.scratch },
+      { exchange: fixture.scratch },
     );
     assertEquals(captured.length, 1);
     assertEquals(captured[0]?.committedHeadSha, fixture.headSha);
@@ -1065,7 +1067,7 @@ async function makeCommittedSummaryRepo(
   await Deno.writeTextFile(`${path}/${summaryPath}`, summary);
   await runGit(path, "add", ".");
   await runGit(path, "commit", "-q", "-m", "repair");
-  const scratch = `${path}/.git/babysitter-scratch`;
+  const scratch = `${await Deno.realPath(path)}/.git/babysitter-scratch`;
   await Deno.mkdir(scratch);
   return { path, headSha: await runGit(path, "rev-parse", "HEAD"), scratch };
 }
@@ -1165,7 +1167,7 @@ Deno.test("Issue #4716: a proposal that re-closes a partial issue is withheld, a
           changesRequestedBy(),
           repairFinishDeps({ headSha: fixture.headSha, github, events }),
           {
-            scratch: fixture.scratch,
+            exchange: fixture.scratch,
             proposal: "Rewritten.\n\nclose #4674\n\nThis does not close #4674",
           },
         ),
@@ -1199,7 +1201,7 @@ Deno.test("Issue #4716: a proposal that re-closes a missing issue is withheld, a
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { scratch: fixture.scratch, proposal: "Rewritten.\n\nFixes #4674" },
+      { exchange: fixture.scratch, proposal: "Rewritten.\n\nFixes #4674" },
     );
     assertEquals(events, ["publish", "dismiss"]);
     assertEquals(closingKeywordLine(github.body(), 4674), null);
@@ -1225,7 +1227,7 @@ Deno.test("a proposal that omits a withheld issue gets Part of #N, not Closes #N
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { scratch: fixture.scratch, proposal: "Rewritten description." },
+      { exchange: fixture.scratch, proposal: "Rewritten description." },
     );
     assertEquals(events, ["publish", "dismiss"]);
     assertStringIncludes(github.body(), "Part of #4674");
@@ -1251,7 +1253,7 @@ Deno.test("a proposal that omits a fully met issue gets Closes #N", async () => 
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { scratch: fixture.scratch, proposal: "Rewritten description." },
+      { exchange: fixture.scratch, proposal: "Rewritten description." },
     );
     assertEquals(events, ["publish", "dismiss"]);
     assertStringIncludes(github.body(), "Closes #4637");
@@ -1278,7 +1280,7 @@ Deno.test("a fully met summary with no closing keyword keeps the close after a r
         "babysitter[bot]",
         changesRequestedBy(),
         repairFinishDeps({ headSha: fixture.headSha, github, events }),
-        { scratch: fixture.scratch, proposal },
+        { exchange: fixture.scratch, proposal },
       );
       assertStringIncludes(github.body(), "Closes #4637");
       assertEquals(github.body().includes("Part of #4637"), false);
@@ -1310,7 +1312,7 @@ Deno.test("a missing criterion withholds the close at finish level and keeps ano
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
       {
-        scratch: fixture.scratch,
+        exchange: fixture.scratch,
         proposal: "Rewritten. Closes #4674 and fixes #9.",
       },
     );
@@ -1341,7 +1343,7 @@ Deno.test("a head that moved before publication publishes nothing and keeps revi
           "babysitter[bot]",
           changesRequestedBy(),
           repairFinishDeps({ headSha: fixture.headSha, github, events }),
-          { scratch: fixture.scratch, proposal: "Rewritten description." },
+          { exchange: fixture.scratch, proposal: "Rewritten description." },
         ),
       Error,
       "head moved",
@@ -1372,7 +1374,7 @@ Deno.test("a failed description edit keeps reviews open, and a retry at the same
         "babysitter[bot]",
         changesRequestedBy(),
         repairFinishDeps({ headSha: fixture.headSha, github, events }),
-        { scratch: fixture.scratch, proposal: "Rewritten description." },
+        { exchange: fixture.scratch, proposal: "Rewritten description." },
       );
     await assertRejects(
       finish,
@@ -1381,6 +1383,8 @@ Deno.test("a failed description edit keeps reviews open, and a retry at the same
     );
     assertEquals(events, []);
     githubOptions.failEdit = false;
+    // Each real repair gets a fresh runner-owned exchange directory.
+    await Deno.remove(`${fixture.scratch}/pr-body.md`);
     await finish();
     assertEquals(events, ["publish", "dismiss"]);
     assertEquals(github.edits(), 2);
@@ -1407,7 +1411,7 @@ Deno.test("a retry at the same head with the description already current makes n
         "babysitter[bot]",
         changesRequestedBy(),
         repairFinishDeps({ headSha: fixture.headSha, github, events }),
-        { scratch: fixture.scratch, proposal: "Rewritten description." },
+        { exchange: fixture.scratch, proposal: "Rewritten description." },
       );
     await finish();
     const published = github.body();
@@ -1443,7 +1447,7 @@ Deno.test("a repair with no code change publishes its proposal after the sync an
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events, syncFn }),
-      { scratch: fixture.scratch, proposal: "Rewritten.\n\nCloses #4674" },
+      { exchange: fixture.scratch, proposal: "Rewritten.\n\nCloses #4674" },
     );
     assertEquals(events, ["sync", "publish", "dismiss"]);
     assertEquals(closingKeywordLine(github.body(), 4674), null);
@@ -1468,7 +1472,7 @@ Deno.test("a stale close left by an earlier proposal is withheld by the next rep
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { scratch: fixture.scratch },
+      { exchange: fixture.scratch },
     );
     assertEquals(events, ["publish", "dismiss"]);
     assertEquals(closingKeywordLine(github.body(), 4674), null);
@@ -1505,7 +1509,7 @@ Deno.test("the withholding evidence is the summary committed at the pushed head,
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { scratch: fixture.scratch, proposal: "Rewritten description." },
+      { exchange: fixture.scratch, proposal: "Rewritten description." },
     );
     assertEquals(events, ["publish", "dismiss"]);
     assertStringIncludes(github.body(), "Part of #4674");
@@ -1535,7 +1539,7 @@ Deno.test("a summary committed only at the legacy docs/pr-summary-N.md path at t
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { scratch: fixture.scratch, proposal: "Rewritten description." },
+      { exchange: fixture.scratch, proposal: "Rewritten description." },
     );
     assertEquals(events, ["publish", "dismiss"]);
     assertStringIncludes(github.body(), "Closes #4637");
@@ -1564,7 +1568,7 @@ Deno.test("a committed summary that cannot be read throws, and reviews stay open
           "babysitter[bot]",
           changesRequestedBy(),
           repairFinishDeps({ headSha: missingSha, github, events }),
-          { scratch: fixture.scratch, proposal: "Rewritten description." },
+          { exchange: fixture.scratch, proposal: "Rewritten description." },
         ),
       Error,
       "Failed to read PR summary",
@@ -1608,7 +1612,7 @@ Deno.test("a pushed head that GitHub's PR view reports late is waited for, then 
         validateAndCommit: async () => {},
         headWaitDelayMs: 0,
       },
-      { scratch: fixture.scratch, proposal: "Rewritten description." },
+      { exchange: fixture.scratch, proposal: "Rewritten description." },
     );
     assert(github.headReads() >= 3);
     assertEquals(events, ["push", "publish", "dismiss"]);
@@ -1651,7 +1655,7 @@ Deno.test("a PR view that never reaches the pushed head throws before the sync, 
             validateAndCommit: async () => {},
             headWaitDelayMs: 0,
           },
-          { scratch: fixture.scratch, proposal: "Rewritten description." },
+          { exchange: fixture.scratch, proposal: "Rewritten description." },
         ),
       Error,
       "PR head did not reach the pushed head",
@@ -1682,7 +1686,7 @@ Deno.test("a PR view that omits closingIssuesReferences is refused by name, and 
           "babysitter[bot]",
           changesRequestedBy(),
           repairFinishDeps({ headSha: fixture.headSha, github, events }),
-          { scratch: fixture.scratch, proposal: "Rewritten description." },
+          { exchange: fixture.scratch, proposal: "Rewritten description." },
         ),
       Error,
       "closingIssuesReferences",
@@ -1713,7 +1717,7 @@ Deno.test("a head that moves after the description is published keeps reviews op
           "babysitter[bot]",
           changesRequestedBy(),
           repairFinishDeps({ headSha: fixture.headSha, github, events }),
-          { scratch: fixture.scratch, proposal: "Rewritten description." },
+          { exchange: fixture.scratch, proposal: "Rewritten description." },
         ),
       Error,
       "head moved",
@@ -1744,7 +1748,7 @@ Deno.test("a description GitHub does not show as published keeps reviews open", 
           "babysitter[bot]",
           changesRequestedBy(),
           repairFinishDeps({ headSha: fixture.headSha, github, events }),
-          { scratch: fixture.scratch, proposal: "Rewritten description." },
+          { exchange: fixture.scratch, proposal: "Rewritten description." },
         ),
       Error,
       "is not the one published",
@@ -2442,6 +2446,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
   const agentToken = "agent-read-only-token";
   const scratch = "/tmp/babysitter-scratch";
   const dir = "/tmp/babysitter-clone";
+  const responseFile = "/tmp/babysitter-exchange/response";
   const prompt = "Fix conflicts on PR #1";
   const protectedPaths = [
     "/home/u/.vibe-coder/fleet-pr-babysitter",
@@ -2459,6 +2464,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
       agentToken,
       protectedPaths,
       codex: "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
+      responseFile,
     },
     (executable, options) => {
       calls.push({ executable, options });
@@ -2489,7 +2495,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     "--cd",
     dir,
     "--output-last-message",
-    `${dir}/.babysitter-response`,
+    responseFile,
     prompt,
   ]);
   assertEquals(call.options.stdin, "null");
@@ -2512,6 +2518,7 @@ Deno.test("codex agent is not given the workspace-write sandbox and cannot read 
       agentToken: "agent-read-only-token",
       protectedPaths,
       codex: "codex",
+      responseFile: "/tmp/babysitter-exchange/response",
     },
     (_executable, options) => {
       calls.push(options.args as string[]);
@@ -2556,6 +2563,7 @@ Deno.test("codex agent refuses to start without protected credential paths", () 
           agentToken: "agent-read-only-token",
           protectedPaths: [],
           codex: "codex",
+          responseFile: "/tmp/babysitter-exchange/response",
         },
         () => {
           spawned = true;
@@ -2563,6 +2571,65 @@ Deno.test("codex agent refuses to start without protected credential paths", () 
         },
       ),
     Error,
+  );
+  assertEquals(spawned, false);
+});
+
+Deno.test("codex agent refuses a response file inside the clone or scratch directory", () => {
+  for (
+    const responseFile of [
+      "/tmp/babysitter-clone/response",
+      "/tmp/babysitter-clone",
+      "/tmp/babysitter-scratch/response",
+      "/tmp/babysitter-scratch",
+    ]
+  ) {
+    let spawned = false;
+    assertThrows(
+      () =>
+        spawnBabysitterAgent(
+          {
+            dir: "/tmp/babysitter-clone",
+            scratch: "/tmp/babysitter-scratch",
+            prompt: "Fix conflicts on PR #1",
+            agentToken: "agent-read-only-token",
+            protectedPaths: ["/home/u/.vibe-coder/fleet-pr-babysitter"],
+            codex: "codex",
+            responseFile,
+          },
+          () => {
+            spawned = true;
+            return {} as unknown as Deno.ChildProcess;
+          },
+        ),
+      Error,
+      "writable path",
+    );
+    assertEquals(spawned, false, `spawned with ${responseFile}`);
+  }
+});
+
+Deno.test("codex agent refuses a relative response file and does not spawn", () => {
+  let spawned = false;
+  assertThrows(
+    () =>
+      spawnBabysitterAgent(
+        {
+          dir: "/tmp/babysitter-clone",
+          scratch: "/tmp/babysitter-scratch",
+          prompt: "Fix conflicts on PR #1",
+          agentToken: "agent-read-only-token",
+          protectedPaths: ["/home/u/.vibe-coder/fleet-pr-babysitter"],
+          codex: "codex",
+          responseFile: "response",
+        },
+        () => {
+          spawned = true;
+          return {} as unknown as Deno.ChildProcess;
+        },
+      ),
+    Error,
+    "not absolute",
   );
   assertEquals(spawned, false);
 });
@@ -2650,7 +2717,7 @@ Deno.test("a review repair may propose a PR description for the runner to apply"
 });
 
 Deno.test("the proposed PR description is taken out of the clone before commit", async () => {
-  const dir = await Deno.makeTempDir();
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "New body\n");
     assertEquals(await takePrBodyProposal(dir), "New body");
@@ -2664,8 +2731,8 @@ Deno.test("the proposed PR description is taken out of the clone before commit",
   }
 });
 
-Deno.test("Moved to babysitter_pr_body_guard_test.ts: the proposal is returned as written, and the guard restores closing references", async () => {
-  const dir = await Deno.makeTempDir();
+Deno.test("the proposal is returned as written, and the guard restores closing references", async () => {
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(
       `${dir}/.babysitter-pr-body`,
@@ -2681,7 +2748,7 @@ Deno.test("Moved to babysitter_pr_body_guard_test.ts: the proposal is returned a
 });
 
 Deno.test("an empty PR description proposal is not applied, and an oversized one is rejected at intake", async () => {
-  const dir = await Deno.makeTempDir();
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "  \n");
     assertEquals(await takePrBodyProposal(dir), undefined);
@@ -2697,6 +2764,125 @@ Deno.test("an empty PR description proposal is not applied, and an oversized one
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Issue #4731: the agent writes the proposal into the clone, so a planted link,
+// FIFO or oversized file must be refused before anything is published.
+Deno.test("a PR description proposal that is a symlink to a secret is refused without being read", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const dir = `${base}/clone`;
+    await Deno.mkdir(dir);
+    await Deno.writeTextFile(`${base}/secret.txt`, "SECRET-TOKEN-4731");
+    await Deno.symlink(`${base}/secret.txt`, `${dir}/.babysitter-pr-body`);
+    const error = await assertRejects(
+      () => takePrBodyProposal(dir),
+      Error,
+      "refused unsafe agent output",
+    );
+    assert(!error.message.includes("SECRET-TOKEN-4731"));
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("a PR description proposal that is a FIFO is refused rather than waited on", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const dir = `${base}/clone`;
+    await Deno.mkdir(dir);
+    const made = await new Deno.Command("mkfifo", {
+      args: [`${dir}/.babysitter-pr-body`],
+    }).output();
+    assert(made.success, "mkfifo created the FIFO");
+    await assertRejects(
+      () => takePrBodyProposal(dir),
+      Error,
+      "refused unsafe agent output",
+    );
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("a PR description proposal over the byte bound is refused before it is read", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const dir = `${base}/clone`;
+    await Deno.mkdir(dir);
+    await Deno.writeTextFile(
+      `${dir}/.babysitter-pr-body`,
+      "x".repeat(65_536 * 4 + 1),
+    );
+    await assertRejects(
+      () => takePrBodyProposal(dir),
+      Error,
+      "refused unsafe agent output",
+    );
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+// Issue #4731: the Codex final message is read from the runner's exchange
+// directory through the same hardened reader.
+Deno.test("the agent's completion response is read from the exchange directory", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    await Deno.writeTextFile(
+      `${base}/response`,
+      "Done.\nBABYSITTER_READY",
+    );
+    assertEquals(await readAgentResponse(base), "Done.\nBABYSITTER_READY");
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("a missing completion response is reported as not written", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    await assertRejects(
+      () => readAgentResponse(base),
+      Error,
+      "did not write its completion response",
+    );
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("a completion response that is a symlink to a secret is refused", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const exchange = `${base}/exchange`;
+    await Deno.mkdir(exchange);
+    await Deno.writeTextFile(`${base}/secret.txt`, "SECRET-TOKEN-4731");
+    await Deno.symlink(`${base}/secret.txt`, `${exchange}/response`);
+    const error = await assertRejects(
+      () => readAgentResponse(exchange),
+      Error,
+      "refused unsafe agent output",
+    );
+    assert(!error.message.includes("did not write"));
+    assert(!error.message.includes("SECRET-TOKEN-4731"));
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});
+
+Deno.test("an oversized completion response is refused", async () => {
+  const base = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    await Deno.writeTextFile(`${base}/response`, "x".repeat(1_048_577));
+    await assertRejects(
+      () => readAgentResponse(base),
+      Error,
+      "refused unsafe agent output",
+    );
+  } finally {
+    await Deno.remove(base, { recursive: true });
   }
 });
 
@@ -2793,6 +2979,65 @@ Deno.test("the PR description update passes the write allowlist for its repo onl
       WriteRepoBlockedError,
     );
   });
+});
+
+// Issue #4731: the PR description is staged in the runner-owned exchange
+// directory, which the agent cannot write, and applied from there.
+Deno.test("applyPrBody stages the body in the exchange at mode 0600 and edits from it", async () => {
+  const exchange = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const calls: string[][] = [];
+    await applyPrBody("owner/repo", 7, "New description", exchange, (args) => {
+      calls.push(args);
+      return Promise.resolve(undefined);
+    });
+    const file = `${exchange}/pr-body.md`;
+    assertEquals(await Deno.readTextFile(file), "New description");
+    assertEquals(((await Deno.stat(file)).mode ?? 0) & 0o777, 0o600);
+    assertEquals(calls, [prBodyEditArgs("owner/repo", 7, file)]);
+  } finally {
+    await Deno.remove(exchange, { recursive: true });
+  }
+});
+
+Deno.test("applyPrBody refuses a symlink planted at the body path and never edits", async () => {
+  const exchange = await Deno.realPath(await Deno.makeTempDir());
+  const victimDir = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const victim = `${victimDir}/victim.txt`;
+    await Deno.writeTextFile(victim, "original");
+    await Deno.symlink(victim, `${exchange}/pr-body.md`);
+    let edited = false;
+    await assertRejects(() =>
+      applyPrBody("owner/repo", 7, "agent-controlled body", exchange, () => {
+        edited = true;
+        return Promise.resolve(undefined);
+      })
+    );
+    assertEquals(await Deno.readTextFile(victim), "original");
+    assertEquals(edited, false);
+  } finally {
+    await Deno.remove(exchange, { recursive: true });
+    await Deno.remove(victimDir, { recursive: true });
+  }
+});
+
+Deno.test("applyPrBody edits from the exchange, not from the agent's scratch directory", async () => {
+  const exchange = await Deno.realPath(await Deno.makeTempDir());
+  const scratch = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const calls: string[][] = [];
+    await applyPrBody("owner/repo", 7, "body", exchange, (args) => {
+      calls.push(args);
+      return Promise.resolve(undefined);
+    });
+    const bodyFile = calls[0]!.at(-1)!;
+    assertEquals(bodyFile, `${exchange}/pr-body.md`);
+    assert(!bodyFile.startsWith(`${scratch}/`));
+  } finally {
+    await Deno.remove(exchange, { recursive: true });
+    await Deno.remove(scratch, { recursive: true });
+  }
 });
 
 // Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in

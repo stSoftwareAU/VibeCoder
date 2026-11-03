@@ -26,6 +26,8 @@ the final version.
 
 ### Essential Design Decisions
 
+- The guarded proposal uses the runner-owned exchange directory and exclusive
+  writer from #4731; agent proposals use the no-follow reader.
 - The sync is pinned to the pushed head (`committedHeadSha`, #4712). A commit
   with no summary is a harmless skip; `pushed head moved`,
   `could not be verified` and `checkout moved off the committed head` throw, so
