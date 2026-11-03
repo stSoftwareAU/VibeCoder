@@ -171,6 +171,14 @@ git repositories and bare origins:
   reference, `Result` use, `@std/assert`, temp directories removed, docs updated
   in `docs/INTERNALS.md`
 
+## CI repair
+
+Regenerated `docs/audits/dependency-inventory.md` with the supply-chain gate’s
+`--write-inventory` option so its generated content matches the current tree.
+The workflow’s frozen supply-chain gate passes after regeneration. Restored the
+contiguous prompt-vocabulary citation expected by its completeness test after
+the branch rewrapped it.
+
 ## Test Plan
 
 Commands run from `worker/deno` on the final head (stdin from `/dev/null`):

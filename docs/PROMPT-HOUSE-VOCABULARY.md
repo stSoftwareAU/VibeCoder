@@ -109,8 +109,8 @@ Applies to the thirteen interactive directories in [Families](#families).
 - **Attribution footer.** `{{ATTRIBUTION_FOOTER}}` is cited exactly one way:
   **"from the Inputs section"**, and the placeholder is placed there. The worker
   substitutes the placeholder wherever it sits, so the citation is only true if
-  the placement matches it — a sweep moves the two together. The "from the end
-  of this prompt" phrasing (`prompts/deprecated_api/` and `prompts/dead_code/`)
+  the placement matches it — a sweep moves the two together. The
+  "from the end of this prompt" phrasing (`prompts/deprecated_api/` and `prompts/dead_code/`)
   and the Phase 4 marker phrasing (`prompts/doc_coverage/`) are banned: they
   describe today's placement rather than the house one, and each sweep that
   leaves them standing keeps a second place a maintainer must look. At the
