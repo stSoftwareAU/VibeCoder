@@ -31,7 +31,7 @@ const TOKEN = "ghs_FAKE-TOKEN-4738";
 const KEY_BODY =
   "-----BEGIN PRIVATE KEY-----\nFAKE-KEY-BODY-4738\n-----END PRIVATE KEY-----";
 const SENTINEL = "VIBE_TEST_SENTINEL_4738";
-const SECRET = "ghs_Abcdefghij0123456789Abcdefghij012345";
+const SECRET = "ghs_" + "Abcdefghij0123456789Abcdefghij012345";
 const OK: BabysitterSpawnResult = {
   success: true,
   code: 0,
