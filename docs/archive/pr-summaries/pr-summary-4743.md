@@ -57,6 +57,8 @@ flowchart TD
 - Callers of `releaseCheckoutTargetDirs` checked: `worker/deno/lib/run_core_production_deps.ts` is unchanged and still gets `{ bytes, errors }`.
 - Callers of `PrePrVerifierDeps` checked: `pr_feedback_verifier.ts` spreads `defaultPrePrVerifierDeps`; the existing verifier tests spread it too and now run the default release against the real ephemeral root, which holds no directory keyed to their random checkout.
 
+- `./quality.sh` on the final head: every stage passed except `deno tests` — the parallel pass ran 32132 passed, 4 failed. The four failures are in code this change does not touch, and I did not fix them: two `formatter should commit the Rust fix` assertions, one test that needs a download of `https://jsr.io/@std/crypto/meta.json` (no network in the sandbox), and one in `worker/deno/tests/milestone_resolution_gate_test.ts` ("untrusted account cannot use /tmp/issue-1559-gate-…"; it was seen failing on an unmodified base checkout in a separate run; not re-run on base here). The serial pass did not run because the parallel pass failed.
+
 **Branch outcomes:**
 - `worker/deno/lib/pre_pr_verifier.ts` release `errors.length > 0` — warn and carry on — `worker/deno/tests/pre_pr_verifier_release_4743_test.ts::runPrePrVerifier keeps the result when the release reports errors, and warns with them (Issue #4743)` — release call removed, test went red
 - `worker/deno/lib/pre_pr_verifier.ts` release throws — warn and carry on — `worker/deno/tests/pre_pr_verifier_release_4743_test.ts::runPrePrVerifier keeps the result when the release throws, and warns with the cause (Issue #4743)` — release call removed, test went red
