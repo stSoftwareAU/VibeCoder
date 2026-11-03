@@ -1579,3 +1579,30 @@ Deno.test("a base already merged into the head is detected, a newer base is not"
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("default git classifies mirror fetch timeout and clone disk exhaustion", async () => {
+  for (const existing of [false, true]) {
+    await withTempRoot(async (root) => {
+      const mirrorRoot = `${root}/mirrors`;
+      if (existing) {
+        await Deno.mkdir(`${mirrorRoot}/owner--repo.git`, { recursive: true });
+      }
+      const stderr = existing
+        ? "TIMEOUT: git fetch --no-auto-maintenance --prune /tmp/upstream timed out after 1800s (Issue #619)"
+        : "Cloning into bare repository /tmp/mirror...\nfatal: write error: No space left on device";
+      try {
+        await cloneForRepair("owner/repo", `${root}/clone`, {
+          mirrorRoot,
+          remoteUrl: () => Promise.resolve("/tmp/upstream"),
+          runGit: () => Promise.resolve({ success: false, stdout: "", stderr }),
+        });
+        throw new Error("expected failure");
+      } catch (error) {
+        assertEquals(
+          (error as { blockerClass: string }).blockerClass,
+          existing ? "infrastructure" : "capability",
+        );
+      }
+    });
+  }
+});

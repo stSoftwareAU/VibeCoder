@@ -10,6 +10,7 @@ import {
   appendTrackedPrs,
   attemptKey,
   classifyBabysitterGitFailure,
+  cloneForRepair,
   escalateStuckRepair,
   type EscalationRequest,
   fix,
@@ -691,9 +692,15 @@ Deno.test("escalation hands off once to the stall ladder and ignores planted mar
     1,
     "a second host with stale push history deduplicates",
   );
+  await escalateStuckRepair({
+    ...request,
+    failureIdentity: "requested review changes:123",
+  });
+  assertStringIncludes(writes[1]!, "babysitter-handoff:");
+  assert(!writes[1]!.includes("auto-fix-cap:"));
   comments[0]!.user = { login: "outsider" };
   await escalateStuckRepair(request);
-  assertEquals(writes.length, 2);
+  assertEquals(writes.length, 3);
 });
 
 Deno.test("closed records cost no further reads and all active states are reconciled", async () => {
@@ -936,6 +943,8 @@ Deno.test("disk-full clone spends no substantive budget", async () => {
     for (
       const message of [
         "git failed: fatal: write error: No space left on device",
+        "git clone failed: Cloning into bare repository /tmp/mirror...\nfatal: write error: No space left on device",
+        "git fetch failed: error: unable to create temporary file: No space left on device",
         "git failed: Failed to execute git fetch origin main: No such file or directory (os error 2)",
       ]
     ) {
@@ -946,21 +955,33 @@ Deno.test("disk-full clone spends no substantive budget", async () => {
       );
     }
   }
-  await withState(async (stateDir) => {
-    const h = harness(stateDir);
-    const message =
-      "git clone failed: fatal: write error: No space left on device";
-    h.deps.clone = () =>
-      Promise.reject(
-        classifyBabysitterGitFailure(["clone"], new Error(message)),
+  for (const existing of [false, true]) {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      const mirrorRoot = `${stateDir}/mirrors`;
+      if (existing) {
+        await Deno.mkdir(`${mirrorRoot}/owner--repo.git`, { recursive: true });
+      }
+      const stderr = existing
+        ? "TIMEOUT: git fetch --no-auto-maintenance --prune /tmp/upstream timed out after 1800s (Issue #619)"
+        : "Cloning into bare repository /tmp/mirror...\nfatal: write error: No space left on device";
+      h.deps.clone = (repo, dir) =>
+        cloneForRepair(repo, dir, {
+          mirrorRoot,
+          remoteUrl: () => Promise.resolve("/tmp/upstream"),
+          runGit: () => Promise.resolve({ success: false, stdout: "", stderr }),
+        });
+      await assertRejects(() => h.attempt(), Error, stderr);
+      const [record] = await records(stateDir);
+      assertEquals(
+        record!.blockerClass,
+        existing ? "infrastructure" : "capability",
       );
-    await assertRejects(() => h.attempt(), Error, message);
-    const [record] = await records(stateDir);
-    assertEquals(record!.blockerClass, "capability");
-    assertEquals(record!.attempts.substantive, 0);
-    assertEquals(h.state.markers.length, 0);
-    assertEquals(h.state.sessions, 0);
-  });
+      assertEquals(record!.attempts.substantive, 0);
+      assertEquals(h.state.markers.length, 0);
+      assertEquals(h.state.sessions, 0);
+    });
+  }
 });
 
 Deno.test("local validation diagnostics spend the budget even in timeout paths", async () => {
@@ -1060,4 +1081,16 @@ Deno.test("conflict incidents stay paused after handoff even past the cooldown",
     assertEquals(h.state.locks.length, 0);
     assertEquals((await records(stateDir))[0]!.attempts.substantive, 3);
   });
+});
+
+Deno.test("mirror fetch timeout is infrastructure", () => {
+  assertEquals(
+    classifyBabysitterGitFailure(
+      ["fetch"],
+      new Error(
+        "git fetch failed: TIMEOUT: git fetch --no-auto-maintenance --prune /tmp/upstream timed out after 1800s (Issue #619)",
+      ),
+    ).blockerClass,
+    "infrastructure",
+  );
 });

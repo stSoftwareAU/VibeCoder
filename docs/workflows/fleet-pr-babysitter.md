@@ -215,7 +215,8 @@ never replaces the repair's real error.
 
 When substantive attempts reach the configured `maxAutoFixAttempts` limit, the
 record keeps the newest five redacted evidence lines, and the babysitter posts
-the existing auto-fix cap marker. Further sessions for that incident stop until
+an auto-fix cap marker for failed CI or a separate babysitter handoff marker
+for other incidents. Further sessions for that incident stop until
 the head or requested review changes, including green review-feedback and
 merge-conflict incidents. A failed handoff is retried without another agent
 session. The shared tally also bounds sessions on a different host. A moved
@@ -223,9 +224,9 @@ head retains the attempt history and receives a changed-diagnosis prompt with
 fenced, redacted prior evidence.
 
 A fleet-authored marker deduplicates the handoff across hosts and restarts.
-The stall self-repair ladder consumes the cap for eligible red-CI stalls and
+The stall self-repair ladder consumes the CI cap for eligible blocking red-CI stalls and
 skips its first trip. Green review-feedback and conflict lanes do not consume
-that cap; their safety bound is the paused babysitter incident. No separate
+that cap, and non-blocking red-CI incidents do not enter the ladder; their safety bound is the paused babysitter incident. No separate
 escalation issue is created. The comment identifies the babysitter handoff, so
 it does not claim ownership of a human `needs-human` label. Explicit human
 holds stay paused until cleared. Waiting paths release the branch lock; the

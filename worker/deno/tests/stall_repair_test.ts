@@ -658,3 +658,18 @@ Deno.test("babysitter cap handoff goes straight to the existing second-trip reco
   assertEquals(state.syncs, 0);
   assert(state.issueLabels.includes("idle-task"));
 });
+
+Deno.test("review handoff does not cap a later red-CI stall", async () => {
+  const { state, deps } = harness({
+    prComments: [{
+      body: `${
+        buildDedupMarker("babysitter-handoff:signature:head")
+      }\n${BABYSITTER_HANDOFF_MARKER}`,
+      user: { login: FLEET },
+      created_at: iso(NOW),
+    }],
+  });
+  assertEquals(await repairStalledPr(stallFor("red-ci"), deps), "first-trip");
+  assertEquals(state.syncs, 1);
+  assertEquals(state.prClosed, false);
+});

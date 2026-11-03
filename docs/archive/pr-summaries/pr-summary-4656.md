@@ -12,8 +12,8 @@ no-progress budget. Successful pushes reset it. Exhausting the runner's
 90-minute budget is substantive; external kills remain infrastructure failures.
 Moved heads bypass old cooldowns without discarding attempt history.
 
-Repeated no-progress persists redacted evidence and posts the existing
-auto-fix cap marker for the stall self-repair ladder. A babysitter handoff
+Repeated no-progress persists redacted evidence and posts a CI cap marker for
+the stall self-repair ladder or a separate marker for other handoffs. A babysitter handoff
 does not claim ownership of a human label. Eligible red-CI stalls use the existing ladder; other incidents pause until the head or review changes;
 no separate escalation issue can remain open after the PR resolves. Terminal
 PRs lose their retry records, and parked closed records cause no further
@@ -76,7 +76,8 @@ longer exists.
   recovery, credential expiry and repeated no-progress. — evidence:
   `babysitter_fix_orchestration_test.ts` covers each scenario, including a
   bounded tool/disk cooldown followed by a successful retry without deleting
-  state, real git timeout/spawn/disk diagnostics, moved-head retry after a
+  state, real git timeout/spawn/disk diagnostics through the default clone path,
+  moved-head retry after a
   pending-CI observation and runner-budget escalation. — reviewer: met
 - **met** — Waits release locks, incidents deduplicate, and human gates remain
   paused. — evidence: orchestration lock assertions, fleet-author handoff
@@ -84,14 +85,15 @@ longer exists.
   `stall_repair_test.ts::babysitter attempts and cap handoffs never lift an owner's needs-human hold`
   and `conflict_needs_human_gate_test.ts::babysitter attempts and handoffs leave the conflict human gate closed`
   — reviewer: met
-- **met** — Repeated no-progress persists evidence and bounds sessions:
+- **partial** — Repeated no-progress persists evidence and bounds sessions:
   eligible red-CI stalls use the existing automated repair mechanism;
   green review and conflict incidents pause until the head or review changes.
   — evidence: `escalateStuckRepair` posts the
   existing cap marker; `stall_repair_test.ts::babysitter cap handoff goes straight to the existing second-trip recovery`
   exercises the real red-CI ladder. Orchestration verifies bounded green-review
   and conflict sessions. Those lanes do not use the ladder or claim automated
-  recovery after handoff. No independent issue is filed. — reviewer: met
+  recovery after handoff; non-blocking red-CI incidents also lack automated
+  recovery. No independent issue is filed. — reviewer: partial
 
 ## Test Plan
 
@@ -200,3 +202,19 @@ The Gitleaks configuration retains both the PR’s synthetic redaction fixture
 exception and the base branch’s credential-channel fixture exceptions. The
 combined TOML configuration parses successfully; its exceptions remain scoped
 to the exact historical fixture lines.
+
+## Current review follow-up
+
+Git mirror fetch timeouts and multiline disk exhaustion diagnostics are classified
+as infrastructure and capability failures. Review and conflict handoffs use
+separate deduplication markers, so later red-CI stalls get their first repair
+trip. Automated recovery remains partial: only eligible blocking red-CI stalls
+enter the ladder; other incidents pause until their head or review changes.
+
+Validation: 111 focused tests passed, including default clone-path failures and
+a later red-CI first trip; the revised orchestration suite passed again after
+the final test change. Deno formatting, lint and type checks passed. The full
+quality gate hit the host Deno permission-pledge panic in the parallel test
+pass; base Quality run 41555343824 passed all test shards. Semgrep and the
+pinned Checkov were unavailable locally; CI runs them. Summary freshness
+requires the babysitter commit before it can be checked.

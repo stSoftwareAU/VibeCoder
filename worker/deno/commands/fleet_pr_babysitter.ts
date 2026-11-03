@@ -115,6 +115,7 @@ export interface CloneForRepairDeps {
   ) => Promise<string>;
   remoteUrl?: (repo: string) => Promise<string>;
   mirrorRoot?: string;
+  runGit?: typeof runGitArgv;
 }
 
 const CLONE_TIMEOUT_SECONDS = 30 * 60;
@@ -142,13 +143,13 @@ export function classifyBabysitterGitFailure(
   const transport = operation && ["clone", "fetch", "push"].includes(operation);
   if (transport && error instanceof BabysitterFailure) return error;
   if (
-    /^(?:git(?: [a-z-]+)? failed: )?(?:ENOSPC:|command not found:|Failed to execute git\b|(?:fatal: )?(?:write error: )?No space left on device\b)/i
+    /(?:^|\n)(?:git(?: [a-z-]+)? failed: )?(?:ENOSPC\b|command not found:|Failed to execute git\b|(?:fatal|error): [^\n]*No space left on device\b)/i
       .test(message)
   ) {
     return new BabysitterFailure(message, "capability");
   }
   const transportFailure =
-    /could not resolve host|connection (?:timed out|reset|refused)|failed to connect|remote end hung up|rpc failed|remote: internal server error|http\s+(?:401|403|408|429|5\d\d)\b|authentication failed|bad credentials|token expired|^(?:git failed: |git clone failed: )?TIMEOUT: git (?:clone|fetch|push)\b|^git failed: (?:clone|fetch|push) timed out/i
+    /could not resolve host|connection (?:timed out|reset|refused)|failed to connect|remote end hung up|rpc failed|remote: internal server error|http\s+(?:401|403|408|429|5\d\d)\b|authentication failed|bad credentials|token expired|^(?:git(?: [a-z-]+)? failed: )?TIMEOUT: git (?:clone|fetch|push)\b|^git failed: (?:clone|fetch|push) timed out/i
       .test(message);
   return new BabysitterFailure(
     message,
@@ -160,8 +161,9 @@ export function classifyBabysitterGitFailure(
 async function defaultGit(
   args: string[],
   options: { cwd?: string; timeoutSeconds?: number } = {},
+  runGit: typeof runGitArgv = runGitArgv,
 ): Promise<string> {
-  const result = await runGitArgv(args, options);
+  const result = await runGit(args, options);
   if (!result.success) {
     const message = `git ${args[0]} failed: ${
       (result.stderr || result.stdout).trim()
@@ -253,7 +255,8 @@ export async function cloneForRepair(
   if (!/^[\w-]+\/[\w.-]+$/.test(repo)) {
     throw new Error(`Invalid repository: ${repo}`);
   }
-  const git = deps.git ?? defaultGit;
+  const git = deps.git ??
+    ((args, options) => defaultGit(args, options, deps.runGit));
   const mirrorRoot = deps.mirrorRoot ?? babysitterMirrorRoot();
   const mirror = `${mirrorRoot}/${repo.replace("/", "--")}.git`;
   const url = await (deps.remoteUrl ?? defaultRemoteUrl)(repo);
@@ -1153,8 +1156,7 @@ export interface EscalationRequest {
 }
 
 /**
- * Hand repeated no-progress to the existing stall self-repair ladder.
- * Its cap marker skips the first trip. No separate issue can outlive this PR.
+ * Record repeated no-progress. Only failed CI hands the cap to the stall ladder.
  */
 export async function escalateStuckRepair(
   request: EscalationRequest,
@@ -1162,7 +1164,9 @@ export async function escalateStuckRepair(
   const { repo, prNumber, failureIdentity, record, authors, gh } = request;
   const signature = babysitterFailureSignature(repo, prNumber, failureIdentity);
   const marker = buildDedupMarker(
-    `auto-fix-cap:${signature}:${record.observedHead}`,
+    `${
+      failureIdentity === "failed CI" ? "auto-fix-cap" : "babysitter-handoff"
+    }:${signature}:${record.observedHead}`,
   );
   const pages: unknown = JSON.parse(
     await gh([
@@ -1196,7 +1200,11 @@ export async function escalateStuckRepair(
       marker,
       BABYSITTER_HANDOFF_MARKER,
       "",
-      `Babysitter made no progress after ${record.attempts.substantive} consecutive substantive attempts. The stall self-repair ladder owns recovery.`,
+      `Babysitter made no progress after ${record.attempts.substantive} consecutive substantive attempts. ${
+        failureIdentity === "failed CI"
+          ? "Eligible blocking red-CI stalls use the stall self-repair ladder."
+          : "This incident is paused until the head or review changes."
+      }`,
       "Untrusted diagnostic evidence:",
       "```text",
       evidence.text.replaceAll(
