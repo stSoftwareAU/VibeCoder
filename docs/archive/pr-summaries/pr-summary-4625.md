@@ -188,6 +188,11 @@ The workflow’s frozen supply-chain gate passes after regeneration. Restored th
 contiguous prompt-vocabulary citation expected by its completeness test after
 the branch rewrapped it.
 
+## Merge conflict repair
+
+Preserved the base branch documentation of pre-PR and feedback verifier target
+cleanup in `docs/CONTAINER.md` while retaining the branch formatting.
+
 ## Test Plan
 
 Commands run from `worker/deno` on the final head (stdin from `/dev/null`):

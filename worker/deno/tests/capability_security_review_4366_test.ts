@@ -20,6 +20,7 @@ import {
   defaultPrePrVerifierDeps,
   prePrVerifierBlocked,
   type PrePrVerifierDeps,
+  releaseVerifierBuildArtefacts,
   runPrePrVerifier,
 } from "../lib/pre_pr_verifier.ts";
 import type { ClaudeRunResult } from "../lib/claude_runner.ts";
@@ -186,6 +187,8 @@ Deno.test("gate and verifier render the same resource-auth check", async () => {
   let prompt = "";
   const deps: PrePrVerifierDeps = {
     ...defaultPrePrVerifierDeps,
+    releaseBuildArtefacts: (path) =>
+      releaseVerifierBuildArtefacts(path, `${path}/../test-target-root`),
     loadTrustedCapabilityBundle: checkoutBundle,
     loadBrief: () => Promise.resolve({ ok: true, value: TEMPLATE }),
     makeTempDir: async () => {
@@ -274,6 +277,8 @@ Deno.test("a missing trusted bundle is not a clean review", async () => {
   const tmps: string[] = [];
   const deps: PrePrVerifierDeps = {
     ...defaultPrePrVerifierDeps,
+    releaseBuildArtefacts: (path) =>
+      releaseVerifierBuildArtefacts(path, `${path}/../test-target-root`),
     loadTrustedCapabilityBundle: () =>
       Promise.resolve({ kind: "unreadable", reason: "bundle missing" }),
     loadBrief: () => Promise.resolve({ ok: true, value: TEMPLATE }),
@@ -381,6 +386,8 @@ Deno.test("a weaker head bundle does not replace the base checks", async () => {
   let prompt = "";
   const deps: PrePrVerifierDeps = {
     ...defaultPrePrVerifierDeps,
+    releaseBuildArtefacts: (path) =>
+      releaseVerifierBuildArtefacts(path, `${path}/../test-target-root`),
     loadTrustedCapabilityBundle: checkoutBundle,
     loadBrief: () => Promise.resolve({ ok: true, value: TEMPLATE }),
     makeTempDir: async () => {
@@ -544,6 +551,8 @@ async function verifyChange(input: {
   let prompt = "";
   const deps: PrePrVerifierDeps = {
     ...defaultPrePrVerifierDeps,
+    releaseBuildArtefacts: (path) =>
+      releaseVerifierBuildArtefacts(path, `${path}/../test-target-root`),
     loadTrustedCapabilityBundle: checkoutBundle,
     loadBrief: () => Promise.resolve({ ok: true, value: TEMPLATE }),
     makeTempDir: async () => {

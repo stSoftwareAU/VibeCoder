@@ -1754,7 +1754,11 @@ artefacts.
 
 - **A pass releases what it built.** When the milestone sync's pass over a
   repository ends, that clone's target directories are removed rather than left
-  to the relaunch.
+  to the relaunch. The pre-PR verifier's disposable checkout is released the
+  same way: its target directory is removed when the verifier finishes, even if
+  the verifier's own checkout removal failed (Issue #4743). The PR feedback
+  verifier runs through the same pass. Every other target directory is still
+  released at the relaunch.
 
 Incremental builds are lost at relaunch. They were lost at every recreate anyway
 — and a recreate now happens only when live data outgrows the floor, not every
@@ -1766,6 +1770,7 @@ flowchart TD
     Q -->|"no"| V["target/ inside the checkout<br/>on the vibe-work volume —<br/>fstrim returns the blocks"]
     Q -->|"yes"| E["/var/tmp/vibe-cargo-target/&lt;checkout&gt;<br/>on the container's own layer"]
     E --> R["released at the next relaunch —<br/>volume image stops ratcheting"]
+    E -->|"pre-PR verifier checkout"| P["removed when the verifier finishes<br/>(Issue #4743)"]
     V2["without this: every rebuild<br/>allocates fresh image blocks"] -.-> X["volume recreated every cycle"]
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
     style X fill:#c9184a,stroke:#800f2f,color:#fff
