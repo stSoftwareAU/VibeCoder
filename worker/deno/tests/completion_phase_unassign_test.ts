@@ -137,7 +137,7 @@ Deno.test("completion - Issue #3804: adopts the agent-raised PR body on the run'
   });
   await Deno.writeTextFile(
     `${repoPath}/docs/archive/pr-summaries/pr-summary-1453.md`,
-    "## Summary\n\nDid the work. Closes #1453.\n",
+    "## Summary\n\nUncommitted work. Closes #1453.\n",
   );
 
   const ctx: IssueContext = {
@@ -194,6 +194,15 @@ Deno.test("completion - Issue #3804: adopts the agent-raised PR body on the run'
         let stdout = "";
         if (args[0] === "rev-parse") stdout = `${sha}\n`;
         if (args[0] === "ls-remote") stdout = `${sha}\trefs/heads/${branch}\n`;
+        if (args[0] === "ls-tree" && args[3] === sha) {
+          stdout = "docs/archive/pr-summaries/pr-summary-1453.md\0";
+        }
+        if (
+          args[0] === "show" &&
+          args[1] === `${sha}:docs/archive/pr-summaries/pr-summary-1453.md`
+        ) {
+          stdout = "## Summary\n\nCommitted work. Closes #1453.\n";
+        }
         return Promise.resolve({
           ok: true as const,
           value: { code: 0, stdout, stderr: "" },
@@ -219,4 +228,5 @@ Deno.test("completion - Issue #3804: adopts the agent-raised PR body on the run'
   assertEquals(editCalls[0]?.[2], "42");
   assertStringIncludes(editBodies[0] ?? "", "<!-- vibe-worker-issue-1453 -->");
   assertStringIncludes(editBodies[0] ?? "", "vibe-pr-summary sha256=");
+  assertStringIncludes(editBodies[0] ?? "", "Committed work.");
 });
