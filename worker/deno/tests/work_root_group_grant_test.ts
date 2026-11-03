@@ -13,14 +13,12 @@
  *
  * Every case runs the real script with a stub PATH and asserts on the mode
  * bits the volume actually ends up with, so the grant is verified rather
- * than described. The entrypoint also grants `vibework` search (not read or
- * write) on the worker's home, the work root's parent, so the untrusted
- * account can reach the checkouts beneath it (Issue #4761).
+ * than described. The image grants search on the worker home (Issue #4761).
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertMatch } from "@std/assert";
 import { RESERVED_WORKDIR_NAMES } from "../lib/stale_workdir.ts";
 
 const ENTRYPOINT = new URL("../../../container/entrypoint.sh", import.meta.url)
@@ -31,8 +29,17 @@ const GROUP_WRITE = 0o020;
 const GROUP_READ_EXECUTE = 0o050;
 const SETGID = 0o2000;
 const STICKY = 0o1000;
-/** Group search (traverse) only, with no group read or write. */
-const GROUP_SEARCH = 0o010;
+
+Deno.test("Containerfile - worker home is searchable by vibework on a read-only root (Issue #4761)", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../../../container/Containerfile", import.meta.url),
+  );
+  // The recursive chown resets the group, so the grant must follow it.
+  assertMatch(
+    source,
+    /chown -R 1000:1000 \/workspace \/home\/vibe;\s*\\\s*\n\s*chgrp vibework \/home\/vibe;\s*\\\s*\n\s*chmod 0710 \/home\/vibe/,
+  );
+});
 
 /**
  * A stub PATH the entrypoint's work-root block can actually run through.
@@ -83,8 +90,8 @@ async function runOverWorkRoot(dir: string): Promise<string> {
     await Deno.mkdir(`${workRoot}/${name}`, { recursive: true });
     await Deno.chmod(`${workRoot}/${name}`, 0o755);
   }
-  // The image creates the worker's home 0700 (Debian useradd default).
-  await Deno.chmod(home, 0o700);
+  // Match the image-level home grant.
+  await Deno.chmod(home, 0o710);
   await Deno.mkdir(`${dir}/tmp`, { recursive: true });
 
   const { success, stderr } = await new Deno.Command("/bin/bash", {
@@ -176,30 +183,6 @@ Deno.test("entrypoint - the work root carries the sticky bit (Issue #1442)", asy
       GROUP_WRITE,
       "removing group write would break the tier-2 sibling clone the gate makes",
     );
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("entrypoint - the untrusted account can search the worker home but not read or write it (Issue #4761)", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
-  try {
-    const workRoot = await runOverWorkRoot(dir);
-    const home = workRoot.slice(0, workRoot.lastIndexOf("/"));
-    const stat = await Deno.stat(home);
-    const mode = stat.mode;
-    assert(mode !== null, "no mode bits on this platform");
-
-    // Without search on the home, `agent` cannot reach the work root beneath
-    // it, so every milestone gate command is left to CI and never verified.
-    assertEquals(
-      mode & 0o070,
-      GROUP_SEARCH,
-      "the home must be group-searchable and nothing more",
-    );
-
-    // Search only: the group must not list the home or write into it.
-    assertEquals(mode & 0o007, 0, "others must stay locked out of the home");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

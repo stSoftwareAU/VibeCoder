@@ -10,8 +10,8 @@ check and unit suite was left to CI, nothing ran, and `verifyResolvedTree`
 returned `skipped`, which the sync refuses (Issue #1559). The refusal is
 uncharged, so the identical resolution was rebuilt and refused every cycle.
 
-The entrypoint now gives `vibework` search-only (`g+x`) permission on the work
-root's parent, the worker's home. Closes #4761.
+The image now gives `vibework` search-only permission on `/home/vibe` at build
+time, including on read-only container roots. Closes #4761.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
@@ -46,10 +46,10 @@ flowchart LR
   already permissive (for example `.vibe-coder/` and the agent-state volume are
   `0755`); that is the same exposure the work root's group grant already
   accepts.
-- The grant is silent on failure, like the rest of that block: a home the
-  entrypoint does not own (a tmpfs home) is left alone.
-- The change takes effect when a container is launched from an image carrying
-  the new entrypoint; an already-running container keeps its `0700` home.
+- The grant follows the recursive `chown` in the image build, which otherwise
+  resets the group. A separately mounted home needs its own suitable access.
+- The change takes effect when a container is launched from the rebuilt image;
+  an already-running container retains its existing home mode.
 
 ### Undiscoverable Facts
 
@@ -76,46 +76,31 @@ the issue's gate message.
   with `untrusted account cannot use '<checkout>' (probe 1)`, so the resolution
   was refused as unverified every cycle.
 - **status** — `partial` — reason: the probe failure and its cause (home mode
-  `0700`) were reproduced on the host and the new test was observed failing
-  against the unfixed entrypoint, but the full GRQ-AutoTrader milestone sync was
+  `0700`) were reproduced on the host and the image grant test was observed
+  failing without the grant, but the full GRQ-AutoTrader milestone sync was
   not run.
 - **regression test** —
-  `worker/deno/tests/work_root_group_grant_test.ts::entrypoint - the untrusted account can search the worker home but not read or write it (Issue #4761)`
+  `worker/deno/tests/work_root_group_grant_test.ts::Containerfile - worker home is searchable by vibework on a read-only root (Issue #4761)`
 
 ## Test Plan
 
-- Added
-  `entrypoint - the untrusted account can search the worker home but not read or write it (Issue #4761)`
-  in `worker/deno/tests/work_root_group_grant_test.ts`. It runs the real
-  entrypoint over a `0700` home and asserts the home's group bits are exactly
-  search and the other bits are zero. Red check: with the new entrypoint lines
-  commented out the test failed
-  (`the home must be group-searchable and nothing
-  more`, actual 0, expected
-  8); restored, the file passes (5 passed, 0 failed). The `chgrp` stub succeeds,
-  so the test checks mode bits, not group ownership.
-- Edited `runOverWorkRoot` in the same file to `chmod` the home to `0700` before
-  the entrypoint runs, so all cases use the image's real home mode. No assertion
-  was removed or changed in the existing tests; they still pass.
-- `deno fmt --check`, `deno lint`, `bash -n` and `shellcheck` on the changed
-  files: clean.
-- `./quality.sh < /dev/null`: every stage passed except `deno tests` (4 failed
-  of 32,218). The four are environmental and also fail without this change on
-  this host: `tests/completion_phase_repo_formatters_test.ts` (two Rust-fix
-  cases), `tests/fleet_pr_babysitter_test.ts` (a JSR download with no network),
-  and
-  `tests/milestone_resolution_gate_test.ts::verifyResolvedTree - the repository's own task sees only the allowlisted environment (Issue #4659)`
-  (its `0700` temp checkout is unreadable to `agent`, so the task is left to CI
-  and the test sees `passed`, not `failed`). The serial pass did not run because
-  the parallel pass failed.
+- The obsolete entrypoint grant could not change a read-only image layer, so
+  its writable temporary-home test was replaced. The required group search-only
+  access remains: `worker/deno/tests/work_root_group_grant_test.ts::Containerfile - worker home is searchable by vibework on a read-only root (Issue #4761)`
+  pins the build commands, their order after `chown`, and mode `0710`. It failed
+  before the image grant was added. The existing work-root tests still exercise
+  the entrypoint with a home matching the image mode.
+- `deno fmt --check`, `deno lint`, `deno task check`, `bash -n` and
+  `shellcheck` pass. Container manifest and containment tests pass (163 passed,
+  one ignored). The home grant regression passes.
+- The work-root suite has one host limitation: the existing clone setgid test
+  fails because this host does not retain the setgid bit even on a freshly
+  chmodded directory. The other four tests pass.
 - Twinned rules: searched for other copies of the work-root grant; the
-  reserved-name list is already pinned by the existing test in the same file,
-  and no other script grants `vibework` access to the home.
+  reserved-name list is pinned by the existing test in the same file. The
+  obsolete entrypoint home grant was removed.
 
 ## Not done
 
-- The full milestone sync on GRQ-AutoTrader was not run; the fix is confirmed at
-  the probe and entrypoint level only.
-- `milestone_resolution_gate_test.ts` (the 4659 test) fails on a host whose temp
-  directory is unreadable to `agent`; it was not changed, being outside this
-  issue.
+- The full milestone sync on GRQ-AutoTrader was not run; the original failure
+  was reproduced at the probe and the image grant is covered by a source pin.

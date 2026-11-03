@@ -1,0 +1,12 @@
+{
+  "issue": 4731,
+  "chunk": "top-up-4731",
+  "title": "top-up: babysitter exchange directory",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4731",
+  "definition": "worker/deno/lib/fleet_babysitter_exchange.ts, the runner-owned directory and no-follow, size-bounded reader the fleet PR babysitter uses to exchange the PR description and the agent's final message (Issue #4731)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/fleet_babysitter_exchange.ts"
+  ],
+  "sweptAt": "0a4d803ab862753bd35fcf39f5df4b3c91545504"
+}

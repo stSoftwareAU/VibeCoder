@@ -188,15 +188,6 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
           ;;
       esac
     done
-    # The work root sits under $HOME, which the image creates 0700, so without
-    # search permission `agent` cannot reach any clone or lane worktree and
-    # every milestone gate command is left to CI (Issue #4761). Search-only:
-    # the group cannot list $HOME, and the credential directories under it are
-    # 0700/0600 and stay unreachable. A failure (home not owned by us, e.g. a
-    # tmpfs home) is silent for the same reason as the rest of this block.
-    work_parent="${VIBE_WORK_ROOT%/*}"
-    chgrp vibework "${work_parent}" 2>/dev/null &&
-      chmod g+x "${work_parent}" 2>/dev/null || true
   fi
 fi
 
