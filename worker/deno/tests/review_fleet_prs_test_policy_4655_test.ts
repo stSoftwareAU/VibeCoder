@@ -1143,7 +1143,10 @@ Deno.test("negative: a gone entry naming the deleted test file itself is refused
     path: removedTest,
     name: "csv export",
   };
-  const { result, calls } = await assess([goneNote([entry])], {
+  const { result, calls } = await assess([{
+    ...goneNote([entry]),
+    file: removedTest,
+  }], {
     pr: { testChanges: { removed: [removedTest], edited: [] } },
   });
   assertFinding(
@@ -1160,7 +1163,10 @@ Deno.test("negative: a gone entry naming the deleted test file itself is refused
   // Legal: the removed production file, with removal evidence.
   assertApproved(
     (await assess(
-      [goneNote([{ role: "gone", path: "src/legacy_export.ts" }])],
+      [{
+        ...goneNote([{ role: "gone", path: "src/legacy_export.ts" }]),
+        file: removedTest,
+      }],
       {
         pr: { testChanges: { removed: [removedTest], edited: [] } },
       },
@@ -1203,6 +1209,7 @@ Deno.test("negative: when every coverage entry is gone, removal evidence in veri
       path: "tests/retry_test.ts",
       name: "retries three times",
     }]),
+    remaining: "Retries remain covered by the existing test.",
     verification: undefined,
   }]);
   assertApproved(mixed.result);

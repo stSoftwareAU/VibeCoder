@@ -70,7 +70,9 @@ flowchart TD
 
 - `gone` coverage must have existed at the base ref and be gone at the head,
   otherwise an invented path would "prove" removed functionality (found in
-  self-review of the first cut).
+  self-review of the first cut). It must name production code, not a test;
+  all-gone coverage also needs concrete verification of removal. Meaningful
+  changes with no usable notes are findings.
 - The worker's pre-PR verifier shares the brief, so it applies the same policy
   through its findings. It does not act on an `owner` verdict: only the fleet
   reviewer's `post.ts` holds.
@@ -102,6 +104,9 @@ only when the earlier record says the skill added it.
 
 ## Test Plan
 
+- CI repair: aligned the removed-test fixture with its review note and supplied
+  the remaining behaviour for mixed coverage. The policy test file passes all
+  55 tests; the negative assertions remain in place.
 - Ran from `worker/deno`: `deno task test:unit` over the three new files plus
   every test importing the review-fleet-prs scripts (458 passed, 0 failed),
   `tests/review_fleet_prs_runner_test.ts` directly (70 passed), and 59
