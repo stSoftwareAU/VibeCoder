@@ -40,16 +40,44 @@ import {
   parseReviewReply,
 } from "../../../../worker/deno/lib/pre_pr_verifier.ts";
 import { runFooter, type RunInfo } from "./review_cost.ts";
+// Type only: test_change_policy.ts imports this module's values, so a value
+// import back would be a cycle.
+import type { ApprovedTestChange } from "./test_change_policy.ts";
 
 export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
 
 /**
- * The version of the owner-hold policy a held review was made under. Bump it
- * when the policy for what is held changes (e.g. the owner-approved
- * test-removal policy in #4655), so existing holds are reassessed once even on
- * an unchanged head (Issue #4643).
+ * The version of the owner-hold policy a held review was made under. Version 2
+ * is the #4655 evidence-review policy: a test change is never itself a hold, so
+ * the owner is asked only about a product-contract question or a repo's
+ * explicit override. Bumping it reassesses every existing reviewer-owned hold
+ * once, including a hold at the current head (Issue #4643, Issue #4655).
  */
-export const HOLD_POLICY_VERSION = 1;
+export const HOLD_POLICY_VERSION = 2;
+
+// A held review carries its policy version on a line of its own, so the gate
+// can tell a stale hold from a current one (Issue #4655). Only a whole line
+// counts: the marker quoted in prose or a code span does not.
+export const HOLD_POLICY_MARKER_PREFIX = "<!-- vibe-hold-policy v=";
+const HOLD_POLICY_LINE = /^<!-- vibe-hold-policy v=(\d{1,4}) -->$/;
+
+export function holdPolicyMarker(version = HOLD_POLICY_VERSION): string {
+  return `${HOLD_POLICY_MARKER_PREFIX}${version} -->`;
+}
+
+/**
+ * The policy version a held review body was made under: the last whole-line
+ * marker in it (the skill's own marker comes after the reviewer's text), or 1
+ * when there is none, which is a hold made before #4655.
+ */
+export function holdPolicyFromBody(body: string | undefined): number {
+  let version = 1;
+  for (const line of (body ?? "").split("\n")) {
+    const match = HOLD_POLICY_LINE.exec(line.trim());
+    if (match) version = Number(match[1]);
+  }
+  return version;
+}
 
 // A pre-existing problem Fable noticed that the PR did not cause (already on
 // the base branch, unchanged by the PR): unfair to ask this PR to fix it, too
@@ -269,10 +297,14 @@ export function unrelatedInstanceComment(
   ].join("\n");
 }
 
+// A test change is never itself a hold (Issue #4655): the evidence review
+// decides it, and `hold` is set only when that review (or a repo's override)
+// leaves a product-contract question for the owner. Findings and a missing
+// checklist item still send the PR back first.
 export function decideOutcome(
   review: FableReview,
   removedTests: readonly string[],
-  opts: { autoRelease?: boolean } = {},
+  opts: { hold?: boolean } = {},
 ): Outcome {
   if (review.findings.length > 0) return "changes_requested";
   // A checklist item the reviewer found missing blocks, even if it forgot to
@@ -280,9 +312,7 @@ export function decideOutcome(
   if (review.checklist.some((c) => c.verdict === "missing")) {
     return "changes_requested";
   }
-  if (review.testChanges === "meaningful" || removedTests.length > 0) {
-    return opts.autoRelease === true ? "approved" : "held";
-  }
+  if (opts.hold === true) return "held";
   return "approved";
 }
 
