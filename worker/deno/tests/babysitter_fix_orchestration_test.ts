@@ -20,6 +20,7 @@ import {
   repairFailureIdentity,
 } from "../commands/fleet_pr_babysitter.ts";
 import {
+  babysitterRetryEligible,
   type BabysitterRetryRecord,
   listBabysitterRetryStates,
   saveBabysitterRetryState,
@@ -421,15 +422,26 @@ Deno.test("head movement defers, and a head that moves mid-repair spends no subs
 
 Deno.test("missing tools, a full disk, a timed-out fetch and a killed agent spend no substantive budget", async () => {
   const cases = [
-    ["ENOSPC: no space left on device", "capability"],
-    ["git failed: command not found: cargo", "capability"],
-    ["git failed: fetch timed out after 1800 seconds", "infrastructure"],
-    ["git failed: push timed out", "infrastructure"],
+    ["git failed: fatal: write error: No space left on device", "capability"],
+    [
+      "git failed: Failed to execute git fetch origin main: No such file or directory (os error 2)",
+      "capability",
+    ],
+    [
+      "git failed: TIMEOUT: git fetch origin main timed out after 60s (Issue #619)",
+      "infrastructure",
+    ],
+    [
+      "git failed: TIMEOUT: git push --end-of-options origin HEAD:refs/heads/x timed out after 60s (Issue #619)",
+      "infrastructure",
+    ],
   ] as const;
   for (const [message, expected] of cases) {
     await withState(async (stateDir) => {
       const h = harness(stateDir);
-      h.state.runFailures.push({ match: "fetch", message });
+      const pushing = message.includes("git push");
+      h.state.changes = pushing;
+      h.state.runFailures.push({ match: pushing ? "push" : "fetch", message });
       await assertRejects(() => h.attempt(), Error, message);
       const [record] = await records(stateDir);
       assertEquals(record!.blockerClass, expected, message);
@@ -441,10 +453,11 @@ Deno.test("missing tools, a full disk, a timed-out fetch and a killed agent spen
       assert(eligibleAt > Date.now(), message);
       assert(eligibleAt <= Date.now() + 2 * 60 * 60_000, message);
       h.state.runFailures = [];
+      h.state.committed = false;
       await elapse(stateDir);
       h.state.changes = true;
       await h.attempt();
-      assertEquals(h.state.sessions, 1, message);
+      assertEquals(h.state.sessions, pushing ? 2 : 1, message);
       assertEquals(h.state.pushed, 1, message);
     });
   }
@@ -669,8 +682,15 @@ Deno.test("escalation hands off once to the stall ladder and ignores planted mar
   assertStringIncludes(writes[0]!, "line one");
   assert(!writes[0]!.includes("```fence"));
   assert(!writes[0]!.includes("<!-- vibe-ci-fix-attempt"));
-  await escalateStuckRepair(request);
-  assertEquals(writes.length, 1);
+  await escalateStuckRepair({
+    ...request,
+    record: { ...request.record, pushedHead: "c".repeat(40) },
+  });
+  assertEquals(
+    writes.length,
+    1,
+    "a second host with stale push history deduplicates",
+  );
   comments[0]!.user = { login: "outsider" };
   await escalateStuckRepair(request);
   assertEquals(writes.length, 2);
@@ -860,6 +880,86 @@ Deno.test("a changed head bypasses an old cooldown without losing attempts", asy
     assertStringIncludes(h.state.prompts[0]!, "prior failed repair diagnostic");
     assertStringIncludes(h.state.prompts[0]!, "Change the diagnosis");
     assertEquals((await records(stateDir))[0]!.attempts.substantive, 2);
+  });
+});
+
+Deno.test("pending CI preserves the moved-head diagnosis after a handoff", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    await saveBabysitterRetryState(
+      stateDir,
+      tracked({
+        observedHead: PUSHED,
+        attempts: { infrastructure: 0, substantive: 1 },
+        escalation: { issue: `${REPO}#900`, at: new Date().toISOString() },
+        evidence: ["prior handoff diagnostic"],
+      }),
+    );
+    await observeTrackedPr(
+      stateDir,
+      REPO,
+      basePr({
+        statusCheckRollup: [{ status: "IN_PROGRESS", conclusion: null }],
+      }) as never,
+      false,
+      false,
+    );
+    assert(
+      babysitterRetryEligible((await records(stateDir))[0], Date.now(), HEAD),
+    );
+    await h.attempt(1);
+    assertEquals(h.state.sessions, 1);
+    assertStringIncludes(h.state.prompts[0]!, "Change the diagnosis");
+    assertStringIncludes(h.state.prompts[0]!, "prior handoff diagnostic");
+    await elapse(stateDir);
+    await h.attempt(1);
+    assertEquals(
+      h.state.sessions,
+      1,
+      "only one new diagnosis on the moved head",
+    );
+  });
+});
+
+Deno.test("disk-full clone spends no substantive budget", async () => {
+  for (
+    const operation of [
+      "clone",
+      "fetch",
+      "push",
+      "diff",
+      "add",
+      "commit",
+      "merge",
+    ]
+  ) {
+    for (
+      const message of [
+        "git failed: fatal: write error: No space left on device",
+        "git failed: Failed to execute git fetch origin main: No such file or directory (os error 2)",
+      ]
+    ) {
+      assertEquals(
+        classifyBabysitterGitFailure([operation], new Error(message))
+          .blockerClass,
+        "capability",
+      );
+    }
+  }
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    const message =
+      "git clone failed: fatal: write error: No space left on device";
+    h.deps.clone = () =>
+      Promise.reject(
+        classifyBabysitterGitFailure(["clone"], new Error(message)),
+      );
+    await assertRejects(() => h.attempt(), Error, message);
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "capability");
+    assertEquals(record!.attempts.substantive, 0);
+    assertEquals(h.state.markers.length, 0);
+    assertEquals(h.state.sessions, 0);
   });
 });
 

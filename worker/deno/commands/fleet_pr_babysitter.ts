@@ -142,12 +142,13 @@ export function classifyBabysitterGitFailure(
   const transport = operation && ["clone", "fetch", "push"].includes(operation);
   if (transport && error instanceof BabysitterFailure) return error;
   if (
-    transport && /^(?:ENOSPC:|git failed: command not found:)/i.test(message)
+    /^(?:git(?: [a-z-]+)? failed: )?(?:ENOSPC:|command not found:|Failed to execute git\b|(?:fatal: )?(?:write error: )?No space left on device\b)/i
+      .test(message)
   ) {
     return new BabysitterFailure(message, "capability");
   }
   const transportFailure =
-    /could not resolve host|connection (?:timed out|reset|refused)|failed to connect|remote end hung up|rpc failed|remote: internal server error|http\s+(?:401|403|408|429|5\d\d)\b|authentication failed|bad credentials|token expired|^git failed: (?:clone|fetch|push) timed out/i
+    /could not resolve host|connection (?:timed out|reset|refused)|failed to connect|remote end hung up|rpc failed|remote: internal server error|http\s+(?:401|403|408|429|5\d\d)\b|authentication failed|bad credentials|token expired|^(?:git failed: |git clone failed: )?TIMEOUT: git (?:clone|fetch|push)\b|^git failed: (?:clone|fetch|push) timed out/i
       .test(message);
   return new BabysitterFailure(
     message,
@@ -1078,7 +1079,8 @@ export async function observeTrackedPr(
       const updated: BabysitterRetryRecord = {
         ...record,
         ...reconcileTrackedPr(pr, record, now, skipAutoMerge),
-        observedHead: pr.headRefOid,
+        // Keep the handoff head until fix() can consume the changed diagnosis.
+        observedHead: record.escalation ? record.observedHead : pr.headRefOid,
       };
       await saveBabysitterRetryState(stateDir, updated);
       console.log(
@@ -1160,7 +1162,7 @@ export async function escalateStuckRepair(
   const { repo, prNumber, failureIdentity, record, authors, gh } = request;
   const signature = babysitterFailureSignature(repo, prNumber, failureIdentity);
   const marker = buildDedupMarker(
-    `auto-fix-cap:${signature}:${record.pushedHead ?? record.observedHead}`,
+    `auto-fix-cap:${signature}:${record.observedHead}`,
   );
   const pages: unknown = JSON.parse(
     await gh([

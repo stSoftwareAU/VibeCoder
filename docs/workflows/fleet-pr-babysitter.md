@@ -234,6 +234,11 @@ next scan logs the cause, next action, and eligible time.
 Local git validation, staging and commit failures are code failures even when
 the diagnostic contains transport words in file paths or source text. Only
 clone, fetch and push failures use git transport diagnostics for classification.
+The chokepoint's timeout prefix counts as infrastructure for those transport
+operations. Git disk-full and spawn failures count as capability failures for
+every operation. A pending-CI observation preserves an escalated incident's
+handoff head until repair consumes the head change. Handoff markers use that
+incident head, independent of any older successful push on a host.
 
 After a successful push the state records the pushed head and waits for CI and
 independent review. Each later scan observes the PR without taking a lock:

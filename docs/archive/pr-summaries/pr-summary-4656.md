@@ -76,16 +76,22 @@ longer exists.
   recovery, credential expiry and repeated no-progress. — evidence:
   `babysitter_fix_orchestration_test.ts` covers each scenario, including a
   bounded tool/disk cooldown followed by a successful retry without deleting
-  state, moved-head retry and runner-budget escalation. — reviewer: met
+  state, real git timeout/spawn/disk diagnostics, moved-head retry after a
+  pending-CI observation and runner-budget escalation. — reviewer: met
 - **met** — Waits release locks, incidents deduplicate, and human gates remain
   paused. — evidence: orchestration lock assertions, fleet-author handoff
-  deduplication, `stall_repair_test.ts::babysitter attempts and cap handoffs never lift an owner's needs-human hold`
+  deduplication across records with different stale pushed heads,
+  `stall_repair_test.ts::babysitter attempts and cap handoffs never lift an owner's needs-human hold`
   and `conflict_needs_human_gate_test.ts::babysitter attempts and handoffs leave the conflict human gate closed`
   — reviewer: met
-- **met** — Repeated no-progress persists evidence and uses the existing
-  automated repair mechanism. — evidence: `escalateStuckRepair` posts the
+- **met** — Repeated no-progress persists evidence and bounds sessions:
+  eligible red-CI stalls use the existing automated repair mechanism;
+  green review and conflict incidents pause until the head or review changes.
+  — evidence: `escalateStuckRepair` posts the
   existing cap marker; `stall_repair_test.ts::babysitter cap handoff goes straight to the existing second-trip recovery`
-  exercises the real red-CI ladder. Green review and conflict incidents pause after handoff until the head or review changes; orchestration verifies bounded green-review sessions. No independent issue is filed. — reviewer: met
+  exercises the real red-CI ladder. Orchestration verifies bounded green-review
+  and conflict sessions. Those lanes do not use the ladder or claim automated
+  recovery after handoff. No independent issue is filed. — reviewer: met
 
 ## Test Plan
 
@@ -125,6 +131,39 @@ longer exists.
 
 The babysitter commits and pushes this working tree. CI must validate that
 commit, including the archived-summary freshness check.
+
+## Current review repair
+
+Git transport classification now recognises the chokepoint's anchored
+`TIMEOUT: git clone/fetch/push` diagnostic. Real disk-full and wrapped spawn
+failures are capability failures for every git operation. Orchestration uses
+the actual diagnostic forms, including a push timeout after a checked session
+and a disk-full clone, and checks zero substantive attempts and no marker.
+The retry scenario resets the simulated checkout's commit state because a
+push timeout now occurs after a real simulated commit.
+
+Non-actionable scans preserve an escalated incident's handoff head until the
+repair consumes the changed diagnosis. A pending-CI scan on a new head therefore
+cannot hide that move; the regression passes eligibility, runs one new session
+with fenced prior evidence and then pauses again. Handoff deduplication uses
+the incident's observed head, so hosts with different stale pushed heads share
+one comment. All three defects reproduced before their guards were added.
+No twinned classifier rule was found.
+
+The six focused orchestration, retry-state, App, babysitter, stall and conflict
+gate suites passed **141 tests, zero failures**. Closure entries above now name
+the new evidence and explicitly distinguish ladder recovery for eligible
+red-CI stalls from bounded pauses for green review and conflict incidents.
+
+Final `./quality.sh` validation passed formatting, lint, type checking,
+Markdown, Mermaid, completeness and all static chokepoints. The full parallel
+test pass reproduced the Deno 2.9.5/macOS permission-pledge panic quoted above;
+the serial pass consequently did not run. Base PR #4715 Quality run
+41555343824 again verified successful across all four unit shards and its
+gate. Current PR CI reports 22 passed, zero failed, two skipped. Semgrep and
+Checkov are unavailable on this host; config integration has no config file.
+The summary CLI reports zero blocked gates and three missing-input checks
+not checked. Commit-history freshness runs after the babysitter commits.
 
 ## Follow-up review repair
 
