@@ -22,12 +22,13 @@ import {
   syncPrBodyFromSummary,
   type SyncPrBodyInput,
 } from "../lib/pr_body_sync.ts";
-import { prSummaryFilePath } from "../lib/pr_body_length.ts";
+import { loadCommittedPrSummary } from "../lib/pr_summary_loader.ts";
 import {
   type ClosingIssueReference,
   githubClosesIssue,
   guardPrBodyProposal,
   isIssueCloseAllowed,
+  PR_BODY_LIMIT,
 } from "../lib/babysitter_pr_body_guard.ts";
 import { getRunId } from "../lib/run_id.ts";
 import {
@@ -656,7 +657,8 @@ const PR_BODY_PROPOSAL = ".babysitter-pr-body";
 
 /**
  * Take the agent's proposed PR description out of the clone, so it is never
- * committed. The caller's guard decides what is published (Issue #4637).
+ * committed. The caller's guard decides what is published (Issue #4637). An
+ * oversized proposal is refused here, before any guard regex reads it.
  */
 export async function takePrBodyProposal(
   dir: string,
@@ -670,7 +672,13 @@ export async function takePrBodyProposal(
   }
   await Deno.remove(`${dir}/${PR_BODY_PROPOSAL}`);
   const body = proposal.trim();
-  return body ? body : undefined;
+  if (!body) return undefined;
+  if (body.length > PR_BODY_LIMIT) {
+    throw new Error(
+      `proposed PR description is ${body.length} characters; GitHub allows ${PR_BODY_LIMIT}`,
+    );
+  }
+  return body;
 }
 
 /** Apply a description with the runner's token; the agent's is read-only. */
@@ -893,6 +901,10 @@ export interface BabysitterRepairFinishDeps {
   syncBodyDeps?: SyncPrBodyDeps;
   syncBodyFn?: typeof syncPrBodyFromSummary;
   dismiss?: (reviews: Review[], expectedHead: string) => Promise<void>;
+  /** The git runner the committed summary is read through. */
+  runGit?: typeof runGitCommand;
+  /** Pause between reads while GitHub's PR view catches up; 1 second by default. */
+  headWaitDelayMs?: number;
   renewalFailed: () => boolean;
 }
 
@@ -909,38 +921,44 @@ export interface BabysitterRepairChange {
 }
 
 /**
- * The summary committed at HEAD for an issue, or undefined when none is.
- * Only committed content is read: a working-tree edit is not evidence, so the
- * check lists the path at HEAD before it reads it (Issue #4637).
+ * The summary committed at `sha` for an issue, or undefined when none is
+ * (Issue #4637/#4712). It is read through the shared committed loader, which
+ * never consults the working tree. A failed read throws, so reviews stay open.
  */
-export async function readCommittedPrSummary(
+async function committedPrSummary(
   repoPath: string,
   issueNumber: number,
-  runCommand: typeof run = run,
+  sha: string,
+  runGit: typeof runGitCommand,
 ): Promise<string | undefined> {
-  const path = prSummaryFilePath(issueNumber);
-  const listed = await runCommand(
-    "git",
-    ["ls-tree", "--name-only", "HEAD", "--", path],
+  const loaded = await loadCommittedPrSummary(
     repoPath,
+    issueNumber,
+    sha,
+    runGit,
   );
-  if (listed === "") return undefined;
-  return await runCommand("git", ["show", `HEAD:${path}`], repoPath);
+  if (!loaded.ok) throw loaded.error;
+  return loaded.value.source === "not_found" ? undefined : loaded.value.content;
 }
 
 /** A PR's head, description and closing references as GitHub reports them. */
 interface PrBodyState {
   headRefOid: string;
   body: string;
-  closingIssuesReferences?: ClosingIssueReference[];
+  closingIssuesReferences: ClosingIssueReference[];
 }
 
+/**
+ * Read the PR's head, body and closing references. A missing or mistyped
+ * field is an error naming the field, never an empty state: an absent
+ * closing-reference list would otherwise read as "closes nothing" (Issue #4637).
+ */
 async function readPrBodyState(
   repo: string,
   prNumber: number,
   gh: GhRunner,
 ): Promise<PrBodyState> {
-  return JSON.parse(
+  const view: Record<string, unknown> = JSON.parse(
     await gh([
       "pr",
       "view",
@@ -951,6 +969,19 @@ async function readPrBodyState(
       "body,headRefOid,closingIssuesReferences",
     ]),
   );
+  const { body, headRefOid, closingIssuesReferences } = view;
+  const refusal = (field: string, expected: string) =>
+    new Error(
+      `PR #${prNumber} view: "${field}" is not ${expected}; reviews left open; the next scan retries`,
+    );
+  if (typeof body !== "string") throw refusal("body", "a string");
+  if (typeof headRefOid !== "string") {
+    throw refusal("headRefOid", "a string");
+  }
+  if (!Array.isArray(closingIssuesReferences)) {
+    throw refusal("closingIssuesReferences", "an array");
+  }
+  return { body, headRefOid, closingIssuesReferences };
 }
 
 /** Line endings and surrounding whitespace do not count as a change. */
@@ -970,10 +1001,10 @@ async function publishBabysitterPrBody(options: {
   repoPath: string;
   expectedHead: string;
   change: BabysitterRepairChange;
-  runCommand: typeof run;
+  runGit: typeof runGitCommand;
   gh: GhRunner;
 }): Promise<void> {
-  const { repo, prNumber, repoPath, expectedHead, change, runCommand, gh } =
+  const { repo, prNumber, repoPath, expectedHead, change, runGit, gh } =
     options;
   const headMoved = (actual: string) =>
     new Error(
@@ -984,7 +1015,7 @@ async function publishBabysitterPrBody(options: {
   const issueNumber = issueNumberFromMarker(live.body);
   const summary = issueNumber === undefined
     ? undefined
-    : await readCommittedPrSummary(repoPath, issueNumber, runCommand);
+    : await committedPrSummary(repoPath, issueNumber, expectedHead, runGit);
   const closeAllowed = issueNumber === undefined
     ? undefined
     : isIssueCloseAllowed({ summary, issueNumber, proposal: change.proposal });
@@ -1024,9 +1055,12 @@ async function publishBabysitterPrBody(options: {
 }
 
 /**
- * Validate, commit and push a repair, then publish its description and
- * dismiss the reviews it addressed. The description is published only after
- * the body sync succeeds, and reviews are dismissed only after it is verified.
+ * Validate, commit and push a repair, then sync the PR body and dismiss the
+ * reviews it addressed (Issue #4637). On a push, GitHub's PR view must first
+ * report the pushed head, since it lags behind the push. The body sync runs
+ * on the committed summary at that head. Inside the sync, the guarded
+ * description is published and checked, and only then are reviews dismissed.
+ * Every failure throws, so reviews stay open and the next scan retries.
  */
 export async function finishBabysitterRepair(
   repo: string,
@@ -1092,6 +1126,22 @@ export async function finishBabysitterRepair(
     expectedHead = await runCommand("git", ["rev-parse", "HEAD"], repoPath);
   }
 
+  if (expectedHead !== pr.headRefOid) {
+    // GitHub's PR view lags after a push (Issue #4637): wait for it to report
+    // the pushed head before the body sync reads it.
+    const reached = await waitForPushedHead(
+      async () => (await readPrBodyState(repo, pr.number, gh)).headRefOid,
+      expectedHead,
+      10,
+      deps.headWaitDelayMs ?? 1_000,
+    );
+    if (!reached) {
+      throw new Error(
+        `PR head did not reach the pushed head ${expectedHead}; reviews left open; the next scan retries`,
+      );
+    }
+  }
+
   await syncBabysitterRepairBody(
     repo,
     pr,
@@ -1108,7 +1158,7 @@ export async function finishBabysitterRepair(
         repoPath,
         expectedHead,
         change,
-        runCommand,
+        runGit: deps.runGit ?? runGitCommand,
         gh,
       });
       await (deps.dismiss

@@ -9,6 +9,7 @@ import {
   guardPrBodyProposal,
   isIssueCloseAllowed,
   PR_BODY_LIMIT,
+  stripVibeMarkers,
 } from "../lib/babysitter_pr_body_guard.ts";
 import { buildIdempotencyMarker, closingKeywordLine } from "../lib/pr_body.ts";
 import {
@@ -49,6 +50,34 @@ const FULLY_MET_SUMMARY = [
 /** A live body the sync built for worker issue `issueNumber`. */
 function liveBodyFor(issueNumber: number, closing: string): string {
   return `${closing}\n\n${buildIdempotencyMarker(issueNumber)}`;
+}
+
+/**
+ * What the guard appends after a proposal that never names #4674, under a
+ * partial summary: the withheld association, then the live marker.
+ */
+function partialSuffix(): string {
+  return `\n\nPart of #4674\n\n${buildIdempotencyMarker(4674)}`;
+}
+
+/**
+ * Asserts every HTML comment in `body` closes before another one opens, so no
+ * comment hides the text that follows its opener (Issue #4637).
+ */
+function assertNoHiddenComment(body: string): void {
+  let at = 0;
+  for (;;) {
+    const open = body.indexOf("<!--", at);
+    if (open === -1) return;
+    const close = body.indexOf("-->", open + 4);
+    assert(close !== -1, `an HTML comment at ${open} is never closed`);
+    assertEquals(
+      body.slice(open + 4, close).includes("<!--"),
+      false,
+      `the comment at ${open} hides a later comment`,
+    );
+    at = close + 3;
+  }
 }
 
 Deno.test("Moved to babysitter_pr_body_guard: a proposed PR description keeps the closing references it dropped", () => {
@@ -267,11 +296,11 @@ Deno.test("with no proposal, a withheld issue's live close is rewritten in place
   assertEquals(output, liveBodyFor(4674, "Part of #4674"));
 });
 
-Deno.test("a body over the GitHub limit is refused, not published", () => {
+Deno.test("a body one character over the GitHub limit is refused, not published", () => {
   assertThrows(
     () =>
       guardPrBodyProposal({
-        proposal: "x".repeat(PR_BODY_LIMIT + 1),
+        proposal: "x".repeat(PR_BODY_LIMIT - partialSuffix().length + 1),
         liveBody: liveBodyFor(4674, "Closes #4674"),
         summary: partSummary("partial"),
         repo: REPO,
@@ -281,14 +310,14 @@ Deno.test("a body over the GitHub limit is refused, not published", () => {
   );
 });
 
-Deno.test("a body at the GitHub limit is still published", () => {
+Deno.test("a body of exactly the GitHub limit is still published", () => {
   const output = guardPrBodyProposal({
-    proposal: "x".repeat(PR_BODY_LIMIT - 200),
+    proposal: "x".repeat(PR_BODY_LIMIT - partialSuffix().length),
     liveBody: liveBodyFor(4674, "Closes #4674"),
     summary: partSummary("partial"),
     repo: REPO,
   });
-  assert(output.length <= PR_BODY_LIMIT);
+  assertEquals(output.length, PR_BODY_LIMIT);
   assertStringIncludes(output, "Part of #4674");
 });
 
@@ -375,7 +404,7 @@ Deno.test("GitHub's closing references name this issue only in this repository",
     false,
   );
   assertEquals(githubClosesIssue([{ number: 99 }], 4674, REPO), false);
-  assertEquals(githubClosesIssue(undefined, 4674, REPO), false);
+  assertEquals(githubClosesIssue([], 4674, REPO), false);
 });
 
 Deno.test("the digest of the committed summary is the one the live body carries", async () => {
@@ -418,4 +447,86 @@ Deno.test("an unmet criterion withholds the close even when the summary's own cl
   });
   assertEquals(closingKeywordLine(output, 4674), null);
   assertStringIncludes(output, "Part of #4674");
+});
+
+Deno.test("a run of 30,000 unclosed `<!--vibe-` openers is defused in one pass (Issue #4637)", () => {
+  const openers = "<!--vibe-".repeat(30_000);
+  assertEquals(stripVibeMarkers(openers), "<!- -vibe-".repeat(30_000));
+  assertEquals(stripVibeMarkers(`${openers}-->`), "");
+});
+
+Deno.test("a long run of `not` and spaces with no keyword is guarded without a close (Issue #4637)", () => {
+  const spaced = "not" + " ".repeat(50_000) + "x";
+  const output = guardPrBodyProposal({
+    proposal: spaced,
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertEquals(output, `${spaced}${partialSuffix()}`);
+  const words = "not ".repeat(15_000);
+  const wordsOutput = guardPrBodyProposal({
+    proposal: words,
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertEquals(wordsOutput, `${words.trimEnd()}${partialSuffix()}`);
+});
+
+Deno.test("a long run of `#1` references is guarded without a closing reference (Issue #4637)", () => {
+  const refs = "#1".repeat(30_000);
+  const output = guardPrBodyProposal({
+    proposal: refs,
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertEquals(output, `${refs}${partialSuffix()}`);
+});
+
+Deno.test("a marker quoted in a code span of the live body is not carried into the description (Issue #4637)", () => {
+  const digest = buildSummaryDigestMarker("f".repeat(64));
+  const liveBody = [
+    "Part of #4674",
+    "",
+    'The summary quotes `<!-- vibe-quality-gate-skipped reason="x" -->` as an example.',
+    "",
+    digest,
+    buildIdempotencyMarker(4674),
+  ].join("\n");
+  const output = guardPrBodyProposal({
+    proposal: "Rewritten.",
+    liveBody,
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertEquals(
+    output,
+    `Rewritten.\n\nPart of #4674\n\n${digest}\n${buildIdempotencyMarker(4674)}`,
+  );
+});
+
+Deno.test("an unclosed plain comment opener at the end of a proposal cannot hide the appended association or markers (Issue #4637)", () => {
+  const output = guardPrBodyProposal({
+    proposal: "Rewritten description.\n\n<!-- ",
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertEquals(closingKeywordLine(output, 4674), null);
+  assertStringIncludes(output, "\n\nPart of #4674\n\n");
+  assertEquals(issueNumberFromMarker(output), 4674);
+  assertNoHiddenComment(output);
+});
+
+Deno.test("a complete benign HTML comment in a proposal is made inert, not left to hide text (Issue #4637)", () => {
+  const output = guardPrBodyProposal({
+    proposal: "Note <!-- benign --> here.",
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+  });
+  assertStringIncludes(output, "Note <!- - benign - -> here.");
+  assertNoHiddenComment(output);
 });

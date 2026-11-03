@@ -7,18 +7,22 @@
  * committed summary with an unmet criterion re-opened exactly the close that
  * the summary withholds (the #4716 regression).
  *
- * The guard decides, from evidence committed at the pushed head, whether the
- * governing issue may be closed, and rewrites the proposal to match:
+ * The guard decides whether the governing issue may be closed, from evidence
+ * committed at the pushed head and from the proposal's own closure block, and
+ * rewrites the proposal to match:
  *
  * ```mermaid
  * flowchart TD
  *     S["Summary committed at the pushed head"] --> M{"Unmet criterion, no committed<br/>summary, or no closing phrase?"}
+ *     P["Proposal's own closure block<br/>(a missing or partial entry)"] --> M
  *     M -- yes --> W["Withhold: negated phrases become complete,<br/>closing keywords become Part of"]
  *     M -- no --> C["Keep the closing keyword, or add Closes #N<br/>when the proposal dropped the issue"]
  * ```
  *
- * The proposal is agent text, so any hidden `<!-- vibe-... -->` marker in it is
- * stripped. The live body's markers are appended in their place, so the
+ * The proposal is agent text. Its complete hidden `<!-- vibe-... -->` markers
+ * are stripped, and every other HTML-comment delimiter in it is made inert by
+ * the shared neutralisation, so an unclosed `<!--` cannot hide the lines the
+ * guard appends. The live body's markers are appended in their place, so the
  * summary digest and the worker-issue marker keep reconciling.
  *
  * Every function here is pure. The caller reads the live body and the summary
@@ -34,23 +38,34 @@ import {
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
 import { maskMarkdownCode } from "./markdown_code_spans.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { closingKeywordLine } from "./pr_body.ts";
 import { issueNumberFromMarker } from "./pr_body_sync.ts";
 
 /** GitHub's pull request body limit, in characters (Issue #4359). */
 export const PR_BODY_LIMIT = 65_536;
 
-/** A complete hidden worker marker, `<!-- vibe-... -->`. */
-const VIBE_MARKER_RE = /<!--\s*vibe-[\s\S]*?-->/gi;
+/** Opens every HTML comment, a hidden marker included. */
+const COMMENT_OPENER = "<!--";
 
-/** The opener of a hidden marker, whether or not the marker is closed. */
-const VIBE_MARKER_OPENER_RE = /<!--\s*vibe-/gi;
+/** Closes every HTML comment, a hidden marker included. */
+const COMMENT_CLOSER = "-->";
+
+/** The name a worker marker opens with, after `<!--` and optional whitespace. */
+const VIBE_NAME = "vibe-";
+
+/** One whitespace character, as `\s` matches it. */
+const WHITESPACE_RE = /\s/;
 
 /**
  * A negated closing phrase such as "does not close #N". GitHub still reads it
  * as a closing reference, so its keyword is replaced by `complete`. Groups:
  * the negation, the rest of the reference from its whitespace onward, the
  * optional repository qualifier, and the issue number.
+ *
+ * No two quantifiers overlap: the negation and the keyword are fixed words,
+ * and the qualifier's two runs are split by a literal `/`, so a hostile run
+ * is read in linear time.
  */
 const NEGATED_CLOSE_RE =
   /((?:\bnot|\bnever|\bcannot|n['’]t|\bno\s+longer)\s+)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s+(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b)/gi;
@@ -90,8 +105,9 @@ interface ClosingRef {
 /**
  * Whether the governing issue may be closed. Unknown evidence is not enough:
  * the committed summary must exist, must have no unmet criterion, and must
- * carry a closing keyword for the issue. A proposal with its own unmet
- * criterion withholds the close too.
+ * carry a closing keyword for the issue. The close is also withheld when the
+ * proposal carries its own unmet criterion: a `missing` or `partial` entry in
+ * its closure block, even when the committed summary is fully met.
  *
  * @param input.summary - The summary committed at the pushed head.
  * @param input.issueNumber - The governing issue.
@@ -115,16 +131,17 @@ export function isIssueCloseAllowed(input: {
  * Whether GitHub reports the issue as closed by the PR. A reference whose
  * repository is not given is taken to be this repository's.
  *
- * @param refs - `closingIssuesReferences` from `gh pr view`.
+ * @param refs - `closingIssuesReferences` from `gh pr view`. The caller has
+ *   checked that GitHub returned the field.
  * @param issueNumber - The issue to look for.
  * @param repo - The pull request's repository, `owner/name`.
  */
 export function githubClosesIssue(
-  refs: readonly ClosingIssueReference[] | undefined,
+  refs: readonly ClosingIssueReference[],
   issueNumber: number,
   repo: string,
 ): boolean {
-  return (refs ?? []).some((ref) => {
+  return refs.some((ref) => {
     if (ref.number !== issueNumber) return false;
     const repository = ref.repository;
     if (repository === undefined) return true;
@@ -204,26 +221,87 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
   return body;
 }
 
-/** Remove every hidden vibe marker from agent text, and defuse a stray opener. */
-function stripVibeMarkers(text: string): string {
-  return text
-    .replace(VIBE_MARKER_RE, "")
-    .replace(VIBE_MARKER_OPENER_RE, "<!- - vibe-")
-    .trimEnd();
+/**
+ * Remove every complete hidden vibe marker from agent text, then make every
+ * other HTML-comment delimiter inert through the shared neutralisation, so an
+ * unclosed `<!--` cannot hide what the guard appends (Issue #4637).
+ *
+ * Exported so the hostile-input tests can reach the scan directly: a body of
+ * 30,000 openers cannot be published, so it cannot go through the guard.
+ */
+export function stripVibeMarkers(text: string): string {
+  const kept: string[] = [];
+  let at = 0;
+  for (const [start, end] of completeVibeMarkerSpans(text)) {
+    kept.push(text.slice(at, start));
+    at = end;
+  }
+  kept.push(text.slice(at));
+  return kept.join("").trimEnd();
 }
 
 /**
  * The hidden vibe markers the live body carries, each once, in the order of
  * their final occurrence. The footer follows any quoted summary text, so the
  * footer's marker stays the last of its kind (the reader takes the last).
+ *
+ * A marker quoted in a Markdown code span or block is not the worker's: the
+ * scan runs over the masked body, which keeps every offset, and the marker
+ * text is sliced from the original (Issue #4637).
  */
 function liveVibeMarkers(body: string): string[] {
-  const all = [...body.matchAll(VIBE_MARKER_RE)].map((match) => match[0]);
+  const masked = maskMarkdownCode(body);
+  const all = completeVibeMarkerSpans(masked).map(([start, end]) =>
+    body.slice(start, end)
+  );
+  const seen = new Set<string>();
   const kept: string[] = [];
   for (let i = all.length - 1; i >= 0; i--) {
-    if (!kept.includes(all[i]!)) kept.unshift(all[i]!);
+    if (seen.has(all[i]!)) continue;
+    seen.add(all[i]!);
+    kept.push(all[i]!);
   }
-  return kept;
+  return kept.reverse();
+}
+
+/**
+ * The `[start, end)` offsets of every complete hidden vibe marker in `text`,
+ * found in one left-to-right pass (Issue #4637).
+ *
+ * An opener is `<!--`, optional whitespace, then `vibe-` (case-insensitive).
+ * Its marker runs to the first `-->` after the `vibe-`, as the regex this
+ * replaced did. An opener with no `-->` after it has no marker, and no later
+ * opener can have one either, so the scan stops there and the caller defuses
+ * the rest. Each character is read a bounded number of times, so a hostile
+ * run of openers cannot make the scan quadratic.
+ */
+function completeVibeMarkerSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let from = 0;
+  for (;;) {
+    const opener = text.indexOf(COMMENT_OPENER, from);
+    if (opener === -1) break;
+    const name = skipWhitespace(text, opener + COMMENT_OPENER.length);
+    const isVibe = text.slice(name, name + VIBE_NAME.length).toLowerCase() ===
+      VIBE_NAME;
+    if (!isVibe) {
+      from = opener + 1;
+      continue;
+    }
+    const close = text.indexOf(COMMENT_CLOSER, name + VIBE_NAME.length);
+    if (close === -1) break;
+    const end = close + COMMENT_CLOSER.length;
+    spans.push([opener, end]);
+    from = end;
+  }
+  return spans;
+}
+
+/** The first index at or after `from` that is not whitespace. */
+function skipWhitespace(text: string, from: number): number {
+  let at = from;
+  while (at < text.length && WHITESPACE_RE.test(text[at]!)) at++;
+  return at;
 }
 
 /** Every closing reference GitHub would honour, read from a masked body. */

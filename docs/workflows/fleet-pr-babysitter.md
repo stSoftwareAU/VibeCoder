@@ -18,8 +18,9 @@ changes) for whitespace errors and conflict markers, and rechecks the PR. It
 pushes only if the PR still matches the original head. A base merge on its own
 is also pushed when the agent made no change, so the branch is never left
 behind. After a push, the babysitter synchronises the PR description from the
-archived summary, then publishes any description the agent proposed (see
-below), and dismisses an addressed review only if it is still the current review
+summary committed at the pushed head, then publishes any description the agent
+proposed (see below), and dismisses an addressed review only if it is still the
+current review
 and the PR head has not changed. A retry with no working-tree changes also
 synchronises the body before dismissal, so a prior failed publication can be
 repaired. A failed body publication or a stale repair checkout leaves the review
@@ -177,32 +178,64 @@ made by the runner with its own token. The agent token lasts about an hour and
 is not refreshed, so reads late in a longer repair can fail. When a review asks
 for a description change, the agent writes the complete new description
 (Markdown) to `.babysitter-pr-body` in the clone. The proposal is data, not
-authority. The runner removes the file before committing, and after the push it
-works through these steps in order:
+authority. The runner takes the file out of the clone before the change check,
+so it is never committed. After the push, or on a no-change retry at the
+unchanged head, the description steps run in order:
 
 1. It synchronises the description from the summary committed at the pushed
-   head.
-2. It re-reads the live description and requires the live head to equal the
-   pushed head, then publishes the proposal on top of that sync.
+   head. The sync is pinned to that commit: just before the edit, the checkout
+   must still be at it and `git ls-remote` must still report the PR branch at
+   it. The pinned-head skips (`checkout moved off the committed head`,
+   `pushed head moved`, `pushed head could not be verified`) keep the review
+   open. So does any skip outside the harmless set: `no worker marker`,
+   `summary unchanged`, `summary file deleted`, `body already current` and
+   `summary not committed at the pushed head`.
+2. It reads the live description once and requires the live head to equal the
+   pushed head. Nothing waits for GitHub's PR view to catch up here, so a
+   lagging view fails this step and the review stays open. The sync in step 1
+   is more lenient: it accepts a view whose head is an ancestor of the pushed
+   checkout. The proposal is then published on top of that sync. With no
+   proposal, the body is edited only to withhold a close that GitHub still
+   honours.
 3. It strips every hidden `<!-- vibe-… -->` marker from the proposal and appends
    the live body's markers (worker issue, summary digest, sub-agent tier and
    assignment id), so the digest reconcile keeps working.
-4. It decides closing or non-closing for the worker's issue from the committed
-   summary only. Closing (`Closes #N`) is kept only when the committed summary
-   has no `partial` or `missing` criterion and itself closes the issue. An unmet
-   criterion, a missing committed summary or unknown evidence gives
-   `Part of #N`. So does a negated sentence such as "does not close #N", which
-   GitHub still honours as a closing reference, so that sentence is reworded. An
-   association the proposal dropped entirely is restored in the form the
-   evidence supports, and closing references to other issues that the proposal
-   dropped are restored.
-5. It verifies the published description, GitHub's `closingIssuesReferences`
-   and that the head has not moved, before the review is dismissed.
+4. It decides closing or non-closing for the worker's issue. Closing
+   (`Closes #N`) is kept only when the summary committed at the pushed head has
+   no `partial` or `missing` criterion, itself closes the issue, and the
+   proposal, if any, has no `partial` or `missing` criterion of its own. The
+   committed summary is read from the clone's `HEAD` (the pushed commit after a
+   push) at the canonical path `docs/archive/pr-summaries/pr-summary-<N>.md`
+   only, with `git ls-tree` and `git show`; the working tree is never read.
+   Legacy summary paths are not read for this decision, so a summary kept only
+   there withholds the close. An unmet criterion, a missing committed summary or
+   unknown evidence gives `Part of #N`. So does a negated sentence such as "does
+   not close #N", which GitHub still honours as a closing reference, so that
+   sentence is reworded. An association the proposal dropped entirely is
+   restored in the form the evidence supports, and closing references to other
+   issues that the proposal dropped are restored.
+5. It verifies before dismissal. The live head is checked before the edit and
+   again after it. When an edit was made, the description read back must match
+   what was published. When the close is withheld, GitHub's
+   `closingIssuesReferences` must not list the issue as closed by the PR; this
+   check runs only in that case. Dismissal then waits up to ten reads, one
+   second apart, for the PR head to show the pushed head, and dismisses only
+   the reviews that are still requested.
+
+The composed description is checked against GitHub's 65,536-character limit
+when it is published, after the push and the sync. The limit applies to the
+whole description, including the appended references and markers, so a
+proposal under the limit can still be refused. Nothing checks the proposal's
+size when it is read. A refusal leaves the review open.
 
 Any failure leaves the review open, and the next scan retries on the pushed
 head. The retry is idempotent: a body that is already current is not edited
-again. The guard is `worker/deno/lib/babysitter_pr_body_guard.ts`, and the close
-decision uses the #3177/#4644 close guard in
+again. Limit: a legacy body that has the worker marker but no summary digest is
+synchronised only through the before-push diff. On a no-change retry the
+before-push SHA is the PR head itself, so the diff is empty and the body is not
+re-synchronised. It is refreshed only by a repair that pushes a change to the
+summary. The guard is `worker/deno/lib/babysitter_pr_body_guard.ts`, and the
+close decision uses the #3177/#4644 close guard in
 `worker/deno/lib/missing_criterion_close_guard.ts`.
 
 The profile explicitly enables network access so the agent can fetch GitHub

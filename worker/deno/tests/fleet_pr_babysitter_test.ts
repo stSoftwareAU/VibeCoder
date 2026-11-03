@@ -77,7 +77,6 @@ import {
   loadConfigAndPublishDeployment,
   prBodyEditArgs,
   publishBabysitterDeployment,
-  readCommittedPrSummary,
   reason,
   recordBabysitterDeployment,
   recoverTemporaryClones,
@@ -244,6 +243,7 @@ function fakePrBodyService(
           ],
           headRefOid: options.headSha,
           headRefName: options.branch ?? "issue-4637-review-fix",
+          closingIssuesReferences: [],
         });
       }
       if (args[0] === "pr" && args[1] === "edit") {
@@ -721,6 +721,58 @@ Deno.test("Issue #4637: only an uncommitted-summary skip is harmless to the revi
   }
 });
 
+Deno.test("Issue #4637: the harmless body-sync skips each let the review dismissal run", async () => {
+  const deps = fakePrBodyService({
+    headSha: "0".repeat(40),
+    body: staleMarkerlessBody,
+  }).deps;
+  for (
+    const reason of [
+      "summary unchanged",
+      "summary file deleted",
+      "body already current",
+    ]
+  ) {
+    let dismissed = false;
+    await syncBabysitterPrBodyBeforeDismissal(
+      babysitterBodySyncInput("/unused-repo", "0".repeat(40)),
+      deps,
+      () => {
+        dismissed = true;
+        return Promise.resolve();
+      },
+      async () => ({ ok: true, value: { status: "skipped", reason } }),
+    );
+    assertEquals(dismissed, true, reason);
+  }
+});
+
+Deno.test("Issue #4637: an unknown body-sync skip reason throws, and the reviews stay open", async () => {
+  const deps = fakePrBodyService({
+    headSha: "0".repeat(40),
+    body: staleMarkerlessBody,
+  }).deps;
+  let dismissed = false;
+  await assertRejects(
+    () =>
+      syncBabysitterPrBodyBeforeDismissal(
+        babysitterBodySyncInput("/unused-repo", "0".repeat(40)),
+        deps,
+        () => {
+          dismissed = true;
+          return Promise.resolve();
+        },
+        async () => ({
+          ok: true,
+          value: { status: "skipped", reason: "an unrecognised reason" },
+        }),
+      ),
+    Error,
+    "an unrecognised reason",
+  );
+  assertEquals(dismissed, false);
+});
+
 Deno.test("Issue #4637: an uncommitted working-tree summary never reaches the adopted body", async () => {
   const fixture = await makeBabysitterSyncFixture();
   try {
@@ -828,11 +880,26 @@ function fakeRepairGitHub(options: {
   stickyClosing?: number[];
   failEdit?: boolean;
   onEdit?: () => void;
+  /** The first `count` PR views report `head`, as GitHub lags a push. */
+  staleHeadReads?: { head: string; count: number };
+  /** The PR head once a description edit has landed. */
+  headAfterEdit?: string;
+  /** Stores a changed text in place of the description that was sent. */
+  alterEdit?: (text: string) => string;
+  /** Leaves `closingIssuesReferences` out of the PR view. */
+  omitClosingIssues?: boolean;
 }) {
   let body = options.body;
+  let headRefOid = options.headRefOid;
   let edits = 0;
+  let headReads = 0;
   const gh = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "view") {
+      headReads++;
+      const stale = options.staleHeadReads;
+      const reportedHead = stale && headReads <= stale.count
+        ? stale.head
+        : headRefOid;
       const closing = [
         ...body.matchAll(
           /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi,
@@ -842,12 +909,14 @@ function fakeRepairGitHub(options: {
         ...new Set([...closing, ...(options.stickyClosing ?? [])]),
       ];
       return JSON.stringify({
-        headRefOid: options.headRefOid,
+        headRefOid: reportedHead,
         body,
-        closingIssuesReferences: numbers.map((number) => ({
-          number,
-          repository: { name: "repo", owner: { login: "owner" } },
-        })),
+        ...(options.omitClosingIssues ? {} : {
+          closingIssuesReferences: numbers.map((number) => ({
+            number,
+            repository: { name: "repo", owner: { login: "owner" } },
+          })),
+        }),
       });
     }
     if (args[0] === "pr" && args[1] === "edit") {
@@ -857,29 +926,41 @@ function fakeRepairGitHub(options: {
       }
       const bodyFile = args[args.indexOf("--body-file") + 1];
       if (!bodyFile) throw new Error("missing --body-file");
-      body = await Deno.readTextFile(bodyFile);
+      const sent = await Deno.readTextFile(bodyFile);
+      body = options.alterEdit ? options.alterEdit(sent) : sent;
+      if (options.headAfterEdit !== undefined) {
+        headRefOid = options.headAfterEdit;
+      }
       options.onEdit?.();
       return "";
     }
     throw new Error(`unexpected gh command: ${args.join(" ")}`);
   };
-  return { gh, body: () => body, edits: () => edits };
+  return {
+    gh,
+    body: () => body,
+    edits: () => edits,
+    headReads: () => headReads,
+  };
 }
 
-/** A repository whose HEAD commits `summary` as the summary of `issueNumber`. */
+/**
+ * A repository whose HEAD commits `summary` at `summaryPath`, by default the
+ * canonical archive path for `issueNumber`.
+ */
 async function makeCommittedSummaryRepo(
   issueNumber: number,
   summary: string,
+  summaryPath = `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
 ): Promise<{ path: string; headSha: string; scratch: string }> {
   const path = await Deno.makeTempDir({ prefix: "babysitter-repair-" });
   await runGit(path, "init", "-q");
   await runGit(path, "config", "user.name", "test");
   await runGit(path, "config", "user.email", "test@example.invalid");
-  await Deno.mkdir(`${path}/docs/archive/pr-summaries`, { recursive: true });
-  await Deno.writeTextFile(
-    `${path}/docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
-    summary,
-  );
+  await Deno.mkdir(`${path}/${summaryPath.replace(/\/[^/]*$/, "")}`, {
+    recursive: true,
+  });
+  await Deno.writeTextFile(`${path}/${summaryPath}`, summary);
   await runGit(path, "add", ".");
   await runGit(path, "commit", "-q", "-m", "repair");
   const scratch = `${path}/.git/babysitter-scratch`;
@@ -1232,23 +1313,279 @@ Deno.test("a stale close left by an earlier proposal is withheld by the next rep
   }
 });
 
-Deno.test("the withholding evidence is the summary committed at HEAD, never the working tree", async () => {
+Deno.test("the withholding evidence is the summary committed at the pushed head, never the working tree", async () => {
   const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
   try {
+    // Uncommitted rewrites at both the canonical and the legacy path say the
+    // issue is met; neither is evidence, so the committed partial summary wins.
     await Deno.writeTextFile(
       `${fixture.path}/docs/archive/pr-summaries/pr-summary-4674.md`,
       "## Summary\n\nCloses #4674.\n",
     );
+    await Deno.mkdir(`${fixture.path}/docs`, { recursive: true });
     await Deno.writeTextFile(
-      `${fixture.path}/docs/archive/pr-summaries/pr-summary-4675.md`,
-      "## Summary\n\nCloses #4675.\n",
+      `${fixture.path}/docs/pr-summary-4674.md`,
+      "## Summary\n\nCloses #4674.\n",
     );
-    assertStringIncludes(
-      (await readCommittedPrSummary(fixture.path, 4674)) ?? "",
-      "**partial**",
+    const events: string[] = [];
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      body: `Closes #4674\n\n${buildIdempotencyMarker(4674)}`,
+      onEdit: () => events.push("publish"),
+    });
+    await finishBabysitterRepair(
+      "owner/repo",
+      repairPrFor(fixture.headSha, 7),
+      fixture.path,
+      "babysitter[bot]",
+      changesRequestedBy(),
+      repairFinishDeps({ headSha: fixture.headSha, github, events }),
+      { scratch: fixture.scratch, proposal: "Rewritten description." },
     );
-    assertEquals(await readCommittedPrSummary(fixture.path, 4675), undefined);
-    assertEquals(await readCommittedPrSummary(fixture.path, 9999), undefined);
+    assertEquals(events, ["publish", "dismiss"]);
+    assertStringIncludes(github.body(), "Part of #4674");
+    assertEquals(closingKeywordLine(github.body(), 4674), null);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a summary committed only at the legacy docs/pr-summary-N.md path at the head is found and governs the close", async () => {
+  const fixture = await makeCommittedSummaryRepo(
+    4637,
+    closingSummary(4637),
+    "docs/pr-summary-4637.md",
+  );
+  try {
+    const events: string[] = [];
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      body: `Part of #4637\n\n${buildIdempotencyMarker(4637)}`,
+      onEdit: () => events.push("publish"),
+    });
+    await finishBabysitterRepair(
+      "owner/repo",
+      repairPrFor(fixture.headSha, 7),
+      fixture.path,
+      "babysitter[bot]",
+      changesRequestedBy(),
+      repairFinishDeps({ headSha: fixture.headSha, github, events }),
+      { scratch: fixture.scratch, proposal: "Rewritten description." },
+    );
+    assertEquals(events, ["publish", "dismiss"]);
+    assertStringIncludes(github.body(), "Closes #4637");
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a committed summary that cannot be read throws, and reviews stay open", async () => {
+  const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
+  try {
+    const events: string[] = [];
+    // A commit the clone does not have: the committed read fails loudly.
+    const missingSha = "1".repeat(40);
+    const github = fakeRepairGitHub({
+      headRefOid: missingSha,
+      body: `Closes #4674\n\n${buildIdempotencyMarker(4674)}`,
+      onEdit: () => events.push("publish"),
+    });
+    await assertRejects(
+      () =>
+        finishBabysitterRepair(
+          "owner/repo",
+          repairPrFor(missingSha, 7),
+          fixture.path,
+          "babysitter[bot]",
+          changesRequestedBy(),
+          repairFinishDeps({ headSha: missingSha, github, events }),
+          { scratch: fixture.scratch, proposal: "Rewritten description." },
+        ),
+      Error,
+      "Failed to read PR summary",
+    );
+    assertEquals(github.edits(), 0);
+    assertEquals(events, []);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a pushed head that GitHub's PR view reports late is waited for, then the repair publishes and dismisses", async () => {
+  const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
+  try {
+    const events: string[] = [];
+    const oldHead = "1".repeat(40);
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      staleHeadReads: { head: oldHead, count: 2 },
+      body: `Closes #4674\n\n${buildIdempotencyMarker(4674)}`,
+      onEdit: () => events.push("publish"),
+    });
+    const repairPr = {
+      ...repairPrFor(oldHead, 7),
+      reviewDecision: "CHANGES_REQUESTED",
+    };
+    await finishBabysitterRepair(
+      "owner/repo",
+      repairPr,
+      fixture.path,
+      "babysitter[bot]",
+      changesRequestedBy(),
+      {
+        ...repairFinishDeps({
+          headSha: fixture.headSha,
+          github,
+          events,
+          changed: true,
+        }),
+        readPr: async () => repairPr,
+        validateAndCommit: async () => {},
+        headWaitDelayMs: 0,
+      },
+      { scratch: fixture.scratch, proposal: "Rewritten description." },
+    );
+    assert(github.headReads() >= 3);
+    assertEquals(events, ["push", "publish", "dismiss"]);
+    assertStringIncludes(github.body(), "Part of #4674");
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a PR view that never reaches the pushed head throws before the sync, publishing nothing and dismissing nothing", async () => {
+  const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
+  try {
+    const events: string[] = [];
+    const oldHead = "1".repeat(40);
+    const github = fakeRepairGitHub({
+      headRefOid: oldHead,
+      body: `Closes #4674\n\n${buildIdempotencyMarker(4674)}`,
+      onEdit: () => events.push("publish"),
+    });
+    const repairPr = {
+      ...repairPrFor(oldHead, 7),
+      reviewDecision: "CHANGES_REQUESTED",
+    };
+    await assertRejects(
+      () =>
+        finishBabysitterRepair(
+          "owner/repo",
+          repairPr,
+          fixture.path,
+          "babysitter[bot]",
+          changesRequestedBy(),
+          {
+            ...repairFinishDeps({
+              headSha: fixture.headSha,
+              github,
+              events,
+              changed: true,
+            }),
+            readPr: async () => repairPr,
+            validateAndCommit: async () => {},
+            headWaitDelayMs: 0,
+          },
+          { scratch: fixture.scratch, proposal: "Rewritten description." },
+        ),
+      Error,
+      "PR head did not reach the pushed head",
+    );
+    assertEquals(github.edits(), 0);
+    assertEquals(events, ["push"]);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a PR view that omits closingIssuesReferences is refused by name, and nothing is published or dismissed", async () => {
+  const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
+  try {
+    const events: string[] = [];
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      body: `Closes #4674\n\n${buildIdempotencyMarker(4674)}`,
+      omitClosingIssues: true,
+      onEdit: () => events.push("publish"),
+    });
+    await assertRejects(
+      () =>
+        finishBabysitterRepair(
+          "owner/repo",
+          repairPrFor(fixture.headSha, 7),
+          fixture.path,
+          "babysitter[bot]",
+          changesRequestedBy(),
+          repairFinishDeps({ headSha: fixture.headSha, github, events }),
+          { scratch: fixture.scratch, proposal: "Rewritten description." },
+        ),
+      Error,
+      "closingIssuesReferences",
+    );
+    assertEquals(github.edits(), 0);
+    assertEquals(events, []);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a head that moves after the description is published keeps reviews open", async () => {
+  const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
+  try {
+    const events: string[] = [];
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      headAfterEdit: "2".repeat(40),
+      body: `Closes #4674\n\n${buildIdempotencyMarker(4674)}`,
+      onEdit: () => events.push("publish"),
+    });
+    await assertRejects(
+      () =>
+        finishBabysitterRepair(
+          "owner/repo",
+          repairPrFor(fixture.headSha, 7),
+          fixture.path,
+          "babysitter[bot]",
+          changesRequestedBy(),
+          repairFinishDeps({ headSha: fixture.headSha, github, events }),
+          { scratch: fixture.scratch, proposal: "Rewritten description." },
+        ),
+      Error,
+      "head moved",
+    );
+    assertEquals(github.edits(), 1);
+    assertEquals(events, ["publish"]);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a description GitHub does not show as published keeps reviews open", async () => {
+  const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
+  try {
+    const events: string[] = [];
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      body: `Closes #4674\n\n${buildIdempotencyMarker(4674)}`,
+      alterEdit: (text) => `${text}\n\nEdited on GitHub.`,
+      onEdit: () => events.push("publish"),
+    });
+    await assertRejects(
+      () =>
+        finishBabysitterRepair(
+          "owner/repo",
+          repairPrFor(fixture.headSha, 7),
+          fixture.path,
+          "babysitter[bot]",
+          changesRequestedBy(),
+          repairFinishDeps({ headSha: fixture.headSha, github, events }),
+          { scratch: fixture.scratch, proposal: "Rewritten description." },
+        ),
+      Error,
+      "is not the one published",
+    );
+    assertEquals(github.edits(), 1);
+    assertEquals(events, ["publish"]);
   } finally {
     await cleanupFixture(fixture.path);
   }
@@ -2178,13 +2515,17 @@ Deno.test("Moved to babysitter_pr_body_guard_test.ts: the proposal is returned a
   }
 });
 
-Deno.test("an empty PR description proposal is not applied, and an oversized one is left for the guard to refuse", async () => {
+Deno.test("an empty PR description proposal is not applied, and an oversized one is rejected at intake", async () => {
   const dir = await Deno.makeTempDir();
   try {
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "  \n");
     assertEquals(await takePrBodyProposal(dir), undefined);
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "x".repeat(65_537));
-    assertEquals((await takePrBodyProposal(dir))?.length, 65_537);
+    await assertRejects(
+      () => takePrBodyProposal(dir),
+      Error,
+      "65536",
+    );
     await assertRejects(
       () => Deno.stat(`${dir}/.babysitter-pr-body`),
       Deno.errors.NotFound,
