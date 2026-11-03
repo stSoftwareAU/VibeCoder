@@ -8,6 +8,8 @@ GitHub reports a merge. Failures are classified from where they are raised
 and the retry record is saved before any best-effort marker write. At the
 configured no-progress limit the record keeps redacted evidence and the
 babysitter files one deduplicated `idle-task` issue (never `needs-human`).
+That repository-scoped incident filer is documented in the issue-creation
+routing allowlist; its incident marker and fleet-author check own deduplication.
 Tracked PRs are observed each scan without a lock: CI, independent review,
 drafts, cross-repository PRs, `skip_auto_merge` and `needs-human` holds are
 recorded, and a green approved PR is recorded as handed to the worker's
@@ -113,6 +115,8 @@ anything; the worker's auto-merge sweep owns the merge.
 
 ## Test Plan
 
+- `issue_create_routing_check_test.ts` — checks the real tree and the
+  documented, non-stale issue-creation allowlist.
 - Gitleaks 8.24.3 PR commit-range scan with the licensed action's flags —
   passed after reproducing the two synthetic fixture findings.
 - `worker/deno/tests/babysitter_fix_orchestration_test.ts` — 16 tests passed
