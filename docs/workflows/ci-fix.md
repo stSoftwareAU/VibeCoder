@@ -116,7 +116,11 @@ flowchart TD
    (`./quality.sh` or the repository's custom quality command). If quality
    fails, Claude is retried once.
 8. **Commit and push** — Changes are committed with the message
-   `Fix CI failure ($check_name) for PR #$pr_number` and pushed.
+   `Fix CI failure ($check_name) for PR #$pr_number` and pushed. When the branch
+   is behind its base, the base is merged in just before that push, so the fix
+   and the branch update go out together and CI runs once; a conflict leaves the
+   fix to be pushed as before (see
+   [One push per fix](../INTERNALS.md#-one-push-per-fix-the-base-rides-along-git_pushts)).
 9. **Re-sync the description** — After that push is verified on the PR's own
    head, the worker rebuilds the PR description from
    `docs/archive/pr-summaries/pr-summary-<N>.md` when the summary at the head
@@ -489,28 +493,28 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   `<!-- vibe-ci-human-gate check="…" head="…" -->` marker (Issue #2727). It
   spends **no attempt**, writes no `vibe-ci-fix-attempt` marker and runs **no
   agent**. It **labels the PR `needs-human`** (owner rule, 2026-11-01): a PR
-  that waits on a person cannot merge, so every base merge or repair on it
-  would only rerun CI. Every lane reads the label as hands off. That covers
-  the merge-conflict scan, the CI-fix, review-feedback and auto-merge scans
-  (`listActionablePrs`), the auto-merge sweep's branch updates and the fleet
-  PR babysitter. Stall repair never lifts this label. The label is
-  re-applied on every pass while the gate still fails. After taking the
-  step, the person re-runs the check and removes the label, and the lanes
-  resume. The marker is keyed by **check name**, not failure
-  signature or head, so a later pass on any host — after a new push, or with a
-  changed log — finds a fleet-authored gate marker and posts nothing. Its `head`
-  names the commit the gate was last confirmed on (PR #2762): a pass that
-  re-confirms the gate on a new head edits that one comment in place to name the
-  new head, and the scanner parks the check only while the marker names the PR's
-  current head — so after a push the check is re-classified from its log once,
-  and a genuine failure reaches the fix path instead of staying parked. A
-  re-stamp that fails is logged as an error with `processed: false`. A gate
-  marker written outside the fleet is ignored. A marker read that fails stands
-  the pass down without posting; a gate comment that cannot be posted (or an
-  unresolved fleet identity, which makes the one-comment rule unenforceable) is
-  logged as an error and the pass reports `processed: false`, so the next scan
-  retries rather than recording a silent success. The gate path does not remove
-  a `needs-human` label an earlier escalation already applied.
+  that waits on a person cannot merge, so every base merge or repair on it would
+  only rerun CI. Every lane reads the label as hands off. That covers the
+  merge-conflict scan, the CI-fix, review-feedback and auto-merge scans
+  (`listActionablePrs`), the auto-merge sweep's branch updates and the fleet PR
+  babysitter. Stall repair never lifts this label. The label is re-applied on
+  every pass while the gate still fails. After taking the step, the person
+  re-runs the check and removes the label, and the lanes resume. The marker is
+  keyed by **check name**, not failure signature or head, so a later pass on any
+  host — after a new push, or with a changed log — finds a fleet-authored gate
+  marker and posts nothing. Its `head` names the commit the gate was last
+  confirmed on (PR #2762): a pass that re-confirms the gate on a new head edits
+  that one comment in place to name the new head, and the scanner parks the
+  check only while the marker names the PR's current head — so after a push the
+  check is re-classified from its log once, and a genuine failure reaches the
+  fix path instead of staying parked. A re-stamp that fails is logged as an
+  error with `processed: false`. A gate marker written outside the fleet is
+  ignored. A marker read that fails stands the pass down without posting; a gate
+  comment that cannot be posted (or an unresolved fleet identity, which makes
+  the one-comment rule unenforceable) is logged as an error and the pass reports
+  `processed: false`, so the next scan retries rather than recording a silent
+  success. The gate path does not remove a `needs-human` label an earlier
+  escalation already applied.
 - **Cancelled or never-started checks (Issue #2914):** A `cancelled` check, or a
   `failure` whose Actions job has **zero steps** (never started — e.g. "not
   started because an Actions budget is preventing further use"), is

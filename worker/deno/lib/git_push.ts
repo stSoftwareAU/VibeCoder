@@ -19,6 +19,11 @@ import {
 import type { PushLineageOptions } from "./git_push_recovery.ts";
 import { describeUnpushedCommits } from "./git_remote_head.ts";
 import {
+  type BranchCurrencyOutcome,
+  ensureBranchCurrent,
+} from "./branch_currency.ts";
+import { mergeOntoBase } from "./pr_raise_sync.ts";
+import {
   assertSafeGitRef,
   assertSafeRefComponent,
   buildFetchArgs,
@@ -428,6 +433,47 @@ export async function pushUnpushedCommits(
 }
 
 /**
+ * Merge `baseBranch` into the checked-out PR branch just before its fix is
+ * pushed, so the fix and the branch update go out together (owner rule
+ * 2026-11-03).
+ *
+ * Acts only when there is something to push to a branch that already exists
+ * on origin: a pass with no fix pushes nothing, as before, and a brand-new
+ * branch is brought up to date by the PR-raise sync instead. The merge is the
+ * PR-raise sync's own (`ensureBranchCurrent` with `mergeOntoBase`): a plain
+ * merge commit, never a rebase or force-push, refused on a dirty tree, and
+ * aborted on a conflict so the fix is pushed as before and the conflict lane
+ * takes over. Never fails the push.
+ *
+ * @returns What the sync did, or `undefined` when it had nothing to do.
+ */
+export async function mergeBaseBeforePush(
+  branchName: string,
+  baseBranch: string,
+  options: GitCommandOptions = {},
+): Promise<BranchCurrencyOutcome | undefined> {
+  const state = await describeUnpushedCommits(branchName, options);
+  if (!state.ok || state.value.sha === null || state.value.count === 0) {
+    return undefined;
+  }
+  const outcome = await ensureBranchCurrent({
+    branch: branchName,
+    baseBranch,
+    runGit: runGitCommand,
+    cwd: options.cwd,
+    rebase: mergeOntoBase,
+    log: (message) => console.log(message),
+  });
+  if (outcome.kind === "declined" || outcome.kind === "unknown") {
+    console.warn(
+      `Pushing '${branchName}' without '${baseBranch}' merged in, so CI may ` +
+        `run again when the branch is updated: ${outcome.detail}`,
+    );
+  }
+  return outcome;
+}
+
+/**
  * What {@link CommitAndPushPendingResult.finalUnpushedCount} was measured
  * against (Issue #211).
  *
@@ -759,6 +805,9 @@ export async function gateUnpushedCommits(
  *      refuses the push. The gate output in the
  *      returned error is cut to a head and a tail (as is Step 1's pre-flight
  *      block), because PR processors post it in a comment.
+ *   1c. Step 1c — when `options.syncBaseBranch` is set and there is a fix to
+ *      push to an existing branch, {@link mergeBaseBeforePush} merges that
+ *      base in, so the fix and the branch update go out in one push.
  *   2. `pushUnpushedCommits` — push every commit ahead of origin (handles
  *      first-time push and non-fast-forward recovery internally).
  *   3. Re-count unpushed commits against the branch's own remote head —
@@ -983,6 +1032,15 @@ export async function commitAndPushPending(
   if (beforePush) {
     const verified = await beforePush();
     if (!verified.ok) return verified;
+  }
+
+  // Step 1c — bring an open PR's branch up to date with its base in this
+  // same push (owner rule 2026-11-03). Every push to an open PR runs the full
+  // CI; a fix pushed onto a branch that is behind leaves the PR BEHIND, and
+  // the later branch update runs CI a second time for the same fix. Placed
+  // after the gates, so they judge only this pass's own commits.
+  if (options.syncBaseBranch) {
+    await mergeBaseBeforePush(branchName, options.syncBaseBranch, options);
   }
 
   // Step 2 — push any unpushed commits. pushUnpushedCommits handles

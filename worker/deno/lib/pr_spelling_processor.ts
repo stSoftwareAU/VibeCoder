@@ -14,6 +14,7 @@
 
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
+import { prBaseForSync } from "./pr_base_for_sync.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
@@ -432,10 +433,25 @@ async function _processSpellingWithHeartbeat(
     processorDeps.repoConfigs,
     input.repo,
   );
+  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
+  // pushed, so the fix and the branch update reach GitHub in one push and CI
+  // runs once. A gated head was refused above, so this is the PR head.
+  const syncBaseBranch = await prBaseForSync(
+    undefined,
+    repo,
+    prNumber,
+    (args) => deps.github.runGhCommand(args),
+    (message) => logger.warn(message),
+  );
+  const pushOptions = {
+    cwd: processorDeps.workDir,
+    expectedAncestor: beforeSha,
+    ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
+  };
   const finaliseResult = await deps.git.commitAndPushPending(
     input.branchName,
     `Fix spelling check failures: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
-    { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+    pushOptions,
     false,
     preFlight,
   );
@@ -478,7 +494,7 @@ async function _processSpellingWithHeartbeat(
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
           `Fix spelling check failures: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
-          { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+          pushOptions,
           false,
           preFlight,
         );
