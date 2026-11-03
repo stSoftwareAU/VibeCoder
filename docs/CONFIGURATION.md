@@ -469,8 +469,9 @@ migration table below). The full rule is in
   assessment; an independent human or security hold is preserved.
 
 Outcomes, in order: any blocking finding requests changes; otherwise an `owner`
-verdict, or a hold-repo override, leaves a comment-only hold with `needs-human`
-(the hold marker `<!-- vibe-hold-policy v=N -->` is in the review body);
+verdict, or a hold-repo override with a meaningful test change or a removed test
+file, leaves a comment-only hold with `needs-human` (the hold marker
+`<!-- vibe-hold-policy v=N -->` is on a line of its own in the review body);
 otherwise the PR is approved, and the approval lists each reviewed test change
 with its verified evidence.
 
@@ -499,9 +500,13 @@ reviewer's assessment. It is read by the reviewer skill, never by the worker.
 ### Effective policy
 
 The effective policy version and overrides are exposed per reviewer host. The
-`gate.ts` JSON line prints a `testPolicy` object; `post.ts` prints it in its
-result and writes it to the `log.jsonl` record; and `summary.md` has a policy
-line.
+`gate.ts` JSON line prints a `testPolicy` object (`version`, `mode`,
+`holdAllRepos`, `legacyAutoRelease` and a one-line `description`). `post.ts`
+prints `testPolicy` (`version`, `mode`, `holdAllRepos`) in its result, and
+`testChangesReviewed: true` only on an approval that rested on a reviewed test
+change; `ownerHold` (the reasons) appears only on a hold for the owner. Its
+`log.jsonl` record carries `testPolicy` and `testChangesReviewed`, plus
+`holdPolicy` on a held record. `summary.md` has a policy line.
 
 ## 📊 Configuration Defaults
 

@@ -120,8 +120,10 @@ all three hold:
 - this host's `log.jsonl` has a `held` record for that commit made under the
   current `HOLD_POLICY_VERSION`, which is 2 (in `scripts/review_log.ts`). The
   version of a hold is read from its hold marker `<!-- vibe-hold-policy v=N -->`
-  in the review body; a held review whose body lacks the marker counts as
-  version 1;
+  on a line of its own in the review body (a marker quoted in prose does not
+  count); a held review whose body lacks the marker counts as version 1. A hold
+  under an older version is not a review at its head, so the PR is reviewed
+  afresh once even when its head is unchanged;
 - `ownDiffUnchanged` confirms the PR's own diff is unchanged since the hold.
 
 A hold has no findings, so the comparison takes its strict path: context lines

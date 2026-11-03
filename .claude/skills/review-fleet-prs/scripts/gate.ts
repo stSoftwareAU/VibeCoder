@@ -8,7 +8,8 @@
 // head (Issue #4398), and not sent back awaiting a fix, or held for the owner,
 // whose only new commits leave their own diff unchanged (for a fix, apart from
 // a strict version re-bump; a held PR must also be held under the current hold
-// policy, Issue #4643).
+// policy, Issue #4643). A hold made under an older policy (Issue #4655) is not
+// counted as a review at its head, so it is reviewed afresh once.
 // At most --limit (default 5) PRs are
 // reported per pass, counted after every other skip, so a red, approved or
 // claimed PR never takes a slot and the rest come back next pass (Issue #3225).
@@ -35,7 +36,8 @@
 // --sleep-first waits one interval before the first poll, so a PR whose
 // review just failed is retried after the interval instead of at once.
 // Output: one line of JSON, { ready: [...], auditBlocked: [...],
-// skipped: { <reason>: count }, upkeep: [...] }. Unlike the review itself, each pass also does the
+// skipped: { <reason>: count }, upkeep: [...], testPolicy: {...} } (the
+// test-change policy in force, Issue #4655). Unlike the review itself, each pass also does the
 // Dependabot upkeep in dependabot.ts (conflict waits, arming auto-merge) and
 // sends approved behind PRs through the shared strict-base refresh policy
 // (branch_update.ts), once per head; --dry-run reports that upkeep
@@ -68,6 +70,7 @@ import {
   type Finding,
   heldPolicyAt,
   HOLD_POLICY_VERSION,
+  holdPolicyFromBody,
   migrateLegacyStateDir,
   previousFindings,
   prKey,
@@ -79,6 +82,12 @@ import {
   writeSummary,
 } from "./review_log.ts";
 import { dependabotAction } from "./dependabot.ts";
+import {
+  describeTestPolicy,
+  type EffectiveTestPolicy,
+  effectiveTestPolicy,
+  loadTestPolicy,
+} from "./test_change_policy.ts";
 import {
   approvedAtHead,
   needsBranchUpdate,
@@ -162,7 +171,9 @@ export interface ReadyPr {
   headSha: string;
   baseRef: string;
   // Existing test files this PR removes or edits; the model review judges
-  // whether the edits are meaningful. A removed test file always is.
+  // whether the edits are meaningful, and post.ts checks the evidence for each
+  // (Issue #4655). A removed test file is no longer a hold on its own: it must
+  // be explained by a note and verified.
   testChanges: { removed: string[]; edited: string[] };
   // Set when a fleet PR changes code but adds no test; the model review
   // decides whether a test was appropriate.
@@ -340,14 +351,25 @@ function countsAsReview(r: Review, reviewer: string): boolean {
       r.state === "DISMISSED");
 }
 
+// Whether this reviewer has reviewed the head. The latest counted review at the
+// head decides. A comment-only hold counts only under the current hold policy:
+// one made under an older policy is reviewed afresh once, even at an unchanged
+// head (Issue #4655). An approval, change request or dismissal always counts.
 export function reviewedAtHead(
   reviews: Review[],
   reviewer: string,
   headSha: string,
+  currentPolicy: number = HOLD_POLICY_VERSION,
 ): boolean {
-  return reviews.some((r) =>
+  const atHead = reviews.filter((r) =>
     countsAsReview(r, reviewer) && r.commit?.oid === headSha
   );
+  const latest = atHead[atHead.length - 1];
+  if (latest === undefined) return false;
+  if (latest.state === "COMMENTED") {
+    return holdPolicyFromBody(latest.body) >= currentPolicy;
+  }
+  return true;
 }
 
 // The commit this reviewer last sent the PR back at, when its latest counted
@@ -1083,9 +1105,15 @@ export async function pass(
      * prompts directory, whatever the host's environment says.
      */
     loadCapabilityBundle?: () => Promise<CapabilityLoad>;
+    /**
+     * The test-change policy (Issue #4655), loaded once per run by main. Absent
+     * means the defaults, which is what an absent .config.json gives too.
+     */
+    testPolicy?: EffectiveTestPolicy;
   } = {},
 ) {
   const callGh = deps.gh ?? gh;
+  const testPolicy = deps.testPolicy ?? effectiveTestPolicy({});
   const loadCapabilityBundle = deps.loadCapabilityBundle ??
     (() => loadTrustedCapabilityBundle(undefined, CHECKOUT_PROMPTS_DIR));
   const dir = deps.dir ?? stateDir();
@@ -1402,8 +1430,24 @@ export async function pass(
   }
   // A single --repo run sees only part of the fleet, so it leaves the
   // summary's open set alone.
-  if (repos.size > 1) await writeSummary(dir, open);
+  if (repos.size > 1) {
+    await writeSummary(dir, open, undefined, describeTestPolicy(testPolicy));
+  }
   return { ready, auditBlocked, skipped, upkeep };
+}
+
+/**
+ * The policy as the gate's output reports it: the effective policy without the
+ * trusted logins, plus its one-line description (Issue #4655).
+ */
+export function policyReport(policy: EffectiveTestPolicy) {
+  return {
+    version: policy.version,
+    mode: policy.mode,
+    holdAllRepos: policy.holdAllRepos,
+    legacyAutoRelease: policy.legacyAutoRelease,
+    description: describeTestPolicy(policy),
+  };
 }
 
 /** The pull request diff, for import and sink selection (Issue #4366). */
@@ -1576,6 +1620,15 @@ export async function main() {
   const config = JSON.parse(
     await Deno.readTextFile(arg("config") ?? DEFAULT_CONFIG),
   );
+  // Loaded once per run. A malformed hold list fails loud, as a malformed
+  // pr_reviewer_app does (app_token.ts); an absent config means the defaults.
+  let testPolicy: EffectiveTestPolicy;
+  try {
+    testPolicy = await loadTestPolicy(arg("config") ?? DEFAULT_CONFIG);
+  } catch (e) {
+    console.error(`test-change policy: ${(e as Error).message}`);
+    Deno.exit(1);
+  }
   const fleet = new Set<string>([
     ...(config.fleet_pr_authors ?? []),
     ...(config.service_accounts ?? []),
@@ -1600,13 +1653,16 @@ export async function main() {
         limit,
         inFlight,
         host: arg("host"),
+        testPolicy,
       });
       failures = 0;
       if (
         result.ready.length > 0 || result.auditBlocked.length > 0 ||
         watchSeconds <= 0
       ) {
-        console.log(JSON.stringify(result));
+        console.log(
+          JSON.stringify({ ...result, testPolicy: policyReport(testPolicy) }),
+        );
         return;
       }
     } catch (e) {

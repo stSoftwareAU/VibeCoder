@@ -356,11 +356,13 @@ The script does the rest, so do not post anything yourself:
   itself: a `missing` checklist item (even with no matching finding), a
   checklist file that could not be applied (malformed, undecodable, or an
   unknown changed-file list) and an item the reply gave no verdict.
-  Otherwise, when a meaningful test change or a removed test file has an
-  `owner` verdict, or the repo is listed in `.config.json`
-  `pr_reviewer_test_hold_repos`, the outcome is **held for the owner**: a
-  comment-only review the worker ignores, carrying the hold marker
-  `<!-- vibe-hold-policy v=N -->` (N is the hold policy version) in its body.
+  Otherwise, when a test change has an `owner` verdict (a product-contract
+  question only the owner can settle), or the repo is listed in `.config.json`
+  `pr_reviewer_test_hold_repos` and the PR has a meaningful test change or a
+  removed test file, the outcome is **held for the owner**: a comment-only
+  review the worker ignores, carrying the hold marker
+  `<!-- vibe-hold-policy v=N -->` (N is the hold policy version, 2) on a line of
+  its own in its body.
   Otherwise the outcome is **approve**, and the approval body lists each
   reviewed test change with its verified evidence. Unjustified test changes
   are findings, so they are sent back, not held (rule 4).
@@ -400,16 +402,19 @@ The script does the rest, so do not post anything yourself:
 - After posting, it deletes the claim comments at the head it reviewed (see
   [Several hosts](references/running-unattended.md#several-hosts)).
 
-It prints `{ posted, outcome?, testPolicy?, testChangesReviewed?,
-filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason? }`.
-`testPolicy` is the effective test-change policy for the PR's repo (the policy
-version, the owner override and any ignored `pr_reviewer_auto_release` value).
-It is also in the `log.jsonl` record, which carries `testReview` (each reviewed
-test change with its verified evidence) and `ownerHold` (set when the PR is
-held for the owner), and `summary.md` has a policy line. `reason` with
+It prints `{ posted, outcome?, testPolicy?, testChangesReviewed?, ownerHold?,
+filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason?, retry? }`.
+`testPolicy` is the effective test-change policy for the PR's repo:
+`{ version, mode, holdAllRepos }`. `testChangesReviewed: true` is printed only
+on an approval that rested on a reviewed test change, and `ownerHold` (the
+reasons) only on a hold for the owner. The `log.jsonl` record carries the same
+`testPolicy` and `testChangesReviewed`, plus `holdPolicy` on a held record; the
+reviewed test changes are its `testChangeNotes`. `summary.md` has a policy line.
+A head that moved during the review is never approved: the result is
+`posted: false` with `reason: now <sha> <state>`. `retry: true` with
 `posted: false` and exit code 3 means a check could not run (for example,
 coverage could not be fetched); nothing was posted, and the PR is retried on
-the next gate pass.
+the next gate pass, with the cause in `reason`.
 `labelError` names the label action (`add` or `remove`) and the `gh` error
 when the label call failed; the exit code is unchanged either way. Exit
 code 2 means the reviewer's reply was malformed, or the gate entry has no valid

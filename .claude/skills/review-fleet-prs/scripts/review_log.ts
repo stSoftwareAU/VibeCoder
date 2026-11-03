@@ -303,7 +303,8 @@ export function unrelatedInstanceComment(
 // checklist item still send the PR back first.
 export function decideOutcome(
   review: FableReview,
-  removedTests: readonly string[],
+  // Not a reason to hold (Issue #4655): kept so each caller names what it passes.
+  _removedTests: readonly string[],
   opts: { hold?: boolean } = {},
 ): Outcome {
   if (review.findings.length > 0) return "changes_requested";
@@ -358,8 +359,16 @@ export function reviewBody(
   review: FableReview,
   removedTests: readonly string[],
   filed: readonly FiledIssue[] = [],
-  // `run`: the model run that wrote the review, for its run footer.
-  opts: { autoReleased?: boolean; run?: RunInfo } = {},
+  opts: {
+    // `run`: the model run that wrote the review, for its run footer.
+    run?: RunInfo;
+    // The test changes the evidence review approved (Issue #4655); shown on an
+    // approval only. Internal to this body: never printed as a field name.
+    testReview?: { approved: readonly ApprovedTestChange[] };
+    // Why the owner must decide (Issue #4655). `override`: the repo holds
+    // every meaningful test change; otherwise `reasons` name the questions.
+    hold?: { reasons: readonly string[]; override: boolean };
+  } = {},
 ): string {
   const lines: string[] = [];
   if (outcome === "changes_requested") {
@@ -371,26 +380,43 @@ export function reviewBody(
       lines.push("");
     }
     const notes = testNotes(review, removedTests);
-    if (review.testChanges === "meaningful" || removedTests.length > 0) {
+    if (notes.length > 0) {
       lines.push("Also note these changes to existing tests:", ...notes, "");
     }
     lines.push(review.summary);
   } else if (outcome === "held") {
+    const hold = opts.hold;
     lines.push(
-      "Held for owner review: this PR changes existing tests.",
+      hold?.override
+        ? "Held for owner review: this repository holds every meaningful test change for the owner (pr_reviewer_test_hold_repos)."
+        : "Held for owner review: the intended product contract behind these test changes is unclear.",
+      ...(hold?.override
+        ? []
+        : (hold?.reasons ?? []).map((r) => `- ${plain(r)}`)),
       "",
       ...testNotes(review, removedTests),
       "",
       review.summary,
       "",
+      // Its own line: the gate reads the policy version from it (Issue #4655).
+      holdPolicyMarker(),
+      "",
       "Approve to merge or request changes; then remove `needs-human`.",
     );
-  } else if (outcome === "approved" && opts.autoReleased) {
+  } else if (
+    outcome === "approved" && (opts.testReview?.approved.length ?? 0) > 0
+  ) {
     lines.push(
-      "Auto-released: this PR changes existing tests, and each change is required by an acceptance criterion of a linked issue.",
+      "Test changes reviewed against the approved test-change policy (Issue #4655): each is shown with the evidence the reviewer script verified at the head commit.",
       "",
-      ...review.testChangeNotes.map((n) =>
-        `- \`${n.file}:${n.line}\`: ${n.change} — required by: "${n.criterionQuote}"`
+      ...(opts.testReview?.approved ?? []).map((a) =>
+        `- \`${plain(a.file)}:${a.line}\` (${plain(a.kind, 60)}): obsolete: ${
+          plain(a.obsolete)
+        }; remaining: ${plain(a.remaining)}; coverage: ${
+          a.coverage.map((c) => plain(c)).join(", ")
+        }; requirement: ${plain(a.requirement)}; verification: ${
+          plain(a.verification)
+        }`
       ),
       "",
       review.summary,
@@ -423,6 +449,8 @@ export async function writeSummary(
   dir: string,
   open?: ReadonlySet<string>,
   now = new Date(),
+  // The test-change policy in force, for the summary's header (Issue #4655).
+  policyLine?: string,
 ): Promise<void> {
   await Deno.mkdir(dir, { recursive: true });
   const read = (f: string) => Deno.readTextFile(`${dir}/${f}`).catch(() => "");
@@ -434,7 +462,7 @@ export async function writeSummary(
   const records = parseLog(await read(LOG_FILE));
   await Deno.writeTextFile(
     `${dir}/${SUMMARY_FILE}`,
-    renderSummary(records, open, now),
+    renderSummary(records, open, now, policyLine),
   );
 }
 
@@ -516,6 +544,7 @@ export function renderSummary(
   records: LogRecord[],
   open: ReadonlySet<string>,
   now: Date,
+  policyLine?: string,
 ): string {
   const latest = [...latestByPr(records).values()].sort((a, b) =>
     b.at.localeCompare(a.at)
@@ -538,6 +567,7 @@ export function renderSummary(
     `Updated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC. ` +
     `Last 24 h: ${count("approved")} approved, ` +
     `${count("changes_requested")} sent back, ${count("held")} held for you.`,
+    ...(policyLine ? [`Test-change policy: ${policyLine}`] : []),
     "",
     `## Waiting for you (${held.length})`,
     "",
@@ -564,7 +594,11 @@ export function renderSummary(
       ? approved.map((r) =>
         line(
           r,
-          (r.autoReleased === true
+          (r.testChangesReviewed === true
+            ? "(test changes reviewed) "
+            // Historical, pre-#4655: the opt-in auto-release (Issue #3397)
+            // wrote this on its approvals, so an old log still renders.
+            : r.autoReleased === true
             ? "(auto-released: issue-required test change) "
             : "") + clip(r.summary),
           isOpen(r),

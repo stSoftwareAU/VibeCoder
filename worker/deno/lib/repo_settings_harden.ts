@@ -42,8 +42,10 @@
  *    The fleet's reviewer is a GitHub App (`pr_reviewer_app`), and an App can
  *    never be a code owner, so while code-owner review is required its
  *    approval cannot merge anything a CODEOWNERS line covers. The reviewer's
- *    approval is the gate; it holds a PR for the owner (a comment-only
- *    review, never an approval) when tests are removed or loosened.
+ *    approval is the gate; it checks each removed or loosened test for
+ *    evidence and holds a PR for the owner (a comment-only review, never an
+ *    approval) only when a test change needs the owner's decision, or the
+ *    repo is an owner override (Issue #4655).
  *    CODEOWNERS still routes review requests. Never turned back on.
  *  - merge commits allowed (Issue #2690), so a milestone sync PR lands as a
  *    real merge commit and the milestone branch reads level afterwards,
