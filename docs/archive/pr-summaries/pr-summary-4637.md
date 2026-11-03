@@ -45,11 +45,10 @@ the final version.
   does not decide it: with a fully met summary, `Closes #N` is appended unless
   the text already has a closing keyword for the issue (plain, colon or
   full-URL) or an explicit `Part of #N`. A bare mention, or another repository's
-  `owner/repo#N`, does not count. The assembler path
-  (`ensurePrReferencesIssue`) counts only the plain `Closes #N` form and does
-  not mask code, so it can append a `Closes` in cases where the guard does not
-  (a colon form, a full-URL form, an explicit `Part of #N`, or a keyword inside
-  code).
+  `owner/repo#N`, does not count. The assembler path (`ensurePrReferencesIssue`)
+  counts only the plain `Closes #N` form and does not mask code, so it can
+  append a `Closes` in cases where the guard does not (a colon form, a full-URL
+  form, an explicit `Part of #N`, or a keyword inside code).
 - The governing issue is the worker marker in the live body, else the issue the
   worker branch (`issue-N-...`) names (`governingIssueNumber`), the identity the
   sync's adoption also validates. A marker-less worker-branch PR with no
@@ -276,22 +275,23 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   a second `Closes`; a marker-less `issue-N-...` branch is governed (with and
   without a proposal, with a no-issue branch as the positive control); and a
   marker-less branch with a fully met committed summary keeps the close. Finish
-  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 112 tests at head; one unrelated environment-dependent test,
+  level (`worker/deno/tests/fleet_pr_babysitter_test.ts`, 112 tests at head; one
+  unrelated environment-dependent test,
   `babysitter default heartbeat resolves its checkout revision`, fails in this
-  checkout): a
-  pushed repair whose proposal only mentions a fully met issue still closes it;
-  nothing pushed over a governing summary does not publish the proposal, and the
-  same proposal is published once a push backs it; nothing pushed with no
-  committed summary publishes through the guard; a marker-less worker branch
-  never closes, with and without a proposal; a failed publication is resumed
-  through `resumePendingPublication` and its record cleared; a resumed pushed
-  head still publishes its proposal; the store keeps one record per head and
-  review and ignores a damaged one. Red-checks, each by breaking only that
-  branch and running the `PR #4779 review` tests: `mentionsIssue` in place of
-  `namesClosingOrPartOf`; no branch fallback in `governingIssueNumber`;
+  checkout): a pushed repair whose proposal only mentions a fully met issue
+  still closes it; nothing pushed over a governing summary does not publish the
+  proposal, and the same proposal is published once a push backs it; nothing
+  pushed with no committed summary publishes through the guard; a marker-less
+  worker branch never closes, with and without a proposal; a failed publication
+  is resumed through `resumePendingPublication` and its record cleared; a
+  resumed pushed head still publishes its proposal; the store keeps one record
+  per head and review and ignores a damaged one. Red-checks, each by breaking
+  only that branch and running the `PR #4779 review` tests: `mentionsIssue` in
+  place of `namesClosingOrPartOf`; no branch fallback in `governingIssueNumber`;
   no-change suppression removed; `pushedByEarlierRepair` not passed on resume;
   `save` writing another head's key; `clear` removed — each went red in the
-  matching tests (per-break counts not restated; not re-run in this fix). `fix()` itself is not driven (see Not done).
+  matching tests (per-break counts not restated; not re-run in this fix).
+  `fix()` itself is not driven (see Not done).
 - Test changes in this round (TDD rule 3). Obsolete: with nothing pushed, a
   proposal over a governing committed summary was published; it is not now.
   Remaining: a proposal is still published through the guard when the repair
