@@ -29,8 +29,8 @@ flowchart LR
 
 - The failure is host contention, not an issue property, and it repeated
   deterministically (12 attempts on GRQ-AutoTrader#3837, most dying in `setup`).
-  The existing repair already releases a lane worktree's hold; the primary
-  clone is the same kind of holder.
+  The existing repair already releases a lane worktree's hold; the primary clone
+  is the same kind of holder.
 - Rejected: widening `laneWorktreeHoldingBranch`, which the PR passes share
   (`preparePrBranch`, `checkoutPrBranchAtRemoteHead`, `pr_ci_processor`); their
   behaviour stays as it was.
@@ -48,8 +48,9 @@ flowchart LR
 
 - The source run's release comment on stSoftwareAU/GRQ-AutoTrader#3837 quoted
   `fatal: '<branch>' is already used by worktree at
-  '/home/vibe/auto-issue-work/GRQ-AutoTrader'`. This issue's own body omits the
-  failure message because the source repository is private.
+  '/home/vibe/auto-issue-work/GRQ-AutoTrader'`.
+  This issue's own body omits the failure message because the source repository
+  is private.
 - On this host the primary clone `~/auto-issue-work/GRQ-AutoTrader` is still on
   `issue-3837-…-redo-1`, with `worktrees/s2/GRQ-AutoTrader` detached. This is
   how the fault was confirmed. How the primary came to hold the branch was not
@@ -67,9 +68,11 @@ branch the failed run needed. `primaryCloneHoldingBranch` relies on the first
 
 ## Reproduction
 
-- **symptom** — `Failed to create feature branch 'issue-3837-…' from 'Develop':
+- **symptom** —
+  `Failed to create feature branch 'issue-3837-…' from 'Develop':
   git checkout -B … exited 128: fatal: '…' is already used by worktree at
-  '/home/vibe/auto-issue-work/GRQ-AutoTrader'`, phase `setup`, 47s.
+  '/home/vibe/auto-issue-work/GRQ-AutoTrader'`,
+  phase `setup`, 47s.
 - **status** — `verified` — the new test, run from a lane worktree with the
   primary holding the branch, went red with the new call in `git_branch.ts`
   disabled (`ok: false`) and passes with it. The base-branch production code has
@@ -88,8 +91,8 @@ branch the failed run needed. `primaryCloneHoldingBranch` relies on the first
 - Red checks: disabling the `primaryCloneHoldingBranch` call in
   `attemptCreateFeatureBranch` turned the release test red (1 failed, 6 passed).
   Making `primaryCloneHoldingBranch` return the held path unconditionally turned
-  the developer-worktree test and the two negative direct cases red (3 failed,
-  4 passed). Both restored.
+  the developer-worktree test and the two negative direct cases red (3 failed, 4
+  passed). Both restored.
 - Existing tests: `deno task test:unit` over `tests/git_branch_test.ts`,
   `tests/lane_worktree_test.ts`, `tests/pr_branch_preparation_test.ts`,
   `tests/pr_branch_checkout_test.ts` and the new file: 99 passed, 0 failed. No
@@ -99,13 +102,16 @@ branch the failed run needed. `primaryCloneHoldingBranch` relies on the first
   `pr_branch_checkout.ts`, `pr_branch_preparation.ts` and `pr_ci_processor.ts`
   are untouched.
 - Twinned rules: searched docs and `worker/deno/lib` for "lane worktrees only"
-  statements. The comment at `worker/deno/tests/git_branch_test.ts` L887 ("confined to this host's own lane
-  worktrees") is now incomplete, but that file contains NUL bytes and could not
-  be edited here.
+  statements. The comment at `worker/deno/tests/git_branch_test.ts` L887
+  ("confined to this host's own lane worktrees") is now incomplete, but that
+  file contains NUL bytes and could not be edited here.
 
 ## Not done
 
-- `./quality.sh`: every stage passed except `deno tests`, whose only failures are the two Rust-formatter cases in `tests/completion_phase_repo_formatters_test.ts`, unrelated to this change (no cargo-fmt fixture access on this host); the new and touched git tests pass.
+- `./quality.sh`: every stage passed except `deno tests`, whose only failures
+  are the two Rust-formatter cases in
+  `tests/completion_phase_repo_formatters_test.ts`, unrelated to this change (no
+  cargo-fmt fixture access on this host); the new and touched git tests pass.
 - How the primary clone came to hold the issue branch was not found, so a path
-  that re-creates the state is not closed; this change only stops it wedging
-  the setup.
+  that re-creates the state is not closed; this change only stops it wedging the
+  setup.
