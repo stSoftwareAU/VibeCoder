@@ -424,6 +424,12 @@ ENV QUALITY_SKIP_RUST_UPDATE="1"
 # writes into it (build output, caches, test artefacts), so the clone is
 # group-owned and setgid — applied by the entrypoint at run time, since the
 # work tree is a volume rather than an image layer.
+#
+# HOME itself is group `vibework` mode 0710 (Issue #4761, PR #4778): the `agent` account
+# must traverse it to reach the clones under ~/auto-issue-work, and HOME is an
+# image layer that the entrypoint cannot change under `--read-only`, so the
+# grant is made here. It is traverse only; the entrypoint closes the other
+# HOME children that hold worker state (logs, the two state volume roots).
 RUN set -eu; \
     groupadd --gid 1000 vibe; \
     useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash vibe; \

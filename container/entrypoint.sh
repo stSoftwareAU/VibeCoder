@@ -120,13 +120,14 @@ TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 # with the `vibework` group and marked setgid, which makes every directory
 # created below it inherit that group rather than the creator's own.
 #
-# Only the top level is walked. The volume carries tens of gigabytes and a
+# Only the top level is walked for the group and mode grant (each clone's own
+# `.git` is also walked, below, to strip write). The volume carries tens of gigabytes and a
 # recursive chgrp at every launch would cost minutes; setgid propagates to
 # what is created from here on, and `setupRepo` re-clones anything older. A
 # failure is a warning, not a stop: the quality gate falls back to running as
 # the worker (degraded, and it says so) rather than the container refusing to
 # start.
-# Silent on failure by design. The consumer — the quality gate — probes
+# The clone group grant is silent on failure by design. The consumer — the quality gate — probes
 # whether it can actually drop to the `agent` account and reports loudly when
 # it cannot, which is the honest signal: it tests the thing that matters
 # rather than a proxy for it. Warning here as well would fire in every
@@ -143,7 +144,9 @@ TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 # names — RESERVED_WORKDIR_NAMES in worker/deno/lib/stale_workdir.ts, kept in
 # step by worker/deno/tests/work_root_group_grant_test.ts — keep group
 # traversal (the gate reaches its own lane worktree through `worktrees/`) and
-# the setgid inheritance, and nothing more.
+# the setgid inheritance, and nothing more. The one grant outside the root is
+# HOME's traverse bit, g+x (Issue #4733), which lets the account reach the root;
+# the image sets it and the HOME block below repeats it only as a fallback.
 #
 # Residual risk, recorded rather than hidden: the work ROOT itself stays
 # group-writable, because a monitored repository's own gate clones its
@@ -201,11 +204,14 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
           chmod g+rxs,g-w "${entry}" 2>/dev/null || true
           ;;
         *)
+          # Sticky as well (Issue #4737): without `+t` the untrusted account
+          # could rename a worker-owned `.git` aside and move its own in, and
+          # the worker's git (safe.directory '*') would trust the substitute.
           chmod g+rwxs,+t "${entry}" 2>/dev/null || true
-          # Git metadata takes no group or other write, whatever mode the clone
-          # was created with (Issue #4737). A linked worktree's `.git` is a file
-          # holding a `gitdir:` pointer, so it is handled too. `${entry}` ends
-          # with `/`, so `${entry}.git` is the path inside the clone.
+          # The sticky bit stops a rename, not a write INTO the git metadata,
+          # so strip group and other write from it, whatever mode the clone
+          # was created with. A linked worktree's `.git` is a file holding a
+          # `gitdir:` pointer. `${entry}` ends with `/`.
           if [[ -d "${entry}.git" ]]; then
             find "${entry}.git" \( -type f -o -type d \) \( -perm -020 -o -perm -002 \) -exec chmod g-w,o-w {} + 2>/dev/null || true
           elif [[ -f "${entry}.git" ]]; then
@@ -236,6 +242,49 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
           ;;
       esac
     done
+  fi
+
+  # Issue #4733: the image's HOME was 0700, so the `agent` account could not
+  # reach any clone under ~/auto-issue-work, and the milestone gates' probe
+  # refused every checkout ("untrusted account cannot use ... probe 1").
+  # Group traverse on HOME (g+x, mode 0710) is the fix. The Containerfile sets
+  # it at build time, because HOME is an image layer and the root filesystem
+  # is read-only on Docker and Podman (Issue #516); the step below is the
+  # fallback for an older image on a writable root.
+  #
+  # Traverse on HOME also lets `agent` open any fixed-name child of HOME by
+  # path, which 0700 used to block. So every child this container can reach
+  # that holds worker state is closed to group and other FIRST: the host log
+  # mount (worker logs, where secrets leak by accident, asset A5 in
+  # docs/THREAT-MODEL.md) and the two state volume roots (the coding agent's
+  # transcripts and the worker's session stores). They are writable mounts, so
+  # this works under --read-only. The credential directories keep their own
+  # 0700/0600 modes and the staged run-config is a 0700 read-only mount.
+  home_children_closed=1
+  for home_child in \
+    "${HOME:-/home/vibe}/logs" \
+    "${VIBE_WORK_ROOT}-agent-state" \
+    "${VIBE_WORK_ROOT}-approval-state"; do
+    [[ -d "${home_child}" ]] || continue
+    chmod go-rwx "${home_child}" 2>/dev/null || true
+    # Verify rather than trust the chmod: a mount that ignores it must not
+    # pass as closed.
+    if [[ -n "$(find "${home_child}" -prune -perm /077 -print 2>/dev/null)" ]]; then
+      home_children_closed=0
+      echo "Warning: ${home_child} is still open to group or other and could not be closed (Issue #4733)" >&2
+    fi
+  done
+
+  if [[ -n "$(find "${HOME:-/home/vibe}" -prune -group vibework -perm -010 -print 2>/dev/null)" ]]; then
+    # Already granted when the image was built.
+    if ((!home_children_closed)); then
+      echo "Warning: HOME is group-traversable but a worker state directory above is open: the untrusted account can read it (Issue #4733)" >&2
+    fi
+  elif ((home_children_closed)) && [[ -O "${HOME:-}" ]] &&
+    chgrp vibework "${HOME}" 2>/dev/null && chmod g+x "${HOME}" 2>/dev/null; then
+    : # Granted here: a writable root.
+  else
+    echo "Warning: could not give the untrusted account traverse on ${HOME:-/home/vibe}; milestone gates will refuse the checkout (Issue #4733)" >&2
   fi
 fi
 
