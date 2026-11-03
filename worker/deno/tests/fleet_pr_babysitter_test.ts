@@ -81,6 +81,7 @@ import {
   loadConfigAndPublishDeployment,
   pendingPublicationStore,
   prBodyEditArgs,
+  ProposalOverGoverningSummaryError,
   publishBabysitterDeployment,
   readAgentResponse,
   reason,
@@ -1202,6 +1203,7 @@ Deno.test("Issue #4716: a proposal that re-closes a partial issue is withheld, a
           repairFinishDeps({ headSha: fixture.headSha, github, events }),
           {
             exchange: fixture.scratch,
+            pushedByEarlierRepair: true,
             proposal: "Rewritten.\n\nclose #4674\n\nThis does not close #4674",
           },
         ),
@@ -1235,7 +1237,11 @@ Deno.test("Issue #4716: a proposal that re-closes a missing issue is withheld, a
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { exchange: fixture.scratch, proposal: "Rewritten.\n\nFixes #4674" },
+      {
+        exchange: fixture.scratch,
+        pushedByEarlierRepair: true,
+        proposal: "Rewritten.\n\nFixes #4674",
+      },
     );
     assertEquals(events, ["publish", "dismiss"]);
     assertEquals(closingKeywordLine(github.body(), 4674), null);
@@ -1261,7 +1267,11 @@ Deno.test("a proposal that omits a withheld issue gets Part of #N, not Closes #N
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { exchange: fixture.scratch, proposal: "Rewritten description." },
+      {
+        exchange: fixture.scratch,
+        pushedByEarlierRepair: true,
+        proposal: "Rewritten description.",
+      },
     );
     assertEquals(events, ["publish", "dismiss"]);
     assertStringIncludes(github.body(), "Part of #4674");
@@ -1316,7 +1326,7 @@ Deno.test("a fully met summary with no closing keyword keeps the close after a r
         "babysitter[bot]",
         changesRequestedBy(),
         repairFinishDeps({ headSha: fixture.headSha, github, events }),
-        { exchange: fixture.scratch, proposal },
+        { exchange: fixture.scratch, pushedByEarlierRepair: true, proposal },
       );
       assertStringIncludes(github.body(), "Closes #4637");
       assertEquals(github.body().includes("Part of #4637"), false);
@@ -1349,6 +1359,7 @@ Deno.test("a missing criterion withholds the close at finish level and keeps ano
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
       {
         exchange: fixture.scratch,
+        pushedByEarlierRepair: true,
         proposal: "Rewritten. Closes #4674 and fixes #9.",
       },
     );
@@ -1410,7 +1421,11 @@ Deno.test("a failed description edit keeps reviews open, and a retry at the same
         "babysitter[bot]",
         changesRequestedBy(),
         repairFinishDeps({ headSha: fixture.headSha, github, events }),
-        { exchange: fixture.scratch, proposal: "Rewritten description." },
+        {
+          exchange: fixture.scratch,
+          pushedByEarlierRepair: true,
+          proposal: "Rewritten description.",
+        },
       );
     await assertRejects(
       finish,
@@ -1447,7 +1462,11 @@ Deno.test("a retry at the same head with the description already current makes n
         "babysitter[bot]",
         changesRequestedBy(),
         repairFinishDeps({ headSha: fixture.headSha, github, events }),
-        { exchange: fixture.scratch, proposal: "Rewritten description." },
+        {
+          exchange: fixture.scratch,
+          pushedByEarlierRepair: true,
+          proposal: "Rewritten description.",
+        },
       );
     await finish();
     const published = github.body();
@@ -1483,7 +1502,11 @@ Deno.test("a repair with no code change withholds the close after the sync and d
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events, syncFn }),
-      { exchange: fixture.scratch, proposal: "Rewritten.\n\nCloses #4674" },
+      {
+        exchange: fixture.scratch,
+        pushedByEarlierRepair: true,
+        proposal: "Rewritten.\n\nCloses #4674",
+      },
     );
     assertEquals(events, ["sync", "publish", "dismiss"]);
     assertEquals(closingKeywordLine(github.body(), 4674), null);
@@ -1492,8 +1515,9 @@ Deno.test("a repair with no code change withholds the close after the sync and d
   }
 });
 
-Deno.test("with nothing pushed, a proposal over a governing committed summary is not published, and the same proposal is once a push backs it (PR #4779 review)", async () => {
+Deno.test("with nothing pushed, a proposal over a governing committed summary keeps the reviews open and leaves no pending record, and the same proposal is published once a push backs it (PR #4779 review)", async () => {
   const fixture = await makeCommittedSummaryRepo(4637, closingSummary(4637));
+  const state = await Deno.makeTempDir({ prefix: "babysitter-state-" });
   try {
     const unsupported =
       "Rewritten. A fix and a regression test were added in this repair.";
@@ -1504,18 +1528,34 @@ Deno.test("with nothing pushed, a proposal over a governing committed summary is
       body: live,
       onEdit: () => events.push("publish"),
     });
-    await finishBabysitterRepair(
+    const reviews = changesRequestedBy();
+    const publication = pendingPublicationStore(
+      state,
       "owner/repo",
-      repairPrFor(fixture.headSha, 7),
-      fixture.path,
-      "babysitter[bot]",
-      changesRequestedBy(),
-      repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { exchange: fixture.scratch, proposal: unsupported },
+      7,
+      reviews,
+    );
+    await assertRejects(
+      () =>
+        finishBabysitterRepair(
+          "owner/repo",
+          repairPrFor(fixture.headSha, 7),
+          fixture.path,
+          "babysitter[bot]",
+          reviews,
+          {
+            ...repairFinishDeps({ headSha: fixture.headSha, github, events }),
+            publication,
+          },
+          { exchange: fixture.scratch, proposal: unsupported },
+        ),
+      ProposalOverGoverningSummaryError,
+      "change the committed summary to change the description",
     );
     assertEquals(github.edits(), 0);
     assertEquals(github.body(), live);
-    assertEquals(events, ["dismiss"]);
+    assertEquals(events, []);
+    assertEquals(await publication.load(fixture.headSha), undefined);
 
     const pushedEvents: string[] = [];
     const pushedGithub = fakeRepairGitHub({
@@ -1536,6 +1576,7 @@ Deno.test("with nothing pushed, a proposal over a governing committed summary is
     assertStringIncludes(pushedGithub.body(), unsupported);
   } finally {
     await cleanupFixture(fixture.path);
+    await cleanupFixture(state);
   }
 });
 
@@ -1695,14 +1736,18 @@ Deno.test("a failed publication is resumed by the next scan without the agent, a
           "babysitter[bot]",
           reviews,
           deps,
-          { exchange: fixture.scratch, proposal: "Rewritten description." },
+          {
+            exchange: fixture.scratch,
+            pushedByEarlierRepair: true,
+            proposal: "Rewritten description.",
+          },
         ),
       Error,
       "simulated body publication failure",
     );
     assertEquals(await publication.load(fixture.headSha), {
       proposal: "Rewritten description.",
-      pushed: false,
+      pushed: true,
     });
     assertEquals(events, []);
 
@@ -1817,7 +1862,9 @@ function fakeAgentStart(
 }
 
 Deno.test("repairInClone: a failed publication is retried at the same head through the attempt marker, without a second agent run (PR #4779 review)", async () => {
-  const fixture = await makeCommittedSummaryRepo(4674, partialSummary(4674));
+  // The only committed summary is for another issue, so #4674 has none and
+  // the agent's proposal is published through the guard.
+  const fixture = await makeCommittedSummaryRepo(1, closingSummary(1));
   const state = await Deno.makeTempDir({ prefix: "babysitter-state-" });
   try {
     await runGit(
@@ -1986,7 +2033,11 @@ Deno.test("the withholding evidence is the summary committed at the pushed head,
       "babysitter[bot]",
       changesRequestedBy(),
       repairFinishDeps({ headSha: fixture.headSha, github, events }),
-      { exchange: fixture.scratch, proposal: "Rewritten description." },
+      {
+        exchange: fixture.scratch,
+        pushedByEarlierRepair: true,
+        proposal: "Rewritten description.",
+      },
     );
     assertEquals(events, ["publish", "dismiss"]);
     assertStringIncludes(github.body(), "Part of #4674");
@@ -2195,7 +2246,11 @@ Deno.test("a head that moves after the description is published keeps reviews op
           "babysitter[bot]",
           changesRequestedBy(),
           repairFinishDeps({ headSha: fixture.headSha, github, events }),
-          { exchange: fixture.scratch, proposal: "Rewritten description." },
+          {
+            exchange: fixture.scratch,
+            pushedByEarlierRepair: true,
+            proposal: "Rewritten description.",
+          },
         ),
       Error,
       "head moved",
@@ -2226,7 +2281,11 @@ Deno.test("a description GitHub does not show as published keeps reviews open", 
           "babysitter[bot]",
           changesRequestedBy(),
           repairFinishDeps({ headSha: fixture.headSha, github, events }),
-          { exchange: fixture.scratch, proposal: "Rewritten description." },
+          {
+            exchange: fixture.scratch,
+            pushedByEarlierRepair: true,
+            proposal: "Rewritten description.",
+          },
         ),
       Error,
       "is not the one published",

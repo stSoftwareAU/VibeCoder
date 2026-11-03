@@ -13,8 +13,9 @@ that has no summary digest.
 Review round (PR #4779): a body that lost its worker marker is governed by the
 issue its worker branch names; a fully met issue gets `Closes` back unless the
 text already has a closing keyword or an explicit `Part of`, so a bare mention
-no longer drops it; a repair that pushed nothing does not publish a proposal
-where a committed summary governs the body; and a failed publication is resumed
+no longer drops it; a repair that pushed nothing cannot publish a proposal where
+a committed summary governs the body, so it keeps the reviews open and names the
+next action (change the committed summary); and a failed publication is resumed
 by the next scan without the agent, which the per-host attempt marker would
 otherwise block.
 
@@ -57,16 +58,23 @@ the final version.
 - With nothing pushed, a proposal is not published where a committed summary
   governs the body: the sync already rebuilt the body from that summary, which
   is the text the pushed head supports, and the agent prompt tells it to change
-  the summary instead. The proposal is still published (through the guard) when
-  no committed summary governs the body, and when the repair pushed. This limits
-  what the proposal can assert; it does not check a proposal's prose against the
-  diff.
+  the summary instead. The review asked for a description change that is thereby
+  not made, so `ProposalOverGoverningSummaryError` is thrown before any
+  dismissal: the reviews stay open, the message names the next action (change
+  the committed summary), and the pending-publication record is cleared, since a
+  resumed scan would drop the same proposal again. The per-host attempt marker
+  stops a second agent run at that head and review, so the next action is a push
+  that changes the head. The proposal is still published (through the guard)
+  when no committed summary governs the body, and when the repair pushed. This
+  limits what the proposal can assert; it does not check a proposal's prose
+  against the diff.
 - A repair that addresses reviews writes `<attempt key>--publication.json` (the
   proposal and whether the repair pushed) before the sync, and removes it once
-  the reviews are dismissed. `fix()` runs `repairInClone`, which looks for it
-  before it merges the base or starts the agent (`resumePendingPublication`), so
-  a publication that failed is retried on the next scan although the attempt
-  marker blocks a second agent run at that head and review.
+  the reviews are dismissed or the proposal is refused over a governing summary.
+  `fix()` runs `repairInClone`, which looks for it before it merges the base or
+  starts the agent (`resumePendingPublication`), so a publication that failed is
+  retried on the next scan although the attempt marker blocks a second agent run
+  at that head and review.
 - A no-change retry diffs the committed summary against git's empty tree, so a
   legacy worker body with no summary digest is rebuilt. The sync still edits
   only when the rebuilt body differs, so a second retry makes no edit.
@@ -158,14 +166,16 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   `a resumed publication for a pushed head still publishes the proposal that the push backs (PR #4779 review)`
   and
   `repairInClone: a failed publication is retried at the same head through the attempt marker, without a second agent run (PR #4779 review)`
+  and
+  `with nothing pushed, a proposal over a governing committed summary keeps the reviews open and leaves no pending record, and the same proposal is published once a push backs it (PR #4779 review)`
   — reviewer: met
 - **partial** — On a no-code-change repair, publish only an independently
   supportable correction; a proposal is data, not authority. A proposal over a
-  governing committed summary is dropped when nothing was pushed, but with no
-  committed summary it is published through the guard, which checks only the
-  closing references and markers, not the proposal's prose against the diff —
-  evidence:
-  `worker/deno/tests/fleet_pr_babysitter_test.ts::with nothing pushed, a proposal over a governing committed summary is not published, and the same proposal is once a push backs it (PR #4779 review)`,
+  governing committed summary is refused, with the reviews left open, when
+  nothing was pushed, but with no committed summary it is published through the
+  guard, which checks only the closing references and markers, not the
+  proposal's prose against the diff — evidence:
+  `worker/deno/tests/fleet_pr_babysitter_test.ts::with nothing pushed, a proposal over a governing committed summary keeps the reviews open and leaves no pending record, and the same proposal is published once a push backs it (PR #4779 review)`,
   `with nothing pushed and no committed summary, a proposal is published through the guard and never closes the issue (PR #4779 review)`
   and
   `a repair with no code change withholds the close after the sync and dismisses last`
@@ -281,32 +291,46 @@ listed the post-push sync callers were updated. Issues cited as provenance:
   unrelated environment-dependent test,
   `babysitter default heartbeat resolves its checkout revision`, fails in this
   checkout): a pushed repair whose proposal only mentions a fully met issue
-  still closes it; nothing pushed over a governing summary does not publish the
-  proposal, and the same proposal is published once a push backs it; nothing
-  pushed with no committed summary publishes through the guard; a marker-less
-  worker branch never closes, with and without a proposal; a failed publication
-  is resumed through `resumePendingPublication` and its record cleared; a
-  resumed pushed head still publishes its proposal; the store keeps one record
-  per head and review and ignores a damaged one. Red-checks, each by breaking
-  only that branch and running the `PR #4779 review` tests: `mentionsIssue` in
-  place of `namesClosingOrPartOf`; no branch fallback in `governingIssueNumber`;
-  no-change suppression removed; `pushedByEarlierRepair` not passed on resume;
-  `save` writing another head's key; `clear` removed — each went red in the
-  matching tests (per-break counts not restated; not re-run in this fix). The
-  order inside `fix()` is driven through `repairInClone`, which `fix()` calls
-  after the clone: with an attempt marker already on disk, a failed publication
-  is recorded (the store reaches the finish), a second scan finishes it with the
-  agent not started again, and a third scan with nothing pending is stopped by
-  the marker
+  still closes it; nothing pushed over a governing summary publishes nothing,
+  throws `ProposalOverGoverningSummaryError`, keeps the reviews open and leaves
+  no pending record, and the same proposal is published once a push backs it;
+  nothing pushed with no committed summary publishes through the guard; a
+  marker-less worker branch never closes, with and without a proposal; a failed
+  publication is resumed through `resumePendingPublication` and its record
+  cleared; a resumed pushed head still publishes its proposal; the store keeps
+  one record per head and review and ignores a damaged one. Red-checks, each by
+  breaking only that branch and running the `PR #4779 review` tests:
+  `mentionsIssue` in place of `namesClosingOrPartOf`; no branch fallback in
+  `governingIssueNumber`; no-change suppression removed; `pushedByEarlierRepair`
+  not passed on resume; `save` writing another head's key; `clear` removed —
+  each went red in the matching tests (per-break counts not restated; not re-run
+  in the second-review fix). The order inside `fix()` is driven through
+  `repairInClone`, which `fix()` calls after the clone: with an attempt marker
+  already on disk, a failed publication is recorded (the store reaches the
+  finish), a second scan finishes it with the agent not started again, and a
+  third scan with nothing pending is stopped by the marker
   (`repairInClone: a failed publication is retried at the
   same head through the attempt marker, without a second agent run (PR #4779 review)`).
   Red-checks on that test: the store dropped from the finish call → red
   (`Values are not equal`); resume made unreachable, as if it ran after the
   marker → red. Both re-run on this head.
 - Test changes in this round (TDD rule 3). Obsolete: with nothing pushed, a
-  proposal over a governing committed summary was published; it is not now.
-  Remaining: a proposal is still published through the guard when the repair
-  pushed (`a proposal that omits a fully met issue gets Closes #N` and
+  proposal over a governing committed summary was published, and then (in the
+  first round) dropped with the reviews dismissed; it is now refused and the
+  reviews stay open (second review). Eleven existing finish-level tests used a
+  no-push repair only as a convenient fixture for the guard, the close
+  withholding and the retry; they now pass `pushedByEarlierRepair: true` so the
+  proposal has committed work behind it, and still assert what their names say.
+  `a failed publication is resumed by the next scan without the agent, and the record is cleared (PR #4779 review)`
+  therefore expects the record as `pushed: true`, and
+  `repairInClone: a failed publication is retried at the same head through the attempt marker, without a second agent run (PR #4779 review)`
+  uses a repository with no committed summary for the PR's issue, so its
+  proposal is published through the guard. Red-check on this head: the `clear`
+  in the refusal path replaced by a no-op → the refusal test went red (the
+  record remained); the refusal condition forced off → the same test went red
+  (the proposal was published and the review dismissed). Remaining: a proposal
+  is still published through the guard when the repair pushed
+  (`a proposal that omits a fully met issue gets Closes #N` and
   `a summary committed only at the legacy docs/pr-summary-N.md path at the head is found and governs the close`
   now run as pushed repairs and assert the proposal text and `Closes #N`) and
   when no summary governs.
