@@ -419,7 +419,10 @@ Dependabot's GitHub Actions bumps, which change `.github/workflows/*`. See
 for details.
 
 Then add `<app-slug>[bot]` to `authorized_commenters` on every fleet host, so
-the worker acts on its change requests. Keep `github-copilot[bot]` and
+the worker acts on its change requests. Also add that login to `service_accounts`
+or `fleet_pr_authors` on every fleet host: all lanes must trust its strict-base
+refresh ownership comments. The reviewer refuses refreshes until its own
+configuration includes the login. Keep `github-copilot[bot]` and
 `github-actions[bot]` in the list: setting the key replaces those defaults.
 Do **not** add the bot to `pr_reviewers`. That list is requested as reviewers
 on every new worker PR, and GitHub cannot request a review from an App, so PR

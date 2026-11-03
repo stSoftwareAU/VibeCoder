@@ -35,6 +35,7 @@
 
 import type { Logger, Result } from "../types.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { requestReadyBranchUpdate } from "./required_branch_checks_4613.ts";
 
 /** Injectable gh command runner. */
 type GhFn = (args: string[]) => Promise<string>;
@@ -300,8 +301,8 @@ export async function requestBranchUpdate(
  * Act on a merge attempt's outcome — the loud half of the merge path.
  *
  * Never returns quietly on a fault: a green PR that will not merge, or a
- * stale-base PR whose branch update fails, is logged as a warning, its branch
- * update is requested, and the next cycle tries the merge again. Nothing is
+ * stale-base PR whose guarded refresh is refused or fails, is logged as a
+ * warning and retried next cycle. Nothing is
  * handed to a human — no comment, no `needs-human` label (Issue #4304).
  *
  * @param options - Merge attempt context
@@ -332,7 +333,7 @@ export async function handleMergeAttempt(
   }
 
   const updateBranchFn = options.updateBranchFn ??
-    ((r: string, n: number) => requestBranchUpdate(r, n, ghFn));
+    ((r: string, n: number) => requestReadyBranchUpdate(r, n, ghFn));
 
   if (disposition === "update_branch") {
     const update = await updateBranchFn(repo, prNumber);

@@ -17,8 +17,9 @@ PRs are fixed without being asked.** There is **one Vibe Coder per hostname**,
 and the **same GitHub user** (e.g. stsvcbot) is often shared by many Vibe
 Coders. The worker monitors **all open PRs by that user** — it does not act on
 other users’ PRs. It fixes **spelling** and **quality** (shellcheck, Deno
-quality checks) failures, keeps branches **up to date** with the base
-(rebase/merge; on a merge-queued default branch only conflicting PRs are updated, not merely behind ones, Issue #4424), and resolves **merge conflicts** when it can. **Auto-merge** is
+quality checks) failures, keeps branches **up to date** with the base (on a
+strict base without a merge queue, only a ready PR is refreshed at a time),
+and resolves **merge conflicts** when it can. **Auto-merge** is
 turned on only when the PR is actually mergeable, and every merge first passes a
 **pre-merge gate** that re-checks CI and branch freshness (a merge-queued default branch is landed by its queue instead). User feedback
 (comments, "Request changes") is also handled: address it, push, mark processed.
@@ -771,8 +772,16 @@ checks pass. The worker does the following:
    this may be the repo default branch or a milestone branch (e.g.
    `milestone/oidc`). If `baseRefName` is unavailable, the repo default branch
    is used as a fallback.
-2. **Update the branch** — If the branch is behind the base (and the base has no merge queue; on a merge-queued default branch a PR that is only behind is left alone, Issue #4424): fetch the latest
-   base branch, merge it into the feature branch, and push normally — never a
+2. **Update the branch** — On a strict base without a merge queue, a behind-only
+   refresh requires an open, non-draft, armed, approved, mergeable PR with
+   passing required checks on its current head or verified test merge. A
+   persisted per-base owner allows one selected PR to refresh until it merges,
+   fails required checks, closes or its six-hour ownership expires. Optional
+   checks do not block selection; unreadable required rules are logged and
+   retried. A merge-queue base is not refreshed merely for being behind
+   (Issue #4424). Other behind updates retain the existing updater behaviour.
+   Conflict resolution remains a separate repair path. For ordinary branch
+   repair, fetch the latest base branch, merge it into the feature branch, and push normally — never a
    rebase and never a force-push, so a PR under review keeps its commits and
    its review comments (Issue #2807). The comparison and merge always use the
    PR's actual base branch, so PRs targeting milestone
@@ -792,9 +801,9 @@ checks pass. The worker does the following:
    remote rejects is a logged failure carrying git's stderr, never retried with
    force.
 4. **After PR creation or recovery** — When a PR is created or an existing PR is
-   recovered, the worker runs a mergeability check and, if the branch is behind
-   base, merges the base in and pushes normally **before** enabling
-   auto-merge.
+   recovered, the worker runs a mergeability check. A behind-only refresh on a
+   strict base follows the shared readiness and ownership policy above before
+   enabling auto-merge; conflicts still use the separate repair path.
    **Auto-merge is only enabled once the PR is mergeable.**
 
 5. **Leave a blocked PR alone** (Issue #2702) — A PR whose review decision is
@@ -803,11 +812,9 @@ checks pass. The worker does the following:
    the review. The decision rides the batched branch-state query, so it costs
    no extra call; the skip is logged at info.
 
-So: **PRs are always kept mergeable when possible**. If a PR is out of date, the
-branch is automatically updated (unless its default branch has a merge queue, which
-tests the PR against its future head instead) and merge issues resolved; if automatic
-resolution fails, the run continues and the next cycle may retry or the user can
-intervene.
+So: **PRs are kept mergeable when possible**. A behind PR on a strict base may
+wait for review and for another ready PR's refresh to finish. Merge-queue bases
+test PRs against their future head; conflicts remain on the repair path.
 
 ### 🟢 Priority 1.65 — Auto-merge
 
@@ -842,8 +849,11 @@ intervene.
   conflicting PR on such a base still gets the update. Not when a reviewer has
   requested changes (Issue #2702): that PR cannot merge anyway, so it gets
   neither the update nor a merge attempt, and the sweep logs why at info.
-  This gate does not serialise different PRs or other updater lanes; that work
-  remains in Issue #4613 and PR #4652.
+  On a strict base without a merge queue, a repository/base owner serialises
+  refreshes across PRs, hosts and updater lanes. It remains while refreshed CI
+  and merge are pending, then a later pass releases it after merge, closure,
+  failed required checks or bounded expiry. The same required-check contract
+  applies across those lanes; optional pending or skipped jobs do not block.
 - **Removed from a merge queue** (Issue #4424) — a PR the queue removed at its
   current head is not armed until a new head arrives, and a queued base is
   never merged directly (`merge-queue-removed`,
