@@ -2,9 +2,12 @@
 #
 # Review routing only: code-owner review is NOT required (infra/rulesets/
 # main.json sets require_code_owner_review false). The fleet reviewer is a
-# GitHub App, which can never be a code owner, so its approval is the gate
-# and a PR that removes or loosens tests is held for the owner (THREAT-MODEL
-# R14). The owners below are still requested as reviewers on these paths.
+# GitHub App, which can never be a code owner, so its approval is the gate.
+# The reviewer decides whether a PR that removes or loosens tests keeps
+# meaningful regression protection: an unjustified removal is sent back, and
+# only an unclear product contract (or an explicit per-repo override) is held
+# for the owner (THREAT-MODEL R14). The owners below are still requested as
+# reviewers on these paths.
 # The worker bot identities (stservice, VibeCoderST) stay absent.
 #
 # Last matching pattern wins. Guarded by worker/deno/tests/codeowners_test.ts.

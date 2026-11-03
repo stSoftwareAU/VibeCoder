@@ -40,16 +40,44 @@ import {
   parseReviewReply,
 } from "../../../../worker/deno/lib/pre_pr_verifier.ts";
 import { runFooter, type RunInfo } from "./review_cost.ts";
+// Type only: test_change_policy.ts imports this module's values, so a value
+// import back would be a cycle.
+import type { ApprovedTestChange } from "./test_change_policy.ts";
 
 export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
 
 /**
- * The version of the owner-hold policy a held review was made under. Bump it
- * when the policy for what is held changes (e.g. the owner-approved
- * test-removal policy in #4655), so existing holds are reassessed once even on
- * an unchanged head (Issue #4643).
+ * The version of the owner-hold policy a held review was made under. Version 2
+ * is the #4655 evidence-review policy: a test change is never itself a hold, so
+ * the owner is asked only about a product-contract question or a repo's
+ * explicit override. Bumping it reassesses every existing reviewer-owned hold
+ * once, including a hold at the current head (Issue #4643, Issue #4655).
  */
-export const HOLD_POLICY_VERSION = 1;
+export const HOLD_POLICY_VERSION = 2;
+
+// A held review carries its policy version on a line of its own, so the gate
+// can tell a stale hold from a current one (Issue #4655). Only a whole line
+// counts: the marker quoted in prose or a code span does not.
+export const HOLD_POLICY_MARKER_PREFIX = "<!-- vibe-hold-policy v=";
+const HOLD_POLICY_LINE = /^<!-- vibe-hold-policy v=(\d{1,4}) -->$/;
+
+export function holdPolicyMarker(version = HOLD_POLICY_VERSION): string {
+  return `${HOLD_POLICY_MARKER_PREFIX}${version} -->`;
+}
+
+/**
+ * The policy version a held review body was made under: the last whole-line
+ * marker in it (the skill's own marker comes after the reviewer's text), or 1
+ * when there is none, which is a hold made before #4655.
+ */
+export function holdPolicyFromBody(body: string | undefined): number {
+  let version = 1;
+  for (const line of (body ?? "").split("\n")) {
+    const match = HOLD_POLICY_LINE.exec(line.trim());
+    if (match) version = Number(match[1]);
+  }
+  return version;
+}
 
 // A pre-existing problem Fable noticed that the PR did not cause (already on
 // the base branch, unchanged by the PR): unfair to ask this PR to fix it, too
@@ -269,10 +297,15 @@ export function unrelatedInstanceComment(
   ].join("\n");
 }
 
+// A test change is never itself a hold (Issue #4655): the evidence review
+// decides it, and `hold` is set only when that review (or a repo's override)
+// leaves a product-contract question for the owner. Findings and a missing
+// checklist item still send the PR back first.
 export function decideOutcome(
   review: FableReview,
-  removedTests: readonly string[],
-  opts: { autoRelease?: boolean } = {},
+  // Not a reason to hold (Issue #4655): kept so each caller names what it passes.
+  _removedTests: readonly string[],
+  opts: { hold?: boolean } = {},
 ): Outcome {
   if (review.findings.length > 0) return "changes_requested";
   // A checklist item the reviewer found missing blocks, even if it forgot to
@@ -280,9 +313,7 @@ export function decideOutcome(
   if (review.checklist.some((c) => c.verdict === "missing")) {
     return "changes_requested";
   }
-  if (review.testChanges === "meaningful" || removedTests.length > 0) {
-    return opts.autoRelease === true ? "approved" : "held";
-  }
+  if (opts.hold === true) return "held";
   return "approved";
 }
 
@@ -328,8 +359,16 @@ export function reviewBody(
   review: FableReview,
   removedTests: readonly string[],
   filed: readonly FiledIssue[] = [],
-  // `run`: the model run that wrote the review, for its run footer.
-  opts: { autoReleased?: boolean; run?: RunInfo } = {},
+  opts: {
+    // `run`: the model run that wrote the review, for its run footer.
+    run?: RunInfo;
+    // The test changes the evidence review approved (Issue #4655); shown on an
+    // approval only. Internal to this body: never printed as a field name.
+    testReview?: { approved: readonly ApprovedTestChange[] };
+    // Why the owner must decide (Issue #4655). `override`: the repo holds
+    // every meaningful test change; otherwise `reasons` name the questions.
+    hold?: { reasons: readonly string[]; override: boolean };
+  } = {},
 ): string {
   const lines: string[] = [];
   if (outcome === "changes_requested") {
@@ -341,26 +380,43 @@ export function reviewBody(
       lines.push("");
     }
     const notes = testNotes(review, removedTests);
-    if (review.testChanges === "meaningful" || removedTests.length > 0) {
+    if (notes.length > 0) {
       lines.push("Also note these changes to existing tests:", ...notes, "");
     }
     lines.push(review.summary);
   } else if (outcome === "held") {
+    const hold = opts.hold;
     lines.push(
-      "Held for owner review: this PR changes existing tests.",
+      hold?.override
+        ? "Held for owner review: this repository holds every meaningful test change for the owner (pr_reviewer_test_hold_repos)."
+        : "Held for owner review: the intended product contract behind these test changes is unclear.",
+      ...(hold?.override
+        ? []
+        : (hold?.reasons ?? []).map((r) => `- ${plain(r)}`)),
       "",
       ...testNotes(review, removedTests),
       "",
       review.summary,
       "",
+      // Its own line: the gate reads the policy version from it (Issue #4655).
+      holdPolicyMarker(),
+      "",
       "Approve to merge or request changes; then remove `needs-human`.",
     );
-  } else if (outcome === "approved" && opts.autoReleased) {
+  } else if (
+    outcome === "approved" && (opts.testReview?.approved.length ?? 0) > 0
+  ) {
     lines.push(
-      "Auto-released: this PR changes existing tests, and each change is required by an acceptance criterion of a linked issue.",
+      "Test changes reviewed against the approved test-change policy (Issue #4655): each is shown with the evidence the reviewer script verified at the head commit.",
       "",
-      ...review.testChangeNotes.map((n) =>
-        `- \`${n.file}:${n.line}\`: ${n.change} — required by: "${n.criterionQuote}"`
+      ...(opts.testReview?.approved ?? []).map((a) =>
+        `- \`${plain(a.file)}:${a.line}\` (${plain(a.kind, 60)}): obsolete: ${
+          plain(a.obsolete)
+        }; remaining: ${plain(a.remaining)}; coverage: ${
+          a.coverage.map((c) => plain(c)).join(", ")
+        }; requirement: ${plain(a.requirement)}; verification: ${
+          plain(a.verification)
+        }`
       ),
       "",
       review.summary,
@@ -393,6 +449,8 @@ export async function writeSummary(
   dir: string,
   open?: ReadonlySet<string>,
   now = new Date(),
+  // The test-change policy in force, for the summary's header (Issue #4655).
+  policyLine?: string,
 ): Promise<void> {
   await Deno.mkdir(dir, { recursive: true });
   const read = (f: string) => Deno.readTextFile(`${dir}/${f}`).catch(() => "");
@@ -404,7 +462,7 @@ export async function writeSummary(
   const records = parseLog(await read(LOG_FILE));
   await Deno.writeTextFile(
     `${dir}/${SUMMARY_FILE}`,
-    renderSummary(records, open, now),
+    renderSummary(records, open, now, policyLine),
   );
 }
 
@@ -486,6 +544,7 @@ export function renderSummary(
   records: LogRecord[],
   open: ReadonlySet<string>,
   now: Date,
+  policyLine?: string,
 ): string {
   const latest = [...latestByPr(records).values()].sort((a, b) =>
     b.at.localeCompare(a.at)
@@ -508,6 +567,10 @@ export function renderSummary(
     `Updated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC. ` +
     `Last 24 h: ${count("approved")} approved, ` +
     `${count("changes_requested")} sent back, ${count("held")} held for you.`,
+    // The policy line as describeTestPolicy words it, capitalised (Issue #4655).
+    ...(policyLine
+      ? [policyLine.charAt(0).toUpperCase() + policyLine.slice(1)]
+      : []),
     "",
     `## Waiting for you (${held.length})`,
     "",
@@ -534,7 +597,11 @@ export function renderSummary(
       ? approved.map((r) =>
         line(
           r,
-          (r.autoReleased === true
+          (r.testChangesReviewed === true
+            ? "(test changes reviewed) "
+            // Historical, pre-#4655: the opt-in auto-release (Issue #3397)
+            // wrote this on its approvals, so an old log still renders.
+            : r.autoReleased === true
             ? "(auto-released: issue-required test change) "
             : "") + clip(r.summary),
           isOpen(r),
