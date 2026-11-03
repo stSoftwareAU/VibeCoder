@@ -375,3 +375,8 @@ unavailable/recovery assertion while adding separate absent-default coverage.
 - Config integration lacks a local `.config.json`. Semgrep and the pinned
   Checkov binary/image are unavailable. These checks were not claimed as
   passing, and no test or gate was disabled.
+
+## Merge conflict resolution
+
+- Retained runner-owned validation and checkpoint handling while incorporating
+  the base branch’s test-change evidence guidance in the repair prompt.

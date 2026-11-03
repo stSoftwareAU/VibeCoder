@@ -19,7 +19,10 @@ import {
   sentBackAt,
   skipReason,
 } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
-import { HOLD_POLICY_VERSION } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
+import {
+  HOLD_POLICY_VERSION,
+  holdPolicyMarker,
+} from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 const file = (
   filename: string,
@@ -233,9 +236,23 @@ Deno.test("reviewedAtHead: approvals, change requests and the skill's own commen
     reviewedAtHead([review("CHANGES_REQUESTED", "head")], "nleck", "head"),
     true,
   );
+  // A marker-only hold is a pre-#4655 (policy 1) hold: not reviewed at head now.
+  // Was `true` before #4655; the current-policy hold below replaces it.
   assertEquals(
     reviewedAtHead(
       [review("COMMENTED", "head", `Held. ${REVIEW_MARKER}`)],
+      "nleck",
+      "head",
+    ),
+    false,
+  );
+  assertEquals(
+    reviewedAtHead(
+      [review(
+        "COMMENTED",
+        "head",
+        `Held.\n${holdPolicyMarker()}\n${REVIEW_MARKER}`,
+      )],
       "nleck",
       "head",
     ),
@@ -2200,6 +2217,30 @@ Deno.test("skipReason: a send-back and an approval behave as before and never co
 });
 
 Deno.test("skipReason: a hold at the head commit is already reviewed (Issue #4643)", async () => {
+  // A hold under the current policy carries its version marker (Issue #4655).
+  // Before #4655 this review had no marker and was skipped; now it is not.
+  const current = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: {
+      nodes: [review(
+        "COMMENTED",
+        "head",
+        `Held for owner review\n\n${holdPolicyMarker()}\n\n_${REVIEW_MARKER}._`,
+      )],
+    },
+  });
+  assertEquals(
+    await skipReason(
+      current,
+      "nleck",
+      () => Promise.resolve(true),
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    "already-reviewed",
+  );
+  // The same hold without the marker is a policy-1 hold: reviewed afresh.
   assertEquals(
     await skipReason(
       heldPr("head"),
@@ -2208,7 +2249,7 @@ Deno.test("skipReason: a hold at the head commit is already reviewed (Issue #464
       () => false,
       () => HOLD_POLICY_VERSION,
     ),
-    "already-reviewed",
+    null,
   );
 });
 

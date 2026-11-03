@@ -195,10 +195,15 @@ guessing.
      pre-existing message left unchanged that is false or misleading in
      the new state is a blocking self-review finding; list the messages
      checked in the PR summary's Test Plan (Issue #3259).
-2. Do not skip or weaken existing tests merely to make the gate pass. A
+2. Do not remove, skip or weaken existing tests merely to make the gate pass.
+   The restriction is against a clean build obtained by deleting useful tests,
+   weakening assertions, adding skips or lowering quality thresholds. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
-   the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
+   the behaviour (see the removal entries in the Test Plan). Replacing or
+   removing an obsolete test is approved by the owner, and independent review
+   decides whether meaningful regression protection remains; a test change is
+   never by itself a reason to hold the pull request for a human. For UI/PWA tests prefer user-visible browser behaviour and
    semantic locators; avoid exact DOM-structure assertions unless explicitly
    required. **A style literal is incidental wherever it lives.** An exact
    colour, length, `calc()`/`min()` expression, font, z-index, class name or
@@ -1414,17 +1419,26 @@ The file MUST contain:
    named-but-absent test is a blocking self-review finding: add the test or
    drop the claim, and never commit a code anchor or comment that references a
    test that does not exist. For every existing test the diff edits, list each
-   assertion it removes with the issue requirement that makes it untrue; an
-   assertion removed with no such requirement is a blocking self-review
-   finding — restore it, or move it to a test that still covers the behaviour
-   and name that test. Give each removal its own list entry: `Removed from
-   <path>: <assertion>`, copying the assertion as it appears in the diff, then
-   an indented `Required by: "<quote>"` or `Moved to: <path>`. The quote must
-   contain at least 5 words verbatim from the linked issue's title or body,
-   not comments; the move must name a file where the same assertion is added
-   with its original guards and coverage preserved. For a replacement, also
-   add `Replaced by:` and name each new assertion in inline code; each must
-   be added in the same test file. The Standards reviewer
+   assertion it removes with the issue requirement that makes it untrue, or with
+   the coverage that still proves the behaviour; an assertion removed with
+   neither is a blocking self-review finding — restore it, or move it to a
+   test that still covers the behaviour and name that test. Give each removal
+   its own list entry: `Removed from <path>: <assertion>`, copying the
+   assertion as it appears in the diff, then one indented justification line:
+   - `Required by: "<verbatim quote from the linked issue's title or body>"`
+     when the issue makes the assertion untrue (never a comment);
+   - `Moved to: <path>` when the same assertion is added to a named file with
+     its original guards and coverage preserved;
+   - `Obsolete: <old behaviour that is gone or intentionally changed>` followed
+     by `Still covered by: <repo-relative path::test name>` when the required
+     behaviour remains; or `Removed functionality: <symbol, and the evidence
+     that its callers are gone>` when the behaviour was removed outright.
+   Independent review checks each entry against the code at the head. Your
+   own assertion that a removal is justified is not proof, and a removal the
+   reviewer cannot verify is sent back; a fabricated replacement test is never
+   required for removed functionality. For a replacement, also add
+   `Replaced by:` and name each new assertion in inline code; each must be
+   added in the same test file. The Standards reviewer
    compares the old and new checks for lost coverage. Include a `## Test Plan`
    heading whenever
    the diff touches a test; it is required. The worker counts as removed a

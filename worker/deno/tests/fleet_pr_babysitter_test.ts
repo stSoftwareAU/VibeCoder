@@ -1271,6 +1271,22 @@ Deno.test("other open feedback does not withhold readiness from a CI repair", ()
 
 // Issue #4713: a code fix left VibeCoder's archived PR summary stale, so CI's
 // freshness gate failed and a second session existed only to refresh it.
+Deno.test("repair prompt applies the shared evidence policy to test replacements", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(
+      prompt,
+      "Never remove, skip or weaken tests just to make a check pass",
+    );
+    assertStringIncludes(prompt, "CODING-STANDARDS.md TDD rule 3");
+    assertStringIncludes(prompt, "obsolete behaviour");
+    assertStringIncludes(prompt, "remaining behaviour");
+    assertStringIncludes(prompt, "path::test in the PR summary");
+  }
+});
+
 Deno.test("a repair updates a CI-checked per-PR summary in the same fix", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
