@@ -172,6 +172,23 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
   # sibling clone are governed by that clone's own mode and stay open — see
   # #1407. And it bounds uid 1001 (`agent`, which runs repository-supplied
   # code), NOT the coding agent, which runs as `vibe` and owns these entries.
+  #
+  # Clone roots get the sticky bit as well (Issue #4737). A clone is
+  # group-writable so the quality gate can write build output into it, but its
+  # top level holds entries the worker's own git depends on, `.git` above all.
+  # Without `+t` the untrusted account could rename `.git` aside and move in a
+  # directory of its own making, and the worker's git (safe.directory '*')
+  # would trust that substitute. With `+t` only the owner of an entry, or root,
+  # may rename or unlink it: `agent` can still create its own entries but cannot
+  # replace `.git` or a top-level tracked file it does not own.
+  #
+  # The sticky bit does not stop `agent` writing INTO `.git`, so the git
+  # metadata of each clone is also stripped of group and other write, whatever
+  # mode the clone was created with (see the `*)` branch below). safe.directory
+  # '*' is deliberately unchanged: the worker's git needs that trust for the
+  # mounted clones. It is safe because the control is that the untrusted
+  # account can neither replace the git directory (sticky root) nor write to
+  # it (non-writable metadata).
   if chgrp vibework "${VIBE_WORK_ROOT}" 2>/dev/null &&
     chmod g+rwxs,+t "${VIBE_WORK_ROOT}" 2>/dev/null; then
     for entry in "${VIBE_WORK_ROOT}"/*/; do
@@ -184,7 +201,38 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
           chmod g+rxs,g-w "${entry}" 2>/dev/null || true
           ;;
         *)
-          chmod g+rwxs "${entry}" 2>/dev/null || true
+          chmod g+rwxs,+t "${entry}" 2>/dev/null || true
+          # Git metadata takes no group or other write, whatever mode the clone
+          # was created with (Issue #4737). A linked worktree's `.git` is a file
+          # holding a `gitdir:` pointer, so it is handled too. `${entry}` ends
+          # with `/`, so `${entry}.git` is the path inside the clone.
+          if [[ -d "${entry}.git" ]]; then
+            find "${entry}.git" \( -type f -o -type d \) \( -perm -020 -o -perm -002 \) -exec chmod g-w,o-w {} + 2>/dev/null || true
+          elif [[ -f "${entry}.git" ]]; then
+            chmod g-w,o-w "${entry}.git" 2>/dev/null || true
+          fi
+          # The chmod above cannot touch a file the untrusted account owns, and
+          # `|| true` hides that. Such a clone had its git directory replaced
+          # before this hardening: safe.directory '*' would still trust its
+          # config and hooks, and `agent` could still write them. Check who
+          # owns the git directory rather than assume the chmod worked, and
+          # take the clone out of service (Issue #4737). Only worker-owned
+          # clone roots qualify: agent-owned tier-2 data siblings are created
+          # by the quality gate and must stay warm. Skipped as root, where
+          # every vibe-owned file would look foreign.
+          if [[ "$(id -u)" != "0" ]] && [[ -e "${entry}.git" ]] &&
+            [[ -n "$(find "${entry%/}" -prune -user "$(id -u)" -print 2>/dev/null)" ]] &&
+            [[ -n "$(find "${entry}.git" -maxdepth 2 ! -user "$(id -u)" -print -quit 2>/dev/null)" ]]; then
+            quarantine="$(mktemp -d "${VIBE_WORK_ROOT}/.untrusted-${entry_name}-XXXXXX")" || quarantine=""
+            echo "Warning: ${entry}.git holds files not owned by uid $(id -u) (Issue #4737); quarantining the clone." >&2
+            if [[ -n "${quarantine}" ]] && mv "${entry%/}" "${quarantine}/clone" 2>/dev/null; then
+              : # The private quarantine directory prevents access to the clone.
+            else
+              echo "Warning: could not quarantine ${entry}; its git directory is still trusted via safe.directory. Disabling access to the clone." >&2
+              chmod 000 "${entry%/}" 2>/dev/null ||
+                echo "Warning: could not disable access to ${entry}; manual intervention is required." >&2
+            fi
+          fi
           ;;
       esac
     done
