@@ -164,11 +164,36 @@ for a description change, the agent writes the full new description to
 applies it after the push (or when there is no code change), re-adding any
 closing reference such as `Closes #N` the proposal dropped.
 
+The runner and the agent exchange files through a runner-owned exchange
+directory that the agent cannot write, outside its clone and scratch grants.
+The runner stages the PR description it applies there before
+`gh pr edit --body-file`, and it passes Codex a `--output-last-message` file
+there for the final message that ends with the completion marker. The agent can
+write `.babysitter-pr-body` in the clone, so the runner reads that file, and the
+final message, through a no-follow, regular-file, size-bounded reader. A
+symlink, FIFO, hard link or oversized file fails the repair before anything is
+published. The bounded reader opens read-write, so a FIFO raced in before the
+open does not block on Unix; it then refuses the non-regular descriptor. This
+also requires write permission on the output file. Another special file can
+still leave an open pending after the timeout; it cannot be cancelled and can
+keep a process alive. The non-watch pass explicitly exits after cleanup so it
+cannot hold the supervisor. Watch mode continues running with the pending open;
+if it eventually completes, its descriptor is closed. A repair that fails this way
+publishes no PR description and dismisses no review. It is recorded as a failed
+attempt for that head, so it is
+not retried on this host until its state file is removed, as described above; a
+new head or a new review gets its own attempt. The design relies on Codex
+writing `--output-last-message` from outside the agent's permissions profile.
+That behaviour is taken from the issue and has not been checked against an
+installed Codex, so confirm it on each host, as for the key check in
+"Verifying the credential boundary" below.
+
 The profile explicitly enables network access so the agent can fetch GitHub
 feedback and check details. Host `[sandbox_workspace_write]` settings do not
 apply to this profile: `network_access` and `writable_roots` are not inherited,
 and `/tmp` is not automatically writable. The agent can write to its assigned
-clone and scratch directory instead.
+clone and scratch directory instead; the runner-owned exchange directory that
+holds the final message and the staged PR description is not among them.
 
 **Verifying the credential boundary.** The permissions-profile keys were written
 without an installed Codex to test against. The paths are passed as the keys of
