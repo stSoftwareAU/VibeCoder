@@ -309,3 +309,22 @@ The obsolete fixture wrote into the clone, where the runner no longer reads it.
 The existing orchestration tests still cover successful repairs, retry and
 escalation, including
 `worker/deno/tests/babysitter_fix_orchestration_test.ts::transient failure, cooldown, retry, checked repair, CI, review and merge observed`.
+# Review follow-up: shared retry budget and diagnostics
+
+The shared marker history now determines the consecutive no-progress tally;
+only locally unpublished attempts are added. A push on another host therefore
+resets the shared budget. Existing version 2 state remains readable: records
+without the optional unpublished count default to zero. Infrastructure and
+capability deferrals retain the redacted diagnosis in the recorded outcome.
+The proposed PR body removes the issue-closing references because automated
+recovery for review, conflict and non-blocking CI incidents remains partial.
+
+The obsolete behaviour was treating a host's already-published local count as
+authoritative after another host pushed. The remaining behaviour retains
+unpublished attempts and shares published attempts across hosts. Coverage:
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::a push on another host resets the shared no-progress budget`
+and `worker/deno/tests/babysitter_fix_orchestration_test.ts::a failed marker write keeps the retry record and the repair's real error`.
+The moved-head fixtures explicitly model unpublished attempts; their changed
+diagnosis and bounded handoff assertions remain intact. Authentication
+diagnostics are covered by
+`worker/deno/tests/babysitter_fix_orchestration_test.ts::agent stderr preserves the symlink target and reports authentication`.

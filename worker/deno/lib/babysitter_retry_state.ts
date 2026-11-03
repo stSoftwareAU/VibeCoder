@@ -39,6 +39,8 @@ export interface BabysitterRetryRecord {
   blockerClass: BabysitterBlockerClass;
   lastOutcome: string;
   attempts: { infrastructure: number; substantive: number };
+  /** Local no-progress attempts whose shared marker could not be published. */
+  unpublishedAttempts?: number;
   nextEligibleAt: string | null;
   nextAction: string;
   pushedHead: string | null;
@@ -122,6 +124,9 @@ function parseRecord(value: unknown, path: string): BabysitterRetryRecord {
     Number.isSafeInteger(attempts.substantive) &&
     (attempts.infrastructure as number) >= 0 &&
     (attempts.substantive as number) >= 0 &&
+    (record.unpublishedAttempts === undefined ||
+      (Number.isSafeInteger(record.unpublishedAttempts) &&
+        (record.unpublishedAttempts as number) >= 0)) &&
     (record.nextEligibleAt === null ||
       (typeof record.nextEligibleAt === "string" &&
         Number.isFinite(Date.parse(record.nextEligibleAt)))) &&

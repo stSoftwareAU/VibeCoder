@@ -286,6 +286,27 @@ async function elapse(stateDir: string): Promise<void> {
   }
 }
 
+Deno.test("a push on another host resets the shared no-progress budget", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    await h.attempt();
+    await elapse(stateDir);
+    await h.attempt();
+    assertEquals((await records(stateDir))[0]!.attempts.substantive, 2);
+    const otherDir = `${stateDir}-other`;
+    h.deps.stateDir = otherDir;
+    h.state.changes = true;
+    await h.attempt();
+    h.deps.stateDir = stateDir;
+    h.state.changes = false;
+    h.state.committed = false;
+    await elapse(stateDir);
+    await h.attempt();
+    assertEquals((await records(stateDir))[0]!.attempts.substantive, 1);
+    assertEquals(h.state.escalations, 0);
+  });
+});
+
 Deno.test("transient failure, cooldown, retry, checked repair, CI, review and merge observed", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir);
@@ -557,6 +578,10 @@ Deno.test("a failed marker write keeps the retry record and the repair's real er
     assertEquals(record!.attempts.substantive, 1);
     assertEquals(record!.lastOutcome, "repair-failed");
     assertEquals(record!.evidence?.length, 1);
+    assertEquals(record!.unpublishedAttempts, 1);
+    await elapse(stateDir);
+    await h.attempt();
+    assertEquals((await records(stateDir))[0]!.attempts.substantive, 2);
   });
 });
 
@@ -607,6 +632,10 @@ Deno.test("agent stderr preserves the symlink target and reports authentication"
         Deno.symlink(target, `${scratch}/codex-stderr`),
     });
     await assertRejects(() => h.attempt(), Error, "authentication");
+    assertStringIncludes(
+      (await records(stateDir))[0]!.lastOutcome,
+      "authentication",
+    );
     assertEquals(await Deno.readTextFile(target), "unchanged");
   });
 });
@@ -983,6 +1012,7 @@ Deno.test("a changed head bypasses an old cooldown without losing attempts", asy
         reconciliation: "repair-needed",
         nextEligibleAt: new Date(Date.now() + 60 * 60_000).toISOString(),
         attempts: { infrastructure: 0, substantive: 1 },
+        unpublishedAttempts: 1,
         escalation: { issue: `${REPO}#900`, at: new Date().toISOString() },
         evidence: ["prior failed repair diagnostic"],
       }),
@@ -1003,6 +1033,7 @@ Deno.test("pending CI preserves the moved-head diagnosis after a handoff", async
       tracked({
         observedHead: PUSHED,
         attempts: { infrastructure: 0, substantive: 1 },
+        unpublishedAttempts: 1,
         escalation: { issue: `${REPO}#900`, at: new Date().toISOString() },
         evidence: ["prior handoff diagnostic"],
       }),

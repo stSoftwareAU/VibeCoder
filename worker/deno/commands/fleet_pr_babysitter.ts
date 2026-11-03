@@ -1575,6 +1575,12 @@ export async function fix(
         ? 0
         : sharedSubstantiveAttempts + 1;
       attemptMarkerRecorded = true;
+      if (retryRecord) {
+        retryRecord.unpublishedAttempts = outcome === "pushed"
+          ? 0
+          : Math.max(0, (retryRecord.unpublishedAttempts ?? 0) - 1);
+        await saveBabysitterRetryState(stateDir, retryRecord);
+      }
     } catch (error) {
       console.warn(
         `${repo}#${initial.number}: could not publish the attempt marker: ${
@@ -1780,10 +1786,8 @@ export async function fix(
     if (sharedSubstantiveAttempts > retryRecord.attempts.substantive) {
       retryRecord.blockerClass = "code";
     }
-    retryRecord.attempts.substantive = Math.max(
-      retryRecord.attempts.substantive,
-      sharedSubstantiveAttempts,
-    );
+    retryRecord.attempts.substantive = sharedSubstantiveAttempts +
+      (retryRecord.unpublishedAttempts ?? 0);
     await saveBabysitterRetryState(stateDir, retryRecord);
     if (
       !headMoved &&
@@ -2002,6 +2006,8 @@ export async function fix(
         substantive,
         maxSubstantiveAttempts,
       );
+      retryRecord.unpublishedAttempts = (retryRecord.unpublishedAttempts ?? 0) +
+        1;
       await saveBabysitterRetryState(stateDir, retryRecord);
       await settleSubstantiveOutcome(pr.headRefOid, "no-change");
       return;
@@ -2051,6 +2057,7 @@ export async function fix(
       ...retryRecord!,
       observedHead: pushedHead,
       pushedHead,
+      unpublishedAttempts: 0,
       blockerClass: "unknown",
       lastOutcome: "pushed",
       evidence: [],
@@ -2106,7 +2113,9 @@ export async function fix(
           blockerClass,
           lastOutcome: blockerClass === "code"
             ? "repair-failed"
-            : `${blockerClass}-failure`,
+            : `${blockerClass}-failure: ${message}`,
+          unpublishedAttempts: (retryRecord.unpublishedAttempts ?? 0) +
+            (substantiveFailure ? 1 : 0),
           attempts,
           nextEligibleAt: delay === null
             ? null
