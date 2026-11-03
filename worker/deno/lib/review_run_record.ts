@@ -45,6 +45,8 @@ export interface ReviewRunRecord {
     codeRevision: string;
     policyFingerprint: string;
     observedAt: string;
+    /** Sanitised hostname; absent in records written before #4658. */
+    host?: string;
   };
   attempts: ReviewRunAttempt[];
 }

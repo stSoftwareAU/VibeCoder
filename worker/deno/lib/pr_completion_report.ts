@@ -46,6 +46,13 @@ export interface TrustedPrAction {
   kind: PrActionKind;
   timestamp: string;
   outcome: "confirmed" | "failed" | "unknown";
+  /**
+   * `"human"` marks an action taken by a person. Operator-declared
+   * `--human-actor-id` values must be people, never a shared automation
+   * account: an automated action under a declared id is counted as a recorded
+   * human action. That is deliberately conservative and lowers the unattended
+   * rate, so a bot must not be declared to keep the metric honest.
+   */
   actor: "fleet" | "human" | "unknown";
   verified: boolean;
 }
@@ -208,7 +215,10 @@ export interface PrCompletionReport {
 export const PR_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /** The host name pattern for heartbeat rows and expected hosts. */
-const HOST_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+export const HOST_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** A numeric GitHub user id, as used for operator-declared human actors. */
+export const ACTOR_ID_PATTERN = /^\d{1,20}$/;
 
 const keyOf = (repo: string, number: number) => `${repo}#${number}`;
 

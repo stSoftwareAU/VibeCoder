@@ -647,3 +647,25 @@ Deno.test("audit_journal - resolveBaseDir accepts '..' inside a segment name (Is
     "/srv/a..b",
   );
 });
+
+Deno.test("audit_journal - auditFilePath refuses a relative VIBE_AUDIT_DIR, naming the variable, and resolves an absolute one (Issue #4658)", async () => {
+  const options = { workerId: "host-a", date: "2026-11-03" };
+  assertThrows(
+    () =>
+      auditFilePath({
+        ...options,
+        env: envFrom({ VIBE_AUDIT_DIR: "audit/babysitter" }),
+      }),
+    Error,
+    "VIBE_AUDIT_DIR",
+  );
+  const dir = await Deno.makeTempDir({ prefix: "audit_journal_4658_" });
+  try {
+    assertEquals(
+      auditFilePath({ ...options, env: envFrom({ VIBE_AUDIT_DIR: dir }) }),
+      `${dir}/audit-host-a-2026-11-03.jsonl`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -81,8 +81,17 @@ Deno.test("collect - failed merge attempts cannot match events but do not taint 
     const snapshot = await collectPrCompletionSnapshot(
       options(
         fakeGh(emptyFixture({
-          pulls: { [REPO]: [pull(1), pull(2)] },
-          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
+          // PR 2 is merged at the failed attempt's instant, so only the outcome refuses it.
+          pulls: {
+            [REPO]: [
+              pull(1),
+              pull(2, { merged_at: "2026-10-20T01:00:00Z" }),
+            ],
+          },
+          events: {
+            [pk(1)]: [mergedEvent(FLEET_ID)],
+            [pk(2)]: [mergedEvent(FLEET_ID, "2026-10-20T01:00:00Z")],
+          },
           commits: {
             [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")],
             [pk(2)]: [commit("sha2", "2026-10-20T00:25:00Z")],
@@ -94,6 +103,13 @@ Deno.test("collect - failed merge attempts cannot match events but do not taint 
     const report = buildPrCompletionReport(snapshot.input);
     assertEquals(report.completion.unattendedMerged, 1);
     assertEquals(report.completion.unknownMerged, 1);
+    // The failed attempt refuses PR 2's merge, so that merge stays unknown.
+    assert(
+      snapshot.input.actions.some((action) =>
+        action.actionId === "gh:org/repo#2:merge:merge2" &&
+        action.actor === "unknown"
+      ),
+    );
   });
 });
 
@@ -425,7 +441,18 @@ Deno.test("collect - a journalled disarm cannot account for a GitHub merge", asy
       options(
         fakeGh(emptyFixture({
           pulls: { [REPO]: [pull(1)] },
-          events: { [pk(1)]: [mergedEvent(FLEET_ID)] },
+          // Armed on GitHub by the merger, so only the journalled disarm refuses.
+          events: {
+            [pk(1)]: [
+              autoEvent(
+                1,
+                "auto_squash_enabled",
+                FLEET_ID,
+                "2026-10-20T00:45:00Z",
+              ),
+              mergedEvent(FLEET_ID),
+            ],
+          },
           commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:30:00Z")] },
         })),
         { auditDirs: [dir] },
@@ -1055,10 +1082,19 @@ Deno.test("collect - a merge armed hours before GitHub records it matches; armed
       },
     ]);
     // PR 14 was armed before it existed; PRs 13 and 15 existed since 19 Oct.
+    // Each PR is merged by the fleet account, so only the arm window decides.
     const fixture = emptyFixture({
       events: {
         [pk(13)]: [
           autoEvent(1, "auto_squash_enabled", FLEET_ID, "2026-10-19T23:00:00Z"),
+          mergedEvent(FLEET_ID),
+        ],
+        [pk(14)]: [
+          autoEvent(2, "auto_squash_enabled", FLEET_ID, "2026-10-19T20:00:00Z"),
+          mergedEvent(FLEET_ID),
+        ],
+        [pk(15)]: [
+          autoEvent(3, "auto_squash_enabled", FLEET_ID, "2026-10-20T01:00:00Z"),
           mergedEvent(FLEET_ID),
         ],
       },
@@ -3026,4 +3062,251 @@ Deno.test("collect - an event actor without an id is refused by name, and a null
     )?.actor,
     "unknown",
   );
+});
+
+/** A ledger with one worker assignment recorded by `host`, returned as its path. */
+async function ledgerForHost(dir: string, host: string): Promise<string> {
+  const ledger = `${dir}/ledger-host.jsonl`;
+  const event = buildLifecycleEvent({
+    kind: "assignment",
+    assignmentId: "3f2c9a1e-4b5d-4c6e-8f70-1a2b3c4d5e09",
+    runId: "run-1",
+    host,
+    repo: REPO,
+    issueNumber: 1,
+    recordedAt: "2026-11-01T21:00:00Z",
+    assignedAt: "2026-11-01T21:00:00Z",
+    cohort: "control",
+    reused: false,
+    treatment: {
+      roles: [{ role: "executor", provider: "claude" }],
+      workerCommit: "rev1",
+      reviewPolicyFingerprint: FP,
+    },
+  });
+  await Deno.writeTextFile(ledger, serialiseLifecycleEvent(event) + "\n");
+  return ledger;
+}
+
+Deno.test("collect - a ledger host is sanitised before validation, and an over-long one is skipped with a note", async () => {
+  await withDir(async (dir) => {
+    const colon = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture()),
+      {
+        lifecycleLedgers: [await ledgerForHost(dir, "host-1.example.com:8080")],
+      },
+    ));
+    assertEquals(
+      colon.input.deployments.map((row) => row.host),
+      ["host-1.example.com_8080"],
+    );
+    const long = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture()),
+      { lifecycleLedgers: [await ledgerForHost(dir, "h".repeat(65))] },
+    ));
+    assertEquals(long.input.deployments, []);
+    assert(
+      long.coverageNotes.some((note) =>
+        note.includes("host is not a host identifier; row skipped")
+      ),
+    );
+  });
+});
+
+Deno.test("collect - an omitted check run conclusion is rejected, naming the PR and run", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1, { head: { ref: "issue-1", sha: "c1" } })] },
+    checks: {
+      c1: {
+        total_count: 1,
+        check_runs: [{
+          id: 701,
+          status: "completed",
+          started_at: "2026-10-20T00:00:00Z",
+          completed_at: "2026-10-20T00:20:00Z",
+        }],
+      },
+    },
+  });
+  await assertRejects(
+    () => collectPrCompletionSnapshot(options(fakeGh(fixture))),
+    Error,
+    "org/repo#1 check run 701 has no conclusion",
+  );
+});
+
+Deno.test("collect - a null check run conclusion is an unknown outcome, not a failure", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1, { head: { ref: "issue-1", sha: "c1" } })] },
+    checks: {
+      c1: {
+        total_count: 1,
+        check_runs: [{
+          id: 702,
+          status: "in_progress",
+          conclusion: null,
+          started_at: "2026-10-20T00:00:00Z",
+          completed_at: null,
+        }],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(snapshot.input.ciRuns.map((run) => run.runId), ["702"]);
+  assertEquals(
+    snapshot.input.blockers.filter((b) => b.blocker === "ci-failing"),
+    [],
+  );
+});
+
+Deno.test("collect - more than twenty commits is noted as a CI scope limit naming the PR", async () => {
+  const commits = Array.from(
+    { length: 21 },
+    (_, i) =>
+      commit(`c${i}`, `2026-10-20T00:${String(i).padStart(2, "0")}:00Z`),
+  );
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(emptyFixture({
+      pulls: { [REPO]: [pull(1, { head: { ref: "issue-1", sha: "c20" } })] },
+      commits: { [pk(1)]: commits },
+    }))),
+  );
+  assert(
+    snapshot.coverageNotes.some((note) =>
+      note.includes(
+        "org/repo#1: check runs read for the last 20 of 21 commits only",
+      )
+    ),
+  );
+});
+
+Deno.test("collect - a default-branch merge with no merge commit sha is a coverage note", async () => {
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(emptyFixture({
+      pulls: { [REPO]: [pull(1, { merge_commit_sha: null })] },
+    }))),
+  );
+  assert(
+    snapshot.coverageNotes.some((note) =>
+      note.includes(
+        "org/repo#1: merged to main with no merge commit sha; post-merge checks not read",
+      )
+    ),
+  );
+});
+
+Deno.test("collect - a failed head on a merged PR with no later commit closes at mergedAt", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1, { head: { ref: "issue-1", sha: "c1" } })] },
+    commits: { [pk(1)]: [commit("c1", "2026-10-20T00:10:00Z")] },
+    checks: {
+      c1: {
+        total_count: 1,
+        check_runs: [checkRun(801, "failure", "2026-10-20T00:20:00Z")],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(
+    snapshot.input.blockers.filter((b) => b.blocker === "ci-failing"),
+    [{
+      repo: REPO,
+      prNumber: 1,
+      blocker: "ci-failing",
+      startedAt: "2026-10-20T00:20:00Z",
+      endedAt: "2026-10-20T02:00:00Z",
+    }],
+  );
+});
+
+Deno.test("collect - a failed head on an open PR with no later commit stays open", async () => {
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [pull(1, {
+        state: "open",
+        merged_at: null,
+        closed_at: null,
+        merge_commit_sha: null,
+        head: { ref: "issue-1", sha: "c1" },
+      })],
+    },
+    commits: { [pk(1)]: [commit("c1", "2026-10-20T00:10:00Z")] },
+    checks: {
+      c1: {
+        total_count: 1,
+        check_runs: [checkRun(802, "failure", "2026-10-20T00:20:00Z")],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(
+    snapshot.input.blockers.filter((b) => b.blocker === "ci-failing"),
+    [{
+      repo: REPO,
+      prNumber: 1,
+      blocker: "ci-failing",
+      startedAt: "2026-10-20T00:20:00Z",
+      endedAt: null,
+    }],
+  );
+});
+
+Deno.test("collect - a failed head closed by an earlier-dated commit clamps to the failure time", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1, { head: { ref: "issue-1", sha: "c2" } })] },
+    commits: {
+      [pk(1)]: [
+        commit("c1", "2026-10-20T00:10:00Z"),
+        commit("c2", "2026-10-20T00:15:00Z"),
+      ],
+    },
+    checks: {
+      c1: {
+        total_count: 1,
+        check_runs: [checkRun(803, "failure", "2026-10-20T00:20:00Z")],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(
+    snapshot.input.blockers.filter((b) => b.blocker === "ci-failing"),
+    [{
+      repo: REPO,
+      prNumber: 1,
+      blocker: "ci-failing",
+      startedAt: "2026-10-20T00:20:00Z",
+      endedAt: "2026-10-20T00:20:00Z",
+    }],
+  );
+});
+
+Deno.test("collect - a PR merged to the default branch is the only post-merge check target", async () => {
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [
+        pull(1, {
+          state: "open",
+          merged_at: null,
+          closed_at: null,
+        }),
+        pull(2, {
+          state: "closed",
+          merged_at: null,
+          closed_at: "2026-10-20T02:00:00Z",
+        }),
+      ],
+    },
+    checks: {
+      merge1: {
+        total_count: 1,
+        check_runs: [checkRun(901, "failure", "2026-10-20T02:30:00Z")],
+      },
+      merge2: {
+        total_count: 1,
+        check_runs: [checkRun(902, "failure", "2026-10-20T02:30:00Z")],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(snapshot.input.postMergeFailures, []);
 });

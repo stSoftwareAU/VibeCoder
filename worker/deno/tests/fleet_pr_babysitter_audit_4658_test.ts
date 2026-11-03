@@ -12,7 +12,11 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { ensureBabysitterAuditDir } from "../commands/fleet_pr_babysitter.ts";
+import {
+  ensureBabysitterAuditDir,
+  prepareBabysitterStartUp,
+  spawnBabysitterAgent,
+} from "../commands/fleet_pr_babysitter.ts";
 import { auditGitMutation, isAuditJournalEnabled } from "../lib/audit_hook.ts";
 import {
   _resetAuditCaches,
@@ -205,4 +209,58 @@ Deno.test("after start-up, a babysitter mutation is journalled under its state d
   } finally {
     await Deno.remove(stateDir, { recursive: true });
   }
+});
+
+Deno.test("prepareBabysitterStartUp sets the quota directory, then VIBE_AUDIT_DIR under the state directory (Issue #4658)", async () => {
+  const stateDir = await Deno.makeTempDir();
+  try {
+    const proc = fakeProcessEnv();
+    await prepareBabysitterStartUp(
+      "/home/babysitter",
+      stateDir,
+      envFrom(proc.values),
+      proc.setEnv,
+      () => {},
+    );
+    assertEquals(proc.sets, [
+      [
+        "VIBE_GITHUB_QUOTA_WORK_DIR",
+        "/home/babysitter/.vibe-coder/fleet-pr-babysitter",
+      ],
+      ["VIBE_AUDIT_DIR", `${stateDir}/audit`],
+    ]);
+    assert((await Deno.stat(`${stateDir}/audit`)).isDirectory);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("the Codex agent is handed VIBE_AUDIT_DISABLED=1, which beats the VIBE_AUDIT_DIR its child inherits (Issue #2400, #4658)", () => {
+  let handed: Deno.CommandOptions | undefined;
+  spawnBabysitterAgent(
+    {
+      dir: "/work/clone",
+      scratch: "/work/scratch",
+      prompt: "repair the pull request",
+      agentToken: "ghs_agent_token",
+      protectedPaths: ["/home/babysitter/.vibe-coder/fleet-pr-babysitter"],
+      codex: "codex",
+      responseFile: "/work/response.md",
+    },
+    (_executable, options) => {
+      handed = options;
+      return {} as Deno.ChildProcess;
+    },
+  );
+  const env: Record<string, string> = handed?.env ?? {};
+  assertEquals(env.VIBE_AUDIT_DISABLED, "1");
+
+  // The child inherits the babysitter's process environment, where start-up
+  // has set VIBE_AUDIT_DIR; the env handed to the agent is overlaid on it.
+  const inherited = { VIBE_AUDIT_DIR: "/home/babysitter/state/audit" };
+  assert(
+    isAuditJournalEnabled(envFrom(inherited)),
+    "the inherited directory alone would journal",
+  );
+  assertEquals(isAuditJournalEnabled(envFrom({ ...inherited, ...env })), false);
 });

@@ -3,6 +3,10 @@ import {
   prCompletionReportCommand,
   runPrCompletionCollect,
 } from "../commands/pr_completion_report.ts";
+import {
+  ACTOR_ID_PATTERN,
+  buildPrCompletionReport,
+} from "../lib/pr_completion_report.ts";
 import type { GhJson } from "../lib/pr_completion_snapshot.ts";
 import type { WorkerConfig } from "../types.ts";
 
@@ -443,6 +447,114 @@ Deno.test("pr-completion-report --collect rejects a --human-actor-id that is not
     );
     assertEquals(result.success, false, `value ${String(value)}`);
     assertStringIncludes(result.message, "--human-actor-id");
+  }
+});
+
+Deno.test("pr-completion-report --collect rejects a 21-digit --human-actor-id at the flag, not inside the collector", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  const result = await runPrCompletionCollect(
+    {
+      collect: true,
+      repos: "org/repo",
+      "expected-revision": "rev1",
+      "human-actor-id": "1".repeat(21),
+    },
+    {} as WorkerConfig,
+    gh,
+    () => undefined,
+  );
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "--human-actor-id");
+  assertStringIncludes(result.message, "1 to 20 digits");
+});
+
+/** Run `--collect` against an empty audit directory, with the given extra args. */
+function collectEmpty(extra: Record<string, unknown>, auditDir: string) {
+  const gh: GhJson = async (path) => {
+    if (path === "repos/org/repo") return { default_branch: "main" };
+    if (path.startsWith("repos/org/repo/pulls?")) return [];
+    throw new Error(`unrouted gh path: ${path}`);
+  };
+  return runPrCompletionCollect(
+    {
+      collect: true,
+      "audit-dir": auditDir,
+      repos: "org/repo",
+      "expected-revision": "rev1",
+      "expected-components": "worker",
+      start: "2026-10-01T00:00:00Z",
+      end: "2026-11-01T00:00:00Z",
+      ...extra,
+    },
+    { repos: ["org/repo"] } as unknown as WorkerConfig,
+    gh,
+    () => undefined,
+  );
+}
+
+Deno.test("the CLI and the report agree on the host-name and actor-id bounds, so a value passes one only if it passes the other", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const auditDir = `${dir}/audit`;
+    await Deno.mkdir(auditDir);
+    for (const host of ["a".repeat(64), "a".repeat(65)]) {
+      const cli = await collectEmpty({ "expected-host": host }, auditDir);
+      let reportAccepts = true;
+      try {
+        buildPrCompletionReport({
+          cohort: {
+            start: "2026-10-01T00:00:00.000Z",
+            end: "2026-11-01T00:00:00.000Z",
+            observedAt: "2026-11-02T00:00:00.000Z",
+          },
+          prs: [],
+          actions: [],
+          blockers: [],
+          ciRuns: [],
+          regressions: [],
+          deployments: [],
+          expectedDeployment: {
+            components: ["worker"],
+            revision: "rev1",
+            policyFingerprint: "a".repeat(64),
+            maxHeartbeatAgeHours: 2,
+            hosts: [host],
+          },
+        });
+      } catch {
+        reportAccepts = false;
+      }
+      // The CLI must refuse at the flag, naming it, exactly when the report refuses.
+      const cliRefusesAtFlag = !cli.success &&
+        cli.message.includes("--expected-host");
+      assertEquals(
+        !cliRefusesAtFlag,
+        reportAccepts,
+        `host length ${host.length}`,
+      );
+      assertEquals(
+        reportAccepts,
+        host.length === 64,
+        `host length ${host.length}`,
+      );
+    }
+    for (const id of ["1".repeat(20), "1".repeat(21)]) {
+      const cli = await collectEmpty({ "human-actor-id": id }, auditDir);
+      const cliRefusesAtFlag = !cli.success &&
+        cli.message.includes("--human-actor-id");
+      assertEquals(
+        !cliRefusesAtFlag,
+        ACTOR_ID_PATTERN.test(id),
+        `actor id length ${id.length}`,
+      );
+      assertEquals(
+        ACTOR_ID_PATTERN.test(id),
+        id.length === 20,
+        `actor id length ${id.length}`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });
 

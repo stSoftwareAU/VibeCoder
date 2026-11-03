@@ -1201,7 +1201,13 @@ account id equals the id of the account that made the latest such enable, and
 then only when its timestamp lies from the PR's creation to ten minutes after
 `mergedAt`. A GitHub `auto_merge_disabled` event after that enable clears the
 arm, so a merge after it matches only once a later enable is made; a failed
-disarm produces no such event and leaves the arm standing. With no arm observed,
+disarm produces no such event and leaves the arm standing. A verified, successful
+journalled fleet disarm also withdraws earlier fleet merge actions: a `pr-merge`
+entry of kind `unknown` (`gh pr merge --disable-auto`) on the same PR, timestamped
+at or after the fleet `merge` action and no later than the PR's `mergedAt` (or the
+observation time, when the PR has no recorded merge), removes that action from
+matching, so the merge does not match it. A failed disarm withdraws nothing, and
+an arm made after the disarm stands. With no arm observed,
 the action matches only a direct merge within ten minutes. The two accounts are
 compared as GitHub ids; no login is read. Residual limit: a person who merges
 through the arming account is indistinguishable from the fleet.
@@ -1271,8 +1277,11 @@ unknown, with the ID `gh:<repo>#<number>:<kind>:<id>`. When its account id is on
 the operator declares with `--human-actor-id` (comma-separated numeric GitHub
 user ids, `--collect` only), the action is `human` instead: verified, outcome
 confirmed, recording a human intervention. The declaration is trusted operator
-input. GitHub logins are never read, so no login makes an action human or fleet.
-Commits carry no actor and stay `unknown` when unmatched. A PR with such an
+input and must name people. GitHub logins are never read, so no login makes an
+action human or fleet. An automated action under a declared account is still
+counted as a recorded human action. This is conservative: it lowers the
+unattended rate and never raises it. Commits carry no actor and stay `unknown`
+when unmatched. A PR with such an
 action is not counted as unattended.
 
 **Owner gates.** `ownerGateVerified` is always false today, because no hold
@@ -1282,9 +1291,12 @@ marker is recorded yet. A PR labelled `needs-human` is recorded as
 **Blockers produced.** `needs-human` (from the label, open until it is removed),
 `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
 commit, approval or dismissal) and `ci-failing`. A failed check run on a commit's
-head opens `ci-failing` at the earliest failure on that head. It closes at the
-next commit's committer date, or at `mergedAt` when there is no later commit, and
-stays open when neither exists. Hold blockers are not produced yet.
+head opens `ci-failing` at the earliest failure on that head. Only check-run
+conclusions `failure` and `timed_out` count as failed; other conclusions do not.
+It closes at the next commit's committer date, or at `mergedAt` when there is no
+later commit, and stays open when neither exists. If that closing date is earlier
+than the failure, the end is clamped to the failure time, so the interval's end
+equals its start. Hold blockers are not produced yet.
 
 **Regression heuristic.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
@@ -1319,7 +1331,8 @@ than twenty commits gets its own note naming the cut-off.
 **Post-merge CI.** A PR merged into the default branch has the check runs on its
 merge commit read. Each failed run is one `regressions.postMergeCiFailures` entry,
 keyed by PR and run id. Milestone-branch merges are skipped, and a merge with no
-merge commit SHA gets a coverage note. No later green run is matched to a
+merge commit SHA gets a coverage note. As for `ci-failing`, only `failure` and
+`timed_out` conclusions count as failed. No later green run is matched to a
 failure yet, so each one is counted in `unresolvedPostMergeCiFailures` as well.
 
 **Deployments.** A babysitter heartbeat is kept whatever its age, so the report
@@ -1377,11 +1390,15 @@ counts CI only for delivered changes.
   attributes the auto-merge to the account that enabled it, so the two cannot be
   told apart. A merge by any other account is not attributed to the fleet: it is
   `unknown`, or `human` when that account is declared with `--human-actor-id`.
-- Per-host heartbeat checks run only with `--expected-host`, and hosts it does not
-  name are not checked. Review-run records and babysitter heartbeats written
-  before they carried a `host` are host-less, so they satisfy only the
-  per-component check. A host whose rows are all host-less is listed as missing
-  until it writes a new record. The operator supplies per-host state
+- Stale and mismatched hosts are checked for every host-bearing row, with or
+  without `--expected-host`: a host whose latest row is stale is listed in
+  `staleHosts`, and one whose latest row has a different revision or policy
+  fingerprint is listed in `mismatchedHosts`. Either degrades the status. Only
+  missing-host heartbeats need `--expected-host`, and a host it does not name is
+  not checked for a missing row. Review-run records and babysitter heartbeats
+  written before they carried a `host` are host-less, so they satisfy only the
+  per-component check. An expected host whose rows are all host-less is listed
+  as missing until it writes a new record. The operator supplies per-host state
   directories and checks the `coverage notes`.
 - Builds older than this change cannot verify journal entries that carry the
   new fields, nor read ledger rows that carry `reviewPolicyFingerprint`. Upgrade

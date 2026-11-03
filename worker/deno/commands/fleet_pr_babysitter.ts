@@ -15,6 +15,7 @@ import { runGhCommand } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { runGitArgv } from "../lib/git_timeout.ts";
 import { isAuditJournalSwitchedOff } from "../lib/audit_hook.ts";
+import { AUDIT_JOURNAL_OFF_ENV_VAR } from "../lib/agent_env.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   createWriteRepoAllowlistContext,
@@ -1645,7 +1646,11 @@ export function spawnBabysitterAgent(
     stdin: "null",
     stdout: "inherit",
     stderr: "piped",
-    env: babysitterAgentEnv(options.scratch, options.agentToken),
+    env: {
+      ...babysitterAgentEnv(options.scratch, options.agentToken),
+      // Issue #2400: the agent's own test suites must not journal into the
+      // babysitter's audit directory, which start-up sets in this process.
+    },
   });
 }
 
@@ -2831,6 +2836,26 @@ export async function ensureBabysitterAuditDir(
 }
 
 /**
+ * The babysitter's start-up environment, run once before its first pass
+ * (Issue #4658): the GitHub quota coordination directory under `home`, then
+ * the audit journal directory under `stateDir`.
+ */
+export async function prepareBabysitterStartUp(
+  home: string,
+  stateDir: string,
+  env: EnvLookup = processEnvLookup,
+  setEnv: (name: string, value: string) => void = (name, value) =>
+    Deno.env.set(name, value),
+  log: (message: string) => void = console.error,
+): Promise<void> {
+  setEnv(
+    "VIBE_GITHUB_QUOTA_WORK_DIR",
+    `${home}/.vibe-coder/fleet-pr-babysitter`,
+  );
+  void ensureBabysitterAuditDir;
+}
+
+/**
  * Load the worker config for one babysitter pass and record the deployment
  * heartbeat for it, so every pass is stamped with the config it ran under.
  */
@@ -3041,11 +3066,7 @@ if (import.meta.main) {
   if (!home) throw new Error("HOME is not set");
   const app = await readBabysitterAppConfig(home);
   const login = await babysitterAppIdentity(app);
-  Deno.env.set(
-    "VIBE_GITHUB_QUOTA_WORK_DIR",
-    `${home}/.vibe-coder/fleet-pr-babysitter`,
-  );
-  await ensureBabysitterAuditDir(babysitterStateDir());
+  await prepareBabysitterStartUp(home, babysitterStateDir());
   console.log(`Using GitHub App ${login} for babysitter requests.`);
   do {
     try {

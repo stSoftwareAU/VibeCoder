@@ -205,8 +205,8 @@ switch on wherever `WORK_DIR` or `VIBE_AUDIT_DIR` is set, and the coding agent's
 the worker's minus a denylist — so anything the agent started, including the
 repository's own test suite driving real `git` against fixture repositories,
 used to append to the production trail under the worker's identity, and could
-die holding its append lock. Every agent child is therefore spawned with
-`VIBE_AUDIT_DISABLED=1` (`buildAgentChildEnv` in
+die holding its append lock. Every provider agent child built through
+`buildAgentChildEnv` is therefore spawned with `VIBE_AUDIT_DISABLED=1` (in
 [`worker/deno/lib/agent_env.ts`](../worker/deno/lib/agent_env.ts)); `WORK_DIR`
 itself stays. The agent cannot use that variable to hide its own commands: the
 `gh`/`git` guard shim journals from a directory, worker id and run id the
@@ -268,6 +268,9 @@ rotated daily and partitioned per worker. When `VIBE_AUDIT_DIR` is set, that
 directory is used verbatim instead; it must be an absolute path with no `..`
 segment. A babysitter host with neither variable journals to `audit` under its
 state directory, which the babysitter exports as `VIBE_AUDIT_DIR` at start-up.
+It does so only when neither `VIBE_AUDIT_DIR` nor `WORK_DIR` is set, journalling
+is not switched off by `VIBE_AUDIT_DISABLED`, and the directory can be created.
+A failed `mkdir` is logged and leaves `VIBE_AUDIT_DIR` unset.
 The default location, `${WORK_DIR}/audit/`, is a sibling of, never inside, any
 cloned repo — so a bug in the worker that rewrites a repo's history cannot rewrite
 its own audit log. `audit` is a **reserved work-root name**

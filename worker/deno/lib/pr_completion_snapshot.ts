@@ -32,7 +32,10 @@ import {
 } from "./lifecycle_ledger.ts";
 import { runGhCommand } from "./github.ts";
 import { REVIEW_RUN_FILE } from "./review_run_record.ts";
+import { sanitiseHostname } from "./fleet_telemetry_sidecar.ts";
 import {
+  ACTOR_ID_PATTERN,
+  HOST_PATTERN,
   PR_REPO_PATTERN,
   type PrActionKind,
   prActionsFromAuditJournal,
@@ -160,10 +163,6 @@ const AUTO_MERGE_ARM_EVENTS: ReadonlySet<string> = new Set([
 ]);
 /** The event that disarms auto-merge. */
 const AUTO_MERGE_DISARM_EVENT = "auto_merge_disabled";
-/** A numeric GitHub user id, as the operator declares it. */
-const USER_ID_PATTERN = /^\d{1,20}$/;
-/** A host identifier, bounded as `pr_completion_report.ts` bounds it. */
-const HOST_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 /** Shown once per collection: the CI scope limit, for the coverage notes. */
 const CI_SCOPE_NOTE =
   `CI runs are read from each PR's final head and its last ${CI_COMMIT_LIMIT} commits; check runs on older commits are not counted`;
@@ -870,7 +869,8 @@ async function checkRunsAt(
 
 /**
  * A check run's id and, when it failed, its completion time. A failed run
- * without a completion time is malformed and throws.
+ * without a completion time is malformed and throws. A `null` conclusion is an
+ * unknown outcome; an omitted key is a malformed response and throws.
  */
 function checkOutcome(
   run: Json,
@@ -878,7 +878,10 @@ function checkOutcome(
 ): { runId: string; failedAt: Stamped | null } {
   const what = `${label} check run`;
   const runId = String(asId(requiredKey(run, "id", what), what));
-  const conclusion = requiredKey(run, "conclusion", `${what} ${runId}`);
+  if (!Object.hasOwn(run, "conclusion")) {
+    throw new Error(`${what} ${runId} has no conclusion`);
+  }
+  const conclusion = run.conclusion;
   const failed = typeof conclusion === "string" &&
     FAILED_CONCLUSIONS.has(conclusion);
   return {
@@ -1253,12 +1256,13 @@ async function collectDeployments(
       if (!treatment.workerCommit || !treatment.reviewPolicyFingerprint) {
         continue;
       }
+      // The ledger writes the raw hostname, so it is sanitised before validation.
       const row = deploymentRow(
         "worker",
         treatment.workerCommit,
         treatment.reviewPolicyFingerprint,
         event.recordedAt,
-        host,
+        typeof host === "string" ? sanitiseHostname(host) : host,
       );
       if (typeof row === "string") {
         notes.push(`lifecycle ledger ${path}: ${row}; row skipped`);
@@ -1583,7 +1587,7 @@ export async function collectPrCompletionSnapshot(
     throw new Error("maxPrsPerRepo must be a positive integer");
   }
   for (const id of options.humanActorIds ?? []) {
-    if (!USER_ID_PATTERN.test(id)) {
+    if (!ACTOR_ID_PATTERN.test(id)) {
       throw new Error(
         `humanActorIds entry ${id} is not a numeric GitHub user id`,
       );

@@ -992,6 +992,42 @@ Deno.test("host names are validated and expected hosts must be unique", () => {
   );
 });
 
+Deno.test("an automated merge under an operator-declared human id is counted as human-assisted, never unattended (conservative by design)", () => {
+  // Declared --human-actor-id values must be people. A fleet-looking PR whose
+  // merge is recorded under a declared id is counted as human, which lowers the
+  // unattended rate rather than inflating it.
+  const report = buildPrCompletionReport(input({
+    prs: [pr(93)],
+    actions: [
+      action(93, "impl-fleet-4", "implementation", "fleet"),
+      action(93, "review-fleet-4", "review", "fleet"),
+      action(93, "merge-declared-4", "merge", "human"),
+    ],
+  }));
+  assertEquals(report.completion.humanAssistedMerged, 1);
+  assertEquals(report.completion.unattendedMerged, 0);
+  assertEquals(report.completion.unattendedWithin24Hours, 0);
+});
+
+Deno.test("expected host names accept 64 characters and reject 65, the same bound the CLI enforces", () => {
+  const withHost = (host: string) =>
+    input({
+      expectedDeployment: {
+        components: ["worker"],
+        revision: "abcdef0123456789",
+        policyFingerprint: "a".repeat(64),
+        maxHeartbeatAgeHours: 2,
+        hosts: [host],
+      },
+    });
+  buildPrCompletionReport(withHost("a".repeat(64)));
+  assertThrows(
+    () => buildPrCompletionReport(withHost("a".repeat(65))),
+    Error,
+    "expectedDeployment.hosts must be unique host names",
+  );
+});
+
 Deno.test("a merge by a recorded human actor after a verified fleet arm is human-assisted, never unattended", () => {
   const report = buildPrCompletionReport(input({
     prs: [pr(90)],

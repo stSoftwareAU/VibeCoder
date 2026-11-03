@@ -87,7 +87,7 @@ Deno.test("review-round command records reviewer build and policy in review-run.
     assertEquals(
       record.deployment.host,
       sanitiseHostname(getHostname()),
-      "the round records the machine it ran on, as the lifecycle ledger names it",
+      "the round records the sanitised hostname of the machine it ran on",
     );
   } finally {
     await Deno.remove(base, { recursive: true });

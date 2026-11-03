@@ -26,9 +26,11 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { resolveBaseDir } from "../lib/audit_journal.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import {
+  ACTOR_ID_PATTERN,
   buildPrCompletionReport,
   fingerprintWorkerReviewPolicy,
   formatPrCompletionReport,
+  HOST_PATTERN,
   type PrCompletionInput,
   type PrCompletionReport,
 } from "../lib/pr_completion_report.ts";
@@ -44,8 +46,6 @@ const DAY_MS = 86_400_000;
 const DEFAULT_WINDOW_DAYS = 14;
 const DEFAULT_EXPECTED_COMPONENTS = ["worker", "reviewer", "babysitter"];
 const DEFAULT_HEARTBEAT_HOURS = 24;
-const HOST_NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
-const DIGITS_PATTERN = /^\d+$/;
 
 /** Data returned by `--collect`: the report plus everything it could not see. */
 export interface PrCompletionCollectData {
@@ -162,12 +162,12 @@ export async function runPrCompletionCollect(
   if (
     expectedHostsRaw !== undefined &&
     (expectedHosts === undefined ||
-      expectedHosts.some((host) => !HOST_NAME_PATTERN.test(host)))
+      expectedHosts.some((host) => !HOST_PATTERN.test(host)))
   ) {
     return {
       success: false,
       message:
-        "pr-completion-report failed: --expected-host must name hosts matching /^[A-Za-z0-9._-]{1,64}$/",
+        `pr-completion-report failed: --expected-host must name hosts matching ${HOST_PATTERN.source}`,
     };
   }
   const humanActorRaw = args["human-actor-id"];
@@ -177,12 +177,12 @@ export async function runPrCompletionCollect(
   if (
     humanActorRaw !== undefined &&
     (humanActorIds === undefined ||
-      humanActorIds.some((id) => !DIGITS_PATTERN.test(id)))
+      humanActorIds.some((id) => !ACTOR_ID_PATTERN.test(id)))
   ) {
     return {
       success: false,
       message:
-        "pr-completion-report failed: --human-actor-id must be a numeric GitHub user id (digits only)",
+        "pr-completion-report failed: --human-actor-id must be a numeric GitHub user id (1 to 20 digits)",
     };
   }
   const rolloutVerifiedAt = asText(args["rollout-verified-at"]);

@@ -45,15 +45,6 @@ import { getHostname } from "./worker_identity.ts";
 export { REVIEW_RUN_FILE, type ReviewRunAttempt, type ReviewRunRecord };
 
 /**
- * The record's deployment block, with the host the round ran on (Issue #4658).
- * Named here rather than in `review_run_record.ts`, so the record's own type
- * stays as the skill's readers expect it.
- */
-type ReviewRunDeployment = NonNullable<ReviewRunRecord["deployment"]> & {
-  host?: string;
-};
-
-/**
  * The fallback provider's model for a round (Issue #3632): DeepSeek's best.
  * The pinned `claude-opus-5-5` id would be silently remapped by the endpoint
  * anyway — asking for the model the operator chose is the honest spelling.
@@ -157,7 +148,7 @@ export async function runReviewRound(
   const roundDir = options.roundDir?.replace(/\/+$/, "");
   const deploymentBlock = (
     deployment: NonNullable<ReviewRoundOptions["deployment"]>,
-  ): ReviewRunDeployment => ({
+  ): NonNullable<ReviewRunRecord["deployment"]> => ({
     ...deployment,
     ...(deps.host === undefined ? {} : { host: deps.host }),
     observedAt: new Date().toISOString(),
@@ -403,12 +394,10 @@ export async function runClaudeCli(
  *   omits it and gets the environment-resolved directory; a wiring test
  *   points it at a fixture so no process environment is mutated. Scoped to
  *   the fallback export — the Claude pool keeps its own resolution.
- * @param options.host - The host the round is recorded as running on (Issue
- *   #4658). Production omits it and gets this machine's hostname, sanitised.
  */
 export function createReviewRoundDeps(
   log: (message: string) => void,
-  options: { credentialDir?: string; host?: string } = {},
+  options: { credentialDir?: string } = {},
 ): ReviewRoundDeps {
   const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
   const pool = createClaudeCredentialPool({ log, provider });
@@ -456,7 +445,7 @@ export function createReviewRoundDeps(
       return { providerId: DEEPSEEK_PROVIDER_ID, env };
     },
     runClaude: runClaudeCli,
-    host: options.host ?? sanitiseHostname(getHostname()),
+    host: sanitiseHostname(getHostname()),
     recordRun: async (roundDir, record) => {
       // Best effort: an unwritable round directory leaves the reviews
       // without a named model ("cost unknown"), never a failed round.

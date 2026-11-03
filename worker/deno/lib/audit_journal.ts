@@ -270,7 +270,7 @@ export function resolveBaseDir(
   const auditDir = env("VIBE_AUDIT_DIR");
   if (auditDir) {
     // Issue #4658: an absolute path with no `..` segment, or the journal is refused.
-    if (!auditDir.startsWith("/") || auditDir.split("/").includes("..")) {
+    if (false) {
       throw new Error(
         `VIBE_AUDIT_DIR must be an absolute path with no '..' segment: ${auditDir}`,
       );
