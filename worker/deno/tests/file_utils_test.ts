@@ -413,6 +413,184 @@ Deno.test("readTextFileNoFollow - refuses a symlink, a hard link and a directory
   });
 });
 
+Deno.test("readTextFileNoFollow - maxBytes accepts a file exactly at the cap and refuses one byte over", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/.gitignore`;
+    await Deno.writeTextFile(target, "12345678");
+    const atCap = await readTextFileNoFollow(target, { maxBytes: 8 });
+    assert(atCap.ok, "a file exactly at the cap is read");
+    assertEquals(atCap.value, "12345678");
+
+    await Deno.writeTextFile(target, "123456789");
+    // The stat pre-check refuses before any open, so the seam must not run.
+    let opens = 0;
+    const over = await readTextFileNoFollow(target, {
+      maxBytes: 8,
+      open: (path: string | URL, options?: Deno.OpenOptions) => {
+        opens++;
+        return Deno.open(path, options);
+      },
+    });
+    assert(!over.ok, "a file one byte over the cap is refused");
+    assertStringIncludes(over.error.message, "exceeds");
+    assertEquals(opens, 0, "an oversize file is refused before it is opened");
+  });
+});
+
+Deno.test("readTextFileNoFollow - maxBytes refuses a file that grows after the stat", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/.gitignore`;
+    await Deno.writeTextFile(target, "abcd");
+    // The seam runs after the lstat (4 bytes, under the cap) and before the
+    // open: it grows the same inode, so the identity check passes and only
+    // the bounded read can catch the growth.
+    const result = await readTextFileNoFollow(target, {
+      maxBytes: 8,
+      open: async (path: string | URL, options?: Deno.OpenOptions) => {
+        await Deno.writeTextFile(target, "x".repeat(20), { append: true });
+        return await Deno.open(path, options);
+      },
+    });
+    assert(!result.ok, "a file that grew past the cap is refused");
+    assertStringIncludes(result.error.message, "exceeds");
+  });
+});
+
+Deno.test("readTextFileNoFollow - refuses a descriptor for a different inode swapped in after the lstat", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/.gitignore`;
+    await Deno.writeTextFile(target, "mine\n");
+    const other = `${dir}/other`;
+    await Deno.writeTextFile(other, "theirs\n");
+    const result = await readTextFileNoFollow(target, {
+      open: (_path: string | URL, options?: Deno.OpenOptions) =>
+        Deno.open(other, options),
+    });
+    assert(!result.ok, "a swapped-in descriptor is refused");
+    assertStringIncludes(
+      result.error.message,
+      "refusing to read through a symlink",
+    );
+  });
+});
+
+Deno.test("readTextFileNoFollow - refuses an opened descriptor that is not a regular file", async () => {
+  await withTempDir(async (dir) => {
+    // The path is a regular file at the lstat; the seam hands back a
+    // descriptor for the directory, so the fstat isFile check is what refuses.
+    const target = `${dir}/.gitignore`;
+    await Deno.writeTextFile(target, "x\n");
+    const result = await readTextFileNoFollow(target, {
+      open: (_path: string | URL, options?: Deno.OpenOptions) =>
+        Deno.open(dir, options),
+    });
+    assert(!result.ok, "a non-regular descriptor is refused");
+    assertStringIncludes(result.error.message, "not a regular file");
+  });
+});
+
+Deno.test("readTextFileNoFollow - openTimeoutMs gives up on an open that never completes", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/.gitignore`;
+    await Deno.writeTextFile(target, "x\n");
+    const result = await readTextFileNoFollow(target, {
+      openTimeoutMs: 20,
+      open: () => new Promise<Deno.FsFile>(() => {}),
+    });
+    assert(!result.ok, "a stalled open is refused");
+    assertStringIncludes(result.error.message, "timed out");
+  });
+});
+
+Deno.test("readTextFileNoFollow - closes the descriptor of an open that completes after the timeout", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/.gitignore`;
+    await Deno.writeTextFile(target, "x\n");
+    const real = await Deno.open(target, { read: true });
+    const realClose = real.close.bind(real);
+    let closeCalls = 0;
+    real.close = () => {
+      closeCalls++;
+      realClose();
+    };
+    let resolveOpen!: (f: Deno.FsFile) => void;
+    const pending = new Promise<Deno.FsFile>((resolve) => {
+      resolveOpen = resolve;
+    });
+    try {
+      const result = await readTextFileNoFollow(target, {
+        openTimeoutMs: 20,
+        open: () => pending,
+      });
+      assert(!result.ok, "the timed-out open is refused");
+      assertStringIncludes(result.error.message, "timed out");
+      assertEquals(closeCalls, 0, "nothing closed before the open completes");
+
+      // The abandoned open completes only now, after the caller has returned.
+      resolveOpen(real);
+      for (let i = 0; i < 3; i++) await Promise.resolve();
+      assertEquals(closeCalls, 1, "the late descriptor is closed, not leaked");
+    } finally {
+      try {
+        realClose();
+      } catch { /* already closed by the code under test */ }
+    }
+  });
+});
+
+Deno.test("readTextFileNoFollow - refuses a FIFO at the path without opening it", async () => {
+  if (Deno.build.os === "windows") return;
+  await withTempDir(async (dir) => {
+    const fifo = `${dir}/.gitignore`;
+    let made: Deno.CommandOutput;
+    try {
+      made = await new Deno.Command("mkfifo", { args: [fifo] }).output();
+    } catch (err) {
+      if (err instanceof Deno.errors.NotFound) {
+        console.log("skipped: mkfifo is not available on this host");
+        return;
+      }
+      throw err;
+    }
+    assert(made.success, "mkfifo created the FIFO");
+
+    // The seam must never be reached: a FIFO open would block forever.
+    let opens = 0;
+    const result = await readTextFileNoFollow(fifo, {
+      openTimeoutMs: 1000,
+      open: () => {
+        opens++;
+        return Promise.reject(new Error("a FIFO must not be opened"));
+      },
+    });
+    assert(!result.ok, "a FIFO is refused");
+    assertStringIncludes(result.error.message, "not a regular file");
+    assertEquals(opens, 0);
+  });
+});
+
+Deno.test("readTextFileNoFollow - refuses a symlink with the options set, without opening it", async () => {
+  await withTempDir(async (dir) => {
+    const victim = `${dir}/victim`;
+    await Deno.writeTextFile(victim, "secret\n");
+    const link = `${dir}/link`;
+    await Deno.symlink(victim, link);
+
+    let opens = 0;
+    const result = await readTextFileNoFollow(link, {
+      maxBytes: 1024,
+      openTimeoutMs: 1000,
+      open: () => {
+        opens++;
+        return Promise.reject(new Error("a symlink must not be opened"));
+      },
+    });
+    assert(!result.ok, "a symlink is refused");
+    assertStringIncludes(result.error.message, "symlink");
+    assertEquals(opens, 0);
+  });
+});
+
 Deno.test("atomicWrite - a tempDir keeps the temporary file out of the target's directory (Issue #1604)", async () => {
   const root = await Deno.makeTempDir({ prefix: "atomic-tempdir-" });
   try {

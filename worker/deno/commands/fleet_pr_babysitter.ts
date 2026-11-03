@@ -33,6 +33,11 @@ import {
 } from "../lib/fleet_babysitter_sandbox.ts";
 import { ensureBabysitterCodex } from "../lib/fleet_babysitter_codex.ts";
 import {
+  createExchangeDir,
+  readAgentOutput,
+  writeExchangeFile,
+} from "../lib/fleet_babysitter_exchange.ts";
+import {
   buildFetchTrackingRefArgs,
   buildPushCreateBranchArgs,
 } from "../lib/git_ref_args.ts";
@@ -559,8 +564,10 @@ const CLOSING_REFERENCE =
 
 /**
  * Take the agent's proposed PR description out of the clone, so it is never
- * committed. Closing references the current body carries and the proposal
- * dropped are appended, so a rewrite cannot unlink the PR from its issue.
+ * committed. The agent writes it, so it is read through the no-follow reader
+ * and an unsafe file throws before anything is published (Issue #4731).
+ * Closing references the current body carries and the proposal dropped are
+ * appended, so a rewrite cannot unlink the PR from its issue.
  */
 export async function takePrBodyProposal(
   dir: string,
@@ -602,14 +609,17 @@ export function prBodyEditArgs(
   return ["pr", "edit", String(number), "--repo", repo, "--body-file", file];
 }
 
+/**
+ * Stage the runner's trusted PR description in the runner-owned exchange
+ * directory, which the agent cannot write (Issue #4731), then apply it.
+ */
 async function applyPrBody(
   repo: string,
   number: number,
   body: string,
-  scratch: string,
+  exchange: string,
 ): Promise<void> {
-  const file = `${scratch}/pr-body.md`;
-  await Deno.writeTextFile(file, body);
+  const file = await writeExchangeFile(exchange, "pr-body.md", body);
   await run("gh", prBodyEditArgs(repo, number, file));
   console.log(`${repo}#${number}: updated the PR description`);
 }
@@ -729,10 +739,29 @@ export function withBabysitterWriteScope<T>(
   );
 }
 
+/** The file Codex writes its final message to, in the runner's exchange directory (Issue #4731). */
+export const BABYSITTER_RESPONSE_FILE = "response";
+
+/**
+ * The Codex final message from the exchange directory. An absent file means
+ * the agent never finished; an unsafe one throws its own refusal (Issue #4731).
+ */
+export async function readAgentResponse(exchange: string): Promise<string> {
+  const response = await readAgentOutput(exchange, BABYSITTER_RESPONSE_FILE, {
+    maxBytes: 1_048_576,
+  });
+  if (response === null) {
+    throw new Error("agent did not write its completion response");
+  }
+  return response;
+}
+
 /**
  * Spawn the Codex repair session with its own read-only, target-repo token
  * rather than the runner's write token inherited from GH_TOKEN. It also runs
- * under a permissions profile denying the babysitter's credential paths.
+ * under a permissions profile denying the babysitter's credential paths. The
+ * completion response goes to `responseFile`, which must lie outside the
+ * clone and scratch directories the agent can write (Issue #4731).
  */
 export function spawnBabysitterAgent(
   options: {
@@ -742,9 +771,25 @@ export function spawnBabysitterAgent(
     agentToken: string;
     protectedPaths: string[];
     codex: string;
+    responseFile: string;
   },
   spawn: typeof spawnCommandWithTimeout = spawnCommandWithTimeout,
 ): Deno.ChildProcess {
+  if (!options.responseFile.startsWith("/")) {
+    throw new Error(
+      `Refusing to start the babysitter agent: the response file ${options.responseFile} is not absolute`,
+    );
+  }
+  for (const writable of [options.dir, options.scratch]) {
+    if (
+      options.responseFile === writable ||
+      options.responseFile.startsWith(`${writable}/`)
+    ) {
+      throw new Error(
+        `Refusing to start the babysitter agent: the response file ${options.responseFile} is inside writable path ${writable}`,
+      );
+    }
+  }
   return spawn(options.codex, {
     timeoutMs: 90 * 60_000,
     args: [
@@ -759,7 +804,7 @@ export function spawnBabysitterAgent(
       "--cd",
       options.dir,
       "--output-last-message",
-      `${options.dir}/.babysitter-response`,
+      options.responseFile,
       options.prompt,
     ],
     stdin: "null",
@@ -779,6 +824,7 @@ export async function startBabysitterAgent(
     prompt: string;
     home: string;
     configPath: string;
+    responseFile: string;
     env?: (name: string) => string | undefined;
   },
   beforeSpawn: () => Promise<boolean>,
@@ -808,6 +854,7 @@ export async function startBabysitterAgent(
       protectedPaths,
       agentToken,
       codex,
+      responseFile: options.responseFile,
     },
     spawn,
   );
@@ -877,6 +924,7 @@ export async function fix(
   });
   let dir: string | undefined;
   let scratch: string | undefined;
+  let exchange: string | undefined;
   try {
     const pr = await readPr(repo, initial.number, gh);
     if (pr.headRefOid !== initial.headRefOid || !reason(pr)) {
@@ -964,9 +1012,14 @@ export async function fix(
     dir = await Deno.makeTempDir({
       prefix: `fleet-pr-babysitter-${Deno.pid}-`,
     });
+    // Canonical, so the no-follow reader's parent check holds for the clone.
+    dir = await Deno.realPath(dir);
     scratch = await Deno.makeTempDir({
       prefix: `fleet-pr-babysitter-${Deno.pid}-`,
     });
+    exchange = await createExchangeDir(
+      `fleet-pr-babysitter-${Deno.pid}-`,
+    );
     await cloneForRepair(repo, dir);
     await run("git", buildFetchTrackingRefArgs("origin", pr.headRefName), dir);
     await run("git", buildFetchTrackingRefArgs("origin", pr.baseRefName), dir);
@@ -1006,7 +1059,14 @@ export async function fix(
     child = await startBabysitterAgent(
       app,
       repo,
-      { dir, scratch, prompt, home, configPath },
+      {
+        dir,
+        scratch,
+        prompt,
+        home,
+        configPath,
+        responseFile: `${exchange}/${BABYSITTER_RESPONSE_FILE}`,
+      },
       async () => {
         const stateDir = babysitterStateDir();
         await Deno.mkdir(stateDir, { recursive: true });
@@ -1038,13 +1098,7 @@ export async function fix(
     if (!result.success || renewalFailed) {
       throw new Error("agent failed or the PR lock could not be renewed");
     }
-    let response: string;
-    try {
-      response = await Deno.readTextFile(`${dir}/.babysitter-response`);
-      await Deno.remove(`${dir}/.babysitter-response`);
-    } catch (error) {
-      throw new Error(`agent did not write its completion response: ${error}`);
-    }
+    const response = await readAgentResponse(exchange);
     if (
       !response.trimEnd().endsWith("\nBABYSITTER_READY") &&
       response.trim() !== "BABYSITTER_READY"
@@ -1075,7 +1129,7 @@ export async function fix(
       if (renewalFailed) {
         throw new Error("PR lock renewal failed; leaving reviews untouched");
       }
-      if (body) await applyPrBody(repo, pr.number, body, scratch!);
+      if (body) await applyPrBody(repo, pr.number, body, exchange!);
       await dismissAddressedReviews(repo, pr.number, reviews, pr.headRefOid);
       return;
     }
@@ -1108,7 +1162,7 @@ export async function fix(
       dir,
     );
     console.log(`${repo}#${pr.number}: pushed fix as ${login}`);
-    if (body) await applyPrBody(repo, pr.number, body, scratch!);
+    if (body) await applyPrBody(repo, pr.number, body, exchange!);
     if (reviews.length > 0) {
       const pushedHead = await run("git", ["rev-parse", "HEAD"], dir);
       await dismissAddressedReviews(repo, pr.number, reviews, pushedHead);
@@ -1125,7 +1179,7 @@ export async function fix(
         });
       }
     } finally {
-      await removeRepairDirs([dir, scratch]);
+      await removeRepairDirs([dir, scratch, exchange]);
     }
   }
 }
