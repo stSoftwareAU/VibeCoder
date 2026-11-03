@@ -110,7 +110,8 @@ import {
   postBranchConflictComment,
   runDeclinedRebasePass,
 } from "../branch_conflict_pass.ts";
-import { syncBranchesForPrRaise } from "../pr_raise_sync.ts";
+import { mergeOntoBase, syncBranchesForPrRaise } from "../pr_raise_sync.ts";
+import { ensureBranchCurrent } from "../branch_currency.ts";
 import { isPrimaryRateLimitMessage } from "../primary_quota_latch.ts";
 import {
   autoMergeOutcomeNeedsComment,
@@ -158,9 +159,11 @@ import {
 } from "../coverage_carryover_gate.ts";
 import {
   buildMutationGateComment,
+  type CiMutationBlock,
   evaluateMutationGate,
 } from "../mutation_gate.ts";
 import { invokeMutationCheck } from "../mutation_check_invocation.ts";
+import { findBlockingMutationJob } from "../ci_mutation_contract.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import {
   preserveRunWip,
@@ -226,11 +229,16 @@ import {
 } from "../screenshot_gate_retry.ts";
 import {
   assessPrBodyLength,
+  degradePrBodyToGitHubLimit,
   PR_BODY_TOO_LONG_REASON,
   recoverFromPrBodyLength,
 } from "../pr_body_length.ts";
 import type { DegradedShortfall } from "../degraded_delivery.ts";
-import { markReadyAndAwaitCi } from "../draft_continuation_pr.ts";
+import {
+  buildMutationHoldDraftBody,
+  convertToDraftContinuation,
+  markReadyAndAwaitCi,
+} from "../draft_continuation_pr.ts";
 import {
   assessUnmetCriteria,
   buildUnmetCriteriaGateComment,
@@ -708,6 +716,10 @@ async function reportSummaryRuleBlock(
   };
 }
 
+/** Logged when a mutation survivor holds a pull request (Issue #4617). */
+const MUTATION_HOLD_WARNING =
+  "Mutation survivors remain and the repository's CI blocks on a mutants job — raising a draft, not a ready PR (Issue #4617)";
+
 /**
  * Post completion-gate findings that survived the in-session note, once
  * (Issue #4234). A failed post is logged and never stops the pull request
@@ -727,12 +739,24 @@ async function postCompletionAdvisory(
     .filter((part) => part !== "")
     .join("\n\n");
   if (findings === "" || prNumber <= 0) return;
+  // Issue #4617: a held pull request is a draft and is not armed, so the
+  // intro says so instead of saying auto-merge stays armed.
+  const intro = state.mutationHold
+    ? "The implementing run could not finish validation: the repository's " +
+      `CI job \`${state.mutationHold.job}\` blocks on surviving mutants and ` +
+      (state.mutationHold.incomplete
+        ? "the worker's mutation check could not finish. "
+        : "the worker's mutation check still reports them after the one " +
+          "in-session recovery turn. ") +
+      "This pull request is a draft and auto-merge " +
+      "is not armed; the next run continues this branch."
+    : "The implementing run was told about these findings once, in that same " +
+      "session. They did not block this pull request, and auto-merge stays " +
+      "armed.";
   const body = [
     "## Notes for the reviewer",
     "",
-    "The implementing run was told about these findings once, in that same " +
-    "session. They did not block this pull request, and auto-merge stays " +
-    "armed.",
+    intro,
     "",
     findings,
   ].join("\n");
@@ -835,8 +859,19 @@ export async function recoverAndFinaliseExistingPr(
   state.prUrl = prUrl;
   state.prNumber = prNumber;
 
+  // Issue #4617: a held pull request keeps the hold body, so this body write
+  // does not drop the validation-incomplete note.
+  const recoverBody = state.mutationHold
+    ? degradePrBodyToGitHubLimit(
+      buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold),
+      {
+        summaryPath: `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
+        issueNumber,
+      },
+    ).body
+    : prBody;
   // Update existing PR body with latest content
-  await deps.pr.recoverExistingPr(repo, issueNumber, prUrl, prBody);
+  await deps.pr.recoverExistingPr(repo, issueNumber, prUrl, recoverBody);
 
   // Update labels on existing PR (Issue #1189)
   if (issueLabels.length > 0 && prNumber > 0) {
@@ -896,7 +931,25 @@ export async function recoverAndFinaliseExistingPr(
       // the ready-for-review CI to start: the draft's checks were skipped,
       // and a skipped required check counts as passing (Issue #4160).
       let ciStarted = true;
-      if (prLookup?.isDraft === true) {
+      if (state.mutationHold) {
+        // Issue #4617: a survivor the repository's CI blocks on holds the pull
+        // request. It is made or kept a draft, auto-merge is disarmed, and it
+        // is never marked ready below.
+        logger.warn(MUTATION_HOLD_WARNING, {
+          repo,
+          prNumber,
+          job: state.mutationHold.job,
+        });
+        await convertToDraftContinuation({
+          repo,
+          issueNumber,
+          prNumber,
+          body: prBody,
+          draftBody: recoverBody,
+          gh: deps.github.runGhCommand,
+          log: (message) => logger.warn(message, { repo, prNumber }),
+        });
+      } else if (prLookup?.isDraft === true) {
         ciStarted = await markReadyAndAwaitCi({
           repo,
           prNumber,
@@ -914,7 +967,8 @@ export async function recoverAndFinaliseExistingPr(
       if (reviewRecord.length > 0) {
         await postPreprReviewRecord(repo, prNumber, reviewRecord, deps);
       }
-      if (ciStarted) {
+      // Issue #4617: a held pull request is never armed.
+      if (ciStarted && !state.mutationHold) {
         await armAutoMergeAtCreation(ctx, state, prNumber, deps);
       }
     }
@@ -1400,6 +1454,7 @@ async function createPrViaRestFallback(
     body: pr.body,
     head: state.branchName,
     base: pr.base,
+    ...(state.mutationHold ? { draft: true } : {}),
     reviewers: ctx.config.prReviewers,
   }, {
     ghCommandFn: deps.github.runGhCommand,
@@ -2719,13 +2774,50 @@ async function completionBody(
   // a survivor is a changed line no test notices, and blocks unless the
   // summary exempts it. A diff or runner that cannot answer fails closed
   // (`error`); a runner that is not wired, or a repo that opts out, never
-  // blocks.
+  // blocks. Issue #4617: where the repository's CI blocks on a mutants job,
+  // summary exemptions are ignored, and a survivor that remains after the
+  // recovery turn holds the pull request as a draft rather than noting it.
   // ---------------------------------------------------------------------
   let mutationVerdict: LateSummaryVerdict;
   {
+    // Issue #4617: a PR-triggered job in the repository's own CI that runs the
+    // mutation tool and can fail. Read before the check so the worker runs
+    // `cargo mutants` with the flags CI uses. A lookup fault is logged and
+    // read as non-blocking, so it cannot crash the phase.
+    let ciBlock:
+      | (CiMutationBlock & { tool: "cargo" | "deno_task" })
+      | undefined;
+    let ciCargoArgs: string[] = [];
+    try {
+      const contract = await findBlockingMutationJob(state.repoPath);
+      for (const workflow of contract.unreadable) {
+        logger.warn(
+          `Workflow file ${workflow} could not be read or parsed, so CI's mutation contract is unknown (Issue #4617)`,
+          { repo, issueNumber, workflow },
+        );
+      }
+      ciBlock = contract.blocking
+        ? {
+          workflow: contract.blocking.workflow,
+          job: contract.blocking.job,
+          tool: contract.blocking.tool,
+        }
+        : undefined;
+      ciCargoArgs = contract.blocking?.cargoArgs ?? [];
+    } catch (error: unknown) {
+      logger.warn(
+        "Could not read the repository's CI workflows, so the mutation check is treated as non-blocking (Issue #4617)",
+        {
+          repo,
+          issueNumber,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
     const mutationResult = await invokeMutationCheck({
       repo,
       repoPath: state.repoPath,
+      cargoMutantsArgs: ciCargoArgs,
       repoConfigs: config.repoConfig,
       runner: deps.quality.runMutationCheck,
       logger,
@@ -2765,7 +2857,7 @@ async function completionBody(
       const fault = hostDiskInfrastructureFailure(mutationResult.reason);
       if (fault) return fault;
     }
-    const gate = evaluateMutationGate(mutationResult, prBody);
+    const gate = evaluateMutationGate(mutationResult, prBody, ciBlock);
     if (gate.budgetExhausted) {
       logger.warn(gate.note, { repo, issueNumber });
     } else if (gate.note !== "") {
@@ -2780,6 +2872,19 @@ async function completionBody(
         reason: gate.reason,
       });
     }
+    // Issue #4617: a survivor that remains on the pass after the recovery turn
+    // holds the PR as a draft. The hold only matters on the pass that reaches
+    // PR creation: a CI block always blocks the gate, so the first pass returns
+    // for the recovery turn before any PR is created. Assigned on every pass
+    // (undefined when no hold applies) because the state is reused across passes.
+    state.mutationHold = gate.ciBlock !== undefined
+      ? {
+        job: gate.ciBlock.job,
+        workflow: gate.ciBlock.workflow,
+        comment: buildMutationGateComment(gate),
+        ...(gate.incomplete ? { incomplete: gate.incomplete } : {}),
+      }
+      : undefined;
     mutationVerdict = {
       categories: [
         mutationResult.kind === "error" ? "internal_error" : "quality_check",
@@ -3234,6 +3339,11 @@ async function completionBody(
   // adds a test that kills it or records an exemption in the summary. Folds
   // in the coverage carry-over check (Issue #3795) and the pre-PR verifier
   // (Issue #3395), the late verdicts still named below it.
+  //
+  // Issue #4617: for a repository whose CI blocks on a mutants job, a
+  // survivor that remains after the recovery turn holds the pull request as a
+  // draft (never marked ready, auto-merge not armed). Elsewhere the second
+  // report is noted and the pull request is raised as before.
   // ---------------------------------------------------------------------
   if (mutationVerdict.blocked) {
     logger.warn("Mutation gate reported findings", {
@@ -3468,6 +3578,31 @@ async function completionBody(
     return await abortStaleClaim(freshness, ctx, state, deps);
   }
 
+  // Owner rule 2026-11-03: the base may have moved while the gates above ran.
+  // A PR opened behind its base runs CI once on the stale head and again when
+  // the branch is updated. No PR exists yet, so this extra push starts no CI.
+  // Never fatal: a decline or an unreadable comparison raises the PR as before.
+  const lastCurrency = await ensureBranchCurrent({
+    branch: state.branchName,
+    baseBranch,
+    runGit: deps.git.runGitCommand,
+    cwd: state.repoPath,
+    rebase: mergeOntoBase,
+    log: (m: string) => logger.info(m),
+  });
+  if (lastCurrency.kind === "updated") {
+    const lastPush = await deps.git.pushUnpushedCommits(state.branchName, {
+      cwd: state.repoPath,
+    });
+    if (!lastPush.ok) {
+      logger.warn(
+        `'${state.branchName}' caught up with '${baseBranch}' locally but the ` +
+          `push failed, so the PR is raised on the earlier head: ` +
+          lastPush.error.message,
+      );
+    }
+  }
+
   // Opening a PR for this branch even though something else references the
   // issue is the Issue #174 behaviour, so say why at INFO — the silence is
   // what made the original loss invisible.
@@ -3476,6 +3611,21 @@ async function completionBody(
     why: linkDecision.why,
   });
 
+  // Issue #4617: a held pull request is raised as a draft whose body says
+  // validation is incomplete. The REST fallback also opens it as a draft.
+  // The deferred-creation path (a GitHub secondary rate
+  // limit parked the PR) records `draft: true`, so `lib/deferred_pr_drain.ts`
+  // opens it later over REST as a draft; the drain never arms auto-merge.
+  const createBody = state.mutationHold
+    ? degradePrBodyToGitHubLimit(
+      buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold),
+      {
+        summaryPath: `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
+        issueNumber,
+      },
+    ).body
+    : prBody;
+
   // Create PR via gh CLI
   const createPrArgs = [
     "pr",
@@ -3483,7 +3633,7 @@ async function completionBody(
     "--title",
     prTitle,
     "--body",
-    prBody,
+    createBody,
     "--base",
     baseBranch,
     "--head",
@@ -3491,6 +3641,14 @@ async function completionBody(
     "--repo",
     repo,
   ];
+  if (state.mutationHold) {
+    createPrArgs.push("--draft");
+    logger.warn(MUTATION_HOLD_WARNING, {
+      repo,
+      issueNumber,
+      job: state.mutationHold.job,
+    });
+  }
 
   // Add reviewers if configured. Issue #2438: a PR into a milestone branch
   // asks for none — nothing waits on that review, because the `milestone/**`
@@ -3518,10 +3676,11 @@ async function completionBody(
   if (attempt.kind === "deferred") {
     return await deferPrCreation(attempt, ctx, state, deps, {
       title: prTitle,
-      body: prBody,
+      body: createBody,
       base: baseBranch,
       reviewers: prReviewers,
       advisoryComment: "",
+      ...(state.mutationHold ? { draft: true } : {}),
     });
   }
 
@@ -3553,7 +3712,7 @@ async function completionBody(
         ctx,
         state,
         deps,
-        { title: prTitle, body: prBody, base: baseBranch },
+        { title: prTitle, body: createBody, base: baseBranch },
       )
       : null;
     if (restUrl !== null) {
@@ -3595,10 +3754,11 @@ async function completionBody(
           deps,
           {
             title: prTitle,
-            body: prBody,
+            body: createBody,
             base: baseBranch,
             reviewers: prReviewers,
             advisoryComment: "",
+            ...(state.mutationHold ? { draft: true } : {}),
           },
         );
       } else {
@@ -3670,7 +3830,27 @@ async function completionBody(
     if (prNumber > 0 && reviewRecord.length > 0) {
       await postPreprReviewRecord(repo, prNumber, reviewRecord, deps);
     }
-    if (prNumber > 0) {
+    // Issue #4617: retain conversion as a fallback for an existing PR returned
+    // during creation, including its auto-merge and body safeguards.
+    if (prNumber > 0 && state.mutationHold && clearedDuringCreate) {
+      await convertToDraftContinuation({
+        repo,
+        issueNumber,
+        prNumber,
+        body: prBody,
+        draftBody: createBody,
+        gh: deps.github.runGhCommand,
+        log: (message) => logger.warn(message, { repo, prNumber }),
+      });
+    }
+    // Issue #4617: a held pull request is a draft and is not armed.
+    if (prNumber > 0 && state.mutationHold) {
+      logger.info(
+        "Auto-merge not armed at creation: the pull request is held as a " +
+          "draft until the mutation survivors are killed (Issue #4617)",
+        { repo, prNumber },
+      );
+    } else if (prNumber > 0) {
       await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
 

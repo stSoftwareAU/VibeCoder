@@ -91,6 +91,98 @@ function searchResult(depPr: ReturnType<typeof dependabotPr>) {
 const FLEET = new Set(["VibeCoderST"]);
 const REPOS = new Set(["acme/app"]);
 
+Deno.test("pass keeps a Dependabot re-cut awaiting-fix but reviews a fleet force-push (Issue #4723)", async () => {
+  for (const login of ["app/dependabot", "VibeCoderST"]) {
+    const dir = await Deno.makeTempDir();
+    try {
+      const pr = {
+        ...fleetPr(),
+        author: { login },
+        headRefOid: "head",
+        reviews: {
+          nodes: [{
+            author: { login: REVIEWER },
+            state: "CHANGES_REQUESTED",
+            body: "",
+            commit: { oid: "X" },
+          }],
+        },
+      };
+      await Deno.writeTextFile(
+        `${dir}/log.jsonl`,
+        JSON.stringify({
+          at: "2026-11-03T00:00:00Z",
+          repo: "acme/app",
+          number: pr.number,
+          title: pr.title,
+          url: pr.url,
+          headSha: "X",
+          outcome: "changes_requested",
+          summary: "Fix a.ts",
+          findings: [{ file: "a.ts", line: 1, problem: "Unfixed" }],
+          testChangeNotes: [],
+          removedTests: [],
+        }) + "\n",
+      );
+      const files = [{
+        filename: "a.ts",
+        status: "modified",
+        patch: "@@ -1 +1 @@\n-old\n+unfixed",
+      }];
+      const gh = (args: string[]): Promise<string> => {
+        const path = args[1] ?? "";
+        if (args[0] === "api" && path === "graphql") {
+          return Promise.resolve(JSON.stringify({
+            data: {
+              search: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [pr],
+              },
+            },
+          }));
+        }
+        if (path.endsWith("compare/X...head")) {
+          return Promise.resolve(JSON.stringify({ status: "diverged" }));
+        }
+        if (path.endsWith("compare/main...X")) {
+          return Promise.resolve(JSON.stringify({ files }));
+        }
+        if (path.endsWith("compare/main...head")) {
+          return Promise.resolve(JSON.stringify({
+            files,
+            total_commits: 1,
+            commits: [{ author: { login: "dependabot[bot]" } }],
+          }));
+        }
+        if (path.includes("/files") || path.endsWith("/comments")) {
+          return Promise.resolve("[]");
+        }
+        if (path.includes("/contents/review-checklists.json")) {
+          throw new Error("gh: Not Found (HTTP 404)");
+        }
+        if (args.includes("Accept: application/vnd.github.diff")) {
+          return Promise.resolve("");
+        }
+        throw new Error(`unexpected gh ${args.join(" ")}`);
+      };
+      const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+      const dependabot = login === "app/dependabot";
+      assertEquals(
+        result.skipped["awaiting-fix"] ?? 0,
+        dependabot ? 1 : 0,
+        login,
+      );
+      assertEquals(
+        result.ready.map((ready) => ready.number),
+        dependabot ? [] : [41],
+        login,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
 // Records every call; `pr merge` throws the GitHub error the issue reports.
 function makeGh(depPr: ReturnType<typeof dependabotPr>) {
   const calls: string[][] = [];

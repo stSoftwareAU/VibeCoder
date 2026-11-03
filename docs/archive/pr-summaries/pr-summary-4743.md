@@ -132,8 +132,10 @@ failed, and the failures are not in code this change touches: three in
 `skipped` here; the same three fail on an unmodified `main` checkout) and one in
 `tests/run_ps1_launcher_test.ts` ("short of the cargo build headroom", which
 passes alone on both `main` and this branch, so it is a parallel-load flake).
-`tests/pre_pr_verifier_release_4743_test.ts` passed (6 of 6) in that run and
-alone. The mutations that matter here were checked by hand: removing the
+Before the review fix, `tests/pre_pr_verifier_release_4743_test.ts` passed
+(6 of 6) in that run and alone. After the review fix, the file passed alone
+(7 of 7) on the merged working tree. The mutations that matter here were
+checked by hand: removing the
 `releaseBuildArtefacts` call turns three of the new tests red (see Branch
 outcomes). `skip_mutation_check` is a repo setting and was not changed by this
 branch.

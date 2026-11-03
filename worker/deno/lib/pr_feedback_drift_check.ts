@@ -101,6 +101,7 @@ import {
 } from "./doc_prose_scope.ts";
 
 import { collectRunOwnBaseline } from "./pr_feedback_mutation_check.ts";
+import { findBlockingMutationJob } from "./ci_mutation_contract.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "./closure_verdict_recovery.ts";
 import {
@@ -117,6 +118,7 @@ import {
 } from "./doc_prose_claims.ts";
 import {
   buildMutationGateComment,
+  type CiMutationBlock,
   evaluateMutationGate,
   type Mutant,
   type MutationCheckResult,
@@ -1203,6 +1205,7 @@ function mutationSurvivorText(s: Mutant): string {
  */
 async function runMutationGateOnce(
   deps: DriftCheckDeps,
+  repoPath: string,
   beforeSha: string,
   summaries: readonly LoadedSummary[],
   context: { repo: string; prNumber: number },
@@ -1218,9 +1221,27 @@ async function runMutationGateOnce(
       }`,
     };
   }
+  // Issue #4617: a blocking repository CI job reads the survivors, so a
+  // PR-summary exemption cannot clear them. Review-fix pushes cannot hold a
+  // PR, so only this verdict changes. A lookup fault is logged and read as
+  // non-blocking, as the completion phase does.
+  let ciBlock: (CiMutationBlock & { tool: "cargo" | "deno_task" }) | undefined;
+  try {
+    const contract = await findBlockingMutationJob(repoPath);
+    ciBlock = contract.blocking ?? undefined;
+  } catch (err) {
+    deps.logger.warn(
+      "Could not read the repository's CI workflows, so the mutation check is treated as non-blocking (Issue #4617)",
+      {
+        ...context,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+  }
   const verdict = evaluateMutationGate(
     result,
     summaries.map((s) => s.content).join("\n"),
+    ciBlock,
   );
   if (verdict.budgetExhausted) {
     deps.logger.warn(verdict.note, context);
@@ -1471,6 +1492,7 @@ export async function runPrFeedbackDriftCheck(
   // are a hit; an error or a budget or cap shortfall is reported only.
   const initialMutation = await runMutationGateOnce(
     deps,
+    repoPath,
     beforeSha,
     summaries,
     { repo, prNumber },
@@ -1736,7 +1758,7 @@ export async function runPrFeedbackDriftCheck(
   // initial survivors (Issue #3750): the fresh summaries then supply any
   // exemption the turn added. Otherwise the initial verdict stands.
   const finalMutation = initialMutation.survivors.length > 0 && recoveryRan
-    ? await runMutationGateOnce(deps, beforeSha, freshSummaries, {
+    ? await runMutationGateOnce(deps, repoPath, beforeSha, freshSummaries, {
       repo,
       prNumber,
     })
