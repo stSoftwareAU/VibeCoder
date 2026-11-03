@@ -53,6 +53,7 @@ import { createLogger } from "../lib/logger.ts";
 import {
   type SyncPrBodyDeps,
   syncPrBodyFromSummary,
+  type SyncPrBodyInput,
 } from "../lib/pr_body_sync.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { buildIdempotencyMarker, closingKeywordLine } from "../lib/pr_body.ts";
@@ -258,7 +259,21 @@ function fakePrBodyService(
       }
       throw new Error(`unexpected gh command: ${args.join(" ")}`);
     },
-    runGitCommand,
+    // Issue #4712: the pushed head is `ls-remote`'d before publishing; the
+    // fixture has no origin, so report the head the fake PR is at.
+    runGitCommand: (args, gitOptions) =>
+      args[0] === "ls-remote"
+        ? Promise.resolve({
+          ok: true as const,
+          value: {
+            code: 0,
+            stdout: `${options.headSha}\trefs/heads/${
+              options.branch ?? "issue-4637-review-fix"
+            }\n`,
+            stderr: "",
+          },
+        })
+        : runGitCommand(args, gitOptions),
     logger: syncLogger,
   };
   return { deps, getBody: () => body, edits: () => editCount };
@@ -534,6 +549,207 @@ Deno.test("an unrelated marker-less PR is not adopted and can still dismiss its 
     );
     assertEquals(service.edits(), 0);
     assertEquals(service.getBody(), unrelatedBody);
+    assertEquals(dismissed, true);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("Issue #4637: a pushed repair pins its body sync to the verified pushed head", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      body: staleMarkerlessBody,
+    });
+    const captured: SyncPrBodyInput[] = [];
+    const syncBodyFn: typeof syncPrBodyFromSummary = async (input) => {
+      captured.push(input);
+      return {
+        ok: true,
+        value: { status: "skipped", reason: "body already current" },
+      };
+    };
+    const repairPr = {
+      ...pr,
+      number: 7,
+      headRefName: "issue-4637-review-fix",
+      headRefOid: fixture.beforeSha,
+      reviewDecision: "CHANGES_REQUESTED",
+    };
+    await finishBabysitterRepair(
+      "owner/repo",
+      repairPr,
+      fixture.path,
+      "babysitter[bot]",
+      [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
+      {
+        renewalFailed: () => false,
+        runCommand: async (command, args) => {
+          if (command === "git" && args[0] === "status") return " M summary";
+          if (command === "git" && args[0] === "diff") return "";
+          if (command === "gh" && args[0] === "api") return "12345";
+          if (command === "git" && args[0] === "push") return "";
+          if (command === "git" && args[0] === "rev-parse") {
+            return fixture.headSha;
+          }
+          throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+        },
+        readPr: async () => repairPr,
+        gh: service.deps.runGhCommand,
+        validateAndCommit: async () => {},
+        syncBodyDeps: service.deps,
+        syncBodyFn,
+        dismiss: async () => {},
+      },
+      { scratch: fixture.scratch },
+    );
+    assertEquals(captured.length, 1);
+    assertEquals(captured[0]?.committedHeadSha, fixture.headSha);
+    assert(captured[0]?.committedHeadSha !== repairPr.headRefOid);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("Issue #4637: a no-change repair pins its body sync to the unchanged PR head", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      body: staleMarkerlessBody,
+    });
+    const captured: SyncPrBodyInput[] = [];
+    const syncBodyFn: typeof syncPrBodyFromSummary = async (input) => {
+      captured.push(input);
+      return {
+        ok: true,
+        value: { status: "skipped", reason: "body already current" },
+      };
+    };
+    const repairPr = {
+      ...pr,
+      number: 7,
+      headRefName: "issue-4637-review-fix",
+      headRefOid: fixture.headSha,
+      reviewDecision: "CHANGES_REQUESTED",
+    };
+    await finishBabysitterRepair(
+      "owner/repo",
+      repairPr,
+      fixture.path,
+      "babysitter[bot]",
+      [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
+      {
+        renewalFailed: () => false,
+        runCommand: async (command, args) => {
+          if (command === "git" && args[0] === "status") return "";
+          throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+        },
+        readPr: async () => repairPr,
+        gh: service.deps.runGhCommand,
+        syncBodyDeps: service.deps,
+        syncBodyFn,
+        dismiss: async () => {},
+      },
+      { scratch: fixture.scratch },
+    );
+    assertEquals(captured.length, 1);
+    assertEquals(captured[0]?.committedHeadSha, fixture.headSha);
+    assertEquals(captured[0]?.committedHeadSha, repairPr.headRefOid);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("Issue #4637: only an uncommitted-summary skip is harmless to the review dismissal", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      body: staleMarkerlessBody,
+    });
+    const input = {
+      ...babysitterBodySyncInput(fixture.path, fixture.beforeSha),
+      committedHeadSha: fixture.headSha,
+    };
+    const skipWith =
+      (reason: string): typeof syncPrBodyFromSummary => async () => ({
+        ok: true,
+        value: { status: "skipped", reason },
+      });
+
+    let dismissed = false;
+    await syncBabysitterPrBodyBeforeDismissal(
+      input,
+      service.deps,
+      () => {
+        dismissed = true;
+        return Promise.resolve();
+      },
+      skipWith("summary not committed at the pushed head"),
+    );
+    assertEquals(dismissed, true);
+
+    for (
+      const reason of [
+        "pushed head moved",
+        "pushed head could not be verified",
+        "checkout moved off the committed head",
+      ]
+    ) {
+      dismissed = false;
+      await assertRejects(
+        () =>
+          syncBabysitterPrBodyBeforeDismissal(
+            input,
+            service.deps,
+            () => {
+              dismissed = true;
+              return Promise.resolve();
+            },
+            skipWith(reason),
+          ),
+        Error,
+        reason,
+      );
+      assertEquals(dismissed, false);
+    }
+    assertEquals(service.edits(), 0);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("Issue #4637: an uncommitted working-tree summary never reaches the adopted body", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      body: staleMarkerlessBody,
+    });
+    await Deno.writeTextFile(
+      `${fixture.path}/docs/archive/pr-summaries/pr-summary-4637.md`,
+      "## Summary\n\nUNCOMMITTED-MARKER-4637 rewritten. Closes #4637.\n",
+    );
+    let dismissed = false;
+    await syncBabysitterPrBodyBeforeDismissal(
+      {
+        ...babysitterBodySyncInput(fixture.path, fixture.beforeSha),
+        committedHeadSha: fixture.headSha,
+      },
+      service.deps,
+      () => {
+        dismissed = true;
+        return Promise.resolve();
+      },
+    );
+    assertEquals(service.edits(), 1);
+    assertStringIncludes(service.getBody(), "Repaired summary.");
+    assertEquals(
+      service.getBody().includes("UNCOMMITTED-MARKER-4637"),
+      false,
+    );
     assertEquals(dismissed, true);
   } finally {
     await cleanupFixture(fixture.path);

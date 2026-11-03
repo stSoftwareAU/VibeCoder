@@ -827,6 +827,8 @@ export async function syncBabysitterPrBodyBeforeDismissal(
       "summary unchanged",
       "summary file deleted",
       "body already current",
+      // Issue #4637/#4712: nothing committed at the pushed head to publish.
+      "summary not committed at the pushed head",
     ]);
     if (!harmlessSkips.has(result.value.reason)) {
       throw new Error(
@@ -837,6 +839,11 @@ export async function syncBabysitterPrBodyBeforeDismissal(
   await dismiss();
 }
 
+/**
+ * Refresh the PR body from the summary committed at the pushed head (the
+ * verified push, or the unchanged PR head on a no-change repair), never from
+ * the working tree (Issue #4637/#4712).
+ */
 async function syncBabysitterRepairBody(
   repo: string,
   pr: Pr,
@@ -858,6 +865,7 @@ async function syncBabysitterRepairBody(
     githubUser: login,
     runId: getRunId(),
     branchName: pr.headRefName,
+    committedHeadSha: expectedHead,
   };
   const syncDeps = deps ?? {
     runGhCommand: (args) => run("gh", args),
