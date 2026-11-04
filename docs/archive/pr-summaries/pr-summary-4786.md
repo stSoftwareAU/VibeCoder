@@ -140,3 +140,16 @@ Files: `worker/deno/lib/milestone_merge_gate.ts`,
 - `./quality.sh < /dev/null` on the final code head: passed (config integration
   and checkov skipped by the gate itself). `deno task pr-summary-check`: 0
   blocked, 0 not checked.
+- Review push (main merge with #4793 and the 2026-11-04 review): the merge
+  keeps #4793's per-toolchain limits and this PR's cargo retry. `spawnTask`
+  gained an injectable command runner, as `spawnTypeCheck` has (#4787).
+  Coverage of the production runners' `timedOut` flag:
+  `worker/deno/tests/milestone_resolution_gate_test.ts::spawnTask - a task that hits its limit comes back with timedOut set, and one that finishes does not (Issue #4786)`,
+  `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - a cargo check the real runner reports as timed out is retried once, then left to CI (Issue #4786)`,
+  and `timedOut` assertions added to
+  `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - each toolchain's check gets its own limit, and a timeout names that limit (Issue #4787)`.
+  Red check: with `timedOut: true` removed from either runner these three
+  fail; restored, the three milestone gate test files pass (100 tests). Run
+  with deno 2.9.8 and a local stand-in for `@std/assert`, because jsr.io was
+  unreachable from that host; CI runs the real module. `docs/INTERNALS.md` is
+  main's text plus the #4786 paragraphs, without the earlier whole-file reflow.
