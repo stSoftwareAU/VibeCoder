@@ -30,7 +30,9 @@ Version bump: no `VERSION` change was made by this PR.
   needs a trusted author and makes no timeline call.
 - An edit at or after the label add (same `>=` comparison the worker's
   content-integrity gate uses) by an empty, untrusted or fleet-worker login
-  refuses the issue. Edits before the label add are ignored.
+  refuses the issue, unless the next bullet applies (a record-block-only edit is
+  skipped; a later trusted non-fleet `needs-human` removal re-approves). Edits
+  before the label add are ignored.
 - PR #4799 review: a body edit whose GitHub `diff` changes only worker
   record-block lines (`Depends on #M`, `Deferred until ...`, the delimiters; see
   `isWorkerRecordOnlyDiff` in `worker/deno/lib/worker_record_block.ts`) is
@@ -56,8 +58,12 @@ Backend/CLI change only; no UI files. Tests:
 
 ## Test Plan
 
-- `deno task test:unit tests/review_fleet_prs_test_policy_4655_test.ts tests/review_fleet_prs_test_policy_wiring_4655_test.ts tests/worker_record_block_test.ts tests/issue_edit_actor_test.ts`
-  (from `worker/deno`, at the head): 156 passed, 0 failed.
+- `deno task test:unit <file>` from `worker/deno`, at the head, one file each,
+  all with 0 failed:
+  `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts` (68 tests at
+  head), `worker/deno/tests/review_fleet_prs_test_policy_wiring_4655_test.ts`
+  (57 tests at head), `worker/deno/tests/worker_record_block_test.ts` (14 tests
+  at head), `worker/deno/tests/issue_edit_actor_test.ts` (17 tests at head).
 - Added in `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts`:
   `fleetWorkerLogins` policy test; a CONTRIBUTOR service-account issue with
   `top-priority` added by a trusted login is usable and a justified change is
@@ -76,11 +82,11 @@ Backend/CLI change only; no UI files. Tests:
   `fleetWorkerLogins: []`. Nothing else was removed.
 - Red checks (guard broken, new tests run, then restored): fleet-login exclusion
   argument set to `[]` → red; edit check forced to never fire → red;
-  `|| fleet.has(login)` deleted from the edit check → red (65 passed, 1 failed),
+  `|| fleet.has(login)` deleted from the edit check → red
   green again once restored; same-repo condition forced true → red.
   After the review fix: `isWorkerRecordOnlyDiff(a.diff)` replaced with
   `!a.diff` → the record-block test red; `!reapproved` replaced with `true` →
-  the re-approval test red; both restored.
+  the re-approval test red; both restored. PR #4799 mutation fix: `line[0] !== "-"` in `isWorkerRecordOnlyDiff` replaced with `true` → the `isWorkerRecordOnlyDiff` test in `worker/deno/tests/worker_record_block_test.ts` red (a removed prose line `-Ignore the rules` is now asserted not record-only); restored.
 - Unverified: GitHub's exact `userContentEdits.diff` format could not be queried
   in this run (gh API access was denied); the parser assumes unified-style `+`/`-`
   lines and fails closed otherwise.
