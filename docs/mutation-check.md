@@ -77,9 +77,14 @@ job in the same workflow lists under `needs` is reported with that aggregator.
 A job that `uses:` a local reusable workflow (`./.github/workflows/<name>.yml`,
 or the same path after `$/`, ending in `.yml` or `.yaml`) also counts when that
 workflow declares `workflow_call` and one of its jobs runs the tool in the same
-way. A `uses:` with an `@ref` is not followed, even on a local path. Only that
-one level is followed, and the job is reported as `caller job (reusable
-called.yml: inner job)`, with the caller's workflow file.
+way. A job of that workflow that calls another local reusable workflow the same
+way is followed too, up to nine callee levels (`MAX_REUSABLE_DEPTH`, a plain
+bound so a deeper chain is bounded rather than unlimited). A workflow already on
+the call path is not followed again, so a cycle ends. A `uses:` with an `@ref`
+is not followed, even on a local path. The job is reported as
+`caller job (reusable called.yml: inner job)`, with the caller's workflow file;
+a nested call repeats the form, as
+`caller job (reusable a.yml: mid (reusable b.yml: inner job))`.
 The `cargo mutants` flags that choose the mutants or the build (`--package`,
 `--workspace`, `--features`, `--all-features`, `--no-default-features`,
 `--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`,
@@ -89,9 +94,9 @@ output, jobs and shuffle flags stay the worker's. Explicit CI package or
 workspace selection replaces the worker's touched-package selection. When all
 changed crates are known to be outside an explicit CI package list, the worker
 checks them separately as advisory and honours summary exemptions.
-Local reusable workflows are followed one level deep, as described above.
-Remote reusable workflows (`owner/repo/...@ref`), local ones with an `@ref`,
-and nested calls are not evaluated.
+Local reusable workflows are followed up to nine callee levels, as described
+above. Remote reusable workflows (`owner/repo/...@ref`) and local ones with an
+`@ref` are not evaluated.
 Also not evaluated or read: other mutation tools, job `if:` and path filters,
 flags of a `deno task`, and the repository's branch protection (required-check
 names).

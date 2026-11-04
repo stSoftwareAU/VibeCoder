@@ -1,54 +1,49 @@
 ## Summary
 
-Continues #4617 after the first PR (#4744, merged) made the worker treat
-surviving mutants as blocking when the repository's CI runs a blocking mutants
-job. That detection missed a mutation run that lives in a local reusable
-workflow, which is a common way to share a `cargo mutants` job. The detector now
-follows a PR-triggered job's `uses: ./.github/workflows/<name>.yml` (or
-`$/.github/workflows/<name>.yml`) one level deep, when the called workflow
-declares `workflow_call`, so those repositories get the same hold-as-draft
-behaviour. A remote reusable workflow, a ref-qualified `uses:` and a nested call
-are not followed. The job is reported as
-`caller job (reusable called.yml: inner
-job)` under the caller's workflow file,
-with the caller's aggregator. Part of #4617.
+Continues #4617 after #4744 (survivors block when the repository's CI runs a
+blocking mutants job) and #4801 (a PR-triggered job that calls one local
+reusable workflow is followed). The detector now also follows **nested** local
+reusable workflows: a called job that itself `uses:` another local
+`./.github/workflows/<name>.yml` (or `$/...`) workflow that declares
+`workflow_call` is followed, up to nine callee levels, with a refusal to follow
+a workflow already on the call path. The job is named as
+`caller (reusable a.yml: mid (reusable b.yml: inner))`. Remote and `@ref` calls
+are still not followed, branch protection is still not read, and the flags of a
+`deno task` are still not read. Part of #4617.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
 
 ```mermaid
 flowchart TD
-    J[PR-triggered job] --> S{its own steps run the mutation tool?}
+    J[PR-triggered job] --> S{own steps run the tool and can fail?}
     S -- yes --> B[blocking job]
-    S -- no --> U{uses a local ./ or $/ workflow, no @ref, declares workflow_call?}
+    S -- no --> U{local ./ or $/ workflow, no @ref, workflow_call, not on call path, depth <= 9?}
     U -- no --> N[not blocking]
-    U -- yes --> C{a called job's steps run the tool?}
-    C -- yes --> B2[blocking: caller job + called job named]
-    C -- no --> N
+    U -- yes --> C[each called job: same question, one level deeper]
+    C -- hit --> B2[blocking: names every level]
+    C -- none --> N
 ```
 
 ## Spec
 
 ### Intent and Rationale
 
-- The base PR read only a job's own steps, so a repository whose CI job
-  delegates to a reusable workflow still had its survivors written off as
-  reviewer notes, then failed in CI.
+- A mutants job two or more reusable calls away from the PR-triggered workflow
+  was written off as reviewer notes, then failed in CI. Following the chain
+  closes that gap for the shape the previous PR left out.
 
 ### Essential Design Decisions
 
-- The `uses:` value is parsed by the existing `calledWorkflowPath`
-  (`worker/deno/lib/pr_check_contexts.ts`), then confined to a file directly
-  under `.github/workflows/` by an anchored pattern, and refused if it carries
-  an `@ref`. The name is only looked up in the in-memory map of parsed
-  workflows, never joined into a filesystem path.
-- Files are now read and parsed in a first pass, so the callee is available when
-  its caller is scanned. `unreadable` stays complete.
-- Called jobs share the caller's alias-dedup set and 1 MiB scan budget, so many
-  callers cannot multiply the work. A callee that exhausts it reports the
-  calling file as unreadable.
-- A malformed or missing callee leaves the contract unknown, as for any
-  unreadable workflow (logged, not blocking).
+- The `uses:` check moved into `localReusableCallee`, which still calls the
+  existing `calledWorkflowPath` and the anchored pattern; names are looked up in
+  the in-memory map of parsed workflows, never joined into a path.
+- `MAX_REUSABLE_DEPTH = 9` and a call-path cycle guard bound the walk. Every job
+  visited charges the shared scan budget, so fan-out across nested calls cannot
+  multiply work; exhausting it reports the calling file as unreadable.
+- The cap is a plain bound, not tied to any GitHub limit (the code comments and
+  `docs/mutation-check.md` make no claim about one); a deeper chain is bounded
+  rather than unlimited.
 
 ### Undiscoverable Facts
 
@@ -58,17 +53,11 @@ flowchart TD
 ## Evidence
 
 Backend-only change; no UI file is touched. Tests call the real detector over
-temporary repositories (`worker/deno/tests/ci_mutation_contract_test.ts`):
-positive and aggregator case, `$/` form, `with:`/`secrets: inherit`, every
-`workflow_call` trigger shape; negatives for remote, `@ref`, `..`, subdirectory,
-bare path, missing, push-only, nested, `continue-on-error` callee step, callee
-with no `jobs`, scalar or list `jobs`; a malformed callee listed as unreadable;
-a counted shared-budget case; and hostile `uses:` values of 200000 characters
-(letters, then dots followed by `!`).
-
-Docs read and updated: `docs/mutation-check.md` (the blocking-CI section and the
-scan-budget paragraph) and the module doc of
-`worker/deno/lib/ci_mutation_contract.ts`.
+temporary repositories (`worker/deno/tests/ci_mutation_contract_test.ts`). Docs
+read and updated: `docs/mutation-check.md` (the blocking-CI section) and the
+module doc of `worker/deno/lib/ci_mutation_contract.ts`; consumers of the job
+string (`mutation_gate.ts`, `completion_phase.ts`, `pr_deferral.ts`) only
+interpolate it for display.
 
 ## Acceptance Criteria
 
@@ -77,81 +66,88 @@ scan-budget paragraph) and the module doc of
 - **partial** — For a repository whose CI runs a blocking mutants job, a PR is not
   reported ready or successfully validated while the worker's mutation check
   reports genuine unresolved survivors; any preserved draft/checkpoint remains
-  explicitly incomplete. A unit test covers this. — evidence:
-  `worker/deno/tests/ci_mutation_contract_test.ts::a PR job calling a local reusable workflow with a mutation run is blocking`
-  extends detection to reusable-workflow jobs; the hold itself is covered on
-  base by
+  explicitly incomplete. A unit test covers this. — reason: a mutants job in a
+  remote reusable workflow (`owner/repo/.github/workflows/...@ref`) is still not
+  detected, so a PR can be reported ready with unresolved survivors. Nested local
+  chains up to nine levels are covered. — evidence:
+  `worker/deno/tests/ci_mutation_contract_test.ts::a nine-level nested reusable call with a mutation run is blocking at the depth cap`
+  (detection, including nested chains); the hold itself is covered by
   `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor the repository's CI blocks on holds the PR as a draft`
-  — reviewer: partial — reason: nested local and remote reusable-workflow
-  mutants jobs are not detected, so those repositories' PRs can still be
-  reported ready with unresolved survivors.
+  — reviewer: partial
 - **met** — Repositories without one are unchanged. — evidence:
-  `worker/deno/tests/ci_mutation_contract_test.ts::a remote or ref-qualified reusable workflow is not followed`
-  and the other negatives — reviewer: met
-- **partial** — Use the repository's actual required CI contract (including jobs
-  feeding an aggregator) — evidence:
-  `worker/deno/tests/ci_mutation_contract_test.ts::a PR job calling a local reusable workflow with a mutation run is blocking`
-  — reviewer: partial — reason: branch protection and required-check names are
-  still not read, remote reusable workflows and nested calls are not followed
-- **partial** — Run the applicable changed-code mutation command with
-  CI-equivalent flags after the final relevant edit — evidence:
-  `worker/deno/tests/ci_mutation_contract_test.ts::a PR job calling a local reusable workflow with a mutation run is blocking`
-  (flags are now read from the called workflow's command) — reviewer: partial —
-  reason: flags of a `deno task` are still not read
+  `worker/deno/tests/ci_mutation_contract_test.ts::a nested reusable callee without workflow_call is not followed`
+  and
+  `worker/deno/tests/ci_mutation_contract_test.ts::a nested remote or ref-qualified reusable call is not followed`
+  — reviewer: met
+- **missing** — Use the repository's actual required CI contract (including jobs
+  feeding an aggregator) — reason: remote reusable workflows and branch-protection
+  required-check names are not read. Local workflow and aggregator coverage:
+  evidence:
+  `worker/deno/tests/ci_mutation_contract_test.ts::a reusable workflow calling another reusable workflow with a mutation run is blocking`
+  — reviewer: missing (the in-repository contract reads caller, called and nested
+  local jobs, and the aggregator by `needs`)
+- **missing** — Run the applicable changed-code mutation command with CI-equivalent
+  flags after the final relevant edit — reason: `deno task` flags and cargo
+  `--timeout`, `--cargo-arg` and `--test-tool` are not read. Partial coverage:
+  evidence:
+  `worker/deno/tests/ci_mutation_contract_test.ts::a reusable workflow calling another reusable workflow with a mutation run is blocking`
+  (`cargoArgs` carried through nesting) — reviewer: missing (the remaining
+  limitations are documented in `docs/mutation-check.md`)
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — two guards in `blockingJobHit` had no test — evidence:
-  `worker/deno/lib/ci_mutation_contract.ts:369` — reason: fixed in this diff
-  (callee with no `jobs`, and a null job beside a real one)
-- **violation** — stale doc comment on `BlockingMutationJob.job` — evidence:
-  `worker/deno/lib/ci_mutation_contract.ts:55` — reason: fixed in this diff
-- **violation** — the `uses:` parser was re-implemented instead of calling
-  `calledWorkflowPath` — evidence: `worker/deno/lib/ci_mutation_contract.ts:94`
-  — reason: fixed in this diff (the helper is called, then the result is
-  confined)
-- **violation** — a `continue-on-error` guard on a calling job, which GitHub
-  does not allow — evidence: `worker/deno/lib/ci_mutation_contract.ts:362` —
-  reason: fixed in this diff (guard and its test removed)
-- **clean** — Australian English, path confinement, regex vetted with hostile
-  cases, no secret or hidden file staged
+- **violation** — the cycle test claimed to pin the guard but the depth cap
+  alone ended it — evidence:
+  `worker/deno/tests/ci_mutation_contract_test.ts:1268` — reason: fixed in this
+  diff (renamed termination-only; the guard is pinned by the "nested call back"
+  test, red without the guard)
+- **violation** — GitHub's nesting limit asserted without a source — evidence:
+  `worker/deno/lib/ci_mutation_contract.ts:108` — reason: fixed in this diff
+  (the claim is removed from the module doc, the `MAX_REUSABLE_DEPTH` comment
+  and `docs/mutation-check.md`; the cap is documented as a plain bound)
+- **clean** — Australian English, no hidden file staged, no new regex, no new
+  member that only a test reads, docs updated, no assertion removed apart from
+  the edited one below
 
 ## Test Plan
 
-- Tests added in `worker/deno/tests/ci_mutation_contract_test.ts` (listed under
-  Evidence); no existing test was edited and no assertion removed.
-- Red checks, each break applied alone then restored: dropping the
-  `workflow_call` check, the one-level limit, the pattern's `^` anchor, the `$/`
-  support, the `@` refusal, the `!isMapping(calledJobs)` guard and the
-  `isMapping(body)` test each turned a named test red. The malformed-callee test
-  pins existing behaviour (base already listed unreadable files) and is green on
-  base.
-- `deno task test:unit tests/ci_mutation_contract_test.ts
-  tests/completion_phase_mutation_gate_test.ts tests/mutation_gate_test.ts`:
-  114 passed in the parallel pass, 69 in the serial pass, 0 failed. `deno fmt`,
-  `deno lint`, `deno check` and `markdownlint-cli2 docs/mutation-check.md`
-  passed.
-- Mutation check (`ci_mutation_contract.ts:425`, dropping `blocking !== null`):
-  killed by `with two blocking workflows the first in sorted order is reported`
-  (two blocking workflows; the later one overwrote the first with the operand
-  dropped, the test went red; restored, 70 passed).
-- `listWorkflowFiles` (verifier finding at `ci_mutation_contract.ts:116`): the
-  function is module-private and its body is unchanged in this diff (only the
-  neighbouring `triggersOn` rename and new helpers moved around it). The other
-  eight "callers" the verifier listed in `supply_chain_gate.ts` and
-  `workflow_hygiene_check.ts` call those modules' own, separately defined
-  `listWorkflowFiles` (`supply_chain_gate.ts:883`,
-  `workflow_hygiene_check.ts:304`), not this one; the only caller of this one is
-  `findBlockingMutationJob`, whose tests all pass. Verdict for every listed
-  caller: unchanged.
-- Callers of `findBlockingMutationJob` checked: the completion phase and the
-  review-fix mutation check both read only `workflow`, `job` as text,
-  `cargoArgs` and `tool`; both see the reusable hit through the same function.
-- Full `./quality.sh < /dev/null` on the final code head:
-  `Result: PASSED (with
-  skipped checks)`, including deno tests, lint, type
-  check and fmt. Skipped by the gate itself: config integration and checkov.
+- Edited:
+  `a reusable workflow calling another reusable workflow with a mutation run is blocking`
+  (was "...is not followed twice"). Removed from
+  `worker/deno/tests/ci_mutation_contract_test.ts`: the assertion
+  `blocking: null` for a nested call.
+  - Obsolete: nested calls were not followed; this change follows them.
+  - Still covered by:
+    `worker/deno/tests/ci_mutation_contract_test.ts::a nested reusable callee without workflow_call is not followed`
+    (the `null` result for a nested non-followable callee, with a positive
+    control).
+  - Red check: one level only (`MAX_REUSABLE_DEPTH = 1`) turns it red.
+- New tests, each with a positive control; red checks, each applied alone then
+  restored:
+  - depth cap: `MAX_REUSABLE_DEPTH = 8` turns the nine-level test red; `= 10`
+    turns `a tenth nested reusable callee level is not followed` red.
+  - cycle guard: removing `chain.includes(file)` turns
+    `a nested call back to a workflow on the call path is refused, and a later job still blocks`
+    red (the termination-only cycle test stays green, as stated in its name).
+  - per-job budget charge: removing it turns
+    `nested reusable fan-out shares the caller's scan budget` red.
+  - `workflow_call`, `@ref`/remote and non-failing-callee refusals at nested
+    depth: each probed with only the probed element made legal, which blocks.
+- Callers of the changed `findBlockingMutationJob` (`completion_phase.ts`,
+  `pr_feedback_mutation_check.ts`, `pr_feedback_drift_check.ts`) read `job` as
+  display text; their tests (`worker/deno/tests/mutation_gate_test.ts`,
+  `worker/deno/tests/completion_phase_mutation_gate_test.ts`) pass.
+- Ran:
+  `deno task test:unit tests/ci_mutation_contract_test.ts tests/mutation_gate_test.ts tests/completion_phase_mutation_gate_test.ts`
+  — passed (114 parallel, 78 serial); `deno fmt --check`, `deno lint`,
+  `deno check` on the two TypeScript files — passed.
+- `./quality.sh`: every stage up to the release-tag ruleset passed (including
+  markdownlint, mermaid, semgrep, completeness checks); the run then reached my
+  590 s bound inside the long unit-test stage, so the full gate did not finish
+  on this head. CI runs it on the PR.
+- Not done: remote reusable workflows, branch protection / required-check names,
+  `deno task` flags.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+<!-- vibe-quality-gate-skipped reason="the full ./quality.sh unit-test stage exceeded the run's 590 s bound; all earlier stages passed; CI runs the full gate on the PR" -->
