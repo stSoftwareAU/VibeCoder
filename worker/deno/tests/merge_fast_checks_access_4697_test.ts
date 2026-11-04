@@ -29,7 +29,10 @@ import {
   type VerifyBeforePushOptions,
   verifyMergeBeforePush,
 } from "../lib/merge_fast_checks.ts";
-import { GateAccountUnavailable } from "../lib/untrusted_gate_spawn.ts";
+import {
+  GateAccountUnavailable,
+  runRepositoryCommand,
+} from "../lib/untrusted_gate_spawn.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import {
   asUntrustedUser,
@@ -326,4 +329,91 @@ Deno.test("real sudo: a checkout the agent can reach runs its command, and one i
     await Deno.remove(readable, { recursive: true });
     await Deno.remove(blocked, { recursive: true });
   }
+});
+
+Deno.test("real sudo: a project the agent can read but not write runs its fast check instead of being deferred (Issue #4782)", async () => {
+  // Skipped where this host cannot drop to the agent account.
+  if (!await canRunAsUntrustedUser()) return;
+  // Under /tmp, not TMPDIR (see the test above). The sub-directory is mode 0755
+  // and worker-owned, as git creates it under a clone: readable, not writable.
+  const clone = await Deno.makeTempDir({
+    dir: "/tmp",
+    prefix: "issue-4782-clone-",
+  });
+  try {
+    await Deno.chmod(clone, 0o755);
+    const project = `${clone}/nested`;
+    await Deno.mkdir(project, { mode: 0o755 });
+    await Deno.chmod(project, 0o755);
+    await Deno.writeTextFile(`${project}/deno.json`, "{}");
+    await Deno.chmod(`${project}/deno.json`, 0o644);
+    const drop = (cmd: readonly string[]) =>
+      Promise.resolve(asUntrustedUser(cmd, { enabled: true }));
+    const result = await spawnFastCheck(
+      {
+        dir: project,
+        kind: "deno",
+        label: "deno eval",
+        args: ["eval", "--no-config", "console.log('ran')"],
+        timeoutMs: 20_000,
+      },
+      {},
+      runWithTimeout,
+      drop,
+    );
+    assertEquals(result.code, 0);
+    assertEquals(result.output, "ran");
+  } finally {
+    await Deno.remove(clone, { recursive: true });
+  }
+});
+
+/** A spawn that really runs the probe script as this account, and fakes the command. */
+function realProbeSpawn() {
+  const commands: SpawnCall[] = [];
+  const spawn: typeof runWithTimeout = (executable, args, options) => {
+    if (isProbeCall(args)) {
+      return runWithTimeout("sh", ["-c", args[6]!, "sh", args[8]!], {
+        timeoutMs: 5000,
+      });
+    }
+    commands.push({ executable, args: [...args], options });
+    return Promise.resolve({
+      ok: true,
+      value: {
+        code: 0,
+        stdout: "",
+        stderr: "",
+        success: true,
+        timedOut: false,
+      },
+    });
+  };
+  return { spawn, commands };
+}
+
+Deno.test("merge checks: the real probe script lets a readable, unwritable sub-directory project run its fast check (Issue #4782)", async () => {
+  await withCheckout({ "deno.json": "{}" }, async (dir) => {
+    await Deno.chmod(dir, 0o555);
+    try {
+      // Positive control: with a write requirement the same probe refuses (3).
+      const strict = realProbeSpawn();
+      const refused = await runRepositoryCommand(
+        Deno.execPath(),
+        ["lint"],
+        { cwd: dir, timeoutMs: 1000, manifests: ["deno.json"] },
+        { spawn: strict.spawn, drop: sudoAgent },
+      );
+      assert(!refused.ok && refused.error instanceof GateAccountUnavailable);
+      assertStringIncludes(refused.error.message, "probe 3");
+      assertEquals(strict.commands.length, 0);
+
+      const { spawn, commands } = realProbeSpawn();
+      const result = await spawnFastCheck(lintCheck(dir), {}, spawn, sudoAgent);
+      assertEquals(result.code, 0);
+      assertEquals(commands.length, 1);
+    } finally {
+      await Deno.chmod(dir, 0o755);
+    }
+  });
 });

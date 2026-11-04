@@ -41,6 +41,12 @@ flowchart LR
 - There is still no worker-account fallback: the `agent` pre-check in
   `spawnFastCheck` is kept, and credentials still travel on the stdin channel
   (#4705) through `runRepositoryCommand`.
+- The fast checks only read the tree, so they call `runRepositoryCommand` with
+  `requireWritableCheckout: false`, which drops the probe's `test -w` on the
+  check's directory (exit 3). Sub-directory projects (`worker/deno`, a nested
+  Deno project in a Cargo repository) are readable but not writable by `agent`
+  (Issue #4782), so with the write test they would be deferred on every attempt.
+  The cargo target write check still runs. The milestone gates keep the default.
 - A probe failure is told apart from a removed manifest by asking the worker
   whether the planned manifest is a file: absent means a failing check, present
   means an access fault (thrown, so unverified).
@@ -64,17 +70,22 @@ Backend change; no UI file is touched. The real-sudo test in
 
 ## Test Plan
 
-- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (7 tests):
+- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (9 tests):
   blocked directory refused and the command never spawned; `runMergeFastChecks`
   gives `unverified` and `verifyMergeBeforePush` gives `deferred` with the
   repair agent never called; a genuinely missing `Cargo.toml` is `{code: 1}`
   while a present one with a failing probe rejects; a passing probe followed by
   cargo's own "could not find `Cargo.toml`" output is still `failed`; probe exit
   2 runs with a private `CARGO_TARGET_DIR`; real `agent` readable versus
-  inaccessible checkout.
+  inaccessible checkout; and (PR #4795 review, Issue #4782) a real-sudo test
+  with a worker-owned 0755 sub-directory project that runs its fast check, plus a
+  test that runs the real probe script on a 0555 directory and shows the fast
+  check runs while the default probe still refuses with `probe 3`.
 - Red checks: returning exit 1 directly for `GateAccountUnavailable` turned the
-  `unverified`/`deferred` test red (5 of 7 failed); always throwing for an
-  absent manifest turned the missing-manifest test red. Both restored.
+  `unverified`/`deferred` test red; always throwing for an
+  absent manifest turned the missing-manifest test red. Setting
+  `requireWritableCheckout: true` in `spawnFastCheck` turned both new
+  sub-directory tests red (2 of 9 failed, `probe 3`). All restored.
 - Edited existing tests: `tests/merge_fast_checks_test.ts` gained `isProbeCall`
   and `probePassed` helpers and the "isolates credentials" test returns early
   for the probe call. `tests/merge_fast_checks_credentials_4705_test.ts`:
@@ -88,9 +99,12 @@ Backend change; no UI file is touched. The real-sudo test in
   refused. The test now makes both checkouts under `/tmp`. Run the way the
   mutation runner runs it (`deno test --no-check -A`, a fresh `0700` `TMPDIR`),
   the four covering test files pass (157 passed, 0 failed).
-- Passed: `deno task test:unit` over those three files plus
-  `tests/untrusted_gate_spawn_test.ts` and
-  `tests/pr_merge_conflict_processor_test.ts` (191 passed, 0 failed).
+- Passed at the head: `deno task test:unit` over
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts`,
+  `merge_fast_checks_test.ts`, `merge_fast_checks_credentials_4705_test.ts`,
+  `untrusted_gate_spawn_test.ts`, `pr_merge_conflict_processor_test.ts`,
+  `milestone_merge_gate_test.ts` and `milestone_resolution_gate_test.ts`
+  (227 passed, 0 failed, plus 41 passed, 0 failed in the second pass).
 - Docs updated: `docs/workflows/merge-conflicts.md` (the Issue #4616 bullet) and
   `docs/CONFIGURATION.md` (the `agent` account checkout paragraph).
 - Callers of `spawnFastCheck` checked: `verifyMergeBeforePush` default runner

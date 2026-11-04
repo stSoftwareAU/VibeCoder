@@ -175,7 +175,11 @@ function blockedDirectoryOf(stdout: string): string | undefined {
  *
  * @throws When a manifest name is not a plain file name.
  */
-function probeScript(manifests: readonly string[], tail: string): string {
+function probeScript(
+  manifests: readonly string[],
+  tail: string,
+  requireWritable = true,
+): string {
   const reads = manifests.map((name) => {
     if (!SAFE_MANIFEST.test(name)) {
       throw new Error(
@@ -187,7 +191,9 @@ function probeScript(manifests: readonly string[], tail: string): string {
   });
   const readable = `${TRAVERSAL_WALK}; test -r "$1" -a -x "$1"${
     reads.join("")
-  } || exit ${PROBE_UNREADABLE}; test -w "$1" || exit ${PROBE_CHECKOUT_UNWRITABLE}`;
+  } || exit ${PROBE_UNREADABLE}${
+    requireWritable ? `; test -w "$1" || exit ${PROBE_CHECKOUT_UNWRITABLE}` : ""
+  }`;
   return tail === ""
     ? readable
     : `${readable}; ${tail} || exit ${PROBE_TARGET_UNWRITABLE}`;
@@ -209,6 +215,10 @@ function probeScript(manifests: readonly string[], tail: string): string {
  * @param options.timeoutMs - The budget for the command itself.
  * @param options.manifests - Files the command reads from the checkout; each
  *   must be readable by the account the command runs as.
+ * @param options.requireWritableCheckout - Whether the account must also be able
+ *   to write `cwd` (default `true`). A read-only command, such as the merge fast
+ *   checks, sets `false`: sub-directories of a clone are readable but not
+ *   writable by `agent` (Issue #4782). The cargo target check still runs.
  * @param deps - Injection seams. Production omits them.
  * @returns The spawn result of the command.
  * @throws When a manifest name is not a plain file name.
@@ -216,7 +226,12 @@ function probeScript(manifests: readonly string[], tail: string): string {
 export async function runRepositoryCommand(
   executable: string,
   args: string[],
-  options: { cwd: string; timeoutMs: number; manifests?: readonly string[] },
+  options: {
+    cwd: string;
+    timeoutMs: number;
+    manifests?: readonly string[];
+    requireWritableCheckout?: boolean;
+  },
   deps: UntrustedGateSpawnDeps = {},
 ): ReturnType<typeof runWithTimeout> {
   const spawn = deps.spawn ?? runWithTimeout;
@@ -315,6 +330,7 @@ export async function runRepositoryCommand(
         probeScript(
           manifests,
           writesTarget ? await targetWriteCheck(options.cwd) : "",
+          options.requireWritableCheckout ?? true,
         ),
         "sh",
         options.cwd,

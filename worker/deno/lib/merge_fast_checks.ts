@@ -370,7 +370,9 @@ export async function planFastChecks(
  *
  * The check runs through {@link runRepositoryCommand}, so it is dropped to the
  * `agent` account only where that account can reach the checkout, and the
- * access probe runs first. There is no fallback to the worker: an account that
+ * access probe runs first. The probe does not require the checkout to be
+ * writable: the checks only read it, and a project below a clone's root is
+ * readable but not writable by `agent` (Issue #4782). There is no fallback to the worker: an account that
  * is unavailable refuses to run the check. An account that cannot reach the
  * checkout, and a probe that fails, throw, so the caller reports the check
  * unverified rather than failed, and no repair round is spent on it. The one
@@ -405,7 +407,14 @@ export async function spawnFastCheck(
   const result = await runRepositoryCommand(
     check.kind === "cargo" ? "cargo" : Deno.execPath(),
     check.args,
-    { cwd: check.dir, timeoutMs: check.timeoutMs, manifests },
+    {
+      cwd: check.dir,
+      timeoutMs: check.timeoutMs,
+      manifests,
+      // The checks only read the tree; a sub-directory project is not writable
+      // by `agent` (Issue #4782), and that must not defer the push.
+      requireWritableCheckout: false,
+    },
     {
       spawn,
       drop,

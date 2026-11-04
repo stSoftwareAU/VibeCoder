@@ -235,9 +235,13 @@ progress and stopped on conflicts. Its contract is absolute:
   push is refused and the attempt fails, with nothing pushed. Infrastructure
   faults — missing tools, unreachable remote modules, an old host toolchain,
   disk pressure, or an exhausted check or run deadline — defer verification.
-  So does a checkout the untrusted account cannot read: the worker probes it
-  before each check, and a failed probe leaves the check unverified, not failed
-  (Issue #4697). A manifest the worker can see is genuinely absent, such as no
+  So does a checkout the untrusted account cannot traverse or whose manifest it
+  cannot read: the worker probes it before each check, and a failed probe leaves
+  the check unverified, not failed (Issue #4697). The probe does not require
+  write access to the project directory, because the checks only read the tree
+  and a project below the clone root is readable but not writable by the account
+  (Issue #4782); a cargo check still needs a writable target, or gets a private
+  one. A manifest the worker can see is genuinely absent, such as no
   `Cargo.toml`, is still a failing check that a repair round can answer. The
   worker discards the local merge and withdraws the attempt without charge or a
   push. Disk admission runs before the first check and each re-check.
