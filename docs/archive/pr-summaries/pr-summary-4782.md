@@ -90,9 +90,9 @@ directory was refused with `probe 3`.
   checked: `spawnTypeCheck` (passes it for Deno) and `spawnTask` (not passed,
   keeps the requirement).
 - Mutation check: its report said the baseline tests failed before any mutation
-  (a list of 20 test files). They pass at the head here:
-  `deno test -A` over `tests/untrusted_gate_spawn_test.ts` and
-  `tests/milestone_merge_gate_test.ts` (92 passed, 0 failed) and `deno task test:unit` over
+  (a list of 20 test files). They pass at the head here: `deno test -A` over
+  `tests/untrusted_gate_spawn_test.ts` and `tests/milestone_merge_gate_test.ts`
+  (92 passed, 0 failed) and `deno task test:unit` over
   `tests/project_manifests_4413_test.ts`, `tests/heavy_build_gate_3178_test.ts`,
   `tests/milestone_sync_gate_repair_test.ts` (58 passed). The failure did not
   reproduce, so it is an environment fault of the mutation run, not a surviving
