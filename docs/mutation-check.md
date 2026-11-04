@@ -73,7 +73,12 @@ when a workflow is triggered by `pull_request`, neither the job nor the step is
 mutants`, `cargo-mutants` or `deno task` with a task name
 containing `mutat`. A line that ends in `|| true`, `|| :` or `|| exit 0` cannot
 fail the step, so it is skipped; `\` continuations are joined before this check.
-This approximates "a required check or the job feeding it": a job that another
+A job that `uses:` a local reusable workflow (`./.github/workflows/<name>.yml` or
+`.yaml`, with no remote owner or `@ref`) also counts when that workflow declares
+`workflow_call` and one of its jobs runs the tool in the same way. Only that one
+level is followed, and the job is reported as `caller job (reusable called.yml:
+inner job)`, with the caller's workflow file. A caller job that is
+`continue-on-error` is not followed. This approximates "a required check or the job feeding it": a job that another
 job in the same workflow lists under `needs` is reported with that aggregator.
 The `cargo mutants` flags that choose the mutants or the build (`--package`,
 `--workspace`, `--features`, `--all-features`, `--no-default-features`,
@@ -84,9 +89,11 @@ output, jobs and shuffle flags stay the worker's. Explicit CI package or
 workspace selection replaces the worker's touched-package selection. When all
 changed crates are known to be outside an explicit CI package list, the worker
 checks them separately as advisory and honours summary exemptions.
-Not evaluated or read: reusable-workflow `uses:` jobs, other mutation tools, job
-`if:` and path filters, flags of a `deno task`, and the repository's branch
-protection (required-check names).
+Local reusable workflows are followed one level deep, as described above. Remote
+reusable workflows (`owner/repo/...@ref`) and nested calls are not evaluated.
+Also not evaluated or read: other mutation tools, job `if:` and path filters,
+flags of a `deno task`, and the repository's branch protection (required-check
+names).
 
 Only regular workflow files up to 1 MiB are read. Symlinked workflow directory
 components, symlinked files and oversized files are reported as unreadable,
