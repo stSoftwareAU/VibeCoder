@@ -1871,19 +1871,18 @@ async function completionBody(
   // Issue #4625: one verdict per head across every publication in this phase.
   // A passed head is not validated twice (the gate can take minutes).
   const passedHeads = new Set<string>();
-  const currentHead = async (): Promise<string | undefined> => {
+  // An empty string means HEAD could not be read; it is never a cache key.
+  const currentHead = async (): Promise<string> => {
     const head = await deps.git.runGitCommand(["rev-parse", "HEAD"], {
       cwd: state.repoPath,
     });
-    return head.ok && head.value.code === 0
-      ? head.value.stdout.trim() || undefined
-      : undefined;
+    return head.ok && head.value.code === 0 ? head.value.stdout.trim() : "";
   };
   const validateHead = async (
     request: PublicationRequest,
   ): Promise<PublicationValidation> => {
     const head = await currentHead();
-    if (head !== undefined && passedHeads.has(head)) {
+    if (head !== "" && passedHeads.has(head)) {
       return { status: "passed", head, gate: "ran" };
     }
     const validation = await deps.git.validatePublication(request);

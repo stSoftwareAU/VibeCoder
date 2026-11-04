@@ -5809,7 +5809,9 @@ and last 2,000 characters: the head holds the `[PRE_PUSH_BLOCKED] ... command`
 line that names the failing check, the tail the end of its output, and GitHub
 refuses a comment body over 65,536 characters (a refusal `markIssueAsFailedOnce`
 swallows). Second, only a verdict on the branch's content carries the marker, a
-`PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan, an
+`PrePushGateBlockedError` from `gateUnpushedCommits` or a
+`PublicationValidationFailedError` raised by the push guard (reported by
+`publicationBlockedResult`): a check, a plan, an
 unsafe base ref, or any other non-infrastructure error from `runPrePushGate`
 (such as malformed hook input), which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
 `describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
@@ -6447,7 +6449,9 @@ The five lanes apply it as follows:
   defers the head to a later cycle, as in the other lanes.
 - The spelling and feedback scanners have no retry cap of their own, so each
   charges one round (`publication_deferral_budget.ts`, `MAX_PUBLICATION_DEFERRALS`
-  = 3) whenever the gate defers or rejects a fix. Spelling keys the budget on the
+  = 3). Spelling charges a round when the gate defers or rejects a fix; feedback
+  charges one only when the gate defers it (`unavailable`), and a rejected feedback
+  head is not charged. Spelling keys the budget on the
   check run, feedback on the comment and the head it started from. A spent
   budget skips the agent and verifier sessions until the key changes (a new push).
   The output of a head the gate rejected in the spelling lane is shown, fenced as

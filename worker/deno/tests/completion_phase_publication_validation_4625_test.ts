@@ -75,6 +75,8 @@ interface Script {
    * the `beforePush` hook it was given as production recovery does.
    */
   rejectFirstPush?: { mergedHead: string };
+  /** How `git rev-parse HEAD` answers; defaults to a readable head. */
+  revParse?: { ok?: boolean; code?: number; stdout?: string };
 }
 
 interface Run {
@@ -84,6 +86,8 @@ interface Run {
   events: string[];
   /** Every request the completion phase made to `validatePublication`. */
   requests: PublicationRequest[];
+  /** The working directory of every `git rev-parse HEAD` call. */
+  revParseCwds: (string | undefined)[];
   /** Every agent prompt, in order. */
   prompts: string[];
   warnings: string[];
@@ -144,6 +148,7 @@ async function runPhase(script: Script): Promise<Run> {
   const events: string[] = [];
   const requests: PublicationRequest[] = [];
   const prompts: string[] = [];
+  const revParseCwds: (string | undefined)[] = [];
   const warnings: string[] = [];
   const infos: string[] = [];
   const behindOnCall = script.behindOnCall ?? (() => 0);
@@ -232,11 +237,24 @@ async function runPhase(script: Script): Promise<Run> {
             events.push("push");
             return { ok: true as const, value: 1 };
           },
-          runGitCommand: (args: string[]) => {
+          runGitCommand: (args: string[], options?: { cwd?: string }) => {
             const joined = args.join(" ");
             let stdout = "";
-            if (script.rejectFirstPush && joined === "rev-parse HEAD") {
-              stdout = `${head}\n`;
+            let code = 0;
+            if (joined === "rev-parse HEAD") {
+              revParseCwds.push(options?.cwd);
+              if (script.revParse?.ok === false) {
+                return Promise.resolve({
+                  ok: false as const,
+                  error: new Error("rev-parse could not run"),
+                });
+              }
+              if (script.revParse) {
+                code = script.revParse.code ?? 0;
+                stdout = script.revParse.stdout ?? "";
+              } else if (script.rejectFirstPush) {
+                stdout = `${head}\n`;
+              }
             } else if (
               args[0] === "rev-list" && joined.includes("--left-right")
             ) {
@@ -252,7 +270,7 @@ async function runPhase(script: Script): Promise<Run> {
             }
             return Promise.resolve({
               ok: true as const,
-              value: { code: 0, stdout, stderr: "" },
+              value: { code, stdout, stderr: "" },
             });
           },
         },
@@ -268,6 +286,7 @@ async function runPhase(script: Script): Promise<Run> {
       result: result as Run["result"],
       events,
       requests,
+      revParseCwds,
       prompts,
       warnings,
       infos,
@@ -478,6 +497,10 @@ Deno.test("a merged head the repository gate rejects is never pushed (Issue #462
   assertStringIncludes(run.result.reason ?? "", FAILING_OUTPUT);
   assertEquals(count(run.events, "push"), 0, run.events.join(", "));
   assertEquals(count(run.events, "create"), 0, run.events.join(", "));
+  // The block ends the run at once: the recovery guard's verdict is reported,
+  // not re-derived by a repair turn and a second gate run.
+  assertEquals(count(run.events, "validate"), 2, run.events.join(", "));
+  assertEquals(count(run.events, "agent"), 0, run.events.join(", "));
 });
 
 Deno.test("a merged head whose gate cannot run is retried as infrastructure, never pushed (Issue #4625)", async () => {
@@ -489,4 +512,74 @@ Deno.test("a merged head whose gate cannot run is retried as infrastructure, nev
   assertEquals(run.result.category, "push_failure");
   assertStringIncludes(run.result.reason ?? "", PRE_PUSH_LOOKUP_FAILED_MARKER);
   assertEquals(count(run.events, "push"), 0, run.events.join(", "));
+  // The first attempt checks the gate, then the recovery guard; the in-run
+  // infrastructure retry's attempt stops at its gate, now unavailable.
+  assertEquals(count(run.events, "validate"), 3, run.events.join(", "));
 });
+
+// (i) The recovery guard is given the same request as the first validation, and
+// reads HEAD in the checkout; the passed head is reused, never re-validated.
+Deno.test("the recovery check receives the checkout, repository, config and branch (Issue #4625)", async () => {
+  const repoConfig = { [REPO]: { qualityCommand: "scripts/check.sh" } };
+  const run = await runPhase({
+    answers: [PASSED_RAN, { ...PASSED_RAN, head: MERGED_HEAD }],
+    rejectFirstPush: { mergedHead: MERGED_HEAD },
+    repoConfig,
+  });
+  assertEquals(run.requests.length, 2);
+  const recovery = run.requests[1]!;
+  assertEquals(recovery.cwd, run.repoPath);
+  assertEquals(recovery.repo, REPO);
+  assertEquals(recovery.repoConfigs, repoConfig);
+  assertEquals(
+    (recovery as PublicationRequest & { branchName?: string }).branchName,
+    BRANCH,
+  );
+  assert(run.revParseCwds.length > 0, "HEAD was read");
+  for (const cwd of run.revParseCwds) assertEquals(cwd, run.repoPath);
+});
+
+Deno.test("a head already passed is not validated again when recovery leaves it unchanged (Issue #4625)", async () => {
+  const run = await runPhase({
+    answers: [PASSED_RAN],
+    rejectFirstPush: { mergedHead: HEAD },
+  });
+  assertEquals(run.result.status, "continue");
+  assertEquals(count(run.events, "validate"), 1, run.events.join(", "));
+  assertEquals(count(run.events, "push"), 1, run.events.join(", "));
+});
+
+// Each unreadable-HEAD answer would reuse the passed head if it were trusted.
+const UNREADABLE: [string, Script][] = [
+  [
+    "rev-parse fails to run",
+    {
+      answers: [PASSED_RAN],
+      revParse: { ok: false },
+      rejectFirstPush: { mergedHead: HEAD },
+    },
+  ],
+  [
+    "rev-parse exits non-zero",
+    {
+      answers: [PASSED_RAN],
+      revParse: { code: 128, stdout: `${HEAD}\n` },
+      rejectFirstPush: { mergedHead: HEAD },
+    },
+  ],
+  [
+    "rev-parse prints nothing",
+    {
+      answers: [{ ...PASSED_RAN, head: "" }],
+      revParse: { stdout: "\n" },
+      rejectFirstPush: { mergedHead: HEAD },
+    },
+  ],
+];
+for (const [name, script] of UNREADABLE) {
+  Deno.test(`an unreadable HEAD is never reused as a passed head: ${name} (Issue #4625)`, async () => {
+    const run = await runPhase(script);
+    assertEquals(run.result.status, "continue");
+    assertEquals(count(run.events, "validate"), 2, run.events.join(", "));
+  });
+}

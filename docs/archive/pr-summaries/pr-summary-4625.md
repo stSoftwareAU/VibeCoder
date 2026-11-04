@@ -26,8 +26,8 @@ Review round (PR #4800): the babysitter gate runs only as a separate account
 (`requireSeparateAccount`, THREAT-MODEL C37) and its `failed` verdict is a
 `BabysitterFailure` of class `code`; completion validates a head merged by
 push-rejection recovery before it is pushed; the spelling and feedback lanes stop
-spending sessions after `MAX_PUBLICATION_DEFERRALS` (3) deferred or rejected
-rounds per key; a gate failure that reproduces on the base commit is
+spending sessions after `MAX_PUBLICATION_DEFERRALS` (3) rounds per key (spelling
+charges deferred and rejected heads, feedback only deferred ones); a gate failure that reproduces on the base commit is
 `unavailable`.
 
 In the CI lane an `unavailable` gate releases the PR: the local retry charge is
@@ -94,7 +94,7 @@ executed, an unavailable host, and Deno tests running in both an initial run and
 a repair.
 
 Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
-`docs/workflows/fleet-pr-babysitter.md`; coverage ledger
+`docs/workflows/fleet-pr-babysitter.md`, `docs/THREAT-MODEL.md` (control C37); coverage ledger
 `docs/audits/lib-sweep-coverage/top-up-4625.json`.
 
 ## Test Plan
@@ -126,21 +126,22 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
   `update_mode_docs_test.ts` (the three docs-pin tests are unchanged from
   `main`): passed.
 - `deno fmt --check` and `deno lint` on the changed `.ts` files: passed.
-- `./quality.sh` on this head: every stage passed except the parallel Deno test
-  pass, where 2 of 32,486 tests failed:
-  `completion - an unformatted Rust change is formatted and committed...` and
-  `completion - cargo fmt stages only the branch's .rs files...` in
-  `worker/deno/tests/completion_phase_repo_formatters_test.ts`. Both are
-  environmental
-  (`rustup could not choose a version of cargo-fmt ... no default
-  is configured`
-  on this host); this PR changes neither `repo_formatters.ts` nor that test. The
-  serial Deno pass did not run after that failure.
-- Mutation check: it could not judge mutants because its baseline run of the
-  importing tests includes `completion_phase_repo_formatters_test.ts`, which
-  fails on this host for the `cargo-fmt` reason above, and the check requires an
-  all-green baseline. It is unchanged from `main` and passes where a Rust
-  toolchain is configured; no line of this change was found unpinned.
+- `./quality.sh` on this head earlier failed only the parallel Deno test pass,
+  on two cargo-fmt tests that need a configured `rustup` default (the host had
+  none). Re-run on this head: `worker/deno/tests/completion_phase_repo_formatters_test.ts`
+  (8 tests at head, 8 passed). This PR changes neither `repo_formatters.ts` nor
+  that test.
+- Mutation check (review round 3): with the baseline green, the survivors were
+  `completion_phase.ts` (the HEAD read, the passed-head cache and the recovery
+  guard's options) and `fleet_pr_babysitter.ts` (`requireSeparateAccount`).
+  `worker/deno/tests/completion_phase_publication_validation_4625_test.ts`
+  (18 tests at head) now pins each: the HEAD read's cwd, exit code and output,
+  reuse of a passed head, the guard's `cwd`, `repo`, `repoConfigs`,
+  `branchName` and `validate`, and that a guard block ends the run without a
+  repair turn. Each was applied by hand and turned a test red. The
+  `requireSeparateAccount` mutants were already red under
+  `worker/deno/tests/fleet_pr_babysitter_validation_test.ts`, whose scenarios
+  run in a child `deno test` process the mutation check does not see.
 
 Not done: the agent's own pre-push hook still checks changed files only, so a
 commit the agent pushes itself is judged by the full gate after it has left the

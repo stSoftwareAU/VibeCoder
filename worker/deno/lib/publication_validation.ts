@@ -4,8 +4,8 @@
  * Every lane that pushes agent-authored work (issue completion, CI repair, PR
  * feedback, babysitter repair) asks the same question here: does the target
  * repository's own trusted gate (`./quality.sh`, in its configured Docker
- * image and with its declared credentials, exactly as the quality-gate phase
- * runs it) pass on the committed head about to be pushed?
+ * image and with its declared credentials, as the quality-gate phase runs it
+ * except that `requireSeparateAccount` refuses the runner account) pass on the committed head about to be pushed?
  *
  * The answer is one of three outcomes, and only `passed` publishes:
  *
