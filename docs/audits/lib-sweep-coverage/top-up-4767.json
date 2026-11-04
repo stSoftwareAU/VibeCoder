@@ -1,0 +1,12 @@
+{
+  "issue": 4767,
+  "chunk": "top-up-4767",
+  "title": "top-up: babysitter repair container launcher",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4767",
+  "definition": "worker/deno/lib/fleet_babysitter_container.ts, the host-side module that turns the worker's container launch plan into a babysitter repair run: it keeps the App key out of mounts, arguments and the runtime's environment, and runs with a time limit (Issue #4767)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/fleet_babysitter_container.ts"
+  ],
+  "sweptAt": "8c5197ef89ec2a7a5e341bedf7bb0af277c3ebc7"
+}
