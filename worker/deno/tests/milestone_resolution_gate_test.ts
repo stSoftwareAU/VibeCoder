@@ -246,6 +246,33 @@ Deno.test("verifyResolvedTree - each task is given only the budget that is left"
   );
 });
 
+Deno.test("verifyResolvedTree - a type check that takes most of the budget does not reduce the budget of the tasks after it (Issue #4787)", async () => {
+  // The type check consumes 800 s of the 900 s budget. The budget starts once
+  // it passes, so the first task after it still gets the whole budget.
+  let clockMs = 0;
+  const clock = () => clockMs;
+  const typeCheck: MergeGateFn = () => {
+    clockMs += 800_000;
+    return Promise.resolve({
+      status: "passed" as const,
+      detail: "deno task check passed",
+      output: "",
+    });
+  };
+  const budgets: number[] = [];
+  const { outcome } = await gate(
+    { check: "deno check", "test:unit": "deno test" },
+    (task) => {
+      budgets.push(task.timeoutMs);
+      return Promise.resolve({ code: 0, output: "" });
+    },
+    { clock, typeCheck },
+  );
+
+  assertEquals(outcome.status, "passed", outcome.detail);
+  assertEquals(budgets, [RESOLUTION_GATE_BUDGET_MS]);
+});
+
 Deno.test("verifyResolvedTree - an unreadable tree fails rather than being skipped", async () => {
   const outcome = await verifyResolvedTree(
     "/nonexistent/issue-1559",

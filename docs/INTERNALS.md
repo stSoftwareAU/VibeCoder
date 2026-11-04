@@ -4562,9 +4562,13 @@ the gate would otherwise refuse the identical union every sync cycle
 **Every automatic resolution is verified before it is pushed**
 ([milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)):
 the merged tree must pass the repository's own Issue #974 type check — reused,
-fallback and all, rather than reimplemented — its `check:manifests` task and its
-unit suite, inside one 15-minute budget so a sync cannot block the event loop.
-Both gates are ecosystem-aware (Issue #2138): a `Cargo.toml` is verified with
+fallback and all, rather than reimplemented — and then its `check:manifests`
+task and its unit suite. Those last two run inside one 15-minute budget that
+starts once the type check has passed, so a sync cannot block the event loop.
+The type check has its own limit, set by toolchain: 300 s for a Deno project
+(`MERGE_GATE_TIMEOUT_MS`) and 900 s for a Cargo project
+(`CARGO_MERGE_GATE_TIMEOUT_MS`, Issue #4787). Both gates are ecosystem-aware
+(Issue #2138): a `Cargo.toml` is verified with
 `cargo check --workspace --all-targets` and `cargo test --workspace`, `--locked`
 when a `Cargo.lock` is committed, exactly as a `deno.json(c)` is verified with
 `deno task`. A repository whose suite runs through its own `quality.sh` rather
@@ -4829,24 +4833,25 @@ flowchart TD
 Three properties matter:
 
 - **Nothing unverified is published.** A check that cannot be run — a spawn
-  failure, a working tree that cannot be read — counts as a failure, not a pass:
-  absence of a failure is not success. A Deno check that times out past
-  `MERGE_GATE_TIMEOUT_MS` is such a failure too. The deliberate exceptions are
-  the merge-only cycle of Issue #4326 on a tree that holds a cargo project,
-  described after this list; a cargo check or cargo test that times out (Issue
-  #4786), which is left to CI because a timeout says nothing about the
-  resolution; and a Deno check whose remote module host this host cannot reach,
-  which is reported as not run rather than counted as passed. In the resolution
-  gate (Issue #4422, described in the merge-down section above) the resolution
-  lands with `suiteLeftToCi` and the `TESTS LEFT TO CI:` note, naming such a
-  task, unless the type check was also left to CI, when the note starts
-  `CHECK LEFT TO CI:` and its detail names the task. `checkMergedTree` leaves
-  such a type check to CI too (Issue #4451). When another project's check
-  passed, the verdict is `passed` with `checkLeftToCi` set, and the push carries
-  a `CHECK LEFT TO CI:` note (Issue #4444). When nothing else was checked, the
-  verdict is `skipped`: on a clean merge the tree is pushed with the `UNGATED:`
-  note, like the flowchart's no-Deno-project path, and only the resolution path
-  (`verifyResolvedTree`) refuses it.
+  failure, a timeout past its limit (300 s for a Deno project,
+  `MERGE_GATE_TIMEOUT_MS`; 900 s for a Cargo project,
+  `CARGO_MERGE_GATE_TIMEOUT_MS`, Issue #4787), a working tree that cannot be
+  read — counts as a failure, not a pass: absence of a failure is not success.
+  The deliberate exceptions are the merge-only cycle of Issue #4326 on a tree
+  that holds a cargo project, described after this list; a cargo check that
+  still times out after one retry (Issue #4786), which is left to CI because a
+  timeout says nothing about the resolution; and a Deno check whose remote
+  module host this host cannot reach, which is reported as not run rather than
+  counted as passed. In the resolution gate (Issue #4422, described in the
+  merge-down section above) the resolution lands with `suiteLeftToCi` and the
+  `TESTS LEFT TO CI:` note, naming such a task, unless the type check was also
+  left to CI, when the note starts `CHECK LEFT TO CI:` and its detail names the
+  task. `checkMergedTree` leaves such a type check to CI too (Issue #4451). When
+  another project's check passed, the verdict is `passed` with `checkLeftToCi`
+  set, and the push carries a `CHECK LEFT TO CI:` note (Issue #4444). When
+  nothing else was checked, the verdict is `skipped`: on a clean merge the tree
+  is pushed with the `UNGATED:` note, like the flowchart's no-Deno-project path,
+  and only the resolution path (`verifyResolvedTree`) refuses it.
 - **The refusal leaves no residue.** The local branch is reset to the commit it
   stood at before the merge, so the next cycle starts from the remote head
   rather than a half-merged tree. The pre-merge SHA is read _before_ merging and

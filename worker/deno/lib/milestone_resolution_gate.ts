@@ -30,6 +30,12 @@
  * than as passed, and it is not failed: a tree that passes every other task is
  * still pushed. A failure of any other kind still refuses the resolution.
  *
+ * The Issue #974 type check runs first and has its own limit,
+ * `typeCheckTimeoutMs` (300 s for Deno, 900 s for Cargo; Issue #4787). The
+ * verification budget, {@link RESOLUTION_GATE_BUDGET_MS}, starts once that
+ * check has passed and covers only the tasks after it, so a long type check
+ * does not leave a later task unreached.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -62,6 +68,11 @@ import {
  * sync cycle, and three fifteen-minute tasks per project would block the loop
  * the milestone sync is supposed to stay out of the way of. A verification
  * that does not finish inside it is a failure, never a pass.
+ *
+ * The budget covers only the tasks after the Issue #974 type check, and starts
+ * once that check has passed (Issue #4787). The type check has its own limit,
+ * `typeCheckTimeoutMs` in milestone_merge_gate.ts, so a long cold cargo check
+ * cannot leave `cargo test` unreached.
  */
 export const RESOLUTION_GATE_BUDGET_MS = 900_000;
 
@@ -291,8 +302,6 @@ export async function verifyResolvedTree(
     };
   }
 
-  const deadline = now() + RESOLUTION_GATE_BUDGET_MS;
-
   // The Issue #974 gate first, exactly as it stands — including its fallback
   // to a whole-tree `deno check` where the manifest names no `check` task.
   // Re-implementing it here would quietly drop that fallback, and a
@@ -306,6 +315,11 @@ export async function verifyResolvedTree(
       ...(typed.cargoSkipped ? { cargoSkipped: true } : {}),
     };
   }
+
+  // The budget starts after the type check, which has its own limit, so a long
+  // cold cargo check does not spend the budget of the tasks after it (Issue
+  // #4787).
+  const deadline = now() + RESOLUTION_GATE_BUDGET_MS;
 
   const ran: string[] = [typed.detail];
   // Tasks the host could not run for want of remote modules (Issue #4422).

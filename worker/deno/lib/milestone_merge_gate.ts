@@ -50,8 +50,30 @@ export {
   type ProjectManifest,
 } from "./project_manifests.ts";
 
-/** How long the merged-tree type check may run before it is killed. */
+/**
+ * How long a Deno project's merged-tree type check may run before it is
+ * killed. A Cargo project has its own limit, {@link CARGO_MERGE_GATE_TIMEOUT_MS}.
+ */
 export const MERGE_GATE_TIMEOUT_MS = 300_000;
+
+/**
+ * How long a Cargo project's merged-tree type check may run before it is
+ * killed (Issue #4787). A cold `cargo check --workspace --all-targets` of a
+ * large workspace outruns the Deno limit, so a Cargo tree was killed at that
+ * limit and refused on every cycle.
+ */
+export const CARGO_MERGE_GATE_TIMEOUT_MS = 900_000;
+
+/**
+ * The time limit for a project's type check, chosen by its toolchain: the
+ * Cargo limit for `cargo`, and {@link MERGE_GATE_TIMEOUT_MS} otherwise.
+ *
+ * @param kind - The toolchain that checks the project
+ * @returns The limit, in milliseconds
+ */
+export function typeCheckTimeoutMs(kind: ProjectKind): number {
+  return kind === "cargo" ? CARGO_MERGE_GATE_TIMEOUT_MS : MERGE_GATE_TIMEOUT_MS;
+}
 
 /** Error name carried by the refusal, so callers can escalate on it. */
 export const MILESTONE_MERGE_GATE_ERROR = "MilestoneMergeGateFailure";
@@ -456,15 +478,23 @@ export function detectRemoteModuleGap(
   return undefined;
 }
 
-/** Spawn the repository's own check with a bounded timeout. */
-const spawnTypeCheck: TypeCheckRunner = async (project) => {
+/**
+ * Spawn the repository's own check with a bounded timeout, the limit for its
+ * toolchain (Issue #4787).
+ */
+export const spawnTypeCheck = async (
+  project: TypeCheckProject,
+  /** The command runner. Production uses the real one; tests inject a fake. */
+  run: typeof runRepositoryCommand = runRepositoryCommand,
+): ReturnType<TypeCheckRunner> => {
   const executable = project.kind === "cargo" ? "cargo" : Deno.execPath();
+  const limitMs = typeCheckTimeoutMs(project.kind);
   // The repository's own check runs with a stated environment and no parent
   // credential (Issue #4659). Build-cache placement for the checkout (Issue
   // #2247) is decided inside runRepositoryCommand, not here.
-  const result = await runRepositoryCommand(executable, project.args, {
+  const result = await run(executable, project.args, {
     cwd: project.dir,
-    timeoutMs: MERGE_GATE_TIMEOUT_MS,
+    timeoutMs: limitMs,
     manifests: await manifestsFor(project.kind, project.dir),
   });
   if (!result.ok) {
@@ -482,8 +512,7 @@ const spawnTypeCheck: TypeCheckRunner = async (project) => {
   if (timedOut) {
     return {
       code: 124,
-      output: `${output}\nType check timed out after ${MERGE_GATE_TIMEOUT_MS}ms`
-        .trim(),
+      output: `${output}\nType check timed out after ${limitMs}ms`.trim(),
       timedOut: true,
     };
   }
@@ -625,7 +654,7 @@ export async function checkMergedTree(
 
   const notes = [
     ...cargoTimedOut.map((where) =>
-      `${where} timed out after ${MERGE_GATE_TIMEOUT_MS}ms — left to CI (Issue #4786)`
+      `${where} timed out after ${CARGO_MERGE_GATE_TIMEOUT_MS}ms — left to CI (Issue #4786)`
     ),
     ...(skippedCargo ? [`${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`] : []),
     ...leftToCi.map((note) => `${note} — left to CI (Issue #4422)`),
