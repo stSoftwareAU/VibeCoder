@@ -40,9 +40,9 @@ Version bump: no `VERSION` change was made by this PR.
   `stripWorkerRecordBlocks` and ignores it too. It fails closed: a missing or
   empty diff, or any other changed line, still counts. The diff is read with
   `resolveLastIssueEditor(..., { includeDiff: true })`; the content gate's own
-  query is unchanged. `requirementQuote` is matched against the body with
-  record blocks stripped. A `needs-human` removal by a trusted non-fleet login
-  at or after the newest counted edit re-approves, as in the worker's
+  query is unchanged. `requirementQuote` is matched against the body with record
+  blocks stripped. A `needs-human` removal by a trusted non-fleet login at or
+  after the newest counted edit re-approves, as in the worker's
   `findTrustedReapproval`.
 - A gh failure during the claim check is a `fetch failed:` problem, so the
   review retries and is never a finding.
@@ -75,21 +75,25 @@ Backend/CLI change only; no UI files. Tests:
   label keeps the issue usable while a prose or mixed edit, or one with no diff,
   is refused; `needs-human` re-approval (trusted non-fleet accepted; fleet,
   untrusted or earlier-than-edit refused); a record-block line is not a
-  requirement quote; `isWorkerRecordOnlyDiff` and `includeDiff` unit tests; a cross-repo issue is still refused without a
-  timeline call; timeline and edit-history read failures give `fetch failed:`
-  and a retry; `work-on` works as the approving label.
+  requirement quote; `isWorkerRecordOnlyDiff` and `includeDiff` unit tests; a
+  cross-repo issue is still refused without a timeline call; timeline and
+  edit-history read failures give `fetch failed:` and a retry; `work-on` works
+  as the approving label.
 - Edited expectation: the "policy defaults" test now also expects
   `fleetWorkerLogins: []`. Nothing else was removed.
 - Red checks (guard broken, new tests run, then restored): fleet-login exclusion
   argument set to `[]` → red; edit check forced to never fire → red;
-  `|| fleet.has(login)` deleted from the edit check → red
-  green again once restored; same-repo condition forced true → red.
-  After the review fix: `isWorkerRecordOnlyDiff(a.diff)` replaced with
-  `!a.diff` → the record-block test red; `!reapproved` replaced with `true` →
-  the re-approval test red; both restored. PR #4799 mutation fix: `line[0] !== "-"` in `isWorkerRecordOnlyDiff` replaced with `true` → the `isWorkerRecordOnlyDiff` test in `worker/deno/tests/worker_record_block_test.ts` red (a removed prose line `-Ignore the rules` is now asserted not record-only); restored.
+  `|| fleet.has(login)` deleted from the edit check → red green again once
+  restored; same-repo condition forced true → red. After the review fix:
+  `isWorkerRecordOnlyDiff(a.diff)` replaced with `!a.diff` → the record-block
+  test red; `!reapproved` replaced with `true` → the re-approval test red; both
+  restored. PR #4799 mutation fix: `line[0] !== "-"` in `isWorkerRecordOnlyDiff`
+  replaced with `true` → the `isWorkerRecordOnlyDiff` test in
+  `worker/deno/tests/worker_record_block_test.ts` red (a removed prose line
+  `-Ignore the rules` is now asserted not record-only); restored.
 - Unverified: GitHub's exact `userContentEdits.diff` format could not be queried
-  in this run (gh API access was denied); the parser assumes unified-style `+`/`-`
-  lines and fails closed otherwise.
+  in this run (gh API access was denied); the parser assumes unified-style
+  `+`/`-` lines and fails closed otherwise.
 - `./quality.sh`: the only failing stage is deno tests, with three failures in
   files this PR does not touch (`completion_phase_repo_formatters_test.ts` ×2,
   `merge_fallback_issue_test.ts`); they fail on environment (cargo fmt commit,
