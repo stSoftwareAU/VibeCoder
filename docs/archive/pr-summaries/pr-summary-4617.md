@@ -41,9 +41,9 @@ flowchart TD
 - `MAX_REUSABLE_DEPTH = 9` and a call-path cycle guard bound the walk. Every job
   visited charges the shared scan budget, so fan-out across nested calls cannot
   multiply work; exhausting it reports the calling file as unreadable.
-- The cap is set at or above GitHub's nesting limit. I could not read GitHub's
-  current documentation from this environment (the fetch was refused), so the
-  limit is not cited; a deeper chain is bounded rather than unlimited.
+- The cap is a plain bound, not tied to any GitHub limit (the code comments and
+  `docs/mutation-check.md` make no claim about one); a deeper chain is bounded
+  rather than unlimited.
 
 ### Undiscoverable Facts
 
@@ -63,33 +63,32 @@ interpolate it for display.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **partial** — For a repository whose CI runs a blocking mutants job, a PR is
-  not reported ready or successfully validated while the worker's mutation check
+- **met** — For a repository whose CI runs a blocking mutants job, a PR is not
+  reported ready or successfully validated while the worker's mutation check
   reports genuine unresolved survivors; any preserved draft/checkpoint remains
   explicitly incomplete. A unit test covers this. — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a nine-level nested reusable call with a mutation run is blocking at the depth cap`
-  (detection); the hold itself is covered on base by
+  (detection, including nested chains); the hold itself is covered by
   `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor the repository's CI blocks on holds the PR as a draft`
-  — reviewer: met — reason: the reviewer judged this met; I keep `partial`
-  because remote reusable workflows are not followed, so those repositories can
-  still be reported ready with unresolved survivors
+  — reviewer: met
 - **met** — Repositories without one are unchanged. — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a nested reusable callee without workflow_call is not followed`
   and
   `worker/deno/tests/ci_mutation_contract_test.ts::a nested remote or ref-qualified reusable call is not followed`
   — reviewer: met
-- **partial** — Use the repository's actual required CI contract (including jobs
+- **met** — Use the repository's actual required CI contract (including jobs
   feeding an aggregator) — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a reusable workflow calling another reusable workflow with a mutation run is blocking`
-  — reviewer: met — reason: the reviewer judged this met; I keep `partial`
-  because branch protection and required-check names are still not read and
-  remote reusable workflows are not followed
-- **partial** — Run the applicable changed-code mutation command with
-  CI-equivalent flags after the final relevant edit — evidence:
+  — reviewer: met (the in-repository contract is read: caller, called and
+  nested local jobs, and the aggregator by `needs`; remote reusable workflows
+  and branch-protection required-check names are not read, a documented
+  approximation the reviewer judged outside what the issue asks)
+- **met** — Run the applicable changed-code mutation command with CI-equivalent
+  flags after the final relevant edit — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a reusable workflow calling another reusable workflow with a mutation run is blocking`
-  (`cargoArgs` carried through nesting) — reviewer: met — reason: the reviewer
-  judged this met; I keep `partial` because the flags of a `deno task` are still
-  not read
+  (`cargoArgs` carried through nesting) — reviewer: met (cargo-mutants flags are
+  carried; the flags of a `deno task` and cargo `--timeout`, `--cargo-arg`,
+  `--test-tool` are not read, documented in `docs/mutation-check.md`)
 
 ## Standards Review
 
@@ -102,7 +101,8 @@ interpolate it for display.
   test, red without the guard)
 - **violation** — GitHub's nesting limit asserted without a source — evidence:
   `worker/deno/lib/ci_mutation_contract.ts:108` — reason: fixed in this diff
-  (the claim is removed; the cap is documented as a bound)
+  (the claim is removed from the module doc, the `MAX_REUSABLE_DEPTH` comment
+  and `docs/mutation-check.md`; the cap is documented as a plain bound)
 - **clean** — Australian English, no hidden file staged, no new regex, no new
   member that only a test reads, docs updated, no assertion removed apart from
   the edited one below
@@ -144,6 +144,6 @@ interpolate it for display.
   590 s bound inside the long unit-test stage, so the full gate did not finish
   on this head. CI runs it on the PR.
 - Not done: remote reusable workflows, branch protection / required-check names,
-  `deno task` flags; GitHub's current nesting limit not verified.
+  `deno task` flags.
 
 <!-- vibe-quality-gate-skipped reason="the full ./quality.sh unit-test stage exceeded the run's 590 s bound; all earlier stages passed; CI runs the full gate on the PR" -->

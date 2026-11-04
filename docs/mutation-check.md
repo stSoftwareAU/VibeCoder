@@ -78,12 +78,12 @@ A job that `uses:` a local reusable workflow (`./.github/workflows/<name>.yml`,
 or the same path after `$/`, ending in `.yml` or `.yaml`) also counts when that
 workflow declares `workflow_call` and one of its jobs runs the tool in the same
 way. A job of that workflow that calls another local reusable workflow the same
-way is followed too, up to nine callee levels (`MAX_REUSABLE_DEPTH`, a cap
-chosen at or above GitHub's documented nesting limit so a deeper chain is
-bounded rather than unlimited). A workflow already on the call path is not
-followed again, so a cycle ends. A `uses:` with an `@ref` is not followed, even
-on a local path. The job is reported as `caller job (reusable called.yml: inner
-job)`, with the caller's workflow file; a nested call repeats the form, as
+way is followed too, up to nine callee levels (`MAX_REUSABLE_DEPTH`, a plain
+bound so a deeper chain is bounded rather than unlimited). A workflow already on
+the call path is not followed again, so a cycle ends. A `uses:` with an `@ref`
+is not followed, even on a local path. The job is reported as
+`caller job (reusable called.yml: inner job)`, with the caller's workflow file;
+a nested call repeats the form, as
 `caller job (reusable a.yml: mid (reusable b.yml: inner job))`.
 The `cargo mutants` flags that choose the mutants or the build (`--package`,
 `--workspace`, `--features`, `--all-features`, `--no-default-features`,

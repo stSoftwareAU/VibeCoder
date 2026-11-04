@@ -19,9 +19,9 @@
  * - Local `./` or `$/` `.github/workflows/*.yml|yaml` callees (`uses:`) that
  *   declare `workflow_call` are followed without a ref, including nested local
  *   calls: a called job that calls another local workflow is followed up to
- *   `MAX_REUSABLE_DEPTH` (nine) callee levels, a cap chosen at or above
- *   GitHub's documented nesting limit so a deeper chain is bounded rather than
- *   unlimited, and a workflow already on the call path is not followed again.
+ *   `MAX_REUSABLE_DEPTH` (nine) callee levels, so a deeper chain is bounded
+ *   rather than unlimited, and a workflow already on the call path is not
+ *   followed again.
  *   Remote reusable workflows (`@ref` or
  *   `owner/repo/.github/workflows/...`) are not inspected.
  * - Only cargo-mutants (`cargo mutants` or `cargo-mutants`, optionally with a
@@ -102,8 +102,8 @@ const DENO_MUTATION_TASK = /\bdeno\s+task\s+\S*mutat\S*/i;
 const REUSABLE_CALL = /^\.github\/workflows\/([A-Za-z0-9._-]+\.ya?ml)$/;
 /**
  * Most local reusable workflow callee levels followed below a PR-triggered
- * caller: nine. The cap is chosen at or above GitHub's documented nesting
- * limit, so a deeper chain is bounded rather than unlimited.
+ * caller: nine. A plain bound, so a deeper chain is bounded rather than
+ * unlimited.
  */
 const MAX_REUSABLE_DEPTH = 9;
 
