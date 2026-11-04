@@ -10,7 +10,10 @@ import { CODEX_OUTPUT_ADAPTER } from "../lib/codex_output_adapter.ts";
 import { loadConfig } from "../lib/config.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
-import { appendPrDiscoveryEvent } from "../lib/pr_discovery_events.ts";
+import {
+  appendPrDiscoveryEvent,
+  reportHostId,
+} from "../lib/pr_discovery_events.ts";
 import { escalationHostId } from "../lib/host_escalation.ts";
 import { isAuditJournalSwitchedOff } from "../lib/audit_hook.ts";
 import { AUDIT_JOURNAL_OFF_ENV_VAR } from "../lib/agent_env.ts";
@@ -2803,7 +2806,7 @@ export async function recordBabysitterDeployment(
     targetFile: `${stateDir}/deployment-health.json`,
     content: JSON.stringify({
       component: "babysitter",
-      hostId: escalationHostId(),
+      hostId: reportHostId(escalationHostId()),
       codeRevision,
       policyFingerprint,
       observedAt,
@@ -2886,7 +2889,7 @@ async function shiftLeftPass(
   }
 }
 
-async function pass(
+export async function pass(
   execute: boolean,
   login: string,
   app: BabysitterAppConfig,
@@ -2952,7 +2955,7 @@ async function pass(
             `${stateDir}/pr-discovery-events.jsonl`,
             {
               event: "discovered",
-              hostId: escalationHostId(),
+              hostId: reportHostId(escalationHostId()),
               repo,
               prNumber: pr.number,
               headSha: pr.headRefOid,
@@ -3007,7 +3010,7 @@ async function pass(
           `${stateDir}/pr-discovery-events.jsonl`,
           {
             event: "eligible",
-            hostId: escalationHostId(),
+            hostId: reportHostId(escalationHostId()),
             repo,
             prNumber: pr.number,
             headSha: pr.headRefOid,
@@ -3024,7 +3027,7 @@ async function pass(
                 `${stateDir}/pr-discovery-events.jsonl`,
                 {
                   event: "processed",
-                  hostId: escalationHostId(),
+                  hostId: reportHostId(escalationHostId()),
                   repo,
                   prNumber: pr.number,
                   headSha: pr.headRefOid,
