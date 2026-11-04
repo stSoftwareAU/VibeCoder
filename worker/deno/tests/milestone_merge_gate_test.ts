@@ -855,6 +855,34 @@ function recordingRun(
   };
 }
 
+Deno.test("checkMergedTree - a cargo check the real runner reports as timed out is retried once, then left to CI (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    const limits: number[] = [];
+    const outcome = await checkMergedTree(
+      dir,
+      (project) =>
+        spawnTypeCheck(
+          project,
+          recordingRun(limits, {
+            code: 0,
+            stdout: "",
+            stderr: "",
+            timedOut: true,
+          }),
+        ),
+      () => Promise.resolve(false),
+    );
+    assertEquals(limits, [
+      CARGO_MERGE_GATE_TIMEOUT_MS,
+      CARGO_MERGE_GATE_TIMEOUT_MS,
+    ]);
+    assert(outcome.status !== "failed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+  });
+});
+
 Deno.test("typeCheckTimeoutMs - cargo gets the Cargo limit, Deno keeps the Deno limit, and Cargo's is the longer (Issue #4787)", () => {
   assertEquals(typeCheckTimeoutMs("cargo"), CARGO_MERGE_GATE_TIMEOUT_MS);
   assertEquals(typeCheckTimeoutMs("deno"), MERGE_GATE_TIMEOUT_MS);
@@ -888,6 +916,9 @@ Deno.test("spawnTypeCheck - each toolchain's check gets its own limit, and a tim
     );
     assertEquals(cargoLimits, [CARGO_MERGE_GATE_TIMEOUT_MS]);
     assertEquals(cargoTimedOut.code, 124);
+    // The caller tells a timeout from a failing check by this flag alone
+    // (Issue #4786), so the production runner must set it.
+    assertEquals(cargoTimedOut.timedOut, true);
     assertStringIncludes(cargoTimedOut.output, "timed out after 900000ms");
     assert(!cargoTimedOut.output.includes("300000ms"));
 
@@ -903,6 +934,7 @@ Deno.test("spawnTypeCheck - each toolchain's check gets its own limit, and a tim
     );
     assertEquals(denoLimits, [MERGE_GATE_TIMEOUT_MS]);
     assertEquals(denoTimedOut.code, 124);
+    assertEquals(denoTimedOut.timedOut, true);
     assertStringIncludes(denoTimedOut.output, "timed out after 300000ms");
 
     // A check that finishes inside its limit keeps its code and its output.

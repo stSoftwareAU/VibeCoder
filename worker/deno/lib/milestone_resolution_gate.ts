@@ -207,12 +207,20 @@ function isUnitSuite(task: string): boolean {
   return (UNIT_SUITE_TASKS as readonly string[]).includes(task);
 }
 
-/** Spawn one of the repository's own tasks within the remaining budget. */
-const spawnTask: ResolutionTaskRunner = async (task) => {
+/**
+ * Spawn one of the repository's own tasks within the remaining budget. The
+ * command runner is injectable so a test can check what a timed-out task
+ * returns (Issue #4786), as {@link spawnTypeCheck}'s is (Issue #4787).
+ */
+export const spawnTask = async (
+  task: ResolutionTask,
+  /** The command runner. Production uses the real one; tests inject a fake. */
+  run: typeof runRepositoryCommand = runRepositoryCommand,
+): ReturnType<ResolutionTaskRunner> => {
   // The repository's own code runs with a stated environment and no parent
   // credential (Issue #4659). Build-cache placement for the checkout (Issue
   // #2247) is decided inside runRepositoryCommand, not here.
-  const result = await runRepositoryCommand(
+  const result = await run(
     task.kind === "script"
       ? "bash"
       : task.kind === "cargo"

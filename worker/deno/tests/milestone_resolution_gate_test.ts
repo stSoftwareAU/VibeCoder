@@ -15,8 +15,10 @@ import {
   RESOLUTION_GATE_BUDGET_MS,
   type ResolutionTask,
   resolutionTasksFor,
+  spawnTask,
   verifyResolvedTree,
 } from "../lib/milestone_resolution_gate.ts";
+import type { runRepositoryCommand } from "../lib/untrusted_gate_spawn.ts";
 import type {
   MergeGateFn,
   MergeGateOutcome,
@@ -922,4 +924,64 @@ Deno.test("verifyResolvedTree - script account access failure stays left to CI",
   assertEquals(outcome.status, "passed");
   assertStringIncludes(outcome.suiteLeftToCi ?? "", "probe 1");
   assertStringIncludes(outcome.suiteLeftToCi ?? "", "quality.sh");
+});
+
+/**
+ * A fake command runner (Issue #4786): records the limit it was handed and
+ * answers with the given reply, in the shape the real runner returns.
+ */
+function recordingTaskRun(
+  limits: number[],
+  reply: { code: number; stdout: string; stderr: string; timedOut: boolean },
+): typeof runRepositoryCommand {
+  return (_executable, _args, options) => {
+    limits.push(options.timeoutMs);
+    return Promise.resolve({
+      ok: true as const,
+      value: { success: reply.code === 0, ...reply },
+    });
+  };
+}
+
+Deno.test("spawnTask - a task that hits its limit comes back with timedOut set, and one that finishes does not (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-spawn-task-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const task: ResolutionTask = {
+      dir,
+      kind: "cargo",
+      task: "test",
+      args: ["test", "--workspace"],
+      timeoutMs: 120_000,
+    };
+
+    const limits: number[] = [];
+    const timedOut = await spawnTask(
+      task,
+      recordingTaskRun(limits, {
+        code: 0,
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+      }),
+    );
+    assertEquals(limits, [120_000]);
+    assertEquals(timedOut.code, 124);
+    // verifyResolvedTree leaves a cargo step to CI on this flag alone.
+    assertEquals(timedOut.timedOut, true);
+    assertStringIncludes(timedOut.output, "timed out after 120000ms");
+
+    const finished = await spawnTask(
+      task,
+      recordingTaskRun([], {
+        code: 101,
+        stdout: "",
+        stderr: "test result: FAILED",
+        timedOut: false,
+      }),
+    );
+    assertEquals(finished, { code: 101, output: "test result: FAILED" });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
