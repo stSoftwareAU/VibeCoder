@@ -38,6 +38,13 @@ export interface IssueEditActor {
   editedAt: number;
   /** Which record identified the actor. */
   source: "content-edit" | "rename";
+  /**
+   * GitHub's `diff` body snapshot. Present only when the caller asked
+   * for it with `includeDiff`; absent for renames and for the default query.
+   */
+  diff?: string;
+  /** Previous body snapshot, when available and ordered before this edit. */
+  previousDiff?: string;
 }
 
 /**
@@ -53,7 +60,12 @@ export interface IssueEditActor {
  * `actors`, never `actor` alone (Issue #3879).
  */
 export type IssueEditActorLookup =
-  | { ok: true; actor: IssueEditActor | null; actors: IssueEditActor[] }
+  | {
+    ok: true;
+    actor: IssueEditActor | null;
+    actors: IssueEditActor[];
+    bodyHistoryTruncated?: boolean;
+  }
   | { ok: false; error: Error };
 
 /**
@@ -64,6 +76,12 @@ export type IssueEditActorLookup =
 const EDIT_ACTOR_QUERY =
   `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(last:100){nodes{editedAt editor{login}}} timelineItems(last:100,itemTypes:[RENAMED_TITLE_EVENT]){nodes{... on RenamedTitleEvent{createdAt actor{login}}}}}}}`;
 
+/** The claim check needs the newest body snapshots, in GitHub's newest-first connection. */
+const EDIT_ACTOR_DIFF_QUERY = EDIT_ACTOR_QUERY.replace(
+  "userContentEdits(last:100){nodes{editedAt editor{login}}}",
+  "userContentEdits(first:100){totalCount nodes{editedAt diff editor{login}}}",
+);
+
 /** Shape of the GraphQL response consumed here. */
 interface EditActorResponse {
   errors?: unknown[];
@@ -71,8 +89,13 @@ interface EditActorResponse {
     repository?: {
       issue?: {
         userContentEdits?: {
+          totalCount?: number;
           nodes?: Array<
-            { editedAt?: string | null; editor?: { login?: string } | null }
+            {
+              editedAt?: string | null;
+              diff?: string | null;
+              editor?: { login?: string } | null;
+            }
           >;
         };
         timelineItems?: {
@@ -123,6 +146,8 @@ function byNewestFirst(a: IssueEditActor, b: IssueEditActor): number {
  * @param repo - Repository in "owner/repo" format
  * @param issueNumber - Issue number
  * @param ghFn - Injected `gh` CLI runner
+ * @param options - `includeDiff` also reads each body edit's `diff` text. Off
+ *   by default so the content-integrity gate's query stays small.
  * @returns Every recorded edit actor newest first (with `actor` as the newest
  *   and `null` when the issue has never been edited), or an error when the
  *   lookup could not be completed
@@ -131,6 +156,7 @@ export async function resolveLastIssueEditor(
   repo: string,
   issueNumber: number,
   ghFn: (args: string[]) => Promise<string>,
+  options?: { includeDiff?: boolean },
 ): Promise<IssueEditActorLookup> {
   const parts = splitRepo(repo);
   if (parts === null) {
@@ -144,7 +170,9 @@ export async function resolveLastIssueEditor(
         "api",
         "graphql",
         "-f",
-        `query=${EDIT_ACTOR_QUERY}`,
+        `query=${
+          options?.includeDiff ? EDIT_ACTOR_DIFF_QUERY : EDIT_ACTOR_QUERY
+        }`,
         "-F",
         `owner=${parts.owner}`,
         "-F",
@@ -202,13 +230,49 @@ export async function resolveLastIssueEditor(
 
   const candidates: IssueEditActor[] = [];
 
-  for (const node of issue.userContentEdits?.nodes ?? []) {
+  const totalCount = issue.userContentEdits?.totalCount;
+  if (
+    options?.includeDiff &&
+    (!Number.isInteger(totalCount) ||
+      totalCount! < (issue.userContentEdits?.nodes?.length ?? 0))
+  ) {
+    return {
+      ok: false,
+      error: new Error(
+        "Edit-actor query returned invalid userContentEdits totalCount",
+      ),
+    };
+  }
+  const bodyHistoryTruncated = options?.includeDiff &&
+    totalCount! > (issue.userContentEdits?.nodes?.length ?? 0);
+
+  const bodyNodes = [...(issue.userContentEdits?.nodes ?? [])].sort((a, b) =>
+    Date.parse(a?.editedAt ?? "") - Date.parse(b?.editedAt ?? "")
+  );
+  // A malformed timestamp makes adjacency uncertain; never exempt an edit.
+  const orderedBodies = bodyNodes.every((node) =>
+    Number.isFinite(Date.parse(node?.editedAt ?? ""))
+  );
+  for (const [index, node] of bodyNodes.entries()) {
     const editedAt = toUnixSeconds(node?.editedAt);
     if (editedAt === null) continue;
+    const previous = bodyNodes[index - 1];
+    const previousTime = previous?.editedAt
+      ? Date.parse(previous.editedAt)
+      : NaN;
+    const currentTime = node?.editedAt ? Date.parse(node.editedAt) : NaN;
     candidates.push({
       login: node?.editor?.login ?? "",
       editedAt,
       source: "content-edit",
+      ...(options?.includeDiff && typeof node?.diff === "string"
+        ? { diff: node.diff }
+        : {}),
+      ...(options?.includeDiff && orderedBodies &&
+          typeof previous?.diff === "string" &&
+          previousTime < currentTime
+        ? { previousDiff: previous.diff }
+        : {}),
     });
   }
 
@@ -222,11 +286,23 @@ export async function resolveLastIssueEditor(
     });
   }
 
-  if (candidates.length === 0) return { ok: true, actor: null, actors: [] };
+  if (candidates.length === 0) {
+    return {
+      ok: true,
+      actor: null,
+      actors: [],
+      ...(options?.includeDiff ? { bodyHistoryTruncated } : {}),
+    };
+  }
 
   // Issue #3879: return the whole history rather than reducing it. Callers that
   // gate on trust must see every editor; collapsing to the newest let a trusted
   // rename bless an untrusted body edit made before it.
   candidates.sort(byNewestFirst);
-  return { ok: true, actor: candidates[0] ?? null, actors: candidates };
+  return {
+    ok: true,
+    actor: candidates[0] ?? null,
+    actors: candidates,
+    ...(options?.includeDiff ? { bodyHistoryTruncated } : {}),
+  };
 }

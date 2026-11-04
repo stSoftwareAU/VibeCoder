@@ -11,9 +11,10 @@
  * Access failures leave commands to CI and never select the worker account.
  * A refusal names the topmost directory the account cannot traverse (Issue #4733).
  * A directory the account cannot write leaves a command to CI only for a command
- * that writes there (cargo's Cargo.lock, a repository script). A read-only
- * command (a Deno type check with a committed deno.lock) is not affected, because directories git creates
- * inside a clone are not group-writable (Issue #4782).
+ * that needs the write probe (cargo's Cargo.lock, a repository script). A Deno
+ * check with a committed deno.lock may run without it; its caller leaves a
+ * lockfile write refusal to CI. Git-created directories inside a clone are not
+ * group-writable (Issue #4782).
  * Only the absence of an agent account selects the restricted worker
  * environment. Declared credentials cannot, and neither can tree-controlled
  * layouts or permissions. Declared credentials reach an agent command through
@@ -220,9 +221,10 @@ function probeScript(
  * command to CI, without changing its account. A refusal names the topmost
  * directory the account cannot traverse, when the probe reports one. A
  * directory the account cannot write leaves a command to CI only when that
- * command writes there (cargo's Cargo.lock, a repository script); a read-only
- * command (a Deno type check with a committed deno.lock) is not affected, because directories git creates
- * inside a clone are not group-writable (Issue #4782).
+ * command needs the write probe (cargo's Cargo.lock, a repository script). A
+ * Deno check with a committed deno.lock may run without it; its caller leaves
+ * a lockfile write refusal to CI. Git-created directories inside a clone are
+ * not group-writable (Issue #4782).
  *
  * @param executable - The command, e.g. `cargo` or `deno`.
  * @param args - Its arguments.
@@ -230,9 +232,10 @@ function probeScript(
  * @param options.timeoutMs - The budget for the command itself.
  * @param options.manifests - Files the command reads from the checkout; each
  *   must be readable by the account the command runs as.
- * @param options.readOnlyCheckout - True only for a command that writes nothing
- *   into its directory (its caches live elsewhere, e.g. DENO_DIR). The probe
- *   then does not require the account to be able to write the directory.
+ * @param options.readOnlyCheckout - Allow a command to run without a writable
+ *   checkout directory. Its caller must leave any expected write refusal to CI
+ *   (caches live elsewhere, e.g. DENO_DIR). The probe does not require the
+ *   account to be able to write the directory.
  *   Omitted or false keeps the requirement, so a caller that forgets it fails
  *   closed to CI (Issue #4782).
  * @param deps - Injection seams. Production omits them.

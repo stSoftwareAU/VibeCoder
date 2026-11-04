@@ -94,6 +94,12 @@ directory was refused with `probe 3`.
   to CI; unrelated errors still fail. Coverage:
   `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a read-only lockfile write refusal is left to CI`.
   The test also checks the merged-tree outcome and unrelated failures.
+- Review fix: the lockfile-refusal fixture no longer writes inside the source
+  checkout, which the dropped agent may not write. The same refusal, skipped
+  outcome and unrelated-error assertions remain covered by
+  `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a read-only lockfile write refusal is left to CI`.
+  The `untrusted_gate_spawn.ts` comments now describe the caller handling a
+  possible lockfile write refusal.
 - Red check for the verifier fix: forcing `readOnlyCheckout` true for every Deno
   project turned the `spawnTypeCheck` test red; restored.
 - Red checks: making `runRepositoryCommand` always require write turned the

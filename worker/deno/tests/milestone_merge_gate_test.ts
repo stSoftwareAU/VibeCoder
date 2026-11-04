@@ -1037,8 +1037,7 @@ Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothin
 });
 
 Deno.test("spawnTypeCheck - a read-only lockfile write refusal is left to CI", async () => {
-  const dir = await Deno.makeTempDir({ dir: Deno.cwd() });
-  try {
+  await withTempDir(async (dir) => {
     await writeFile(`${dir}/app/deno.json`, "{}");
     await writeFile(`${dir}/app/deno.lock`, "{}");
     const project: TypeCheckProject = {
@@ -1084,7 +1083,5 @@ Deno.test("spawnTypeCheck - a read-only lockfile write refusal is left to CI", a
       );
       assertEquals(failure.accountUnavailable, undefined);
     }
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
+  });
 });
