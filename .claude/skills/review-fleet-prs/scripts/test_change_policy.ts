@@ -572,12 +572,16 @@ function neverExisted(where: string, fix?: string): Problem {
 }
 
 // Coverage: each entry is checked at the head; at least one must pass.
+// A gone entry naming a test file shows nothing was removed, so it never
+// counts as proof. It is reported only when no other entry in the note passes
+// (an extra renamed-test entry beside verified coverage does not fail the note).
 async function checkCoverage(
   note: TestChangeNote,
   ctx: Context,
   problems: Problem[],
 ): Promise<{ passed: TestCoverageRef[]; retry?: string }> {
   const passed: TestCoverageRef[] = [];
+  const goneTestProblems: Problem[] = [];
   const coverage = note.coverage ?? [];
   if (!SHA_PATTERN.test(ctx.pr.headSha)) {
     problems.push({
@@ -604,7 +608,7 @@ async function checkCoverage(
       ? plain(ref.path)
       : `${plain(ref.path)}::${plain(name)}`;
     if (ref.role === "gone" && isTestPath(ref.path)) {
-      problems.push({
+      goneTestProblems.push({
         problem:
           `gone coverage ${where} is a test file, so it does not show any functionality was removed`,
         fix:
@@ -720,6 +724,7 @@ async function checkCoverage(
       passed.push(ref);
     }
   }
+  if (passed.length === 0) problems.push(...goneTestProblems);
   return { passed };
 }
 

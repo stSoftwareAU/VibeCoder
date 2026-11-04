@@ -1223,6 +1223,47 @@ Deno.test("negative: a gone entry naming any test path is refused, a production 
   }
 });
 
+Deno.test("approval: a gone test-path entry beside verified existing coverage does not fail the note", async () => {
+  const removedTest = "tests/legacy_export_test.ts";
+  const pr = { testChanges: { removed: [removedTest], edited: [] } };
+  const gone = { role: "gone" as const, path: removedTest, name: "csv export" };
+  const existing = {
+    role: "existing" as const,
+    path: "tests/retry_test.ts",
+    name: "retries three times",
+  };
+  const { result, calls } = await assess([{
+    ...goneNote([gone, existing]),
+    file: removedTest,
+    remaining: "Retries remain covered by the existing test.",
+    verification: undefined,
+  }], { pr });
+  assertApproved(result);
+  assertEquals(result.approved[0]!.coverage, [
+    "existing: tests/retry_test.ts::retries three times",
+  ]);
+  // The gone test path is refused before any read: nothing was probed for it.
+  assertEquals(
+    contentsCalls(calls).filter((c) => (c[1] ?? "").includes(removedTest))
+      .length,
+    0,
+  );
+  // Swap the verified existing entry for one absent at the head: no entry
+  // passes, so the gone test-path finding is reported and nothing is approved.
+  const absent = await assess([{
+    ...goneNote([gone, {
+      role: "existing",
+      path: "tests/missing_test.ts",
+      name: "retries three times",
+    }]),
+    file: removedTest,
+    remaining: "Retries remain covered by the existing test.",
+    verification: undefined,
+  }], { pr });
+  assertFinding(absent.result, "is a test file");
+  assertEquals(absent.result.approved, []);
+});
+
 Deno.test("negative: when every coverage entry is gone, removal evidence in verification is required", async () => {
   const entry = { role: "gone" as const, path: "src/legacy_export.ts" };
   for (const verification of [undefined, "", "ok", "verified", "done it"]) {

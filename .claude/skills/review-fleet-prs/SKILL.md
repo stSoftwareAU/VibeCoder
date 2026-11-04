@@ -70,7 +70,7 @@ escalation.
      is a blocking finding (missing evidence).
    - A justified change is approved only on evidence the code verifies at the
      head: each `coverage` entry resolves (`replacement` and `existing` exist
-     and contain the given name; `gone` means absent or without the name); a
+     and contain the given name; `gone` (removed production code) means absent or without the name); a
      `requirementQuote` is verbatim in the governing issue (the PR's closing
      reference, the validated `issue-<N>-…` branch, or an anchored
      `Part of #N` line; its title or body, never comments, and only when the
