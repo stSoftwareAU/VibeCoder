@@ -135,9 +135,12 @@ traverse leaves the command to CI rather than running as the worker
 (Issue #4659). So does a command that writes into its directory, such as cargo's
 `Cargo.lock`, a task or the repository script, when the account cannot write
 it; a cargo target the account cannot write is given a target of its own
-instead. A Deno type check does not write into its project directory: it
-caches in `DENO_DIR`, and the directories git creates inside a clone are group
-read-only, so a Deno project in a sub-directory is still checked (Issue #4782).
+instead. A Deno type check caches in `DENO_DIR`, and the directories git
+creates inside a clone are group read-only, so a Deno project in a
+sub-directory with a committed `deno.lock` is still checked (Issue #4782). A
+Deno project that may write into its directory (no `deno.lock`, a
+`package.json`, or `nodeModulesDir` other than `none` or `manual`) keeps the
+write requirement and is left to CI when the account cannot write it.
 A milestone resolution whose every check is left to CI this way verified
 nothing and is refused as unverified (Issue #1559, #4761).
 

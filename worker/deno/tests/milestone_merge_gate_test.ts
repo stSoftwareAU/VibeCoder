@@ -954,29 +954,76 @@ Deno.test("spawnTypeCheck - each toolchain's check gets its own limit, and a tim
   });
 });
 
-Deno.test("spawnTypeCheck - a Deno check is read-only for the account, a cargo check keeps the write requirement (Issue #4782)", async () => {
-  await withTempDir(async (dir) => {
-    await writeFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
-    await writeFile(`${dir}/app/deno.json`, "{}");
-    const seen: (boolean | undefined)[] = [];
+Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothing into its directory, a cargo check keeps the write requirement (Issue #4782)", async () => {
+  const okResult = {
+    ok: true as const,
+    value: {
+      code: 0,
+      stdout: "",
+      stderr: "",
+      success: true,
+      timedOut: false,
+    },
+  };
+  const readOnlyFor = async (
+    files: Record<string, string>,
+    kind: "deno" | "cargo" = "deno",
+  ): Promise<boolean | undefined> => {
+    let seen: boolean | undefined;
     const run: typeof runRepositoryCommand = (_executable, _args, options) => {
-      seen.push(options.readOnlyCheckout);
-      return Promise.resolve({
-        ok: true as const,
-        value: {
-          code: 0,
-          stdout: "",
-          stderr: "",
-          success: true,
-          timedOut: false,
-        },
-      });
+      seen = options.readOnlyCheckout;
+      return Promise.resolve(okResult);
     };
-    await spawnTypeCheck(
-      { dir: `${dir}/app`, kind: "deno", args: ["check", "**/*.ts"] },
-      run,
-    );
-    await spawnTypeCheck({ dir, kind: "cargo", args: ["check"] }, run);
-    assertEquals(seen, [true, false]);
-  });
+    await withTempDir(async (dir) => {
+      for (const [name, body] of Object.entries(files)) {
+        await writeFile(`${dir}/app/${name}`, body);
+      }
+      await spawnTypeCheck({
+        dir: `${dir}/app`,
+        kind,
+        args: kind === "cargo" ? ["check"] : ["check", "**/*.ts"],
+      }, run);
+    });
+    return seen;
+  };
+  // A committed lockfile and nothing else that writes: read-only.
+  assertEquals(
+    await readOnlyFor({ "deno.json": "{}", "deno.lock": "{}" }),
+    true,
+  );
+  assertEquals(
+    await readOnlyFor({
+      "deno.jsonc": '{ // c\n "nodeModulesDir": "none" }',
+      "deno.lock": "{}",
+    }),
+    true,
+  );
+  // No lockfile: Deno may have to write one for an npm or remote import.
+  assertEquals(await readOnlyFor({ "deno.json": "{}" }), false);
+  // node_modules is written for "auto" and beside a package.json.
+  assertEquals(
+    await readOnlyFor({
+      "deno.json": '{"nodeModulesDir": "auto"}',
+      "deno.lock": "{}",
+    }),
+    false,
+  );
+  assertEquals(
+    await readOnlyFor({
+      "deno.json": "{}",
+      "deno.lock": "{}",
+      "package.json": "{}",
+    }),
+    false,
+  );
+  // A manifest that cannot be parsed fails closed.
+  assertEquals(
+    await readOnlyFor({ "deno.json": "{ nope", "deno.lock": "{}" }),
+    false,
+  );
+  // Cargo keeps the requirement even with a lockfile.
+  assertEquals(
+    await readOnlyFor({ "Cargo.toml": "", "Cargo.lock": "" }, "cargo"),
+    false,
+  );
 });

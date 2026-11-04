@@ -479,6 +479,43 @@ export function detectRemoteModuleGap(
 }
 
 /**
+ * Whether a Deno check in a directory can be trusted not to write into it
+ * (Issue #4782).
+ *
+ * Deno writes `deno.lock` when it has to create or update one, and writes
+ * `node_modules` for `nodeModulesDir: "auto"` or beside a `package.json`.
+ * Only a committed lockfile and none of those lets the check run in a
+ * directory the account cannot write. Anything else, or a manifest that cannot
+ * be read, keeps the write requirement, so it fails closed to CI.
+ *
+ * @param dir - The Deno project directory
+ * @returns True when the check writes nothing into {@link dir}
+ */
+export async function denoCheckLeavesDirUntouched(
+  dir: string,
+): Promise<boolean> {
+  if (!(await isFile(`${dir}/deno.lock`))) return false;
+  if (await isFile(`${dir}/package.json`)) return false;
+  for (const name of ["deno.json", "deno.jsonc"]) {
+    if (!(await isFile(`${dir}/${name}`))) continue;
+    try {
+      const config = JSON.parse(
+        stripJsonc(await Deno.readTextFile(`${dir}/${name}`)),
+      );
+      const mode = config?.nodeModulesDir;
+      if (
+        mode !== undefined && mode !== "none" && mode !== "manual" &&
+        mode !== false
+      ) return false;
+    } catch {
+      return false;
+    }
+    break;
+  }
+  return true;
+}
+
+/**
  * Spawn the repository's own check with a bounded timeout, the limit for its
  * toolchain (Issue #4787).
  */
@@ -492,14 +529,16 @@ export const spawnTypeCheck = async (
   // The repository's own check runs with a stated environment and no parent
   // credential (Issue #4659). Build-cache placement for the checkout (Issue
   // #2247) is decided inside runRepositoryCommand, not here. A Deno check
-  // writes its cache to DENO_DIR, not the project, so it does not need the
-  // project directory writable by the account (Issue #4782). A cargo check
-  // writes Cargo.lock there, so it keeps the requirement.
+  // writes its cache to DENO_DIR, so it does not need the project directory
+  // writable by the account, unless it must write deno.lock or node_modules
+  // there (Issue #4782). A cargo check writes Cargo.lock, so it keeps the
+  // requirement.
   const result = await run(executable, project.args, {
     cwd: project.dir,
     timeoutMs: limitMs,
     manifests: await manifestsFor(project.kind, project.dir),
-    readOnlyCheckout: project.kind === "deno",
+    readOnlyCheckout: project.kind === "deno" &&
+      await denoCheckLeavesDirUntouched(project.dir),
   });
   if (!result.ok) {
     return {

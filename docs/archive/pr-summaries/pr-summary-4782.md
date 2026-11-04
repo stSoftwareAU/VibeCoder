@@ -7,8 +7,11 @@ sub-directory (for example `worker/deno/deno.json`) was left to CI, and a tree
 whose only projects live in sub-directories came back `skipped` and was refused
 as unverified. `runRepositoryCommand` now takes `readOnlyCheckout`; when true
 the probe does not require the directory to be writable. `spawnTypeCheck` sets
-it for Deno projects, which cache in `DENO_DIR` and not in the project.
-Everything else keeps the requirement. Closes #4782.
+it for a Deno project that writes nothing into its directory: one with a
+committed `deno.lock`, no `package.json`, and no `nodeModulesDir` other than
+`none`/`manual` (`denoCheckLeavesDirUntouched`). A Deno project that may write
+`deno.lock` or `node_modules`, and everything else, keeps the requirement.
+Closes #4782.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
@@ -16,7 +19,7 @@ the final version.
 ```mermaid
 flowchart LR
     A[runRepositoryCommand] --> B{readOnlyCheckout}
-    B -- "true: Deno type check" --> C[probe: traverse and read only]
+    B -- "true: Deno check, committed deno.lock, no node_modules" --> C[probe: traverse and read only]
     B -- "false: cargo, tasks, script" --> D[probe: traverse, read and write the directory]
     C --> E[run as agent]
     D -- writable --> E
@@ -42,10 +45,16 @@ flowchart LR
   pins (`a nested read-only agent checkout without Cargo.lock is left to CI`).
   `spawnTask` (resolution tasks and `quality.sh`) is not changed: those commands
   may write into the project.
-- `spawnTypeCheck` sets the option for every Deno project, which includes a
-  repository-defined `deno task check`. A task that writes into its own
-  directory now fails as a check instead of being left to CI; the issue states
-  such tasks write to `DENO_DIR`, not the project.
+- `spawnTypeCheck` sets the option only when `denoCheckLeavesDirUntouched` says
+  so. Deno writes `deno.lock` when it must create or update one (reproduced by
+  the pre-PR verifier: exit 1, `Failed writing lockfile ... Permission denied`
+  in a `0555` directory with an npm import and no lockfile) and writes
+  `node_modules` for `nodeModulesDir: auto` or beside a `package.json`. A
+  project without a committed `deno.lock`, with a `package.json`, with such a
+  `nodeModulesDir`, or with a manifest that cannot be parsed keeps the write
+  requirement and is left to CI, as before this change. Deno resolving a
+  lockfile from a parent workspace root is not recognised, so such a member is
+  conservatively left to CI.
 
 ### Undiscoverable Facts
 
@@ -68,14 +77,26 @@ directory was refused with `probe 3`.
   gives probe exit 0 with the option, 3 without); the real-sudo end-to-end test
   above.
 - Added to `worker/deno/tests/milestone_merge_gate_test.ts`: `spawnTypeCheck`
-  passes `readOnlyCheckout: true` for a Deno project and false for a cargo
-  project.
+  passes `readOnlyCheckout: true` for a Deno project with a committed
+  `deno.lock`, and false for: no lockfile (the verifier's finding),
+  `nodeModulesDir: "auto"`, a `package.json`, an unparseable manifest, and a
+  cargo project.
+- Red check for the verifier fix: forcing `readOnlyCheckout` true for every Deno
+  project turned the `spawnTypeCheck` test red; restored.
 - Red checks: making `runRepositoryCommand` always require write turned the
   three untrusted_gate_spawn tests red; making `spawnTypeCheck` stop passing the
   option turned the merge-gate test red. Both restored.
 - Existing tests are unchanged, none edited; callers of `runRepositoryCommand`
   checked: `spawnTypeCheck` (passes it for Deno) and `spawnTask` (not passed,
   keeps the requirement).
+- Mutation check: its report said the baseline tests failed before any mutation
+  (a list of 20 test files). They pass at the head here:
+  `deno test -A` over `tests/untrusted_gate_spawn_test.ts` and
+  `tests/milestone_merge_gate_test.ts` (92 passed, 0 failed) and `deno task test:unit` over
+  `tests/project_manifests_4413_test.ts`, `tests/heavy_build_gate_3178_test.ts`,
+  `tests/milestone_sync_gate_repair_test.ts` (58 passed). The failure did not
+  reproduce, so it is an environment fault of the mutation run, not a surviving
+  mutant; no mutant was judged.
 - Passed: `deno task test:unit` over `tests/untrusted_gate_spawn_test.ts`,
   `tests/milestone_merge_gate_test.ts`,
   `tests/milestone_resolution_gate_test.ts` (77 passed, 0 failed in parallel; 55
@@ -91,6 +112,7 @@ directory was refused with `probe 3`.
 
 ## Not done
 
-- A Deno project that needs a lockfile written (a remote import with no
-  `deno.lock`) was not exercised in a read-only directory: no network here.
+- The no-lockfile case is pinned at the option boundary (`spawnTypeCheck` passes
+  `false`) and the probe text/real-`sh` tests cover that `false` keeps
+  `test -w`; no remote-import Deno run was made here (no network).
 - No fleet host was re-run.

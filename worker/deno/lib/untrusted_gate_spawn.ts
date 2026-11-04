@@ -12,7 +12,7 @@
  * A refusal names the topmost directory the account cannot traverse (Issue #4733).
  * A directory the account cannot write leaves a command to CI only for a command
  * that writes there (cargo's Cargo.lock, a repository script). A read-only
- * command (a Deno type check) is not affected, because directories git creates
+ * command (a Deno type check with a committed deno.lock) is not affected, because directories git creates
  * inside a clone are not group-writable (Issue #4782).
  * Only the absence of an agent account selects the restricted worker
  * environment. Declared credentials cannot, and neither can tree-controlled
@@ -221,7 +221,7 @@ function probeScript(
  * directory the account cannot traverse, when the probe reports one. A
  * directory the account cannot write leaves a command to CI only when that
  * command writes there (cargo's Cargo.lock, a repository script); a read-only
- * command (a Deno type check) is not affected, because directories git creates
+ * command (a Deno type check with a committed deno.lock) is not affected, because directories git creates
  * inside a clone are not group-writable (Issue #4782).
  *
  * @param executable - The command, e.g. `cargo` or `deno`.
