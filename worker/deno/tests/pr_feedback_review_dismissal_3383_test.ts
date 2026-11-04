@@ -359,8 +359,8 @@ async function runScenario(options: RunOptions) {
           if (options.finaliseError) {
             return { ok: false, error: new Error(options.finaliseError) };
           }
-          if (options.feedbackVerifierFn && args[7]) {
-            const verdict = await args[7]();
+          if (options.feedbackVerifierFn && args[8]) {
+            const verdict = await args[8]();
             if (!verdict.ok) return verdict;
           }
           options.events.push("commitAndPushPending");

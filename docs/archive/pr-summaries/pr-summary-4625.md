@@ -90,6 +90,11 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
 
 ## Test Plan
 
+- CI repair: the review-dismissal scenario now invokes the separate verifier
+  hook passed to `commitAndPushPending`, rather than the publication guard.
+  The existing verifier rejection, recovery and body-sync assertions remain
+  covered by `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts::review-fix verifier - recovery must clear before pushing`
+  and the other scenarios in that file. No mirrored rule changed.
 - CI repair: the feedback and CI self-push tests now inject a passing
   publication validator and assert it runs once. Their mocked pushes do not
   invoke the guard, and their temporary work directories are not repositories.
