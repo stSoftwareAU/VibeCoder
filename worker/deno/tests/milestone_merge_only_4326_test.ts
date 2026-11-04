@@ -811,11 +811,11 @@ Deno.test("merge-only e2e - root Cargo cannot hide a failing nested Deno resolut
   });
   try {
     await Deno.mkdir(`${f.clone}/web`);
+    // Committed and pushed, so it must already satisfy the pre-push `deno fmt
+    // --check` gate (Issue #4787).
     await Deno.writeTextFile(
       `${f.clone}/web/deno.json`,
-      JSON.stringify({
-        tasks: { check: "deno check main.ts", "test:unit": "deno test" },
-      }),
+      '{ "tasks": { "check": "deno check main.ts", "test:unit": "deno test" } }\n',
     );
     await git(["add", "web/deno.json"], f.clone);
     await git(["commit", "-m", "nested Deno project"], f.clone);
