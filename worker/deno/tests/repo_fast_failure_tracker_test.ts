@@ -349,6 +349,23 @@ Deno.test("diagnosticErrorLine - Git checkout's Aborting trailer preserves its c
   });
 });
 
+Deno.test("diagnosticErrorLine - a refused merge keeps its cause, not the advice and Aborting", () => {
+  const stderr =
+    "error: Your local changes to the following files would be overwritten by merge:\n\ttracked.txt\nPlease commit your changes or stash them before you merge.\nAborting";
+  const detail = diagnosticErrorLine(stderr);
+  assertStringIncludes(detail, "Your local changes");
+  assertEquals(
+    detail.includes("Aborting"),
+    false,
+    "the generic trailer is not diagnostic",
+  );
+  assertEquals(
+    detail.includes("Please commit"),
+    false,
+    "the merge advice is not diagnostic",
+  );
+});
+
 Deno.test("recordRepoFastFailure - three failures in the window back the repo off", async () => {
   await withWorkDir(async (workDir) => {
     const first = await record(workDir, 1_000);
