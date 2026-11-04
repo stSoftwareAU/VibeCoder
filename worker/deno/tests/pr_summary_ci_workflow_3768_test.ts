@@ -32,6 +32,25 @@ const CHECK_COMMAND = "deno task pr-summary-ci";
 const BASE_REF_EXPR = "${{ github.base_ref }}";
 const HEAD_REF_EXPR = "${{ github.head_ref }}";
 
+Deno.test("PR summary CI task runs git with restricted environment permissions", async () => {
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: [
+      "task",
+      "pr-summary-ci",
+      "--base",
+      "main",
+      "--head-branch",
+      "non-issue-branch",
+    ],
+    cwd: `${REPO_ROOT}/worker/deno`,
+    clearEnv: true,
+    env: { PATH: Deno.env.get("PATH") ?? "" },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+});
+
 type Obj = Record<string, unknown>;
 
 function isRecord(value: unknown): value is Obj {
