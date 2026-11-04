@@ -74,7 +74,7 @@ scan-budget paragraph) and the module doc of
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — For a repository whose CI runs a blocking mutants job, a PR is not
+- **partial** — For a repository whose CI runs a blocking mutants job, a PR is not
   reported ready or successfully validated while the worker's mutation check
   reports genuine unresolved survivors; any preserved draft/checkpoint remains
   explicitly incomplete. A unit test covers this. — evidence:
@@ -82,7 +82,9 @@ scan-budget paragraph) and the module doc of
   extends detection to reusable-workflow jobs; the hold itself is covered on
   base by
   `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor the repository's CI blocks on holds the PR as a draft`
-  — reviewer: met
+  — reviewer: partial — reason: nested local and remote reusable-workflow
+  mutants jobs are not detected, so those repositories' PRs can still be
+  reported ready with unresolved survivors.
 - **met** — Repositories without one are unchanged. — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a remote or ref-qualified reusable workflow is not followed`
   and the other negatives — reviewer: met
