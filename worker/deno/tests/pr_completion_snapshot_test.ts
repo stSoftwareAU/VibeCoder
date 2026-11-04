@@ -1482,11 +1482,17 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
       "repos/org/repo/actions/runs?head_sha=sha2&per_page=100&page=1",
     ),
   );
+  assert(
+    fixture.calls.some((path) =>
+      path.startsWith("repos/org/repo/commits/sha2/check-runs?") &&
+      path.includes("filter=all")
+    ),
+  );
   assertEquals(snapshot.input.blockers, [{
     repo: REPO,
     prNumber: 1,
     blocker: "ci-failure",
-    startedAt: "2026-10-20T00:05:00Z",
+    startedAt: "2026-10-20T00:00:00Z",
     endedAt: "2026-10-20T00:20:00Z",
   }]);
   assertEquals(snapshot.input.regressions, [{
