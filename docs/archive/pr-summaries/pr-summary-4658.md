@@ -67,9 +67,9 @@ flowchart LR
 
 - **missing** — "Record trusted automation provenance for
   implementation/repair/review/dismissal/merge actions": reviewer reviews stay
-  on the lower-trust review log, dismissals through `pr_comments.ts` and milestone
-  rollback pushes stay `unknown` — reason: `pr_comments.ts` is shared with the
-  babysitter and the rollback push goes through `rollbackGitFn` in
+  on the lower-trust review log, dismissals through `pr_comments.ts` and
+  milestone rollback pushes stay `unknown` — reason: `pr_comments.ts` is shared
+  with the babysitter and the rollback push goes through `rollbackGitFn` in
   `lib/run_core_production_deps.ts`; neither is named by the hook yet.
 - **missing** — "genuinely owner-only exceptions": `--collect` still sets
   `ownerGateVerified` false and produces no hold blockers — reason: no recorded
@@ -100,11 +100,11 @@ flowchart LR
   no longer reached their guard were fixed and re-broken red.
 - Existing fixtures gained `merged` events, review `user.id` and check-run
   `conclusion` because those keys are now required. No assertion was removed.
-- Old-shape tests: `review-run.json` and `deployment-health.json` without
-  `host` still read as host-less rows; snapshot input without the new fields
-  reports unchanged values.
-- Targeted run on the final head: `deno task test:unit` over the ten files
-  above plus `tests/vibe_env_registry_test.ts` and
+- Old-shape tests: `review-run.json` and `deployment-health.json` without `host`
+  still read as host-less rows; snapshot input without the new fields reports
+  unchanged values.
+- Targeted run on the final head: `deno task test:unit` over the ten files above
+  plus `tests/vibe_env_registry_test.ts` and
   `tests/self_diagnostic_attestation_test.ts`: 243 passed, 0 failed.
 - <!-- vibe-quality-gate-skipped reason="`./quality.sh` hit its 590 s bound in the test stage; every stage before it passed (workflow hygiene, completeness, markdownlint, semgrep, mermaid); CI and the worker's own gate run the full suite" -->
   The full gate was not completed.
