@@ -146,6 +146,22 @@ export async function runPrCompletionCollect(
     };
   }
 
+  const ciBudgetRaw = args["ci-call-budget"];
+  const ciCallBudget = ciBudgetRaw === undefined
+    ? undefined
+    : Number(ciBudgetRaw);
+  if (
+    ciBudgetRaw !== undefined &&
+    ((typeof ciBudgetRaw !== "string" && typeof ciBudgetRaw !== "number") ||
+      !/^\d+$/.test(String(ciBudgetRaw)) || !Number.isSafeInteger(ciCallBudget))
+  ) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --ci-call-budget must be a non-negative integer",
+    };
+  }
+
   const observedAt = new Date().toISOString();
   const end = asText(args.end) ?? observedAt;
   if (!/^\d{4}-\d\d-\d\dT.*Z$/.test(end) || !Number.isFinite(Date.parse(end))) {
@@ -198,6 +214,7 @@ export async function runPrCompletionCollect(
       },
       ...(rolloutVerifiedAt !== undefined ? { rolloutVerifiedAt } : {}),
       ...(maxPrsPerRepo !== undefined ? { maxPrsPerRepo } : {}),
+      ...(ciCallBudget !== undefined ? { ciCallBudget } : {}),
       gh,
     });
     const report = buildPrCompletionReport(snapshot.input);

@@ -85,6 +85,8 @@ export interface PrCompletionInput {
     startedAt?: string | null;
     completedAt?: string | null;
   }>;
+  /** PRs whose CI history was truncated during collection. */
+  ciIncompletePrs?: Array<{ repo: string; prNumber: number }>;
   regressions: Array<{
     repo: string;
     prNumber: number;
@@ -165,8 +167,10 @@ export interface PrCompletionReport {
     observedAt: string;
     intervals: Record<string, { count: number; seconds: number }>;
     openIntervals: number;
+    ciFailureComplete: boolean;
   };
   regressions: {
+    postMergeCiComplete: boolean;
     observed: number;
     unresolved: number;
     attributed: number;
@@ -678,6 +682,18 @@ export function buildPrCompletionReport(
     }
   }
   defaultBranchChanges = deliveredKeys.size;
+  const incompleteCi = new Set(
+    (input.ciIncompletePrs ?? []).map((pr) => keyOf(pr.repo, pr.prNumber)),
+  );
+  const incompleteDelivered = new Set(
+    prs.filter((pr) =>
+      incompleteCi.has(keyOf(pr.repo, pr.number)) && pr.state === "merged" &&
+      pr.baseRef === pr.defaultBranch && pr.milestone !== true
+    ).map((pr) => pr.rollupRoot ?? keyOf(pr.repo, pr.number)),
+  );
+  const incompleteMerged = prs.some((pr) =>
+    pr.state === "merged" && incompleteCi.has(keyOf(pr.repo, pr.number))
+  );
 
   for (const run of input.ciRuns) {
     if (!run.runId || !Number.isSafeInteger(run.prNumber) || run.prNumber < 1) {
@@ -730,6 +746,7 @@ export function buildPrCompletionReport(
     observedAt: input.cohort.observedAt,
     intervals: {},
     openIntervals: 0,
+    ciFailureComplete: incompleteCi.size === 0,
   };
   for (const blocker of input.blockers) {
     if (!/^[a-z][a-z0-9_-]{0,63}$/.test(blocker.blocker)) {
@@ -894,17 +911,21 @@ export function buildPrCompletionReport(
           (jobRows.length > 0 || defaultBranchChanges === 0)
         ? knownJobMinutes.reduce((sum, value) => sum + value, 0)
         : null,
-      ciRunsPerDeliveredChange: defaultBranchChanges && primaryCiRows.length
-        ? primaryCiRows.length / defaultBranchChanges
-        : null,
-      ciMinutesPerDeliveredChange: defaultBranchChanges &&
+      ciRunsPerDeliveredChange:
+        incompleteDelivered.size === 0 && defaultBranchChanges &&
+          primaryCiRows.length
+          ? primaryCiRows.length / defaultBranchChanges
+          : null,
+      ciMinutesPerDeliveredChange:
+        incompleteDelivered.size === 0 && defaultBranchChanges &&
           primaryCiRows.length && knownCi.length === primaryCiRows.length
-        ? knownCi.reduce((sum, value) => sum + value, 0) /
-          defaultBranchChanges
-        : null,
+          ? knownCi.reduce((sum, value) => sum + value, 0) /
+            defaultBranchChanges
+          : null,
     },
     waiting,
     regressions: {
+      postMergeCiComplete: !incompleteMerged,
       observed: regressionRows.length,
       unresolved: regressionRows.filter((row) => !row.resolved).length,
       attributed,
@@ -920,10 +941,10 @@ export function buildPrCompletionReport(
       ).length,
       unlinkedActions,
       unknownCiDurations: primaryCiRows.length - knownCi.length,
-      deliveredChangesWithoutCiData: defaultBranchChanges &&
-          primaryCiRows.length === 0
+      deliveredChangesWithoutCiData: primaryCiRows.length === 0
         ? defaultBranchChanges
-        : 0,
+        : [...incompleteDelivered].filter((key) => deliveredKeys.has(key))
+          .length,
       excludedPrs,
       incompleteObservationWindow,
       truncatedRepos: [...truncatedRepos],

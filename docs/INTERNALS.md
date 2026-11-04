@@ -1220,9 +1220,8 @@ timestamp lies within ten minutes either side of `mergedAt`. An action stamped
 eleven minutes before or after the merge does not match, and nor does one on
 another head. A direct merge records its head when it is pinned with
 `--match-head-commit`. Auto-merge arming is recorded as `merge-arm` and never
-verifies a later merge. A verified, successful fleet disarm between the arm and
-GitHub's merge invalidates that arm. A later re-arm can match; failed disarms do
-not withdraw an arm. A merge entry written before merge entries carried a
+verifies a later merge; neither a disarm nor a re-arm verifies it. A merge entry
+written before merge entries carried a
 `headSha` (the pre-change shape) has no head to compare, so it never matches.
 Pre-change merge entries are therefore read as `unknown` for attribution: the
 GitHub merge stays `unknown`, and its PR is not counted as unattended on that
@@ -1344,6 +1343,11 @@ runs. Other checks on heads without workflow runs are not observed. A shared
 5,000-call CI budget bounds each collection; exhaustion leaves a per-PR coverage
 note and discards that PR's partial CI history. Workflow attempts and paginated
 jobs are read, including for open and closed-unmerged PRs.
+
+CI collection accepts `--ci-call-budget` (default 5000). A truncated PR is
+recorded in the snapshot; delivered CI ratios become unknown and the report
+marks CI-failure waiting and post-merge CI coverage incomplete as applicable.
+
 Merge-commit runs are read for post-merge regressions only, and are kept out of
 the CI history that feeds the cost totals. Shared evidence is deduplicated by repository, run and attempt. Truncated history
 and missing durations remain visible; cost totals are calculated for delivered

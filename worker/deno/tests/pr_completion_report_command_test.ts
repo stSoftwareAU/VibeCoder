@@ -135,6 +135,27 @@ Deno.test("pr-completion-report --collect rejects a --max-prs-per-repo that is n
   }
 });
 
+Deno.test("pr-completion-report --collect rejects an invalid CI call budget", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (const value of ["-1", "two", "1.5", true, ""]) {
+    const result = await runPrCompletionCollect(
+      {
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "ci-call-budget": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false);
+    assertStringIncludes(
+      result.message,
+      "--ci-call-budget must be a non-negative integer",
+    );
+  }
+});
+
 Deno.test("pr-completion-report --collect passes --max-prs-per-repo to the collector and reports the truncation", async () => {
   const dir = await Deno.makeTempDir();
   try {

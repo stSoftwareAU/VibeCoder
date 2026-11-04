@@ -1101,6 +1101,19 @@ Deno.test("collect - many commits require one CI listing and budget exhaustion i
   );
 });
 
+Deno.test("collect - incomplete CI is reflected in delivered metrics and coverage", async () => {
+  const fixture = emptyFixture({ pulls: { [REPO]: [pull(1)] } });
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(fixture), { ciCallBudget: 0 }),
+  );
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.coverage.deliveredChangesWithoutCiData, 1);
+  assertEquals(report.delivery.ciRunsPerDeliveredChange, null);
+  assertEquals(report.delivery.ciMinutesPerDeliveredChange, null);
+  assertEquals(report.waiting.ciFailureComplete, false);
+  assertEquals(report.regressions.postMergeCiComplete, false);
+});
+
 function options(
   gh: GhJson,
   extra: Partial<CollectOptions> = {},
@@ -3390,6 +3403,12 @@ Deno.test("collect - a page-truncated event list and a partial check-run list ar
   });
   const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
   const notes = snapshot.coverageNotes.join("\n");
+  assertEquals(snapshot.input.ciIncompletePrs, [{ repo: REPO, prNumber: 50 }]);
+  assertEquals(
+    buildPrCompletionReport(snapshot.input).coverage
+      .deliveredChangesWithoutCiData,
+    1,
+  );
   assertStringIncludes(notes, `${pk(50)}: reviews truncated after 10 pages`);
   assertStringIncludes(notes, `${pk(50)}: 1 of 3 check runs listed`);
 });

@@ -179,6 +179,26 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - CI history includes observed heads, workflow attempts and paged jobs`
   and `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a CI run without a completion time has no duration`.
   No duplicate CI collection implementation was found.
+- Review repair: CI collection records each PR whose budget, pagination or
+  attempt limit truncates CI. Delivered-change CI ratios are unknown when a
+  delivered PR is incomplete; coverage counts the affected delivered changes,
+  and waiting and post-merge regression results carry completeness flags.
+  `--ci-call-budget` configures the limit. Coverage:
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - incomplete CI is reflected in delivered metrics and coverage`
+  and `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a page-truncated event list and a partial check-run list are coverage notes`.
+  The merge-window documentation now agrees with the direct-merge matcher.
+  No duplicate CI completeness rule was found.
+- Review test-change evidence rerun: restoring `git_pull` to unknown makes
+  `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`
+  fail with actual `unknown`, expected `milestone`. Restoring fleet attribution
+  for unchained logs makes
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`
+  fail with actual `fleet`, expected `unknown`, and
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`
+  fail with actual zero, expected one unknown merge. The obsolete classifications
+  are replaced by the named classifications and unverified log handling; the
+  same tests cover the remaining behaviour.
+
 - Review repair validation: `deno fmt --check`, `deno lint` and the whole-tree
   `deno check` pass. The gate's `deno task test:unit` for the snapshot,
   issue-assignment and audit-hook suites passes (144 tests); markdownlint

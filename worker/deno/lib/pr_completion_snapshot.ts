@@ -842,6 +842,7 @@ async function ciRunsFor(
   headShas: string[],
   notes: string[],
   mergeCommit = false,
+  markIncomplete: () => void = () => {},
 ): Promise<CiRun[]> {
   const label = keyOf(record.repo, record.number);
   const rows: CiRun[] = [];
@@ -870,11 +871,13 @@ async function ciRunsFor(
       }
     }
     if (!complete) {
+      markIncomplete();
       notes.push(
         `${label}: ${source} history truncated for ${headSha ?? base}`,
       );
     }
     if (totalCount !== null && totalCount > items.length) {
+      markIncomplete();
       notes.push(
         `${label}: ${items.length} of ${totalCount} ${source} listed for ${
           headSha ?? base
@@ -950,6 +953,7 @@ async function ciRunsFor(
       : 1;
     const attemptLimit = 100;
     if (latestAttempt > attemptLimit) {
+      markIncomplete();
       notes.push(
         `${label}: workflow run ${runId} has ${latestAttempt} attempts; history truncated at ${attemptLimit}`,
       );
@@ -1748,8 +1752,8 @@ export async function collectPrCompletionSnapshot(
   ];
   const fleetByPr = new Map<string, TrustedPrAction[]>();
   for (const action of verifiedFleet) {
-    // A recorded withdrawal invalidates earlier merge arms, but remains in
-    // the output history. Failed withdrawals and later re-arms do not cancel.
+    // A successful withdrawal before the GitHub merge invalidates an earlier
+    // direct merge action; the withdrawal remains in the output history.
     if (
       action.kind === "merge" &&
       linked.some(({ entry, verified }) =>
@@ -1787,6 +1791,7 @@ export async function collectPrCompletionSnapshot(
   const blockers: Blocker[] = [];
   const ciRuns: CiRun[] = [];
   const postMergeRunsByPr = new Map<string, CiRun[]>();
+  const ciIncompletePrs = new Map<string, { repo: string; prNumber: number }>();
   let ciCallsRemaining = options.ciCallBudget ?? 5000;
   if (!Number.isSafeInteger(ciCallsRemaining) || ciCallsRemaining < 0) {
     throw new Error("ciCallBudget must be a non-negative safe integer");
@@ -1802,10 +1807,23 @@ export async function collectPrCompletionSnapshot(
     heads: string[],
     mergeCommit = false,
   ): Promise<CiRun[]> => {
+    const markIncomplete = () =>
+      ciIncompletePrs.set(
+        keyOf(record.repo, record.number),
+        { repo: record.repo, prNumber: record.number },
+      );
     try {
-      return await ciRunsFor(ciGh, record, heads, notes, mergeCommit);
+      return await ciRunsFor(
+        ciGh,
+        record,
+        heads,
+        notes,
+        mergeCommit,
+        markIncomplete,
+      );
     } catch (error) {
       if (!(error instanceof CiBudgetExhausted)) throw error;
+      markIncomplete();
       notes.push(
         `${
           keyOf(record.repo, record.number)
@@ -1937,6 +1955,7 @@ export async function collectPrCompletionSnapshot(
     ],
     blockers,
     ciRuns,
+    ciIncompletePrs: [...ciIncompletePrs.values()],
     regressions: regressionsFor(observed, postMergeRunsByPr),
     deployments,
     expectedDeployment: {
