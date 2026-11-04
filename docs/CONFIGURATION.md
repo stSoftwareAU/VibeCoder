@@ -131,8 +131,8 @@ The `agent` account can only run a gate command in a checkout it can reach. The
 image therefore gives group `vibework` search-only permission on the worker's
 home (`0710`) at build time, so the work root beneath it is reachable even on
 a read-only root filesystem. A checkout the account still cannot read or
-traverse leaves the command to CI rather than running as the worker (Issue
-#4659). So does a command that writes into its directory, such as cargo's
+traverse leaves the command to CI rather than running as the worker
+(Issue #4659). So does a command that writes into its directory, such as cargo's
 `Cargo.lock`, a task or the repository script, when the account cannot write
 it; a cargo target the account cannot write is given a target of its own
 instead. A Deno type check does not write into its project directory: it
