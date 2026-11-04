@@ -47,8 +47,9 @@ flowchart LR
   Deno project in a Cargo repository) are readable but not writable by `agent`
   (Issue #4782), so with the write test they would be deferred on every attempt.
   The cargo target write check still runs, and a private target it asks for is
-  placed under `EPHEMERAL_CARGO_TARGET_ROOT` (`/var/tmp/vibe-cargo-target`), not
-  in the checkout: `agent` cannot create a directory under a sub-directory
+  placed under the clone root's `.vibe-cargo-target` on the work volume:
+  `/var/tmp` is a noexec scratch mount on Docker and Podman, while `agent`
+  cannot create a directory under a sub-directory
   project, so the default `.vibe-cargo-target` there would fail the build and
   charge a repair round (verifier finding). `spawnFastCheck` takes an
   `environment` seam (`source`, `trimRefused`) so the test can reach that path
@@ -76,7 +77,7 @@ Backend change; no UI file is touched. The real-sudo test in
 
 ## Test Plan
 
-- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (10 tests):
+- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (11 tests):
   blocked directory refused and the command never spawned; `runMergeFastChecks`
   gives `unverified` and `verifyMergeBeforePush` gives `deferred` with the
   repair agent never called; a genuinely missing `Cargo.toml` is `{code: 1}`
@@ -93,7 +94,7 @@ Backend change; no UI file is touched. The real-sudo test in
   `unverified`/`deferred` test red; always throwing for an absent manifest
   turned the missing-manifest test red. Setting `requireWritableCheckout: true`
   in `spawnFastCheck` turned both sub-directory Deno tests red (`probe 3`).
-  Dropping `root: EPHEMERAL_CARGO_TARGET_ROOT` turned the private-target test
+  Dropping the clone-root target override turned the private-target test
   and the cargo sub-directory real-sudo test red
   (`mkdir: cannot create directory
   '.../nested/.vibe-cargo-target': Permission denied`).
@@ -112,7 +113,7 @@ Backend change; no UI file is touched. The real-sudo test in
   mutation runner runs it (`deno test --no-check -A`, a fresh `0700` `TMPDIR`),
   the four covering test files pass (157 passed, 0 failed).
 - Passed at the head (`deno task test:unit`, run per file):
-  `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (10 tests at head),
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (11 tests),
   `worker/deno/tests/merge_fast_checks_test.ts` (36 tests at head) and
   `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts` (6 tests at
   head), 0 failed.
@@ -121,6 +122,13 @@ Backend change; no UI file is touched. The real-sudo test in
 - Callers of `spawnFastCheck` checked: `verifyMergeBeforePush` default runner
   and `runMergeFastChecks` default runner; both pass through unchanged and
   handle the thrown error as `unverified`.
+- PR #4795 review: the obsolete `/var/tmp` private target could not execute
+  Cargo binaries on Docker and Podman. The replacement lives under the clone
+  root on the work volume, retaining per-account isolation and support for
+  unwritable nested projects. `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: the private target on the work volume is outside noexec scratch mounts`
+  checks the configured scratch mounts; the private-target and real-sudo nested
+  project tests cover selection and access. Both default runners pass the clone
+  root through to the spawn. No other copy of this target-selection rule was found.
 
 ## Not done
 

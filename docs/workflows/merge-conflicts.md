@@ -241,7 +241,8 @@ progress and stopped on conflicts. Its contract is absolute:
   write access to the project directory, because the checks only read the tree
   and a project below the clone root is readable but not writable by the account
   (Issue #4782); a cargo check whose target the account cannot write gets a
-  private one under `/var/tmp/vibe-cargo-target`, outside the checkout, so a
+  private one under the clone root's `.vibe-cargo-target` on the executable work
+  volume, so a
   project below the clone root does not fail the build. A manifest the worker can see is genuinely absent, such as no
   `Cargo.toml`, is still a failing check that a repair round can answer. The
   worker discards the local merge and withdraws the attempt without charge or a

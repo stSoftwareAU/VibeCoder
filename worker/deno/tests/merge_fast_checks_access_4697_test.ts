@@ -23,6 +23,7 @@ import {
 import type { Logger } from "../types.ts";
 import {
   type FastCheck,
+  fastCheckCargoRoot,
   type FastCheckGit,
   runMergeFastChecks,
   spawnFastCheck,
@@ -34,7 +35,7 @@ import {
   runRepositoryCommand,
 } from "../lib/untrusted_gate_spawn.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
-import { EPHEMERAL_CARGO_TARGET_ROOT } from "../lib/ephemeral_build_cache.ts";
+import { SCRATCH_TMPFS_MOUNTS } from "../lib/container_launch.ts";
 import {
   asUntrustedUser,
   canRunAsUntrustedUser,
@@ -260,10 +261,9 @@ Deno.test("merge checks: a cargo target the account cannot write is built in a p
     assert(target !== undefined, "the command runs with a CARGO_TARGET_DIR");
     // Outside the checkout: a sub-directory project is not writable (Issue #4782).
     assert(
-      target.startsWith(`${EPHEMERAL_CARGO_TARGET_ROOT}/`),
-      `target ${target} is under the ephemeral root`,
+      target.startsWith(`${fastCheckCargoRoot(dir)}/`),
+      `target ${target} is under the clone root`,
     );
-    assert(!target.startsWith(dir));
   });
 });
 
@@ -432,7 +432,7 @@ Deno.test("merge checks: a cargo check in a readable, unwritable sub-directory p
     prefix: "issue-4782-cargo-",
   });
   try {
-    await Deno.chmod(clone, 0o755);
+    await Deno.chmod(clone, 0o777);
     const project = `${clone}/nested`;
     await Deno.mkdir(project, { mode: 0o755 });
     await Deno.chmod(project, 0o755);
@@ -460,10 +460,24 @@ Deno.test("merge checks: a cargo check in a readable, unwritable sub-directory p
       // An inherited CARGO_TARGET_DIR, or a launch that refused the trim,
       // would mean no private target is needed at all.
       { source: { PATH: Deno.env.get("PATH") ?? "" }, trimRefused: false },
+      clone,
     );
     assertEquals(result.code, 0, result.output);
     assertStringIncludes(result.output, "built");
   } finally {
     await Deno.remove(clone, { recursive: true });
+  }
+});
+
+Deno.test("merge checks: the private target on the work volume is outside noexec scratch mounts", () => {
+  const root = fastCheckCargoRoot("/home/vibe/auto-issue-work/repo");
+  for (const mount of SCRATCH_TMPFS_MOUNTS) {
+    const [path, options] = mount.split(":");
+    if (options?.split(",").includes("noexec")) {
+      assert(
+        root !== path && !root.startsWith(`${path}/`),
+        `${root} is under noexec mount ${path}`,
+      );
+    }
   }
 });

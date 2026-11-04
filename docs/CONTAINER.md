@@ -1391,7 +1391,11 @@ behind indefinitely: the over-budget build was refused every cycle (GRQ-23,
 cycle, in **merge-only** mode, unless its conflict needs the agent. Merge-only applies
 to a tree that holds a cargo project, because only a cargo build writes to the
 ephemeral cargo root. A repository with no cargo project keeps its own check
-(the repository's own type check) and the normal agent. Only cargo checks and cargo unit suites are skipped. Mixed trees still run
+(the repository's own type check) and the normal agent. Only cargo checks and cargo unit suites are skipped. A cargo check or cargo
+test that hits its time limit on the cold ephemeral target is left to the
+milestone PR's CI in the same way (Issue #4786), and the report says it timed
+out rather than that cargo was not run. A Deno timeout is still a failure.
+Mixed trees still run
 and must pass their Deno checks and unit suites. A Deno check whose module host
 this host cannot reach is left to CI and named as not run (`TESTS LEFT TO CI:`
 or `CHECK LEFT TO CI:`, Issues #4422 and #4441) only when some other check

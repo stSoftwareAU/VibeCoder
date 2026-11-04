@@ -49,7 +49,6 @@ import {
   type UntrustedGateSpawnDeps,
 } from "./untrusted_gate_spawn.ts";
 import { parkInFlightBuild } from "./heavy_build_gate.ts";
-import { EPHEMERAL_CARGO_TARGET_ROOT } from "./ephemeral_build_cache.ts";
 import { parse } from "@std/yaml/parse";
 
 /** One budget across every fast check of one merge (Issue #4616). */
@@ -374,9 +373,9 @@ export async function planFastChecks(
  * `agent` account only where that account can reach the checkout, and the
  * access probe runs first. The probe does not require the checkout to be
  * writable: the checks only read it, and a project below a clone's root is
- * readable but not writable by `agent` (Issue #4782), so a cargo check that needs a private
- * target builds it under {@link EPHEMERAL_CARGO_TARGET_ROOT}, not in the
- * checkout. There is no fallback to the worker: an account that
+ * readable but not writable by `agent` (Issue #4782). A private cargo target
+ * sits under the writable clone root on the work volume, where it can execute.
+ * There is no fallback to the worker: an account that
  * is unavailable refuses to run the check. An account that cannot reach the
  * checkout, and a probe that fails, throw, so the caller reports the check
  * unverified rather than failed, and no repair round is spent on it. The one
@@ -396,6 +395,7 @@ export async function spawnFastCheck(
   spawn: typeof runWithTimeout = runWithTimeout,
   drop: typeof untrustedSpawn = untrustedSpawn,
   environment: Pick<UntrustedGateSpawnDeps, "source" | "trimRefused"> = {},
+  repoDir: string = check.dir,
 ): Promise<{ code: number; output: string }> {
   const dropped = await drop([
     check.kind === "cargo" ? "cargo" : Deno.execPath(),
@@ -426,10 +426,8 @@ export async function spawnFastCheck(
       drop,
       ...environment,
       credentials: () => Promise.resolve(repoCredentialEnv),
-      // A private cargo target goes outside the checkout: a sub-directory
-      // project is not writable by `agent`, so a target under it would fail
-      // the build and charge a repair round for an environment fault.
-      root: EPHEMERAL_CARGO_TARGET_ROOT,
+      // The clone root is writable by agent and is on the executable work volume.
+      root: fastCheckCargoRoot(repoDir),
     },
   );
   if (!result.ok) {
@@ -460,6 +458,11 @@ export async function spawnFastCheck(
   return { code, output };
 }
 
+/** Private targets live at the clone root, not in a nested project or tmpfs. */
+export function fastCheckCargoRoot(repoDir: string): string {
+  return `${repoDir.replace(/\/+$/, "")}/.vibe-cargo-target`;
+}
+
 /**
  * Run the planned checks against the merged tree, stopping at the first
  * failure.
@@ -483,7 +486,8 @@ export async function spawnFastCheck(
 export async function runMergeFastChecks(
   repoDir: string,
   touchedPaths: readonly string[],
-  runner: FastCheckRunner = spawnFastCheck,
+  runner: FastCheckRunner = (check) =>
+    spawnFastCheck(check, {}, runWithTimeout, untrustedSpawn, {}, repoDir),
   now: () => number = () => Date.now(),
 ): Promise<MergeFastChecksOutcome> {
   const plan = await planFastChecks(repoDir, touchedPaths);
@@ -616,7 +620,15 @@ export async function verifyMergeBeforePush(
       runMergeFastChecks(
         dir,
         paths,
-        (check) => spawnFastCheck(check, opts.repoCredentialEnv),
+        (check) =>
+          spawnFastCheck(
+            check,
+            opts.repoCredentialEnv,
+            runWithTimeout,
+            untrustedSpawn,
+            {},
+            dir,
+          ),
       ));
   const maxRounds = opts.maxRounds ?? MERGE_FAST_CHECK_REPAIR_ROUNDS;
 
