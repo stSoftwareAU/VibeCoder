@@ -713,7 +713,8 @@ Deno.test("audit_hook - actionKindFor names a repair push from the babysitter an
   assertEquals(
     pushKind(callerIn("lib", "pr_merge_conflict_processor.ts")),
     "repair",
-  );  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "repair");
+  );
+  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "repair");
 });
 
 Deno.test("audit_hook - actionKindFor leaves a push from an unresolved or unlisted caller unknown", () => {
