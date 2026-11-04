@@ -82,6 +82,14 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
   `config_docs_consistency_test.ts`, `containment_docs_test.ts`,
   `update_mode_docs_test.ts`: passed.
 - `deno fmt --check` and `deno lint` on the changed `.ts` files: passed.
+- `./quality.sh` on this head: every stage passed except the parallel Deno test
+  pass, where 2 of 32,486 tests failed:
+  `completion - an unformatted Rust change is formatted and committed...` and
+  `completion - cargo fmt stages only the branch's .rs files...` in
+  `worker/deno/tests/completion_phase_repo_formatters_test.ts`. Both are
+  environmental (`rustup could not choose a version of cargo-fmt ... no default
+  is configured` on this host); this PR changes neither `repo_formatters.ts` nor
+  that test. The serial Deno pass did not run after that failure.
 
 Not done: commits an agent pushes itself in the CI and feedback lanes go through
 the agent's changed-file pre-push hook, not this full gate. Parity with
