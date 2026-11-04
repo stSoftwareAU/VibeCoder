@@ -1492,7 +1492,7 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
     repo: REPO,
     prNumber: 1,
     blocker: "ci-failure",
-    startedAt: "2026-10-20T00:00:00Z",
+    startedAt: "2026-10-20T00:05:00Z",
     endedAt: "2026-10-20T00:20:00Z",
   }]);
   assertEquals(snapshot.input.regressions, [{

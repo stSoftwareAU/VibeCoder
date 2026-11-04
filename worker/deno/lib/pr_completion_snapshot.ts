@@ -859,8 +859,9 @@ async function ciRunsFor(
   const heads = [...new Set([record.headSha, ...headShas].filter(Boolean))];
   const workflowRuns = new Map<string, { run: Json; headSha: string }>();
   for (const headSha of heads) {
+    // filter=all: otherwise GitHub lists only the latest run per check name.
     const checks = await fetchPages(
-      `repos/${record.repo}/commits/${headSha}/check-runs`,
+      `repos/${record.repo}/commits/${headSha}/check-runs?filter=all`,
       "check_runs",
       "check runs",
       headSha,
