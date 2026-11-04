@@ -185,6 +185,37 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     review-log actions fails with actual `0`, expected `1` unknown merge. The
     obsolete trusted attribution is replaced by unknown attribution; this test
     also covers the malformed-line note and out-of-cohort exclusion.
+- PR #4810 review response (reproduced from `worker/deno` with `deno test -A`
+  and the test's name as `--filter`):
+  - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a CI failure fixed by a later run of the same workflow on the same head closes when that run completes`:
+    run 60 of workflow 9 fails on `sha1` at 00:05, run 61 of the same workflow
+    succeeds on `sha1` at 00:20, the PR merges at 05:00. Restoring the
+    attempt-only recovery on a shared head ends the blocker at 05:00 instead of
+    00:20. `ciBlockersFor` now matches `regressionsFor`: a different run or a
+    later attempt of the failed run recovers it.
+  - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a journalled disarm cannot account for a GitHub merge`:
+    the direct merge action (01:52), the successful disarm (01:55) and the GitHub
+    merge (02:00) now sit inside the ten-minute window on one head, so only the
+    withdrawal guard makes the merge `unknownMerged 1`. Replacing the guard
+    with `false` fails the assertion that the merge is unknown.
+  - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - readable discovery events without an expected inventory leave rollout discovery unknown`:
+    two stranded PRs, valid events and no inventory. Deleting the
+    inventory-undefined block gives `discoveryEvidenceComplete` true instead of
+    false.
+  - The three edited tests the review asked to show red were each reverted
+    alone and failed with an assertion mismatch: `audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`
+    (`git_pull` milestone target classified `unknown`),
+    `pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`
+    and `pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`
+    (review-log actions restored to `actor: "fleet"`, `verified: true`).
+  - Branch outcomes: the same-workflow different-run recovery operand
+    (`candidate.runId !== failed.runId`) is reached by the same-head test above;
+    the later-attempt operand (`candidate.attempt > failed.attempt`) by
+    `worker/deno/tests/pr_completion_snapshot_test.ts::collect - CI history includes observed heads, workflow attempts and paged jobs`.
+    Each was flipped alone (runId operand removed; attempt operand forced
+    false) and a test went red. The inventory-undefined and withdrawal-guard
+    branches are covered by the two tests above.
+
 - Review regression evidence: two delivered PRs share a five-call CI budget;
   the first has a completed ten-minute workflow and the second is incomplete.
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - incomplete CI is reflected in delivered metrics and coverage`
@@ -321,8 +352,11 @@ and the collector, while the hook-driven test covers the journal path.
   `worker/deno/tests/issue_assignment_test.ts`,
   `worker/deno/tests/review_round_command_4658_test.ts`,
   `worker/deno/tests/review_round_test.ts`.
-- Targeted run on the head of the touched suites: `ok | 285 passed | 0 failed`
-  (parallel pass); the babysitter files `ok | 125 passed | 0 failed`. `deno fmt
+- Targeted run on the head of `worker/deno/tests/pr_completion_snapshot_test.ts`,
+  `worker/deno/tests/pr_completion_report_test.ts` and
+  `worker/deno/tests/audit_hook_test.ts`: `ok | 142 passed | 0 failed`
+  (`pr_completion_snapshot_test.ts` has 74 tests at head). The other touched
+  suites were not re-run in the PR #4810 review-response round. `deno fmt
   --check`, `deno lint` and `deno check` on the changed files are clean;
   markdownlint on the docs: 0 issues.
 - Red checks (each guard broken alone, test went red, restored): review head rule

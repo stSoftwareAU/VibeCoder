@@ -696,21 +696,24 @@ Deno.test("collect - a journalled disarm cannot account for a GitHub merge", asy
         target: "issue-1",
         timestamp: "2026-10-20T01:00:00Z",
       },
+      // Inside the ten-minute window of the 02:00 GitHub merge and on the same
+      // head, so only the withdrawal guard can stop it accounting for the merge.
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "withdrawn-merge",
+        repo: REPO,
+        prNumber: 1,
+        headSha: "sha1",
+        timestamp: "2026-10-20T01:52:00Z",
+      },
       {
         verb: info.verb,
         actionKind: actionKindFor(info, undefined, args),
         actionId: "disarm-1",
         repo: REPO,
         prNumber: 1,
-        timestamp: "2026-10-20T01:30:00Z",
-      },
-      {
-        verb: "pr-merge",
-        actionKind: "merge",
-        actionId: "earlier-arm",
-        repo: REPO,
-        prNumber: 1,
-        timestamp: "2026-10-20T01:15:00Z",
+        timestamp: "2026-10-20T01:55:00Z",
       },
     ]);
     const snapshot = await collectPrCompletionSnapshot(
@@ -727,10 +730,9 @@ Deno.test("collect - a journalled disarm cannot account for a GitHub merge", asy
         a.kind === "merge" && a.actor === "unknown"
       ),
     );
-    assertEquals(
-      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
-      0,
-    );
+    const completion = buildPrCompletionReport(snapshot.input).completion;
+    assertEquals(completion.unattendedMerged, 0);
+    assertEquals(completion.unknownMerged, 1);
   });
 });
 
@@ -2352,6 +2354,57 @@ Deno.test("collect - a CI failure fixed by a later run of the same workflow on a
   }]);
 });
 
+Deno.test("collect - a CI failure fixed by a later run of the same workflow on the same head closes when that run completes", async () => {
+  // A draft's gate fails; marking it ready runs a new run (attempt 1) on the
+  // same head. The PR merges hours later, but the blocker ends at the success.
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [pull(1, {
+        merged_at: "2026-10-20T05:00:00Z",
+        closed_at: "2026-10-20T05:00:00Z",
+      })],
+    },
+    commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:01:00Z")] },
+    workflowRuns: {
+      sha1: {
+        total_count: 2,
+        workflow_runs: [
+          { id: 60, run_attempt: 1, workflow_id: 9 },
+          { id: 61, run_attempt: 1, workflow_id: 9 },
+        ],
+      },
+    },
+    workflowAttempts: {
+      "60:1": {
+        id: 60,
+        workflow_id: 9,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "failure",
+        run_started_at: "2026-10-20T00:00:00Z",
+        updated_at: "2026-10-20T00:05:00Z",
+      },
+      "61:1": {
+        id: 61,
+        workflow_id: 9,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T00:12:00Z",
+        updated_at: "2026-10-20T00:20:00Z",
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(snapshot.input.blockers, [{
+    repo: REPO,
+    prNumber: 1,
+    blocker: "ci-failure",
+    startedAt: "2026-10-20T00:05:00Z",
+    endedAt: "2026-10-20T00:20:00Z",
+  }]);
+});
+
 Deno.test("collect - a CI blocker on a merged PR never runs past the merge, recovered or not, and a failure after it is no blocker", async () => {
   // PR 1 merges at 00:10. Workflow 9 fails on sha1 before the merge and is
   // recovered on sha2 after it. Workflow 10 fails before the merge and is never
@@ -2747,6 +2800,41 @@ Deno.test("collect - oversized discovery evidence remains incomplete", async () 
       snapshot.coverageNotes.join("\n"),
       "discovery ledger exceeds",
     );
+  });
+});
+
+Deno.test("collect - readable discovery events without an expected inventory leave rollout discovery unknown", async () => {
+  await withDir(async (dir) => {
+    for (const event of ["discovered", "eligible", "processed"] as const) {
+      await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
+        event,
+        hostId: "host-a",
+        repo: REPO,
+        prNumber: 2,
+        headSha: "sha2",
+        recordedAt: "2026-10-26T00:00:00Z",
+      });
+    }
+    const open = { state: "open", merged_at: null, closed_at: null };
+    const fixture = emptyFixture({
+      pulls: {
+        [REPO]: [
+          pull(1, { ...open, created_at: "2026-10-20T00:00:00Z" }),
+          pull(2, { ...open, created_at: "2026-10-20T00:00:00Z" }),
+        ],
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(fixture),
+      { babysitterStateDirs: [dir], rolloutVerifiedAt: "2026-10-25T00:00:00Z" },
+    ));
+    // Positive control: the same events are read and, with a covering
+    // inventory, leave the discovery evidence complete (see the host-coverage
+    // test above), so only the missing inventory makes it incomplete here.
+    assertEquals(snapshot.input.rollout!.strandedPrs.length, 2);
+    assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, false);
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.rollout.unknownDiscoveryPrs, 2);
   });
 });
 

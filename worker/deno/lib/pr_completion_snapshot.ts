@@ -617,8 +617,8 @@ function blockersFor(
 
 /**
  * Failed workflow runs remain blockers until a later successful run of the same
- * workflow. On the failed run's head that is a later attempt; on any other head
- * of the PR it is a later run. A blocker never extends past the PR's merge or
+ * workflow: a later attempt of the failed run, or a different run on any head
+ * of the PR, including a ready_for_review or reopened run on the same head. A blocker never extends past the PR's merge or
  * close: it ends there when no recovery came first, and a failure completed
  * after that moment is not a blocker at all.
  */
@@ -651,9 +651,8 @@ function ciBlockersFor(
     const recovered = workflows.find((candidate) =>
       candidate.workflowId === failed.workflowId &&
       candidate.outcome === "success" &&
-      (candidate.headSha === failed.headSha
-        ? candidate.attempt! > failed.attempt!
-        : true) &&
+      (candidate.runId !== failed.runId ||
+        candidate.attempt! > failed.attempt!) &&
       utcMillis(candidate.completedAt!, "workflow completedAt") >= startedMs
     );
     let endedAt: string | null = recovered?.completedAt ?? null;

@@ -1296,7 +1296,8 @@ marker is recorded yet. A PR labelled `needs-human` is recorded as
 commit, approval or dismissal), and `ci-failure` (opened when a workflow run
 completes with `failure`, `timed_out` or `action_required`). A
 `ci-failure` closes at the first later successful run of the same workflow: a
-later attempt on the same head, or a later run on any other head of the PR. It
+later attempt of the failed run, or a different run on any head of the PR
+(including a ready-for-review or reopened run on the same head). It
 never extends past the PR's merge or close. When the PR has ended, an open
 blocker ends at that moment, and a failure completed after it is not a blocker.
 Overlapping workflow failure intervals are combined so waiting time is not
