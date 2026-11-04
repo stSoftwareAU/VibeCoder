@@ -235,8 +235,20 @@ progress and stopped on conflicts. Its contract is absolute:
   push is refused and the attempt fails, with nothing pushed. Infrastructure
   faults — missing tools, unreachable remote modules, an old host toolchain,
   disk pressure, or an exhausted check or run deadline — defer verification.
-  The worker discards the local merge and withdraws the attempt without charge
-  or a push. Disk admission runs before the first check and each re-check.
+  So does a checkout the untrusted account cannot traverse or whose manifest it
+  cannot read: the worker probes it before each check, and a failed probe leaves
+  the check unverified, not failed (Issue #4697). The probe requires write access
+  for checks that may write, while read-only checks can run in a readable
+  sub-directory (Issue #4782). A Deno `check` task uses the milestone gate's
+  read-only criteria. Any check blocked by the write probe, or by a stale Deno
+  lockfile write refusal, is left to CI provided at least one check ran; otherwise
+  verification is deferred. A cargo check whose target the account cannot write gets a
+  private one under the clone root's `.vibe-fast-check-target` on the executable work
+  volume. The worker provisions that root and defers if it cannot; trim-refused
+  builds retain their separate ephemeral target. A manifest the worker can see is genuinely absent, such as no
+  `Cargo.toml`, is still a failing check that a repair round can answer. The
+  worker discards the local merge and withdraws the attempt without charge or a
+  push. Disk admission runs before the first check and each re-check.
   Repository commands run with the quality gate's allowlisted environment,
   declared repository credentials and untrusted account drop. Resolution and
   repair replies are retained together in the final comment. The resolved comment
