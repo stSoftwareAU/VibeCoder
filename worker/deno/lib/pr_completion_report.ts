@@ -833,8 +833,7 @@ export function buildPrCompletionReport(
               timestamp(pr.createdAt, "PR createdAt") <= 86_400_000;
     }).length;
     const windowClosed = observedAt >= rolloutEnd;
-    const ready = windowClosed && deployment.status === "verified" &&
-      discoveryComplete;
+    const ready = deployment.status === "verified" && discoveryComplete;
     targetEvaluation = {
       status: !windowClosed
         ? "pending"
