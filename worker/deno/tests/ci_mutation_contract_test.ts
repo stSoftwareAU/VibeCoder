@@ -8,9 +8,9 @@
  * `|| exit 0`, `|| /bin/true`), trigger shapes (string, array, object,
  * `pull_request_target`), a missing workflows directory, unreadable workflow
  * files, mentions that are not in a `run`, multi-line `run` blocks, pathological
- * lines that must not stall, and local reusable workflow calls (one level, `./`
- * or `$/` forms, with `workflow_call` callees; remote, ref-qualified and nested
- * calls not followed).
+ * lines that must not stall, and local reusable workflow calls (nested up to
+ * three callee levels with a cycle guard, `./` or `$/` forms, with
+ * `workflow_call` callees; remote and ref-qualified calls not followed).
  *
  * Each fixture is a fresh temporary repository, removed in `finally`.
  *
@@ -999,6 +999,21 @@ function calleeWorkflow(
   ].join("\n");
 }
 
+/** A reusable callee whose one job `key` calls the workflow `uses`. */
+function forwardingWorkflow(
+  key: string,
+  uses: string,
+  on = "workflow_call",
+): string {
+  return [
+    `on: ${on}`,
+    "jobs:",
+    `  ${key}:`,
+    `    uses: ${uses}`,
+    "",
+  ].join("\n");
+}
+
 Deno.test("a PR job calling a local reusable workflow with a mutation run is blocking", async () => {
   await withRepo({
     "ci.yml": callerWorkflow("./.github/workflows/mutants.yml"),
@@ -1157,7 +1172,7 @@ Deno.test("a continue-on-error mutation step in a reusable callee is not blockin
   });
 });
 
-Deno.test("a reusable workflow calling another reusable workflow is not followed twice", async () => {
+Deno.test("a reusable workflow calling another reusable workflow with a mutation run is blocking", async () => {
   await withRepo({
     "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
     "a.yml": [
@@ -1170,8 +1185,249 @@ Deno.test("a reusable workflow calling another reusable workflow is not followed
     "b.yml": calleeWorkflow("workflow_call"),
   }, async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
+      blocking: {
+        tool: "cargo",
+        workflow: "ci.yml",
+        job: "mutants (reusable a.yml: inner (reusable b.yml: run))",
+        aggregator: "gate",
+        cargoArgs: ["--package", "core"],
+      },
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a three-level nested reusable call with a mutation run is blocking at the depth cap", async () => {
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
+    "b.yml": forwardingWorkflow("deep", "./.github/workflows/c.yml"),
+    "c.yml": calleeWorkflow("workflow_call"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: {
+        tool: "cargo",
+        workflow: "ci.yml",
+        job:
+          "mutants (reusable a.yml: mid (reusable b.yml: deep (reusable c.yml: run)))",
+        aggregator: "gate",
+        cargoArgs: ["--package", "core"],
+      },
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a fourth nested reusable callee level is not followed", async () => {
+  const chain = {
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
+    "b.yml": forwardingWorkflow("deep", "./.github/workflows/c.yml"),
+  };
+  // Control: the same chain with the mutation run in the third callee blocks.
+  await withRepo(
+    { ...chain, "c.yml": calleeWorkflow("workflow_call") },
+    async (repo) => {
+      assertEquals(
+        (await findBlockingMutationJob(repo)).blocking?.job,
+        "mutants (reusable a.yml: mid (reusable b.yml: deep (reusable c.yml: run)))",
+        "control: three callee levels",
+      );
+    },
+  );
+  await withRepo({
+    ...chain,
+    "c.yml": forwardingWorkflow("deeper", "./.github/workflows/d.yml"),
+    "d.yml": calleeWorkflow("workflow_call"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
       blocking: null,
       unreadable: [],
+    });
+  });
+});
+
+Deno.test("a nested reusable cycle terminates and is not blocking without a mutation run", async () => {
+  // a.yml -> b.yml -> a.yml: the path back to a.yml is refused.
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
+    "b.yml": forwardingWorkflow("back", "./.github/workflows/a.yml"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+  // A callee that calls the top-level caller file back terminates too.
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml")
+      .replace("on: pull_request", "on: [pull_request, workflow_call]"),
+    "a.yml": forwardingWorkflow("mid", "./.github/workflows/ci.yml"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+  // Control: the back-call replaced by a mutation run is blocking.
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
+    "b.yml": calleeWorkflow("workflow_call"),
+  }, async (repo) => {
+    assertEquals(
+      (await findBlockingMutationJob(repo)).blocking?.job,
+      "mutants (reusable a.yml: mid (reusable b.yml: run))",
+    );
+  });
+});
+
+Deno.test("a nested call back to a workflow on the call path is refused, and a later job still blocks", async () => {
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": [
+      "on: workflow_call",
+      "jobs:",
+      "  loop:",
+      "    uses: ./.github/workflows/b.yml",
+      "  run:",
+      "    steps:",
+      "      - run: cargo mutants --package core",
+      "",
+    ].join("\n"),
+    "b.yml": forwardingWorkflow("back", "./.github/workflows/a.yml"),
+  }, async (repo) => {
+    assertEquals(
+      (await findBlockingMutationJob(repo)).blocking?.job,
+      "mutants (reusable a.yml: run)",
+    );
+  });
+});
+
+Deno.test("a nested reusable callee without workflow_call is not followed", async () => {
+  // Control: the same chain with b.yml declaring workflow_call blocks.
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
+    "b.yml": calleeWorkflow("workflow_call"),
+  }, async (repo) => {
+    assertEquals(
+      (await findBlockingMutationJob(repo)).blocking?.job,
+      "mutants (reusable a.yml: mid (reusable b.yml: run))",
+    );
+  });
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
+    "b.yml": calleeWorkflow("push"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a nested remote or ref-qualified reusable call is not followed", async () => {
+  // Control: the same chain with the local, ref-free form blocks.
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
+    "b.yml": calleeWorkflow("workflow_call"),
+  }, async (repo) => {
+    assertEquals(
+      (await findBlockingMutationJob(repo)).blocking?.job,
+      "mutants (reusable a.yml: mid (reusable b.yml: run))",
+    );
+  });
+  for (
+    const uses of [
+      "acme/ci/.github/workflows/b.yml@v1",
+      "acme/ci/.github/workflows/b.yml",
+      "./.github/workflows/b.yml@v1",
+    ]
+  ) {
+    await withRepo({
+      "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+      "a.yml": forwardingWorkflow("mid", uses),
+      "b.yml": calleeWorkflow("workflow_call"),
+    }, async (repo) => {
+      assertEquals(
+        await findBlockingMutationJob(repo),
+        { blocking: null, unreadable: [] },
+        `uses: ${uses}`,
+      );
+    });
+  }
+});
+
+Deno.test("a nested callee job that cannot fail is not blocking", async () => {
+  const cannotFail = {
+    "job-level continue-on-error": [
+      "on: workflow_call",
+      "jobs:",
+      "  run:",
+      "    continue-on-error: true",
+      "    steps:",
+      "      - run: cargo mutants --package core",
+      "",
+    ].join("\n"),
+    "|| true tail": [
+      "on: workflow_call",
+      "jobs:",
+      "  run:",
+      "    steps:",
+      "      - run: cargo mutants --package core || true",
+      "",
+    ].join("\n"),
+  };
+  for (const [label, callee] of Object.entries(cannotFail)) {
+    await withRepo({
+      "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+      "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
+      "b.yml": callee,
+    }, async (repo) => {
+      assertEquals(
+        await findBlockingMutationJob(repo),
+        { blocking: null, unreadable: [] },
+        label,
+      );
+    });
+  }
+  // Control: the same chain with a plain mutation run blocks.
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
+    "b.yml": calleeWorkflow("workflow_call"),
+  }, async (repo) => {
+    assertEquals(
+      (await findBlockingMutationJob(repo)).blocking?.job,
+      "mutants (reusable a.yml: mid (reusable b.yml: run))",
+    );
+  });
+});
+
+Deno.test("nested reusable fan-out shares the caller's scan budget", async () => {
+  // 600 jobs each call b.yml, whose 600 jobs each call c.yml: about 2e8 job
+  // visits, far beyond the shared 1 MiB budget, so the caller is unreadable.
+  const fanOut = (target: string) =>
+    "on: workflow_call\njobs:\n" +
+    Array.from(
+      { length: 600 },
+      (_, i) => `  j${i}:\n    uses: ./.github/workflows/${target}\n`,
+    ).join("");
+  const leaves = "on: workflow_call\njobs:\n" +
+    Array.from({ length: 600 }, (_, i) => `  k${i}:\n    name: k\n`).join("");
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
+    "a.yml": fanOut("b.yml"),
+    "b.yml": fanOut("c.yml"),
+    "c.yml": leaves,
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: ["ci.yml"],
     });
   });
 });

@@ -16,14 +16,18 @@
  * `$/.github/workflows/...` are followed; a `uses:` with an `@ref` is not.
  *
  * Known limits:
- * - Only local `./` or `$/` `.github/workflows/*.yml|yaml` callees (`uses:`)
- *   that declare `workflow_call` are followed, one level deep, without a ref.
- *   Remote reusable workflows and nested calls are not inspected.
+ * - Local `./` or `$/` `.github/workflows/*.yml|yaml` callees (`uses:`) that
+ *   declare `workflow_call` are followed without a ref, including nested local
+ *   calls: a called job that calls another local workflow is followed up to
+ *   `MAX_REUSABLE_DEPTH` callee levels, and a workflow already on the call path
+ *   is not followed again. Remote reusable workflows (`@ref` or
+ *   `owner/repo/.github/workflows/...`) are not inspected.
  * - Only cargo-mutants (`cargo mutants` or `cargo-mutants`, optionally with a
  *   `+toolchain` word such as `cargo +nightly mutants`) and `deno task` with a
  *   task name containing `mutat` are recognised. Other tools are not.
  * - Any PR-triggered job counts. Job-level `if:` and path filters are not
- *   evaluated, and branch protection is not read.
+ *   evaluated, branch protection is not read, and the flags of a `deno task`
+ *   command are not read.
  * - A no-op tail is taken to cover the whole logical line, so
  *   `cargo mutants; echo done || true` is treated as non-failing even though
  *   the `cargo mutants` failure would stop the step.
@@ -53,7 +57,9 @@ export interface BlockingMutationJob {
   workflow: string;
   /**
    * The job key under `jobs:`, or for a reusable call `caller key (reusable
-   * called.yml: called job key)`.
+   * called.yml: called job key)`. A nested call repeats the form inside the
+   * called job key, e.g. `caller key (reusable a.yml: mid (reusable b.yml:
+   * inner))`.
    */
   job: string;
   /**
@@ -92,6 +98,12 @@ const DENO_MUTATION_TASK = /\bdeno\s+task\s+\S*mutat\S*/i;
  * any other path do not match.
  */
 const REUSABLE_CALL = /^\.github\/workflows\/([A-Za-z0-9._-]+\.ya?ml)$/;
+/**
+ * Most local reusable workflow levels followed below a PR-triggered caller.
+ * GitHub allows four workflow levels including the caller, so three callee
+ * levels are followed.
+ */
+const MAX_REUSABLE_DEPTH = 3;
 
 /** Only `*.yml` / `*.yaml` names are workflows. */
 function isWorkflowName(name: string): boolean {
@@ -334,27 +346,25 @@ export function findAggregator(
 /** The blocking line of a job, and the called job it came from, if any. */
 interface JobHit {
   line: string;
-  /** Set when the line is in a job of a local reusable workflow the job calls. */
+  /**
+   * Set when the line is in a job of a local reusable workflow the job calls.
+   * `file` is that first callee; `job` is its job key, or for a deeper nested
+   * call the inner display string (`mid (reusable b.yml: inner)`).
+   */
   called?: { file: string; job: string };
 }
 
 /**
- * The blocking line for one job of a PR-triggered workflow: the job's own steps
- * first. Otherwise, when the job `uses:` a local reusable workflow that declares
- * `workflow_call`, the called workflow's jobs. The local form must start with
- * `./` or `$/`, and a `uses:` with an `@ref` is not followed. Only that one
- * level is followed. Called jobs share the caller's `seen` and `budget`, so
- * aliasing stays bounded across the caller and callee.
+ * The local reusable workflow a job `uses:`, when the `uses:` has the `./` or
+ * `$/` form with no `@ref` and names a file directly under
+ * `.github/workflows/`, the file is parsed and declares `workflow_call`, and it
+ * is not already on the call path `chain`. Otherwise `null`.
  */
-function blockingJobHit(
-  job: unknown,
+function localReusableCallee(
+  job: Mapping,
   parsed: Map<string, Mapping>,
-  seen: WeakSet<object>,
-  budget: { remaining: number },
-): JobHit | null {
-  if (!isMapping(job)) return null;
-  const line = blockingMutationLine(job, seen, budget);
-  if (line !== null) return { line };
+  chain: readonly string[],
+): { file: string; doc: Mapping } | null {
   const uses = job.uses;
   if (typeof uses !== "string" || uses.includes("@")) return null;
   if (!/^(\.|\$)\//.test(uses)) return null;
@@ -363,16 +373,55 @@ function blockingJobHit(
   const match = REUSABLE_CALL.exec(path);
   if (match === null) return null;
   const file = match[1]!;
-  const callee = parsed.get(file);
-  if (callee === undefined || !triggersOn(callee, "workflow_call")) return null;
-  const calledJobs = callee.jobs;
+  if (chain.includes(file)) return null;
+  const doc = parsed.get(file);
+  if (doc === undefined || !triggersOn(doc, "workflow_call")) return null;
+  return { file, doc };
+}
+
+/**
+ * The blocking line for one job of a PR-triggered workflow: the job's own steps
+ * first. Otherwise, when the job `uses:` a local reusable workflow that declares
+ * `workflow_call`, the blocking line of that workflow's jobs, which may in turn
+ * call local reusable workflows (see `localReusableCallee`). A `uses:` with an
+ * `@ref` is not followed. `chain` lists the workflow files on the current call
+ * path, the top-level caller first, so `chain.length - 1` callee levels have
+ * been entered and no callee is followed past `MAX_REUSABLE_DEPTH`. Every job
+ * visited charges `budget`, and called jobs share the caller's `seen` and
+ * `budget`, so aliasing and fan-out stay bounded across the whole call tree.
+ */
+function blockingJobHit(
+  job: unknown,
+  parsed: Map<string, Mapping>,
+  seen: WeakSet<object>,
+  budget: { remaining: number },
+  chain: readonly string[],
+): JobHit | null {
+  // Charge even non-mappings, so repeated reusable calls cannot fan out freely.
+  if (--budget.remaining < 0) throw new WorkflowScanBudgetExceeded();
+  if (!isMapping(job)) return null;
+  const line = blockingMutationLine(job, seen, budget);
+  if (line !== null) return { line };
+  if (chain.length > MAX_REUSABLE_DEPTH) return null;
+  const callee = localReusableCallee(job, parsed, chain);
+  if (callee === null) return null;
+  const calledJobs = callee.doc.jobs;
   if (!isMapping(calledJobs)) return null;
   for (const [calledJob, body] of Object.entries(calledJobs)) {
-    const calledLine = isMapping(body)
-      ? blockingMutationLine(body, seen, budget)
-      : null;
-    if (calledLine !== null) {
-      return { line: calledLine, called: { file, job: calledJob } };
+    const hit = blockingJobHit(body, parsed, seen, budget, [
+      ...chain,
+      callee.file,
+    ]);
+    if (hit !== null) {
+      return {
+        line: hit.line,
+        called: {
+          file: callee.file,
+          job: hit.called === undefined
+            ? calledJob
+            : `${calledJob} (reusable ${hit.called.file}: ${hit.called.job})`,
+        },
+      };
     }
   }
   return null;
@@ -380,9 +429,10 @@ function blockingJobHit(
 
 /**
  * Finds the first PR-triggered job that runs the mutation tool in a way that
- * can fail the workflow, directly or through one local reusable workflow it
- * calls. Every workflow file is read and parsed first, so `unreadable` is
- * complete even when a blocking job is found earlier in the sort order.
+ * can fail the workflow, directly or through local reusable workflows it calls,
+ * nested up to `MAX_REUSABLE_DEPTH` levels. Every workflow file is read and
+ * parsed first, so `unreadable` is complete even when a blocking job is found
+ * earlier in the sort order.
  *
  * Returns `{ blocking: null, unreadable: [] }` when `.github/workflows/` does
  * not exist. Any other directory-read error is thrown.
@@ -430,7 +480,7 @@ export async function findBlockingMutationJob(
     for (const [jobName, job] of Object.entries(doc.jobs)) {
       let hit: JobHit | null;
       try {
-        hit = blockingJobHit(job, parsed, seen, budget);
+        hit = blockingJobHit(job, parsed, seen, budget, [name]);
       } catch (error) {
         if (!(error instanceof WorkflowScanBudgetExceeded)) throw error;
         unreadable.push(name);
