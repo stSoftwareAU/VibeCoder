@@ -46,6 +46,7 @@ import { runWithTimeout } from "./subprocess_timeout.ts";
 import { untrustedAccountOf, untrustedSpawn } from "./quality_gate_phase.ts";
 import {
   GateAccountUnavailable,
+  GateCheckoutUnwritable,
   manifestsFor,
   runRepositoryCommand,
   type UntrustedGateSpawnDeps,
@@ -418,8 +419,7 @@ export async function spawnFastCheck(
         args.slice(0, args.indexOf("--") < 0 ? undefined : args.indexOf("--"))
           .includes("--locked"))
     : args[0] === "fmt" && args.includes("--check") || args[0] === "lint" ||
-      (args[0] === "check" &&
-        await denoCheckLeavesDirUntouched(check.dir, args));
+      await denoCheckLeavesDirUntouched(check.dir, args);
   const result = await runRepositoryCommand(
     check.kind === "cargo" ? "cargo" : Deno.execPath(),
     check.args,
@@ -525,6 +525,13 @@ export async function runMergeFastChecks(
     try {
       result = await runner({ ...check, timeoutMs: remaining });
     } catch (err) {
+      if (
+        err instanceof GateCheckoutUnwritable && check.kind === "deno" &&
+        check.args[0] === "task" && check.args[1] !== "check"
+      ) {
+        leftToCi.push(`${check.label}: ${err.message}`);
+        continue;
+      }
       // Unrunnable is not clean: the merge stays unverified.
       return {
         status: "unverified",
@@ -573,6 +580,13 @@ export async function runMergeFastChecks(
       status: "failed",
       failingCommand: check.label,
       output: tail(result.output),
+    };
+  }
+  if (ran.length === 0 && leftToCi.length > 0) {
+    return {
+      status: "unverified",
+      detail: "No checks ran",
+      output: leftToCi.join("; "),
     };
   }
   return { status: "passed", ran, leftToCi };

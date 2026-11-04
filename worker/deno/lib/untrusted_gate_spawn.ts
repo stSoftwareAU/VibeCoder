@@ -61,6 +61,9 @@ export function setGateCredentialSource(
 /** A host access probe could not safely run the command as the chosen account. */
 export class GateAccountUnavailable extends Error {}
 
+/** The access probe found that a writing command cannot write its checkout. */
+export class GateCheckoutUnwritable extends GateAccountUnavailable {}
+
 /** Injection seams for {@link runRepositoryCommand}. Production omits them. */
 export interface UntrustedGateSpawnDeps {
   spawn?: typeof runWithTimeout;
@@ -412,7 +415,10 @@ export async function runRepositoryCommand(
           : `${cause}; cannot traverse '${blocked}'`;
         return {
           ok: false,
-          error: new GateAccountUnavailable(
+          error: new (code === PROBE_CHECKOUT_UNWRITABLE && verdict.ok &&
+              !verdict.value.timedOut
+            ? GateCheckoutUnwritable
+            : GateAccountUnavailable)(
             `untrusted account cannot use '${options.cwd}' (${reason}) — left to CI (Issue #4659)`,
           ),
         };

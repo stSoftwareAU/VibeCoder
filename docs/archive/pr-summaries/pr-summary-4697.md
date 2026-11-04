@@ -43,8 +43,9 @@ flowchart LR
   (#4705) through `runRepositoryCommand`.
 - Fast checks omit the write probe only for cargo fmt, locked clippy and test,
   Deno fmt and lint, and a direct Deno check that meets the milestone gate's
-  read-only criteria. Other commands, including tasks, require a writable
-  checkout. A stale Deno lockfile permission refusal also defers the check.
+  read-only criteria, including a qualifying `check` task. Other commands
+  require a writable checkout; resolution tasks refused by that probe are left
+  to CI when another check ran. A stale Deno lockfile permission refusal also defers the check.
   The cargo target write check still runs, and a private target it asks for is
   placed under the clone root's `.vibe-fast-check-target` on the work volume:
   `/var/tmp` is a noexec scratch mount on Docker and Podman, while `agent`
@@ -80,7 +81,15 @@ Backend change; no UI file is touched. The real-sudo test in
 
 ## Test Plan
 
-- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (20 tests):
+- PR #4795 task follow-up: the obsolete rule deferred every Deno task in an
+  unwritable project. A `check` task now uses the milestone gate's read-only
+  classifier; resolution tasks refused by the write probe are left to CI when
+  another check ran. Other access faults still defer. Coverage:
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: nested read-only check task runs and unwritable resolution task is left to CI`.
+  The regression failed before the fix. The milestone gate's existing classifier
+  is reused; no other copy of this fast-check handling was found.
+
+- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (21 tests):
   blocked directory refused and the command never spawned; `runMergeFastChecks`
   gives `unverified` and `verifyMergeBeforePush` gives `deferred` with the
   repair agent never called; a genuinely missing `Cargo.toml` is `{code: 1}`

@@ -239,7 +239,9 @@ progress and stopped on conflicts. Its contract is absolute:
   cannot read: the worker probes it before each check, and a failed probe leaves
   the check unverified, not failed (Issue #4697). The probe requires write access
   for checks that may write, while read-only checks can run in a readable
-  sub-directory (Issue #4782); a cargo check whose target the account cannot write gets a
+  sub-directory (Issue #4782). A Deno `check` task uses the milestone gate's
+  read-only criteria; other resolution tasks blocked by the write probe are
+  left to CI, provided at least one check ran. A cargo check whose target the account cannot write gets a
   private one under the clone root's `.vibe-fast-check-target` on the executable work
   volume. The worker provisions that root and defers if it cannot; trim-refused
   builds retain their separate ephemeral target. A manifest the worker can see is genuinely absent, such as no

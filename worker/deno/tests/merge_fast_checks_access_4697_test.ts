@@ -314,6 +314,41 @@ Deno.test("merge checks: unwritable project defers a writing check without repai
   });
 });
 
+Deno.test("merge checks: nested read-only check task runs and unwritable resolution task is left to CI", async () => {
+  await withCheckout({}, async (dir) => {
+    const project = `${dir}/nested`;
+    await Deno.mkdir(project);
+    await Deno.writeTextFile(
+      `${project}/deno.json`,
+      JSON.stringify({
+        tasks: {
+          check: "deno check --frozen main.ts",
+          "test:unit": "deno test",
+        },
+      }),
+    );
+    await Deno.writeTextFile(`${project}/deno.lock`, "{}");
+    await Deno.chmod(project, 0o555);
+    try {
+      const { spawn, commands } = realProbeSpawn();
+      const outcome = await runMergeFastChecks(
+        dir,
+        ["nested/main.ts"],
+        (check) => spawnFastCheck(check, {}, spawn, sudoAgent, {}, dir),
+      );
+      assertEquals(outcome.status, "passed");
+      if (outcome.status !== "passed") throw new Error("expected passed");
+      assert(outcome.ran.some((label) => label.includes("deno task check in")));
+      assert(
+        outcome.leftToCi.some((label) => label.includes("deno task test:unit")),
+      );
+      assertEquals(commands.length, 3);
+    } finally {
+      await Deno.chmod(project, 0o755);
+    }
+  });
+});
+
 Deno.test("merge checks: milestone cargo target does not block fast target", async () => {
   await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
     await Deno.mkdir(`${dir}/.vibe-cargo-target`, { mode: 0o700 });
