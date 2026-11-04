@@ -91,5 +91,7 @@ with the real `git`.
   567, Rust formatter). Neither this change nor its dependencies touch that
   file; I did not compare against `main`.
 
-Not done: the cause of the #4658 abort itself is not investigated; the full `./quality.sh` was not re-run after PR #4816 review round 1 (targeted tests, formatter and linter only);
-`deno task pr-summary-check` was not run.
+Not done: the cause of the #4658 abort itself is not investigated. After PR
+#4816 review round 1 the full `./quality.sh` was not re-run (targeted tests,
+formatter and linter only). `deno task pr-summary-check` ran on the final
+summary: 0 gates blocked, 3 not checked (no issue body or labels supplied).
