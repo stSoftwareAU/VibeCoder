@@ -15,8 +15,10 @@ import {
   RESOLUTION_GATE_BUDGET_MS,
   type ResolutionTask,
   resolutionTasksFor,
+  spawnTask,
   verifyResolvedTree,
 } from "../lib/milestone_resolution_gate.ts";
+import type { runRepositoryCommand } from "../lib/untrusted_gate_spawn.ts";
 import type {
   MergeGateFn,
   MergeGateOutcome,
@@ -384,6 +386,102 @@ Deno.test("verifyResolvedTree - cargo as the only suite does not fall through to
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("verifyResolvedTree - a type check that left cargo to CI starts no cargo step, even when the disk budget is fine (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-gate-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        return Promise.resolve({ code: 0, output: "" });
+      },
+      () =>
+        Promise.resolve({
+          status: "passed" as const,
+          detail:
+            "cargo check --workspace --all-targets in /w passed; cargo builds wait for CI (Issue #4326)",
+          output: "",
+          cargoSkipped: true,
+        }),
+      () => 0,
+      () => Promise.resolve(false),
+    );
+    assertEquals(seen, [], "no cargo step may start");
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - a cargo test that times out is left to CI, not failed (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-gate-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        return Promise.resolve({ code: 124, timedOut: true, output: "" });
+      },
+      passingTypeCheck,
+      () => 0,
+      () => Promise.resolve(false),
+    );
+    assertEquals(seen.map((task) => task.kind), ["cargo"]);
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(outcome.detail, "timed out");
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - Deno runs before a cargo timeout exhausts the budget (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-mixed-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    await Deno.mkdir(`${dir}/web`);
+    await Deno.writeTextFile(
+      `${dir}/web/deno.json`,
+      JSON.stringify({ tasks: { test: "deno test" } }),
+    );
+    let clock = 0;
+    const seen: string[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task.kind);
+        if (task.kind === "cargo") {
+          clock += task.timeoutMs;
+          return Promise.resolve({ code: 124, timedOut: true, output: "" });
+        }
+        return Promise.resolve({ code: 0, output: "" });
+      },
+      passingTypeCheck,
+      () => clock,
+      () => Promise.resolve(false),
+    );
+    assertEquals(seen, ["deno", "cargo"]);
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - a Deno task that times out is still failed (Issue #4786)", async () => {
+  const { outcome } = await gate(
+    { "test:unit": "deno test" },
+    () => Promise.resolve({ code: 124, timedOut: true, output: "" }),
+  );
+  assertEquals(outcome.status, "failed", outcome.detail);
 });
 
 Deno.test("verifyResolvedTree - a Cargo tree whose tests fail is refused with the output (Issue #2138)", async () => {
@@ -826,4 +924,64 @@ Deno.test("verifyResolvedTree - script account access failure stays left to CI",
   assertEquals(outcome.status, "passed");
   assertStringIncludes(outcome.suiteLeftToCi ?? "", "probe 1");
   assertStringIncludes(outcome.suiteLeftToCi ?? "", "quality.sh");
+});
+
+/**
+ * A fake command runner (Issue #4786): records the limit it was handed and
+ * answers with the given reply, in the shape the real runner returns.
+ */
+function recordingTaskRun(
+  limits: number[],
+  reply: { code: number; stdout: string; stderr: string; timedOut: boolean },
+): typeof runRepositoryCommand {
+  return (_executable, _args, options) => {
+    limits.push(options.timeoutMs);
+    return Promise.resolve({
+      ok: true as const,
+      value: { success: reply.code === 0, ...reply },
+    });
+  };
+}
+
+Deno.test("spawnTask - a task that hits its limit comes back with timedOut set, and one that finishes does not (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-spawn-task-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const task: ResolutionTask = {
+      dir,
+      kind: "cargo",
+      task: "test",
+      args: ["test", "--workspace"],
+      timeoutMs: 120_000,
+    };
+
+    const limits: number[] = [];
+    const timedOut = await spawnTask(
+      task,
+      recordingTaskRun(limits, {
+        code: 0,
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+      }),
+    );
+    assertEquals(limits, [120_000]);
+    assertEquals(timedOut.code, 124);
+    // verifyResolvedTree leaves a cargo step to CI on this flag alone.
+    assertEquals(timedOut.timedOut, true);
+    assertStringIncludes(timedOut.output, "timed out after 120000ms");
+
+    const finished = await spawnTask(
+      task,
+      recordingTaskRun([], {
+        code: 101,
+        stdout: "",
+        stderr: "test result: FAILED",
+        timedOut: false,
+      }),
+    );
+    assertEquals(finished, { code: 101, output: "test result: FAILED" });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

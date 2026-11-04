@@ -409,6 +409,32 @@ Deno.test("repair keeps the key out of every mount, argument and env value", asy
   }
 });
 
+Deno.test("key guard refuses caller mounts at or above the key directory", async () => {
+  const f = await makeFixture();
+  try {
+    for (
+      const input of [
+        { ...inputFor(f), clone: f.home },
+        { ...inputFor(f), scratch: f.keyDir },
+      ]
+    ) {
+      const { deps, calls } = fakeDeps(f);
+      const error = await assertRejects(
+        () => runBabysitterRepairContainer(input, deps),
+        Error,
+      );
+      assertStringIncludes(error.message, "refusing to mount");
+      assertStringIncludes(error.message, "App private key");
+      assertEquals(calls.spawns.length, 0);
+    }
+    const { deps, calls } = fakeDeps(f);
+    await runBabysitterRepairContainer(inputFor(f), deps);
+    assertEquals(calls.spawns.length, 1);
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
 Deno.test("key guard refuses a mount of the key directory itself, and accepts a legal mount", async () => {
   const f = await makeFixture();
   try {

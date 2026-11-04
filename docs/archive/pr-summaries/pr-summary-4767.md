@@ -151,13 +151,23 @@ emits `--volume <source>:<target>` for every dialect),
 
 ## Test Plan
 
-Added `worker/deno/tests/fleet_babysitter_container_4738_test.ts` (36 tests).
+Added `worker/deno/tests/fleet_babysitter_container_4738_test.ts` (37 tests).
 Review follow-up strengthens the fixture and preflight assertions without
 removing coverage: the previous fixture did not distinguish the two volume
 lists, while both lists must be removed. Coverage:
 `worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair drops the named volumes and adds exactly the clone and scratch mounts`.
 The preflight tests also assert the runtime and image-inspection arguments.
+The key guard also covers caller-supplied clone and scratch mounts, with an
+accepted control:
+`worker/deno/tests/fleet_babysitter_container_4738_test.ts::key guard refuses caller mounts at or above the key directory`.
+The focused suite passed all 37 tests with the repository-pinned Deno 2.9.8.
 No other existing test edited, no assertion removed.
+
+The latest local quality gate passed completeness, formatter, lint, type check
+and markdownlint. Its parallel Deno suite panicked in the runtime's permission
+pledge; a separate full-suite rerun hit the same Deno 2.9.8 panic. Semgrep and
+Checkov timed out locally, and config integration was skipped. The base PR's
+CI checks passed; CI will run these checks on the pushed fix.
 
 - Red-checks (each guard broken alone, test file run, guard restored): ancestor
   comparison always false → key-guard refusal tests red; plan volumes kept →
