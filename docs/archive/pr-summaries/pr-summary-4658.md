@@ -205,14 +205,25 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     two stranded PRs, valid events and no inventory. Deleting the
     inventory-undefined block gives `discoveryEvidenceComplete` true instead of
     false.
-  - The three edited tests the review asked to show red were each reverted alone
-    and failed with an assertion mismatch:
-    `audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`
-    (`git_pull` milestone target classified `unknown`),
-    `pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`
-    and
-    `pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`
-    (review-log actions restored to `actor: "fleet"`, `verified: true`).
+  - The four edited tests the review asked to show red were each reverted alone
+    on the head and failed with an assertion mismatch (`failsWithoutChange`):
+    - `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`:
+      `git_pull` milestone target classified `unknown` fails with actual
+      `unknown`, expected `milestone`.
+    - `worker/deno/tests/pr_completion_report_test.ts::rollout check separates eligibility, rediscovery and processing before the target window`:
+      restoring `lib/pr_completion_report.ts` to `origin/main` fails at
+      `pr_completion_report_test.ts:347` with actual `undefined`, expected `1`
+      (`rollout.discoveredPrs`). The obsolete `rediscovered` input is replaced
+      by `discovered` and `eligibilityConfirmed` with
+      `discoveryEvidenceComplete`; the test still asserts eligibility,
+      processing and the pending target.
+    - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`:
+      review-log actions restored to `actor: "fleet"`, `verified: true` fail at
+      `pr_completion_snapshot_test.ts:3314` with actual `fleet`, expected
+      `unknown`.
+    - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`:
+      the same restoration fails at `pr_completion_snapshot_test.ts:3376` with
+      actual `0`, expected `1` unknown merge.
   - Branch outcomes: the same-workflow different-run recovery operand
     (`candidate.runId !== failed.runId`) is reached by the same-head test above;
     the later-attempt operand (`candidate.attempt > failed.attempt`) by
