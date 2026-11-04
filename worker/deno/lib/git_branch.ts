@@ -378,10 +378,17 @@ export async function resumeFeatureBranchFromRemote(
   // onto the remote checkpoint rather than colliding with it (Issue #356);
   // `branch -D` cannot delete the checked-out branch, and the collision that
   // followed silently reported "no resumable work" over a pushed commit.
-  const checkoutResult = await runGitCommand(
-    buildCheckoutResetBranchArgs(branchName, `origin/${branchName}`),
-    options,
-  );
+  const args = buildCheckoutResetBranchArgs(branchName, `origin/${branchName}`);
+  let checkoutResult = await runGitCommand(args, options);
+  if (checkoutResult.ok && checkoutResult.value.code !== 0) {
+    const holder = await primaryCloneHoldingBranch(
+      checkoutResult.value.stderr,
+      options.cwd,
+    );
+    if (holder !== undefined && await detachLaneWorktreeHead(holder)) {
+      checkoutResult = await runGitCommand(args, options);
+    }
+  }
   return {
     ok: true,
     value: checkoutResult.ok && checkoutResult.value.code === 0,

@@ -8,7 +8,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { createFeatureBranchFromBase } from "../lib/git_branch.ts";
+import {
+  createFeatureBranchFromBase,
+  resumeFeatureBranchFromRemote,
+} from "../lib/git_branch.ts";
 import { primaryCloneHoldingBranch } from "../lib/lane_worktree.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 
@@ -65,6 +68,33 @@ Deno.test("createFeatureBranchFromBase - releases a branch held by the primary c
     assertEquals(result.ok, true, JSON.stringify(result));
     assertEquals(await headOf(lanePath), branch);
     // The primary was detached, not left holding the issue branch.
+    assertEquals(await headOf(repoPath), "HEAD");
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("resumeFeatureBranchFromRemote - preserves a pushed checkpoint held by the primary (Issue #4789)", async () => {
+  const { workDir, repoPath, lanePath, branch } = await primaryHeldFixture();
+  try {
+    const git = async (args: string[], cwd = repoPath) => {
+      const result = await runGitCommand(args, { cwd });
+      assert(result.ok && result.value.code === 0, JSON.stringify(result));
+      return result.value.stdout.trim();
+    };
+    await git(["init", "--bare", `${workDir}/remote.git`]);
+    await git(["remote", "add", "origin", `${workDir}/remote.git`]);
+    await Deno.writeTextFile(`${repoPath}/checkpoint.txt`, "checkpoint\n");
+    await git(["add", "checkpoint.txt"]);
+    await git(["commit", "-m", "checkpoint"]);
+    const checkpoint = await git(["rev-parse", "HEAD"]);
+    await git(["push", "origin", "main", branch]);
+    const result = await resumeFeatureBranchFromRemote(branch, {
+      cwd: lanePath,
+    });
+    assertEquals(result, { ok: true, value: true });
+    assertEquals(await headOf(lanePath), branch);
+    assertEquals(await git(["rev-parse", "HEAD"], lanePath), checkpoint);
     assertEquals(await headOf(repoPath), "HEAD");
   } finally {
     await Deno.remove(workDir, { recursive: true });

@@ -10,6 +10,8 @@ went unrepaired and recurred on every re-claim. Closes #4789.
 `attemptCreateFeatureBranch` now also asks `primaryCloneHoldingBranch` whether
 the holder is this clone's primary worktree, and releases it through the same
 `detachLaneWorktreeHead` plus retry.
+Resume also releases a primary-held branch before checking out its remote
+checkpoint, preserving pushed work on re-claim.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
@@ -79,22 +81,25 @@ branch the failed run needed. `primaryCloneHoldingBranch` relies on the first
   no such call, so it is the unfixed code. The real-host fleet run was not
   repeated.
 - **regression test** —
-  `worker/deno/tests/git_branch_primary_clone_held_test.ts::createFeatureBranchFromBase - frees a branch the shared clone's primary worktree holds (Issue #4789)`
+  `worker/deno/tests/git_branch_primary_clone_held_test.ts::createFeatureBranchFromBase - releases a branch held by the primary clone, run from a lane (Issue #4789)`
 
 ## Test Plan
 
-- Added `worker/deno/tests/git_branch_primary_clone_held_test.ts` (11 tests,
+- Added `worker/deno/tests/git_branch_primary_clone_held_test.ts` (12 tests,
   real git in temporary directories plus mocked git runners): release of a
   primary-held branch from a lane worktree; a developer's linked worktree is
   still not detached; and direct cases for `primaryCloneHoldingBranch` (primary,
   non-primary, stderr with no held path, not a git repository, a listing that
   cannot run, a listing that exits non-zero, and the first listed worktree being
   the primary), and a repair of a broken ref named only by a refused `checkout`
-  (a `git` shim on `PATH` fails `checkout` until the ref is removed).
+  (a `git` shim on `PATH` fails `checkout` until the ref is removed). The
+  real-git test verifies the resumed commit remains at the pushed checkpoint;
+  it failed before the resume repair and passes after it:
+  `worker/deno/tests/git_branch_primary_clone_held_test.ts::resumeFeatureBranchFromRemote - preserves a pushed checkpoint held by the primary (Issue #4789)`.
 - Red checks: disabling the `primaryCloneHoldingBranch` call in
-  `attemptCreateFeatureBranch` turned the release test red (1 failed, 6 passed).
+  `attemptCreateFeatureBranch` turned the release test red (1 failed, 11 passed).
   Making `primaryCloneHoldingBranch` return the held path unconditionally turned
-  the developer-worktree test and the two negative direct cases red (3 failed, 4
+  the developer-worktree test and the two negative direct cases red (3 failed, 9
   passed). Both restored.
 - Mutation check (all three survivors now kill a test): deleting the
   `stderrTexts.push(checkout.value.stderr)` call at `git_branch.ts:190` turns
@@ -104,23 +109,21 @@ branch the failed run needed. `primaryCloneHoldingBranch` relies on the first
   listing test red. All restored.
 - Existing tests: `deno task test:unit` over `tests/git_branch_test.ts`,
   `tests/lane_worktree_test.ts`, `tests/pr_branch_preparation_test.ts`,
-  `tests/pr_branch_checkout_test.ts` and the new file: 99 passed, 0 failed. No
+  `tests/pr_branch_checkout_test.ts` and the new file: 104 passed, 0 failed. No
   existing assertion was changed or removed.
 - Callers of the changed helper checked: `laneWorktreeHoldingBranch` keeps its
   behaviour (only its regex moved into `heldWorktreePath`); its callers
   `pr_branch_checkout.ts`, `pr_branch_preparation.ts` and `pr_ci_processor.ts`
   are untouched.
 - Twinned rules: searched docs and `worker/deno/lib` for "lane worktrees only"
-  statements. The comment at `worker/deno/tests/git_branch_test.ts` L887
-  ("confined to this host's own lane worktrees") is now incomplete, but that
-  file contains NUL bytes and could not be edited here.
+  statements and corrected the comment in `worker/deno/tests/git_branch_test.ts`.
 
 ## Not done
 
-- `./quality.sh`: every stage passed except `deno tests`, whose only failures
-  are the two Rust-formatter cases in
-  `tests/completion_phase_repo_formatters_test.ts`, unrelated to this change (no
-  cargo-fmt fixture access on this host); the new and touched git tests pass.
+- `./quality.sh`: formatter, lint, type check, completeness and markdownlint
+  passed. The full Deno test run hit a runtime permission-pledge panic; local
+  Semgrep and Checkov timed out. The targeted git tests passed, and the base's
+  merged PR #4791 passed its CI checks.
 - How the primary clone came to hold the issue branch was not found, so a path
   that re-creates the state is not closed; this change only stops it wedging the
   setup.
