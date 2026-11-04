@@ -56,14 +56,21 @@ flowchart LR
   `reportHostId(escalationHostId())`, which maps any `VIBE_HOST_ID` to the
   report's host-id pattern so one odd value cannot abort a babysitter pass.
 
+- The tests that drive the real babysitter `pass` set PATH, HOME and TMPDIR
+  (`pass` spawns `gh` through PATH and reads TMPDIR with no injected seam), so
+  they live in `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts`, the
+  single entry in `PROCESS_STATE_MUTATOR_TEST_FILES`
+  (`worker/deno/lib/parallel_unsafe_test_manifest.ts`). That list's rule is
+  "shrink, never grow"; this is a recorded exception whose exit condition is
+  `pass` taking its `gh` runner and temp dir as parameters.
+
 ### Undiscoverable Facts
 
 - No `<fleet_data_source>` block was supplied; no cohort was measured and live
   GitHub was never called. The REST shapes in the test fakes are the documented
   `pulls`, `actions/runs`, `actions/runs/{id}/attempts/{n}`, `.../jobs` and
   `commits/{sha}/check-runs?filter=all` responses.
-- `./quality.sh` was not completed locally: the gate ran past the 580 s
-  bound inside the deno test stage (see Test Plan).
+- The local full gate did not pass end to end (see Test Plan).
 
 ## Evidence
 
@@ -143,6 +150,12 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
   evidence: `worker/deno/tests/pr_completion_snapshot_test.ts:619` — reason:
   fixed in this diff (a hook-driven test added; its red comes from the hook's own
   kind assertion, the collector assertion alone does not go red)
+- **violation** — a new test file mutating `Deno.env` joined the process-state
+  mutator list, against its "shrink, never grow" rule —
+  evidence: `worker/deno/lib/parallel_unsafe_test_manifest.ts:101` — reason:
+  fixed in this diff (the env-mutating tests were isolated in one file; the
+  list's comment now names it as the single exception with its exit condition;
+  an injected `gh` seam on `pass` would remove it but was not done in this run)
 - **clean** — Australian English; no hidden or secret file staged; new regexes
   anchored with bounded quantifiers; legacy shapes read as unknown; named tests
   exist; no members only tests read (`reportHostId`, `isAuditJournalSwitchedOff`
@@ -226,11 +239,17 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
   matcher in `pr_completion_snapshot.ts` agree on kinds; the hook-driven collect
   test covers both. `CODING-STANDARDS.md` and the guidelines template are not
   changed.
-- Full gate: `./quality.sh < /dev/null` was started on the pre-fix head and
-  exceeded the 580 s bound in the deno test stage; every stage that printed a
-  result passed (completeness, markdownlint, semgrep, release-tag ruleset,
-  mermaid); checkov and config integration were skipped by the gate. It was not
-  re-run on the final head. CI runs the full suite on this PR.
+- Full gate: `./quality.sh < /dev/null` on the head before the last two fixes
+  took 7m27s in the deno test stage and failed on `check:manifests` (the
+  process-state mutator test, fixed by the isolation above; `deno task
+  check:manifests` now passes: `ok | 847 passed | 0 failed | 1 ignored`) and on
+  four tests: the mutator test above, plus `handover_note_test.ts` (a note is
+  deno fmt clean), `heartbeat_test.ts` (stopHeartbeat clears the interval) and
+  `handler_watchdog_scope_test.ts`, which all pass in isolation
+  (`ok | 59 passed | 0 failed`) and appear to race under the loaded parallel
+  pass; they were not investigated further. The gate was not re-run end to end
+  after the fixes; checkov and config integration are skipped by the gate. CI
+  runs the full suite on this PR.
 - Not done: live GitHub never called; no cross-host data; reviewer provenance
   from the review skill; human attribution; owner-gate verification.
 
