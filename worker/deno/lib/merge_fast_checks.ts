@@ -46,8 +46,10 @@ import {
   GateAccountUnavailable,
   manifestsFor,
   runRepositoryCommand,
+  type UntrustedGateSpawnDeps,
 } from "./untrusted_gate_spawn.ts";
 import { parkInFlightBuild } from "./heavy_build_gate.ts";
+import { EPHEMERAL_CARGO_TARGET_ROOT } from "./ephemeral_build_cache.ts";
 import { parse } from "@std/yaml/parse";
 
 /** One budget across every fast check of one merge (Issue #4616). */
@@ -372,7 +374,9 @@ export async function planFastChecks(
  * `agent` account only where that account can reach the checkout, and the
  * access probe runs first. The probe does not require the checkout to be
  * writable: the checks only read it, and a project below a clone's root is
- * readable but not writable by `agent` (Issue #4782). There is no fallback to the worker: an account that
+ * readable but not writable by `agent` (Issue #4782), so a cargo check that needs a private
+ * target builds it under {@link EPHEMERAL_CARGO_TARGET_ROOT}, not in the
+ * checkout. There is no fallback to the worker: an account that
  * is unavailable refuses to run the check. An account that cannot reach the
  * checkout, and a probe that fails, throw, so the caller reports the check
  * unverified rather than failed, and no repair round is spent on it. The one
@@ -383,13 +387,15 @@ export async function planFastChecks(
  * `env_reset` would strip them from the environment. A spawn failure (the
  * toolchain is not installed) throws, and so does a channel fault, naming the
  * wrapper's fault line but never a value, so the caller reports the check as
- * unverified rather than as a failure or a pass.
+ * unverified rather than as a failure or a pass. `environment` is a test seam
+ * for the environment the check's account is built from; production omits it.
  */
 export async function spawnFastCheck(
   check: FastCheck,
   repoCredentialEnv: Record<string, string> = {},
   spawn: typeof runWithTimeout = runWithTimeout,
   drop: typeof untrustedSpawn = untrustedSpawn,
+  environment: Pick<UntrustedGateSpawnDeps, "source" | "trimRefused"> = {},
 ): Promise<{ code: number; output: string }> {
   const dropped = await drop([
     check.kind === "cargo" ? "cargo" : Deno.execPath(),
@@ -418,7 +424,12 @@ export async function spawnFastCheck(
     {
       spawn,
       drop,
+      ...environment,
       credentials: () => Promise.resolve(repoCredentialEnv),
+      // A private cargo target goes outside the checkout: a sub-directory
+      // project is not writable by `agent`, so a target under it would fail
+      // the build and charge a repair round for an environment fault.
+      root: EPHEMERAL_CARGO_TARGET_ROOT,
     },
   );
   if (!result.ok) {

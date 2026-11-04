@@ -46,7 +46,13 @@ flowchart LR
   check's directory (exit 3). Sub-directory projects (`worker/deno`, a nested
   Deno project in a Cargo repository) are readable but not writable by `agent`
   (Issue #4782), so with the write test they would be deferred on every attempt.
-  The cargo target write check still runs. The milestone gates keep the default.
+  The cargo target write check still runs, and a private target it asks for is
+  placed under `EPHEMERAL_CARGO_TARGET_ROOT` (`/var/tmp/vibe-cargo-target`), not
+  in the checkout: `agent` cannot create a directory under a sub-directory
+  project, so the default `.vibe-cargo-target` there would fail the build and
+  charge a repair round (verifier finding). `spawnFastCheck` takes an
+  `environment` seam (`source`, `trimRefused`) so the test can reach that path
+  regardless of the host's trim verdict. The milestone gates keep the default.
 - A probe failure is told apart from a removed manifest by asking the worker
   whether the planned manifest is a file: absent means a failing check, present
   means an access fault (thrown, so unverified).
@@ -70,7 +76,7 @@ Backend change; no UI file is touched. The real-sudo test in
 
 ## Test Plan
 
-- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (9 tests):
+- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (10 tests):
   blocked directory refused and the command never spawned; `runMergeFastChecks`
   gives `unverified` and `verifyMergeBeforePush` gives `deferred` with the
   repair agent never called; a genuinely missing `Cargo.toml` is `{code: 1}`
@@ -80,12 +86,18 @@ Backend change; no UI file is touched. The real-sudo test in
   inaccessible checkout; and (PR #4795 review, Issue #4782) a real-sudo test
   with a worker-owned 0755 sub-directory project that runs its fast check, plus
   a test that runs the real probe script on a 0555 directory and shows the fast
-  check runs while the default probe still refuses with `probe 3`.
+  check runs while the default probe still refuses with `probe 3`; and a
+  real-sudo test where a cargo check in a worker-owned 0755 sub-directory writes
+  its private `CARGO_TARGET_DIR` (stand-in `sh` creates it).
 - Red checks: returning exit 1 directly for `GateAccountUnavailable` turned the
   `unverified`/`deferred` test red; always throwing for an absent manifest
   turned the missing-manifest test red. Setting `requireWritableCheckout: true`
-  in `spawnFastCheck` turned both new sub-directory tests red (2 of 9 failed,
-  `probe 3`). All restored.
+  in `spawnFastCheck` turned both sub-directory Deno tests red (`probe 3`).
+  Dropping `root: EPHEMERAL_CARGO_TARGET_ROOT` turned the private-target test
+  and the cargo sub-directory real-sudo test red
+  (`mkdir: cannot create directory
+  '.../nested/.vibe-cargo-target': Permission denied`).
+  All restored.
 - Edited existing tests: `tests/merge_fast_checks_test.ts` gained `isProbeCall`
   and `probePassed` helpers and the "isolates credentials" test returns early
   for the probe call. `tests/merge_fast_checks_credentials_4705_test.ts`:
@@ -100,7 +112,7 @@ Backend change; no UI file is touched. The real-sudo test in
   mutation runner runs it (`deno test --no-check -A`, a fresh `0700` `TMPDIR`),
   the four covering test files pass (157 passed, 0 failed).
 - Passed at the head (`deno task test:unit`, run per file):
-  `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (9 tests at head),
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (10 tests at head),
   `worker/deno/tests/merge_fast_checks_test.ts` (36 tests at head) and
   `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts` (6 tests at
   head), 0 failed.

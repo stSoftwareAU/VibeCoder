@@ -34,6 +34,7 @@ import {
   runRepositoryCommand,
 } from "../lib/untrusted_gate_spawn.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
+import { EPHEMERAL_CARGO_TARGET_ROOT } from "../lib/ephemeral_build_cache.ts";
 import {
   asUntrustedUser,
   canRunAsUntrustedUser,
@@ -257,7 +258,12 @@ Deno.test("merge checks: a cargo target the account cannot write is built in a p
     assertEquals(commands.length, 1);
     const target = commands[0]!.options?.env?.["CARGO_TARGET_DIR"];
     assert(target !== undefined, "the command runs with a CARGO_TARGET_DIR");
-    assertStringIncludes(target, ".vibe-cargo-target");
+    // Outside the checkout: a sub-directory project is not writable (Issue #4782).
+    assert(
+      target.startsWith(`${EPHEMERAL_CARGO_TARGET_ROOT}/`),
+      `target ${target} is under the ephemeral root`,
+    );
+    assert(!target.startsWith(dir));
   });
 });
 
@@ -416,4 +422,48 @@ Deno.test("merge checks: the real probe script lets a readable, unwritable sub-d
       await Deno.chmod(dir, 0o755);
     }
   });
+});
+
+Deno.test("merge checks: a cargo check in a readable, unwritable sub-directory project gets a private target the account can write (Issue #4782)", async () => {
+  // Skipped where this host cannot drop to the agent account.
+  if (!await canRunAsUntrustedUser()) return;
+  const clone = await Deno.makeTempDir({
+    dir: "/tmp",
+    prefix: "issue-4782-cargo-",
+  });
+  try {
+    await Deno.chmod(clone, 0o755);
+    const project = `${clone}/nested`;
+    await Deno.mkdir(project, { mode: 0o755 });
+    await Deno.chmod(project, 0o755);
+    await Deno.writeTextFile(`${project}/Cargo.toml`, CARGO_MANIFEST);
+    await Deno.chmod(`${project}/Cargo.toml`, 0o644);
+    // `sh` stands in for cargo: it creates the directory CARGO_TARGET_DIR names.
+    const drop = (cmd: readonly string[]) =>
+      Promise.resolve(asUntrustedUser(
+        cmd[0] === "cargo"
+          ? ["sh", "-c", 'mkdir -p "$CARGO_TARGET_DIR" && echo built']
+          : cmd,
+        { enabled: true },
+      ));
+    const result = await spawnFastCheck(
+      {
+        dir: project,
+        kind: "cargo",
+        label: "cargo check",
+        args: ["check"],
+        timeoutMs: 20_000,
+      },
+      {},
+      runWithTimeout,
+      drop,
+      // An inherited CARGO_TARGET_DIR, or a launch that refused the trim,
+      // would mean no private target is needed at all.
+      { source: { PATH: Deno.env.get("PATH") ?? "" }, trimRefused: false },
+    );
+    assertEquals(result.code, 0, result.output);
+    assertStringIncludes(result.output, "built");
+  } finally {
+    await Deno.remove(clone, { recursive: true });
+  }
 });

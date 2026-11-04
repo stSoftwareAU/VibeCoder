@@ -142,7 +142,8 @@ directory, which the read-only checks do not need, Issue #4782), and a probe
 that fails, or an account that cannot reach the checkout, leaves the merge
 `unverified` and its push deferred, with no repair round spent. A manifest the
 worker can see is genuinely absent, such as no `Cargo.toml`, is a failing check
-instead.
+instead. A cargo check whose target the account cannot write builds in a private
+target under `/var/tmp/vibe-cargo-target`, outside the checkout.
 
 A declared name must be a plain identifier. `IFS` and names starting with
 `_vibe_cc_` are the wrapper's own and are refused, so a declaration can never
