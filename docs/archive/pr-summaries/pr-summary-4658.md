@@ -10,6 +10,9 @@ evaluated per host. Milestone sync pushes, and the host babysitter's own pushes
 (through a new `VIBE_AUDIT_DIR`), are now journalled with provenance. Several
 parts of the issue remain (see Acceptance Criteria), so this is Part of #4658.
 
+The `pr-summary-check` and `pr-summary-ci` tasks in `worker/deno/deno.json` also
+allow `VIBE_AUDIT_DIR` in their `--allow-env` list.
+
 Version bump: `VERSION` is not touched by this change.
 
 ### Deno regression avoided
@@ -105,6 +108,11 @@ flowchart LR
   reached their guard were fixed and re-broken red.
 - Existing fixtures gained `merged` events, review `user.id` and check-run
   `conclusion` because those keys are now required. No assertion was removed.
+- `worker/deno/deno.json`: the `pr-summary-check` and `pr-summary-ci` tasks now
+  allow the `VIBE_AUDIT_DIR` env var, because the audit hook reads it and the
+  tasks' `--allow-env` list denied it (commit 9f2908c4). Verified by running
+  `deno task pr-summary-ci --base main --head-branch <branch>` from
+  `worker/deno`, which no longer fails on the env permission.
 - Old-shape tests: `review-run.json` and `deployment-health.json` without `host`
   still read as host-less rows; snapshot input without the new fields reports
   unchanged values.
