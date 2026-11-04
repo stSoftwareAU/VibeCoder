@@ -967,7 +967,10 @@ function revertedNumbers(title: string, body: string): number[] {
  * once per reverted PR, at the earliest revert, and resolved when the revert
  * merged. Reverts of PRs outside the cohort are not observed.
  */
-function regressionsFor(observed: ObservedPr[]): Regression[] {
+function regressionsFor(
+  observed: ObservedPr[],
+  ciRunsByPr: ReadonlyMap<string, readonly CiRun[]> = new Map(),
+): Regression[] {
   const byKey = new Map(
     observed.map((o) => [keyOf(o.record.repo, o.record.number), o.record]),
   );
@@ -995,7 +998,41 @@ function regressionsFor(observed: ObservedPr[]): Regression[] {
       }
     }
   }
-  return [...earliest.values()].map(({ createdAt: _createdAt, ...row }) => row);
+  const rows: Regression[] = [...earliest.values()].map(
+    ({ createdAt: _createdAt, ...row }) => ({ ...row, source: "revert" }),
+  );
+  for (const { record } of observed) {
+    if (!record.mergedAt) continue;
+    const mergeMs = utcMillis(record.mergedAt, "PR mergedAt");
+    const runs = ciRunsByPr.get(keyOf(record.repo, record.number)) ?? [];
+    const workflows = runs.filter((run) => run.kind === "workflow_run");
+    for (const failed of workflows) {
+      if (
+        !failed.completedAt || !failed.workflowId || !failed.headSha ||
+        failed.headSha !== record.headSha ||
+        !["failure", "cancelled", "timed_out", "action_required"].includes(
+          failed.outcome ?? "",
+        ) || utcMillis(failed.completedAt!, "workflow completedAt") < mergeMs
+      ) continue;
+      const recovered = workflows.some((candidate) =>
+        candidate.workflowId === failed.workflowId &&
+        candidate.headSha === failed.headSha &&
+        candidate.outcome === "success" &&
+        candidate.attempt! > failed.attempt! &&
+        candidate.completedAt !== null &&
+        utcMillis(candidate.completedAt!, "workflow completedAt") >=
+          utcMillis(failed.completedAt!, "workflow completedAt")
+      );
+      rows.push({
+        repo: record.repo,
+        prNumber: record.number,
+        detectedAt: failed.completedAt,
+        resolved: recovered,
+        source: "post_merge_ci",
+      });
+    }
+  }
+  return rows;
 }
 
 /** One deployment row, or the reason the record is unusable. */
@@ -1247,9 +1284,8 @@ function isPostedReview(value: unknown): value is LogRecord {
  * (docs/INTERNALS.md). Records for
  * PRs outside the cohort are ignored. A missing or unreadable file, and a
  * malformed line, is noted and skipped, never silently. The same record across
- * two logs is one action. Its head SHA is not carried because nothing uses it:
- * an action links by repository and PR number whatever its recorded head.
- * A review posted at an older head still matches its event by time.
+ * two logs is one action. Its head SHA helps correlate the event, but does not
+ * verify it; review-log records remain supporting evidence only.
  */
 async function reviewLogActions(
   paths: string[],
@@ -1477,8 +1513,8 @@ function linkBranchPush(
  * Whether a cohort PR is stranded at the rollout verification instant: created
  * before it, still open at it (no merge or close at or before it), at least
  * {@link STRANDED_AGE_MS} old at it, and not owner-gated. A PR that merged after
- * the instant is stranded, and is then rediscovered or processed by its fleet
- * actions. PRs created before the cohort start never reach this check.
+ * the instant is stranded. PRs created before the cohort start never reach
+ * this check.
  */
 function strandedAt(pr: PrCompletionRecord, verifiedMs: number): boolean {
   const createdMs = utcMillis(pr.createdAt, "PR createdAt");
@@ -1620,6 +1656,7 @@ export async function collectPrCompletionSnapshot(
   const githubActions: TrustedPrAction[] = [];
   const blockers: Blocker[] = [];
   const ciRuns: CiRun[] = [];
+  const ciRunsByPr = new Map<string, CiRun[]>();
   let reviewEvents = 0;
   let prsWithReviewEvents = 0;
   for (const o of observed) {
@@ -1645,6 +1682,7 @@ export async function collectPrCompletionSnapshot(
       notes,
     );
     ciRuns.push(...prCiRuns);
+    ciRunsByPr.set(keyOf(record.repo, record.number), prCiRuns);
     blockers.push(...ciBlockersFor(record, prCiRuns, options.cohort.observedAt));
   }
   if ((options.reviewLogs ?? []).length === 0 && reviewEvents > 0) {
@@ -1666,24 +1704,24 @@ export async function collectPrCompletionSnapshot(
     );
     rollout = {
       verifiedAt: options.rolloutVerifiedAt,
+      discoveryEvidenceComplete: false,
       strandedPrs: records.filter((pr) => strandedAt(pr, verifiedMs)).map(
         (pr) => {
-          const fleet = verifiedFleet.filter((action) =>
-            action.repo === pr.repo && action.prNumber === pr.number &&
-            utcMillis(action.timestamp, "action timestamp") >= verifiedMs
-          );
           return {
             repo: pr.repo,
             prNumber: pr.number,
             eligible: true,
-            rediscovered: fleet.length > 0,
-            processed: fleet.some((action) =>
-              action.outcome === "confirmed" && action.kind !== "unknown"
-            ),
+            rediscovered: false,
+            processed: false,
           };
         },
       ),
     };
+    if (rollout.strandedPrs.length > 0) {
+      notes.push(
+        "rollout discovery evidence is unavailable; later audit actions do not prove ordinary discovery, eligibility or processing",
+      );
+    }
   }
 
   const input: PrCompletionInput = {
@@ -1697,7 +1735,7 @@ export async function collectPrCompletionSnapshot(
     ],
     blockers,
     ciRuns,
-    regressions: regressionsFor(observed),
+    regressions: regressionsFor(observed, ciRunsByPr),
     deployments,
     expectedDeployment: {
       components: [...options.expected.components],

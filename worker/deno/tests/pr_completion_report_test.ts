@@ -301,6 +301,7 @@ Deno.test("rollout check separates eligibility, rediscovery and processing befor
     })),
     rollout: {
       verifiedAt: "2026-10-20T00:00:00.000Z",
+      discoveryEvidenceComplete: true,
       strandedPrs: [
         {
           repo: "org/repo",
@@ -327,9 +328,11 @@ Deno.test("rollout check separates eligibility, rediscovery and processing befor
     },
   }));
   assertEquals(report.rollout.eligibleStrandedPrs, 2);
+  assertEquals(report.rollout.discoveredPrs, 1);
   assertEquals(report.rollout.rediscoveredPrs, 1);
   assertEquals(report.rollout.processedPrs, 0);
   assertEquals(report.rollout.notRediscoveredPrs, 1);
+  assertEquals(report.rollout.unknownDiscoveryPrs, 0);
   assertEquals(report.targetEvaluation.status, "pending");
 });
 

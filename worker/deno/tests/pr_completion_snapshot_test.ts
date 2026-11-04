@@ -1344,7 +1344,7 @@ Deno.test("collect - a CI run without a completion time has no duration", async 
 
 Deno.test("collect - CI history includes observed heads, workflow attempts and paged jobs", async () => {
   const fixture = emptyFixture({
-    pulls: { [REPO]: [pull(1)] },
+    pulls: { [REPO]: [pull(1, { merged_at: "2026-10-20T00:01:00Z" })] },
     commits: { [pk(1)]: [commit("sha2", "2026-10-20T00:40:00Z")] },
     workflowRuns: {
       sha1: {
@@ -1420,6 +1420,13 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
     blocker: "ci-failure",
     startedAt: "2026-10-20T00:05:00Z",
     endedAt: "2026-10-20T00:20:00Z",
+  }]);
+  assertEquals(snapshot.input.regressions, [{
+    repo: REPO,
+    prNumber: 1,
+    detectedAt: "2026-10-20T00:05:00Z",
+    resolved: true,
+    source: "post_merge_ci",
   }]);
 });
 
@@ -1713,15 +1720,17 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
       .sort((a, b) => a.prNumber - b.prNumber);
     assertEquals(stranded, [
       { prNumber: 1, rediscovered: false, processed: false },
-      { prNumber: 2, rediscovered: true, processed: true },
-      { prNumber: 3, rediscovered: true, processed: false },
+      { prNumber: 2, rediscovered: false, processed: false },
+      { prNumber: 3, rediscovered: false, processed: false },
     ]);
+    assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, false);
     assertEquals(snapshot.input.rollout!.verifiedAt, "2026-10-25T00:00:00Z");
     const report = buildPrCompletionReport(snapshot.input);
     assertEquals(report.rollout.eligibleStrandedPrs, 3);
-    assertEquals(report.rollout.rediscoveredPrs, 2);
-    assertEquals(report.rollout.processedPrs, 1);
-    assertEquals(report.rollout.notRediscoveredPrs, 1);
+    assertEquals(report.rollout.rediscoveredPrs, 0);
+    assertEquals(report.rollout.processedPrs, 0);
+    assertEquals(report.rollout.notRediscoveredPrs, 0);
+    assertEquals(report.rollout.unknownDiscoveryPrs, 3);
   });
 });
 

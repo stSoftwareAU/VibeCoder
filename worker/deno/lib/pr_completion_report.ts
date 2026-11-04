@@ -87,6 +87,7 @@ export interface PrCompletionInput {
     prNumber: number;
     detectedAt: string;
     resolved: boolean;
+    source?: "revert" | "post_merge_ci";
   }>;
   deployments: Array<{
     component: string;
@@ -105,12 +106,14 @@ export interface PrCompletionInput {
   };
   rollout?: {
     verifiedAt: string;
+    discoveryEvidenceComplete?: boolean;
     strandedPrs: Array<{
       repo: string;
       prNumber: number;
       eligible: boolean;
-      rediscovered: boolean;
-      processed: boolean;
+      discovered?: boolean;
+      eligibilityConfirmed?: boolean;
+      processed?: boolean;
     }>;
   };
 }
@@ -181,9 +184,12 @@ export interface PrCompletionReport {
   };
   rollout: {
     eligibleStrandedPrs: number;
+    discoveredPrs: number;
+    eligibleEventPrs: number;
     rediscoveredPrs: number;
     processedPrs: number;
     notRediscoveredPrs: number;
+    unknownDiscoveryPrs: number;
   };
   targetEvaluation: {
     status: "pending" | "met" | "not_met" | "unavailable";
@@ -742,13 +748,26 @@ export function buildPrCompletionReport(
   const deployment = deploymentReport(input);
   const incompleteObservationWindow = observedAt < end;
   const stranded = input.rollout?.strandedPrs ?? [];
+  const discoveryComplete = input.rollout?.discoveryEvidenceComplete === true;
+  const discoveredPrs = discoveryComplete
+    ? stranded.filter((pr) => pr.eligible && pr.discovered).length
+    : 0;
   const rollout = {
     eligibleStrandedPrs: stranded.filter((pr) => pr.eligible).length,
-    rediscoveredPrs:
-      stranded.filter((pr) => pr.eligible && pr.rediscovered).length,
-    processedPrs: stranded.filter((pr) => pr.eligible && pr.processed).length,
-    notRediscoveredPrs:
-      stranded.filter((pr) => pr.eligible && !pr.rediscovered).length,
+    discoveredPrs,
+    rediscoveredPrs: discoveredPrs,
+    eligibleEventPrs: discoveryComplete
+      ? stranded.filter((pr) => pr.eligible && pr.eligibilityConfirmed).length
+      : 0,
+    processedPrs: discoveryComplete
+      ? stranded.filter((pr) => pr.eligible && pr.processed).length
+      : 0,
+    notRediscoveredPrs: discoveryComplete
+      ? stranded.filter((pr) => pr.eligible && !pr.discovered).length
+      : 0,
+    unknownDiscoveryPrs: discoveryComplete
+      ? 0
+      : stranded.filter((pr) => pr.eligible).length,
   };
   let targetEvaluation: PrCompletionReport["targetEvaluation"] = {
     status: "pending",

@@ -10,6 +10,7 @@ import { CODEX_OUTPUT_ADAPTER } from "../lib/codex_output_adapter.ts";
 import { loadConfig } from "../lib/config.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
+import { appendPrDiscoveryEvent } from "../lib/pr_discovery_events.ts";
 import { escalationHostId } from "../lib/host_escalation.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
@@ -2902,6 +2903,19 @@ async function pass(
         );
       if (prFilter === undefined) {
         await appendTrackedPrs(stateDir, repo, prs, skipMerge);
+        for (const pr of prs) {
+          await appendPrDiscoveryEvent(
+            `${stateDir}/pr-discovery-events.jsonl`,
+            {
+              event: "discovered",
+              hostId: escalationHostId(),
+              repo,
+              prNumber: pr.number,
+              headSha: pr.headRefOid,
+              recordedAt: new Date().toISOString(),
+            },
+          );
+        }
       }
       for (const pr of prs) {
         if (prFilter !== undefined && pr.number !== prFilter) continue;
@@ -2945,13 +2959,35 @@ async function pass(
           );
           continue;
         }
+        await appendPrDiscoveryEvent(
+          `${stateDir}/pr-discovery-events.jsonl`,
+          {
+            event: "eligible",
+            hostId: escalationHostId(),
+            repo,
+            prNumber: pr.number,
+            headSha: pr.headRefOid,
+            recordedAt: new Date().toISOString(),
+          },
+        );
         console.log(`${repo}#${pr.number}: ${why}`);
         if (execute) {
           repairs.push({
             key: `${repo}#${pr.number}`,
             version: `${pr.headRefOid}:${why}`,
-            run: () =>
-              withBabysitterWriteScope(
+            run: async () => {
+              await appendPrDiscoveryEvent(
+                `${stateDir}/pr-discovery-events.jsonl`,
+                {
+                  event: "processed",
+                  hostId: escalationHostId(),
+                  repo,
+                  prNumber: pr.number,
+                  headSha: pr.headRefOid,
+                  recordedAt: new Date().toISOString(),
+                },
+              );
+              return await withBabysitterWriteScope(
                 repo,
                 () =>
                   fix(
@@ -2966,6 +3002,7 @@ async function pass(
                     resolveMaxAutoFixAttempts(config, repo),
                   ),
               ),
+            },
           });
         }
       }

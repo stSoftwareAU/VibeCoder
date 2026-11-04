@@ -1124,9 +1124,9 @@ pr-completion-report --collect` builds that snapshot itself and reports on it.
 Exactly one of `--input` and `--collect` is required. Neither mode performs
 GitHub writes or changes host configuration. `--collect` writes only the
 optional `--write-snapshot <path>`, which holds the collected input so a later
-`--input` run reproduces the same report, plus whatever `verifyAllChains` settles
-in an audit directory it sweeps (an interrupted append, Issue #1074; see
-**Limits**). A `--input` snapshot is not authenticated.
+`--input` run reproduces the same report. Audit-chain verification runs without
+interrupted-append recovery, so collection does not modify audit state. A
+`--input` snapshot is not authenticated.
 
 `--collect` reads these sources, all read-only. The audit journals are the
 verified fleet source; the review-fleet-prs log is a lower-trust source, set
@@ -1136,11 +1136,12 @@ out under **Review-fleet-prs log** below:
   (default `config.repos`): the default branch; the pull requests created in
   `[start, end)` (`--start` and `--end`, default the fourteen days ending now),
   paged newest first; each cohort PR's reviews, issue events and commits; and
-  check runs for merged PRs.
+  check runs plus workflow attempts and paged jobs for the PR head and every
+  observed commit head. The report separates checks, workflow runs and jobs,
+  and records job durations in seconds before converting them to minutes.
 - **Audit journals** in each `--audit-dir` (default the resolved audit
-  directory). Each directory's chains are verified with `verifyAllChains`, the
-  sweep `audit-chain-verify` runs at startup, and each journal is read with
-  `loadEntries`.
+  directory). Each directory's chains are verified with `verifyAllChains`
+  without repair, and each journal is read with `loadEntries`.
 - **Review-run records**: `<round>/review-run.json` under each
   `--review-run-dir`.
 - **Lifecycle ledgers** named by `--lifecycle-ledger`.
@@ -1150,7 +1151,8 @@ out under **Review-fleet-prs log** below:
   (comma-separated, one per host). Lower trust; see below.
 
 The expected deployment comes from `--expected-components` (default
-`worker,reviewer,babysitter`), `--expected-revision` (default
+`worker,reviewer,babysitter`), optional explicit `--expected-inventory`
+(`host-id/component,...`), `--expected-revision` (default
 `VIBE_BUILD_COMMIT`; the command fails when neither is set), the policy
 fingerprint from `fingerprintWorkerReviewPolicy(config)`, and
 `--max-heartbeat-age-hours` (default 24).
@@ -1186,13 +1188,11 @@ on the remote is excluded from a later fleet push's range. Legacy pushes without
 delivery evidence, unsupported push forms and shallow or unavailable history
 leave commits unknown rather than falling back to time-based attribution.
 
-**Merge window.** Auto-merge journals the merge when it is armed, which can be
-hours before GitHub records `mergedAt`. So a fleet `merge` action matches a
-merge event when its timestamp lies from the PR's creation to ten minutes after
-`mergedAt`. An armed merge stamped before the PR existed does not match, nor
-does one stamped more than ten minutes after the merge. A verified, successful
-fleet disarm between the arm and GitHub's merge invalidates that arm. A later
-re-arm can match; failed disarms do not withdraw an arm.
+**Merge attribution.** Arming auto-merge is journalled as `merge-arm`, carries
+the observed head SHA, and never verifies a later merge by itself. A synchronous
+merge is correlated to GitHub's merge event by PR, head SHA and a short
+post-action window. Without that exact evidence, the merge remains unknown;
+GitHub's actor login is not treated as proof of a human or fleet action.
 
 **Push linking.** Production writes `git-push` entries with no repository, only
 the push target. Such a push links across every supplied repository by branch
@@ -1218,13 +1218,12 @@ and the skill, which re-exports them. There is no worker-to-skill import. Each r
 `outcome` of `approved`, `changes_requested` or `held`. Each is a posted GitHub
 review: a held PR is posted as a COMMENTED review.
 
-A record for a cohort PR becomes a verified fleet `review` action with actor
-`fleet`, outcome `confirmed` and the ID `review-log:<repo>#<number>:<at>`. The
-same record in two logs is one action. It matches a GitHub review event within
-ten minutes, as an audit action does. Matching uses the repository, the PR
-number and the time only. A review posted at an older head still matches, so the
-record's head SHA is not carried because nothing uses it. An action links to
-its PR by repository and number whatever head it was recorded at.
+A record for a cohort PR is supporting evidence only. It can help correlate a
+GitHub review by repository, PR, head SHA and time, but it does not independently
+verify that the fleet performed the review. The same record in two logs is one
+action. Records for PRs outside the cohort are ignored. A missing or unreadable
+file, and a malformed line, are coverage notes; the rest of the log is still
+used.
 Records for PRs outside the cohort are ignored. A missing or unreadable file,
 and a malformed line, are coverage notes; the rest of the log is still used.
 
@@ -1232,7 +1231,7 @@ and a malformed line, are coverage notes; the rest of the log is still used.
 (`verifyAllChains`) does not cover it. It is trusted at the same level as the
 lifecycle ledger and the review-run records: the fleet account's own record,
 not a journal that the chain protects. A record can therefore make a review
-event verified, and so help a PR count as unattended. The review-fleet-prs
+event verified only when a matching audit action exists. The review-fleet-prs
 skill still does not journal to the audit chain. A PR whose GitHub review
 events have neither an audit action nor a review-log record stays unknown. With
 no `--review-log` and any GitHub review event in the cohort, the coverage notes
@@ -1251,10 +1250,11 @@ the PR number. A PUT to `…/reviews/<id>` with `state=DISMISSED` is also kind
 `dismissal`. The review-fleet-prs skill makes no dismissal call, so it has none
 to journal.
 
-**Unknown, never human.** A GitHub event with no matching verified fleet action
-becomes an `unknown` action: unverified, outcome unknown, with the ID
-`gh:<repo>#<number>:<kind>:<id>`. GitHub logins are never read, so no login
-makes an action human or fleet.
+**Unknown and human evidence.** A GitHub event with no matching verified fleet
+action becomes an `unknown` action: unverified, outcome unknown, with the ID
+`gh:<repo>#<number>:<kind>:<id>`. Human attribution requires affirmative
+evidence; an unmatched event stays unknown. A bot merge does not erase a
+recorded human repair or review earlier in the PR history.
 
 **Owner gates.** `ownerGateVerified` is always false today, because no hold
 marker is recorded yet. A PR labelled `needs-human` is recorded as
@@ -1362,8 +1362,9 @@ are unavailable when a delivered change has a run without a duration. Post-
 merge regressions and unresolved attribution remain separate from merge speed.
 `targetEvaluation` stays pending until a verified rollout has a complete
 fourteen-day window; it reports the provisional 90% target and never gates a
-merge. The repeatable `rollout` counts distinguish eligible stranded PRs,
-rediscovery and processing.
+merge. The repeatable rollout report counts eligible stranded PRs. Discovery,
+eligibility and processing remain unknown until the ordinary discovery path
+records explicit events; later audit actions do not prove rediscovery.
 
 Deployment observations come from the lifecycle ledgers, review-round records
 and babysitter heartbeats named above. Each stores a code revision and the same
@@ -1374,12 +1375,15 @@ repository's resolved executor split, sub-agent tier and `skipAutoMerge`. No
 credentials or raw configuration enter the fingerprint, and changing any
 allowlisted setting changes it. The expected value is computed from the current
 configuration at collection time, so fingerprints recorded by older builds
-report as a policy mismatch until each component writes a new one. Review-run
-records written before the `deployment` field existed contribute no row, and one
-note counts them. Missing or stale heartbeats,
-unknown revisions, policy mismatches and mixed observations make deployment
-status degraded. The report never repairs deployment state or changes the ordinary discovery
-path. The trusted update route remains the existing
+report as a policy mismatch until each component writes a new one. Explicit
+`--expected-inventory` entries are evaluated per host and component, so a fresh
+host cannot mask a missing or stale peer. Records without a host identity stay
+legacy evidence and cannot satisfy an inventory entry. Review-run records
+written before the `deployment` field existed contribute no row, and one note
+counts them. Missing or stale heartbeats, unknown revisions, policy mismatches
+and mixed observations make deployment status degraded. The report never
+repairs deployment state or changes the ordinary discovery path. The trusted
+update route remains the existing
 [`worker-checkout-update` launcher step](#-entry-point-runsh--runps1).
 
 ```mermaid
