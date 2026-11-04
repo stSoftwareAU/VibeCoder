@@ -79,6 +79,12 @@ directory was refused with `probe 3`.
 - Passed: `deno task test:unit` over `tests/untrusted_gate_spawn_test.ts`,
   `tests/milestone_merge_gate_test.ts`, `tests/milestone_resolution_gate_test.ts`
   (77 passed, 0 failed in parallel; 55 passed serially).
+- `./quality.sh`: every stage passed except `deno tests`, whose only failures are
+  the two Rust-formatter cases in `tests/completion_phase_repo_formatters_test.ts`
+  (lines 480 and 567, files this change does not touch; not compared against
+  `main`), and `markdownlint`, which flagged a wrapped `#4659` in
+  `docs/CONFIGURATION.md`; that was re-wrapped and the pre-push markdownlint
+  check then passed.
 - Docs updated: `docs/CONFIGURATION.md` (the `agent` account checkout paragraph).
 
 ## Not done
