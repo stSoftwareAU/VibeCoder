@@ -84,6 +84,27 @@ Deno.test("discovery suppresses repeated scans and excludes later days", async (
   }
 });
 
+Deno.test("discovery deduplicates across independent module instances", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = `${dir}/events`;
+    const event = {
+      event: "discovered" as const,
+      hostId: "host",
+      repo: "org/repo",
+      prNumber: 1,
+      headSha: "head",
+      recordedAt: "2026-10-01T01:00:00Z",
+    };
+    await appendPrDiscoveryEvent(path, event);
+    const fresh = await import("../lib/pr_discovery_events.ts?fresh-instance");
+    await fresh.appendPrDiscoveryEvent(path, event);
+    assertEquals(await readPrDiscoveryEvents(path), [event]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("PR discovery reader refuses an oversized ledger", async () => {
   const dir = await Deno.makeTempDir();
   try {

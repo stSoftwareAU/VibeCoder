@@ -15,7 +15,16 @@ export interface PrDiscoveryEvent {
 
 const EVENT_LINE_LIMIT = 16_384;
 const LEDGER_BYTE_LIMIT = 16 * 1024 * 1024;
-const recordedByPath = new Map<string, { day: string; keys: Set<string> }>();
+
+function eventKey(event: PrDiscoveryEvent): string {
+  return JSON.stringify([
+    event.event,
+    event.hostId,
+    event.repo,
+    event.prNumber,
+    event.headSha,
+  ]);
+}
 
 /**
  * Map any host label (a free-form VIBE_HOST_ID or hostname) onto the identifier
@@ -60,23 +69,13 @@ export async function appendPrDiscoveryEvent(
     new Date(event.recordedAt).toISOString().slice(0, 10)
   }`;
   await withFileLock(`${path}.lock`, async () => {
-    const day = new Date(event.recordedAt).toISOString().slice(0, 10);
-    let recorded = recordedByPath.get(path);
-    if (!recorded || recorded.day !== day) {
-      recorded = { day, keys: new Set() };
-      recordedByPath.set(path, recorded);
-    }
-    const key = JSON.stringify([
-      event.event,
-      event.hostId,
-      event.repo,
-      event.prNumber,
-      event.headSha,
-    ]);
-    if (recorded.keys.has(key)) return;
+    const key = eventKey(event);
     try {
       using file = await Deno.open(dailyPath, { read: true, write: true });
       const size = (await file.stat()).size;
+      if (size > LEDGER_BYTE_LIMIT) {
+        throw new Error(`discovery ledger exceeds ${LEDGER_BYTE_LIMIT} bytes`);
+      }
       if (size) {
         const start = Math.max(0, size - EVENT_LINE_LIMIT - 1);
         await file.seek(start, Deno.SeekMode.Start);
@@ -97,6 +96,28 @@ export async function appendPrDiscoveryEvent(
           await file.truncate(start + lastNewline + 1);
         }
       }
+      await file.seek(0, Deno.SeekMode.Start);
+      const bytes = new Uint8Array((await file.stat()).size);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const count = await file.read(bytes.subarray(offset));
+        if (count === null) {
+          throw new Error("unexpected end of discovery ledger");
+        }
+        offset += count;
+      }
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      for (const line of text.split("\n")) {
+        if (!line) continue;
+        if (line.length > EVENT_LINE_LIMIT) {
+          throw new Error("discovery ledger line exceeds limit");
+        }
+        const row: unknown = JSON.parse(line);
+        if (!validEvent(row)) {
+          throw new Error("invalid PR discovery event in ledger");
+        }
+        if (eventKey(row) === key) return;
+      }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
@@ -104,7 +125,6 @@ export async function appendPrDiscoveryEvent(
       create: true,
       append: true,
     });
-    recorded.keys.add(key);
   });
 }
 

@@ -873,6 +873,12 @@ Deno.test("collect - legacy push records cannot prove commit delivery", async ()
 });
 
 Deno.test("collect - auto-merge arms and withdrawals never verify a GitHub merge", async () => {
+  const armKind = actionKindFor(
+    { verb: "pr-merge", target: "1", scope: "cwd" },
+    undefined,
+    ["pr", "merge", "1", "--auto"],
+  );
+  assertEquals(armKind, "merge-arm");
   for (const failed of [false, true]) {
     await withDir(async (dir) => {
       await journal(dir, [
@@ -886,7 +892,7 @@ Deno.test("collect - auto-merge arms and withdrawals never verify a GitHub merge
         },
         {
           verb: "pr-merge",
-          actionKind: "merge-arm",
+          actionKind: armKind,
           actionId: "arm",
           repo: REPO,
           prNumber: 1,
@@ -904,7 +910,7 @@ Deno.test("collect - auto-merge arms and withdrawals never verify a GitHub merge
         ...(!failed
           ? [{
             verb: "pr-merge",
-            actionKind: "merge-arm" as const,
+            actionKind: armKind,
             actionId: "rearm",
             repo: REPO,
             prNumber: 1,

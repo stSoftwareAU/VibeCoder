@@ -56,7 +56,7 @@ flowchart LR
   `reportHostId(escalationHostId())`, which maps any `VIBE_HOST_ID` to the
   report's host-id pattern so one odd value cannot abort a babysitter pass.
 
-- Discovery events rotate into UTC-day files, deduplicate per process and day, recover
+- Discovery events rotate into UTC-day files, deduplicate across processes per day, recover
   a torn final record from a bounded tail, and log write failures without
   stopping repairs. The collector reads relevant days and the legacy ledger up
   through the 14-day evaluation window up to a 16 MiB total limit; excess
@@ -79,7 +79,7 @@ flowchart LR
 Backend and CLI only; no UI file is touched.
 
 The obsolete single unbounded ledger and exact-timestamp deduplication are
-replaced by daily rotation and process-local daily deduplication. Rediscovery on
+replaced by daily rotation and cross-process daily deduplication. Rediscovery on
 later days remains recorded, and the legacy ledger remains readable. Coverage:
 `worker/deno/tests/pr_discovery_events_test.ts::PR discovery event ledger rotates daily and repairs a torn tail`
 and `worker/deno/tests/pr_completion_snapshot_test.ts::collect - oversized discovery evidence remains incomplete`.
@@ -180,9 +180,25 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a failed run on the merge commit is a post-merge regression, resolved by a later successful attempt`.
   Unpinned and malformed merge pins remain unverified:
   `worker/deno/tests/audit_hook_test.ts::audit_hook - unpinned and malformed merge pins carry no head`.
-  The obsolete per-scan deduplication is replaced by daily process-local
+The obsolete per-scan deduplication is replaced by daily cross-process
   deduplication; distinct transitions and later days remain recorded in
   `worker/deno/tests/pr_discovery_events_test.ts::PR discovery event ledger rotates daily and repairs a torn tail`.
+Independent module instances sharing a ledger suppress duplicate appends in
+`worker/deno/tests/pr_discovery_events_test.ts::discovery deduplicates across independent module instances`;
+without the fix it observed two rows instead of one. The obsolete process-local
+cache is replaced by a bounded ledger read under the append lock. No duplicate
+deduplication implementation was found.
+
+Test-change evidence: reverting the `git_pull` classification made
+`worker/deno/tests/audit_hook_test.ts::audit_hook - a git_pull push to a milestone branch is a milestone action`
+fail with `unknown` instead of `milestone`. The obsolete unknown classification
+is replaced by milestone and branch-update classifications; unknown callers stay
+covered by `worker/deno/tests/audit_hook_test.ts::audit_hook - a push with no resolved caller is unknown, not milestone`.
+Reverting the auto-arm classification made
+`worker/deno/tests/pr_completion_snapshot_test.ts::collect - auto-merge arms and withdrawals never verify a GitHub merge`
+fail with `merge` instead of `merge-arm`. The obsolete attribution of an arm as
+a merge is replaced by an unknown outcome; this test exercises the classifier
+and the collector, while the hook-driven test covers the journal path.
   No duplicate regression or discovery implementation was found.
 
 - Review fixes: the obsolete per-run overlapping CI intervals are replaced by

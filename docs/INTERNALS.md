@@ -1171,7 +1171,8 @@ uses the machine hostname for a worker and the mapped id for a babysitter or a
 reviewer.
 
 Discovery appends deduplicate each event, host, repository, PR and head within
-each UTC day for the lifetime of the process. Collection also reads the legacy
+each UTC day across processes, by reading the bounded daily file under the
+append lock. Collection also reads the legacy
 `pr-discovery-events.jsonl` and daily files intersecting the verification window,
 ending at the observation time or 14 days after verification, whichever is
 earlier. A combined 16 MiB read limit marks rollout evidence incomplete with a
