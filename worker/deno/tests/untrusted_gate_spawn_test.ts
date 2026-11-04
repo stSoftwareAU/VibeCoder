@@ -1024,3 +1024,106 @@ Deno.test("an unreadable probe names the blocked directory only for one plausibl
     assert(!unwritable.includes("cannot traverse"), unwritable);
   });
 });
+
+Deno.test("a read-only checkout drops only the exit-3 write check, never the cargo target check (Issue #4782)", async () => {
+  await withCheckout(async (cwd) => {
+    const probeFor = async (
+      executable: string,
+      options: { readOnlyCheckout?: boolean },
+    ): Promise<string> => {
+      const { calls, spawn } = recordingSpawn();
+      await runRepositoryCommand(
+        executable,
+        ["run"],
+        {
+          cwd,
+          timeoutMs: 1000,
+          manifests: [executable === "cargo" ? "Cargo.toml" : "deno.json"],
+          ...options,
+        },
+        { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+      );
+      return probeScriptOf(callAt(calls, 0));
+    };
+
+    const deno = await probeFor("deno", { readOnlyCheckout: true });
+    assert(!deno.includes("test -w"), deno);
+    assert(!deno.includes("exit 3"), deno);
+    // Control: the same call without the option keeps the write check.
+    const denoControl = await probeFor("deno", {});
+    assert(denoControl.includes(`test -w "$1" || exit 3`), denoControl);
+
+    // Cargo still probes its target (no target is named, so the checkout must
+    // be writable for cargo to create one); only the exit-3 check is dropped.
+    const cargo = await probeFor("cargo", { readOnlyCheckout: true });
+    assert(cargo.includes(`test -w "$1" || exit 2`), cargo);
+    assert(!cargo.includes("exit 3"), cargo);
+  });
+});
+
+Deno.test("real probe for a read-only checkout passes a 0555 deno project only with the option (Issue #4782)", async () => {
+  const uid = await new Deno.Command("id", { args: ["-u"] }).output();
+  if (new TextDecoder().decode(uid.stdout).trim() === "0") return;
+  await withCheckout(async (cwd) => {
+    await Deno.writeTextFile(`${cwd}/deno.json`, "{}");
+    const code = async (
+      options: { readOnlyCheckout?: boolean } = {},
+    ): Promise<number | undefined> => {
+      const { calls, spawn } = recordingSpawn();
+      await runRepositoryCommand("deno", ["check"], {
+        cwd,
+        timeoutMs: 1000,
+        manifests: ["deno.json"],
+        ...options,
+      }, { spawn, drop: agentDrop, source: SOURCE, trimRefused: false });
+      return (await new Deno.Command("sh", {
+        args: ["-c", probeScriptOf(callAt(calls, 0)), "sh", cwd],
+      }).output()).code;
+    };
+    await Deno.chmod(cwd, 0o555);
+    try {
+      assertEquals(await code({ readOnlyCheckout: true }), 0);
+      assertEquals(await code(), 3);
+    } finally {
+      await Deno.chmod(cwd, 0o755);
+    }
+  });
+});
+
+Deno.test("a worker-owned sub-directory Deno project at 0755 is not left to CI for a read-only check (Issue #4782)", async () => {
+  if (!await canRunAsUntrustedUser()) return;
+  // Under /tmp, not TMPDIR: the runner's TMPDIR is 0700 and `agent` cannot
+  // traverse it.
+  const root = await Deno.makeTempDir({ dir: "/tmp", prefix: "vibe_4782_" });
+  try {
+    await Deno.chmod(root, 0o755);
+    const sub = `${root}/sub`;
+    await Deno.mkdir(sub, { mode: 0o755 });
+    await Deno.chmod(sub, 0o755);
+    await Deno.writeTextFile(`${sub}/deno.json`, "{}");
+    await Deno.chmod(`${sub}/deno.json`, 0o644);
+    const run = (options: { readOnlyCheckout?: boolean } = {}) =>
+      runRepositoryCommand("/bin/sh", ["-c", "exit 0"], {
+        cwd: sub,
+        timeoutMs: 20000,
+        manifests: ["deno.json"],
+        ...options,
+      }, {
+        drop: (cmd) => Promise.resolve(asUntrustedUser(cmd, { enabled: true })),
+        source: { PATH: "/usr/bin:/bin" },
+        trimRefused: false,
+        credentials: async () => ({}),
+      });
+
+    const checked = await run({ readOnlyCheckout: true });
+    assert(checked.ok, checked.ok ? "" : checked.error.message);
+    assertEquals(checked.value.code, 0);
+
+    const left = await run();
+    assert(!left.ok);
+    assert(left.error instanceof GateAccountUnavailable, left.error.message);
+    assert(left.error.message.includes("probe 3"), left.error.message);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
