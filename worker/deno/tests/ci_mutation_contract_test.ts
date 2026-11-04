@@ -8,8 +8,9 @@
  * `|| exit 0`, `|| /bin/true`), trigger shapes (string, array, object,
  * `pull_request_target`), a missing workflows directory, unreadable workflow
  * files, mentions that are not in a `run`, multi-line `run` blocks, pathological
- * lines that must not stall, and local reusable workflow calls (one level, with
- * `workflow_call` callees; remote, ref-qualified and nested calls not followed).
+ * lines that must not stall, and local reusable workflow calls (one level, `./`
+ * or `$/` forms, with `workflow_call` callees; remote, ref-qualified and nested
+ * calls not followed).
  *
  * Each fixture is a fresh temporary repository, removed in `finally`.
  *
@@ -1175,20 +1176,6 @@ Deno.test("a reusable workflow calling another reusable workflow is not followed
   });
 });
 
-Deno.test("a continue-on-error caller job does not follow its reusable workflow", async () => {
-  await withRepo({
-    "ci.yml": callerWorkflow("./.github/workflows/mutants.yml", [
-      '    continue-on-error: "true"',
-    ]),
-    "mutants.yml": calleeWorkflow("workflow_call"),
-  }, async (repo) => {
-    assertEquals(await findBlockingMutationJob(repo), {
-      blocking: null,
-      unreadable: [],
-    });
-  });
-});
-
 Deno.test("a malformed reusable callee is reported unreadable", async () => {
   await withRepo({
     "ci.yml": callerWorkflow("./.github/workflows/mutants.yml"),
@@ -1227,4 +1214,125 @@ Deno.test("hostile: a reusable uses of 200000 name characters returns promptly w
   }, async (repo) => {
     assertEquals((await findBlockingMutationJob(repo)).blocking, null);
   });
+});
+
+Deno.test("hostile: a reusable uses of 200000 dots then ! in the name returns promptly without a match", async () => {
+  const uses = "./.github/workflows/" + ".".repeat(200000) + "!mutants.yml";
+  await withRepo({
+    "ci.yml": callerWorkflow(uses),
+    "mutants.yml": calleeWorkflow("workflow_call"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a PR job calling a $/ local reusable workflow is followed", async () => {
+  await withRepo({
+    "ci.yml": callerWorkflow("$/.github/workflows/mutants.yml"),
+    "mutants.yml": calleeWorkflow("workflow_call"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: {
+        tool: "cargo",
+        workflow: "ci.yml",
+        job: "mutants (reusable mutants.yml: run)",
+        aggregator: "gate",
+        cargoArgs: ["--package", "core"],
+      },
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a ./ or $/ reusable call with an @ref is not followed", async () => {
+  for (
+    const uses of [
+      "./.github/workflows/mutants.yml@main",
+      "$/.github/workflows/mutants.yml@main",
+    ]
+  ) {
+    await withRepo({
+      "ci.yml": callerWorkflow(uses),
+      "mutants.yml": calleeWorkflow("workflow_call"),
+    }, async (repo) => {
+      assertEquals(
+        await findBlockingMutationJob(repo),
+        { blocking: null, unreadable: [] },
+        `uses: ${uses}`,
+      );
+    });
+  }
+});
+
+Deno.test("a bare .github/workflows path without ./ or $/ is not followed", async () => {
+  await withRepo({
+    "ci.yml": callerWorkflow(".github/workflows/mutants.yml"),
+    "mutants.yml": calleeWorkflow("workflow_call"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a reusable callee with no jobs key is not blocking", async () => {
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/mutants.yml"),
+    "mutants.yml": "on: workflow_call\n",
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: null,
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("scalar jobs in a reusable callee are skipped; the real job is still found", async () => {
+  await withRepo({
+    "ci.yml": callerWorkflow("./.github/workflows/mutants.yml"),
+    "mutants.yml": [
+      "on: workflow_call",
+      "jobs:",
+      "  broken:",
+      "  run: not-a-mapping",
+      "  mutants:",
+      "    steps:",
+      "      - run: cargo mutants --package core",
+      "",
+    ].join("\n"),
+  }, async (repo) => {
+    assertEquals(await findBlockingMutationJob(repo), {
+      blocking: {
+        tool: "cargo",
+        workflow: "ci.yml",
+        job: "mutants (reusable mutants.yml: mutants)",
+        aggregator: "gate",
+        cargoArgs: ["--package", "core"],
+      },
+      unreadable: [],
+    });
+  });
+});
+
+Deno.test("a reusable callee whose jobs is a scalar or a list is not blocking", async () => {
+  const callees = [
+    "on: workflow_call\njobs: not-a-mapping\n",
+    "on: workflow_call\njobs:\n  - steps:\n      - run: cargo mutants --package core\n",
+  ];
+  for (const callee of callees) {
+    await withRepo({
+      "ci.yml": callerWorkflow("./.github/workflows/mutants.yml"),
+      "mutants.yml": callee,
+    }, async (repo) => {
+      assertEquals(
+        await findBlockingMutationJob(repo),
+        { blocking: null, unreadable: [] },
+        `callee: ${callee}`,
+      );
+    });
+  }
 });

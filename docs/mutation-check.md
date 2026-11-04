@@ -69,17 +69,17 @@ The worker looks for this job in the repository's `.github/workflows/*.yml` and
 `*.yaml` files, using `worker/deno/lib/ci_mutation_contract.ts`. A job counts
 when a workflow is triggered by `pull_request`, neither the job nor the step is
 `continue-on-error`, and one of its steps runs `cargo mutants`,
-`cargo +toolchain
-mutants`, `cargo-mutants` or `deno task` with a task name
+`cargo +toolchain mutants`, `cargo-mutants` or `deno task` with a task name
 containing `mutat`. A line that ends in `|| true`, `|| :` or `|| exit 0` cannot
 fail the step, so it is skipped; `\` continuations are joined before this check.
-A job that `uses:` a local reusable workflow (`./.github/workflows/<name>.yml` or
-`.yaml`, with no remote owner or `@ref`) also counts when that workflow declares
-`workflow_call` and one of its jobs runs the tool in the same way. Only that one
-level is followed, and the job is reported as `caller job (reusable called.yml:
-inner job)`, with the caller's workflow file. A caller job that is
-`continue-on-error` is not followed. This approximates "a required check or the job feeding it": a job that another
+This approximates "a required check or the job feeding it": a job that another
 job in the same workflow lists under `needs` is reported with that aggregator.
+A job that `uses:` a local reusable workflow (`./.github/workflows/<name>.yml`,
+or the same path after `$/`, ending in `.yml` or `.yaml`) also counts when that
+workflow declares `workflow_call` and one of its jobs runs the tool in the same
+way. A `uses:` with an `@ref` is not followed, even on a local path. Only that
+one level is followed, and the job is reported as `caller job (reusable
+called.yml: inner job)`, with the caller's workflow file.
 The `cargo mutants` flags that choose the mutants or the build (`--package`,
 `--workspace`, `--features`, `--all-features`, `--no-default-features`,
 `--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`,
@@ -89,8 +89,9 @@ output, jobs and shuffle flags stay the worker's. Explicit CI package or
 workspace selection replaces the worker's touched-package selection. When all
 changed crates are known to be outside an explicit CI package list, the worker
 checks them separately as advisory and honours summary exemptions.
-Local reusable workflows are followed one level deep, as described above. Remote
-reusable workflows (`owner/repo/...@ref`) and nested calls are not evaluated.
+Local reusable workflows are followed one level deep, as described above.
+Remote reusable workflows (`owner/repo/...@ref`), local ones with an `@ref`,
+and nested calls are not evaluated.
 Also not evaluated or read: other mutation tools, job `if:` and path filters,
 flags of a `deno task`, and the repository's branch protection (required-check
 names).
@@ -101,7 +102,9 @@ leaving their contract unknown. Reads are
 bounded even if a file grows after its size check. Continued script lines are
 joined once, and each YAML step mapping is scanned once per file. A cumulative
 1 MiB script scan budget per file also bounds repeated YAML string aliases;
-exceeding it reports the workflow as unreadable.
+exceeding it reports the workflow as unreadable. A called workflow's steps are
+charged to the calling file's budget, and the calling file is the one reported
+unreadable.
 
 The CI tool must match the mutation result: cargo-mutants checks Rust, and a
 Deno mutation task checks Deno. A result for the other language stays advisory

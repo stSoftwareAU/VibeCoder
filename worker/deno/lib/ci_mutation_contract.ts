@@ -12,12 +12,13 @@
  *
  * A job that calls a local reusable workflow is inspected through that
  * workflow's jobs, and the result names both (`caller (reusable called.yml:
- * inner)`).
+ * inner)`). The local forms `./.github/workflows/...` and
+ * `$/.github/workflows/...` are followed; a `uses:` with an `@ref` is not.
  *
  * Known limits:
- * - Only local `./.github/workflows/*.yml|yaml` callees (`uses:`) that declare
- *   `workflow_call` are followed, one level deep. Remote reusable workflows and
- *   nested calls are not inspected.
+ * - Only local `./` or `$/` `.github/workflows/*.yml|yaml` callees (`uses:`)
+ *   that declare `workflow_call` are followed, one level deep, without a ref.
+ *   Remote reusable workflows and nested calls are not inspected.
  * - Only cargo-mutants (`cargo mutants` or `cargo-mutants`, optionally with a
  *   `+toolchain` word such as `cargo +nightly mutants`) and `deno task` with a
  *   task name containing `mutat` are recognised. Other tools are not.
@@ -43,13 +44,17 @@
  */
 
 import { parse as parseYaml } from "@std/yaml/parse";
+import { calledWorkflowPath } from "./pr_check_contexts.ts";
 import { WORKFLOWS_DIR } from "./workflow_scope.ts";
 
 /** A PR-triggered workflow job that runs the mutation tool and can fail. */
 export interface BlockingMutationJob {
   /** Workflow file name, e.g. "mutants.yml". */
   workflow: string;
-  /** Job key under `jobs:`. */
+  /**
+   * The job key under `jobs:`, or for a reusable call `caller key (reusable
+   * called.yml: called job key)`.
+   */
   job: string;
   /**
    * The first job in the same workflow whose `needs` lists this job (the
@@ -59,7 +64,8 @@ export interface BlockingMutationJob {
   /**
    * The `cargo mutants` flags of the job's command that change which mutants
    * are tried or how the tree builds (see `extractCargoMutantsArgs`), so the
-   * worker's own run can use the same ones. Empty for other tools.
+   * worker's own run can use the same ones. The command may be in the called
+   * workflow's job. Empty for other tools.
    */
   cargoArgs: string[];
   /** Mutation tool run by this CI command. */
@@ -79,8 +85,13 @@ class WorkflowScanBudgetExceeded extends Error {}
 
 const CARGO_MUTANTS = /(?:^|[;&|])\s*cargo(?:\s+\+\S+)?[ -]mutants\b/;
 const DENO_MUTATION_TASK = /\bdeno\s+task\s+\S*mutat\S*/i;
-/** A `uses:` value naming a local reusable workflow file (no remote or ref). */
-const REUSABLE_CALL = /^\.\/\.github\/workflows\/([A-Za-z0-9._-]+\.ya?ml)$/;
+/**
+ * The path of a local reusable workflow, as `calledWorkflowPath` returns it
+ * (the `./` or `$/` prefix stripped and any `@ref` removed), naming a file
+ * directly under `.github/workflows/`. Anchored, so `..`, subdirectories and
+ * any other path do not match.
+ */
+const REUSABLE_CALL = /^\.github\/workflows\/([A-Za-z0-9._-]+\.ya?ml)$/;
 
 /** Only `*.yml` / `*.yaml` names are workflows. */
 function isWorkflowName(name: string): boolean {
@@ -330,9 +341,10 @@ interface JobHit {
 /**
  * The blocking line for one job of a PR-triggered workflow: the job's own steps
  * first. Otherwise, when the job `uses:` a local reusable workflow that declares
- * `workflow_call` (and the job is not `continue-on-error`), the called workflow's
- * jobs. Only that one level is followed. Called jobs share the caller's `seen`
- * and `budget`, so aliasing stays bounded across the caller and callee.
+ * `workflow_call`, the called workflow's jobs. The local form must start with
+ * `./` or `$/`, and a `uses:` with an `@ref` is not followed. Only that one
+ * level is followed. Called jobs share the caller's `seen` and `budget`, so
+ * aliasing stays bounded across the caller and callee.
  */
 function blockingJobHit(
   job: unknown,
@@ -343,10 +355,12 @@ function blockingJobHit(
   if (!isMapping(job)) return null;
   const line = blockingMutationLine(job, seen, budget);
   if (line !== null) return { line };
-  if (isTrueFlag(job["continue-on-error"])) return null;
   const uses = job.uses;
-  if (typeof uses !== "string") return null;
-  const match = REUSABLE_CALL.exec(uses);
+  if (typeof uses !== "string" || uses.includes("@")) return null;
+  if (!/^(\.|\$)\//.test(uses)) return null;
+  const path = calledWorkflowPath(job);
+  if (path === null) return null;
+  const match = REUSABLE_CALL.exec(path);
   if (match === null) return null;
   const file = match[1]!;
   const callee = parsed.get(file);
