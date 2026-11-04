@@ -7,11 +7,12 @@ sub-directory (for example `worker/deno/deno.json`) was left to CI, and a tree
 whose only projects live in sub-directories came back `skipped` and was refused
 as unverified. `runRepositoryCommand` now takes `readOnlyCheckout`; when true
 the probe does not require the directory to be writable. `spawnTypeCheck` sets
-it for a Deno project that writes nothing into its directory: one with a
+it for a Deno project that can attempt a read-only check: one with a
 committed `deno.lock`, no `package.json`, and no `nodeModulesDir` other than
 `none`/`manual` and no enabled `vendor` (`denoCheckLeavesDirUntouched`). A
-Deno project that may write `deno.lock`, `node_modules` or `vendor`, and
-everything else, keeps the requirement.
+Deno project without a lockfile or that may write `node_modules` or `vendor`,
+and everything else, keeps the requirement. A stale lockfile can still need an
+update; a permission refusal writing it leaves the check to CI.
 Closes #4782.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
@@ -88,6 +89,11 @@ directory was refused with `probe 3`.
   `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a Deno check is read-only only when it writes nothing into its directory, a cargo check keeps the write requirement (Issue #4782)`.
   A direct `spawnTypeCheck` exercise passed for enabled and disabled vendoring;
   this sandbox denies the test fixture's `/tmp` directory creation.
+- Review fix: treating a stale lockfile write refusal as a failed merge is
+  obsolete. A refusal for the project's lockfile on the read-only path is left
+  to CI; unrelated errors still fail. Coverage:
+  `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a read-only lockfile write refusal is left to CI`.
+  The test also checks the merged-tree outcome and unrelated failures.
 - Red check for the verifier fix: forcing `readOnlyCheckout` true for every Deno
   project turned the `spawnTypeCheck` test red; restored.
 - Red checks: making `runRepositoryCommand` always require write turned the

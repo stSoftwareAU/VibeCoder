@@ -1035,3 +1035,56 @@ Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothin
     false,
   );
 });
+
+Deno.test("spawnTypeCheck - a read-only lockfile write refusal is left to CI", async () => {
+  const dir = await Deno.makeTempDir({ dir: Deno.cwd() });
+  try {
+    await writeFile(`${dir}/app/deno.json`, "{}");
+    await writeFile(`${dir}/app/deno.lock`, "{}");
+    const project: TypeCheckProject = {
+      dir: `${dir}/app`,
+      kind: "deno",
+      args: ["check", "mod.ts"],
+    };
+    const refusal =
+      `error: Failed writing lockfile: Permission denied (os error 13) (for '${dir}/app/deno.lock')`;
+    const run = recordingRun([], {
+      code: 1,
+      stdout: "",
+      stderr: refusal,
+      timedOut: false,
+    });
+    const result = await spawnTypeCheck(project, run);
+    assertStringIncludes(
+      result.accountUnavailable ?? "",
+      "Failed writing lockfile",
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      (p) => spawnTypeCheck(p, run),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "skipped");
+    assertStringIncludes(outcome.detail, "left to CI");
+    for (
+      const message of [
+        `error: Failed writing lockfile: Permission denied (os error 13) (for '${dir}/other/deno.lock')`,
+        `error: Permission denied (os error 13) (for '${dir}/app/mod.ts')`,
+        `error: Failed writing lockfile: disk full (for '${dir}/app/deno.lock')`,
+      ]
+    ) {
+      const failure = await spawnTypeCheck(
+        project,
+        recordingRun([], {
+          code: 1,
+          stdout: "",
+          stderr: message,
+          timedOut: false,
+        }),
+      );
+      assertEquals(failure.accountUnavailable, undefined);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
