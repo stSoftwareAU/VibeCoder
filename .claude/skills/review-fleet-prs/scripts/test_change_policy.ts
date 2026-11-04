@@ -26,10 +26,7 @@ import {
   lastRemoveInfoFromTimeline,
   wasLabelAddedByAllowedAuthor,
 } from "../../../../worker/deno/lib/issue_query.ts";
-import {
-  isWorkerRecordOnlyDiff,
-  stripWorkerRecordBlocks,
-} from "../../../../worker/deno/lib/worker_record_block.ts";
+import { stripWorkerRecordBlocks } from "../../../../worker/deno/lib/worker_record_block.ts";
 import { resolveLastIssueEditor } from "../../../../worker/deno/lib/issue_edit_actor.ts";
 import type { RunGh } from "./needs_human.ts";
 
@@ -364,10 +361,12 @@ async function workerClaimProblem(
     }
     const untrustedEdits = lookup.actors.filter((a) => {
       if (a.editedAt < added.addedAt) return false;
-      // Only a body edit with a readable bookkeeping-only diff is skipped.
+      // Compare adjacent GitHub body snapshots; a missing predecessor counts.
       if (
         a.source === "content-edit" && a.diff !== undefined &&
-        isWorkerRecordOnlyDiff(a.diff)
+        a.previousDiff !== undefined &&
+        stripWorkerRecordBlocks(a.diff) ===
+          stripWorkerRecordBlocks(a.previousDiff)
       ) {
         return false;
       }

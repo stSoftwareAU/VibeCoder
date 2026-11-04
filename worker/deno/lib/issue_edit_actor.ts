@@ -39,10 +39,12 @@ export interface IssueEditActor {
   /** Which record identified the actor. */
   source: "content-edit" | "rename";
   /**
-   * GitHub's `diff` text for a body edit. Present only when the caller asked
+   * GitHub's `diff` body snapshot. Present only when the caller asked
    * for it with `includeDiff`; absent for renames and for the default query.
    */
   diff?: string;
+  /** Previous body snapshot, when available and ordered before this edit. */
+  previousDiff?: string;
 }
 
 /**
@@ -222,15 +224,32 @@ export async function resolveLastIssueEditor(
 
   const candidates: IssueEditActor[] = [];
 
-  for (const node of issue.userContentEdits?.nodes ?? []) {
+  const bodyNodes = [...(issue.userContentEdits?.nodes ?? [])].sort((a, b) =>
+    Date.parse(a?.editedAt ?? "") - Date.parse(b?.editedAt ?? "")
+  );
+  // A malformed timestamp makes adjacency uncertain; never exempt an edit.
+  const orderedBodies = bodyNodes.every((node) =>
+    Number.isFinite(Date.parse(node?.editedAt ?? ""))
+  );
+  for (const [index, node] of bodyNodes.entries()) {
     const editedAt = toUnixSeconds(node?.editedAt);
     if (editedAt === null) continue;
+    const previous = bodyNodes[index - 1];
+    const previousTime = previous?.editedAt
+      ? Date.parse(previous.editedAt)
+      : NaN;
+    const currentTime = node?.editedAt ? Date.parse(node.editedAt) : NaN;
     candidates.push({
       login: node?.editor?.login ?? "",
       editedAt,
       source: "content-edit",
       ...(options?.includeDiff && typeof node?.diff === "string"
         ? { diff: node.diff }
+        : {}),
+      ...(options?.includeDiff && orderedBodies &&
+          typeof previous?.diff === "string" &&
+          previousTime < currentTime
+        ? { previousDiff: previous.diff }
         : {}),
     });
   }

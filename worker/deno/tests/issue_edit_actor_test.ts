@@ -88,6 +88,42 @@ Deno.test("issue_edit_actor - returns a null actor when the issue was never edit
   assertEquals(result.actor, null);
 });
 
+Deno.test("issue_edit_actor - pairs ordered body snapshots and fails closed on ambiguous history", async () => {
+  const lookup = (contentEdits: GraphPayload["contentEdits"]) =>
+    resolveLastIssueEditor("owner/repo", 42, graphMock({ contentEdits }), {
+      includeDiff: true,
+    });
+  const earlier = {
+    editedAt: "2026-05-01T10:00:00Z",
+    diff: "original",
+    editor: { login: "a" },
+  };
+  const later = {
+    editedAt: "2026-05-01T11:00:00Z",
+    diff: "new body",
+    editor: { login: "b" },
+  };
+  const ordered = await lookup([later, earlier]);
+  assertEquals(ordered.ok && ordered.actors[0]?.previousDiff, "original");
+  const sameTime = await lookup([earlier, {
+    ...later,
+    editedAt: earlier.editedAt,
+  }]);
+  assertEquals(
+    sameTime.ok && sameTime.actors.every((a) => a.previousDiff === undefined),
+    true,
+  );
+  const malformed = await lookup([
+    earlier,
+    { ...later, editedAt: "bad" },
+    later,
+  ]);
+  assertEquals(
+    malformed.ok && malformed.actors.every((a) => a.previousDiff === undefined),
+    true,
+  );
+});
+
 Deno.test("issue_edit_actor - yields an empty login when GitHub records no editor", async () => {
   // A deleted or anonymised account leaves the edit but drops the actor;
   // an unattributable edit must never read as a trusted login.

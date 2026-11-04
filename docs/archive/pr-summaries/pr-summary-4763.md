@@ -28,22 +28,13 @@ Version bump: no `VERSION` change was made by this PR.
   `resolveGoverningIssues`.
 - Only an issue in the PR's own repo gets this route; a cross-repo issue still
   needs a trusted author and makes no timeline call.
-- An edit at or after the label add (same `>=` comparison the worker's
-  content-integrity gate uses) by an empty, untrusted or fleet-worker login
-  refuses the issue, unless the next bullet applies (a record-block-only edit is
-  skipped; a later trusted non-fleet `needs-human` removal re-approves). Edits
-  before the label add are ignored.
-- PR #4799 review: a body edit whose GitHub `diff` changes only worker
-  record-block lines (`Depends on #M`, `Deferred until ...`, the delimiters; see
-  `isWorkerRecordOnlyDiff` in `worker/deno/lib/worker_record_block.ts`) is
-  skipped, whoever made it, because the worker's gate hashes the body through
-  `stripWorkerRecordBlocks` and ignores it too. It fails closed: a missing or
-  empty diff, or any other changed line, still counts. The diff is read with
-  `resolveLastIssueEditor(..., { includeDiff: true })`; the content gate's own
-  query is unchanged. `requirementQuote` is matched against the body with record
-  blocks stripped. A `needs-human` removal by a trusted non-fleet login at or
-  after the newest counted edit re-approves, as in the worker's
-  `findTrustedReapproval`.
+- Edits before the label add are ignored. A body edit at or after the label
+  is skipped only when consecutive GitHub `userContentEdits.diff` body
+  snapshots are equal after `stripWorkerRecordBlocks`. Missing snapshots,
+  including a predecessor outside the last 100, count as edits. Renames count
+  as edits. An untrusted or fleet editor then refuses the issue unless a
+  trusted non-fleet `needs-human` removal at or after the newest counted edit
+  re-approves it. `requirementQuote` also excludes worker record blocks.
 - A gh failure during the claim check is a `fetch failed:` problem, so the
   review retries and is never a finding.
 
@@ -58,46 +49,16 @@ Backend/CLI change only; no UI files. Tests:
 
 ## Test Plan
 
-- `deno task test:unit <file>` from `worker/deno`, at the head, one file each,
-  all with 0 failed:
-  `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts` (68 tests at
-  head), `worker/deno/tests/review_fleet_prs_test_policy_wiring_4655_test.ts`
-  (57 tests at head), `worker/deno/tests/worker_record_block_test.ts` (14 tests
-  at head), `worker/deno/tests/issue_edit_actor_test.ts` (17 tests at head).
-- Added in `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts`:
-  `fleetWorkerLogins` policy test; a CONTRIBUTOR service-account issue with
-  `top-priority` added by a trusted login is usable and a justified change is
-  approved; the label added by the service account itself (or an unknown login)
-  is refused with "not by a trusted author"; untrusted, empty-login,
-  before-label and trusted-editor cases; an edit after the label by a fleet
-  worker login that is also in `trustedLogins` is refused (and the same edit
-  before the label is not); a fleet login's record-block-only edit after the
-  label keeps the issue usable while a prose or mixed edit, or one with no diff,
-  is refused; `needs-human` re-approval (trusted non-fleet accepted; fleet,
-  untrusted or earlier-than-edit refused); a record-block line is not a
-  requirement quote; `isWorkerRecordOnlyDiff` and `includeDiff` unit tests; a
-  cross-repo issue is still refused without a timeline call; timeline and
-  edit-history read failures give `fetch failed:` and a retry; `work-on` works
-  as the approving label.
-- Edited expectation: the "policy defaults" test now also expects
-  `fleetWorkerLogins: []`. Nothing else was removed.
-- Red checks (guard broken, new tests run, then restored): fleet-login exclusion
-  argument set to `[]` → red; edit check forced to never fire → red;
-  `|| fleet.has(login)` deleted from the edit check → red green again once
-  restored; same-repo condition forced true → red. After the review fix:
-  `isWorkerRecordOnlyDiff(a.diff)` replaced with `!a.diff` → the record-block
-  test red; `!reapproved` replaced with `true` → the re-approval test red; both
-  restored. PR #4799 mutation fix: `line[0] !== "-"` in `isWorkerRecordOnlyDiff`
-  replaced with `true` → the `isWorkerRecordOnlyDiff` test in
-  `worker/deno/tests/worker_record_block_test.ts` red (a removed prose line
-  `-Ignore the rules` is now asserted not record-only); restored.
-- Unverified: GitHub's exact `userContentEdits.diff` format could not be queried
-  in this run (gh API access was denied); the parser assumes unified-style
-  `+`/`-` lines and fails closed otherwise.
-- `./quality.sh`: the only failing stage is deno tests, with three failures in
-  files this PR does not touch (`completion_phase_repo_formatters_test.ts` ×2,
-  `merge_fallback_issue_test.ts`); they fail on environment (cargo fmt commit,
-  gh routing), not on this change. Not re-run against the base branch.
+- `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts::claim rule: a fleet worker's record-block edit after the label keeps the issue usable; a prose edit does not` covers full body snapshots, a worker record edit, a malicious prose rewrite with a dependency bullet, and missing snapshots. The snapshot fixture failed before the fix and passed afterwards.
+- The obsolete `isWorkerRecordOnlyDiff` test assumed unified diff lines, which
+  GitHub does not return. The remaining requirement is to ignore only changes
+  inside strict worker record blocks; the claim-rule test above and
+  `worker/deno/tests/worker_record_block_test.ts` cover snapshot comparison and
+  stripping. The original policy default expectation also includes
+  `fleetWorkerLogins: []`.
+- Other coverage includes re-approval, quote matching, trusted editors,
+  cross-repo issues and failed lookups in
+  `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts`.
 - Docs updated: `.claude/skills/review-fleet-prs/SKILL.md`,
   `prompts/pr_review_brief/prompt.md`, `CODING-STANDARDS.md` (the three places
   that say governing-issue text is read "only when the author is trusted").
@@ -112,7 +73,3 @@ Backend/CLI change only; no UI files. Tests:
   `review_fleet_prs_test_policy_4655_test.ts` pass (76 tests). Run with deno
   2.9.8 and a local stand-in for `@std/assert`, because jsr.io was unreachable
   from that host; CI runs the real module.
-
-Not done / not checked: the three failing unrelated tests were not diagnosed on
-the base branch; `deno fmt --check CODING-STANDARDS.md` already fails on the
-base copy.
