@@ -8,9 +8,10 @@ follows a PR-triggered job's `uses: ./.github/workflows/<name>.yml` (or
 `$/.github/workflows/<name>.yml`) one level deep, when the called workflow
 declares `workflow_call`, so those repositories get the same hold-as-draft
 behaviour. A remote reusable workflow, a ref-qualified `uses:` and a nested call
-are not followed. The job is reported as `caller job (reusable called.yml: inner
-job)` under the caller's workflow file, with the caller's aggregator. Part of
-#4617.
+are not followed. The job is reported as
+`caller job (reusable called.yml: inner
+job)` under the caller's workflow file,
+with the caller's aggregator. Part of #4617.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -38,11 +39,11 @@ flowchart TD
 
 - The `uses:` value is parsed by the existing `calledWorkflowPath`
   (`worker/deno/lib/pr_check_contexts.ts`), then confined to a file directly
-  under `.github/workflows/` by an anchored pattern, and refused if it carries an
-  `@ref`. The name is only looked up in the in-memory map of parsed workflows,
-  never joined into a filesystem path.
-- Files are now read and parsed in a first pass, so the callee is available
-  when its caller is scanned. `unreadable` stays complete.
+  under `.github/workflows/` by an anchored pattern, and refused if it carries
+  an `@ref`. The name is only looked up in the in-memory map of parsed
+  workflows, never joined into a filesystem path.
+- Files are now read and parsed in a first pass, so the callee is available when
+  its caller is scanned. `unreadable` stays complete.
 - Called jobs share the caller's alias-dedup set and 1 MiB scan budget, so many
   callers cannot multiply the work. A callee that exhausts it reports the
   calling file as unreadable.
@@ -100,18 +101,18 @@ scan-budget paragraph) and the module doc of
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — two guards in `blockingJobHit` had no test —
-  evidence: `worker/deno/lib/ci_mutation_contract.ts:369` — reason: fixed in
-  this diff (callee with no `jobs`, and a null job beside a real one)
-- **violation** — stale doc comment on `BlockingMutationJob.job` —
-  evidence: `worker/deno/lib/ci_mutation_contract.ts:55` — reason: fixed in this
-  diff
+- **violation** — two guards in `blockingJobHit` had no test — evidence:
+  `worker/deno/lib/ci_mutation_contract.ts:369` — reason: fixed in this diff
+  (callee with no `jobs`, and a null job beside a real one)
+- **violation** — stale doc comment on `BlockingMutationJob.job` — evidence:
+  `worker/deno/lib/ci_mutation_contract.ts:55` — reason: fixed in this diff
 - **violation** — the `uses:` parser was re-implemented instead of calling
-  `calledWorkflowPath` — evidence: `worker/deno/lib/ci_mutation_contract.ts:94` —
-  reason: fixed in this diff (the helper is called, then the result is confined)
-- **violation** — a `continue-on-error` guard on a calling job, which GitHub does
-  not allow — evidence: `worker/deno/lib/ci_mutation_contract.ts:362` — reason:
-  fixed in this diff (guard and its test removed)
+  `calledWorkflowPath` — evidence: `worker/deno/lib/ci_mutation_contract.ts:94`
+  — reason: fixed in this diff (the helper is called, then the result is
+  confined)
+- **violation** — a `continue-on-error` guard on a calling job, which GitHub
+  does not allow — evidence: `worker/deno/lib/ci_mutation_contract.ts:362` —
+  reason: fixed in this diff (guard and its test removed)
 - **clean** — Australian English, path confinement, regex vetted with hostile
   cases, no secret or hidden file staged
 
@@ -120,8 +121,8 @@ scan-budget paragraph) and the module doc of
 - Tests added in `worker/deno/tests/ci_mutation_contract_test.ts` (listed under
   Evidence); no existing test was edited and no assertion removed.
 - Red checks, each break applied alone then restored: dropping the
-  `workflow_call` check, the one-level limit, the pattern's `^` anchor, the
-  `$/` support, the `@` refusal, the `!isMapping(calledJobs)` guard and the
+  `workflow_call` check, the one-level limit, the pattern's `^` anchor, the `$/`
+  support, the `@` refusal, the `!isMapping(calledJobs)` guard and the
   `isMapping(body)` test each turned a named test red. The malformed-callee test
   pins existing behaviour (base already listed unreadable files) and is green on
   base.
@@ -133,8 +134,9 @@ scan-budget paragraph) and the module doc of
 - Callers of `findBlockingMutationJob` checked: the completion phase and the
   review-fix mutation check both read only `workflow`, `job` as text,
   `cargoArgs` and `tool`; both see the reusable hit through the same function.
-- Full `./quality.sh < /dev/null` on the final code head: `Result: PASSED (with
-  skipped checks)`, including deno tests, lint, type check and fmt. Skipped by
-  the gate itself: config integration and checkov.
+- Full `./quality.sh < /dev/null` on the final code head:
+  `Result: PASSED (with
+  skipped checks)`, including deno tests, lint, type
+  check and fmt. Skipped by the gate itself: config integration and checkov.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
