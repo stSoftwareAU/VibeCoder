@@ -36,8 +36,28 @@ export async function appendPrDiscoveryEvent(
   event: PrDiscoveryEvent,
 ): Promise<void> {
   if (!validEvent(event)) throw new Error("invalid PR discovery event");
+  const separator = path.lastIndexOf("/");
+  if (separator > 0) {
+    await Deno.mkdir(path.slice(0, separator), { recursive: true });
+  }
   await withFileLock(`${path}.lock`, async () => {
-    const file = await Deno.open(path, { create: true, append: true, write: true });
+    try {
+      const prior = await readPrDiscoveryEvents(path);
+      if (
+        prior.some((row) =>
+          row.event === event.event && row.hostId === event.hostId &&
+          row.repo === event.repo && row.prNumber === event.prNumber &&
+          row.headSha === event.headSha
+        )
+      ) return;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    const file = await Deno.open(path, {
+      create: true,
+      append: true,
+      write: true,
+    });
     try {
       await file.write(new TextEncoder().encode(`${JSON.stringify(event)}\n`));
     } finally {
@@ -55,7 +75,9 @@ export async function readPrDiscoveryEvents(
   for (const [index, line] of text.split("\n").entries()) {
     if (!line) continue;
     if (line.length > EVENT_LINE_LIMIT) {
-      throw new Error(`line ${index + 1} exceeds ${EVENT_LINE_LIMIT} characters`);
+      throw new Error(
+        `line ${index + 1} exceeds ${EVENT_LINE_LIMIT} characters`,
+      );
     }
     let parsed: unknown;
     try {

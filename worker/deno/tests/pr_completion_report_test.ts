@@ -107,6 +107,12 @@ Deno.test("PR completion report deduplicates repeated observations and separates
         ownerGated: true,
         ownerGateVerified: true,
       }),
+      pr(8, {
+        state: "open",
+        mergedAt: null,
+        ownerGated: true,
+        ownerGateVerified: false,
+      }),
     ] as PrCompletionInput["prs"],
     actions: [
       action(1, "a1", "implementation", "fleet"),
@@ -129,13 +135,14 @@ Deno.test("PR completion report deduplicates repeated observations and separates
     ],
   }));
 
-  assertEquals(report.cohort.prCount, 7);
+  assertEquals(report.cohort.prCount, 8);
   assertEquals(report.cohort.duplicateObservations, 1);
   assertEquals(report.cohort.mergedPrs, 4);
-  assertEquals(report.cohort.openPrs, 2);
+  assertEquals(report.cohort.openPrs, 3);
   assertEquals(report.cohort.closedUnmergedPrs, 1);
   assertEquals(report.cohort.ownerGatedPrs, 1);
-  assertEquals(report.completion.eligiblePrs, 6);
+  assertEquals(report.cohort.unverifiedOwnerGateLabels, 1);
+  assertEquals(report.completion.eligiblePrs, 7);
   assertEquals(report.completion.unattendedMerged, 1);
   assertEquals(report.completion.humanAssistedMerged, 1);
   assertEquals(report.completion.unknownMerged, 2);
@@ -307,21 +314,24 @@ Deno.test("rollout check separates eligibility, rediscovery and processing befor
           repo: "org/repo",
           prNumber: 30,
           eligible: true,
-          rediscovered: true,
+          discovered: true,
+          eligibilityConfirmed: true,
           processed: false,
         },
         {
           repo: "org/repo",
           prNumber: 31,
           eligible: true,
-          rediscovered: false,
+          discovered: false,
+          eligibilityConfirmed: false,
           processed: false,
         },
         {
           repo: "org/repo",
           prNumber: 32,
           eligible: false,
-          rediscovered: false,
+          discovered: false,
+          eligibilityConfirmed: false,
           processed: false,
         },
       ],
@@ -355,12 +365,25 @@ Deno.test("the 90 percent target is evaluated only after verified deployment and
       action(40, "merge-40", "merge", "fleet"),
     ] as PrCompletionInput["actions"],
     deployments: ["worker", "reviewer", "babysitter"].map((component) => ({
+      hostId: "host-a",
       component,
       revision: "abcdef0123456789",
       policyFingerprint,
       observedAt: "2026-11-04T00:00:00.000Z",
     })),
-    rollout: { verifiedAt: "2026-10-20T00:00:00.000Z", strandedPrs: [] },
+    expectedDeployment: {
+      ...input().expectedDeployment,
+      inventory: ["worker", "reviewer", "babysitter"].map((component) => ({
+        hostId: "host-a",
+        component,
+      })),
+      inventoryComplete: true,
+    },
+    rollout: {
+      verifiedAt: "2026-10-20T00:00:00.000Z",
+      discoveryEvidenceComplete: true,
+      strandedPrs: [],
+    },
   }));
   assertEquals(report.targetEvaluation.status, "met");
   assertEquals(report.targetEvaluation.unattendedWithin24Hours, 1);
@@ -380,8 +403,21 @@ Deno.test("deployment inventory reports missing and stale components as degraded
   }));
   assertEquals(report.deployment.status, "degraded");
   assertEquals(report.deployment.missingComponents, ["babysitter", "reviewer"]);
+  assertEquals(report.deployment.missingHostComponents, ["inventory"]);
   assertEquals(report.deployment.mismatchedComponents, ["worker"]);
   assertEquals(report.deployment.staleComponents, ["worker"]);
+});
+
+Deno.test("the target is unavailable after its window when deployment or discovery evidence is incomplete", () => {
+  const report = buildPrCompletionReport(input({
+    cohort: {
+      start: "2026-10-20T00:00:00.000Z",
+      end: "2026-11-04T00:00:00.000Z",
+      observedAt: "2026-11-04T00:00:00.000Z",
+    },
+    rollout: { verifiedAt: "2026-10-20T00:00:00.000Z", strandedPrs: [] },
+  }));
+  assertEquals(report.targetEvaluation.status, "unavailable");
 });
 
 Deno.test("per-host deployment inventory does not let a fresh host mask a stale host", () => {
@@ -576,12 +612,25 @@ Deno.test("an action for a PR outside the cohort is counted as unlinked", () => 
 Deno.test("target evaluation is unavailable with no eligible PRs and not met below ninety percent", () => {
   const policyFingerprint = "a".repeat(64);
   const deployments = ["worker", "reviewer", "babysitter"].map((component) => ({
+    hostId: "host-a",
     component,
     revision: "abcdef0123456789",
     policyFingerprint,
     observedAt: "2026-11-04T00:00:00Z",
   }));
-  const rollout = { verifiedAt: "2026-10-20T00:00:00Z", strandedPrs: [] };
+  const expectedDeployment = {
+    ...input().expectedDeployment,
+    inventory: ["worker", "reviewer", "babysitter"].map((component) => ({
+      hostId: "host-a",
+      component,
+    })),
+    inventoryComplete: true,
+  };
+  const rollout = {
+    verifiedAt: "2026-10-20T00:00:00Z",
+    discoveryEvidenceComplete: true,
+    strandedPrs: [],
+  };
   const window = {
     start: "2026-10-20T00:00:00.000Z",
     end: "2026-11-03T00:00:00.000Z",
@@ -591,6 +640,7 @@ Deno.test("target evaluation is unavailable with no eligible PRs and not met bel
   const unavailable = buildPrCompletionReport(input({
     cohort: window,
     deployments,
+    expectedDeployment,
     rollout,
   }));
   assertEquals(unavailable.targetEvaluation.status, "unavailable");
@@ -606,6 +656,7 @@ Deno.test("target evaluation is unavailable with no eligible PRs and not met bel
       createdAt: "2026-10-21T00:00:00.000Z",
     })],
     deployments,
+    expectedDeployment,
     rollout,
   }));
   assertEquals(notMet.targetEvaluation.status, "not_met");

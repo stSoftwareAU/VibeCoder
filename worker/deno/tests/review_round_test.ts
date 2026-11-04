@@ -292,11 +292,13 @@ Deno.test("runReviewRound refreshes reviewer build and policy metadata with its 
     roundDir: "/logs/review-fleet-prs/rounds/20261016-101500",
     deployment: {
       component: "reviewer",
+      hostId: "host-a",
       codeRevision: "abcdef0123456789",
       policyFingerprint: "a".repeat(64),
     },
   });
   assertEquals(final().deployment?.component, "reviewer");
+  assertEquals(final().deployment?.hostId, "host-a");
   assertEquals(final().deployment?.codeRevision, "abcdef0123456789");
   assertEquals(final().deployment?.policyFingerprint, "a".repeat(64));
   assert(Number.isFinite(Date.parse(final().deployment?.observedAt ?? "")));

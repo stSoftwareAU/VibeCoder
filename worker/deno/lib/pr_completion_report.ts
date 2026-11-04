@@ -130,6 +130,7 @@ export interface PrCompletionReport {
     ageingOpenPrs: number;
     closedUnmergedPrs: number;
     ownerGatedPrs: number;
+    unverifiedOwnerGateLabels: number;
   };
   completion: {
     eligiblePrs: number;
@@ -371,7 +372,9 @@ function deploymentReport(
         !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(item.hostId) ||
         !expected.components.includes(item.component)
       ) {
-        throw new Error("expectedDeployment.inventory has an invalid host/component");
+        throw new Error(
+          "expectedDeployment.inventory has an invalid host/component",
+        );
       }
       const key = `${item.hostId}/${item.component}`;
       if (seen.has(key)) {
@@ -401,7 +404,9 @@ function deploymentReport(
       ) mismatchedHostComponents.push(key);
     }
   }
-  if (expected.inventoryComplete === false) {
+  if (
+    expected.inventoryComplete === false || expected.inventory === undefined
+  ) {
     missingHostComponents.push("inventory");
   }
   return {
@@ -555,7 +560,8 @@ export function buildPrCompletionReport(
     openPrs = 0,
     ageingOpenPrs = 0,
     closedUnmergedPrs = 0,
-    ownerGatedPrs = 0;
+    ownerGatedPrs = 0,
+    unverifiedOwnerGateLabels = 0;
   let unattendedMerged = 0,
     humanAssistedMerged = 0,
     unknownMerged = 0,
@@ -585,6 +591,7 @@ export function buildPrCompletionReport(
     } else closedUnmergedPrs++;
     const ownerGated = pr.ownerGated === true && pr.ownerGateVerified === true;
     if (ownerGated) ownerGatedPrs++;
+    else if (pr.ownerGated === true) unverifiedOwnerGateLabels++;
     if (pr.eligible !== false && !ownerGated) eligiblePrs++;
 
     const actions = actionsByPr.get(key) ?? [];
@@ -819,10 +826,14 @@ export function buildPrCompletionReport(
         timestamp(pr.mergedAt, "PR mergedAt") -
               timestamp(pr.createdAt, "PR createdAt") <= 86_400_000;
     }).length;
-    const ready = deployment.status === "verified" && observedAt >= rolloutEnd;
+    const windowClosed = observedAt >= rolloutEnd;
+    const ready = windowClosed && deployment.status === "verified" &&
+      discoveryComplete;
     targetEvaluation = {
-      status: !ready
+      status: !windowClosed
         ? "pending"
+        : !ready
+        ? "unavailable"
         : evaluationPrs.length === 0
         ? "unavailable"
         : successful / evaluationPrs.length >= 0.9
@@ -847,6 +858,7 @@ export function buildPrCompletionReport(
       ageingOpenPrs,
       closedUnmergedPrs,
       ownerGatedPrs,
+      unverifiedOwnerGateLabels,
     },
     completion: {
       eligiblePrs,

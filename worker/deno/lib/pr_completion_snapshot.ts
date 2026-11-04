@@ -19,6 +19,7 @@
  */
 
 import type { AuditEntry } from "./audit_entry.ts";
+import { readPrDiscoveryEvents } from "./pr_discovery_events.ts";
 import {
   isAuditJournalName,
   loadEntries,
@@ -626,11 +627,15 @@ function ciBlockersFor(
   );
   const out: Blocker[] = [];
   for (const failed of workflows) {
-    if (!new Set(["failure", "cancelled", "timed_out", "action_required"])
-      .has(failed.outcome!)) continue;
+    if (
+      !new Set(["failure", "cancelled", "timed_out", "action_required"])
+        .has(failed.outcome!)
+    ) continue;
     const startedAt = failed.completedAt!;
-    if (utcMillis(startedAt, "workflow completedAt") >
-      utcMillis(observedAt, "observedAt")) continue;
+    if (
+      utcMillis(startedAt, "workflow completedAt") >
+        utcMillis(observedAt, "observedAt")
+    ) continue;
     const recovered = workflows.find((candidate) =>
       candidate.workflowId === failed.workflowId &&
       candidate.headSha === failed.headSha &&
@@ -706,9 +711,8 @@ function gitHubEvents(
  * to a human or the fleet.
  *
  * A review or dismissal matches within {@link MATCH_WINDOW_MS} of it. A merge
- * matches from the PR's creation to {@link MATCH_WINDOW_MS} after `mergedAt`:
- * the fleet merges with `gh pr merge --auto`, so the audit entry is stamped
- * when auto-merge is armed, possibly hours before GitHub records the merge.
+ * matches only a synchronous merge action on the same head shortly before the
+ * GitHub merge event; an auto-merge arm cannot verify a later merge.
  */
 function unmatchedActions(
   observed: ObservedPr,
@@ -717,7 +721,6 @@ function unmatchedActions(
   used: Set<TrustedPrAction>,
 ): TrustedPrAction[] {
   const { record } = observed;
-  const createdMs = utcMillis(record.createdAt, "PR createdAt");
   const out: TrustedPrAction[] = [];
   for (const event of events) {
     let best: TrustedPrAction | undefined;
@@ -730,8 +733,10 @@ function unmatchedActions(
         event.headSha !== undefined && action.headSha !== undefined &&
         event.headSha !== action.headSha
       ) continue;
-      if (event.kind === "review" && event.headSha !== undefined &&
-        action.headSha !== event.headSha) continue;
+      if (
+        event.kind === "review" && event.headSha !== undefined &&
+        action.headSha !== event.headSha
+      ) continue;
       if (
         isCommit && action.kind !== "branch-update" &&
         !action.deliveredCommits?.includes(event.id)
@@ -805,7 +810,9 @@ async function ciRunsFor(
     let complete = false;
     let totalCount: number | null = null;
     for (let page = 1; page <= EVENT_PAGE_LIMIT; page++) {
-      const path = `${base}${base.includes("?") ? "&" : "?"}per_page=${PER_PAGE}&page=${page}`;
+      const path = `${base}${
+        base.includes("?") ? "&" : "?"
+      }per_page=${PER_PAGE}&page=${page}`;
       const body = asObject(await gh(path), path);
       if (typeof body.total_count === "number") totalCount = body.total_count;
       const batch = asList(requiredKey(body, field, path), path).map((item) =>
@@ -817,9 +824,17 @@ async function ciRunsFor(
         break;
       }
     }
-    if (!complete) notes.push(`${label}: ${source} history truncated for ${headSha ?? base}`);
+    if (!complete) {
+      notes.push(
+        `${label}: ${source} history truncated for ${headSha ?? base}`,
+      );
+    }
     if (totalCount !== null && totalCount > items.length) {
-      notes.push(`${label}: ${items.length} of ${totalCount} ${source} listed for ${headSha ?? base}`);
+      notes.push(
+        `${label}: ${items.length} of ${totalCount} ${source} listed for ${
+          headSha ?? base
+        }`,
+      );
     }
     return items;
   };
@@ -850,9 +865,7 @@ async function ciRunsFor(
         repo: record.repo,
         prNumber: record.number,
         runId: String(asId(check.id, `${label} check run`)),
-        durationMinutes: durationSeconds === null
-          ? null
-          : durationSeconds / 60,
+        durationMinutes: durationSeconds === null ? null : durationSeconds / 60,
         kind: "check_run",
         headSha,
         durationSeconds,
@@ -862,7 +875,9 @@ async function ciRunsFor(
       });
     }
     const workflows = await fetchPages(
-      `repos/${record.repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}`,
+      `repos/${record.repo}/actions/runs?head_sha=${
+        encodeURIComponent(headSha)
+      }`,
       "workflow_runs",
       "workflow-run",
       headSha,
@@ -884,7 +899,11 @@ async function ciRunsFor(
         `${label}: workflow run ${runId} has ${latestAttempt} attempts; history truncated at ${attemptLimit}`,
       );
     }
-    for (let attempt = 1; attempt <= Math.min(latestAttempt, attemptLimit); attempt++) {
+    for (
+      let attempt = 1;
+      attempt <= Math.min(latestAttempt, attemptLimit);
+      attempt++
+    ) {
       const attemptPath =
         `repos/${record.repo}/actions/runs/${runId}/attempts/${attempt}`;
       const run = asObject(await gh(attemptPath), attemptPath);
@@ -897,9 +916,7 @@ async function ciRunsFor(
         prNumber: record.number,
         runId,
         attempt,
-        durationMinutes: durationSeconds === null
-          ? null
-          : durationSeconds / 60,
+        durationMinutes: durationSeconds === null ? null : durationSeconds / 60,
         durationSeconds,
         kind: "workflow_run",
         workflowRunId: runId,
@@ -1250,6 +1267,46 @@ async function collectDeployments(
     );
   }
   return rows;
+}
+
+async function collectDiscoveryEvents(
+  directories: string[],
+  verifiedMs: number,
+  notes: string[],
+): Promise<{
+  events: Array<{ repo: string; prNumber: number; event: string }>;
+  hosts: Set<string>;
+  complete: boolean;
+}> {
+  const events: Array<{ repo: string; prNumber: number; event: string }> = [];
+  const hosts = new Set<string>();
+  let complete = directories.length > 0;
+  for (const directory of directories) {
+    const path = `${directory}/pr-discovery-events.jsonl`;
+    try {
+      const rows = await readPrDiscoveryEvents(path);
+      for (const row of rows) {
+        hosts.add(row.hostId);
+        if (Date.parse(row.recordedAt) < verifiedMs) continue;
+        events.push({
+          repo: row.repo,
+          prNumber: row.prNumber,
+          event: row.event,
+        });
+      }
+    } catch (error) {
+      complete = false;
+      const reason = error instanceof Deno.errors.NotFound
+        ? "is missing"
+        : `is invalid (${
+          error instanceof Error ? error.message : String(error)
+        })`;
+      notes.push(
+        `PR discovery events ${path} ${reason}; rollout remains unknown`,
+      );
+    }
+  }
+  return { events, hosts, complete };
 }
 
 /**
@@ -1683,7 +1740,9 @@ export async function collectPrCompletionSnapshot(
     );
     ciRuns.push(...prCiRuns);
     ciRunsByPr.set(keyOf(record.repo, record.number), prCiRuns);
-    blockers.push(...ciBlockersFor(record, prCiRuns, options.cohort.observedAt));
+    blockers.push(
+      ...ciBlockersFor(record, prCiRuns, options.cohort.observedAt),
+    );
   }
   if ((options.reviewLogs ?? []).length === 0 && reviewEvents > 0) {
     const events = reviewEvents === 1 ? "review event" : "review events";
@@ -1702,22 +1761,47 @@ export async function collectPrCompletionSnapshot(
       options.rolloutVerifiedAt,
       "rolloutVerifiedAt",
     );
+    const discovery = await collectDiscoveryEvents(
+      options.babysitterStateDirs ?? [],
+      verifiedMs,
+      notes,
+    );
+    const expectedBabysitterHosts = options.expected.inventory
+      ?.filter((item) => item.component === "babysitter")
+      .map((item) => item.hostId) ?? [];
+    if (options.expected.inventory === undefined) {
+      discovery.complete = false;
+    }
+    if (
+      expectedBabysitterHosts.some((hostId) => !discovery.hosts.has(hostId))
+    ) {
+      discovery.complete = false;
+      notes.push(
+        "PR discovery events do not cover every expected babysitter host; rollout remains unknown",
+      );
+    }
     rollout = {
       verifiedAt: options.rolloutVerifiedAt,
-      discoveryEvidenceComplete: false,
+      discoveryEvidenceComplete: discovery.complete,
       strandedPrs: records.filter((pr) => strandedAt(pr, verifiedMs)).map(
         (pr) => {
+          const events = discovery.events.filter((event) =>
+            event.repo === pr.repo && event.prNumber === pr.number
+          );
           return {
             repo: pr.repo,
             prNumber: pr.number,
             eligible: true,
-            rediscovered: false,
-            processed: false,
+            discovered: events.some((event) => event.event === "discovered"),
+            eligibilityConfirmed: events.some((event) =>
+              event.event === "eligible"
+            ),
+            processed: events.some((event) => event.event === "processed"),
           };
         },
       ),
     };
-    if (rollout.strandedPrs.length > 0) {
+    if (!discovery.complete && rollout.strandedPrs.length > 0) {
       notes.push(
         "rollout discovery evidence is unavailable; later audit actions do not prove ordinary discovery, eligibility or processing",
       );
@@ -1740,7 +1824,9 @@ export async function collectPrCompletionSnapshot(
     expectedDeployment: {
       components: [...options.expected.components],
       ...(options.expected.inventory !== undefined
-        ? { inventory: options.expected.inventory.map((entry) => ({ ...entry })) }
+        ? {
+          inventory: options.expected.inventory.map((entry) => ({ ...entry })),
+        }
         : {}),
       inventoryComplete: options.expected.inventory !== undefined,
       revision: options.expected.revision,

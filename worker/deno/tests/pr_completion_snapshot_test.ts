@@ -22,6 +22,7 @@ import {
 } from "../lib/audit_journal.ts";
 import type { AuditMutation } from "../lib/audit_entry.ts";
 import { actionKindFor, callerFromStack } from "../lib/audit_hook.ts";
+import { appendPrDiscoveryEvent } from "../lib/pr_discovery_events.ts";
 import { classifyGhMutation } from "../lib/audit_mutation_classifier.ts";
 import {
   buildLifecycleEvent,
@@ -753,12 +754,14 @@ function fakeGh(fixture: Fixture): GhJson {
     }
     if ((match = /^repos\/[^/]+\/[^/]+\/actions\/runs$/.exec(base!))) {
       const headSha = params.get("head_sha") ?? "";
-      return fixture.workflowRuns?.[headSha] ?? { total_count: 0, workflow_runs: [] };
+      return fixture.workflowRuns?.[headSha] ??
+        { total_count: 0, workflow_runs: [] };
     }
     if (
-      (match = /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/attempts\/(\d+)$/.exec(
-        base!,
-      ))
+      (match = /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/attempts\/(\d+)$/
+        .exec(
+          base!,
+        ))
     ) {
       const key = `${match[1]}:${match[2]}`;
       const run = fixture.workflowAttempts?.[key];
@@ -766,9 +769,11 @@ function fakeGh(fixture: Fixture): GhJson {
       return run;
     }
     if (
-      (match = /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs$/.exec(
-        base!,
-      ))
+      (match =
+        /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs$/
+          .exec(
+            base!,
+          ))
     ) {
       return fixture.jobs?.[`${match[1]}:${match[2]}`] ?? {
         total_count: 0,
@@ -809,10 +814,11 @@ async function journal(
 ): Promise<void> {
   _resetAuditCaches();
   for (const entry of entries) {
-    const withHead = entry.verb === "pr-merge" && entry.actionKind === "merge" &&
+    const withHead =
+      entry.verb === "pr-merge" && entry.actionKind === "merge" &&
         entry.headSha === undefined && entry.prNumber !== undefined
-      ? { ...entry, headSha: `sha${entry.prNumber}` }
-      : entry;
+        ? { ...entry, headSha: `sha${entry.prNumber}` }
+        : entry;
     const result = await recordMutation({
       runId: "run-1",
       outcome: "success",
@@ -850,7 +856,9 @@ Deno.test("collect - audit verification leaves interrupted history untouched", a
 
     assertEquals(await Deno.readTextFile(path), before);
     assert(
-      snapshot.coverageNotes.some((note) => note.includes("failed verification")),
+      snapshot.coverageNotes.some((note) =>
+        note.includes("failed verification")
+      ),
       "a broken journal remains visible in coverage",
     );
   });
@@ -1413,7 +1421,11 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
     ]),
     [[1, 240], [2, 480]],
   );
-  assert(fixture.calls.includes("repos/org/repo/actions/runs?head_sha=sha2&per_page=100&page=1"));
+  assert(
+    fixture.calls.includes(
+      "repos/org/repo/actions/runs?head_sha=sha2&per_page=100&page=1",
+    ),
+  );
   assertEquals(snapshot.input.blockers, [{
     repo: REPO,
     prNumber: 1,
@@ -1543,6 +1555,7 @@ Deno.test("collect - a revert of a merged cohort PR is a regression, including a
     prNumber: 1,
     detectedAt: "2026-10-21T00:00:00Z",
     resolved: true,
+    source: "revert",
   }]);
 });
 
@@ -1655,6 +1668,24 @@ Deno.test("collect - deployments come from all three sources and missing or malf
 
 Deno.test("collect - the rollout check counts stranded, rediscovered and processed PRs by verified time", async () => {
   await withDir(async (dir) => {
+    for (
+      const [number, event] of [
+        [2, "discovered"],
+        [2, "eligible"],
+        [2, "processed"],
+        [3, "discovered"],
+        [3, "eligible"],
+      ] as const
+    ) {
+      await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
+        event,
+        hostId: "host-a",
+        repo: REPO,
+        prNumber: number,
+        headSha: `sha${number}`,
+        recordedAt: "2026-10-26T00:00:00Z",
+      });
+    }
     await journal(dir, [
       // Before the rollout verification: must not count as rediscovery.
       {
@@ -1708,29 +1739,55 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
       fakeGh(fixture),
       {
         auditDirs: [dir],
+        babysitterStateDirs: [dir],
+        expected: {
+          components: ["worker", "babysitter"],
+          inventory: [{ hostId: "host-a", component: "babysitter" }],
+          revision: "rev1",
+          policyFingerprint: FP,
+          maxHeartbeatAgeHours: 24,
+        },
         rolloutVerifiedAt: "2026-10-25T00:00:00Z",
       },
     ));
     const stranded = snapshot.input.rollout!.strandedPrs
       .map((pr) => ({
         prNumber: pr.prNumber,
-        rediscovered: pr.rediscovered,
+        discovered: pr.discovered,
+        eligibilityConfirmed: pr.eligibilityConfirmed,
         processed: pr.processed,
       }))
       .sort((a, b) => a.prNumber - b.prNumber);
     assertEquals(stranded, [
-      { prNumber: 1, rediscovered: false, processed: false },
-      { prNumber: 2, rediscovered: false, processed: false },
-      { prNumber: 3, rediscovered: false, processed: false },
+      {
+        prNumber: 1,
+        discovered: false,
+        eligibilityConfirmed: false,
+        processed: false,
+      },
+      {
+        prNumber: 2,
+        discovered: true,
+        eligibilityConfirmed: true,
+        processed: true,
+      },
+      {
+        prNumber: 3,
+        discovered: true,
+        eligibilityConfirmed: true,
+        processed: false,
+      },
     ]);
-    assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, false);
+    assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, true);
     assertEquals(snapshot.input.rollout!.verifiedAt, "2026-10-25T00:00:00Z");
     const report = buildPrCompletionReport(snapshot.input);
     assertEquals(report.rollout.eligibleStrandedPrs, 3);
-    assertEquals(report.rollout.rediscoveredPrs, 0);
-    assertEquals(report.rollout.processedPrs, 0);
-    assertEquals(report.rollout.notRediscoveredPrs, 0);
-    assertEquals(report.rollout.unknownDiscoveryPrs, 3);
+    assertEquals(report.rollout.discoveredPrs, 2);
+    assertEquals(report.rollout.eligibleEventPrs, 2);
+    assertEquals(report.rollout.rediscoveredPrs, 2);
+    assertEquals(report.rollout.processedPrs, 1);
+    assertEquals(report.rollout.notRediscoveredPrs, 1);
+    assertEquals(report.rollout.unknownDiscoveryPrs, 0);
   });
 });
 
@@ -1912,12 +1969,14 @@ Deno.test("collect - each revert pattern reads only its bounded slice and stays 
         prNumber: 5,
         detectedAt: "2026-10-22T00:00:00Z",
         resolved: true,
+        source: "revert",
       },
       {
         repo: REPO,
         prNumber: 8,
         detectedAt: "2026-10-25T00:00:00Z",
         resolved: true,
+        source: "revert",
       },
     ],
   );
@@ -1978,19 +2037,32 @@ Deno.test("collect - the rollout check strands only PRs open at verification and
     const stranded = snapshot.input.rollout!.strandedPrs
       .map((pr) => ({
         prNumber: pr.prNumber,
-        rediscovered: pr.rediscovered,
+        discovered: pr.discovered,
+        eligibilityConfirmed: pr.eligibilityConfirmed,
         processed: pr.processed,
       }))
       .sort((a, b) => a.prNumber - b.prNumber);
     assertEquals(stranded, [
-      { prNumber: 30, rediscovered: false, processed: false },
-      { prNumber: 31, rediscovered: true, processed: true },
+      {
+        prNumber: 30,
+        discovered: false,
+        eligibilityConfirmed: false,
+        processed: false,
+      },
+      {
+        prNumber: 31,
+        discovered: false,
+        eligibilityConfirmed: false,
+        processed: false,
+      },
     ]);
+    assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, false);
     const report = buildPrCompletionReport(snapshot.input);
     assertEquals(report.rollout.eligibleStrandedPrs, 2);
-    assertEquals(report.rollout.rediscoveredPrs, 1);
-    assertEquals(report.rollout.processedPrs, 1);
-    assertEquals(report.rollout.notRediscoveredPrs, 1);
+    assertEquals(report.rollout.rediscoveredPrs, 0);
+    assertEquals(report.rollout.processedPrs, 0);
+    assertEquals(report.rollout.notRediscoveredPrs, 0);
+    assertEquals(report.rollout.unknownDiscoveryPrs, 2);
   });
 });
 

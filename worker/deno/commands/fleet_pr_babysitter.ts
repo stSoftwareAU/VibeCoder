@@ -3001,7 +3001,7 @@ async function pass(
                     undefined,
                     resolveMaxAutoFixAttempts(config, repo),
                   ),
-              ),
+              );
             },
           });
         }
