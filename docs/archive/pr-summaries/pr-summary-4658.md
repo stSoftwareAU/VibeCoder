@@ -168,6 +168,23 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
 
 ## Test Plan
 
+- Review-requested test-change evidence, reproduced with `deno test --allow-all`
+  and each test's name as `--filter` from `worker/deno`:
+  - `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`:
+    `failsWithoutChange`: replacing the `git_pull` target classification with
+    `unknown` fails with actual `unknown`, expected `milestone`. The obsolete
+    unknown classification for a milestone target is replaced by milestone
+    attribution; unnamed and unlisted callers remain unknown in this test.
+  - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`:
+    `failsWithoutChange`: restoring `actor: "fleet"` and `verified: true` for
+    review-log actions fails with actual `fleet`, expected `unknown`. The
+    obsolete trusted attribution is replaced by unknown, unverified attribution;
+    this test also retains the head and checks the unmatched GitHub review.
+  - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`:
+    `failsWithoutChange`: restoring `actor: "fleet"` and `verified: true` for
+    review-log actions fails with actual `0`, expected `1` unknown merge. The
+    obsolete trusted attribution is replaced by unknown attribution; this test
+    also covers the malformed-line note and out-of-cohort exclusion.
 - Review regression evidence: two delivered PRs share a five-call CI budget;
   the first has a completed ten-minute workflow and the second is incomplete.
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - incomplete CI is reflected in delivered metrics and coverage`
