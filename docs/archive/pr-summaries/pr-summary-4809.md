@@ -59,7 +59,7 @@ with the real `git`.
 - **symptom** — a fast-failure comment read `setup after 26s: Aborting`, with no
   cause
 - **status** — `verified` — the new tests fail against the base
-  `repo_fast_failure_tracker.ts` (49 passed, 2 failed) and pass with the fix
+  `repo_fast_failure_tracker.ts` (49 passed, 3 failed) and pass with the fix
   (the file now has 52 tests, all passing)
 - **regression test** —
   `worker/deno/tests/repo_fast_failure_tracker_test.ts::diagnosticErrorLine - Git checkout's Aborting trailer preserves its cause`
@@ -72,8 +72,8 @@ with the real `git`.
   `diagnosticErrorLine - a checkout refused over untracked files keeps its cause`
   (real git) and
   `diagnosticErrorLine - a refused merge keeps its cause, not the advice and Aborting`.
-  Red check: base production file restored, the tracked-edit and merge tests
-  fail; with only the `move or remove them` alternative removed, the
+  Red check: base production file restored, all three new tests fail (49
+  passed, 3 failed); with only the `move or remove them` alternative removed, the
   untracked-file test fails
   (`Expected actual: "Please move or remove them
   before you switch branches." to contain: "untracked working tree files would
@@ -84,7 +84,9 @@ with the real `git`.
 - Existing `diagnosticErrorLine` tests (last non-empty line, multi-line secret
   redaction, length bound) pass unchanged.
 - Docs: `docs/CONFIGURATION.md` fast-failure paragraph now says the detail skips
-  generic trailing lines such as `Aborting`.
+  generic trailing lines such as `Aborting`, git's `Please commit your changes
+  or stash them…` / `Please move or remove them…` advice and the indented path
+  list.
 
 - `./quality.sh`: every stage passed except `deno tests`, which failed only
   `worker/deno/tests/completion_phase_repo_formatters_test.ts` (lines 480 and
