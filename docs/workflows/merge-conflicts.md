@@ -237,11 +237,10 @@ progress and stopped on conflicts. Its contract is absolute:
   disk pressure, or an exhausted check or run deadline — defer verification.
   So does a checkout the untrusted account cannot traverse or whose manifest it
   cannot read: the worker probes it before each check, and a failed probe leaves
-  the check unverified, not failed (Issue #4697). The probe does not require
-  write access to the project directory, because the checks only read the tree
-  and a project below the clone root is readable but not writable by the account
-  (Issue #4782); a cargo check whose target the account cannot write gets a
-  private one under the clone root's `.vibe-cargo-target` on the executable work
+  the check unverified, not failed (Issue #4697). The probe requires write access
+  for checks that may write, while read-only checks can run in a readable
+  sub-directory (Issue #4782); a cargo check whose target the account cannot write gets a
+  private one under the clone root's `.vibe-fast-check-target` on the executable work
   volume. The worker provisions that root and defers if it cannot; trim-refused
   builds retain their separate ephemeral target. A manifest the worker can see is genuinely absent, such as no
   `Cargo.toml`, is still a failing check that a repair round can answer. The

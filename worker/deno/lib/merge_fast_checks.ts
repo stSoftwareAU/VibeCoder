@@ -25,6 +25,8 @@ import type { MergeConflictAgentOutcome } from "./merge_conflict_agent.ts";
 import type { MergeConflictRepairContext } from "./prompt_builder.ts";
 import {
   collapseRepeatedLines,
+  denoCheckLeavesDirUntouched,
+  denoLockfileWriteRefused,
   describeRustToolchainGap,
   detectRemoteModuleGap,
   detectRustToolchainGap,
@@ -371,9 +373,8 @@ export async function planFastChecks(
  *
  * The check runs through {@link runRepositoryCommand}, so it is dropped to the
  * `agent` account only where that account can reach the checkout, and the
- * access probe runs first. The probe does not require the checkout to be
- * writable: the checks only read it, and a project below a clone's root is
- * readable but not writable by `agent` (Issue #4782). A private cargo target
+ * access probe runs first. Checks that may write require a writable checkout;
+ * read-only checks can run in a readable sub-directory (Issue #4782). A private cargo target
  * sits under the writable clone root on the work volume, where it can execute.
  * There is no fallback to the worker: an account that
  * is unavailable refuses to run the check. An account that cannot reach the
@@ -410,6 +411,15 @@ export async function spawnFastCheck(
     check.kind === "cargo" ? "cargo" : "deno",
     check.dir,
   );
+  const args = check.args;
+  const readOnlyCheckout = check.kind === "cargo"
+    ? args[0] === "fmt" ||
+      ((args[0] === "clippy" || args[0] === "test") &&
+        args.slice(0, args.indexOf("--") < 0 ? undefined : args.indexOf("--"))
+          .includes("--locked"))
+    : args[0] === "fmt" && args.includes("--check") || args[0] === "lint" ||
+      (args[0] === "check" &&
+        await denoCheckLeavesDirUntouched(check.dir, args));
   const result = await runRepositoryCommand(
     check.kind === "cargo" ? "cargo" : Deno.execPath(),
     check.args,
@@ -417,9 +427,7 @@ export async function spawnFastCheck(
       cwd: check.dir,
       timeoutMs: check.timeoutMs,
       manifests,
-      // The checks only read the tree; a sub-directory project is not writable
-      // by `agent` (Issue #4782), and that must not defer the push.
-      readOnlyCheckout: true,
+      readOnlyCheckout,
     },
     {
       spawn,
@@ -456,12 +464,18 @@ export async function spawnFastCheck(
         .trim(),
     };
   }
+  if (
+    code !== 0 && check.kind === "deno" && readOnlyCheckout &&
+    denoLockfileWriteRefused(check.dir, output)
+  ) {
+    throw new GateAccountUnavailable(output);
+  }
   return { code, output };
 }
 
 /** Private targets live at the clone root, not in a nested project or tmpfs. */
 export function fastCheckCargoRoot(repoDir: string): string {
-  return `${repoDir.replace(/\/+$/, "")}/.vibe-cargo-target`;
+  return `${repoDir.replace(/\/+$/, "")}/.vibe-fast-check-target`;
 }
 
 /**

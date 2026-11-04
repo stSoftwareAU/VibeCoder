@@ -41,13 +41,12 @@ flowchart LR
 - There is still no worker-account fallback: the `agent` pre-check in
   `spawnFastCheck` is kept, and credentials still travel on the stdin channel
   (#4705) through `runRepositoryCommand`.
-- The fast checks only read the tree, so they call `runRepositoryCommand` with
-  `readOnlyCheckout: true`, which drops the probe's `test -w` on the
-  check's directory (exit 3). Sub-directory projects (`worker/deno`, a nested
-  Deno project in a Cargo repository) are readable but not writable by `agent`
-  (Issue #4782), so with the write test they would be deferred on every attempt.
+- Fast checks omit the write probe only for cargo fmt, locked clippy and test,
+  Deno fmt and lint, and a direct Deno check that meets the milestone gate's
+  read-only criteria. Other commands, including tasks, require a writable
+  checkout. A stale Deno lockfile permission refusal also defers the check.
   The cargo target write check still runs, and a private target it asks for is
-  placed under the clone root's `.vibe-cargo-target` on the work volume:
+  placed under the clone root's `.vibe-fast-check-target` on the work volume:
   `/var/tmp` is a noexec scratch mount on Docker and Podman, while `agent`
   cannot create a directory under a sub-directory
   project, so the default `.vibe-cargo-target` there would fail the build and
@@ -81,7 +80,7 @@ Backend change; no UI file is touched. The real-sudo test in
 
 ## Test Plan
 
-- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (14 tests):
+- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (20 tests):
   blocked directory refused and the command never spawned; `runMergeFastChecks`
   gives `unverified` and `verifyMergeBeforePush` gives `deferred` with the
   repair agent never called; a genuinely missing `Cargo.toml` is `{code: 1}`
@@ -152,6 +151,23 @@ Backend change; no UI file is touched. The real-sudo test in
   and the private-target selection test, which verifies the provisioned mode.
   The ownership regression failed before the fix. No other copy of this
   clone-root provisioning rule was found.
+- PR #4795 access follow-up: the obsolete assumption that every check reads
+  only is replaced by per-command write probes; safe read-only checks still run
+  in unwritable projects. The fast target no longer shares the milestone target
+  that an agent can own. Coverage:
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: write requirements follow each command`,
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: unwritable project defers a writing check without repair`,
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: a stale Deno lockfile permission refusal is unverified`,
+  and `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: milestone cargo target does not block fast target`.
+  The milestone gate is the other copy of the Deno read-only rule; its helper
+  and lockfile refusal classifier are reused. The three access and target
+  regressions failed before the fix. The real-sudo nested-project fixtures now
+  exercise Deno lint and cargo fmt instead of arbitrary eval and cargo check:
+  those old commands are not guaranteed read-only. The remaining contract, that
+  read-only checks run in a readable project and use a writable private cargo
+  target, is covered by
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::real sudo: a project the agent can read but not write runs its fast check instead of being deferred (Issue #4782)`
+  and `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: a cargo check in a readable, unwritable sub-directory project gets a private target the account can write (Issue #4782)`.
 
 ## Not done
 

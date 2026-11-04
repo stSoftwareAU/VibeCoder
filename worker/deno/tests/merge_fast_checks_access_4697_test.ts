@@ -252,6 +252,124 @@ Deno.test("merge checks: a probe that passes, then a command that cannot find Ca
   });
 });
 
+Deno.test("merge checks: write requirements follow each command", async () => {
+  await withCheckout(
+    { "deno.json": "{}", "Cargo.toml": CARGO_MANIFEST },
+    async (dir) => {
+      const cases: ["cargo" | "deno", string[], boolean][] = [
+        ["cargo", ["fmt"], false],
+        ["cargo", ["clippy"], true],
+        ["cargo", ["test", "--locked"], false],
+        ["deno", ["lint"], false],
+        ["deno", ["check", "main.ts"], true],
+        ["deno", ["task", "test"], true],
+      ];
+      for (const [kind, args, requiresWrite] of cases) {
+        const { spawn, calls } = fakeSpawn({ code: 0 });
+        await spawnFastCheck(
+          { dir, kind, args, label: args.join(" "), timeoutMs: 1000 },
+          {},
+          spawn,
+          sudoAgent,
+        );
+        assertEquals(
+          calls[0]!.args[6]!.includes('test -w "$1" || exit 3'),
+          requiresWrite,
+          args.join(" "),
+        );
+      }
+    },
+  );
+});
+
+Deno.test("merge checks: unwritable project defers a writing check without repair", async () => {
+  await withCheckout({ "deno.json": "{}" }, async (dir) => {
+    await Deno.chmod(dir, 0o555);
+    try {
+      const { spawn, commands } = realProbeSpawn();
+      let repairs = 0;
+      const runner = (check: FastCheck) =>
+        spawnFastCheck(check, {}, spawn, sudoAgent);
+      const runChecks = () => runMergeFastChecks(dir, ["main.ts"], runner);
+      assertEquals((await runChecks()).status, "unverified");
+      const verdict = await verifyMergeBeforePush({
+        repoDir: dir,
+        headBeforeMerge: "abc",
+        baseBranch: "main",
+        git: gitListing,
+        park: () => Promise.resolve(null),
+        runChecks,
+        runRepairAgent: () => {
+          repairs++;
+          return Promise.resolve({ ok: true, value: { terminated: false } });
+        },
+        logger: silentLogger(),
+      });
+      assertEquals(verdict.kind, "deferred");
+      assertEquals(repairs, 0);
+      assertEquals(commands.length, 4);
+    } finally {
+      await Deno.chmod(dir, 0o700);
+    }
+  });
+});
+
+Deno.test("merge checks: milestone cargo target does not block fast target", async () => {
+  await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    await Deno.mkdir(`${dir}/.vibe-cargo-target`, { mode: 0o700 });
+    const uid = (await Deno.stat(`${dir}/.vibe-cargo-target`)).uid!;
+    const other = fakeSpawn({ code: 2 });
+    const rejected = await runRepositoryCommand("cargo", ["test"], {
+      cwd: dir,
+      timeoutMs: 1000,
+    }, {
+      spawn: other.spawn,
+      drop: sudoAgent,
+      privateTargetRoot: `${dir}/.vibe-cargo-target`,
+      workerUid: () => Promise.resolve(uid + 1),
+      source: { PATH: Deno.env.get("PATH") ?? "" },
+      trimRefused: false,
+    });
+    assert(!rejected.ok && rejected.error instanceof GateAccountUnavailable);
+    const { spawn, commands } = fakeSpawn({ code: 2 });
+    await spawnFastCheck(cargoCheck(dir), {}, spawn, sudoAgent, {
+      source: { PATH: Deno.env.get("PATH") ?? "" },
+      trimRefused: false,
+    }, dir);
+    assertEquals(commands.length, 1);
+    assert(fastCheckCargoRoot(dir) !== `${dir}/.vibe-cargo-target`);
+    assertEquals(
+      (await Deno.stat(`${dir}/.vibe-cargo-target`)).mode! & 0o7777,
+      0o700,
+    );
+  });
+});
+
+Deno.test("merge checks: a stale Deno lockfile permission refusal is unverified", async () => {
+  await withCheckout({ "deno.json": "{}", "deno.lock": "{}" }, async (dir) => {
+    const message =
+      `Failed writing lockfile (for '${dir}/deno.lock'): Permission denied (os error 13)`;
+    const { spawn } = fakeSpawn({ code: 0 }, { code: 1, stderr: message });
+    await assertRejects(
+      () =>
+        spawnFastCheck(
+          {
+            dir,
+            kind: "deno",
+            args: ["check", "main.ts"],
+            label: "deno check",
+            timeoutMs: 1000,
+          },
+          {},
+          spawn,
+          sudoAgent,
+        ),
+      GateAccountUnavailable,
+      "Failed writing lockfile",
+    );
+  });
+});
+
 Deno.test("merge checks: a cargo target the account cannot write is built in a private target (Issue #4697)", async () => {
   await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
     const project = `${dir}/nested`;
@@ -471,13 +589,16 @@ Deno.test("real sudo: a project the agent can read but not write runs its fast c
     await Deno.writeTextFile(`${project}/deno.json`, "{}");
     await Deno.chmod(`${project}/deno.json`, 0o644);
     const drop = (cmd: readonly string[]) =>
-      Promise.resolve(asUntrustedUser(cmd, { enabled: true }));
+      Promise.resolve(asUntrustedUser(
+        cmd[0] === Deno.execPath() ? ["sh", "-c", "echo ran"] : cmd,
+        { enabled: true },
+      ));
     const result = await spawnFastCheck(
       {
         dir: project,
         kind: "deno",
-        label: "deno eval",
-        args: ["eval", "--no-config", "console.log('ran')"],
+        label: "deno lint",
+        args: ["lint"],
         timeoutMs: 20_000,
       },
       {},
@@ -567,8 +688,8 @@ Deno.test("merge checks: a cargo check in a readable, unwritable sub-directory p
       {
         dir: project,
         kind: "cargo",
-        label: "cargo check",
-        args: ["check"],
+        label: "cargo fmt",
+        args: ["fmt", "--all", "--", "--check"],
         timeoutMs: 20_000,
       },
       {},
