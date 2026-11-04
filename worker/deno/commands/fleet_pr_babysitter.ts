@@ -1379,13 +1379,20 @@ export async function finishBabysitterRepair(
         cwd: repoPath,
         repo,
         repoConfigs: deps.repoConfigs,
+        // The babysitter's account holds the fleet's write-capable
+        // credentials (THREAT-MODEL C36): the PR's own code never runs as it.
+        requireSeparateAccount: true,
       });
     if (validation.status === "failed") {
       console.error(
         `${repo}#${pr.number}: required repository checks failed on ${pr.headRefName}; not pushed`,
       );
-      throw new Error(
+      // The class is fixed here, never read back from the gate's own output:
+      // a test name such as "needs-human" or a "timed out" line must not move
+      // a substantive failure into the owner, race or infrastructure class.
+      throw new BabysitterFailure(
         `required repository checks failed before publication:\n${validation.output}`,
+        "code",
       );
     }
     if (validation.status === "unavailable") {

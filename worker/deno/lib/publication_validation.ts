@@ -13,12 +13,13 @@
  *   or the repository has no local gate (`gate: "absent"`) or the operator
  *   opted out of quality checks (`gate: "opted-out"`);
  * - `failed`: the gate ran and rejected the head, the head carries
- *   uncommitted changes the push would leave out, or a Deno test run executed
- *   no tests. The output goes back to the lane for repair;
+ *   uncommitted changes the push would leave out, a Deno test run executed
+ *   no tests, or the gate was killed by its timeout (exit 124, 137 or 143).
+ *   The output goes back to the lane for repair;
  * - `unavailable`: the gate could not run here (missing tool, Docker or
- *   credential fault, unreadable checkout, a gate killed by its timeout, a
- *   host out of disk). Not a verdict on the change: the lane releases or
- *   defers and the next cycle retries.
+ *   credential fault, unreadable checkout, a host out of disk, or a failure
+ *   that reproduces on the PR's base commit). Not a verdict on the change: the
+ *   lane releases or defers and the next cycle retries.
  *
  * The result is tied to the head it validated. An agent that commits again
  * produces a new head, which is validated afresh.
@@ -39,6 +40,8 @@ import { resolveRepoCredentials } from "./repo_credentials.ts";
 import { redactedHeadTail } from "./redacted_text.ts";
 import { stripAnsi } from "./github_actions_log_fetcher.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
+import { canRunAsUntrustedUser } from "./untrusted_command_env.ts";
+import { normaliseGateOutputLines } from "./baseline_gate.ts";
 
 export type PublicationValidation =
   | { status: "passed"; head: string; gate: "ran" | "absent" | "opted-out" }
@@ -50,9 +53,25 @@ export interface PublicationRequest {
   cwd: string;
   repo: string;
   repoConfigs?: Record<string, RepoConfig>;
+  /**
+   * Refuse to run the gate as the runner's own account. The default gate drops
+   * to the `agent` account where the host has one and otherwise falls back to
+   * the runner, whose credential files the repository's code could then read.
+   * A caller whose runner holds write-capable credentials (the fleet PR
+   * babysitter, THREAT-MODEL control C36) sets this: with no separate account
+   * the result is `unavailable`, never a run as the runner.
+   */
+  requireSeparateAccount?: boolean;
+  /**
+   * The ref a failing gate is compared against (for example `origin/main`).
+   * Defaults to the remote's default branch. See {@link reproducesOnBase}.
+   */
+  baseRef?: string;
 }
 
 export interface PublicationValidationDeps {
+  /** Whether the host can run commands as a separate account. */
+  canDropPrivileges?: () => Promise<boolean>;
   /** The gate runner. Production: {@link runQualityGateCheck}. */
   runGate?: (
     params: QualityGateParams,
@@ -149,7 +168,8 @@ function gateDepsFor(
   cwd: string,
   base: QualityGateDeps,
   customCommand: boolean,
-  observed: { exitCode?: number },
+  observed: { exitCode?: number; refusedAsRunner?: boolean },
+  canDrop: (() => Promise<boolean>) | undefined,
 ): QualityGateDeps {
   const resolve = (path: string) =>
     path.startsWith("/") ? path : `${cwd}/${path.replace(/^\.\//, "")}`;
@@ -160,6 +180,15 @@ function gateDepsFor(
       customCommand ? Promise.resolve(true) : base.fileExists(resolve(path)),
     detectMissingTools: (script) => base.detectMissingTools(resolve(script)),
     runCommand: async (cmd, options) => {
+      if (canDrop !== undefined && !(await canDrop())) {
+        // Fail closed: the command would run as the runner (C36).
+        observed.refusedAsRunner = true;
+        throw new PublicationValidationUnavailableError(
+          "this host has no separate account to run the repository's own " +
+            "commands, and they must not run as the account that holds the " +
+            "fleet credentials",
+        );
+      }
       const result = await base.runCommand(cmd, { ...options, cwd });
       // The gate result carries no exit code, so the most recent one is kept
       // for classify. The result itself is passed back unchanged.
@@ -210,22 +239,39 @@ export async function validateRepositoryForPublication(
           `declared quality credentials could not be resolved: ${credentials.error.message}`,
       };
     }
-    const observed: { exitCode?: number } = {};
-    const gateDeps = gateDepsFor(
-      cwd,
-      (deps.createDeps ?? createDefaultDeps)(credentials.value.env),
-      command !== "./quality.sh",
-      observed,
+    const observed: { exitCode?: number; refusedAsRunner?: boolean } = {};
+    const baseDeps = (deps.createDeps ?? createDefaultDeps)(
+      credentials.value.env,
     );
-    const result = await (deps.runGate ?? runQualityGateCheck)(
-      {
-        repo,
-        qualityScript: command,
-        repoConfigs,
-        defaultTimeoutSeconds: PUBLICATION_GATE_TIMEOUT_SECONDS,
-      },
-      gateDeps,
-    );
+    const runGateAt = (dir: string, seen: typeof observed) =>
+      (deps.runGate ?? runQualityGateCheck)(
+        {
+          repo,
+          qualityScript: command,
+          repoConfigs,
+          defaultTimeoutSeconds: PUBLICATION_GATE_TIMEOUT_SECONDS,
+        },
+        gateDepsFor(
+          dir,
+          baseDeps,
+          command !== "./quality.sh",
+          seen,
+          request.requireSeparateAccount
+            ? (deps.canDropPrivileges ?? canRunAsUntrustedUser)
+            : undefined,
+        ),
+      );
+    // A throw from a refused spawn reaches the catch below as `unavailable`;
+    // a runner that swallows it is caught by the flag check.
+    const result = await runGateAt(cwd, observed);
+    if (observed.refusedAsRunner) {
+      return {
+        status: "unavailable",
+        head: before.head,
+        reason: "no separate account to run the repository's own commands " +
+          "without exposing the runner's credentials (THREAT-MODEL C36)",
+      };
+    }
     const after = await inspectCheckout(cwd);
     if (typeof after === "string") {
       return {
@@ -241,7 +287,33 @@ export async function validateRepositoryForPublication(
         reason: "HEAD moved while the checks ran; the result is discarded",
       };
     }
-    return classify(result, before.head, observed.exitCode);
+    const verdict = classify(result, before.head, observed.exitCode);
+    if (
+      verdict.status === "failed" && isContentFailure(result, observed.exitCode)
+    ) {
+      const base = await reproducesOnBase({
+        cwd,
+        repo,
+        baseRef: request.baseRef,
+        headOutput: result.qualityOutput,
+        runAt: (dir) => {
+          const seen: typeof observed = {};
+          return runGateAt(dir, seen).then((outcome) => ({
+            outcome,
+            refused: seen.refusedAsRunner === true,
+          }));
+        },
+      });
+      if (base !== undefined) {
+        return {
+          status: "unavailable",
+          head: before.head,
+          reason: `the same failure reproduces on ${base}, so the change ` +
+            `did not cause it (host or pre-existing)`,
+        };
+      }
+    }
+    return verdict;
   } catch (error) {
     return {
       status: "unavailable",
@@ -270,6 +342,127 @@ function gateInfrastructureFault(
     }`;
   }
   return undefined;
+}
+
+/** A gate failure that is the change's content, not a timeout or disk fault. */
+function isContentFailure(
+  result: QualityGateRunResult,
+  exitCode: number | undefined,
+): boolean {
+  return (result.action === "failed" || result.action === "failed_fixable") &&
+    !(exitCode !== undefined && GATE_TIMEOUT_EXIT_CODES.has(exitCode)) &&
+    gateInfrastructureFault(result.qualityOutput, exitCode) === undefined;
+}
+
+/** What the gate did on a base commit, kept per `repo@sha` for the process. */
+const baseGateOutcomes = new Map<string, Promise<string[] | null>>();
+
+/** Forget the cached base outcomes. Tests only. */
+export function _resetBaseGateOutcomes(): void {
+  baseGateOutcomes.clear();
+}
+
+async function resolveBase(
+  cwd: string,
+  baseRef: string | undefined,
+): Promise<{ ref: string; sha: string } | undefined> {
+  const candidates = baseRef
+    ? [baseRef]
+    : ["origin/HEAD", "origin/main", "origin/master"];
+  for (const ref of candidates) {
+    const parsed = await runGitCommand(
+      ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+      { cwd },
+    );
+    if (parsed.ok && parsed.value.code === 0 && parsed.value.stdout.trim()) {
+      return { ref, sha: parsed.value.stdout.trim() };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether a failing gate fails the same way on the PR's base commit on this
+ * host (the check-agnostic idea of `decidePreExistingGateFailure`, Issue
+ * #1852). The base run happens in a throwaway detached worktree and is cached
+ * per base SHA. Reproduces only when the base gate also failed and every
+ * normalised output line of the head's failure is already in the base's.
+ * Anything unreadable, refused or different is "does not reproduce": the
+ * failure stays a content verdict.
+ *
+ * @returns The base label (`ref@sha`) when the failure reproduces
+ */
+async function reproducesOnBase(options: {
+  cwd: string;
+  repo: string;
+  baseRef: string | undefined;
+  headOutput: string;
+  runAt: (
+    dir: string,
+  ) => Promise<{ outcome: QualityGateRunResult; refused: boolean }>;
+}): Promise<string | undefined> {
+  const base = await resolveBase(options.cwd, options.baseRef);
+  if (base === undefined) return undefined;
+  const key = `${options.repo}@${base.sha}`;
+  let pending = baseGateOutcomes.get(key);
+  if (pending === undefined) {
+    pending = runGateOnBase(options.cwd, base.sha, options.runAt);
+    baseGateOutcomes.set(key, pending);
+  }
+  const baseLines = await pending;
+  if (baseLines === null) return undefined;
+  const known = new Set(baseLines);
+  const headLines = normaliseGateOutputLines(options.headOutput);
+  if (headLines.length === 0 || !headLines.every((line) => known.has(line))) {
+    return undefined;
+  }
+  return `${base.ref}@${base.sha.slice(0, 12)}`;
+}
+
+/** The base gate's normalised failure lines, or null when it did not fail. */
+async function runGateOnBase(
+  cwd: string,
+  sha: string,
+  runAt: (
+    dir: string,
+  ) => Promise<{ outcome: QualityGateRunResult; refused: boolean }>,
+): Promise<string[] | null> {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-base-gate-" });
+  try {
+    const added = await runGitCommand(
+      ["worktree", "add", "--detach", "--force", `${dir}/tree`, sha],
+      { cwd },
+    );
+    if (!added.ok || added.value.code !== 0) return null;
+    try {
+      const { outcome, refused } = await runAt(`${dir}/tree`);
+      if (refused) return null;
+      return outcome.action === "failed" || outcome.action === "failed_fixable"
+        ? normaliseGateOutputLines(outcome.qualityOutput)
+        : null;
+    } finally {
+      await runGitCommand(["worktree", "remove", "--force", `${dir}/tree`], {
+        cwd,
+      });
+    }
+  } catch (error) {
+    console.error(
+      `[publication] the base-commit gate comparison could not run: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return null;
+  } finally {
+    try {
+      await Deno.remove(dir, { recursive: true });
+    } catch (error) {
+      console.error(
+        `[publication] could not remove the base-gate scratch '${dir}': ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
 }
 
 function classify(

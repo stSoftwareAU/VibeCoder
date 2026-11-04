@@ -14,6 +14,7 @@ import {
 } from "@std/assert";
 import type { RepoConfig, Result } from "../types.ts";
 import {
+  _resetBaseGateOutcomes,
   createPublicationGuard,
   PUBLICATION_GATE_TIMEOUT_SECONDS,
   type PublicationValidation,
@@ -853,4 +854,179 @@ Deno.test("the real quality gate: Deno tests run in the initial run and again in
       assertEquals(repaired.head, await git(dir, "rev-parse", "HEAD"));
     },
   );
+});
+
+// --- Runner account protection (PR #4800 review) ---
+
+Deno.test("requireSeparateAccount: with no separate account the repository's command never runs", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    let spawned = 0;
+    const createDeps = () => ({
+      ...createDefaultDeps(),
+      runCommand: () => {
+        spawned++;
+        return Promise.resolve({ exitCode: 0, output: "" });
+      },
+    });
+    const refused = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, requireSeparateAccount: true },
+        {
+          createDeps,
+          runGate: gateRunning(PASS),
+          canDropPrivileges: () => Promise.resolve(false),
+        },
+      ),
+      "unavailable",
+    );
+    assertStringIncludes(refused.reason, "separate account");
+    assertEquals(spawned, 0);
+
+    // Positive control: the same request on a host that can drop runs and passes.
+    expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, requireSeparateAccount: true },
+        {
+          createDeps,
+          runGate: gateRunning(PASS),
+          canDropPrivileges: () => Promise.resolve(true),
+        },
+      ),
+      "passed",
+    );
+    assertEquals(spawned, 1);
+
+    // A caller that does not ask for the protection is unchanged.
+    expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        {
+          createDeps,
+          runGate: gateRunning(PASS),
+          canDropPrivileges: () => Promise.resolve(false),
+        },
+      ),
+      "passed",
+    );
+  });
+});
+
+// --- A failure that reproduces on the base commit (PR #4800 review) ---
+
+/** A repo with `main` and a `feature` branch one commit ahead, checked out. */
+async function withFeatureBranch(
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  await withRepo({ "README.md": "base\n" }, async (dir) => {
+    await git(dir, "checkout", "--quiet", "-b", "feature");
+    await Deno.writeTextFile(`${dir}/change.txt`, "change\n");
+    await git(dir, "add", "-A");
+    await git(dir, "commit", "--quiet", "-m", "change");
+    await fn(dir);
+  });
+}
+
+function gateByCheckout(
+  headResult: QualityGateRunResult,
+  baseResult: QualityGateRunResult,
+  runs: string[],
+) {
+  return (
+    _params: QualityGateParams,
+    deps: QualityGateDeps,
+  ): Promise<QualityGateRunResult> => {
+    const where = deps.getCwd();
+    runs.push(where);
+    return Promise.resolve(
+      where.includes("vibe-base-gate-") ? baseResult : headResult,
+    );
+  };
+}
+
+Deno.test("a gate failure that reproduces on the base commit is unavailable, not a content verdict", async () => {
+  _resetBaseGateOutcomes();
+  const red: QualityGateRunResult = {
+    action: "failed",
+    qualityOutput:
+      "rustup could not choose a version of cargo-fmt\n2 tests failed\n",
+  };
+  await withFeatureBranch(async (dir) => {
+    const runs: string[] = [];
+    const v = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, baseRef: "main" },
+        { runGate: gateByCheckout(red, red, runs) },
+      ),
+      "unavailable",
+    );
+    assertStringIncludes(v.reason, "reproduces on main@");
+    assertEquals(runs.length, 2);
+
+    // The base outcome is cached per base SHA: a second validation does not re-run it.
+    expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, baseRef: "main" },
+        { runGate: gateByCheckout(red, red, runs) },
+      ),
+      "unavailable",
+    );
+    assertEquals(runs.length, 3);
+  });
+});
+
+Deno.test("a gate failure the base commit does not share stays failed", async (t) => {
+  const red = (output: string): QualityGateRunResult => ({
+    action: "failed",
+    qualityOutput: output,
+  });
+  await t.step("the base gate passes", async () => {
+    _resetBaseGateOutcomes();
+    await withFeatureBranch(async (dir) => {
+      expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO, baseRef: "main" },
+          { runGate: gateByCheckout(red("1 test failed\n"), PASS, []) },
+        ),
+        "failed",
+      );
+    });
+  });
+  await t.step("the head fails with a line the base lacks", async () => {
+    _resetBaseGateOutcomes();
+    await withFeatureBranch(async (dir) => {
+      expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO, baseRef: "main" },
+          {
+            runGate: gateByCheckout(
+              red("1 test failed\nnew regression in change.txt\n"),
+              red("1 test failed\n"),
+              [],
+            ),
+          },
+        ),
+        "failed",
+      );
+    });
+  });
+  await t.step("no base ref resolves", async () => {
+    _resetBaseGateOutcomes();
+    await withFeatureBranch(async (dir) => {
+      const runs: string[] = [];
+      expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO, baseRef: "origin/nowhere" },
+          {
+            runGate: gateByCheckout(
+              red("1 test failed\n"),
+              red("1 test failed\n"),
+              runs,
+            ),
+          },
+        ),
+        "failed",
+      );
+      assertEquals(runs.length, 1);
+    });
+  });
 });

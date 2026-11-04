@@ -128,37 +128,6 @@ export async function recordCiCheckRetry(
 }
 
 /**
- * Give back one recorded retry for a CI check (Issue #4625).
- *
- * A round that ended because the repository's checks could not run — a missing
- * tool, Docker down, a full disk — judged nothing about the fix, so it must not
- * count against the retry cap. Never goes below zero; a state directory that
- * cannot be written is logged and leaves the count as it was.
- *
- * @returns The retry count after the refund
- */
-export async function refundCiCheckRetry(
-  stateDir: string,
-  repo: string,
-  checkId: string,
-): Promise<number> {
-  const stateFile = retryStateFile(stateDir, repo, checkId);
-  const current = await getCiCheckRetryCount(stateDir, repo, checkId);
-  const refunded = Math.max(0, current - 1);
-  try {
-    await Deno.writeTextFile(stateFile, String(refunded));
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error(
-      `[ci-check] could not refund the CI check retry for ${repo} check ` +
-        `${checkId} in '${stateDir}': ${msg} (Issue #4625).`,
-    );
-    return current;
-  }
-  return refunded;
-}
-
-/**
  * Get the current retry count for a CI check (Issue #563).
  *
  * @param stateDir - Directory for retry state files
