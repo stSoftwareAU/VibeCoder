@@ -102,6 +102,12 @@ interface Fx {
   contents?: Record<string, Entry>;
   // Base contents, read at the base branch name (`baseRef`).
   base?: Record<string, Entry>;
+  // Timeline events per issue, keyed "owner/repo#N"; page 1 only (later pages
+  // are empty). An Error fails the read.
+  timeline?: Record<string, unknown[] | Error>;
+  // Title and body edit history per issue (the GraphQL edit-actor lookup),
+  // keyed "owner/repo#N". An Error fails the read.
+  editors?: Record<string, { editedAt: string; editor: string }[] | Error>;
 }
 
 function answer(args: string[], fx: Fx): string {
@@ -109,12 +115,47 @@ function answer(args: string[], fx: Fx): string {
     if (fx.prError) throw fx.prError;
     return JSON.stringify(fx.pr ?? PR_VIEW);
   }
+  if (args[0] === "api" && args[1] === "graphql") {
+    // The edit-actor query passes owner, name and number as `-F key=value`.
+    const arg = (name: string) =>
+      args.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
+    const key = `${arg("owner")}/${arg("name")}#${arg("number")}`;
+    const v: { editedAt: string; editor: string }[] | Error =
+      fx.editors?.[key] ?? [];
+    if (v instanceof Error) throw v;
+    return JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: {
+              nodes: v.map((e) => ({
+                editedAt: e.editedAt,
+                editor: { login: e.editor },
+              })),
+            },
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    });
+  }
   const endpoint = args[1] ?? "";
   const issue = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/.exec(endpoint);
   if (issue) {
     const issues = { ...DEFAULT_ISSUES, ...fx.issues };
     const v = issues[`${issue[1]}#${issue[2]}`];
     if (v === undefined) throw new Error("gh: Not Found (HTTP 404)");
+    if (v instanceof Error) throw v;
+    return JSON.stringify(v);
+  }
+  const timeline =
+    /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/timeline\?per_page=\d+&page=(\d+)$/
+      .exec(endpoint);
+  if (timeline) {
+    if (timeline[3] !== "1") return "[]";
+    const v: unknown[] | Error =
+      fx.timeline?.[`${timeline[1]}#${timeline[2]}`] ??
+        [];
     if (v instanceof Error) throw v;
     return JSON.stringify(v);
   }
@@ -235,6 +276,7 @@ Deno.test("policy defaults: evidence review for every repo, nothing held or trus
     holdAllRepos: [],
     legacyAutoRelease: [],
     trustedLogins: [],
+    fleetWorkerLogins: [],
   });
   assertEquals(
     effectiveTestPolicy({ pr_reviewer_test_hold_repos: null }).holdAllRepos,
@@ -286,6 +328,17 @@ Deno.test("policy: trusted logins come from the three lists, non-strings skipped
     effectiveTestPolicy({ pr_reviewers: ["dave"] }).trustedLogins,
     ["dave"],
   );
+});
+
+Deno.test("policy: fleet worker logins are this host, fleet_pr_authors and service_accounts", () => {
+  const p = effectiveTestPolicy({
+    github_user: "A",
+    fleet_pr_authors: ["b"],
+    service_accounts: ["VibeCoderST"],
+  });
+  assert(p.fleetWorkerLogins.includes("A"));
+  assert(p.fleetWorkerLogins.includes("b"));
+  assert(p.fleetWorkerLogins.includes("VibeCoderST"));
 });
 
 Deno.test("loadTestPolicy: a missing file is the defaults; other read errors rethrow", async () => {
@@ -349,7 +402,10 @@ Deno.test("quoteFound: plain substring after whitespace normalisation, no word m
 
 const FLEET = { repo: "acme/widgets", number: 42, kind: "fleet" as const };
 const DEPENDABOT = { ...FLEET, kind: "dependabot" as const };
-const TRUST = { trustedLogins: [] as string[] };
+const TRUST = {
+  trustedLogins: [] as string[],
+  fleetWorkerLogins: [] as string[],
+};
 
 Deno.test("governing issues: cross-repo OWNER needs an explicitly trusted login", async () => {
   const fx = {
@@ -376,7 +432,7 @@ Deno.test("governing issues: cross-repo OWNER needs an explicitly trusted login"
   assert(denied.problems.some((p) => p.includes("not by a trusted author")));
   const allowed = await resolveGoverningIssues(
     FLEET,
-    { trustedLogins: ["Stranger"] },
+    { trustedLogins: ["Stranger"], fleetWorkerLogins: [] },
     fakeGh(fx).runGh,
   );
   assertEquals(allowed.issues.map((i) => i.repo), ["stranger/other"]);
@@ -525,7 +581,7 @@ Deno.test("governing issues: a [bot] login is trusted only through trustedLogins
   };
   const trusted = await resolveGoverningIssues(
     FLEET,
-    { trustedLogins: ["Renovate"] },
+    { trustedLogins: ["Renovate"], fleetWorkerLogins: [] },
     fakeGh(bot).runGh,
   );
   assertEquals(trusted.issues.map((i) => i.number), [3416]);
@@ -607,6 +663,233 @@ Deno.test("governing issues: at most five are read, and invalid input is refused
   );
   assertEquals(r.issues, []);
   assertEquals(bad.calls, []);
+});
+
+// ----- the worker's claim rule (Issue #4763) --------------------------------
+
+const FLEET_AUTHOR = "VibeCoderST";
+const ISSUE_KEY = "acme/widgets#4733";
+const ADDED_AT = "2026-11-02T18:32:00Z";
+const BEFORE_ADD = "2026-11-02T18:00:00Z";
+const AFTER_ADD = "2026-11-03T09:00:00Z";
+const CLAIM = {
+  trustedLogins: ["nleck"],
+  fleetWorkerLogins: [FLEET_AUTHOR],
+};
+// A same-repo issue by a fleet service account (CONTRIBUTOR, not trusted).
+const ISSUE_4733 = {
+  title: "Retry policy",
+  body: ISSUE_BODY,
+  state: "open",
+  user: { login: FLEET_AUTHOR },
+  author_association: "CONTRIBUTOR",
+};
+const CLOSES_4733 = {
+  closingIssuesReferences: [{
+    number: 4733,
+    repository: { name: "widgets", owner: { login: "acme" } },
+  }],
+  headRefName: "feature/retries",
+  body: "Closes #4733",
+};
+// A timeline "labeled" event, as the REST timeline returns it.
+const labelled = (label: string, login: string, at: string) => ({
+  event: "labeled",
+  label: { name: label },
+  actor: { login },
+  created_at: at,
+});
+// The fake for the claim cases: the issue, its timeline and its edit history.
+const claimFx = (
+  timeline: unknown[] | Error,
+  editors?: { editedAt: string; editor: string }[] | Error,
+): Fx => ({
+  pr: CLOSES_4733,
+  issues: { [ISSUE_KEY]: ISSUE_4733 },
+  timeline: { [ISSUE_KEY]: timeline },
+  editors: editors === undefined ? undefined : { [ISSUE_KEY]: editors },
+});
+
+Deno.test("policy: fleet worker logins feed the claim rule; service accounts are not trusted", () => {
+  const p = effectiveTestPolicy({
+    allowed_authors: ["nleck"],
+    service_accounts: [FLEET_AUTHOR],
+  });
+  assertEquals(p.trustedLogins, ["nleck"]);
+  assertEquals(p.fleetWorkerLogins, [FLEET_AUTHOR]);
+});
+
+Deno.test("claim rule: a same-repo issue by a fleet worker is usable once a trusted login adds top-priority", async () => {
+  const g = fakeGh(
+    claimFx([labelled("top-priority", "nleck", ADDED_AT)], []),
+  );
+  const r = await resolveGoverningIssues(FLEET, CLAIM, g.runGh);
+  assertEquals(r.issues.length, 1);
+  assertEquals(r.issues.map((i) => [i.repo, i.number, i.source]), [[
+    "acme/widgets",
+    4733,
+    "closing",
+  ]]);
+  assertEquals(r.problems, []);
+});
+
+Deno.test("claim rule: the worker's own branch issue is approved through assessTestChanges", async () => {
+  const { result } = await assess([note({
+    kind: "other",
+    obsolete: "Duplicated fixture setup, now a shared helper.",
+    remaining: "The same three assertions still run.",
+    requirementQuote: undefined,
+    failsWithoutChange: undefined,
+    verification: undefined,
+  })], {
+    fx: {
+      pr: {
+        closingIssuesReferences: [],
+        headRefName: "issue-4733-x",
+        body: "",
+      },
+      issues: { [ISSUE_KEY]: ISSUE_4733 },
+      timeline: { [ISSUE_KEY]: [labelled("top-priority", "nleck", ADDED_AT)] },
+    },
+    policy: effectiveTestPolicy({
+      allowed_authors: ["nleck"],
+      service_accounts: [FLEET_AUTHOR],
+    }),
+  });
+  assertApproved(result);
+  assert(result.approved[0]!.requirement.includes("#4733"));
+});
+
+Deno.test("claim rule: a label added by a fleet worker login, or by an unknown login, is refused", async () => {
+  // The issue is by a stranger, so the claim rule decides it. The fleet login
+  // is also in allowed_authors: only the fleet exclusion refuses its add.
+  const policy = {
+    trustedLogins: ["nleck", FLEET_AUTHOR],
+    fleetWorkerLogins: [FLEET_AUTHOR],
+  };
+  const stranger = {
+    ...ISSUE_4733,
+    user: { login: "stranger" },
+  };
+  for (const adder of [FLEET_AUTHOR, "mallory"]) {
+    const g = fakeGh({
+      ...claimFx([labelled("top-priority", adder, ADDED_AT)]),
+      issues: { [ISSUE_KEY]: stranger },
+    });
+    const r = await resolveGoverningIssues(FLEET, policy, g.runGh);
+    assertEquals(r.issues, [], `adder ${adder}`);
+    assert(
+      r.problems.some((p) => p.includes("not by a trusted author")),
+      `adder ${adder}: ${JSON.stringify(r.problems)}`,
+    );
+  }
+});
+
+Deno.test("claim rule: an untrusted or unattributable edit after the label is ignored; before it or by a trusted login is fine", async () => {
+  const check = async (editors: { editedAt: string; editor: string }[]) => {
+    const g = fakeGh(
+      claimFx([labelled("top-priority", "nleck", ADDED_AT)], editors),
+    );
+    return await resolveGoverningIssues(FLEET, CLAIM, g.runGh);
+  };
+
+  const after = await check([{ editedAt: AFTER_ADD, editor: "mallory" }]);
+  assertEquals(after.issues, []);
+  assert(
+    after.problems.some((p) => p.includes("edited by an untrusted account")),
+    JSON.stringify(after.problems),
+  );
+
+  const anonymous = await check([{ editedAt: AFTER_ADD, editor: "" }]);
+  assertEquals(anonymous.issues, []);
+  assert(
+    anonymous.problems.some((p) =>
+      p.includes("edited by an untrusted account")
+    ),
+    JSON.stringify(anonymous.problems),
+  );
+
+  const before = await check([{ editedAt: BEFORE_ADD, editor: "mallory" }]);
+  assertEquals(before.issues.length, 1);
+  assertEquals(before.problems, []);
+
+  const trusted = await check([{ editedAt: AFTER_ADD, editor: "nleck" }]);
+  assertEquals(trusted.issues.length, 1);
+  assertEquals(trusted.problems, []);
+});
+
+Deno.test("claim rule: a cross-repo issue by an untrusted author is refused without reading its timeline", async () => {
+  const partnerRef = {
+    number: 4733,
+    repository: { name: "widgets", owner: { login: "partner" } },
+  };
+  const g = fakeGh({
+    pr: {
+      closingIssuesReferences: [partnerRef],
+      headRefName: "feature/x",
+      body: "",
+    },
+    issues: { "partner/widgets#4733": ISSUE_4733 },
+    // The trusted add is there, so only the same-repo rule can refuse it.
+    timeline: {
+      "partner/widgets#4733": [labelled("top-priority", "nleck", ADDED_AT)],
+    },
+  });
+  const r = await resolveGoverningIssues(FLEET, CLAIM, g.runGh);
+  assertEquals(r.issues, []);
+  assert(
+    r.problems.some((p) =>
+      p.includes("partner/widgets#4733 is not by a trusted author")
+    ),
+  );
+  assertEquals(
+    g.calls.filter((c) => (c[1] ?? "").includes("/timeline")).length,
+    0,
+  );
+  assertEquals(g.calls.filter((c) => c[1] === "graphql").length, 0);
+});
+
+Deno.test("claim rule: a timeline or edit-history read failure is a fetch failed problem, and the assessment retries", async () => {
+  const timelineDown = await resolveGoverningIssues(
+    FLEET,
+    CLAIM,
+    fakeGh(claimFx(new Error("HTTP 502: Bad Gateway"))).runGh,
+  );
+  assertEquals(timelineDown.issues, []);
+  assert(timelineDown.problems.some((p) => p.startsWith("fetch failed:")));
+
+  const editsDown = await resolveGoverningIssues(
+    FLEET,
+    CLAIM,
+    fakeGh(
+      claimFx(
+        [labelled("top-priority", "nleck", ADDED_AT)],
+        new Error("HTTP 503: Service Unavailable"),
+      ),
+    ).runGh,
+  );
+  assertEquals(editsDown.issues, []);
+  assert(editsDown.problems.some((p) => p.startsWith("fetch failed:")));
+
+  const { result } = await assess([note()], {
+    fx: claimFx(new Error("HTTP 502: Bad Gateway")),
+    policy: effectiveTestPolicy({
+      allowed_authors: ["nleck"],
+      service_accounts: [FLEET_AUTHOR],
+    }),
+  });
+  assertEquals(result.findings, []);
+  assert(result.retry?.startsWith("fetch failed:"));
+});
+
+Deno.test("claim rule: work-on is an approving label too, when top-priority is absent", async () => {
+  const r = await resolveGoverningIssues(
+    FLEET,
+    CLAIM,
+    fakeGh(claimFx([labelled("work-on", "nleck", ADDED_AT)], [])).runGh,
+  );
+  assertEquals(r.issues.length, 1);
+  assertEquals(r.problems, []);
 });
 
 // ----- assessment ----------------------------------------------------------

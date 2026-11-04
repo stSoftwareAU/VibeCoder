@@ -74,9 +74,13 @@ escalation.
      `requirementQuote` is verbatim in the governing issue (the PR's closing
      reference, the validated `issue-<N>-…` branch, or an anchored
      `Part of #N` line; its title or body, never comments, and only when the
-     author is trusted); and `failsWithoutChange` and `verification` are
-     present where the contract requires them. The model's claim alone never
-     approves. Arbitrary PR prose is never owner authorisation.
+     author is trusted, or when the issue is in this PR's repo and a trusted,
+     non-fleet-worker login added `top-priority` or `work-on` to it with no
+     untrusted edit since, the worker's own claim rule; service accounts stay
+     untrusted authors); and `failsWithoutChange` and
+     `verification` are present where the contract requires them. The model's
+     claim alone never approves. Arbitrary PR prose is never owner
+     authorisation.
    - Only an `owner` verdict (material uncertainty about the intended product
      contract, with a non-empty `ownerQuestion`), or a repo listed in
      `.config.json` `pr_reviewer_test_hold_repos` (an array of `owner/repo`),

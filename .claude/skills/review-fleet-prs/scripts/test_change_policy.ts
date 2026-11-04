@@ -18,6 +18,13 @@ import {
   type TestChangeNote,
 } from "./review_log.ts";
 import type { TestCoverageRef } from "../../../../worker/deno/lib/fleet_review_log.ts";
+import { resolveSuppressionExcludedLogins } from "../../../../worker/deno/lib/fleet_authors.ts";
+import { LABEL_DEFAULTS } from "../../../../worker/deno/lib/config_defaults.ts";
+import {
+  getLabelLastAddInfoComplete,
+  wasLabelAddedByAllowedAuthor,
+} from "../../../../worker/deno/lib/issue_query.ts";
+import { resolveLastIssueEditor } from "../../../../worker/deno/lib/issue_edit_actor.ts";
 import type { RunGh } from "./needs_human.ts";
 
 const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
@@ -65,6 +72,9 @@ export interface EffectiveTestPolicy {
   holdAllRepos: string[]; // `pr_reviewer_test_hold_repos`: owner-comment hold for every meaningful test change
   legacyAutoRelease: string[]; // `pr_reviewer_auto_release`: tolerated but ignored since #4655
   trustedLogins: string[]; // from `allowed_authors`, `authorized_commenters`, `pr_reviewers`
+  // Fleet worker logins (this host, `fleet_pr_authors`, `service_accounts`):
+  // never a trusted adder or editor of a same-repo governing issue (Issue #4763).
+  fleetWorkerLogins: string[];
 }
 
 export interface GoverningIssue {
@@ -233,6 +243,17 @@ export function effectiveTestPolicy(
     holdAllRepos,
     legacyAutoRelease: repoList(config.pr_reviewer_auto_release) ?? [],
     trustedLogins: trustedLoginsOf(config),
+    fleetWorkerLogins: resolveSuppressionExcludedLogins({
+      githubUser: typeof config.github_user === "string"
+        ? config.github_user
+        : "",
+      fleetPrAuthors: Array.isArray(config.fleet_pr_authors)
+        ? config.fleet_pr_authors as string[]
+        : [],
+      serviceAccounts: Array.isArray(config.service_accounts)
+        ? config.service_accounts as string[]
+        : [],
+    }),
   };
 }
 
@@ -280,15 +301,82 @@ interface Candidate {
 }
 
 /**
+ * The worker's own claim rule (Issue #4763), for a same-repo governing issue
+ * whose author is not trusted. A trusted login that is not a fleet worker must
+ * have added `top-priority` or `work-on` (the worker's own pickup labels), and
+ * no untrusted account may have edited the issue since that add. Returns null
+ * when the claim holds, otherwise the problem string. Any gh failure is a
+ * `fetch failed:` problem, so the caller retries rather than raising a finding.
+ */
+async function workerClaimProblem(
+  repo: string,
+  number: number,
+  policy: Pick<EffectiveTestPolicy, "trustedLogins" | "fleetWorkerLogins">,
+  runGh: RunGh,
+): Promise<string | null> {
+  const ref = `${repo}#${number}`;
+  const trusted = new Set(policy.trustedLogins.map(normaliseLogin));
+  const fleet = new Set(policy.fleetWorkerLogins.map(normaliseLogin));
+  const labels = [LABEL_DEFAULTS.topPriorityLabel, LABEL_DEFAULTS.workOnLabel];
+  try {
+    let label: string | undefined;
+    for (const candidate of labels) {
+      const byTrusted = await wasLabelAddedByAllowedAuthor(
+        repo,
+        number,
+        candidate,
+        policy.trustedLogins,
+        runGh,
+        undefined,
+        policy.fleetWorkerLogins,
+      );
+      if (byTrusted) {
+        label = candidate;
+        break;
+      }
+    }
+    if (label === undefined) {
+      return `${ref} is not by a trusted author; it is ignored`;
+    }
+    const added = await getLabelLastAddInfoComplete(repo, number, label, runGh);
+    if (added === null) {
+      return `${ref} is not by a trusted author: its approving label time cannot be read; it is ignored`;
+    }
+    const lookup = await resolveLastIssueEditor(repo, number, runGh);
+    if (!lookup.ok) {
+      return `${FETCH_FAILED} linked issue ${ref} edit history could not be read: ${
+        firstLine(lookup.error)
+      }`;
+    }
+    const editedSinceAdd = lookup.actors.filter((a) =>
+      a.editedAt >= added.addedAt
+    );
+    const untrustedEdit = editedSinceAdd.some((a) => {
+      const login = normaliseLogin(a.login);
+      return login === "" || !trusted.has(login) || fleet.has(login);
+    });
+    if (untrustedEdit) {
+      return `${ref} was edited by an untrusted account after its ${label} label was added; it is ignored`;
+    }
+    return null;
+  } catch (e) {
+    return `${FETCH_FAILED} linked issue ${ref} approval could not be read: ${
+      firstLine(e)
+    }`;
+  }
+}
+
+/**
  * The issues that govern a PR: closing references, the worker's own issue
  * (fleet branches only) and anchored `Part of #N` lines. Each candidate must be
- * an issue (not a PR) by a trusted author; anything else is a problem string.
- * A `fetch failed:` problem means the links could not be read: retry, not
- * a finding.
+ * an issue (not a PR) by a trusted author, or (Issue #4763) a same-repo issue
+ * that passes the worker's claim rule (`workerClaimProblem`); anything else is
+ * a problem string. A `fetch failed:` problem means the links could not be
+ * read: retry, not a finding.
  */
 export async function resolveGoverningIssues(
   pr: { repo: string; number: number; kind: "fleet" | "dependabot" },
-  policy: Pick<EffectiveTestPolicy, "trustedLogins">,
+  policy: Pick<EffectiveTestPolicy, "trustedLogins" | "fleetWorkerLogins">,
   runGh: RunGh,
 ): Promise<GoverningIssues> {
   if (!isRepo(pr.repo) || !isPositiveInt(pr.number)) {
@@ -423,8 +511,14 @@ export async function resolveGoverningIssues(
     const byLogin = typeof login === "string" &&
       trusted.has(normaliseLogin(login));
     if (!byAssociation && !byLogin) {
-      problems.push(`${ref} is not by a trusted author; it is ignored`);
-      continue;
+      const sameRepo = c.repo.toLowerCase() === pr.repo.toLowerCase();
+      const claimProblem = sameRepo
+        ? await workerClaimProblem(c.repo, c.number, policy, runGh)
+        : `${ref} is not by a trusted author; it is ignored`;
+      if (claimProblem !== null) {
+        problems.push(claimProblem);
+        continue;
+      }
     }
     issues.push({
       repo: c.repo,
