@@ -349,6 +349,50 @@ Deno.test("diagnosticErrorLine - Git checkout's Aborting trailer preserves its c
   });
 });
 
+Deno.test("diagnosticErrorLine - a checkout refused over untracked files keeps its cause", async () => {
+  await withWorkDir(async (workDir) => {
+    const repo = `${workDir}/repo`;
+    await Deno.mkdir(repo);
+    const runGit = async (args: string[], expectedCode = 0) => {
+      const result = await new Deno.Command("git", {
+        args,
+        cwd: repo,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const stderr = new TextDecoder().decode(result.stderr);
+      assertEquals(result.code, expectedCode, stderr);
+      return stderr;
+    };
+
+    await runGit(["init", "-b", "main"]);
+    await runGit(["config", "user.name", "Test"]);
+    await runGit(["config", "user.email", "test@example.invalid"]);
+    await Deno.writeTextFile(`${repo}/base.txt`, "base\n");
+    await runGit(["add", "base.txt"]);
+    await runGit(["commit", "-m", "initial"]);
+    await runGit(["checkout", "-b", "other"]);
+    await Deno.writeTextFile(`${repo}/newfile.txt`, "other\n");
+    await runGit(["add", "newfile.txt"]);
+    await runGit(["commit", "-m", "other"]);
+    await runGit(["checkout", "main"]);
+    await Deno.writeTextFile(`${repo}/newfile.txt`, "untracked\n");
+
+    const stderr = await runGit(["checkout", "-B", "feature", "other"], 1);
+    assertStringIncludes(stderr, "untracked working tree files would be");
+    assertStringIncludes(stderr, "Please move or remove them");
+    assertStringIncludes(stderr, "Aborting");
+
+    const detail = diagnosticErrorLine(stderr);
+    assertStringIncludes(
+      detail,
+      "untracked working tree files would be overwritten",
+    );
+    assertEquals(detail.includes("Please move or remove"), false);
+    assertEquals(detail.includes("Aborting"), false);
+  });
+});
+
 Deno.test("diagnosticErrorLine - a refused merge keeps its cause, not the advice and Aborting", () => {
   const stderr =
     "error: Your local changes to the following files would be overwritten by merge:\n\ttracked.txt\nPlease commit your changes or stash them before you merge.\nAborting";

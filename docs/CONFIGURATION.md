@@ -2464,8 +2464,10 @@ flowchart TD
   then adds one comment of the form
   `<!-- vibe-fast-failure host="<host>" at="<ISO time>" issue="<repo>#<n>" -->`
   plus a one-line human-readable reason. For a multiline Git failure, the
-  detail skips generic trailing lines such as `Aborting` so the comment keeps
-  the checkout refusal that explains why setup stopped. The detail is
+  detail skips generic trailing lines such as `Aborting`, git's `Please commit
+  your changes or stash them…` / `Please move or remove them…` advice and the
+  indented path list, so the comment keeps the checkout refusal that explains
+  why setup stopped. The detail is
   redacted and length-bounded before it is posted. Only fleet-authored marker
   comments count — `service_accounts` ∪ `fleet_pr_authors` ∪ the host's own
   login — a comment from any other account is ignored, and a tally issue

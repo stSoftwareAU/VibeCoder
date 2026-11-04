@@ -290,7 +290,9 @@ const UNINFORMATIVE_LINE_PATTERNS: readonly RegExp[] = [
   /^remote:\s*$/i, // GitHub's blank padding inside a `remote:` block
   /^hint:/i,
   /^Aborting$/i, // Git's generic trailer after a failed checkout
-  /^Please commit your changes or stash them before you (?:switch branches|merge)\.$/i,
+  // git's advice under a refused checkout or merge: tracked local edits, or
+  // untracked files that the target would overwrite.
+  /^Please (?:commit your changes or stash them|move or remove them) before you (?:switch branches|merge)\.$/i,
   // git's discovery trailer under `fatal: not a git repository` (Issue #2848).
   /^Stopping at filesystem boundary\b/i,
   // The worker's failure message fences the agent's last output in a
