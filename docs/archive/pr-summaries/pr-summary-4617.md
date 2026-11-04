@@ -76,19 +76,20 @@ interpolate it for display.
   and
   `worker/deno/tests/ci_mutation_contract_test.ts::a nested remote or ref-qualified reusable call is not followed`
   — reviewer: met
-- **met** — Use the repository's actual required CI contract (including jobs
-  feeding an aggregator) — evidence:
+- **missing** — Use the repository's actual required CI contract (including jobs
+  feeding an aggregator) — reason: remote reusable workflows and branch-protection
+  required-check names are not read. Local workflow and aggregator coverage:
+  evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a reusable workflow calling another reusable workflow with a mutation run is blocking`
-  — reviewer: met (the in-repository contract is read: caller, called and nested
-  local jobs, and the aggregator by `needs`; remote reusable workflows and
-  branch-protection required-check names are not read, a documented
-  approximation the reviewer judged outside what the issue asks)
-- **met** — Run the applicable changed-code mutation command with CI-equivalent
-  flags after the final relevant edit — evidence:
+  — reviewer: missing (the in-repository contract reads caller, called and nested
+  local jobs, and the aggregator by `needs`)
+- **missing** — Run the applicable changed-code mutation command with CI-equivalent
+  flags after the final relevant edit — reason: `deno task` flags and cargo
+  `--timeout`, `--cargo-arg` and `--test-tool` are not read. Partial coverage:
+  evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a reusable workflow calling another reusable workflow with a mutation run is blocking`
-  (`cargoArgs` carried through nesting) — reviewer: met (cargo-mutants flags are
-  carried; the flags of a `deno task` and cargo `--timeout`, `--cargo-arg`,
-  `--test-tool` are not read, documented in `docs/mutation-check.md`)
+  (`cargoArgs` carried through nesting) — reviewer: missing (the remaining
+  limitations are documented in `docs/mutation-check.md`)
 
 ## Standards Review
 
