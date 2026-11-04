@@ -9,8 +9,9 @@ as unverified. `runRepositoryCommand` now takes `readOnlyCheckout`; when true
 the probe does not require the directory to be writable. `spawnTypeCheck` sets
 it for a Deno project that writes nothing into its directory: one with a
 committed `deno.lock`, no `package.json`, and no `nodeModulesDir` other than
-`none`/`manual` (`denoCheckLeavesDirUntouched`). A Deno project that may write
-`deno.lock` or `node_modules`, and everything else, keeps the requirement.
+`none`/`manual` and no enabled `vendor` (`denoCheckLeavesDirUntouched`). A
+Deno project that may write `deno.lock`, `node_modules` or `vendor`, and
+everything else, keeps the requirement.
 Closes #4782.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
@@ -19,7 +20,7 @@ the final version.
 ```mermaid
 flowchart LR
     A[runRepositoryCommand] --> B{readOnlyCheckout}
-    B -- "true: Deno check, committed deno.lock, no node_modules" --> C[probe: traverse and read only]
+    B -- "true: Deno check, committed deno.lock, no node_modules or vendor" --> C[probe: traverse and read only]
     B -- "false: cargo, tasks, script" --> D[probe: traverse, read and write the directory]
     C --> E[run as agent]
     D -- writable --> E
@@ -51,8 +52,8 @@ flowchart LR
   in a `0555` directory with an npm import and no lockfile) and writes
   `node_modules` for `nodeModulesDir: auto` or beside a `package.json`. A
   project without a committed `deno.lock`, with a `package.json`, with such a
-  `nodeModulesDir`, or with a manifest that cannot be parsed keeps the write
-  requirement and is left to CI, as before this change. Deno resolving a
+  `nodeModulesDir`, enabled `vendor`, or with a manifest that cannot be parsed
+  keeps the write requirement and is left to CI, as before this change. Deno resolving a
   lockfile from a parent workspace root is not recognised, so such a member is
   conservatively left to CI.
 
@@ -79,14 +80,20 @@ directory was refused with `probe 3`.
 - Added to `worker/deno/tests/milestone_merge_gate_test.ts`: `spawnTypeCheck`
   passes `readOnlyCheckout: true` for a Deno project with a committed
   `deno.lock`, and false for: no lockfile (the verifier's finding),
-  `nodeModulesDir: "auto"`, a `package.json`, an unparseable manifest, and a
-  cargo project.
+  `nodeModulesDir: "auto"`, enabled `vendor`, a `package.json`, an unparseable
+  manifest, and a cargo project.
+- Review fix: treating a vendoring project as read-only is obsolete because Deno
+  may write `vendor/`. Such projects retain the write probe and are left to CI
+  when unwritable; other eligible Deno projects remain read-only. Coverage:
+  `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a Deno check is read-only only when it writes nothing into its directory, a cargo check keeps the write requirement (Issue #4782)`.
+  A direct `spawnTypeCheck` exercise passed for enabled and disabled vendoring;
+  this sandbox denies the test fixture's `/tmp` directory creation.
 - Red check for the verifier fix: forcing `readOnlyCheckout` true for every Deno
   project turned the `spawnTypeCheck` test red; restored.
 - Red checks: making `runRepositoryCommand` always require write turned the
   three untrusted_gate_spawn tests red; making `spawnTypeCheck` stop passing the
   option turned the merge-gate test red. Both restored.
-- Existing tests are unchanged, none edited; callers of `runRepositoryCommand`
+- Callers of `runRepositoryCommand`
   checked: `spawnTypeCheck` (passes it for Deno) and `spawnTask` (not passed,
   keeps the requirement).
 - Mutation check: its report said the baseline tests failed before any mutation

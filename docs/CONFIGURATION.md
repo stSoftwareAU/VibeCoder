@@ -139,8 +139,9 @@ instead. A Deno type check caches in `DENO_DIR`, and the directories git
 creates inside a clone are group read-only, so a Deno project in a
 sub-directory with a committed `deno.lock` is still checked (Issue #4782). A
 Deno project that may write into its directory (no `deno.lock`, a
-`package.json`, or `nodeModulesDir` other than `none` or `manual`) keeps the
-write requirement and is left to CI when the account cannot write it.
+`package.json`, enabled `vendor`, or `nodeModulesDir` other than `none` or
+`manual`) keeps the write requirement and is left to CI when the account
+cannot write it.
 A milestone resolution whose every check is left to CI this way verified
 nothing and is refused as unverified (Issue #1559, #4761).
 

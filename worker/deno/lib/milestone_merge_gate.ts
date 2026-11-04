@@ -483,7 +483,8 @@ export function detectRemoteModuleGap(
  * (Issue #4782).
  *
  * Deno writes `deno.lock` when it has to create or update one, and writes
- * `node_modules` for `nodeModulesDir: "auto"` or beside a `package.json`.
+ * `node_modules` for `nodeModulesDir: "auto"` or beside a `package.json`,
+ * and writes `vendor` when vendoring is enabled.
  * Only a committed lockfile and none of those lets the check run in a
  * directory the account cannot write. Anything else, or a manifest that cannot
  * be read, keeps the write requirement, so it fails closed to CI.
@@ -502,6 +503,7 @@ export async function denoCheckLeavesDirUntouched(
       const config = JSON.parse(
         stripJsonc(await Deno.readTextFile(`${dir}/${name}`)),
       );
+      if (config?.vendor) return false;
       const mode = config?.nodeModulesDir;
       if (
         mode !== undefined && mode !== "none" && mode !== "manual" &&
@@ -530,7 +532,7 @@ export const spawnTypeCheck = async (
   // credential (Issue #4659). Build-cache placement for the checkout (Issue
   // #2247) is decided inside runRepositoryCommand, not here. A Deno check
   // writes its cache to DENO_DIR, so it does not need the project directory
-  // writable by the account, unless it must write deno.lock or node_modules
+  // writable by the account, unless it must write deno.lock, node_modules or vendor
   // there (Issue #4782). A cargo check writes Cargo.lock, so it keeps the
   // requirement.
   const result = await run(executable, project.args, {

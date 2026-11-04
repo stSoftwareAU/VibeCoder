@@ -1000,6 +1000,14 @@ Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothin
   );
   // No lockfile: Deno may have to write one for an npm or remote import.
   assertEquals(await readOnlyFor({ "deno.json": "{}" }), false);
+  // Vendoring can create or update files in the project directory.
+  assertEquals(
+    await readOnlyFor({
+      "deno.json": '{"vendor": true}',
+      "deno.lock": "{}",
+    }),
+    false,
+  );
   // node_modules is written for "auto" and beside a package.json.
   assertEquals(
     await readOnlyFor({
