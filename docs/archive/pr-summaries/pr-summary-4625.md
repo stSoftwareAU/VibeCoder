@@ -76,6 +76,8 @@ Backend only. Tests (all passed on this head in the targeted run):
 `worker/deno/tests/pr_ci_processor_test.ts`,
 `worker/deno/tests/pr_feedback_processor_test.ts`,
 `worker/deno/tests/pr_feedback_processor_milestone_fix_test.ts`,
+`worker/deno/tests/pr_feedback_processor_self_push_test.ts`,
+`worker/deno/tests/pr_ci_processor_no_changes_test.ts`,
 `worker/deno/tests/pr_spelling_processor_test.ts`,
 `worker/deno/tests/pr_push_base_sync_test.ts`. They cover a real failing
 command, a claimed-but-not-run check, edits after validation, zero Deno tests
@@ -88,6 +90,15 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
 
 ## Test Plan
 
+- CI repair: the feedback and CI self-push tests now inject a passing
+  publication validator and assert it runs once. Their mocked pushes do not
+  invoke the guard, and their temporary work directories are not repositories.
+  The supported behaviour remains a success reply only after remote push
+  verification and publication validation; coverage remains in
+  `worker/deno/tests/pr_feedback_processor_self_push_test.ts::processPrFeedback - claude self-pushed: HEAD moved => success reply`
+  and `worker/deno/tests/pr_ci_processor_no_changes_test.ts::processCiFailure - Claude self-pushed: HEAD moved triggers success reply (Issue #1863)`.
+  Both files pass with `deno task test` (21 tests); both failed before the
+  fixture repair. No mirrored rule changed.
 - Head push `c92357559`: `pr_feedback_processor_milestone_fix_test.ts` now
   injects a passing `validatePublication` stub. Its mocked push never reaches
   the publication guard, and the real gate finds no repository in the fake

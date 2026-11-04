@@ -779,6 +779,7 @@ Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success re
       },
     });
 
+    let validationCalls = 0;
     const processorDeps: CiProcessorDeps = {
       promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
@@ -787,6 +788,14 @@ Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success re
       workDir: tmpDir,
       workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      validatePublication: () => {
+        validationCalls++;
+        return Promise.resolve({
+          status: "passed",
+          head: "0".repeat(40),
+          gate: "absent",
+        });
+      },
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -798,6 +807,7 @@ Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success re
         "changesPushed must be true when HEAD moved during the Claude run",
       );
     }
+    assertEquals(validationCalls, 1);
 
     // Success reply path must be taken — must not include "no changes"
     // dismissive wording or add `needs-human`.
