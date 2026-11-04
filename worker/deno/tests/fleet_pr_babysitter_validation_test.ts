@@ -30,6 +30,7 @@ const SCENARIO_TITLES: readonly string[] = [
   "the repository configs come from the worker config, and a failed load is thrown",
   "a lock renewal that fails while the gate runs stops the push",
   "a repository config that cannot be loaded stops the repair before any agent runs or attempt is recorded",
+  "a failed gate is a code failure whatever its output says, and counts one substantive attempt",
 ];
 
 /**

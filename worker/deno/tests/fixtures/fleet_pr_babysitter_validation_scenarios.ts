@@ -595,6 +595,9 @@ Deno.test("the gate runs on the committed head in the clone, with the loaded rep
     const call = seen[0]!;
     assertEquals(call.request.cwd, h.agentDirs[0]);
     assertEquals(call.request.repo, REPO);
+    // The babysitter's account holds the fleet credentials, so the PR's own
+    // code must never run as it (THREAT-MODEL C36).
+    assertEquals(call.request.requireSeparateAccount, true);
     assertEquals(
       call.request.repoConfigs,
       (await loadConfig(h.configPath)).repoConfig,
@@ -723,4 +726,36 @@ Deno.test("a repository config that cannot be loaded stops the repair before any
     assertEquals(h.pushes.length, 0);
     assertEquals(await stateEntries(h), []);
   });
+});
+
+Deno.test("a failed gate is a code failure whatever its output says, and counts one substantive attempt", async () => {
+  // Each line would classify as owner, race or infrastructure if the verdict's
+  // text, not the verdict, decided the class.
+  const outputs = [
+    "FAIL: tests/needs-human_label_test.ts needs-human",
+    "FAIL: the file changed during the run",
+    "the repository gate timed out (exit 124) and was killed at its time limit",
+  ];
+  for (const text of outputs) {
+    await withHost(async (h) => {
+      await assertRejects(
+        () =>
+          repair(
+            h,
+            validatorFor(h, () => ({
+              status: "failed",
+              head: null,
+              output: text,
+            })),
+          ),
+        Error,
+        "required repository checks failed",
+      );
+      const record = (await records(h))[0]!;
+      assertEquals(record.blockerClass, "code", text);
+      assertEquals(record.attempts.substantive, 1, text);
+      assertEquals(record.attempts.infrastructure, 0, text);
+      assert(record.nextEligibleAt !== null, `${text}: the PR is retried`);
+    });
+  }
 });
