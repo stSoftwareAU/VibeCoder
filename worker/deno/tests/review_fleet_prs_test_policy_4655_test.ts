@@ -818,6 +818,36 @@ Deno.test("claim rule: an untrusted or unattributable edit after the label is ig
   assertEquals(trusted.problems, []);
 });
 
+Deno.test("claim rule: an edit after the label by a fleet worker login is refused even when that login is trusted", async () => {
+  // The fleet login is in trustedLogins, so only the fleet exclusion refuses it.
+  const policy = {
+    trustedLogins: ["nleck", FLEET_AUTHOR],
+    fleetWorkerLogins: [FLEET_AUTHOR],
+  };
+  const stranger = { ...ISSUE_4733, user: { login: "stranger" } };
+  const run = async (editedAt: string) => {
+    const g = fakeGh({
+      ...claimFx([labelled("top-priority", "nleck", ADDED_AT)], [{
+        editedAt,
+        editor: FLEET_AUTHOR,
+      }]),
+      issues: { [ISSUE_KEY]: stranger },
+    });
+    return await resolveGoverningIssues(FLEET, policy, g.runGh);
+  };
+
+  const after = await run(AFTER_ADD);
+  assertEquals(after.issues, []);
+  assert(
+    after.problems.some((p) => p.includes("edited by an untrusted account")),
+    JSON.stringify(after.problems),
+  );
+
+  const before = await run(BEFORE_ADD);
+  assertEquals(before.issues.length, 1);
+  assertEquals(before.problems, []);
+});
+
 Deno.test("claim rule: a cross-repo issue by an untrusted author is refused without reading its timeline", async () => {
   const partnerRef = {
     number: 4733,

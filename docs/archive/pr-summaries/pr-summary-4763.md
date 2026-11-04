@@ -46,20 +46,23 @@ Backend/CLI change only; no UI files. Tests:
 ## Test Plan
 
 - `deno task test:unit tests/review_fleet_prs_test_policy_4655_test.ts tests/review_fleet_prs_test_policy_wiring_4655_test.ts`
-  (from `worker/deno`): 122 passed, 0 failed.
+  (from `worker/deno`): 123 passed, 0 failed.
 - Added in `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts`:
   `fleetWorkerLogins` policy test; a CONTRIBUTOR service-account issue with
   `top-priority` added by a trusted login is usable and a justified change is
   approved; the label added by the service account itself (or an unknown login)
   is refused with "not by a trusted author"; untrusted, empty-login,
-  before-label and trusted-editor cases; a cross-repo issue is still refused
-  without a timeline call; timeline and edit-history read failures give
-  `fetch failed:` and a retry; `work-on` works as the approving label.
+  before-label and trusted-editor cases; an edit after the label by a fleet
+  worker login that is also in `trustedLogins` is refused (and the same edit
+  before the label is not); a cross-repo issue is still refused without a
+  timeline call; timeline and edit-history read failures give `fetch failed:`
+  and a retry; `work-on` works as the approving label.
 - Edited expectation: the "policy defaults" test now also expects
   `fleetWorkerLogins: []`. Nothing else was removed.
 - Red checks (guard broken, new tests run, then restored): fleet-login exclusion
-  argument set to `[]` → red; edit check forced to never fire → red; same-repo
-  condition forced true → red.
+  argument set to `[]` → red; edit check forced to never fire → red;
+  `|| fleet.has(login)` deleted from the edit check → red (65 passed, 1 failed),
+  green again once restored; same-repo condition forced true → red.
 - `./quality.sh`: the only failing stage is deno tests, with three failures in
   files this PR does not touch (`completion_phase_repo_formatters_test.ts` ×2,
   `merge_fallback_issue_test.ts`); they fail on environment (cargo fmt commit,
