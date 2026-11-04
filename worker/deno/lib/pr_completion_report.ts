@@ -245,11 +245,11 @@ export function prActionsFromAuditJournal(
       timestamp: entry.timestamp,
       outcome: entry.outcome === "success" ? "confirmed" : "failed",
       actor: chainVerified && entry.component !== undefined &&
-          entry.component !== "unknown" && entry.actionKind !== "unknown"
+          entry.component !== "unknown"
         ? "fleet"
         : "unknown",
       verified: chainVerified && entry.component !== undefined &&
-        entry.component !== "unknown" && entry.actionKind !== "unknown",
+        entry.component !== "unknown",
     }];
   });
 }

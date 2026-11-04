@@ -1074,6 +1074,7 @@ function regressionsFor(
     const mergeMs = utcMillis(record.mergedAt, "PR mergedAt");
     const runs = postMergeRunsByPr.get(keyOf(record.repo, record.number)) ?? [];
     const workflows = runs.filter((run) => run.kind === "workflow_run");
+    const failedRuns = new Map<string, CiRun>();
     for (const failed of workflows) {
       if (
         !failed.completedAt || !failed.workflowId ||
@@ -1082,11 +1083,18 @@ function regressionsFor(
           failed.outcome ?? "",
         ) || utcMillis(failed.completedAt!, "workflow completedAt") < mergeMs
       ) continue;
+      const previous = failedRuns.get(failed.runId);
+      if (!previous || failed.completedAt < previous.completedAt!) {
+        failedRuns.set(failed.runId, failed);
+      }
+    }
+    for (const failed of failedRuns.values()) {
       const recovered = workflows.some((candidate) =>
         candidate.workflowId === failed.workflowId &&
         candidate.headSha === failed.headSha &&
         candidate.outcome === "success" &&
-        candidate.attempt! > failed.attempt! &&
+        (candidate.runId !== failed.runId ||
+          candidate.attempt! > failed.attempt!) &&
         candidate.completedAt !== null &&
         utcMillis(candidate.completedAt!, "workflow completedAt") >=
           utcMillis(failed.completedAt!, "workflow completedAt")
@@ -1094,7 +1102,7 @@ function regressionsFor(
       rows.push({
         repo: record.repo,
         prNumber: record.number,
-        detectedAt: failed.completedAt,
+        detectedAt: failed.completedAt!,
         resolved: recovered,
         source: "post_merge_ci",
       });
@@ -1323,6 +1331,7 @@ async function collectDeployments(
 async function collectDiscoveryEvents(
   directories: string[],
   verifiedMs: number,
+  endMs: number,
   notes: string[],
 ): Promise<{
   events: Array<{ repo: string; prNumber: number; event: string }>;
@@ -1335,8 +1344,9 @@ async function collectDiscoveryEvents(
   for (const directory of directories) {
     const path = `${directory}/pr-discovery-events.jsonl`;
     try {
-      const rows = await readPrDiscoveryEvents(path, verifiedMs);
+      const rows = await readPrDiscoveryEvents(path, verifiedMs, endMs);
       for (const row of rows) {
+        if (Date.parse(row.recordedAt) > endMs) continue;
         hosts.add(row.hostId);
         if (Date.parse(row.recordedAt) < verifiedMs) continue;
         events.push({
@@ -1835,6 +1845,7 @@ export async function collectPrCompletionSnapshot(
     const discovery = await collectDiscoveryEvents(
       options.babysitterStateDirs ?? [],
       verifiedMs,
+      Math.min(observedMs, verifiedMs + 14 * 86_400_000),
       notes,
     );
     const expectedBabysitterHosts = options.expected.inventory

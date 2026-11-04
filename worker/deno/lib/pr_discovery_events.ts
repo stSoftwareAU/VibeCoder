@@ -15,6 +15,7 @@ export interface PrDiscoveryEvent {
 
 const EVENT_LINE_LIMIT = 16_384;
 const LEDGER_BYTE_LIMIT = 16 * 1024 * 1024;
+const recordedByPath = new Map<string, { day: string; keys: Set<string> }>();
 
 /**
  * Map any host label (a free-form VIBE_HOST_ID or hostname) onto the identifier
@@ -59,6 +60,20 @@ export async function appendPrDiscoveryEvent(
     new Date(event.recordedAt).toISOString().slice(0, 10)
   }`;
   await withFileLock(`${path}.lock`, async () => {
+    const day = new Date(event.recordedAt).toISOString().slice(0, 10);
+    let recorded = recordedByPath.get(path);
+    if (!recorded || recorded.day !== day) {
+      recorded = { day, keys: new Set() };
+      recordedByPath.set(path, recorded);
+    }
+    const key = JSON.stringify([
+      event.event,
+      event.hostId,
+      event.repo,
+      event.prNumber,
+      event.headSha,
+    ]);
+    if (recorded.keys.has(key)) return;
     try {
       using file = await Deno.open(dailyPath, { read: true, write: true });
       const size = (await file.stat()).size;
@@ -89,6 +104,7 @@ export async function appendPrDiscoveryEvent(
       create: true,
       append: true,
     });
+    recorded.keys.add(key);
   });
 }
 
@@ -96,6 +112,7 @@ export async function appendPrDiscoveryEvent(
 export async function readPrDiscoveryEvents(
   path: string,
   verifiedMs = 0,
+  endMs = Infinity,
 ): Promise<PrDiscoveryEvent[]> {
   const separator = path.lastIndexOf("/");
   const directory = separator < 0 ? "." : path.slice(0, separator) || "/";
@@ -106,7 +123,8 @@ export async function readPrDiscoveryEvents(
     const suffix = entry.name.slice(name.length + 1);
     if (
       entry.name.startsWith(`${name}.`) && /^\d{4}-\d{2}-\d{2}$/.test(suffix) &&
-      Date.parse(`${suffix}T23:59:59.999Z`) >= verifiedMs
+      Date.parse(`${suffix}T23:59:59.999Z`) >= verifiedMs &&
+      Date.parse(`${suffix}T00:00:00Z`) <= endMs
     ) {
       paths.push(`${directory}/${entry.name}`);
     }

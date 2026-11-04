@@ -1170,9 +1170,12 @@ report's host-id pattern reject them. An `--expected-inventory` entry therefore
 uses the machine hostname for a worker and the mapped id for a babysitter or a
 reviewer.
 
-Discovery collection also reads the legacy `pr-discovery-events.jsonl`, and
-daily files from the verification date onward. A combined 16 MiB read limit
-marks rollout evidence incomplete with a coverage note when exceeded.
+Discovery appends deduplicate each event, host, repository, PR and head within
+each UTC day for the lifetime of the process. Collection also reads the legacy
+`pr-discovery-events.jsonl` and daily files intersecting the verification window,
+ending at the observation time or 14 days after verification, whichever is
+earlier. A combined 16 MiB read limit marks rollout evidence incomplete with a
+coverage note when exceeded.
 
 **Cross-host evidence.** The command reads only the audit directories it is
 given. To include another host, export that host's journal directory and pass

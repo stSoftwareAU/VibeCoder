@@ -4,6 +4,7 @@ import {
   recordBabysitterDeployment,
 } from "../commands/fleet_pr_babysitter.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { capturingWarningsAsync } from "./support/warnings.ts";
 import {
   type PrDiscoveryEvent,
   readPrDiscoveryEvents,
@@ -137,39 +138,51 @@ Deno.test("babysitter pass with a single-PR filter journals only the eligible tr
   );
 });
 
-Deno.test("a malformed discovery ledger does not stop a repair", async () => {
+Deno.test("a discovery write failure does not stop a repair", async () => {
   const root = await Deno.makeTempDir();
   try {
-    await Deno.writeTextFile(`${root}/pr-discovery-events.jsonl`, "invalid\n");
-    let repaired = false;
-    await pass(
-      true,
-      PASS_LOGIN,
-      {} as unknown as Parameters<typeof pass>[2],
-      {
-        fleetPrAuthors: [PASS_LOGIN],
-        serviceAccounts: [],
-        repoConfig: {},
-      } as unknown as Parameters<typeof pass>[3],
-      `${root}/config.json`,
-      ["org/repo"],
-      "org/repo",
-      11,
-      {
-        gh: () =>
-          Promise.resolve(
-            JSON.stringify(passFixturePr(11, { mergeable: "CONFLICTING" })),
-          ),
-        tempDir: root,
-        stateDir: root,
-        hostId: PASS_HOST,
-        repair: () => {
-          repaired = true;
-          return Promise.resolve();
-        },
-      },
+    await Deno.mkdir(
+      `${root}/pr-discovery-events.jsonl.${
+        new Date().toISOString().slice(0, 10)
+      }`,
     );
+    let repaired = false;
+    const warnings = await capturingWarningsAsync(async () => {
+      await pass(
+        true,
+        PASS_LOGIN,
+        {} as unknown as Parameters<typeof pass>[2],
+        {
+          fleetPrAuthors: [PASS_LOGIN],
+          serviceAccounts: [],
+          repoConfig: {},
+        } as unknown as Parameters<typeof pass>[3],
+        `${root}/config.json`,
+        ["org/repo"],
+        "org/repo",
+        11,
+        {
+          gh: () =>
+            Promise.resolve(
+              JSON.stringify(passFixturePr(11, { mergeable: "CONFLICTING" })),
+            ),
+          tempDir: root,
+          stateDir: root,
+          hostId: PASS_HOST,
+          repair: () => {
+            repaired = true;
+            return Promise.resolve();
+          },
+        },
+      );
+    });
     assertEquals(repaired, true);
+    assertEquals(
+      warnings.some((warning) =>
+        warning.includes("discovery event not recorded")
+      ),
+      true,
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }

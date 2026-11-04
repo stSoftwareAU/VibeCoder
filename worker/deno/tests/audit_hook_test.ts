@@ -131,6 +131,23 @@ Deno.test("audit_hook - PR mutations carry a worker action id and PR number", as
   });
 });
 
+Deno.test("audit_hook - unpinned and malformed merge pins carry no head", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGhMutation(["pr", "merge", "42", "--repo", "org/repo"], 0, opts);
+    await auditGhMutation(
+      ["pr", "merge", "42", "--repo", "org/repo", "--match-head-commit", "abc"],
+      0,
+      opts,
+    );
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    assertEquals(loaded.value.map((entry) => entry.headSha), [
+      undefined,
+      undefined,
+    ]);
+  });
+});
+
 Deno.test("audit_hook - a PR review dismissal is recorded as a distinct action", async () => {
   await withAuditEnv(async (journalPath, opts) => {
     await auditGhMutation(

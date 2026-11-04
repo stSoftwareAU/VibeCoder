@@ -30,6 +30,7 @@ import {
   componentFor,
 } from "../lib/audit_hook.ts";
 import { appendPrDiscoveryEvent } from "../lib/pr_discovery_events.ts";
+import { replyToComment } from "../lib/pr_comments.ts";
 import { classifyGhMutation } from "../lib/audit_mutation_classifier.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import {
@@ -148,6 +149,61 @@ Deno.test("collect - a direct merge caller verifies while an unnamed component s
     const report = buildPrCompletionReport(snapshot.input);
     assertEquals(report.completion.unattendedMerged, 1);
     assertEquals(report.completion.unknownMerged, 1);
+  });
+});
+
+Deno.test("collect - a named worker comment retains trusted attribution", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "push",
+        deliveredCommits: ["sha1"],
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const result = await replyToComment(REPO, 1, "resolved", async (args) => {
+      await auditGhMutation(args, 0, {
+        baseDir: dir,
+        workerId: "test-worker",
+        date: JOURNAL_DATE,
+        env: envFrom({ WORK_DIR: dir }),
+      });
+      return "";
+    });
+    assert(result.ok);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(
+          emptyFixture({
+            pulls: { [REPO]: [pull(1)] },
+            commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+          }),
+        ),
+        { auditDirs: [dir] },
+      ),
+    );
+    assertEquals(
+      snapshot.input.actions.find((action) =>
+        action.kind === "unknown" && action.component === "worker"
+      )
+        ?.verified,
+      true,
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      1,
+    );
   });
 });
 
@@ -1941,6 +1997,18 @@ const MERGE_FAILED = {
 Deno.test("collect - a failed run on the merge commit is a post-merge regression, resolved by a later successful attempt", async () => {
   const cases: Array<{ name: string; attempts: Json[]; resolved: boolean }> = [
     { name: "unrecovered", attempts: [MERGE_FAILED], resolved: false },
+    {
+      name: "two failures then success",
+      attempts: [MERGE_FAILED, {
+        ...MERGE_FAILED,
+        ended: "2026-10-20T02:24:00Z",
+      }, {
+        conclusion: "success",
+        started: "2026-10-20T02:25:00Z",
+        ended: "2026-10-20T02:30:00Z",
+      }],
+      resolved: true,
+    },
     {
       name: "recovered by a later attempt",
       attempts: [MERGE_FAILED, {

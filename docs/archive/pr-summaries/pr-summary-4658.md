@@ -56,10 +56,11 @@ flowchart LR
   `reportHostId(escalationHostId())`, which maps any `VIBE_HOST_ID` to the
   report's host-id pattern so one odd value cannot abort a babysitter pass.
 
-- Discovery events rotate into UTC-day files, deduplicate within a pass, recover
+- Discovery events rotate into UTC-day files, deduplicate per process and day, recover
   a torn final record from a bounded tail, and log write failures without
   stopping repairs. The collector reads relevant days and the legacy ledger up
-  to a 16 MiB total limit; excess evidence leaves rollout unknown with a note.
+  through the 14-day evaluation window up to a 16 MiB total limit; excess
+  evidence leaves rollout unknown with a note.
   Test seams supply the GitHub
   runner, temporary and state directories, host identity and repair operation.
 - CI failure intervals exclude cancellations and unite overlaps across workflows.
@@ -78,8 +79,8 @@ flowchart LR
 Backend and CLI only; no UI file is touched.
 
 The obsolete single unbounded ledger and exact-timestamp deduplication are
-replaced by daily rotation and pass-local deduplication. Rediscovery on later
-passes remains recorded, and the legacy ledger remains readable. Coverage:
+replaced by daily rotation and process-local daily deduplication. Rediscovery on
+later days remains recorded, and the legacy ledger remains readable. Coverage:
 `worker/deno/tests/pr_discovery_events_test.ts::PR discovery event ledger rotates daily and repairs a torn tail`
 and `worker/deno/tests/pr_completion_snapshot_test.ts::collect - oversized discovery evidence remains incomplete`.
 
@@ -166,6 +167,23 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
   have production callers).
 
 ## Test Plan
+
+- Review repair: named chain-verified worker comments retain fleet attribution;
+  unnamed components remain unknown. Coverage:
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a named worker comment retains trusted attribution`.
+  Discovery suppresses repeated same-day scans and excludes later day files:
+  `worker/deno/tests/pr_discovery_events_test.ts::discovery suppresses repeated scans and excludes later days`.
+  Append errors warn without stopping repair:
+  `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts::a discovery write failure does not stop a repair`.
+  Multiple failed attempts of one workflow run now produce one regression;
+  recovery remains covered by
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a failed run on the merge commit is a post-merge regression, resolved by a later successful attempt`.
+  Unpinned and malformed merge pins remain unverified:
+  `worker/deno/tests/audit_hook_test.ts::audit_hook - unpinned and malformed merge pins carry no head`.
+  The obsolete per-scan deduplication is replaced by daily process-local
+  deduplication; distinct transitions and later days remain recorded in
+  `worker/deno/tests/pr_discovery_events_test.ts::PR discovery event ledger rotates daily and repairs a torn tail`.
+  No duplicate regression or discovery implementation was found.
 
 - Review fixes: the obsolete per-run overlapping CI intervals are replaced by
   one union interval; cancellation is not a failure. Remaining coverage:
