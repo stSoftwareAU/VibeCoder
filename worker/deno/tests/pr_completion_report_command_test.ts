@@ -159,7 +159,9 @@ Deno.test("pr-completion-report --collect passes --max-prs-per-repo to the colle
       }
       if (path.startsWith("repos/org/repo/pulls/")) return [];
       if (path.startsWith("repos/org/repo/issues/")) return [];
-      if (path.includes("/check-runs?")) return { total_count: 0, check_runs: [] };
+      if (path.includes("/check-runs?")) {
+        return { total_count: 0, check_runs: [] };
+      }
       if (path.includes("/actions/runs?")) {
         return { total_count: 0, workflow_runs: [] };
       }
@@ -282,7 +284,9 @@ Deno.test("pr-completion-report --collect notes a --review-log it cannot read, a
       }
       if (path.startsWith("repos/org/repo/pulls/")) return [];
       if (path.startsWith("repos/org/repo/issues/")) return [];
-      if (path.includes("/check-runs?")) return { total_count: 0, check_runs: [] };
+      if (path.includes("/check-runs?")) {
+        return { total_count: 0, check_runs: [] };
+      }
       if (path.includes("/actions/runs?")) {
         return { total_count: 0, workflow_runs: [] };
       }

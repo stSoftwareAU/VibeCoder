@@ -10,6 +10,7 @@
     "worker/deno/commands/pr_completion_report.ts",
     "worker/deno/lib/fleet_review_log.ts",
     "worker/deno/lib/pr_completion_report.ts",
-    "worker/deno/lib/pr_completion_snapshot.ts"
+    "worker/deno/lib/pr_completion_snapshot.ts",
+    "worker/deno/lib/pr_discovery_events.ts"
   ]
 }
