@@ -79,9 +79,9 @@ interpolate it for display.
 - **met** — Use the repository's actual required CI contract (including jobs
   feeding an aggregator) — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a reusable workflow calling another reusable workflow with a mutation run is blocking`
-  — reviewer: met (the in-repository contract is read: caller, called and
-  nested local jobs, and the aggregator by `needs`; remote reusable workflows
-  and branch-protection required-check names are not read, a documented
+  — reviewer: met (the in-repository contract is read: caller, called and nested
+  local jobs, and the aggregator by `needs`; remote reusable workflows and
+  branch-protection required-check names are not read, a documented
   approximation the reviewer judged outside what the issue asks)
 - **met** — Run the applicable changed-code mutation command with CI-equivalent
   flags after the final relevant edit — evidence:
