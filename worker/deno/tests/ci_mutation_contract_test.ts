@@ -9,7 +9,7 @@
  * `pull_request_target`), a missing workflows directory, unreadable workflow
  * files, mentions that are not in a `run`, multi-line `run` blocks, pathological
  * lines that must not stall, and local reusable workflow calls (nested up to
- * three callee levels with a cycle guard, `./` or `$/` forms, with
+ * nine callee levels with a cycle guard, `./` or `$/` forms, with
  * `workflow_call` callees; remote and ref-qualified calls not followed).
  *
  * Each fixture is a fresh temporary repository, removed in `finally`.
@@ -1197,19 +1197,45 @@ Deno.test("a reusable workflow calling another reusable workflow with a mutation
   });
 });
 
-Deno.test("a three-level nested reusable call with a mutation run is blocking at the depth cap", async () => {
-  await withRepo({
-    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
-    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
-    "b.yml": forwardingWorkflow("deep", "./.github/workflows/c.yml"),
-    "c.yml": calleeWorkflow("workflow_call"),
-  }, async (repo) => {
+/**
+ * A PR-triggered `ci.yml` whose job calls a chain of `levels` callee workflows,
+ * `c1.yml` to `c<levels>.yml`, each calling the next. The last callee holds a
+ * `run` job running `script`, so the mutation run sits `levels` callee levels
+ * below the caller.
+ */
+function chainWorkflows(
+  levels: number,
+  script = "cargo mutants --package core",
+): Record<string, string> {
+  const workflows: Record<string, string> = {
+    "ci.yml": callerWorkflow("./.github/workflows/c1.yml"),
+  };
+  for (let level = 1; level < levels; level++) {
+    workflows[`c${level}.yml`] = forwardingWorkflow(
+      `j${level}`,
+      `./.github/workflows/c${level + 1}.yml`,
+    );
+  }
+  workflows[`c${levels}.yml`] = calleeWorkflow("workflow_call", script);
+  return workflows;
+}
+
+/** The job name `ci.yml` reports for the run at the end of `chainWorkflows`. */
+function chainJobName(levels: number): string {
+  let inner = "run";
+  for (let level = levels - 1; level >= 1; level--) {
+    inner = `j${level} (reusable c${level + 1}.yml: ${inner})`;
+  }
+  return `mutants (reusable c1.yml: ${inner})`;
+}
+
+Deno.test("a nine-level nested reusable call with a mutation run is blocking at the depth cap", async () => {
+  await withRepo(chainWorkflows(9), async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
       blocking: {
         tool: "cargo",
         workflow: "ci.yml",
-        job:
-          "mutants (reusable a.yml: mid (reusable b.yml: deep (reusable c.yml: run)))",
+        job: chainJobName(9),
         aggregator: "gate",
         cargoArgs: ["--package", "core"],
       },
@@ -1218,28 +1244,17 @@ Deno.test("a three-level nested reusable call with a mutation run is blocking at
   });
 });
 
-Deno.test("a fourth nested reusable callee level is not followed", async () => {
-  const chain = {
-    "ci.yml": callerWorkflow("./.github/workflows/a.yml"),
-    "a.yml": forwardingWorkflow("mid", "./.github/workflows/b.yml"),
-    "b.yml": forwardingWorkflow("deep", "./.github/workflows/c.yml"),
-  };
-  // Control: the same chain with the mutation run in the third callee blocks.
-  await withRepo(
-    { ...chain, "c.yml": calleeWorkflow("workflow_call") },
-    async (repo) => {
-      assertEquals(
-        (await findBlockingMutationJob(repo)).blocking?.job,
-        "mutants (reusable a.yml: mid (reusable b.yml: deep (reusable c.yml: run)))",
-        "control: three callee levels",
-      );
-    },
-  );
-  await withRepo({
-    ...chain,
-    "c.yml": forwardingWorkflow("deeper", "./.github/workflows/d.yml"),
-    "d.yml": calleeWorkflow("workflow_call"),
-  }, async (repo) => {
+Deno.test("a tenth nested reusable callee level is not followed", async () => {
+  // Control: the same chain with the run in the ninth callee blocks, so only
+  // the tenth level makes the difference.
+  await withRepo(chainWorkflows(9), async (repo) => {
+    assertEquals(
+      (await findBlockingMutationJob(repo)).blocking?.job,
+      chainJobName(9),
+      "control: nine callee levels",
+    );
+  });
+  await withRepo(chainWorkflows(10), async (repo) => {
     assertEquals(await findBlockingMutationJob(repo), {
       blocking: null,
       unreadable: [],
@@ -1247,7 +1262,10 @@ Deno.test("a fourth nested reusable callee level is not followed", async () => {
   });
 });
 
-Deno.test("a nested reusable cycle terminates and is not blocking without a mutation run", async () => {
+// Termination only: the two negative probes below assert the null result and
+// that the call returns. The depth cap alone also ends these chains, so they do
+// not pin the cycle guard; "a nested call back ..." below does.
+Deno.test("a nested reusable cycle with no mutation run terminates and is not blocking (termination only)", async () => {
   // a.yml -> b.yml -> a.yml: the path back to a.yml is refused.
   await withRepo({
     "ci.yml": callerWorkflow("./.github/workflows/a.yml"),

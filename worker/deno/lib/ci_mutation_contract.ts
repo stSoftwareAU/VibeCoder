@@ -19,8 +19,10 @@
  * - Local `./` or `$/` `.github/workflows/*.yml|yaml` callees (`uses:`) that
  *   declare `workflow_call` are followed without a ref, including nested local
  *   calls: a called job that calls another local workflow is followed up to
- *   `MAX_REUSABLE_DEPTH` callee levels, and a workflow already on the call path
- *   is not followed again. Remote reusable workflows (`@ref` or
+ *   `MAX_REUSABLE_DEPTH` (nine) callee levels, a cap chosen at or above
+ *   GitHub's documented nesting limit so a deeper chain is bounded rather than
+ *   unlimited, and a workflow already on the call path is not followed again.
+ *   Remote reusable workflows (`@ref` or
  *   `owner/repo/.github/workflows/...`) are not inspected.
  * - Only cargo-mutants (`cargo mutants` or `cargo-mutants`, optionally with a
  *   `+toolchain` word such as `cargo +nightly mutants`) and `deno task` with a
@@ -99,11 +101,11 @@ const DENO_MUTATION_TASK = /\bdeno\s+task\s+\S*mutat\S*/i;
  */
 const REUSABLE_CALL = /^\.github\/workflows\/([A-Za-z0-9._-]+\.ya?ml)$/;
 /**
- * Most local reusable workflow levels followed below a PR-triggered caller.
- * GitHub allows four workflow levels including the caller, so three callee
- * levels are followed.
+ * Most local reusable workflow callee levels followed below a PR-triggered
+ * caller: nine. The cap is chosen at or above GitHub's documented nesting
+ * limit, so a deeper chain is bounded rather than unlimited.
  */
-const MAX_REUSABLE_DEPTH = 3;
+const MAX_REUSABLE_DEPTH = 9;
 
 /** Only `*.yml` / `*.yaml` names are workflows. */
 function isWorkflowName(name: string): boolean {
@@ -386,8 +388,9 @@ function localReusableCallee(
  * call local reusable workflows (see `localReusableCallee`). A `uses:` with an
  * `@ref` is not followed. `chain` lists the workflow files on the current call
  * path, the top-level caller first, so `chain.length - 1` callee levels have
- * been entered and no callee is followed past `MAX_REUSABLE_DEPTH`. Every job
- * visited charges `budget`, and called jobs share the caller's `seen` and
+ * been entered and no callee is followed past `MAX_REUSABLE_DEPTH` (nine).
+ * Every job visited charges `budget`, and called jobs share the caller's `seen`
+ * and
  * `budget`, so aliasing and fan-out stay bounded across the whole call tree.
  */
 function blockingJobHit(
@@ -430,8 +433,9 @@ function blockingJobHit(
 /**
  * Finds the first PR-triggered job that runs the mutation tool in a way that
  * can fail the workflow, directly or through local reusable workflows it calls,
- * nested up to `MAX_REUSABLE_DEPTH` levels. Every workflow file is read and
- * parsed first, so `unreadable` is complete even when a blocking job is found
+ * nested up to `MAX_REUSABLE_DEPTH` (nine) callee levels. Every workflow file
+ * is read and parsed first, so `unreadable` is complete even when a blocking
+ * job is found
  * earlier in the sort order.
  *
  * Returns `{ blocking: null, unreadable: [] }` when `.github/workflows/` does

@@ -78,8 +78,9 @@ A job that `uses:` a local reusable workflow (`./.github/workflows/<name>.yml`,
 or the same path after `$/`, ending in `.yml` or `.yaml`) also counts when that
 workflow declares `workflow_call` and one of its jobs runs the tool in the same
 way. A job of that workflow that calls another local reusable workflow the same
-way is followed too, up to three callee levels (GitHub allows four workflow
-levels including the caller). A workflow already on the call path is not
+way is followed too, up to nine callee levels (`MAX_REUSABLE_DEPTH`, a cap
+chosen at or above GitHub's documented nesting limit so a deeper chain is
+bounded rather than unlimited). A workflow already on the call path is not
 followed again, so a cycle ends. A `uses:` with an `@ref` is not followed, even
 on a local path. The job is reported as `caller job (reusable called.yml: inner
 job)`, with the caller's workflow file; a nested call repeats the form, as
@@ -93,7 +94,7 @@ output, jobs and shuffle flags stay the worker's. Explicit CI package or
 workspace selection replaces the worker's touched-package selection. When all
 changed crates are known to be outside an explicit CI package list, the worker
 checks them separately as advisory and honours summary exemptions.
-Local reusable workflows are followed up to three callee levels, as described
+Local reusable workflows are followed up to nine callee levels, as described
 above. Remote reusable workflows (`owner/repo/...@ref`) and local ones with an
 `@ref` are not evaluated.
 Also not evaluated or read: other mutation tools, job `if:` and path filters,
