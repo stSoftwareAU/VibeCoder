@@ -345,7 +345,7 @@ Deno.test("merge checks: a private target owned by another uid is refused", asyn
     const result = await runRepositoryCommand("cargo", ["test"], {
       cwd: dir,
       timeoutMs: 1000,
-      requireWritableCheckout: false,
+      readOnlyCheckout: true,
     }, {
       spawn,
       drop: sudoAgent,

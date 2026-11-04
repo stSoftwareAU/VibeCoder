@@ -42,7 +42,7 @@ flowchart LR
   `spawnFastCheck` is kept, and credentials still travel on the stdin channel
   (#4705) through `runRepositoryCommand`.
 - The fast checks only read the tree, so they call `runRepositoryCommand` with
-  `requireWritableCheckout: false`, which drops the probe's `test -w` on the
+  `readOnlyCheckout: true`, which drops the probe's `test -w` on the
   check's directory (exit 3). Sub-directory projects (`worker/deno`, a nested
   Deno project in a Cargo repository) are readable but not writable by `agent`
   (Issue #4782), so with the write test they would be deferred on every attempt.
@@ -55,7 +55,9 @@ flowchart LR
   `environment` seam (`source`, `trimRefused`) so the test can reach that path
   regardless of the host's trim verdict. The fallback root is provisioned by
   the worker; a provisioning failure defers the check. Trim-refused placement
-  retains its separate ephemeral root. The milestone gates keep the default.
+  retains its separate ephemeral root. Main uses the replacement
+  `readOnlyCheckout` option for its milestone gate; the fast checks now use
+  that same option.
 - A probe failure is told apart from a removed manifest by asking the worker
   whether the planned manifest is a file: absent means a failing check, present
   means an access fault (thrown, so unverified).
@@ -94,8 +96,9 @@ Backend change; no UI file is touched. The real-sudo test in
   its private `CARGO_TARGET_DIR` (stand-in `sh` creates it).
 - Red checks: returning exit 1 directly for `GateAccountUnavailable` turned the
   `unverified`/`deferred` test red; always throwing for an absent manifest
-  turned the missing-manifest test red. Setting `requireWritableCheckout: true`
-  in `spawnFastCheck` turned both sub-directory Deno tests red (`probe 3`).
+  turned the missing-manifest test red. Setting the former
+  `requireWritableCheckout` option to `true` in `spawnFastCheck` turned both
+  sub-directory Deno tests red (`probe 3`).
   Dropping the clone-root target override made the cargo sub-directory
   real-sudo test fail with permission denied. The original fake-spawn fixture
   used the clone root as the project directory and did not distinguish the

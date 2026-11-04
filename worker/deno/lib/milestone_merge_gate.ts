@@ -479,6 +479,75 @@ export function detectRemoteModuleGap(
 }
 
 /**
+ * Whether a Deno check can attempt to run without a writable directory
+ * (Issue #4782). A stale lockfile can still require a write.
+ *
+ * Deno writes `deno.lock` when it has to create or update one, and writes
+ * `node_modules` for `nodeModulesDir: "auto"` or beside a `package.json`,
+ * and writes `vendor` when vendoring is enabled.
+ * A present lockfile and none of the other conditions allow an attempt.
+ * A check task must also be a simple `deno check` with known safe flags.
+ * Anything else, or a manifest that cannot be read, keeps the write requirement.
+ *
+ * @param dir - The Deno project directory
+ * @param args - Arguments selected for the project check
+ * @returns True when the check can attempt a read-only checkout
+ */
+export async function denoCheckLeavesDirUntouched(
+  dir: string,
+  args: string[] = ["check"],
+): Promise<boolean> {
+  if (!(await isFile(`${dir}/deno.lock`))) return false;
+  if (await isFile(`${dir}/package.json`)) return false;
+  const taskCheck = args.length === 2 && args[0] === "task" &&
+    args[1] === "check";
+  if (!taskCheck && args[0] !== "check") return false;
+  for (const name of ["deno.json", "deno.jsonc"]) {
+    if (!(await isFile(`${dir}/${name}`))) continue;
+    try {
+      const config = JSON.parse(
+        stripJsonc(await Deno.readTextFile(`${dir}/${name}`)),
+      );
+      if (taskCheck) {
+        const command = config?.tasks?.check;
+        if (typeof command !== "string" || /[\r\n]/.test(command)) return false;
+        // Accept only a simple invocation with known non-writing flags. Shell
+        // expansions, operators and unknown options retain the write probe.
+        const words = command.trim().split(/\s+/);
+        if (words[0] !== "deno" || words[1] !== "check") return false;
+        if (
+          !words.slice(2).every((word: string) => {
+            if (/^['"]-/.test(word)) return false;
+            if (word.startsWith("-")) {
+              return [
+                "--frozen",
+                "--lock=deno.lock",
+                "--no-lock",
+                "--all",
+                "--quiet",
+              ].includes(word);
+            }
+            return /^(?:[\w./*?@:-]+|'[\w./*?@:-]+'|"[\w./*?@:-]+")$/.test(
+              word,
+            );
+          })
+        ) return false;
+      }
+      if (config?.vendor) return false;
+      const mode = config?.nodeModulesDir;
+      if (
+        mode !== undefined && mode !== "none" && mode !== "manual" &&
+        mode !== false
+      ) return false;
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  return !taskCheck;
+}
+
+/**
  * Spawn the repository's own check with a bounded timeout, the limit for its
  * toolchain (Issue #4787).
  */
@@ -489,13 +558,20 @@ export const spawnTypeCheck = async (
 ): ReturnType<TypeCheckRunner> => {
   const executable = project.kind === "cargo" ? "cargo" : Deno.execPath();
   const limitMs = typeCheckTimeoutMs(project.kind);
+  const readOnlyCheckout = project.kind === "deno" &&
+    await denoCheckLeavesDirUntouched(project.dir, project.args);
   // The repository's own check runs with a stated environment and no parent
   // credential (Issue #4659). Build-cache placement for the checkout (Issue
-  // #2247) is decided inside runRepositoryCommand, not here.
+  // #2247) is decided inside runRepositoryCommand, not here. A Deno check
+  // writes its cache to DENO_DIR, so it does not need the project directory
+  // writable by the account, unless it must write deno.lock, node_modules or vendor
+  // there (Issue #4782). A cargo check writes Cargo.lock, so it keeps the
+  // requirement.
   const result = await run(executable, project.args, {
     cwd: project.dir,
     timeoutMs: limitMs,
     manifests: await manifestsFor(project.kind, project.dir),
+    readOnlyCheckout,
   });
   if (!result.ok) {
     return {
@@ -515,6 +591,16 @@ export const spawnTypeCheck = async (
       output: `${output}\nType check timed out after ${limitMs}ms`.trim(),
       timedOut: true,
     };
+  }
+  // A present but stale lockfile may still need rewriting. Only this specific
+  // permission refusal is a host limitation; other check failures remain failures.
+  if (
+    code !== 0 && readOnlyCheckout &&
+    output.includes("Failed writing lockfile") &&
+    output.includes("Permission denied (os error 13)") &&
+    output.includes(`(for '${project.dir.replace(/\/$/, "")}/deno.lock')`)
+  ) {
+    return { code, output, accountUnavailable: output };
   }
   return { code, output };
 };

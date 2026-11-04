@@ -419,7 +419,7 @@ export async function spawnFastCheck(
       manifests,
       // The checks only read the tree; a sub-directory project is not writable
       // by `agent` (Issue #4782), and that must not defer the push.
-      requireWritableCheckout: false,
+      readOnlyCheckout: true,
     },
     {
       spawn,

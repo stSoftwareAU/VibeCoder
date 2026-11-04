@@ -10,6 +10,11 @@
  *
  * Access failures leave commands to CI and never select the worker account.
  * A refusal names the topmost directory the account cannot traverse (Issue #4733).
+ * A directory the account cannot write leaves a command to CI only for a command
+ * that needs the write probe (cargo's Cargo.lock, a repository script). A Deno
+ * check with a committed deno.lock may run without it; its caller leaves a
+ * lockfile write refusal to CI. Git-created directories inside a clone are not
+ * group-writable (Issue #4782).
  * Only the absence of an agent account selects the restricted worker
  * environment. Declared credentials cannot, and neither can tree-controlled
  * layouts or permissions. Declared credentials reach an agent command through
@@ -76,7 +81,11 @@ const PROBE_UNREADABLE = 1;
 /** The probe exits with this when the account cannot write the cargo target. */
 const PROBE_TARGET_UNWRITABLE = 2;
 
-/** Project access can be shaped by the tree; never use it to select an account. */
+/**
+ * The probe exits with this when the account cannot write the checkout and the
+ * command writes there (Issue #4782). A read-only command never gets it.
+ * Project access can be shaped by the tree; never use it to select an account.
+ */
 const PROBE_CHECKOUT_UNWRITABLE = 3;
 
 /** The probe is a few `test` and `find` calls. Seconds. */
@@ -190,12 +199,14 @@ function blockedDirectoryOf(stdout: string): string | undefined {
  * The probe script. `$1` is the checkout and is passed as an argument, never
  * interpolated, so a path cannot change the script.
  *
+ * @param requireWrite - Whether the checkout must be writable by the account.
+ *   Only a command that writes there needs it (Issue #4782).
  * @throws When a manifest name is not a plain file name.
  */
 function probeScript(
   manifests: readonly string[],
   tail: string,
-  requireWritable = true,
+  requireWrite: boolean,
 ): string {
   const reads = manifests.map((name) => {
     if (!SAFE_MANIFEST.test(name)) {
@@ -206,11 +217,12 @@ function probeScript(
     }
     return ` -a -r "$1/${name}"`;
   });
+  const writable = requireWrite
+    ? `; test -w "$1" || exit ${PROBE_CHECKOUT_UNWRITABLE}`
+    : "";
   const readable = `${TRAVERSAL_WALK}; test -r "$1" -a -x "$1"${
     reads.join("")
-  } || exit ${PROBE_UNREADABLE}${
-    requireWritable ? `; test -w "$1" || exit ${PROBE_CHECKOUT_UNWRITABLE}` : ""
-  }`;
+  } || exit ${PROBE_UNREADABLE}${writable}`;
   return tail === ""
     ? readable
     : `${readable}; ${tail} || exit ${PROBE_TARGET_UNWRITABLE}`;
@@ -224,7 +236,12 @@ function probeScript(
  *
  * The account is probed with a command of its own. Access faults leave the
  * command to CI, without changing its account. A refusal names the topmost
- * directory the account cannot traverse, when the probe reports one.
+ * directory the account cannot traverse, when the probe reports one. A
+ * directory the account cannot write leaves a command to CI only when that
+ * command needs the write probe (cargo's Cargo.lock, a repository script). A
+ * Deno check with a committed deno.lock may run without it; its caller leaves
+ * a lockfile write refusal to CI. Git-created directories inside a clone are
+ * not group-writable (Issue #4782).
  *
  * @param executable - The command, e.g. `cargo` or `deno`.
  * @param args - Its arguments.
@@ -232,10 +249,12 @@ function probeScript(
  * @param options.timeoutMs - The budget for the command itself.
  * @param options.manifests - Files the command reads from the checkout; each
  *   must be readable by the account the command runs as.
- * @param options.requireWritableCheckout - Whether the account must also be able
- *   to write `cwd` (default `true`). A read-only command, such as the merge fast
- *   checks, sets `false`: sub-directories of a clone are readable but not
- *   writable by `agent` (Issue #4782). The cargo target check still runs.
+ * @param options.readOnlyCheckout - Allow a command to run without a writable
+ *   checkout directory. Its caller must leave any expected write refusal to CI
+ *   (caches live elsewhere, e.g. DENO_DIR). The probe does not require the
+ *   account to be able to write the directory.
+ *   Omitted or false keeps the requirement, so a caller that forgets it fails
+ *   closed to CI (Issue #4782).
  * @param deps - Injection seams. Production omits them.
  * @returns The spawn result of the command.
  * @throws When a manifest name is not a plain file name.
@@ -247,7 +266,7 @@ export async function runRepositoryCommand(
     cwd: string;
     timeoutMs: number;
     manifests?: readonly string[];
-    requireWritableCheckout?: boolean;
+    readOnlyCheckout?: boolean;
   },
   deps: UntrustedGateSpawnDeps = {},
 ): ReturnType<typeof runWithTimeout> {
@@ -258,7 +277,7 @@ export async function runRepositoryCommand(
   // A manifest that is a link can point at a file the account cannot read, so
   // the tree would choose which account runs its code. Refuse it (Issue #4659).
   for (const name of manifests) {
-    if (!SAFE_MANIFEST.test(name)) probeScript([name], "");
+    if (!SAFE_MANIFEST.test(name)) probeScript([name], "", true);
     let info: Deno.FileInfo | undefined;
     try {
       info = await lstatOrUndefined(`${options.cwd}/${name}`);
@@ -333,7 +352,7 @@ export async function runRepositoryCommand(
         probeScript(
           manifests,
           writesTarget ? await targetWriteCheck(options.cwd) : "",
-          options.requireWritableCheckout ?? true,
+          options.readOnlyCheckout !== true,
         ),
         "sh",
         options.cwd,

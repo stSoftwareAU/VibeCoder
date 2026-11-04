@@ -130,11 +130,26 @@ Where the credentials go depends on the account the command runs as:
 The `agent` account can only run a gate command in a checkout it can reach. The
 image therefore gives group `vibework` search-only permission on the worker's
 home (`0710`) at build time, so the work root beneath it is reachable even on
-a read-only root filesystem. A checkout the account still cannot read, write
-(cargo target aside; the merge fast checks do not need write access either) or
+a read-only root filesystem. A checkout the account still cannot read or
 traverse leaves the command to CI rather than running as the worker
-(Issue #4659). A milestone resolution whose every check is left to CI
-this way verified nothing and is refused as unverified (Issue #1559, #4761).
+(Issue #4659). So does a command that writes into its directory, such as cargo's
+`Cargo.lock`, a task or the repository script, when the account cannot write
+it; a cargo target the account cannot write is given a target of its own
+instead. A Deno type check caches in `DENO_DIR`, and the directories git
+creates inside a clone are group read-only, so a Deno project in a
+sub-directory with a `deno.lock` can still be checked (Issue #4782). A `check`
+task is eligible only when it is a single `deno check` with recognised
+non-writing flags; newline-separated commands, other chains, redirects and
+unrecognised flags keep the write requirement. A stale lockfile may need
+updating; a permission refusal
+writing that project's lockfile leaves the check to CI. A
+Deno project that may write into its directory (no `deno.lock`, a
+`package.json`, enabled `vendor`, or `nodeModulesDir` other than `none` or
+`manual`) keeps the write requirement and is left to CI when the account
+cannot write it.
+A milestone resolution whose every check is left to CI this way verified
+nothing and is refused as unverified (Issue #1559, #4761).
+
 The merge fast checks use the same probe without its write test, through the same
 `runRepositoryCommand` path (Issue #4697). Before each check the account is probed for the checkout
 (traversal and a readable manifest, but not write access to the project
