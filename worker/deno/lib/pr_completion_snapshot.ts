@@ -743,7 +743,8 @@ function unmatchedActions(
         !action.deliveredCommits?.includes(event.id)
       ) continue;
       const isPush = action.kind === "implementation" ||
-        action.kind === "repair" || action.kind === "branch-update";
+        action.kind === "repair" || action.kind === "milestone" ||
+        action.kind === "branch-update";
       if (event.kind === "merge" && action.headSha !== record.headSha) {
         continue;
       }

@@ -949,6 +949,52 @@ Deno.test("collect - a GitHub merge matched to a verified fleet action is unatte
   });
 });
 
+Deno.test("collect - milestone rollup actions link the delivered GitHub commit", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "milestone",
+        actionId: "milestone-push-1",
+        repo: REPO,
+        prNumber: 1,
+        headSha: "sha1",
+        deliveredCommits: ["sha1"],
+        target: "milestone/release",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "milestone-merge-1",
+        repo: REPO,
+        prNumber: 1,
+        headSha: "sha1",
+        timestamp: "2026-10-20T01:59:00Z",
+      },
+    ]);
+    const fixture = emptyFixture({
+      pulls: {
+        [REPO]: [pull(1, { head: { ref: "milestone/release", sha: "sha1" } })],
+      },
+      commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), { auditDirs: [dir] }),
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.delivery.defaultBranchChanges, 1);
+    assertEquals(
+      snapshot.input.actions.find((action) =>
+        action.actionId === "milestone-push-1"
+      )
+        ?.githubEvents,
+      [{ kind: "implementation", id: "sha1" }],
+    );
+  });
+});
+
 Deno.test("collect - a repo-less branch push is linked to its PR by branch name", async () => {
   await withDir(async (dir) => {
     // Production writes git-push entries without a repo: only the target.

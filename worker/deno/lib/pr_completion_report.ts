@@ -9,6 +9,7 @@ export type PrState = "open" | "merged" | "closed";
 export type PrActionKind =
   | "implementation"
   | "repair"
+  | "milestone"
   | "branch-update"
   | "review"
   | "dismissal"
@@ -521,6 +522,7 @@ export function buildPrCompletionReport(
       !([
         "implementation",
         "repair",
+        "milestone",
         "branch-update",
         "review",
         "dismissal",
@@ -618,7 +620,8 @@ export function buildPrCompletionReport(
         action.actor === "fleet" && action.outcome === "confirmed"
       );
       const hasVerifiedImplementation = actions.some((action) =>
-        (action.kind === "implementation" || action.kind === "repair") &&
+        (action.kind === "implementation" || action.kind === "repair" ||
+          action.kind === "milestone") &&
         action.verified && action.actor === "fleet" &&
         action.outcome === "confirmed"
       );
@@ -810,7 +813,8 @@ export function buildPrCompletionReport(
         action.actor === "human"
       );
       const implementation = actions.some((action) =>
-        (action.kind === "implementation" || action.kind === "repair") &&
+        (action.kind === "implementation" || action.kind === "repair" ||
+          action.kind === "milestone") &&
         action.verified && action.actor === "fleet" &&
         action.outcome === "confirmed"
       );

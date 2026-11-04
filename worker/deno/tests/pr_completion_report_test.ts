@@ -33,7 +33,13 @@ function pr(
 function action(
   number: number,
   actionId: string,
-  kind: "implementation" | "repair" | "review" | "dismissal" | "merge",
+  kind:
+    | "implementation"
+    | "repair"
+    | "milestone"
+    | "review"
+    | "dismissal"
+    | "merge",
   actor: "fleet" | "human" | "unknown",
 ) {
   return {

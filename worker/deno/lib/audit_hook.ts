@@ -246,6 +246,7 @@ export function actionKindFor(
       .test(info.target ?? "")
   ) return "dismissal";
   if (info.verb === "git-push" && caller) {
+    if (caller.includes("git_pull")) return "milestone";
     if (REPAIR_PUSH_CALLERS.some((name) => caller.includes(name))) {
       return "repair";
     }

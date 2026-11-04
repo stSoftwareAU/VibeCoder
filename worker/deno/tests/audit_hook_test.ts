@@ -643,9 +643,9 @@ Deno.test("audit_hook - actionKindFor names a repair push from the babysitter an
   );
 });
 
-Deno.test("audit_hook - milestone sync pushes through git_pull are repair actions", () => {
+Deno.test("audit_hook - milestone sync pushes through git_pull are milestone actions", () => {
   assertEquals(pushKind(undefined), "unknown");
-  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "repair");
+  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "milestone");
 });
 
 Deno.test("audit_hook - a push with no resolved caller is journalled as component and kind unknown", async () => {
