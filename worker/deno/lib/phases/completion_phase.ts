@@ -66,7 +66,13 @@ import {
   resolvePreFlightSpec,
 } from "../git_push.ts";
 import type { PrePushGateInfrastructureError } from "../pre_push_gate.ts";
-import { PublicationValidationUnavailableError } from "../publication_validation.ts";
+import {
+  createPublicationGuard,
+  type PublicationRequest,
+  type PublicationValidation,
+  PublicationValidationFailedError,
+  PublicationValidationUnavailableError,
+} from "../publication_validation.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
@@ -1862,6 +1868,69 @@ async function completionBody(
   );
   const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
     { commands: [] };
+  // Issue #4625: one verdict per head across every publication in this phase.
+  // A passed head is not validated twice (the gate can take minutes).
+  const passedHeads = new Set<string>();
+  const currentHead = async (): Promise<string | undefined> => {
+    const head = await deps.git.runGitCommand(["rev-parse", "HEAD"], {
+      cwd: state.repoPath,
+    });
+    return head.ok && head.value.code === 0
+      ? head.value.stdout.trim() || undefined
+      : undefined;
+  };
+  const validateHead = async (
+    request: PublicationRequest,
+  ): Promise<PublicationValidation> => {
+    const head = await currentHead();
+    if (head !== undefined && passedHeads.has(head)) {
+      return { status: "passed", head, gate: "ran" };
+    }
+    const validation = await deps.git.validatePublication(request);
+    if (validation.status === "passed") passedHeads.add(validation.head);
+    return validation;
+  };
+  // The push, and the recovery a rejected push triggers, validate whatever
+  // head they are about to publish. A recovery merges the remote branch into
+  // the local one, so its head is new and was never gated above. A block is
+  // kept so the caller reports it instead of a generic push failure.
+  let publicationBlock: Error | undefined;
+  const publicationGuard = createPublicationGuard({
+    cwd: state.repoPath,
+    repo,
+    repoConfigs: config.repoConfig,
+    branchName: state.branchName,
+    validate: validateHead,
+  });
+  const beforePush = async (): Promise<Result<void>> => {
+    publicationBlock = undefined;
+    const verdict = await publicationGuard();
+    if (!verdict.ok) publicationBlock = verdict.error;
+    return verdict;
+  };
+  const publicationBlockedResult = (error: Error): PhaseResult => {
+    logger.error("Publication check blocked the push", {
+      error: error.message,
+    });
+    const quoted = redactedHeadTail(
+      error.message,
+      PRE_PUSH_GATE_REASON_HEAD_CHARS,
+      PRE_PUSH_GATE_REASON_TAIL_CHARS,
+    );
+    // An unavailable gate is infrastructure and is retried; a failed one is a
+    // verdict on the head.
+    return error instanceof PublicationValidationFailedError
+      ? {
+        status: "failure",
+        category: "pre_push_gate",
+        reason: `${PRE_PUSH_GATE_MARKER}: ${quoted}`,
+      }
+      : {
+        status: "failure",
+        category: "push_failure",
+        reason: `${PRE_PUSH_LOOKUP_FAILED_MARKER}: ${quoted}`,
+      };
+  };
   const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
     const runGateOnce = async (): Promise<
       Result<
@@ -1891,7 +1960,7 @@ async function completionBody(
       // before anything is published. A noop has nothing ahead of base to
       // publish, so there is nothing to validate.
       if (!fast.ok || fast.value.kind === "noop") return fast;
-      const validation = await deps.git.validatePublication({
+      const validation = await validateHead({
         cwd: state.repoPath,
         repo,
         repoConfigs: config.repoConfig,
@@ -2006,10 +2075,14 @@ async function completionBody(
   if (blockedBeforePush) return blockedBeforePush;
 
   // Push branch
-  const pushResult = await deps.git.pushUnpushedCommits(state.branchName, {
-    cwd: state.repoPath,
-  });
+  const pushResult = await deps.git.pushUnpushedCommits(
+    state.branchName,
+    { cwd: state.repoPath },
+    false,
+    beforePush,
+  );
   if (!pushResult.ok) {
+    if (publicationBlock) return publicationBlockedResult(publicationBlock);
     // Issue #1952: GitHub refusing a workflow file for want of the scope is
     // not a stale branch. Fetch, merge and retry cannot supply a missing
     // scope, so stop on the first refusal with the fix named — and with the
@@ -2042,8 +2115,10 @@ async function completionBody(
         cwd: state.repoPath,
       },
       pushResult.error.message,
+      beforePush,
     );
     if (!recoveryResult.ok) {
+      if (publicationBlock) return publicationBlockedResult(publicationBlock);
       return {
         category: "push_failure",
         status: "failure",
@@ -2058,10 +2133,14 @@ async function completionBody(
     // Retry push after recovery — recovery can add commits, so gate again.
     const blockedBeforeRetry = await gateBeforePush();
     if (blockedBeforeRetry) return blockedBeforeRetry;
-    const retryPush = await deps.git.pushUnpushedCommits(state.branchName, {
-      cwd: state.repoPath,
-    });
+    const retryPush = await deps.git.pushUnpushedCommits(
+      state.branchName,
+      { cwd: state.repoPath },
+      false,
+      beforePush,
+    );
     if (!retryPush.ok) {
+      if (publicationBlock) return publicationBlockedResult(publicationBlock);
       return {
         category: "push_failure",
         status: "failure",
@@ -3631,7 +3710,7 @@ async function completionBody(
   if (lastCurrency.kind === "updated") {
     // Issue #4625: the merged head is published only once the repository's own
     // gate passes on it. Otherwise the PR is raised on the earlier, validated head.
-    const mergedCheck = await deps.git.validatePublication({
+    const mergedCheck = await validateHead({
       cwd: state.repoPath,
       repo,
       repoConfigs: config.repoConfig,
@@ -3648,9 +3727,12 @@ async function completionBody(
             .split("\n").slice(0, 5).join(" | "),
       );
     } else {
-      const lastPush = await deps.git.pushUnpushedCommits(state.branchName, {
-        cwd: state.repoPath,
-      });
+      const lastPush = await deps.git.pushUnpushedCommits(
+        state.branchName,
+        { cwd: state.repoPath },
+        false,
+        beforePush,
+      );
       if (!lastPush.ok) {
         logger.warn(
           `'${state.branchName}' caught up with '${baseBranch}' locally but the ` +

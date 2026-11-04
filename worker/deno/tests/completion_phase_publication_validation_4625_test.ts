@@ -69,6 +69,12 @@ interface Script {
   /** Behind-count answered to each drift check (merge when non-zero). */
   behindOnCall?: (call: number) => number;
   repoConfig?: Record<string, RepoConfig>;
+  /**
+   * The first push is rejected and git's recovery merges a remote commit into
+   * the local branch (head becomes `mergedHead`) before pushing it, calling
+   * the `beforePush` hook it was given as production recovery does.
+   */
+  rejectFirstPush?: { mergedHead: string };
 }
 
 interface Run {
@@ -142,6 +148,8 @@ async function runPhase(script: Script): Promise<Run> {
   const infos: string[] = [];
   const behindOnCall = script.behindOnCall ?? (() => 0);
   let driftChecks = 0;
+  let head = HEAD;
+  let pushes = 0;
   try {
     const result = await workOnIssueCompletion(
       ctx,
@@ -198,14 +206,40 @@ async function runPhase(script: Script): Promise<Run> {
             assert(answer !== undefined, "a validation answer was scripted");
             return Promise.resolve(answer);
           },
-          pushUnpushedCommits: () => {
+          pushUnpushedCommits: async (
+            _branch: string,
+            _options?: unknown,
+            _allowDefaultBranch?: boolean,
+            beforePush?: () => Promise<
+              { ok: true; value: void } | { ok: false; error: Error }
+            >,
+          ) => {
+            pushes++;
+            if (script.rejectFirstPush && pushes === 1) {
+              events.push("push-rejected");
+              events.push("recovery-merge");
+              head = script.rejectFirstPush.mergedHead;
+              const verified = await beforePush?.();
+              if (verified && !verified.ok) {
+                return {
+                  ok: false as const,
+                  error: new Error(
+                    `Failed to push unpushed commits: ${verified.error.message}`,
+                  ),
+                };
+              }
+            }
             events.push("push");
-            return Promise.resolve({ ok: true as const, value: 1 });
+            return { ok: true as const, value: 1 };
           },
           runGitCommand: (args: string[]) => {
             const joined = args.join(" ");
             let stdout = "";
-            if (args[0] === "rev-list" && joined.includes("--left-right")) {
+            if (script.rejectFirstPush && joined === "rev-parse HEAD") {
+              stdout = `${head}\n`;
+            } else if (
+              args[0] === "rev-list" && joined.includes("--left-right")
+            ) {
               driftChecks++;
               stdout = `${behindOnCall(driftChecks)} 1\n`;
             } else if (args[0] === "merge" && args[1] === "--no-edit") {
@@ -410,4 +444,49 @@ Deno.test("the publication check receives the checkout, repository and repo conf
     repo: REPO,
     repoConfigs: repoConfig,
   });
+});
+
+// (h) A rejected push is recovered by merging the remote branch in. That merged
+// head was never gated, so recovery validates it before it is pushed.
+const MERGED_HEAD = "9e8d7c6b5a49382716059483726150493827160a";
+
+Deno.test("a head merged by push-rejection recovery is validated before it is pushed (Issue #4625)", async () => {
+  const run = await runPhase({
+    answers: [PASSED_RAN, { ...PASSED_RAN, head: MERGED_HEAD }],
+    rejectFirstPush: { mergedHead: MERGED_HEAD },
+  });
+  assertEquals(run.result.status, "continue");
+  const merge = run.events.indexOf("recovery-merge");
+  assert(merge > 0, `recovery ran: ${run.events.join(", ")}`);
+  assertEquals(
+    run.events.slice(merge, merge + 3),
+    ["recovery-merge", "validate", "push"],
+    `the merged head is gated before its push: ${run.events.join(", ")}`,
+  );
+  // The pre-merge head was validated once and not again; the merged head once.
+  assertEquals(count(run.events, "validate"), 2, run.events.join(", "));
+});
+
+Deno.test("a merged head the repository gate rejects is never pushed (Issue #4625)", async () => {
+  const run = await runPhase({
+    answers: [PASSED_RAN, { ...FAILED, head: MERGED_HEAD }],
+    rejectFirstPush: { mergedHead: MERGED_HEAD },
+  });
+  assertEquals(run.result.status, "failure");
+  assertEquals(run.result.category, "pre_push_gate");
+  assertStringIncludes(run.result.reason ?? "", PRE_PUSH_GATE_MARKER);
+  assertStringIncludes(run.result.reason ?? "", FAILING_OUTPUT);
+  assertEquals(count(run.events, "push"), 0, run.events.join(", "));
+  assertEquals(count(run.events, "create"), 0, run.events.join(", "));
+});
+
+Deno.test("a merged head whose gate cannot run is retried as infrastructure, never pushed (Issue #4625)", async () => {
+  const run = await runPhase({
+    answers: [PASSED_RAN, { ...UNAVAILABLE, head: MERGED_HEAD }],
+    rejectFirstPush: { mergedHead: MERGED_HEAD },
+  });
+  assertEquals(run.result.status, "failure");
+  assertEquals(run.result.category, "push_failure");
+  assertStringIncludes(run.result.reason ?? "", PRE_PUSH_LOOKUP_FAILED_MARKER);
+  assertEquals(count(run.events, "push"), 0, run.events.join(", "));
 });
