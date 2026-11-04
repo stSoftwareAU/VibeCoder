@@ -150,6 +150,14 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
 
 ## Test Plan
 
+- CI repair: both `pr-summary-ci` and its twin `pr-summary-check` permit
+  `VIBE_AUDIT_DIR`, which the shared Git audit hook now reads. The actual CI
+  task regression in `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts`
+  failed with the missing permission before the fix and passes afterwards.
+  The workflow's `deno task pr-summary-ci --base main --head-branch
+  issue-4658-complete-trusted-completion-metrics-and-per-host-p-redo-1` also
+  passes locally. The two task definitions are the matching permission copies.
+
 - Added or extended: `worker/deno/tests/pr_completion_snapshot_test.ts`,
   `worker/deno/tests/pr_completion_report_test.ts`,
   `worker/deno/tests/pr_completion_report_command_test.ts`,
