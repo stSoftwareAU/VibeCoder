@@ -259,6 +259,10 @@ function harness(
     run,
     clone: () => Promise.resolve(),
     mergeBase: () => Promise.resolve({ kind: "current" }),
+    // This harness mocks the checkout; real publication gates are exercised by
+    // fleet_pr_babysitter_validation_test.ts (Issue #4625).
+    validate: () =>
+      Promise.resolve({ status: "passed", head: PUSHED, gate: "ran" }),
     dismiss: () => {
       state.dismissals++;
       return Promise.resolve();

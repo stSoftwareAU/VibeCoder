@@ -60,6 +60,7 @@
  * Australian English throughout.
  */
 
+import { createPublicationGuard } from "./publication_validation.ts";
 import {
   type IssueContext,
   type PhaseResult,
@@ -523,6 +524,17 @@ export async function commitRecoveredSummary(
     { cwd: state.repoPath },
     false,
     resolvePreFlightSpec(config.repoConfig, repo),
+    undefined,
+    undefined,
+    // Issue #4625: this push reaches origin (and CI) before completion's own
+    // gate runs, so the repository's checks must pass on the head first.
+    createPublicationGuard({
+      cwd: state.repoPath,
+      repo,
+      repoConfigs: config.repoConfig,
+      branchName: state.branchName,
+      validate: deps.git.validatePublication,
+    }),
   );
   if (!commit.ok) {
     logger.error(

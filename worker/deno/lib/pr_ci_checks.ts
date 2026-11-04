@@ -69,6 +69,15 @@ export function sanitiseRepoName(repo: string): string {
   return repo.replace("/", "_");
 }
 
+/** The state file counting retries for one check run of one repository. */
+function retryStateFile(
+  stateDir: string,
+  repo: string,
+  checkId: string,
+): string {
+  return `${stateDir}/${sanitiseRepoName(repo)}_${checkId}.retries`;
+}
+
 /**
  * Record a CI check retry in the state directory (Issue #562).
  *
@@ -82,8 +91,7 @@ export async function recordCiCheckRetry(
   repo: string,
   checkId: string,
 ): Promise<number> {
-  const safeRepo = sanitiseRepoName(repo);
-  const stateFile = `${stateDir}/${safeRepo}_${checkId}.retries`;
+  const stateFile = retryStateFile(stateDir, repo, checkId);
 
   let currentCount = 0;
   try {
@@ -120,6 +128,37 @@ export async function recordCiCheckRetry(
 }
 
 /**
+ * Give back one recorded retry for a CI check (Issue #4625).
+ *
+ * A round that ended because the repository's checks could not run — a missing
+ * tool, Docker down, a full disk — judged nothing about the fix, so it must not
+ * count against the retry cap. Never goes below zero; a state directory that
+ * cannot be written is logged and leaves the count as it was.
+ *
+ * @returns The retry count after the refund
+ */
+export async function refundCiCheckRetry(
+  stateDir: string,
+  repo: string,
+  checkId: string,
+): Promise<number> {
+  const stateFile = retryStateFile(stateDir, repo, checkId);
+  const current = await getCiCheckRetryCount(stateDir, repo, checkId);
+  const refunded = Math.max(0, current - 1);
+  try {
+    await Deno.writeTextFile(stateFile, String(refunded));
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[ci-check] could not refund the CI check retry for ${repo} check ` +
+        `${checkId} in '${stateDir}': ${msg} (Issue #4625).`,
+    );
+    return current;
+  }
+  return refunded;
+}
+
+/**
  * Get the current retry count for a CI check (Issue #563).
  *
  * @param stateDir - Directory for retry state files
@@ -132,8 +171,7 @@ export async function getCiCheckRetryCount(
   repo: string,
   checkId: string,
 ): Promise<number> {
-  const safeRepo = sanitiseRepoName(repo);
-  const stateFile = `${stateDir}/${safeRepo}_${checkId}.retries`;
+  const stateFile = retryStateFile(stateDir, repo, checkId);
 
   try {
     const content = await Deno.readTextFile(stateFile);

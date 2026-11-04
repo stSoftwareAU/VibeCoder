@@ -238,7 +238,7 @@ Deno.test("config docs - Haiku 5.5 price rows match token_usage (Issue #3407)", 
     pricing.cacheReadPerMillion,
   ]);
   assert(
-    lines.some((l) => l.startsWith("| Claude Haiku 4.5 |")),
+    lines.some((l) => /^\| Claude Haiku 4\.5\s*\|/.test(l)),
     "the flat Haiku 4.5 pricing row must remain",
   );
 });

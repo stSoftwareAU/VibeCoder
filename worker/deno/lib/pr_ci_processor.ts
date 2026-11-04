@@ -37,7 +37,11 @@ import {
   withGraftContext,
 } from "./graft_context.ts";
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
-import { getCiCheckRetryCount, recordCiCheckRetry } from "./pr_ci_checks.ts";
+import {
+  getCiCheckRetryCount,
+  recordCiCheckRetry,
+  refundCiCheckRetry,
+} from "./pr_ci_checks.ts";
 import {
   type CheckAnnotation,
   decodeAnnotations,
@@ -69,6 +73,11 @@ import {
   runQualityGateCheck,
 } from "./quality_gate_phase.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
+import {
+  createPublicationGuard,
+  PublicationValidationUnavailableError,
+  validateRepositoryForPublication,
+} from "./publication_validation.ts";
 import {
   detachLaneWorktreeHead,
   laneWorktreeHoldingBranch,
@@ -284,6 +293,17 @@ export interface CiFixResult {
   rtkOutput?: RtkOutputResult;
 }
 
+/**
+ * The push-failure detail for a `beforePush` refusal (Issue #4625). A gate
+ * that could not run is deferred, not a content failure, so its detail says
+ * so; a rejected head carries the gate's own output.
+ */
+function publicationFailureDetail(error: Error): string {
+  return error instanceof PublicationValidationUnavailableError
+    ? `deferred: ${error.message}`
+    : error.message;
+}
+
 /** Dependencies specific to the CI fix processor. */
 export interface CiProcessorDeps {
   /** Logger for diagnostic output. */
@@ -396,6 +416,12 @@ export interface CiProcessorDeps {
   repoConfigs?: Record<string, RepoConfig>;
   /** Function to run the quality gate (injectable for testing — Issue #1456). */
   qualityGateFn?: (params: QualityGateParams) => Promise<QualityGateRunResult>;
+  /**
+   * Repository-checks validator run before every push of a CI fix (Issue
+   * #4625). Test seam: production leaves it unset and gets
+   * {@link validateRepositoryForPublication}.
+   */
+  validatePublication?: typeof validateRepositoryForPublication;
   /**
    * Override the remote push verification (Issue #579). Injected by tests so
    * the "a failed push produces no success claim" regression can be exercised
@@ -2171,6 +2197,16 @@ async function _processCiWithHeartbeat(
     expectedAncestor: beforeSha,
     ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
   };
+  // Issue #4625: the target repository's own gate must pass on the committed
+  // head before any of it is published. One guard per round, shared by the
+  // final push, the recovery and the retry finalise below.
+  const beforePush = createPublicationGuard({
+    cwd: processorDeps.workDir ?? Deno.cwd(),
+    repo,
+    repoConfigs: processorDeps.repoConfigs,
+    branchName: pushBranch,
+    validate: processorDeps.validatePublication,
+  });
   const finaliseResult = await deps.git.commitAndPushPending(
     pushBranch,
     `Fix CI failure: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
@@ -2179,6 +2215,7 @@ async function _processCiWithHeartbeat(
     preFlight,
     undefined,
     formatRound,
+    beforePush,
   );
 
   let pushSucceeded = false;
@@ -2192,6 +2229,14 @@ async function _processCiWithHeartbeat(
   // step and git's own words. Reaches both the log and the PR comment, so a
   // human never gets a bare "please check the branch status" again.
   let pushFailureDetail = "";
+  // Issue #4625: set when the repository's checks could not run (not when they
+  // failed). Such a round is released, not charged as a failed fix.
+  let publicationDeferral: string | undefined;
+  const noteDeferral = (error: Error): void => {
+    if (error instanceof PublicationValidationUnavailableError) {
+      publicationDeferral = error.message;
+    }
+  };
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed, finalUnpushedCount } =
       finaliseResult.value;
@@ -2212,13 +2257,16 @@ async function _processCiWithHeartbeat(
       const recoveryResult = await deps.git.recoverFromPushRejection(
         pushBranch,
         { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
+        undefined,
+        beforePush,
       );
       // Issue #211: keep the reason the recovery failed — it names the step
       // (fetch, merge conflict, rejected retry push, unconfirmed push)
       // and carries git's stderr. Without it the log said only "push failed".
+      if (!recoveryResult.ok) noteDeferral(recoveryResult.error);
       let failureDetail = recoveryResult.ok
         ? undefined
-        : recoveryResult.error.message;
+        : publicationFailureDetail(recoveryResult.error);
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           pushBranch,
@@ -2228,15 +2276,17 @@ async function _processCiWithHeartbeat(
           preFlight,
           undefined,
           formatRound,
+          beforePush,
         );
         if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
           hasChanges = true;
           pushSucceeded = true;
           finalUnpushedAfterPush = 0;
         } else {
+          if (!retryFinalise.ok) noteDeferral(retryFinalise.error);
           failureDetail = retryFinalise.ok
             ? `retry after push recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
-            : retryFinalise.error.message;
+            : publicationFailureDetail(retryFinalise.error);
         }
       }
       if (!pushSucceeded) {
@@ -2251,10 +2301,22 @@ async function _processCiWithHeartbeat(
       }
     }
   } else {
-    pushFailureDetail = finaliseResult.error.message;
-    logger.error("commitAndPushPending failed", {
-      error: finaliseResult.error.message,
-    });
+    pushFailureDetail = publicationFailureDetail(finaliseResult.error);
+    noteDeferral(finaliseResult.error);
+    if (finaliseResult.error instanceof PublicationValidationUnavailableError) {
+      // Issue #4625: the repository's checks could not run, which is not a
+      // verdict on the fix. The push is deferred to a later cycle.
+      logger.warn("Publication deferred: repository checks could not run", {
+        repo,
+        prNumber,
+        branchName: pushBranch,
+        reason: finaliseResult.error.message,
+      });
+    } else {
+      logger.error("commitAndPushPending failed", {
+        error: finaliseResult.error.message,
+      });
+    }
   }
 
   // Issue #1863: detect commits Claude pushed itself during its run.
@@ -2519,6 +2581,32 @@ async function _processCiWithHeartbeat(
     } catch {
       logger.warn("Could not re-enable auto-merge", { repo, prNumber });
     }
+  }
+
+  // Issue #4625: the repository's checks could not run, so nothing was
+  // published and nothing was judged. Release the pull request: refund the
+  // retry charge, post no failed-push comment and write no attempt marker, so
+  // repeated infrastructure faults never reach the attempt cap (which would
+  // close the PR). The next scan retries.
+  if (publicationDeferral !== undefined && !(hasChanges && pushSucceeded)) {
+    await refundCiCheckRetry(stateDir, repo, checkRunId);
+    await recordCiMilestone(
+      processorDeps,
+      input,
+      `Push deferred for \`${checkName}\` — repository checks could not run`,
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount - 1,
+        summary:
+          `PR #${prNumber} (${checkName}) — push deferred: repository checks ` +
+          `could not run (${publicationDeferral}); no attempt charged, retried next scan`,
+      },
+    };
   }
 
   let actuallyPushed = hasChanges && pushSucceeded;

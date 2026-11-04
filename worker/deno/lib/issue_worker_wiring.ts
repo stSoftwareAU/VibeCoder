@@ -73,6 +73,7 @@ import {
 } from "./git_pull.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
 import { validateRepoState } from "./git_repo_validation.ts";
+import { validateRepositoryForPublication } from "./publication_validation.ts";
 import {
   type IssueAssignmentInput,
   type IssueAssignmentRecord,
@@ -300,6 +301,11 @@ export interface GitDeps {
   pushUnpushedCommits: typeof pushUnpushedCommits;
   /** Pre-push changed-file gate over unpushed commits (Issue #3689). */
   gateUnpushedCommits: typeof gateUnpushedCommits;
+  /**
+   * Run the repository's own gate on the head about to be published, and
+   * report whether it passed (Issue #4625). Only a `passed` result publishes.
+   */
+  validatePublication: typeof validateRepositoryForPublication;
   /**
    * Run the repo's formatters over the branch's changed files and commit the
    * result, before the quality and pre-push gates (part of #2932).
@@ -741,6 +747,7 @@ export function createDefaultDeps(
       reconcileHeadToBranch,
       pushUnpushedCommits,
       gateUnpushedCommits,
+      validatePublication: validateRepositoryForPublication,
       formatBranchChanges,
       commitAndPushPending,
       ensureDefaultBranchCurrent,
@@ -1119,6 +1126,9 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     ),
     gateUnpushedCommits: mockFn<GitDeps["gateUnpushedCommits"]>(() =>
       Promise.resolve({ ok: true, value: { kind: "passed", checksRun: [] } })
+    ),
+    validatePublication: mockFn<GitDeps["validatePublication"]>(() =>
+      Promise.resolve({ status: "passed", head: "mock", gate: "ran" })
     ),
     formatBranchChanges: mockFn<GitDeps["formatBranchChanges"]>(() =>
       Promise.resolve({ runs: [], failures: [], committed: false })
