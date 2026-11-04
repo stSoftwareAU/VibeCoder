@@ -9,7 +9,11 @@ import { resolveLastIssueEditor } from "../lib/issue_edit_actor.ts";
 
 interface GraphPayload {
   contentEdits?: Array<
-    { editedAt?: string | null; editor?: { login?: string } | null }
+    {
+      editedAt?: string | null;
+      diff?: string;
+      editor?: { login?: string } | null;
+    }
   >;
   renames?: Array<
     { createdAt?: string | null; actor?: { login?: string } | null }
@@ -26,7 +30,10 @@ function graphMock(
       data: {
         repository: {
           issue: {
-            userContentEdits: { nodes: payload.contentEdits ?? [] },
+            userContentEdits: {
+              totalCount: payload.contentEdits?.length ?? 0,
+              nodes: payload.contentEdits ?? [],
+            },
             timelineItems: { nodes: payload.renames ?? [] },
           },
         },
@@ -82,6 +89,42 @@ Deno.test("issue_edit_actor - returns a null actor when the issue was never edit
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertEquals(result.actor, null);
+});
+
+Deno.test("issue_edit_actor - pairs ordered body snapshots and fails closed on ambiguous history", async () => {
+  const lookup = (contentEdits: GraphPayload["contentEdits"]) =>
+    resolveLastIssueEditor("owner/repo", 42, graphMock({ contentEdits }), {
+      includeDiff: true,
+    });
+  const earlier = {
+    editedAt: "2026-05-01T10:00:00Z",
+    diff: "original",
+    editor: { login: "a" },
+  };
+  const later = {
+    editedAt: "2026-05-01T11:00:00Z",
+    diff: "new body",
+    editor: { login: "b" },
+  };
+  const ordered = await lookup([later, earlier]);
+  assertEquals(ordered.ok && ordered.actors[0]?.previousDiff, "original");
+  const sameTime = await lookup([earlier, {
+    ...later,
+    editedAt: earlier.editedAt,
+  }]);
+  assertEquals(
+    sameTime.ok && sameTime.actors.every((a) => a.previousDiff === undefined),
+    true,
+  );
+  const malformed = await lookup([
+    earlier,
+    { ...later, editedAt: "bad" },
+    later,
+  ]);
+  assertEquals(
+    malformed.ok && malformed.actors.every((a) => a.previousDiff === undefined),
+    true,
+  );
 });
 
 Deno.test("issue_edit_actor - yields an empty login when GitHub records no editor", async () => {
@@ -261,4 +304,34 @@ Deno.test("issue_edit_actor - passes owner, name and number to the GraphQL call"
   assertEquals(args.includes("owner=owner"), true);
   assertEquals(args.includes("name=repo"), true);
   assertEquals(args.includes("number=42"), true);
+});
+
+Deno.test("issue_edit_actor - includeDiff asks for and returns each body edit's diff (Issue #4763)", async () => {
+  const captured: string[][] = [];
+  const gh = graphMock({
+    contentEdits: [
+      { editedAt: "2026-05-01T10:00:00Z", diff: "+x", editor: { login: "a" } },
+    ],
+    renames: [{ createdAt: "2026-05-01T09:00:00Z", actor: { login: "a" } }],
+  }, captured);
+
+  const withDiff = await resolveLastIssueEditor("owner/repo", 42, gh, {
+    includeDiff: true,
+  });
+  assertEquals(withDiff.ok, true);
+  if (withDiff.ok) {
+    assertEquals(
+      withDiff.actors.map((a) => [a.source, a.diff]),
+      [["content-edit", "+x"], ["rename", undefined]],
+    );
+  }
+  assertStringIncludes(captured[0]!.join(" "), "editedAt diff editor");
+
+  // Default: the query and the result stay as the content gate expects.
+  const plain = await resolveLastIssueEditor("owner/repo", 42, gh);
+  assertEquals(
+    plain.ok && plain.actors.every((a) => a.diff === undefined),
+    true,
+  );
+  assertEquals(captured[1]!.join(" ").includes("diff"), false);
 });
