@@ -10,9 +10,15 @@
  * `|| exit 0` or `|| /bin/true`; see `isNonFailing`), cannot fail the workflow
  * and so does not count.
  *
+ * A job that calls a local reusable workflow is inspected through that
+ * workflow's jobs, and the result names both (`caller (reusable called.yml:
+ * inner)`). The local forms `./.github/workflows/...` and
+ * `$/.github/workflows/...` are followed; a `uses:` with an `@ref` is not.
+ *
  * Known limits:
- * - A job that only calls a reusable workflow (`uses:`) is not inspected, so a
- *   mutation run inside that called workflow is not detected.
+ * - Only local `./` or `$/` `.github/workflows/*.yml|yaml` callees (`uses:`)
+ *   that declare `workflow_call` are followed, one level deep, without a ref.
+ *   Remote reusable workflows and nested calls are not inspected.
  * - Only cargo-mutants (`cargo mutants` or `cargo-mutants`, optionally with a
  *   `+toolchain` word such as `cargo +nightly mutants`) and `deno task` with a
  *   task name containing `mutat` are recognised. Other tools are not.
@@ -38,13 +44,17 @@
  */
 
 import { parse as parseYaml } from "@std/yaml/parse";
+import { calledWorkflowPath } from "./pr_check_contexts.ts";
 import { WORKFLOWS_DIR } from "./workflow_scope.ts";
 
 /** A PR-triggered workflow job that runs the mutation tool and can fail. */
 export interface BlockingMutationJob {
   /** Workflow file name, e.g. "mutants.yml". */
   workflow: string;
-  /** Job key under `jobs:`. */
+  /**
+   * The job key under `jobs:`, or for a reusable call `caller key (reusable
+   * called.yml: called job key)`.
+   */
   job: string;
   /**
    * The first job in the same workflow whose `needs` lists this job (the
@@ -54,7 +64,8 @@ export interface BlockingMutationJob {
   /**
    * The `cargo mutants` flags of the job's command that change which mutants
    * are tried or how the tree builds (see `extractCargoMutantsArgs`), so the
-   * worker's own run can use the same ones. Empty for other tools.
+   * worker's own run can use the same ones. The command may be in the called
+   * workflow's job. Empty for other tools.
    */
   cargoArgs: string[];
   /** Mutation tool run by this CI command. */
@@ -74,6 +85,13 @@ class WorkflowScanBudgetExceeded extends Error {}
 
 const CARGO_MUTANTS = /(?:^|[;&|])\s*cargo(?:\s+\+\S+)?[ -]mutants\b/;
 const DENO_MUTATION_TASK = /\bdeno\s+task\s+\S*mutat\S*/i;
+/**
+ * The path of a local reusable workflow, as `calledWorkflowPath` returns it
+ * (the `./` or `$/` prefix stripped and any `@ref` removed), naming a file
+ * directly under `.github/workflows/`. Anchored, so `..`, subdirectories and
+ * any other path do not match.
+ */
+const REUSABLE_CALL = /^\.github\/workflows\/([A-Za-z0-9._-]+\.ya?ml)$/;
 
 /** Only `*.yml` / `*.yaml` names are workflows. */
 function isWorkflowName(name: string): boolean {
@@ -121,15 +139,15 @@ async function listWorkflowFiles(
 }
 
 /**
- * Whether the trigger includes `pull_request`. The `on` key may parse as the
- * string "on" or as "true" (YAML 1.1 boolean). `pull_request_target` does not
- * count.
+ * Whether the trigger includes `event`, such as `pull_request` or
+ * `workflow_call`. The `on` key may parse as the string "on" or as "true" (YAML
+ * 1.1 boolean). Other events, such as `pull_request_target`, do not count.
  */
-function triggersOnPullRequest(doc: Mapping): boolean {
+function triggersOn(doc: Mapping, event: string): boolean {
   const trigger = doc.on !== undefined ? doc.on : doc["true"];
-  if (typeof trigger === "string") return trigger === "pull_request";
-  if (Array.isArray(trigger)) return trigger.includes("pull_request");
-  if (isMapping(trigger)) return Object.hasOwn(trigger, "pull_request");
+  if (typeof trigger === "string") return trigger === event;
+  if (Array.isArray(trigger)) return trigger.includes(event);
+  if (isMapping(trigger)) return Object.hasOwn(trigger, event);
   return false;
 }
 
@@ -313,9 +331,57 @@ export function findAggregator(
   return undefined;
 }
 
+/** The blocking line of a job, and the called job it came from, if any. */
+interface JobHit {
+  line: string;
+  /** Set when the line is in a job of a local reusable workflow the job calls. */
+  called?: { file: string; job: string };
+}
+
+/**
+ * The blocking line for one job of a PR-triggered workflow: the job's own steps
+ * first. Otherwise, when the job `uses:` a local reusable workflow that declares
+ * `workflow_call`, the called workflow's jobs. The local form must start with
+ * `./` or `$/`, and a `uses:` with an `@ref` is not followed. Only that one
+ * level is followed. Called jobs share the caller's `seen` and `budget`, so
+ * aliasing stays bounded across the caller and callee.
+ */
+function blockingJobHit(
+  job: unknown,
+  parsed: Map<string, Mapping>,
+  seen: WeakSet<object>,
+  budget: { remaining: number },
+): JobHit | null {
+  if (!isMapping(job)) return null;
+  const line = blockingMutationLine(job, seen, budget);
+  if (line !== null) return { line };
+  const uses = job.uses;
+  if (typeof uses !== "string" || uses.includes("@")) return null;
+  if (!/^(\.|\$)\//.test(uses)) return null;
+  const path = calledWorkflowPath(job);
+  if (path === null) return null;
+  const match = REUSABLE_CALL.exec(path);
+  if (match === null) return null;
+  const file = match[1]!;
+  const callee = parsed.get(file);
+  if (callee === undefined || !triggersOn(callee, "workflow_call")) return null;
+  const calledJobs = callee.jobs;
+  if (!isMapping(calledJobs)) return null;
+  for (const [calledJob, body] of Object.entries(calledJobs)) {
+    const calledLine = isMapping(body)
+      ? blockingMutationLine(body, seen, budget)
+      : null;
+    if (calledLine !== null) {
+      return { line: calledLine, called: { file, job: calledJob } };
+    }
+  }
+  return null;
+}
+
 /**
  * Finds the first PR-triggered job that runs the mutation tool in a way that
- * can fail the workflow. Every workflow file is parsed, so `unreadable` is
+ * can fail the workflow, directly or through one local reusable workflow it
+ * calls. Every workflow file is read and parsed first, so `unreadable` is
  * complete even when a blocking job is found earlier in the sort order.
  *
  * Returns `{ blocking: null, unreadable: [] }` when `.github/workflows/` does
@@ -328,8 +394,8 @@ export async function findBlockingMutationJob(
   const files = await listWorkflowFiles(repoPath, unreadable);
   if (files === null) return { blocking: null, unreadable: [] };
 
-  let blocking: BlockingMutationJob | null = null;
-
+  // Pass 1: read and parse every file, keyed by file name in sorted order.
+  const parsed = new Map<string, Mapping>();
   for (const name of files) {
     let doc: unknown;
     try {
@@ -349,28 +415,37 @@ export async function findBlockingMutationJob(
       unreadable.push(name);
       continue;
     }
-    if (blocking !== null || !triggersOnPullRequest(doc)) continue;
+    parsed.set(name, doc);
+  }
+
+  // Pass 2: detect in sorted file order.
+  let blocking: BlockingMutationJob | null = null;
+
+  for (const [name, doc] of parsed) {
+    if (blocking !== null || !triggersOn(doc, "pull_request")) continue;
     if (!isMapping(doc.jobs)) continue;
 
     const seen = new WeakSet<object>();
     const budget = { remaining: MAX_WORKFLOW_BYTES };
     for (const [jobName, job] of Object.entries(doc.jobs)) {
-      let line: string | null;
+      let hit: JobHit | null;
       try {
-        line = isMapping(job) ? blockingMutationLine(job, seen, budget) : null;
+        hit = blockingJobHit(job, parsed, seen, budget);
       } catch (error) {
         if (!(error instanceof WorkflowScanBudgetExceeded)) throw error;
         unreadable.push(name);
         break;
       }
-      if (line !== null) {
+      if (hit !== null) {
         const aggregator = findAggregator(doc.jobs, jobName);
         blocking = {
           workflow: name,
-          job: jobName,
+          job: hit.called === undefined
+            ? jobName
+            : `${jobName} (reusable ${hit.called.file}: ${hit.called.job})`,
           ...(aggregator !== undefined ? { aggregator } : {}),
-          cargoArgs: extractCargoMutantsArgs(line),
-          tool: CARGO_MUTANTS.test(line) ? "cargo" : "deno_task",
+          cargoArgs: extractCargoMutantsArgs(hit.line),
+          tool: CARGO_MUTANTS.test(hit.line) ? "cargo" : "deno_task",
         };
         break;
       }
