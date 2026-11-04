@@ -103,6 +103,15 @@ Backend/CLI change only; no UI files. Tests:
   that say governing-issue text is read "only when the author is trusted").
 - Callers of `resolveGoverningIssues`: only `assessTestChanges`, which passes
   the whole policy.
+- CI repair push: `.claude/skills/review-fleet-prs/SKILL.md` had copied two
+  lines of `prompts/pr_review_brief/prompt.md` word for word, which
+  `worker/deno/tests/pr_review_brief_shared_3395_test.ts::SKILL.md carries no copy of the brief's rules`
+  forbids. SKILL.md now names the claim rule and points to the brief, which
+  stays the one place that states its conditions. Red check: the test fails on
+  the earlier SKILL.md and passes on the head; that file and
+  `review_fleet_prs_test_policy_4655_test.ts` pass (76 tests). Run with deno
+  2.9.8 and a local stand-in for `@std/assert`, because jsr.io was unreachable
+  from that host; CI runs the real module.
 
 Not done / not checked: the three failing unrelated tests were not diagnosed on
 the base branch; `deno fmt --check CODING-STANDARDS.md` already fails on the
