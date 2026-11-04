@@ -19,6 +19,7 @@ import {
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import type { validateRepositoryForPublication } from "../lib/publication_validation.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
+import { MAX_PUBLICATION_DEFERRALS } from "../lib/publication_deferral_budget.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { Logger } from "../types.ts";
@@ -2090,8 +2091,9 @@ async function runPublicationRound(
   commentType: "pr_review" | "issue",
   validation: typeof validateRepositoryForPublication,
   selfPushed = false,
+  sharedDir?: string,
 ) {
-  const dir = await Deno.makeTempDir();
+  const dir = sharedDir ?? await Deno.makeTempDir();
   const ghCalls: string[][] = [];
   const verdicts: string[] = [];
   const counts = { claude: 0, verifications: 0, pushes: 0, marks: 0 };
@@ -2208,7 +2210,9 @@ async function runPublicationRound(
     });
     return { result, counts, ghCalls, verdicts };
   } finally {
-    await Deno.remove(dir, { recursive: true });
+    if (sharedDir === undefined) {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 }
 
@@ -2341,5 +2345,52 @@ Deno.test("feedback publication - a head the agent pushed itself is judged by th
       deferred.result.value.summary,
       "docker is not running",
     );
+  }
+});
+
+Deno.test("feedback publication - a review the checks keep deferring stops costing sessions at the bound and resumes on a new head (PR #4800 review)", async () => {
+  const shared = await Deno.makeTempDir();
+  try {
+    let sessions = 0;
+    for (let round = 0; round < MAX_PUBLICATION_DEFERRALS; round++) {
+      const { counts } = await runPublicationRound(
+        "pr_review",
+        unavailablePublication,
+        false,
+        shared,
+      );
+      sessions += counts.claude;
+    }
+    assertEquals(sessions > 0, true, "the rounds within the bound ran");
+
+    const paused = await runPublicationRound(
+      "pr_review",
+      unavailablePublication,
+      false,
+      shared,
+    );
+    assertEquals(paused.counts.claude, 0, "no agent session once spent");
+    assertEquals(paused.counts.verifications, 0, "no verifier session");
+    assertEquals(paused.counts.pushes, 0);
+    assertEquals(paused.result.ok, true);
+    if (paused.result.ok) {
+      assertEquals(paused.result.value.processed, false);
+      assertStringIncludes(paused.result.value.summary, "waits for a new head");
+    }
+
+    // A comment is released for retry the same way, without a session.
+    const pausedComment = await runPublicationRound(
+      "issue",
+      unavailablePublication,
+      false,
+      shared,
+    );
+    assertEquals(
+      pausedComment.counts.claude > 0,
+      true,
+      "a different key has its own budget",
+    );
+  } finally {
+    await Deno.remove(shared, { recursive: true });
   }
 });
