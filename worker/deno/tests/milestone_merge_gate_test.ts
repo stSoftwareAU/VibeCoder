@@ -968,6 +968,7 @@ Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothin
   const readOnlyFor = async (
     files: Record<string, string>,
     kind: "deno" | "cargo" = "deno",
+    args: string[] = kind === "cargo" ? ["check"] : ["check", "**/*.ts"],
   ): Promise<boolean | undefined> => {
     let seen: boolean | undefined;
     const run: typeof runRepositoryCommand = (_executable, _args, options) => {
@@ -981,7 +982,7 @@ Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothin
       await spawnTypeCheck({
         dir: `${dir}/app`,
         kind,
-        args: kind === "cargo" ? ["check"] : ["check", "**/*.ts"],
+        args,
       }, run);
     });
     return seen;
@@ -991,6 +992,29 @@ Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothin
     await readOnlyFor({ "deno.json": "{}", "deno.lock": "{}" }),
     true,
   );
+  for (
+    const [command, expected] of [
+      ["deno check --frozen --lock=deno.lock '**/*.ts'", true],
+      ["deno run -A gen.ts && deno check main.ts", false],
+      ["deno check main.ts > output.txt", false],
+      ["deno check $(touch generated.ts)", false],
+      ["deno check --lock=other.lock main.ts", false],
+      ["deno check '--vendor' main.ts", false],
+    ] as const
+  ) {
+    assertEquals(
+      await readOnlyFor(
+        {
+          "deno.json": JSON.stringify({ tasks: { check: command } }),
+          "deno.lock": "{}",
+        },
+        "deno",
+        ["task", "check"],
+      ),
+      expected,
+      command,
+    );
+  }
   assertEquals(
     await readOnlyFor({
       "deno.jsonc": '{ // c\n "nodeModulesDir": "none" }',

@@ -486,22 +486,53 @@ export function detectRemoteModuleGap(
  * `node_modules` for `nodeModulesDir: "auto"` or beside a `package.json`,
  * and writes `vendor` when vendoring is enabled.
  * A present lockfile and none of the other conditions allow an attempt.
+ * A check task must also be a simple `deno check` with known safe flags.
  * Anything else, or a manifest that cannot be read, keeps the write requirement.
  *
  * @param dir - The Deno project directory
+ * @param args - Arguments selected for the project check
  * @returns True when the check can attempt a read-only checkout
  */
 export async function denoCheckLeavesDirUntouched(
   dir: string,
+  args: string[] = ["check"],
 ): Promise<boolean> {
   if (!(await isFile(`${dir}/deno.lock`))) return false;
   if (await isFile(`${dir}/package.json`)) return false;
+  const taskCheck = args.length === 2 && args[0] === "task" &&
+    args[1] === "check";
+  if (!taskCheck && args[0] !== "check") return false;
   for (const name of ["deno.json", "deno.jsonc"]) {
     if (!(await isFile(`${dir}/${name}`))) continue;
     try {
       const config = JSON.parse(
         stripJsonc(await Deno.readTextFile(`${dir}/${name}`)),
       );
+      if (taskCheck) {
+        const command = config?.tasks?.check;
+        if (typeof command !== "string") return false;
+        // Accept only a simple invocation with known non-writing flags. Shell
+        // expansions, operators and unknown options retain the write probe.
+        const words = command.trim().split(/\s+/);
+        if (words[0] !== "deno" || words[1] !== "check") return false;
+        if (
+          !words.slice(2).every((word: string) => {
+            if (/^['"]-/.test(word)) return false;
+            if (word.startsWith("-")) {
+              return [
+                "--frozen",
+                "--lock=deno.lock",
+                "--no-lock",
+                "--all",
+                "--quiet",
+              ].includes(word);
+            }
+            return /^(?:[\w./*?@:-]+|'[\w./*?@:-]+'|"[\w./*?@:-]+")$/.test(
+              word,
+            );
+          })
+        ) return false;
+      }
       if (config?.vendor) return false;
       const mode = config?.nodeModulesDir;
       if (
@@ -511,9 +542,9 @@ export async function denoCheckLeavesDirUntouched(
     } catch {
       return false;
     }
-    break;
+    return true;
   }
-  return true;
+  return !taskCheck;
 }
 
 /**
@@ -528,7 +559,7 @@ export const spawnTypeCheck = async (
   const executable = project.kind === "cargo" ? "cargo" : Deno.execPath();
   const limitMs = typeCheckTimeoutMs(project.kind);
   const readOnlyCheckout = project.kind === "deno" &&
-    await denoCheckLeavesDirUntouched(project.dir);
+    await denoCheckLeavesDirUntouched(project.dir, project.args);
   // The repository's own check runs with a stated environment and no parent
   // credential (Issue #4659). Build-cache placement for the checkout (Issue
   // #2247) is decided inside runRepositoryCommand, not here. A Deno check

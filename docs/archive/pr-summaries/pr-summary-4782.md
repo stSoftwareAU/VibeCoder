@@ -10,6 +10,8 @@ the probe does not require the directory to be writable. `spawnTypeCheck` sets
 it for a Deno project that can attempt a read-only check: one with a
 committed `deno.lock`, no `package.json`, and no `nodeModulesDir` other than
 `none`/`manual` and no enabled `vendor` (`denoCheckLeavesDirUntouched`). A
+`check` task must be a single `deno check` with recognised non-writing flags;
+chained commands, redirects and unrecognised flags keep the write requirement. A
 Deno project without a lockfile or that may write `node_modules` or `vendor`,
 and everything else, keeps the requirement. A stale lockfile can still need an
 update; a permission refusal writing it leaves the check to CI.
@@ -57,6 +59,8 @@ flowchart LR
   keeps the write requirement and is left to CI, as before this change. Deno resolving a
   lockfile from a parent workspace root is not recognised, so such a member is
   conservatively left to CI.
+- A repository's check task can run other commands, so only a simple
+  `deno check` with recognised non-writing flags can bypass the write probe.
 
 ### Undiscoverable Facts
 
@@ -100,6 +104,10 @@ directory was refused with `probe 3`.
   `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a read-only lockfile write refusal is left to CI`.
   The `untrusted_gate_spawn.ts` comments now describe the caller handling a
   possible lockfile write refusal.
+- Review fix: bypassing the write probe for arbitrary check tasks is obsolete;
+  tasks that chain commands, redirect output or use unrecognised flags retain the
+  probe, while a simple `deno check` remains eligible. Coverage:
+  `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a Deno check is read-only only when it writes nothing into its directory, a cargo check keeps the write requirement (Issue #4782)`.
 - Red check for the verifier fix: forcing `readOnlyCheckout` true for every Deno
   project turned the `spawnTypeCheck` test red; restored.
 - Red checks: making `runRepositoryCommand` always require write turned the

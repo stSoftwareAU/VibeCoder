@@ -75,8 +75,8 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
      required behaviour is still covered by a `replacement` or `existing`
      test. Verify every cited test yourself at the head: the file must exist
      and contain the name given. For genuinely removed functionality, evidence
-     that the behaviour and its callers are gone (`gone` coverage) is the
-     relevant proof; never demand a fabricated replacement test for it.
+     that the behaviour and its callers are gone (`gone` coverage of production
+     code) is the relevant proof; never demand a fabricated replacement test for it.
    - Where applicable, a reproducible regression or mutation check shows that
      the replacement fails without the fix. A boolean claim, a vacuous
      assertion or the implementer's own assertion is not proof.
@@ -117,8 +117,12 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    - `coverage`: an array of `{role, path, name?}`. `role` is `replacement`,
      `existing` or `gone`; `path` is repo-relative at the pull request head.
      `replacement` and `existing` must exist at the head and contain `name`
-     when given. `gone` means the file is absent at the head or does not
-     contain `name`.
+     when given. `gone` is for removed production code (a production file
+     absent at the head, or one that no longer contains `name`, and that
+     existed at the base ref). A renamed or deleted test is not `gone`
+     coverage: it counts for nothing, and a note is refused when it is the
+     only proof, so cite the existing or replacement test that proves the
+     remaining behaviour instead.
    - `requirementQuote`: verbatim text from the governing issue (title or
      body, never comments), of any length. It is required for
      `expected-value`, and when given it must be found in that issue.
