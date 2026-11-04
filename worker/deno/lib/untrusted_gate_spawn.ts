@@ -30,7 +30,10 @@ import {
   credentialChannelFault,
 } from "./credential_channel.ts";
 import type { ChannelledCommand } from "./credential_channel.ts";
-import { cargoTargetDirForCheckout } from "./ephemeral_build_cache.ts";
+import {
+  cargoTargetDirForCheckout,
+  ensureEphemeralCargoRoot,
+} from "./ephemeral_build_cache.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 
 /**
@@ -63,6 +66,8 @@ export interface UntrustedGateSpawnDeps {
   source?: Record<string, string>;
   trimRefused?: boolean;
   root?: string;
+  /** Root for the probe-exit-2 fallback, independent of trim placement. */
+  privateTargetRoot?: string;
   workerUid?: () => Promise<number>;
   /** The repository's declared credentials. Default: the registered source. */
   credentials?: GateCredentialSource;
@@ -349,8 +354,23 @@ export async function runRepositoryCommand(
       ) {
         // The tree can make its own `target` unwritable (a committed file), so
         // that never chooses the account: the account builds elsewhere.
+        if (deps.privateTargetRoot !== undefined) {
+          const root = await lstatOrUndefined(deps.privateTargetRoot);
+          if (
+            (root !== undefined && !root.isDirectory) ||
+            !ensureEphemeralCargoRoot(deps.privateTargetRoot)
+          ) {
+            return {
+              ok: false,
+              error: new GateAccountUnavailable(
+                `cannot provision private cargo target '${deps.privateTargetRoot}' — left to CI (Issue #4697)`,
+              ),
+            };
+          }
+        }
         privateTarget = cargoTargetDirForCheckout(options.cwd, {
-          root: deps.root ?? `${options.cwd}/.vibe-cargo-target`,
+          root: deps.privateTargetRoot ?? deps.root ??
+            `${options.cwd}/.vibe-cargo-target`,
           account: untrustedAccountOf(spawnable)!,
         });
       } else if (!verdict.ok || code !== 0 || verdict.value.timedOut) {

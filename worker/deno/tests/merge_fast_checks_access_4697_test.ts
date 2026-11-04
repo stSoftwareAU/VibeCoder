@@ -36,6 +36,7 @@ import {
 } from "../lib/untrusted_gate_spawn.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import { SCRATCH_TMPFS_MOUNTS } from "../lib/container_launch.ts";
+import { EPHEMERAL_CARGO_TARGET_ROOT } from "../lib/ephemeral_build_cache.ts";
 import {
   asUntrustedUser,
   canRunAsUntrustedUser,
@@ -253,17 +254,83 @@ Deno.test("merge checks: a probe that passes, then a command that cannot find Ca
 
 Deno.test("merge checks: a cargo target the account cannot write is built in a private target (Issue #4697)", async () => {
   await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    const project = `${dir}/nested`;
+    await Deno.mkdir(project);
+    await Deno.writeTextFile(`${project}/Cargo.toml`, CARGO_MANIFEST);
     const { spawn, commands } = fakeSpawn({ code: 2 }, { code: 0 });
-    const result = await spawnFastCheck(cargoCheck(dir), {}, spawn, sudoAgent);
+    const result = await spawnFastCheck(
+      cargoCheck(project),
+      {},
+      spawn,
+      sudoAgent,
+      { source: { PATH: Deno.env.get("PATH") ?? "" }, trimRefused: false },
+      dir,
+    );
     assertEquals(result.code, 0);
     assertEquals(commands.length, 1);
     const target = commands[0]!.options?.env?.["CARGO_TARGET_DIR"];
     assert(target !== undefined, "the command runs with a CARGO_TARGET_DIR");
-    // Outside the checkout: a sub-directory project is not writable (Issue #4782).
+    assert(!target.startsWith(`${project}/`));
+    // The sub-directory project is not writable (Issue #4782).
     assert(
       target.startsWith(`${fastCheckCargoRoot(dir)}/`),
       `target ${target} is under the clone root`,
     );
+  });
+});
+
+Deno.test("merge checks: trim refusal retains the ephemeral cargo target", async () => {
+  await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    const { spawn, commands } = fakeSpawn({ code: 0 });
+    await spawnFastCheck(cargoCheck(dir), {}, spawn, sudoAgent, {
+      source: { PATH: Deno.env.get("PATH") ?? "" },
+      trimRefused: true,
+    }, dir);
+    const target = commands[0]!.options?.env?.["CARGO_TARGET_DIR"];
+    assert(
+      target?.startsWith(`${EPHEMERAL_CARGO_TARGET_ROOT}/`),
+      String(target),
+    );
+  });
+});
+
+Deno.test("merge checks: an unprovisionable private target defers the check", async () => {
+  await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    await Deno.writeTextFile(fastCheckCargoRoot(dir), "not a directory");
+    const { spawn, commands } = fakeSpawn({ code: 2 });
+    await assertRejects(
+      () =>
+        spawnFastCheck(cargoCheck(dir), {}, spawn, sudoAgent, {
+          source: { PATH: Deno.env.get("PATH") ?? "" },
+          trimRefused: false,
+        }, dir),
+      GateAccountUnavailable,
+      "cannot provision private cargo target",
+    );
+    assertEquals(commands.length, 0);
+  });
+});
+
+Deno.test("merge checks: a symlinked private target is refused", async () => {
+  await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    const destination = `${dir}/destination`;
+    await Deno.mkdir(destination, { mode: 0o700 });
+    await Deno.symlink(destination, fastCheckCargoRoot(dir));
+    const { spawn, commands } = fakeSpawn({ code: 2 });
+    await assertRejects(
+      () =>
+        spawnFastCheck(
+          cargoCheck(dir),
+          {},
+          spawn,
+          sudoAgent,
+          { source: { PATH: Deno.env.get("PATH") ?? "" }, trimRefused: false },
+          dir,
+        ),
+      GateAccountUnavailable,
+    );
+    assertEquals((await Deno.stat(destination)).mode! & 0o777, 0o700);
+    assertEquals(commands.length, 0);
   });
 });
 
@@ -432,7 +499,7 @@ Deno.test("merge checks: a cargo check in a readable, unwritable sub-directory p
     prefix: "issue-4782-cargo-",
   });
   try {
-    await Deno.chmod(clone, 0o777);
+    await Deno.chmod(clone, 0o755);
     const project = `${clone}/nested`;
     await Deno.mkdir(project, { mode: 0o755 });
     await Deno.chmod(project, 0o755);

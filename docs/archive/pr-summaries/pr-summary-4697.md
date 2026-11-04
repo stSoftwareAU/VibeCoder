@@ -53,7 +53,9 @@ flowchart LR
   project, so the default `.vibe-cargo-target` there would fail the build and
   charge a repair round (verifier finding). `spawnFastCheck` takes an
   `environment` seam (`source`, `trimRefused`) so the test can reach that path
-  regardless of the host's trim verdict. The milestone gates keep the default.
+  regardless of the host's trim verdict. The fallback root is provisioned by
+  the worker; a provisioning failure defers the check. Trim-refused placement
+  retains its separate ephemeral root. The milestone gates keep the default.
 - A probe failure is told apart from a removed manifest by asking the worker
   whether the planned manifest is a file: absent means a failing check, present
   means an access fault (thrown, so unverified).
@@ -77,7 +79,7 @@ Backend change; no UI file is touched. The real-sudo test in
 
 ## Test Plan
 
-- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (11 tests):
+- New `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (14 tests):
   blocked directory refused and the command never spawned; `runMergeFastChecks`
   gives `unverified` and `verifyMergeBeforePush` gives `deferred` with the
   repair agent never called; a genuinely missing `Cargo.toml` is `{code: 1}`
@@ -94,11 +96,10 @@ Backend change; no UI file is touched. The real-sudo test in
   `unverified`/`deferred` test red; always throwing for an absent manifest
   turned the missing-manifest test red. Setting `requireWritableCheckout: true`
   in `spawnFastCheck` turned both sub-directory Deno tests red (`probe 3`).
-  Dropping the clone-root target override turned the private-target test
-  and the cargo sub-directory real-sudo test red
-  (`mkdir: cannot create directory
-  '.../nested/.vibe-cargo-target': Permission denied`).
-  All restored.
+  Dropping the clone-root target override made the cargo sub-directory
+  real-sudo test fail with permission denied. The original fake-spawn fixture
+  used the clone root as the project directory and did not distinguish the
+  fallback; it now uses a nested project. All changes restored.
 - Edited existing tests: `tests/merge_fast_checks_test.ts` gained `isProbeCall`
   and `probePassed` helpers and the "isolates credentials" test returns early
   for the probe call. `tests/merge_fast_checks_credentials_4705_test.ts`:
@@ -112,7 +113,7 @@ Backend change; no UI file is touched. The real-sudo test in
   refused. The test now makes both checkouts under `/tmp`. Run the way the
   mutation runner runs it (`deno test --no-check -A`, a fresh `0700` `TMPDIR`),
   the four covering test files pass (157 passed, 0 failed).
-- Passed at the head (`deno task test:unit`, run per file):
+- Passed at the previous head (`deno task test:unit`, run per file):
   `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (11 tests),
   `worker/deno/tests/merge_fast_checks_test.ts` (36 tests at head) and
   `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts` (6 tests at
@@ -129,6 +130,16 @@ Backend change; no UI file is touched. The real-sudo test in
   checks the configured scratch mounts; the private-target and real-sudo nested
   project tests cover selection and access. Both default runners pass the clone
   root through to the spawn. No other copy of this target-selection rule was found.
+- PR #4795 follow-up: the obsolete shared root override also redirected
+  trim-refused builds to the persistent clone. The separate private fallback
+  keeps trim-refused builds on the ephemeral root and provisions the clone-root
+  fallback, deferring if provisioning fails. Coverage:
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: trim refusal retains the ephemeral cargo target`,
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: a cargo target the account cannot write is built in a private target (Issue #4697)`,
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: an unprovisionable private target defers the check`,
+  the real-sudo nested-project test with a 0755 clone root, and
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: a symlinked private target is refused`,
+  which protects the provisioning step from a repository-controlled symlink.
 
 ## Not done
 

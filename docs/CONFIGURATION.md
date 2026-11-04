@@ -144,6 +144,8 @@ that fails, or an account that cannot reach the checkout, leaves the merge
 worker can see is genuinely absent, such as no `Cargo.toml`, is a failing check
 instead. A cargo check whose target the account cannot write builds in a private
 target under the clone root's `.vibe-cargo-target` on the executable work volume.
+The worker provisions that root, deferring if it cannot; the separate
+trim-refused target remains on the ephemeral layer.
 
 A declared name must be a plain identifier. `IFS` and names starting with
 `_vibe_cc_` are the wrapper's own and are refused, so a declaration can never

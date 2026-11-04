@@ -426,8 +426,9 @@ export async function spawnFastCheck(
       drop,
       ...environment,
       credentials: () => Promise.resolve(repoCredentialEnv),
-      // The clone root is writable by agent and is on the executable work volume.
-      root: fastCheckCargoRoot(repoDir),
+      // Provision the fallback on the executable work volume, independently
+      // of the trim-refused cache placement.
+      privateTargetRoot: fastCheckCargoRoot(repoDir),
     },
   );
   if (!result.ok) {
