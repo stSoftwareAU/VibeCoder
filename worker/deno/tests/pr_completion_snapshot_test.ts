@@ -2651,6 +2651,32 @@ Deno.test("collect - deployments come from all three sources and missing or malf
 
 Deno.test("collect - the rollout check counts stranded, rediscovered and processed PRs by verified time", async () => {
   await withDir(async (dir) => {
+    // PR 1's only evidence is earlier the same UTC day as the verification
+    // (12:00Z), so only the collector's per-row filter can leave it out.
+    for (const event of ["discovered", "eligible", "processed"] as const) {
+      await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
+        event,
+        hostId: "host-a",
+        repo: REPO,
+        prNumber: 1,
+        headSha: "sha1",
+        recordedAt: "2026-10-25T06:00:00Z",
+      });
+    }
+    // A legacy undated ledger row before verification: also row-filtered.
+    await Deno.writeTextFile(
+      `${dir}/pr-discovery-events.jsonl`,
+      `${
+        JSON.stringify({
+          event: "discovered",
+          hostId: "host-a",
+          repo: REPO,
+          prNumber: 1,
+          headSha: "sha1",
+          recordedAt: "2026-10-24T00:00:00Z",
+        })
+      }\n`,
+    );
     await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
       event: "discovered",
       hostId: "host-a",
@@ -2738,7 +2764,7 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
           policyFingerprint: FP,
           maxHeartbeatAgeHours: 24,
         },
-        rolloutVerifiedAt: "2026-10-25T00:00:00Z",
+        rolloutVerifiedAt: "2026-10-25T12:00:00Z",
       },
     ));
     const stranded = snapshot.input.rollout!.strandedPrs
@@ -2770,7 +2796,7 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
       },
     ]);
     assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, true);
-    assertEquals(snapshot.input.rollout!.verifiedAt, "2026-10-25T00:00:00Z");
+    assertEquals(snapshot.input.rollout!.verifiedAt, "2026-10-25T12:00:00Z");
     const report = buildPrCompletionReport(snapshot.input);
     assertEquals(report.rollout.eligibleStrandedPrs, 3);
     assertEquals(report.rollout.discoveredPrs, 2);

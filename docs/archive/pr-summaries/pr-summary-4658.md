@@ -219,11 +219,27 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
       processing and the pending target.
     - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`:
       review-log actions restored to `actor: "fleet"`, `verified: true` fail at
-      `pr_completion_snapshot_test.ts:3314` with actual `fleet`, expected
+      `pr_completion_snapshot_test.ts:3340` with actual `fleet`, expected
       `unknown`.
     - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`:
-      the same restoration fails at `pr_completion_snapshot_test.ts:3376` with
+      the same restoration fails at `pr_completion_snapshot_test.ts:3402` with
       actual `0`, expected `1` unknown merge.
+  - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - the rollout check counts stranded, rediscovered and processed PRs by verified time`:
+    obsolete: rediscovery evidence from audit actions (`review` journal
+    entries). Remaining: PR 1 stays not discovered, eligible or processed
+    because its only evidence predates verification. Covered by this test: the
+    verification is now 2026-10-25T12:00Z and PR 1's `discovered`, `eligible`
+    and `processed` events are at 06:00Z the same day (plus a legacy undated
+    ledger row at 2026-10-24), so the reader's day-file filter does not skip
+    them and only the row filter in `collectDiscoveryEvents` leaves them out.
+    `failsWithoutChange`: deleting
+    `if (Date.parse(row.recordedAt) < verifiedMs) continue;` fails the stranded
+    list with PR 1
+    `discovered: true, eligibilityConfirmed: true, processed:
+    true` instead
+    of `false`. The reader's day filter is redundant with the row filter for
+    outcomes (the row filter drops the same rows), so removing it alone is not
+    observable; it only bounds the bytes read.
   - Branch outcomes: the same-workflow different-run recovery operand
     (`candidate.runId !== failed.runId`) is reached by the same-head test above;
     the later-attempt operand (`candidate.attempt > failed.attempt`) by
