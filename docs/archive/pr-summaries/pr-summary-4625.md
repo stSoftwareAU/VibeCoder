@@ -4,7 +4,8 @@ Every lane that publishes agent-authored work now runs the target repository's
 own gate (`./quality.sh`, or its `quality_command`, in its `docker_image` with
 its declared `quality_credentials`) on the committed head before the push. A
 failed or unrun gate can no longer become a successful completion. The shared
-contract lives in `worker/deno/lib/publication_validation.ts`; the consumers are:
+contract lives in `worker/deno/lib/publication_validation.ts`; the consumers
+are:
 
 - issue completion (`completion_phase.ts`), including the last-currency push;
 - CI repair (`pr_ci_processor.ts`), PR feedback (`pr_feedback_processor.ts`) and
@@ -39,7 +40,8 @@ flowchart LR
 
 - The same `deno test` step failed on CI for many fleet PRs because paths
   published without a passing local gate. One runner-owned check at the push
-  boundary closes them, reusing `runQualityGateCheck` rather than a second runner.
+  boundary closes them, reusing `runQualityGateCheck` rather than a second
+  runner.
 
 ### Essential Design Decisions
 
@@ -47,8 +49,8 @@ flowchart LR
   `unavailable` (missing tool, Docker or credential fault, disk full, timeout:
   never pushed, never a content failure, retried later).
 - The result is tied to the head: a dirty tree fails, and any new commit is
-  validated afresh. A Deno run that executed zero tests fails. Default timeout is
-  30 minutes; a repository's `quality_check_timeout` overrides it.
+  validated afresh. A Deno run that executed zero tests fails. Default timeout
+  is 30 minutes; a repository's `quality_check_timeout` overrides it.
 - The target repository's own checks run; no prose or evidence accounting was
   added (#4234).
 
@@ -78,7 +80,8 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
 ## Test Plan
 
 - Targeted run of the files above plus `pr_ci_checks_test.ts`,
-  `babysitter_fix_orchestration_test.ts`, `pr_feedback_review_dismissal_3383_test.ts`,
+  `babysitter_fix_orchestration_test.ts`,
+  `pr_feedback_review_dismissal_3383_test.ts`,
   `config_docs_consistency_test.ts`, `containment_docs_test.ts`,
   `update_mode_docs_test.ts`: passed.
 - `deno fmt --check` and `deno lint` on the changed `.ts` files: passed.
@@ -87,11 +90,13 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
   `completion - an unformatted Rust change is formatted and committed...` and
   `completion - cargo fmt stages only the branch's .rs files...` in
   `worker/deno/tests/completion_phase_repo_formatters_test.ts`. Both are
-  environmental (`rustup could not choose a version of cargo-fmt ... no default
-  is configured` on this host); this PR changes neither `repo_formatters.ts` nor
-  that test. The serial Deno pass did not run after that failure.
+  environmental
+  (`rustup could not choose a version of cargo-fmt ... no default
+  is configured`
+  on this host); this PR changes neither `repo_formatters.ts` nor that test. The
+  serial Deno pass did not run after that failure.
 
 Not done: commits an agent pushes itself in the CI and feedback lanes go through
 the agent's changed-file pre-push hook, not this full gate. Parity with
-mutation, clippy, cargo-deny and ShellCheck (#4617, #4630, #4626, #4631), durable
-retry (#4656) and review dismissal (#4657) belong to those issues.
+mutation, clippy, cargo-deny and ShellCheck (#4617, #4630, #4626, #4631),
+durable retry (#4656) and review dismissal (#4657) belong to those issues.
