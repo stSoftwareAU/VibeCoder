@@ -133,7 +133,8 @@ scan-budget paragraph) and the module doc of
 - Callers of `findBlockingMutationJob` checked: the completion phase and the
   review-fix mutation check both read only `workflow`, `job` as text,
   `cargoArgs` and `tool`; both see the reusable hit through the same function.
-- <!-- vibe-quality-gate-skipped reason="`./quality.sh` exceeded the 600 s foreground bound in this run; CI and the worker's own gate run the full suite" -->
-  The full gate was not completed locally.
+- Full `./quality.sh < /dev/null` on the final code head: `Result: PASSED (with
+  skipped checks)`, including deno tests, lint, type check and fmt. Skipped by
+  the gate itself: config integration and checkov.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
