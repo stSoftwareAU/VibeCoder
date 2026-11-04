@@ -255,8 +255,8 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
   deno fmt clean), `heartbeat_test.ts` (stopHeartbeat clears the interval) and
   `handler_watchdog_scope_test.ts`, which all pass in isolation
   (`ok | 59 passed | 0 failed`) and appear to race under the loaded parallel
-  pass; they were not investigated further. The gate was not re-run end to end
-  after the fixes; checkov and config integration are skipped by the gate. CI
+  pass; they were not investigated further. A second end-to-end run after the fixes
+  exceeded the 595 s bound and was not completed; checkov and config integration are skipped by the gate. CI
   runs the full suite on this PR.
 - Not done: live GitHub never called; no cross-host data; reviewer provenance
   from the review skill; human attribution; owner-gate verification.
