@@ -1335,7 +1335,7 @@ async function collectDiscoveryEvents(
   for (const directory of directories) {
     const path = `${directory}/pr-discovery-events.jsonl`;
     try {
-      const rows = await readPrDiscoveryEvents(path);
+      const rows = await readPrDiscoveryEvents(path, verifiedMs);
       for (const row of rows) {
         hosts.add(row.hostId);
         if (Date.parse(row.recordedAt) < verifiedMs) continue;

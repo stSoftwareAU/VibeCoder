@@ -56,8 +56,11 @@ flowchart LR
   `reportHostId(escalationHostId())`, which maps any `VIBE_HOST_ID` to the
   report's host-id pattern so one odd value cannot abort a babysitter pass.
 
-- Discovery events are recorded on each pass, recover a torn final record,
-  and log write failures without stopping repairs. Test seams supply the GitHub
+- Discovery events rotate into UTC-day files, deduplicate within a pass, recover
+  a torn final record from a bounded tail, and log write failures without
+  stopping repairs. The collector reads relevant days and the legacy ledger up
+  to a 16 MiB total limit; excess evidence leaves rollout unknown with a note.
+  Test seams supply the GitHub
   runner, temporary and state directories, host identity and repair operation.
 - CI failure intervals exclude cancellations and unite overlaps across workflows.
   Named fleet mutation callers retain trusted attribution.
@@ -73,6 +76,12 @@ flowchart LR
 ## Evidence
 
 Backend and CLI only; no UI file is touched.
+
+The obsolete single unbounded ledger and exact-timestamp deduplication are
+replaced by daily rotation and pass-local deduplication. Rediscovery on later
+passes remains recorded, and the legacy ledger remains readable. Coverage:
+`worker/deno/tests/pr_discovery_events_test.ts::PR discovery event ledger rotates daily and repairs a torn tail`
+and `worker/deno/tests/pr_completion_snapshot_test.ts::collect - oversized discovery evidence remains incomplete`.
 
 Tool behaviour the code depends on, observed by running the real classifiers:
 `classifyGitMutation(["push","origin","milestone/foo"])` returns

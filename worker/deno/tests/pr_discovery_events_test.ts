@@ -5,7 +5,7 @@ import {
   reportHostId,
 } from "../lib/pr_discovery_events.ts";
 
-Deno.test("PR discovery event ledger validates and deduplicates transitions", async () => {
+Deno.test("PR discovery event ledger rotates daily and repairs a torn tail", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const path = `${dir}/events.jsonl`;
@@ -18,20 +18,45 @@ Deno.test("PR discovery event ledger validates and deduplicates transitions", as
       recordedAt: "2026-11-01T00:00:00Z",
     };
     await appendPrDiscoveryEvent(path, event);
-    await appendPrDiscoveryEvent(path, event);
     assertEquals(await readPrDiscoveryEvents(path), [event]);
     const later = { ...event, recordedAt: "2026-11-01T00:05:00Z" };
     await appendPrDiscoveryEvent(path, later);
     assertEquals(await readPrDiscoveryEvents(path), [event, later]);
-    await Deno.writeTextFile(path, '{"torn":', { append: true });
+    await Deno.writeTextFile(`${path}.2026-11-01`, '{"torn":', {
+      append: true,
+    });
     const next = { ...event, recordedAt: "2026-11-01T00:10:00Z" };
     await appendPrDiscoveryEvent(path, next);
     assertEquals(await readPrDiscoveryEvents(path), [event, later, next]);
+    const tomorrow = { ...event, recordedAt: "2026-11-02T00:00:00Z" };
+    await appendPrDiscoveryEvent(path, tomorrow);
+    assertEquals(await readPrDiscoveryEvents(path), [
+      event,
+      later,
+      next,
+      tomorrow,
+    ]);
+    assertEquals(
+      await readPrDiscoveryEvents(path, Date.parse("2026-11-02T00:00:00Z")),
+      [tomorrow],
+    );
+    assertEquals((await Deno.stat(`${path}.2026-11-02`)).isFile, true);
     await assertRejects(
       () => appendPrDiscoveryEvent(path, { ...event, hostId: "../escape" }),
       Error,
       "invalid PR discovery event",
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("PR discovery reader refuses an oversized ledger", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = `${dir}/events.jsonl`;
+    await Deno.writeFile(path, new Uint8Array(16 * 1024 * 1024 + 1));
+    await assertRejects(() => readPrDiscoveryEvents(path), Error, "exceeds");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

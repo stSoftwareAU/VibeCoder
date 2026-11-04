@@ -150,6 +150,22 @@ cannot write it.
 A milestone resolution whose every check is left to CI this way verified
 nothing and is refused as unverified (Issue #1559, #4761).
 
+The merge fast checks use the same `runRepositoryCommand` probe (Issue #4697).
+Before each check the account is probed for traversal and a readable manifest;
+checks that may write also require write access to the project directory.
+Read-only checks can run in readable sub-directories (Issue #4782), and a probe
+that fails, or an account that cannot reach the checkout, leaves the merge
+`unverified` and its push deferred, with no repair round spent. A manifest the
+worker can see is genuinely absent, such as no `Cargo.toml`, is a failing check
+instead. A cargo check whose target the account cannot write builds in a private
+target under the clone root's `.vibe-fast-check-target` on the executable work volume,
+separate from the milestone gate's target.
+The worker provisions that root, deferring if it cannot; the separate
+trim-refused target remains on the ephemeral layer.
+The `check` task runs read-only when the milestone gate's Deno criteria hold.
+Any check blocked by the project write probe, or by a stale Deno lockfile write
+refusal, is recorded as left to CI; if no check ran, the merge remains unverified.
+
 A declared name must be a plain identifier. `IFS` and names starting with
 `_vibe_cc_` are the wrapper's own and are refused, so a declaration can never
 silently shorten what is delivered.

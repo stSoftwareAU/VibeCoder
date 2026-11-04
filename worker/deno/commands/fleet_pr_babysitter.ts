@@ -2938,17 +2938,28 @@ export async function pass(
       gh,
     );
   }
-  const recordDiscovery = async (
-    path: string,
-    event: Parameters<typeof appendPrDiscoveryEvent>[1],
-  ): Promise<void> => {
-    try {
-      await appendPrDiscoveryEvent(path, event);
-    } catch (error) {
-      console.warn(`[babysitter] discovery event not recorded: ${error}`);
-    }
-  };
   const discover = async (): Promise<RepairTask[]> => {
+    const recorded = new Set<string>();
+    const recordDiscovery = async (
+      path: string,
+      event: Parameters<typeof appendPrDiscoveryEvent>[1],
+    ): Promise<void> => {
+      try {
+        const key = JSON.stringify([
+          path,
+          event.event,
+          event.hostId,
+          event.repo,
+          event.prNumber,
+          event.headSha,
+        ]);
+        if (recorded.has(key)) return;
+        await appendPrDiscoveryEvent(path, event);
+        recorded.add(key);
+      } catch (error) {
+        console.warn(`[babysitter] discovery event not recorded: ${error}`);
+      }
+    };
     const repairs: RepairTask[] = [];
     for (const repo of repositories) {
       if (repoFilter && repo !== repoFilter) continue;

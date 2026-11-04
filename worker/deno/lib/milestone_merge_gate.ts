@@ -478,6 +478,13 @@ export function detectRemoteModuleGap(
   return undefined;
 }
 
+/** Whether Deno reports that a project's lockfile cannot be written. */
+export function denoLockfileWriteRefused(dir: string, output: string): boolean {
+  return output.includes("Failed writing lockfile") &&
+    output.includes("Permission denied (os error 13)") &&
+    output.includes(`(for '${dir.replace(/\/$/, "")}/deno.lock')`);
+}
+
 /**
  * Whether a Deno check can attempt to run without a writable directory
  * (Issue #4782). A stale lockfile can still require a write.
@@ -596,9 +603,7 @@ export const spawnTypeCheck = async (
   // permission refusal is a host limitation; other check failures remain failures.
   if (
     code !== 0 && readOnlyCheckout &&
-    output.includes("Failed writing lockfile") &&
-    output.includes("Permission denied (os error 13)") &&
-    output.includes(`(for '${project.dir.replace(/\/$/, "")}/deno.lock')`)
+    denoLockfileWriteRefused(project.dir, output)
   ) {
     return { code, output, accountUnavailable: output };
   }

@@ -2572,6 +2572,24 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
 const BABYSITTER_HOSTS_NOTE =
   "PR discovery events do not cover every expected babysitter host; rollout remains unknown";
 
+Deno.test("collect - oversized discovery evidence remains incomplete", async () => {
+  await withDir(async (dir) => {
+    await Deno.writeFile(
+      `${dir}/pr-discovery-events.jsonl`,
+      new Uint8Array(16 * 1024 * 1024 + 1),
+    );
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture()),
+      { babysitterStateDirs: [dir], rolloutVerifiedAt: "2026-10-25T00:00:00Z" },
+    ));
+    assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, false);
+    assertStringIncludes(
+      snapshot.coverageNotes.join("\n"),
+      "discovery ledger exceeds",
+    );
+  });
+});
+
 Deno.test("collect - rollout discovery is incomplete unless every expected babysitter host has discovery events", async () => {
   const cases: Array<{ name: string; hosts: string[]; noted: boolean }> = [
     { name: "a host is missing", hosts: ["host-a"], noted: true },

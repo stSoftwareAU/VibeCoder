@@ -14,6 +14,7 @@ export interface PrDiscoveryEvent {
 }
 
 const EVENT_LINE_LIMIT = 16_384;
+const LEDGER_BYTE_LIMIT = 16 * 1024 * 1024;
 
 /**
  * Map any host label (a free-form VIBE_HOST_ID or hostname) onto the identifier
@@ -54,25 +55,37 @@ export async function appendPrDiscoveryEvent(
   if (separator > 0) {
     await Deno.mkdir(path.slice(0, separator), { recursive: true });
   }
+  const dailyPath = `${path}.${
+    new Date(event.recordedAt).toISOString().slice(0, 10)
+  }`;
   await withFileLock(`${path}.lock`, async () => {
     try {
-      const bytes = await Deno.readFile(path);
-      if (bytes.length && bytes[bytes.length - 1] !== 10) {
-        const lastNewline = bytes.lastIndexOf(10);
-        await Deno.truncate(path, lastNewline + 1);
+      using file = await Deno.open(dailyPath, { read: true, write: true });
+      const size = (await file.stat()).size;
+      if (size) {
+        const start = Math.max(0, size - EVENT_LINE_LIMIT - 1);
+        await file.seek(start, Deno.SeekMode.Start);
+        const bytes = new Uint8Array(size - start);
+        let read = 0;
+        while (read < bytes.length) {
+          const count = await file.read(bytes.subarray(read));
+          if (count === null) {
+            throw new Error("unexpected end of discovery ledger");
+          }
+          read += count;
+        }
+        if (bytes[bytes.length - 1] !== 10) {
+          const lastNewline = bytes.lastIndexOf(10);
+          if (lastNewline < 0 && start > 0) {
+            throw new Error("discovery ledger tail exceeds line limit");
+          }
+          await file.truncate(start + lastNewline + 1);
+        }
       }
-      const prior = await readPrDiscoveryEvents(path);
-      if (
-        prior.some((row) =>
-          row.event === event.event && row.hostId === event.hostId &&
-          row.repo === event.repo && row.prNumber === event.prNumber &&
-          row.headSha === event.headSha && row.recordedAt === event.recordedAt
-        )
-      ) return;
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
-    await Deno.writeTextFile(path, `${JSON.stringify(event)}\n`, {
+    await Deno.writeTextFile(dailyPath, `${JSON.stringify(event)}\n`, {
       create: true,
       append: true,
     });
@@ -82,24 +95,60 @@ export async function appendPrDiscoveryEvent(
 /** Parse a bounded event file, rejecting malformed or overlong records. */
 export async function readPrDiscoveryEvents(
   path: string,
+  verifiedMs = 0,
 ): Promise<PrDiscoveryEvent[]> {
-  const text = await Deno.readTextFile(path);
+  const separator = path.lastIndexOf("/");
+  const directory = separator < 0 ? "." : path.slice(0, separator) || "/";
+  const name = path.slice(separator + 1);
+  const paths: string[] = [];
+  for await (const entry of Deno.readDir(directory)) {
+    if (entry.name === name) paths.push(path);
+    const suffix = entry.name.slice(name.length + 1);
+    if (
+      entry.name.startsWith(`${name}.`) && /^\d{4}-\d{2}-\d{2}$/.test(suffix) &&
+      Date.parse(`${suffix}T23:59:59.999Z`) >= verifiedMs
+    ) {
+      paths.push(`${directory}/${entry.name}`);
+    }
+  }
+  if (!paths.length) {
+    throw new Deno.errors.NotFound(`no discovery ledger at ${path}`);
+  }
+  paths.sort();
+  let total = 0;
   const rows: PrDiscoveryEvent[] = [];
-  for (const [index, line] of text.split("\n").entries()) {
-    if (!line) continue;
-    if (line.length > EVENT_LINE_LIMIT) {
-      throw new Error(
-        `line ${index + 1} exceeds ${EVENT_LINE_LIMIT} characters`,
-      );
+  for (const filePath of paths) {
+    using file = await Deno.open(filePath, { read: true });
+    const bytes = new Uint8Array(LEDGER_BYTE_LIMIT - total + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = await file.read(bytes.subarray(length));
+      if (count === null) break;
+      length += count;
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch (error) {
-      throw new Error(`line ${index + 1} is invalid JSON`, { cause: error });
+    total += length;
+    if (total > LEDGER_BYTE_LIMIT) {
+      throw new Error(`discovery ledger exceeds ${LEDGER_BYTE_LIMIT} bytes`);
     }
-    if (!validEvent(parsed)) throw new Error(`line ${index + 1} is invalid`);
-    rows.push(parsed);
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.subarray(0, length),
+    );
+    for (const [index, line] of text.split("\n").entries()) {
+      if (!line) continue;
+      if (line.length > EVENT_LINE_LIMIT) {
+        throw new Error(
+          `line ${index + 1} exceeds ${EVENT_LINE_LIMIT} characters`,
+        );
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch (error) {
+        throw new Error(`line ${index + 1} is invalid JSON`, { cause: error });
+      }
+      if (!validEvent(parsed)) throw new Error(`line ${index + 1} is invalid`);
+      rows.push(parsed);
+    }
   }
   return rows;
 }

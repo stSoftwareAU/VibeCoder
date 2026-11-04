@@ -114,6 +114,29 @@ function manualClock() {
   };
 }
 
+/**
+ * Whether a spawn call is the access probe runRepositoryCommand runs before a
+ * command (Issue #4697): `sh -c <probe> sh <cwd>` behind the sudo drop. The
+ * credential wrapper names its `$0` vibe-credential-channel instead.
+ */
+function isProbeCall(args: string[]): boolean {
+  return args[5] === "-c" && args[7] === "sh";
+}
+
+/** A spawn answer for a probe that passed: exit 0, no output. */
+function probePassed() {
+  return Promise.resolve({
+    ok: true as const,
+    value: {
+      code: 0,
+      success: true,
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+    },
+  });
+}
+
 // --- planFastChecks ---------------------------------------------------------
 
 Deno.test("planFastChecks: a Deno project runs fmt, lint, check and its manifest tasks in order", async () => {
@@ -867,6 +890,9 @@ Deno.test("spawnFastCheck isolates credentials and uses the untrusted spawn", as
       },
       { DECLARED_CREDENTIAL: "declared" },
       (binary, args, options) => {
+        // The access probe runs first and passes; the assertions below are on
+        // the command call that follows it (Issue #4697).
+        if (isProbeCall(args)) return probePassed();
         called = true;
         assertEquals(binary, "sudo");
         assertEquals(args.slice(0, 4), ["-n", "-u", "agent", "--"]);
