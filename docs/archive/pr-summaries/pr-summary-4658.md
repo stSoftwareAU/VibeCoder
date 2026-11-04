@@ -96,7 +96,10 @@ flowchart LR
   `worker/deno/tests/review_round_test.ts`,
   `worker/deno/tests/review_round_command_4658_test.ts`.
 - Each new guard was broken on purpose and the named test went red, then the
-  guard was restored. After independent review, three edited snapshot tests that
+  guard was restored. The `git_pull` repair-push entry in `lib/audit_hook.ts`
+  is pinned by `audit_hook_test.ts::actionKindFor names a repair push from the
+  babysitter and the PR processors` (`pushKind(git_pull.ts)` is `repair`);
+  deleting the entry turned that test red. After independent review, three edited snapshot tests that
   no longer reached their guard were fixed and re-broken red.
 - Existing fixtures gained `merged` events, review `user.id` and check-run
   `conclusion` because those keys are now required. No assertion was removed.
