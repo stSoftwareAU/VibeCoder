@@ -16,23 +16,23 @@ are:
   `screenshot_gate_retry.ts`, `pr_body_length.ts`).
 
 Two paths the first cut missed are now covered. When `syncBaseBranch` merges the
-base into the branch in the same push, `commitAndPushPending` runs the guard
-on the merged head before pushing it. When the agent pushes its own
-commits in the CI, feedback or spelling lane, the lane validates the moved head after the
-run (`validateSelfPushedHead`); a rejected or unrunnable head is not reported as
-a successful push.
+base into the branch in the same push, `commitAndPushPending` runs the guard on
+the merged head before pushing it. When the agent pushes its own commits in the
+CI, feedback or spelling lane, the lane validates the moved head after the run
+(`validateSelfPushedHead`); a rejected or unrunnable head is not reported as a
+successful push.
 
 Review round (PR #4800): the babysitter gate runs only as a separate account
 (`requireSeparateAccount`, THREAT-MODEL C37) and its `failed` verdict is a
 `BabysitterFailure` of class `code`; completion validates a head merged by
-push-rejection recovery before it is pushed; the spelling and feedback lanes stop
-spending sessions after `MAX_PUBLICATION_DEFERRALS` (3) rounds per key (spelling
-charges deferred and rejected heads, feedback only deferred ones); a gate failure that reproduces on the base commit is
-`unavailable`.
+push-rejection recovery before it is pushed; the spelling and feedback lanes
+stop spending sessions after `MAX_PUBLICATION_DEFERRALS` (3) rounds per key
+(spelling charges deferred and rejected heads, feedback only deferred ones); a
+gate failure that reproduces on the base commit is `unavailable`.
 
 In the CI lane an `unavailable` gate releases the PR: the local retry charge is
-retained, no failed-push comment is written and the round
-returns `processed: false`. Closes #4625.
+retained, no failed-push comment is written and the round returns
+`processed: false`. Closes #4625.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -94,15 +94,16 @@ executed, an unavailable host, and Deno tests running in both an initial run and
 a repair.
 
 Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
-`docs/workflows/fleet-pr-babysitter.md`, `docs/THREAT-MODEL.md` (control C37); coverage ledger
-`docs/audits/lib-sweep-coverage/top-up-4625.json`.
+`docs/workflows/fleet-pr-babysitter.md`, `docs/THREAT-MODEL.md` (control C37);
+coverage ledger `docs/audits/lib-sweep-coverage/top-up-4625.json`.
 
 ## Test Plan
 
 - CI repair: the review-dismissal scenario now invokes the separate verifier
-  hook passed to `commitAndPushPending`, rather than the publication guard.
-  The existing verifier rejection, recovery and body-sync assertions remain
-  covered by `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts::review-fix verifier - recovery must clear before pushing`
+  hook passed to `commitAndPushPending`, rather than the publication guard. The
+  existing verifier rejection, recovery and body-sync assertions remain covered
+  by
+  `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts::review-fix verifier - recovery must clear before pushing`
   and the other scenarios in that file. No mirrored rule changed.
 - CI repair: the feedback and CI self-push tests now inject a passing
   publication validator and assert it runs once. Their mocked pushes do not
@@ -110,15 +111,18 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
   The supported behaviour remains a success reply only after remote push
   verification and publication validation; coverage remains in
   `worker/deno/tests/pr_feedback_processor_self_push_test.ts::processPrFeedback - claude self-pushed: HEAD moved => success reply`
-  and `worker/deno/tests/pr_ci_processor_no_changes_test.ts::processCiFailure - Claude self-pushed: HEAD moved triggers success reply (Issue #1863)`.
+  and
+  `worker/deno/tests/pr_ci_processor_no_changes_test.ts::processCiFailure - Claude self-pushed: HEAD moved triggers success reply (Issue #1863)`.
   Both files pass with `deno task test` (21 tests); both failed before the
   fixture repair. No mirrored rule changed.
 - Head push `c92357559`: `pr_feedback_processor_milestone_fix_test.ts` now
   injects a passing `validatePublication` stub. Its mocked push never reaches
   the publication guard, and the real gate finds no repository in the fake
   `workDir` and reports `unavailable`, so those tests would otherwise stop at
-  the new post-run head validation. `deno task test:unit
-  tests/pr_feedback_processor_milestone_fix_test.ts`: 16 passed, 0 failed.
+  the new post-run head validation.
+  `deno task test:unit
+  tests/pr_feedback_processor_milestone_fix_test.ts`: 16
+  passed, 0 failed.
 - Targeted run of the files above plus `pr_ci_checks_test.ts`,
   `babysitter_fix_orchestration_test.ts`,
   `pr_feedback_review_dismissal_3383_test.ts`,
@@ -128,18 +132,18 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
 - `deno fmt --check` and `deno lint` on the changed `.ts` files: passed.
 - `./quality.sh` on this head earlier failed only the parallel Deno test pass,
   on two cargo-fmt tests that need a configured `rustup` default (the host had
-  none). Re-run on this head: `worker/deno/tests/completion_phase_repo_formatters_test.ts`
-  (8 tests at head, 8 passed). This PR changes neither `repo_formatters.ts` nor
-  that test.
+  none). Re-run on this head:
+  `worker/deno/tests/completion_phase_repo_formatters_test.ts` (8 tests at head,
+  8 passed). This PR changes neither `repo_formatters.ts` nor that test.
 - Mutation check (review round 3): with the baseline green, the survivors were
   `completion_phase.ts` (the HEAD read, the passed-head cache and the recovery
   guard's options) and `fleet_pr_babysitter.ts` (`requireSeparateAccount`).
-  `worker/deno/tests/completion_phase_publication_validation_4625_test.ts`
-  (18 tests at head) now pins each: the HEAD read's cwd, exit code and output,
-  reuse of a passed head, the guard's `cwd`, `repo`, `repoConfigs`,
-  `branchName` and `validate`, and that a guard block ends the run without a
-  repair turn. Each was applied by hand and turned a test red. The
-  `requireSeparateAccount` mutants were already red under
+  `worker/deno/tests/completion_phase_publication_validation_4625_test.ts` (18
+  tests at head) now pins each: the HEAD read's cwd, exit code and output, reuse
+  of a passed head, the guard's `cwd`, `repo`, `repoConfigs`, `branchName` and
+  `validate`, and that a guard block ends the run without a repair turn. Each
+  was applied by hand and turned a test red. The `requireSeparateAccount`
+  mutants were already red under
   `worker/deno/tests/fleet_pr_babysitter_validation_test.ts`, whose scenarios
   run in a child `deno test` process the mutation check does not see.
 
@@ -153,16 +157,19 @@ durable retry (#4656) and review dismissal (#4657) belong to those issues.
   is a failed verdict. The obsolete free-retry and timeout deferral expectations
   are replaced by the bounded retry and failure coverage in
   `worker/deno/tests/pr_ci_processor_test.ts::processCiFailure - an unavailable repository check releases the PR: retry charged, no comment, no marker (Issue #4625)`
-  and `worker/deno/tests/publication_validation_test.ts::a gate killed by its timeout is failed, whatever its output`.
+  and
+  `worker/deno/tests/publication_validation_test.ts::a gate killed by its timeout is failed, whatever its output`.
 - The obsolete pre-merge repository gate and its ordering before the review
-  verifier are replaced by verification of the fix before base sync and one
-  gate on the resulting head. Coverage remains in
+  verifier are replaced by verification of the fix before base sync and one gate
+  on the resulting head. Coverage remains in
   `worker/deno/tests/pr_push_base_sync_test.ts::the merged head is validated before it is pushed; a verdict on the pre-merge head does not stand in for it (Issue #4625)`
-  and `worker/deno/tests/pr_push_base_sync_test.ts::base sync verifies the fix once and gates the merged head once`.
+  and
+  `worker/deno/tests/pr_push_base_sync_test.ts::base sync verifies the fix once and gates the merged head once`.
   The obsolete expectation that the repository gate precedes the verifier is
-  replaced by `worker/deno/tests/pr_feedback_processor_test.ts::feedback publication - the verifier runs before the repository checks reject the head (Issue #4625)`,
-  which still proves a rejected head is neither pushed nor marked addressed.
-  A rejected self-push remains unsuccessful, covered by
+  replaced by
+  `worker/deno/tests/pr_feedback_processor_test.ts::feedback publication - the verifier runs before the repository checks reject the head (Issue #4625)`,
+  which still proves a rejected head is neither pushed nor marked addressed. A
+  rejected self-push remains unsuccessful, covered by
   `worker/deno/tests/pr_spelling_processor_test.ts::processSpellingFailure - a self-pushed spelling fix rejected by the repository checks is not reported as successful (Issue #4625)`.
   No mirrored rule was found for these push hooks.
 
