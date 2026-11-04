@@ -359,6 +359,14 @@ async function workerClaimProblem(
         firstLine(lookup.error)
       }`;
     }
+    const oldestBody = lookup.actors.filter((a) => a.source === "content-edit")
+      .at(-1);
+    if (
+      lookup.bodyHistoryTruncated &&
+      (!oldestBody || oldestBody.editedAt >= added.addedAt)
+    ) {
+      return `${ref} has incomplete edit history since its ${label} label was added; it is ignored`;
+    }
     const untrustedEdits = lookup.actors.filter((a) => {
       if (a.editedAt < added.addedAt) return false;
       // Compare adjacent GitHub body snapshots; a missing predecessor counts.

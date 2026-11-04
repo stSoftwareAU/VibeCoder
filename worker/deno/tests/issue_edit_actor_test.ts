@@ -30,7 +30,10 @@ function graphMock(
       data: {
         repository: {
           issue: {
-            userContentEdits: { nodes: payload.contentEdits ?? [] },
+            userContentEdits: {
+              totalCount: payload.contentEdits?.length ?? 0,
+              nodes: payload.contentEdits ?? [],
+            },
             timelineItems: { nodes: payload.renames ?? [] },
           },
         },

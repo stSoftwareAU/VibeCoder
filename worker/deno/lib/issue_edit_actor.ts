@@ -60,7 +60,12 @@ export interface IssueEditActor {
  * `actors`, never `actor` alone (Issue #3879).
  */
 export type IssueEditActorLookup =
-  | { ok: true; actor: IssueEditActor | null; actors: IssueEditActor[] }
+  | {
+    ok: true;
+    actor: IssueEditActor | null;
+    actors: IssueEditActor[];
+    bodyHistoryTruncated?: boolean;
+  }
   | { ok: false; error: Error };
 
 /**
@@ -71,10 +76,10 @@ export type IssueEditActorLookup =
 const EDIT_ACTOR_QUERY =
   `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(last:100){nodes{editedAt editor{login}}} timelineItems(last:100,itemTypes:[RENAMED_TITLE_EVENT]){nodes{... on RenamedTitleEvent{createdAt actor{login}}}}}}}`;
 
-/** {@link EDIT_ACTOR_QUERY} plus each body edit's `diff` (Issue #4763). */
+/** The claim check needs the newest body snapshots, in GitHub's newest-first connection. */
 const EDIT_ACTOR_DIFF_QUERY = EDIT_ACTOR_QUERY.replace(
-  "nodes{editedAt editor{login}}",
-  "nodes{editedAt diff editor{login}}",
+  "userContentEdits(last:100){nodes{editedAt editor{login}}}",
+  "userContentEdits(first:100){totalCount nodes{editedAt diff editor{login}}}",
 );
 
 /** Shape of the GraphQL response consumed here. */
@@ -84,6 +89,7 @@ interface EditActorResponse {
     repository?: {
       issue?: {
         userContentEdits?: {
+          totalCount?: number;
           nodes?: Array<
             {
               editedAt?: string | null;
@@ -224,6 +230,22 @@ export async function resolveLastIssueEditor(
 
   const candidates: IssueEditActor[] = [];
 
+  const totalCount = issue.userContentEdits?.totalCount;
+  if (
+    options?.includeDiff &&
+    (!Number.isInteger(totalCount) ||
+      totalCount! < (issue.userContentEdits?.nodes?.length ?? 0))
+  ) {
+    return {
+      ok: false,
+      error: new Error(
+        "Edit-actor query returned invalid userContentEdits totalCount",
+      ),
+    };
+  }
+  const bodyHistoryTruncated = options?.includeDiff &&
+    totalCount! > (issue.userContentEdits?.nodes?.length ?? 0);
+
   const bodyNodes = [...(issue.userContentEdits?.nodes ?? [])].sort((a, b) =>
     Date.parse(a?.editedAt ?? "") - Date.parse(b?.editedAt ?? "")
   );
@@ -264,11 +286,23 @@ export async function resolveLastIssueEditor(
     });
   }
 
-  if (candidates.length === 0) return { ok: true, actor: null, actors: [] };
+  if (candidates.length === 0) {
+    return {
+      ok: true,
+      actor: null,
+      actors: [],
+      ...(options?.includeDiff ? { bodyHistoryTruncated } : {}),
+    };
+  }
 
   // Issue #3879: return the whole history rather than reducing it. Callers that
   // gate on trust must see every editor; collapsing to the newest let a trusted
   // rename bless an untrusted body edit made before it.
   candidates.sort(byNewestFirst);
-  return { ok: true, actor: candidates[0] ?? null, actors: candidates };
+  return {
+    ok: true,
+    actor: candidates[0] ?? null,
+    actors: candidates,
+    ...(options?.includeDiff ? { bodyHistoryTruncated } : {}),
+  };
 }

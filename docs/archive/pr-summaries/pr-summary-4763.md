@@ -31,7 +31,7 @@ Version bump: no `VERSION` change was made by this PR.
 - Edits before the label add are ignored. A body edit at or after the label
   is skipped only when consecutive GitHub `userContentEdits.diff` body
   snapshots are equal after `stripWorkerRecordBlocks`. Missing snapshots,
-  including a predecessor outside the last 100, count as edits. Renames count
+  including a predecessor outside the newest 100, count as edits. Renames count
   as edits. An untrusted or fleet editor then refuses the issue unless a
   trusted non-fleet `needs-human` removal at or after the newest counted edit
   re-approves it. `requirementQuote` also excludes worker record blocks.
@@ -50,6 +50,7 @@ Backend/CLI change only; no UI files. Tests:
 ## Test Plan
 
 - `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts::claim rule: a fleet worker's record-block edit after the label keeps the issue usable; a prose edit does not` covers full body snapshots, a worker record edit, a malicious prose rewrite with a dependency bullet, and missing snapshots. The snapshot fixture failed before the fix and passed afterwards.
+- `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts::claim rule: newest body edits are checked beyond the 100-edit window` models GitHub's newest-first pagination and rejects both a concealed prose rewrite and incomplete post-label history, even when the oldest returned editor is trusted. The old `last:100` query missed the newest edits; the claim query now requests `first:100` and `totalCount`. The regression failed before the fix.
 - The obsolete `isWorkerRecordOnlyDiff` test assumed unified diff lines, which
   GitHub does not return. The remaining requirement is to ignore only changes
   inside strict worker record blocks; the claim-rule test above and

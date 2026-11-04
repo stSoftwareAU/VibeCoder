@@ -131,11 +131,23 @@ function answer(args: string[], fx: Fx): string {
         repository: {
           issue: {
             userContentEdits: {
-              nodes: v.map((e) => ({
-                editedAt: e.editedAt,
-                ...(wantsDiff && e.diff !== undefined ? { diff: e.diff } : {}),
-                editor: { login: e.editor },
-              })),
+              totalCount: v.length,
+              nodes: [...v].sort((a, b) => b.editedAt.localeCompare(a.editedAt))
+                .slice(
+                  args.some((a) => a.includes("userContentEdits(first:100)"))
+                    ? 0
+                    : -100,
+                  args.some((a) => a.includes("userContentEdits(first:100)"))
+                    ? 100
+                    : undefined,
+                )
+                .map((e) => ({
+                  editedAt: e.editedAt,
+                  ...(wantsDiff && e.diff !== undefined
+                    ? { diff: e.diff }
+                    : {}),
+                  editor: { login: e.editor },
+                })),
             },
             timelineItems: { nodes: [] },
           },
@@ -925,6 +937,42 @@ Deno.test("claim rule: a fleet worker's record-block edit after the label keeps 
   // Either missing snapshot, including an omitted previous page, fails closed.
   assertEquals((await run(undefined)).issues, []);
   assertEquals((await run(RECORD_DIFF, FLEET_AUTHOR, null)).issues, []);
+});
+
+Deno.test("claim rule: newest body edits are checked beyond the 100-edit window", async () => {
+  const start = Date.parse(ADDED_AT);
+  const edits: Editor[] = [
+    { editedAt: BEFORE_ADD, editor: "stranger", diff: ORIGINAL_BODY },
+    ...Array.from({ length: 99 }, (_, i) => ({
+      editedAt: new Date(start + (i + 1) * 1000).toISOString(),
+      editor: FLEET_AUTHOR,
+      diff: i % 2 ? ORIGINAL_BODY : RECORD_DIFF,
+    })),
+    {
+      editedAt: new Date(start + 100_000).toISOString(),
+      editor: FLEET_AUTHOR,
+      diff: PROSE_DIFF,
+    },
+  ];
+  const run = async (history: Editor[]) => {
+    const g = fakeGh(
+      claimFx([labelled("top-priority", "nleck", ADDED_AT)], history),
+    );
+    return await resolveGoverningIssues(FLEET, CLAIM, g.runGh);
+  };
+  assertEquals((await run(edits)).issues, []);
+  // A missing predecessor for the oldest post-label edit also fails closed.
+  const longer = [...edits.slice(0, -1), {
+    editedAt: new Date(start + 100_000).toISOString(),
+    editor: FLEET_AUTHOR,
+    diff: ORIGINAL_BODY,
+  }];
+  assertEquals((await run(longer)).issues, []);
+  // A trusted boundary edit cannot establish what an omitted editor changed.
+  assertEquals(
+    (await run(longer.map((e) => ({ ...e, editor: "nleck" })))).issues,
+    [],
+  );
 });
 
 Deno.test("claim rule: a trusted non-fleet needs-human removal after the newest edit re-approves; a fleet or earlier removal does not", async () => {
