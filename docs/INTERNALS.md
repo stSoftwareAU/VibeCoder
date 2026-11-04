@@ -1158,6 +1158,18 @@ The expected deployment comes from `--expected-components` (default
 fingerprint from `fingerprintWorkerReviewPolicy(config)`, and
 `--max-heartbeat-age-hours` (default 24).
 
+**Host identity.** Worker rows are keyed by the lifecycle ledger's `host`, the
+machine hostname from `getHostname()`. That is unchanged, so the subscription
+allocation reader still matches it. Babysitter rows (`deployment-health.json`)
+and the babysitter's `pr-discovery-events.jsonl` use
+`reportHostId(escalationHostId())`: `VIBE_HOST_ID` or the short hostname, with
+any character outside `[A-Za-z0-9_.-]` replaced by `-`, leading non-alphanumerics
+dropped, and at most 128 characters. Reviewer rows (`review-run.json`) are
+mapped by the same `reportHostId`, so a free-form `VIBE_HOST_ID` cannot make the
+report's host-id pattern reject them. An `--expected-inventory` entry therefore
+uses the machine hostname for a worker and the mapped id for a babysitter or a
+reviewer.
+
 **Cross-host evidence.** The command reads only the audit directories it is
 given. To include another host, export that host's journal directory and pass
 it in `--audit-dir a,b`. An action repeated across directories is counted once,

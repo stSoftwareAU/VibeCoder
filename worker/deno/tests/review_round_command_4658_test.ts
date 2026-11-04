@@ -86,3 +86,51 @@ Deno.test("review-round command records reviewer build and policy in review-run.
     await Deno.remove(base, { recursive: true });
   }
 });
+
+Deno.test("review-round command maps a free-form VIBE_HOST_ID to the report's host-id shape (Issue #4658)", async () => {
+  const base = await Deno.makeTempDir({ prefix: "review_round_command_4658_" });
+  try {
+    const roundDir = `${base}/rounds/20261102-000001`;
+    const promptFile = `${roundDir}/prompt.md`;
+    await Deno.mkdir(roundDir, { recursive: true });
+    await Deno.writeTextFile(promptFile, "review the fleet\n");
+
+    const config = buildDefaultWorkerConfig();
+    const production = createReviewRoundDeps(() => {});
+    const deps: ReviewRoundDeps = {
+      ...production,
+      exportStartCredential: () => Promise.resolve(undefined),
+      switchCredential: () => Promise.resolve(null),
+      exportFallbackCredential: () => Promise.resolve(null),
+      runClaude: () => Promise.resolve({ code: 0, output: "Round done" }),
+      log: () => {},
+    };
+    // A VIBE_HOST_ID with a space and a slash, which the report's host-id
+    // pattern would reject if recorded as given.
+    const env = (name: string) => {
+      if (name === "VIBE_HOST_ID") return "vibe box/42";
+      if (name === "VIBE_BUILD_COMMIT") return BUILD_COMMIT;
+      return undefined;
+    };
+
+    const result = await runReviewRoundCommand(
+      { "prompt-file": promptFile, "claude-args": "[]" },
+      config,
+      deps,
+      env,
+    );
+    assertEquals(result.exitCode, 0);
+
+    const record = JSON.parse(
+      await Deno.readTextFile(`${roundDir}/${REVIEW_RUN_FILE}`),
+    );
+    assertEquals(
+      record.deployment.hostId,
+      "vibe-box-42",
+      "the reviewer row's hostId is mapped by reportHostId",
+    );
+    assertMatch(record.deployment.hostId, /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/);
+  } finally {
+    await Deno.remove(base, { recursive: true });
+  }
+});

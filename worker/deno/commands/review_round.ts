@@ -25,6 +25,7 @@ import {
 } from "../lib/review_round.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 import { escalationHostId } from "../lib/host_escalation.ts";
+import { reportHostId } from "../lib/pr_discovery_events.ts";
 
 /** The CLI arguments, given as a JSON array of strings (parsed or not). */
 export function parseClaudeArgs(value: unknown): string[] {
@@ -86,7 +87,9 @@ export async function runReviewRoundCommand(
         : ".",
       deployment: {
         component: "reviewer",
-        hostId: escalationHostId(),
+        // The command's `env` seam also feeds VIBE_HOST_ID, so a test can
+        // inject the host without mutating the process environment.
+        hostId: reportHostId(escalationHostId(env)),
         codeRevision: env("VIBE_BUILD_COMMIT") ?? "unknown",
         policyFingerprint: await fingerprintWorkerReviewPolicy(config),
       },
