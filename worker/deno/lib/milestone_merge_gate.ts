@@ -491,11 +491,15 @@ export const spawnTypeCheck = async (
   const limitMs = typeCheckTimeoutMs(project.kind);
   // The repository's own check runs with a stated environment and no parent
   // credential (Issue #4659). Build-cache placement for the checkout (Issue
-  // #2247) is decided inside runRepositoryCommand, not here.
+  // #2247) is decided inside runRepositoryCommand, not here. A Deno check
+  // writes its cache to DENO_DIR, not the project, so it does not need the
+  // project directory writable by the account (Issue #4782). A cargo check
+  // writes Cargo.lock there, so it keeps the requirement.
   const result = await run(executable, project.args, {
     cwd: project.dir,
     timeoutMs: limitMs,
     manifests: await manifestsFor(project.kind, project.dir),
+    readOnlyCheckout: project.kind === "deno",
   });
   if (!result.ok) {
     return {

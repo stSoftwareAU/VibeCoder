@@ -953,3 +953,30 @@ Deno.test("spawnTypeCheck - each toolchain's check gets its own limit, and a tim
     });
   });
 });
+
+Deno.test("spawnTypeCheck - a Deno check is read-only for the account, a cargo check keeps the write requirement (Issue #4782)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    await writeFile(`${dir}/app/deno.json`, "{}");
+    const seen: (boolean | undefined)[] = [];
+    const run: typeof runRepositoryCommand = (_executable, _args, options) => {
+      seen.push(options.readOnlyCheckout);
+      return Promise.resolve({
+        ok: true as const,
+        value: {
+          code: 0,
+          stdout: "",
+          stderr: "",
+          success: true,
+          timedOut: false,
+        },
+      });
+    };
+    await spawnTypeCheck(
+      { dir: `${dir}/app`, kind: "deno", args: ["check", "**/*.ts"] },
+      run,
+    );
+    await spawnTypeCheck({ dir, kind: "cargo", args: ["check"] }, run);
+    assertEquals(seen, [true, false]);
+  });
+});
