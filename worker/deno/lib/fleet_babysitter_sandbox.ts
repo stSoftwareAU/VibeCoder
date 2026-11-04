@@ -37,7 +37,7 @@ async function realPathOrUndefined(path: string): Promise<string | undefined> {
   }
 }
 
-function normaliseAbsolutePath(path: string): string {
+export function normaliseAbsolutePath(path: string): string {
   assertAbsolute(path, "A protected path");
   const segments: string[] = [];
   for (const segment of path.split("/")) {
@@ -48,7 +48,7 @@ function normaliseAbsolutePath(path: string): string {
   return `/${segments.join("/")}`;
 }
 
-async function canonicalPathIncludingMissingTail(
+export async function canonicalPathIncludingMissingTail(
   path: string,
 ): Promise<string> {
   let prefix = path;

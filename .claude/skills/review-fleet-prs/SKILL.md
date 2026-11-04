@@ -70,13 +70,16 @@ escalation.
      is a blocking finding (missing evidence).
    - A justified change is approved only on evidence the code verifies at the
      head: each `coverage` entry resolves (`replacement` and `existing` exist
-     and contain the given name; `gone` means absent or without the name); a
+     and contain the given name; `gone` (removed production code) means absent or without the name); a
      `requirementQuote` is verbatim in the governing issue (the PR's closing
      reference, the validated `issue-<N>-…` branch, or an anchored
      `Part of #N` line; its title or body, never comments, and only when the
-     author is trusted); and `failsWithoutChange` and `verification` are
-     present where the contract requires them. The model's claim alone never
-     approves. Arbitrary PR prose is never owner authorisation.
+     author is trusted, or when a trusted non-fleet login approved a same-repo
+     issue under the worker's own claim rule, as the shared brief sets out;
+     service accounts stay untrusted authors); and `failsWithoutChange` and
+     `verification` are present where the contract requires them. The model's
+     claim alone never approves. Arbitrary PR prose is never owner
+     authorisation.
    - Only an `owner` verdict (material uncertainty about the intended product
      contract, with a non-empty `ownerQuestion`), or a repo listed in
      `.config.json` `pr_reviewer_test_hold_repos` (an array of `owner/repo`),

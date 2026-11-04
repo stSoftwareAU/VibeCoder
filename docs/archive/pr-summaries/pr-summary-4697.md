@@ -140,6 +140,15 @@ Backend change; no UI file is touched. The real-sudo test in
   the real-sudo nested-project test with a 0755 clone root, and
   `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: a symlinked private target is refused`,
   which protects the provisioning step from a repository-controlled symlink.
+- PR #4795 security follow-up: the obsolete link-following, memoised root
+  provisioning is replaced by non-recursive creation and a worker-ownership
+  check before chmod. The private root remains writable by the agent, while an
+  unsafe or unprovisionable root defers the check. Coverage includes
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: a private target owned by another uid is refused`,
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: an unprovisionable private target defers the check`,
+  and the private-target selection test, which verifies the provisioned mode.
+  The ownership regression failed before the fix. No other copy of this
+  clone-root provisioning rule was found.
 
 ## Not done
 

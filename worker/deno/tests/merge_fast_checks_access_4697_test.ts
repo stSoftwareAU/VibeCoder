@@ -268,6 +268,9 @@ Deno.test("merge checks: a cargo target the account cannot write is built in a p
     );
     assertEquals(result.code, 0);
     assertEquals(commands.length, 1);
+    const rootInfo = await Deno.lstat(fastCheckCargoRoot(dir));
+    assert(rootInfo.isDirectory);
+    assertEquals(rootInfo.mode! & 0o7777, 0o1777);
     const target = commands[0]!.options?.env?.["CARGO_TARGET_DIR"];
     assert(target !== undefined, "the command runs with a CARGO_TARGET_DIR");
     assert(!target.startsWith(`${project}/`));
@@ -294,7 +297,7 @@ Deno.test("merge checks: trim refusal retains the ephemeral cargo target", async
   });
 });
 
-Deno.test("merge checks: an unprovisionable private target defers the check", async () => {
+Deno.test("merge checks: a non-directory private target defers the check", async () => {
   await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
     await Deno.writeTextFile(fastCheckCargoRoot(dir), "not a directory");
     const { spawn, commands } = fakeSpawn({ code: 2 });
@@ -307,6 +310,53 @@ Deno.test("merge checks: an unprovisionable private target defers the check", as
       GateAccountUnavailable,
       "cannot provision private cargo target",
     );
+    assertEquals(commands.length, 0);
+  });
+});
+
+Deno.test("merge checks: an unprovisionable private target defers the check", async () => {
+  await withCheckout({ "Cargo.toml": CARGO_MANIFEST }, async (dir) => {
+    const { spawn, commands } = fakeSpawn({ code: 2 });
+    await Deno.chmod(dir, 0o555);
+    try {
+      await assertRejects(
+        () =>
+          spawnFastCheck(cargoCheck(dir), {}, spawn, sudoAgent, {
+            source: { PATH: Deno.env.get("PATH") ?? "" },
+            trimRefused: false,
+          }, dir),
+        GateAccountUnavailable,
+        "cannot provision private cargo target",
+      );
+      assertEquals(commands.length, 0);
+    } finally {
+      await Deno.chmod(dir, 0o700);
+    }
+  });
+});
+
+Deno.test("merge checks: a private target owned by another uid is refused", async () => {
+  await withCheckout({}, async (dir) => {
+    const root = fastCheckCargoRoot(dir);
+    await Deno.mkdir(root, { mode: 0o700 });
+    const info = await Deno.lstat(root);
+    assert(info.uid !== null);
+    const { spawn, commands } = fakeSpawn({ code: 2 });
+    const result = await runRepositoryCommand("cargo", ["test"], {
+      cwd: dir,
+      timeoutMs: 1000,
+      requireWritableCheckout: false,
+    }, {
+      spawn,
+      drop: sudoAgent,
+      privateTargetRoot: root,
+      workerUid: () => Promise.resolve(info.uid! + 1),
+      source: { PATH: Deno.env.get("PATH") ?? "" },
+      trimRefused: false,
+    });
+    assert(!result.ok);
+    assert(result.error instanceof GateAccountUnavailable);
+    assertEquals((await Deno.lstat(root)).mode! & 0o7777, 0o700);
     assertEquals(commands.length, 0);
   });
 });

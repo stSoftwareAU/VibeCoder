@@ -30,10 +30,7 @@ import {
   credentialChannelFault,
 } from "./credential_channel.ts";
 import type { ChannelledCommand } from "./credential_channel.ts";
-import {
-  cargoTargetDirForCheckout,
-  ensureEphemeralCargoRoot,
-} from "./ephemeral_build_cache.ts";
+import { cargoTargetDirForCheckout } from "./ephemeral_build_cache.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 
 /**
@@ -84,6 +81,21 @@ const PROBE_CHECKOUT_UNWRITABLE = 3;
 
 /** The probe is a few `test` and `find` calls. Seconds. */
 const PROBE_TIMEOUT_MS = 15_000;
+
+async function workerUid(deps: UntrustedGateSpawnDeps): Promise<number> {
+  if (deps.workerUid) return await deps.workerUid();
+  const uid = await runWithTimeout("id", ["-u"], {
+    timeoutMs: PROBE_TIMEOUT_MS,
+  });
+  const value = uid.ok ? uid.value.stdout.trim() : "";
+  if (
+    !uid.ok || uid.value.code !== 0 || uid.value.timedOut ||
+    !/^\d+$/.test(value)
+  ) {
+    throw new Error("cannot determine worker uid");
+  }
+  return Number(value);
+}
 
 /** A manifest name the probe script may embed in its text. */
 const SAFE_MANIFEST = /^[A-Za-z0-9._-]+$/;
@@ -261,21 +273,7 @@ export async function runRepositoryCommand(
       };
     }
     if (info && info.uid !== null) {
-      const ownerUid = deps.workerUid
-        ? await deps.workerUid()
-        : await (async () => {
-          const uid = await runWithTimeout("id", ["-u"], {
-            timeoutMs: PROBE_TIMEOUT_MS,
-          });
-          const value = uid.ok ? uid.value.stdout.trim() : "";
-          if (
-            !uid.ok || uid.value.code !== 0 || uid.value.timedOut ||
-            !/^\d+$/.test(value)
-          ) {
-            throw new Error("cannot determine worker uid");
-          }
-          return Number(value);
-        })();
+      const ownerUid = await workerUid(deps);
       if (info.uid !== ownerUid) {
         return {
           ok: false,
@@ -355,11 +353,21 @@ export async function runRepositoryCommand(
         // The tree can make its own `target` unwritable (a committed file), so
         // that never chooses the account: the account builds elsewhere.
         if (deps.privateTargetRoot !== undefined) {
-          const root = await lstatOrUndefined(deps.privateTargetRoot);
-          if (
-            (root !== undefined && !root.isDirectory) ||
-            !ensureEphemeralCargoRoot(deps.privateTargetRoot)
-          ) {
+          try {
+            try {
+              await Deno.mkdir(deps.privateTargetRoot);
+            } catch (error) {
+              if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
+            }
+            const root = await Deno.lstat(deps.privateTargetRoot);
+            if (
+              !root.isDirectory || root.uid === null ||
+              root.uid !== await workerUid(deps)
+            ) {
+              throw new Error("private target is not a worker-owned directory");
+            }
+            await Deno.chmod(deps.privateTargetRoot, 0o1777);
+          } catch {
             return {
               ok: false,
               error: new GateAccountUnavailable(
