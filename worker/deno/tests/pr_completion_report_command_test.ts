@@ -407,3 +407,104 @@ Deno.test("pr-completion-report --input refuses a non-string value as a missing 
     assertStringIncludes(result.message, "--input <path> is required");
   }
 });
+
+/** The one refusal message for a malformed or a duplicate --expected-inventory. */
+const INVENTORY_REFUSAL =
+  "--expected-inventory must be a unique comma-separated list of hostId/component entries";
+
+Deno.test("pr-completion-report --collect refuses a malformed --expected-inventory entry before any read, with the inventory message", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  // Each value is malformed: no slash, an empty host, an empty component, an
+  // upper-case component, a space in the host, or a flag with no value.
+  for (
+    const value of [
+      "host-a",
+      "/worker",
+      "host-a/",
+      "host-a/Worker",
+      "host a/worker",
+      true,
+    ]
+  ) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "expected-inventory": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false, `value ${String(value)}`);
+    assertStringIncludes(result.message, INVENTORY_REFUSAL);
+  }
+});
+
+Deno.test("pr-completion-report --collect refuses a duplicate --expected-inventory entry before any read, with the inventory message", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (
+    const value of [
+      "host-a/worker,host-a/worker",
+      "host-a/worker, host-a/worker",
+    ]
+  ) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "expected-inventory": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false, `value ${value}`);
+    assertStringIncludes(result.message, INVENTORY_REFUSAL);
+  }
+});
+
+Deno.test("pr-completion-report --collect accepts legal --expected-inventory entries and passes them into the report", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const auditDir = `${dir}/audit`;
+    await Deno.mkdir(auditDir);
+    const gh: GhJson = async (path) => {
+      if (path === "repos/org/repo") return { default_branch: "main" };
+      if (path.startsWith("repos/org/repo/pulls?")) return [];
+      throw new Error(`unrouted gh path: ${path}`);
+    };
+    const config = { repos: ["org/repo"] } as unknown as WorkerConfig;
+    const collect = (inventory: string) =>
+      runPrCompletionCollect(
+        {
+          collect: true,
+          "audit-dir": auditDir,
+          "expected-revision": "rev1",
+          start: "2026-10-01T00:00:00Z",
+          end: "2026-11-01T00:00:00Z",
+          "expected-inventory": inventory,
+        },
+        config,
+        gh,
+      );
+    // A single legal entry has the same shape as the refused ones above.
+    const single = await collect("host-a/worker");
+    assertEquals(single.success, true);
+    assertEquals(
+      single.data?.report.deployment.expectedHostComponents,
+      ["host-a/worker"],
+    );
+    // Several distinct entries, in any order, all reach the report, sorted.
+    const several = await collect("host-b/reviewer, host-a/worker");
+    assertEquals(several.success, true);
+    assertEquals(
+      several.data?.report.deployment.expectedHostComponents,
+      ["host-a/worker", "host-b/reviewer"],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

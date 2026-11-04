@@ -181,7 +181,6 @@ const REPAIR_PUSH_CALLERS: ReadonlyArray<string> = [
   "pr_feedback_processor",
   "pr_merge_conflict_processor",
   "pr_spelling_processor",
-  "git_pull",
 ];
 
 /**
@@ -209,7 +208,12 @@ const IMPLEMENTATION_PUSH_CALLERS: ReadonlyArray<string> = [
  * alone.
  *
  * A `git push` is only `repair` or `implementation` when its caller positively
- * names the module that makes that push; any other push is `unknown`.
+ * names the module that makes that push; any other push is `unknown`. The one
+ * exception is `git_pull.ts`, which makes two kinds of push: a push whose
+ * target is a `milestone/` branch is `milestone` (the milestone sync), and any
+ * other push from it is `branch-update` (the plain fast-forward update of a PR
+ * branch that merges its base in). A `branch-update` is neither a fix round nor
+ * verified implementation evidence.
  *
  * Exported for tests; production reaches it only through {@link record}.
  *
@@ -246,7 +250,11 @@ export function actionKindFor(
       .test(info.target ?? "")
   ) return "dismissal";
   if (info.verb === "git-push" && caller) {
-    if (caller.includes("git_pull")) return "milestone";
+    if (caller.includes("git_pull")) {
+      return (info.target ?? "").startsWith("milestone/")
+        ? "milestone"
+        : "branch-update";
+    }
     if (REPAIR_PUSH_CALLERS.some((name) => caller.includes(name))) {
       return "repair";
     }

@@ -18,12 +18,19 @@ import {
 import {
   _resetAuditCaches,
   auditFilePath,
+  loadEntries,
   recordMutation,
 } from "../lib/audit_journal.ts";
+import { rosterPath } from "../lib/audit_anchor.ts";
 import type { AuditMutation } from "../lib/audit_entry.ts";
-import { actionKindFor, callerFromStack } from "../lib/audit_hook.ts";
+import {
+  actionKindFor,
+  auditGhMutation,
+  callerFromStack,
+} from "../lib/audit_hook.ts";
 import { appendPrDiscoveryEvent } from "../lib/pr_discovery_events.ts";
 import { classifyGhMutation } from "../lib/audit_mutation_classifier.ts";
+import { envFrom } from "./support/env_lookup.ts";
 import {
   buildLifecycleEvent,
   serialiseLifecycleEvent,
@@ -137,6 +144,91 @@ Deno.test("collect - auto-merge arming cannot verify a later merge", async () =>
     assertEquals(report.completion.unattendedMerged, 0);
     assertEquals(report.completion.unknownMerged, 1);
   });
+});
+
+Deno.test("collect - an auto-merge armed through the audit hook is journalled as merge-arm and never verifies a later merge", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    const env = envFrom({
+      WORK_DIR: workDir,
+      WORKER_UNIQUE_ID: "test-worker",
+      VIBE_RUN_ID: "run-arm-hook",
+    });
+    _resetAuditCaches();
+    // A head pin (40-hex) is what the hook records as the entry's headSha, so a
+    // misclassified arm would have a head to match the GitHub merge on.
+    const head = "a".repeat(40);
+    await auditGhMutation(
+      [
+        "pr",
+        "merge",
+        "1",
+        "--repo",
+        REPO,
+        "--auto",
+        "--match-head-commit",
+        head,
+      ],
+      0,
+      { env },
+    );
+    const written = await loadEntries(auditFilePath({ env }));
+    assert(written.ok, written.ok ? "" : written.error.message);
+    assertEquals(written.value.length, 1, "the hook journals one arm");
+    const arm = written.value[0]!;
+    assertEquals(arm.verb, "pr-merge");
+    assertEquals(arm.actionKind, "merge-arm");
+    assertEquals(arm.headSha, head);
+
+    // Collect the hook's journal with a GitHub merge four minutes after the
+    // arm, on the same head. The arm must not verify it.
+    const armedMs = Date.parse(arm.timestamp);
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const auditDir = `${workDir}/audit`;
+    await journal(auditDir, [{
+      verb: "git-push",
+      actionKind: "implementation",
+      actionId: "hook-arm-push",
+      deliveredCommits: [head],
+      target: "issue-1",
+      timestamp: iso(armedMs - 30 * MINUTE),
+    }]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: {
+            [REPO]: [pull(1, {
+              created_at: iso(armedMs - 2 * HOUR),
+              merged_at: iso(armedMs + 4 * MINUTE),
+              closed_at: iso(armedMs + 4 * MINUTE),
+              head: { ref: "issue-1", sha: head },
+            })],
+          },
+          commits: {
+            [pk(1)]: [commit(head, iso(armedMs - 40 * MINUTE))],
+          },
+        })),
+        {
+          auditDirs: [auditDir],
+          cohort: {
+            start: iso(armedMs - 3 * HOUR),
+            end: iso(armedMs + 3 * HOUR),
+            observedAt: iso(armedMs + 4 * HOUR),
+          },
+        },
+      ),
+    );
+    assertEquals(
+      snapshot.input.actions.find((action) => action.actionId === arm.actionId)
+        ?.kind,
+      "merge-arm",
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 Deno.test("collect - a confirmed update-branch accounts for its GitHub commit without a fix round", async () => {
@@ -270,6 +362,66 @@ Deno.test("collect - a failed review cannot account for a GitHub approval", asyn
     assertEquals(report.completion.unknownMerged, 1);
     assertEquals(report.completion.unattendedMerged, 0);
     assertEquals(report.delivery.reviewRounds, 0);
+  });
+});
+
+Deno.test("collect - a journalled review without a head SHA matches the GitHub review that carries a commit_id", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "a-push-review-head",
+        deliveredCommits: ["sha1"],
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      // Production-shaped: gh pr review journals no headSha.
+      {
+        verb: "pr-review",
+        actionKind: "review",
+        actionId: "a-review-head",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T00:59:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "a-merge-review-head",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          reviews: { [pk(1)]: [review(601, REVIEW_AT)] },
+          commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    const journalled = snapshot.input.actions.find((action) =>
+      action.actionId === "a-review-head"
+    );
+    assertEquals(
+      journalled?.githubEvents,
+      [{ kind: "review", id: "601", headSha: "sha1" }],
+      "the journalled review must account for the GitHub review",
+    );
+    assertEquals(
+      snapshot.input.actions.some((action) =>
+        action.actionId === "gh:org/repo#1:review:601"
+      ),
+      false,
+      "the GitHub review must not stay an unknown action",
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.completion.unknownMerged, 0);
   });
 });
 

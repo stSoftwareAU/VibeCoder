@@ -46,6 +46,7 @@ import {
   classifyGitMutation,
   type MutationInfo,
 } from "../lib/audit_mutation_classifier.ts";
+import { buildPushArgs } from "../lib/git_ref_args.ts";
 import { envFrom } from "./support/env_lookup.ts";
 
 /** Worker partition these tests journal under — a sentinel, not a real id. */
@@ -643,9 +644,55 @@ Deno.test("audit_hook - actionKindFor names a repair push from the babysitter an
   );
 });
 
-Deno.test("audit_hook - milestone sync pushes through git_pull are milestone actions", () => {
+/** The action kind the hook assigns to a `git push` of `args` from `caller`. */
+function pushKindFor(args: string[], caller?: string) {
+  return actionKindFor(gitInfo(args), caller, args);
+}
+
+/** Frames of the milestone sync push (`pushSyncedMilestoneBranch`). */
+const GIT_PULL_MILESTONE_STACK = [
+  "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:373:3)",
+  "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+  "    at pushSyncedMilestoneBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:242:17)",
+  "    at async syncMilestone (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:901:9)",
+].join("\n");
+
+/** Frames of a PR feature-branch update (`updatePrBranch` -> `pushFeatureBranch`). */
+const GIT_PULL_FEATURE_STACK = [
+  "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:373:3)",
+  "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+  "    at pushFeatureBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:1651:20)",
+  "    at async updatePrBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:1615:22)",
+].join("\n");
+
+Deno.test("audit_hook - a push with no resolved caller is unknown, not milestone", () => {
   assertEquals(pushKind(undefined), "unknown");
-  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "milestone");
+});
+
+Deno.test("audit_hook - a git_pull push to a milestone branch is a milestone action", () => {
+  const caller = callerFromStack(GIT_PULL_MILESTONE_STACK);
+  assertEquals(caller, "worker/deno/lib/git_pull.ts");
+  assertEquals(
+    pushKindFor(["push", "origin", "milestone/foo"], caller),
+    "milestone",
+  );
+  assertEquals(
+    pushKindFor(buildPushArgs("origin", "milestone/foo"), caller),
+    "milestone",
+  );
+});
+
+Deno.test("audit_hook - a git_pull feature-branch update is branch-update, not milestone", () => {
+  const caller = callerFromStack(GIT_PULL_FEATURE_STACK);
+  assertEquals(caller, "worker/deno/lib/git_pull.ts");
+  assertEquals(
+    pushKindFor(buildPushArgs("origin", "feature-branch"), caller),
+    "branch-update",
+  );
+  assertEquals(
+    pushKindFor(["push", "origin", "feature-branch"], caller),
+    "branch-update",
+  );
 });
 
 Deno.test("audit_hook - a push with no resolved caller is journalled as component and kind unknown", async () => {

@@ -613,7 +613,13 @@ function blockersFor(
   return out;
 }
 
-/** Failed workflow runs remain blockers until a later successful rerun. */
+/**
+ * Failed workflow runs remain blockers until a later successful run of the same
+ * workflow. On the failed run's head that is a later attempt; on any other head
+ * of the PR it is a later run. A blocker never extends past the PR's merge or
+ * close: it ends there when no recovery came first, and a failure completed
+ * after that moment is not a blocker at all.
+ */
 function ciBlockersFor(
   record: PrCompletionRecord,
   runs: readonly CiRun[],
@@ -626,6 +632,10 @@ function ciBlockersFor(
     utcMillis(a.completedAt!, "workflow completedAt") -
     utcMillis(b.completedAt!, "workflow completedAt")
   );
+  const endCap = record.mergedAt ?? record.closedAt ?? null;
+  const endCapMs = endCap === null
+    ? null
+    : utcMillis(endCap, "PR merged or closed at");
   const out: Blocker[] = [];
   for (const failed of workflows) {
     if (
@@ -633,23 +643,31 @@ function ciBlockersFor(
         .has(failed.outcome!)
     ) continue;
     const startedAt = failed.completedAt!;
-    if (
-      utcMillis(startedAt, "workflow completedAt") >
-        utcMillis(observedAt, "observedAt")
-    ) continue;
+    const startedMs = utcMillis(startedAt, "workflow completedAt");
+    if (startedMs > utcMillis(observedAt, "observedAt")) continue;
+    if (endCapMs !== null && startedMs > endCapMs) continue;
     const recovered = workflows.find((candidate) =>
       candidate.workflowId === failed.workflowId &&
-      candidate.headSha === failed.headSha &&
-      candidate.outcome === "success" && candidate.attempt! > failed.attempt! &&
-      utcMillis(candidate.completedAt!, "workflow completedAt") >=
-        utcMillis(startedAt, "workflow completedAt")
+      candidate.outcome === "success" &&
+      (candidate.headSha === failed.headSha
+        ? candidate.attempt! > failed.attempt!
+        : true) &&
+      utcMillis(candidate.completedAt!, "workflow completedAt") >= startedMs
     );
+    let endedAt: string | null = recovered?.completedAt ?? null;
+    if (
+      endCap !== null && endCapMs !== null &&
+      (endedAt === null ||
+        utcMillis(endedAt, "workflow completedAt") > endCapMs)
+    ) {
+      endedAt = endCap;
+    }
     out.push({
       repo: record.repo,
       prNumber: record.number,
       blocker: "ci-failure",
       startedAt,
-      endedAt: recovered?.completedAt ?? null,
+      endedAt,
     });
   }
   return out;
@@ -705,15 +723,21 @@ function gitHubEvents(
 }
 
 /**
- * Match reviews, dismissals and merges one-to-one; commits can share the first
- * confirmed implementation or repair push whose delivered range contains them.
- * Branch updates match one commit within MATCH_WINDOW_MS either side of the call.
- * Matched event identifiers are attached to the audit action. Unmatched events
- * become `unknown` actions, never attributed to a human or the fleet.
+ * Match reviews, dismissals and merges one-to-one. A commit matches a confirmed
+ * implementation, repair or milestone push whose `deliveredCommits` contains it,
+ * stamped at or after the commit and within the PR's lifetime; several commits
+ * may share one such push. A branch update accounts for one commit within
+ * MATCH_WINDOW_MS either side of its call. Matched event identifiers are
+ * attached to the audit action. Unmatched events become `unknown` actions, never
+ * attributed to a human or the fleet.
  *
- * A review or dismissal matches within {@link MATCH_WINDOW_MS} of it. A merge
- * matches only a synchronous merge action on the same head shortly before the
- * GitHub merge event; an auto-merge arm cannot verify a later merge.
+ * A review or dismissal matches a verified fleet action of its kind within
+ * {@link MATCH_WINDOW_MS} either side of it. A review's head is compared only
+ * when both sides carry one, so a journalled review without a head still
+ * matches a GitHub review that has a `commit_id`. A merge matches only a
+ * confirmed merge action on the PR's head, within MATCH_WINDOW_MS either side
+ * of the GitHub merge event. An auto-merge arm (`merge-arm`) never verifies a
+ * later merge.
  */
 function unmatchedActions(
   observed: ObservedPr,
@@ -733,10 +757,6 @@ function unmatchedActions(
       if (
         event.headSha !== undefined && action.headSha !== undefined &&
         event.headSha !== action.headSha
-      ) continue;
-      if (
-        event.kind === "review" && event.headSha !== undefined &&
-        action.headSha !== event.headSha
       ) continue;
       if (
         isCommit && action.kind !== "branch-update" &&
@@ -992,10 +1012,18 @@ function revertedNumbers(title: string, body: string): number[] {
  * A regression is a cohort PR that reverts a merged cohort PR. It is recorded
  * once per reverted PR, at the earliest revert, and resolved when the revert
  * merged. Reverts of PRs outside the cohort are not observed.
+ *
+ * A post-merge CI regression is a failed workflow run on a merged PR's merge
+ * commit, completed at or after the merge. `failure`, `timed_out` and
+ * `action_required` count; `cancelled` does not, since a concurrency
+ * cancellation is not a failure. Only the merge commit's runs are read: a run
+ * on the PR head is not a post-merge regression, and later default-branch
+ * commits are not observed. It is resolved by a later successful attempt of the
+ * same workflow on that commit.
  */
 function regressionsFor(
   observed: ObservedPr[],
-  ciRunsByPr: ReadonlyMap<string, readonly CiRun[]> = new Map(),
+  postMergeRunsByPr: ReadonlyMap<string, readonly CiRun[]> = new Map(),
 ): Regression[] {
   const byKey = new Map(
     observed.map((o) => [keyOf(o.record.repo, o.record.number), o.record]),
@@ -1027,16 +1055,16 @@ function regressionsFor(
   const rows: Regression[] = [...earliest.values()].map(
     ({ createdAt: _createdAt, ...row }) => ({ ...row, source: "revert" }),
   );
-  for (const { record } of observed) {
-    if (!record.mergedAt) continue;
+  for (const { record, mergeCommitSha } of observed) {
+    if (!record.mergedAt || mergeCommitSha === null) continue;
     const mergeMs = utcMillis(record.mergedAt, "PR mergedAt");
-    const runs = ciRunsByPr.get(keyOf(record.repo, record.number)) ?? [];
+    const runs = postMergeRunsByPr.get(keyOf(record.repo, record.number)) ?? [];
     const workflows = runs.filter((run) => run.kind === "workflow_run");
     for (const failed of workflows) {
       if (
-        !failed.completedAt || !failed.workflowId || !failed.headSha ||
-        failed.headSha !== record.headSha ||
-        !["failure", "cancelled", "timed_out", "action_required"].includes(
+        !failed.completedAt || !failed.workflowId ||
+        failed.headSha !== mergeCommitSha ||
+        !["failure", "timed_out", "action_required"].includes(
           failed.outcome ?? "",
         ) || utcMillis(failed.completedAt!, "workflow completedAt") < mergeMs
       ) continue;
@@ -1722,7 +1750,7 @@ export async function collectPrCompletionSnapshot(
   const githubActions: TrustedPrAction[] = [];
   const blockers: Blocker[] = [];
   const ciRuns: CiRun[] = [];
-  const ciRunsByPr = new Map<string, CiRun[]>();
+  const postMergeRunsByPr = new Map<string, CiRun[]>();
   let reviewEvents = 0;
   let prsWithReviewEvents = 0;
   for (const o of observed) {
@@ -1748,10 +1776,30 @@ export async function collectPrCompletionSnapshot(
       notes,
     );
     ciRuns.push(...prCiRuns);
-    ciRunsByPr.set(keyOf(record.repo, record.number), prCiRuns);
     blockers.push(
       ...ciBlockersFor(record, prCiRuns, options.cohort.observedAt),
     );
+    // Merge-commit runs feed only the post-merge regressions, not CI cost
+    // totals, so they are read separately and kept out of `ciRuns`.
+    if (record.mergedAt !== null) {
+      if (o.mergeCommitSha === null) {
+        notes.push(
+          `${
+            keyOf(record.repo, record.number)
+          }: merge commit SHA is null or absent; post-merge CI is not observed`,
+        );
+      } else {
+        postMergeRunsByPr.set(
+          keyOf(record.repo, record.number),
+          await ciRunsFor(
+            options.gh,
+            { ...record, headSha: o.mergeCommitSha },
+            [],
+            notes,
+          ),
+        );
+      }
+    }
   }
   if ((options.reviewLogs ?? []).length === 0 && reviewEvents > 0) {
     const events = reviewEvents === 1 ? "review event" : "review events";
@@ -1828,7 +1876,7 @@ export async function collectPrCompletionSnapshot(
     ],
     blockers,
     ciRuns,
-    regressions: regressionsFor(observed, ciRunsByPr),
+    regressions: regressionsFor(observed, postMergeRunsByPr),
     deployments,
     expectedDeployment: {
       components: [...options.expected.components],

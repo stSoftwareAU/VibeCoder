@@ -9,10 +9,12 @@
  * deleted interior entry) is detectable on verification.
  *
  * The journal lives OUTSIDE any repo working tree — under `VIBE_AUDIT_DIR`
- * when set, otherwise `${WORK_DIR}/audit/` — so a bug in the worker that rewrites a repo's
- * history cannot rewrite the history of its own audit log. Files are
- * partitioned per worker and per UTC day:
- *   `${WORK_DIR}/audit/audit-<workerId>-YYYY-MM-DD.jsonl`
+ * when set, otherwise `${WORK_DIR}/audit/` — so a bug in the worker that
+ * rewrites a repo's history cannot rewrite the history of its own audit log.
+ * `VIBE_AUDIT_DIR` must be an absolute path with no `..` segment (see
+ * {@link resolveBaseDir}). Files are partitioned per worker and per UTC day:
+ *   `<audit directory>/audit-<workerId>-YYYY-MM-DD.jsonl`
+ * where `<audit directory>` is `VIBE_AUDIT_DIR` or `${WORK_DIR}/audit`.
  *
  * The chain alone only detects interior edits, so every append also
  * updates a **chain anchor** (`audit_anchor.ts`) holding the record count
@@ -128,7 +130,10 @@ export class AuditChainAnchorError extends Error {
 
 /** Options controlling where an entry is written. */
 export interface RecordOptions {
-  /** Base directory override (default: `${WORK_DIR}/audit`). */
+  /**
+   * Base directory override (default: `VIBE_AUDIT_DIR` when set, otherwise
+   * `${WORK_DIR}/audit`).
+   */
   baseDir?: string;
   /** Worker partition override (default: resolved from env). */
   workerId?: string;
