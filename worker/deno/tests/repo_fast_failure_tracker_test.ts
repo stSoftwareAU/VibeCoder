@@ -302,6 +302,53 @@ Deno.test("diagnosticErrorLine - bounds a very long line", () => {
   assert(diagnosticErrorLine(line).length <= 400);
 });
 
+Deno.test("diagnosticErrorLine - Git checkout's Aborting trailer preserves its cause", async () => {
+  await withWorkDir(async (workDir) => {
+    const repo = `${workDir}/repo`;
+    await Deno.mkdir(repo);
+    const runGit = async (args: string[]) => {
+      const result = await new Deno.Command("git", {
+        args,
+        cwd: repo,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    };
+
+    await runGit(["init", "-b", "main"]);
+    await runGit(["config", "user.name", "Test"]);
+    await runGit(["config", "user.email", "test@example.invalid"]);
+    await Deno.writeTextFile(`${repo}/tracked.txt`, "base\n");
+    await runGit(["add", "tracked.txt"]);
+    await runGit(["commit", "-m", "initial"]);
+    await runGit(["checkout", "-b", "other"]);
+    await Deno.writeTextFile(`${repo}/tracked.txt`, "other\n");
+    await runGit(["commit", "-am", "other"]);
+    await runGit(["checkout", "main"]);
+    await Deno.writeTextFile(`${repo}/tracked.txt`, "local edit\n");
+
+    const refusal = await new Deno.Command("git", {
+      args: ["checkout", "-B", "feature", "other"],
+      cwd: repo,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(refusal.code, 1);
+    const stderr = new TextDecoder().decode(refusal.stderr);
+    assertStringIncludes(stderr, "Your local changes");
+    assertStringIncludes(stderr, "Aborting");
+
+    const detail = diagnosticErrorLine(stderr);
+    assertStringIncludes(detail, "Your local changes");
+    assertEquals(
+      detail.includes("Aborting"),
+      false,
+      "the generic trailer is not diagnostic",
+    );
+  });
+});
+
 Deno.test("recordRepoFastFailure - three failures in the window back the repo off", async () => {
   await withWorkDir(async (workDir) => {
     const first = await record(workDir, 1_000);

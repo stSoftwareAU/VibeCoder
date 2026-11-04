@@ -289,6 +289,8 @@ const UNINFORMATIVE_LINE_PATTERNS: readonly RegExp[] = [
   /^To\s+\S+$/, // git's destination line, printed above the rejection
   /^remote:\s*$/i, // GitHub's blank padding inside a `remote:` block
   /^hint:/i,
+  /^Aborting$/i, // Git's generic trailer after a failed checkout
+  /^Please commit your changes or stash them before you switch branches\.$/i,
   // git's discovery trailer under `fatal: not a git repository` (Issue #2848).
   /^Stopping at filesystem boundary\b/i,
   // The worker's failure message fences the agent's last output in a
@@ -300,7 +302,10 @@ const UNINFORMATIVE_LINE_PATTERNS: readonly RegExp[] = [
 
 /** Whether `line` is one of the trailing lines that carries no diagnosis. */
 function isUninformativeLine(line: string): boolean {
-  return UNINFORMATIVE_LINE_PATTERNS.some((pattern) => pattern.test(line));
+  const trimmed = line.trim();
+  // Git indents the affected paths between the checkout cause and its advice.
+  return /^\t\S/.test(line) ||
+    UNINFORMATIVE_LINE_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
 /**
@@ -311,6 +316,8 @@ function isUninformativeLine(line: string): boolean {
  * diagnosis ({@link UNINFORMATIVE_LINE_PATTERNS}) are stepped over. When
  * every line in the window is one of those, the true last line is kept: a
  * record that says something imperfect beats one that says nothing.
+ * Git's checkout refusal also lists affected paths and ends with generic
+ * advice and `Aborting`; those lines are skipped in favour of the refusal.
  *
  * The line is filed into a public issue body and the failure message quotes
  * the agent's own output, so the message is handed to `redactedLineTail`
@@ -321,14 +328,14 @@ function isUninformativeLine(line: string): boolean {
 export function diagnosticErrorLine(message: string): string {
   const lines = redactedLineTail(message ?? "", LAST_LINE_WINDOW)
     .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
   const informative = lines.filter((line) => !isUninformativeLine(line));
   const candidates = informative.length > 0 ? informative : lines;
   const chosen = candidates.length > 0
     ? candidates[candidates.length - 1]!
     : "";
-  return redactedTail(chosen, REPO_FAST_FAILURE_DETAIL_CHARS);
+  return redactedTail(chosen.trim(), REPO_FAST_FAILURE_DETAIL_CHARS);
 }
 
 /** Coerce an unknown record read from disk into a well-formed one. */
