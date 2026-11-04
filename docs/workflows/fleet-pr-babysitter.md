@@ -15,7 +15,9 @@ branch would run the whole CI again and roughly double the Actions cost of the
 repair. After Codex reports a completed fix, the babysitter commits the fix and
 the merge together as one merge commit, checks the fix (not the base's own
 changes) for whitespace errors and conflict markers, runs the repository's own
-gate on the committed head (Issue #4625), and rechecks the PR. It pushes only
+gate on the committed head (Issue #4625; run only as a separate account, never
+as the babysitter's own, which holds the fleet credentials, so a host with no
+such account defers the repair), and rechecks the PR. It pushes only
 if the gate passed and the PR still matches the original head. A base merge on its own
 is also pushed when the agent made no change, so the branch is never left
 behind. After a push, the babysitter synchronises the PR description from the

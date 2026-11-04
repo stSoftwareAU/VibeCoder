@@ -6404,14 +6404,25 @@ and only `passed` publishes:
   reached its time limit. The output
   goes back to the lane for repair.
 - `unavailable`: the gate could not run (a missing tool, a Docker or credential
-  fault, an unreadable checkout). This is not a verdict on the change: the lane
-  defers the head and a later cycle retries it.
+  fault, an unreadable checkout, a full disk), or it failed here in a way that
+  reproduces on the PR's base commit. For the last case a failing gate is re-run
+  once in a throwaway detached worktree of the base ref (`baseRef`, else
+  `origin/HEAD`, `origin/main` or `origin/master`), cached per base SHA; the
+  failure reproduces when the base gate also failed and every normalised output
+  line of the head's failure is already in the base's (the idea of
+  `decidePreExistingGateFailure`, Issue #1852). A host fault or a check already
+  red on the base is therefore not charged to the change. This is not a verdict
+  on the change: the lane defers the head and a later cycle retries it.
 
 The five lanes apply it as follows:
 
 - Issue completion runs it after the changed-file pre-push gate, and once more
   on a head that the last-currency step merged. A `failed` verdict gets the one
-  in-run recovery turn; `unavailable` is retried as a push failure.
+  in-run recovery turn; `unavailable` is retried as a push failure. The push
+  and the push-rejection recovery both carry the publication guard: a rejected
+  push is recovered by merging the remote branch in, and that merged head is
+  validated before it is pushed. A head already validated in the phase is not
+  validated twice.
 - CI repair and PR feedback run it in the `beforePush` guard of
   `commitAndPushPending` and `recoverFromPushRejection`. Feedback runs the AI
   review-fix verifier before merging the base and the gate on the resulting
@@ -6423,11 +6434,24 @@ The five lanes apply it as follows:
   push the issue branch before completion's own gate, so each passes the same
   `createPublicationGuard` as `beforePush`; a `failed` or `unavailable` verdict
   leaves origin unmoved.
-- Babysitter repair runs it after the commit and before the push. A `failed`
-  verdict keeps the attempt record; `unavailable` removes it so a later pass
-  resumes.
+- Babysitter repair runs it after the commit and before the push, with
+  `requireSeparateAccount`: the babysitter's account holds the fleet's
+  write-capable credentials (THREAT-MODEL control C37), so the PR's own code runs
+  only as the separate `agent` account. A host with no such account reports
+  `unavailable` and never runs the gate as the runner. A `failed` verdict is
+  thrown as a `BabysitterFailure` of class `code`, so the gate's output (a test
+  named `needs-human`, a "timed out" line) can never change its class, and it
+  counts one substantive attempt; `unavailable` is a `capability` failure and
+  counts none.
 - PR spelling fixes run it on the committed fix before the push. `unavailable`
   defers the head to a later cycle, as in the other lanes.
+- The spelling and feedback scanners have no retry cap of their own, so each
+  charges one round (`publication_deferral_budget.ts`, `MAX_PUBLICATION_DEFERRALS`
+  = 3) whenever the gate defers or rejects a fix. Spelling keys the budget on the
+  check run, feedback on the comment and the head it started from. A spent
+  budget skips the agent and verifier sessions until the key changes (a new push).
+  The output of a head the gate rejected in the spelling lane is shown, fenced as
+  untrusted, to the next round for the same check run.
 
 A `passed` verdict is reused only while the checkout is clean and the head is
 unchanged. Any new commit or uncommitted edit is validated afresh. The gate's

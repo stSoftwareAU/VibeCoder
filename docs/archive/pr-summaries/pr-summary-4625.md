@@ -22,6 +22,14 @@ commits in the CI, feedback or spelling lane, the lane validates the moved head 
 run (`validateSelfPushedHead`); a rejected or unrunnable head is not reported as
 a successful push.
 
+Review round (PR #4800): the babysitter gate runs only as a separate account
+(`requireSeparateAccount`, THREAT-MODEL C37) and its `failed` verdict is a
+`BabysitterFailure` of class `code`; completion validates a head merged by
+push-rejection recovery before it is pushed; the spelling and feedback lanes stop
+spending sessions after `MAX_PUBLICATION_DEFERRALS` (3) deferred or rejected
+rounds per key; a gate failure that reproduces on the base commit is
+`unavailable`.
+
 In the CI lane an `unavailable` gate releases the PR: the local retry charge is
 retained, no failed-push comment is written and the round
 returns `processed: false`. Closes #4625.
@@ -53,8 +61,9 @@ flowchart LR
 ### Essential Design Decisions
 
 - Three outcomes: `passed`, `failed` (output goes back for repair) and
-  `unavailable` (missing tool, Docker or credential fault, disk full: never pushed, never a content failure, retried later; a gate timeout
-  is a charged failure).
+  `unavailable` (missing tool, Docker or credential fault, disk full, or a gate
+  failure that reproduces on the PR's base commit on this host: never pushed,
+  never a content failure, retried later; a gate timeout is a charged failure).
 - The result is tied to the head: a dirty tree fails, and any new commit is
   validated afresh. A Deno run that executed zero tests fails. Default timeout
   is 30 minutes; a repository's `quality_check_timeout` overrides it.
@@ -155,3 +164,50 @@ durable retry (#4656) and review dismissal (#4657) belong to those issues.
   A rejected self-push remains unsuccessful, covered by
   `worker/deno/tests/pr_spelling_processor_test.ts::processSpellingFailure - a self-pushed spelling fix rejected by the repository checks is not reported as successful (Issue #4625)`.
   No mirrored rule was found for these push hooks.
+
+## Review round 2 (PR #4800)
+
+- Babysitter credential boundary: `PublicationRequest.requireSeparateAccount`
+  makes the gate's `runCommand` refuse (and the result `unavailable`) when
+  `canRunAsUntrustedUser` is false, instead of the `untrustedSpawn` fallback to
+  the runner. Tests:
+  `worker/deno/tests/publication_validation_test.ts::requireSeparateAccount: with no separate account the repository's command never runs`
+  (spawn count 0, positive control with a droppable host, and an unchanged
+  caller that does not ask). The babysitter passes the flag; asserted in
+  `worker/deno/tests/fixtures/fleet_pr_babysitter_validation_scenarios.ts` ("the
+  gate runs on the committed head..."). Recorded as THREAT-MODEL C37.
+  Consequence: a host with no `agent` account defers babysitter repairs rather
+  than running PR code as the key holder.
+- Babysitter failure class: a `failed` verdict throws
+  `BabysitterFailure(..., "code")`. Scenario "a failed gate is a code failure
+  whatever its output says, and counts one substantive attempt" uses output
+  containing `needs-human`, `changed during` and a timeout line; red with the
+  plain `Error` restored (class `owner`).
+- Completion push self-heal: `pushUnpushedCommits` (4th argument) and
+  `recoverFromPushRejection` receive the publication guard at all four push
+  sites; a head validated earlier in the phase is not validated again. Tests in
+  `worker/deno/tests/completion_phase_publication_validation_4625_test.ts`:
+  merged head validated before its push, rejected merged head never pushed
+  (`pre_push_gate`), unavailable merged head retried (`push_failure`); the first
+  is red with the first push's hook removed.
+- Deferral bounds: new `worker/deno/lib/publication_deferral_budget.ts`.
+  Spelling (`spelling-<checkRunId>`) and feedback
+  (`feedback-<type>-<id>-<head>`) stand down after 3 rounds, charged on
+  `unavailable` and, in spelling, on a rejected head too; a rejected head's
+  output is fenced into the next spelling prompt. Tests:
+  `pr_spelling_processor_test.ts` (bound, self-push `unavailable`,
+  `processed: false` and no comment in the deferred case; red with the early
+  return disabled and with the charge removed) and
+  `pr_feedback_processor_test.ts` (bound; red with the charge removed). Not
+  done: cheap capability probes before the agent starts; the capability decision
+  lives inside the gate runner, so a probe would duplicate it. The bound is what
+  limits the cost.
+- Base reproduction: a failing gate is re-run in a detached worktree of the base
+  ref, cached per base SHA; reproduces when every normalised head failure line
+  is in the base's. Tests: `publication_validation_test.ts` (reproduces and is
+  cached; base passes, head has a new line, no base ref: all stay `failed`). The
+  comparison base is `baseRef` when a caller supplies one, else `origin/HEAD`,
+  `origin/main` or `origin/master`; no lane passes `baseRef` yet, so a milestone
+  PR compares against the default branch.
+- Removed `refundCiCheckRetry` and its test (no caller); corrected the
+  `publication_validation.ts` header so a gate timeout is under `failed`.
