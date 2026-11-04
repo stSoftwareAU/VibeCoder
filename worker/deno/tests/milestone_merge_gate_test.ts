@@ -12,15 +12,20 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  CARGO_MERGE_GATE_TIMEOUT_MS,
   checkMergedTree,
   collapseRepeatedLines,
   detectRemoteModuleGap,
   detectRustToolchainGap,
   findTypeCheckProjects,
   isMergeGateFailure,
+  MERGE_GATE_TIMEOUT_MS,
   mergeGateFailureError,
+  spawnTypeCheck,
   type TypeCheckProject,
+  typeCheckTimeoutMs,
 } from "../lib/milestone_merge_gate.ts";
+import type { runRepositoryCommand } from "../lib/untrusted_gate_spawn.ts";
 import { CARGO_BUILD_SKIPPED_FOR_MERGE } from "../lib/heavy_build_gate.ts";
 import {
   assertOnlyAllowlistedNames,
@@ -620,5 +625,89 @@ Deno.test("checkMergedTree - the repository's own check is refused when its mani
       outcome.output.includes("is a symbolic link"),
       `expected the symbolic-link refusal, got: ${outcome.output}`,
     );
+  });
+});
+
+/**
+ * A fake command runner (Issue #4787): records the limit it was handed and
+ * answers with the given reply, in the shape the real runner returns.
+ */
+function recordingRun(
+  limits: number[],
+  reply: { code: number; stdout: string; stderr: string; timedOut: boolean },
+): typeof runRepositoryCommand {
+  return (_executable, _args, options) => {
+    limits.push(options.timeoutMs);
+    return Promise.resolve({
+      ok: true as const,
+      value: { success: reply.code === 0, ...reply },
+    });
+  };
+}
+
+Deno.test("typeCheckTimeoutMs - cargo gets the Cargo limit, Deno keeps the Deno limit, and Cargo's is the longer (Issue #4787)", () => {
+  assertEquals(typeCheckTimeoutMs("cargo"), CARGO_MERGE_GATE_TIMEOUT_MS);
+  assertEquals(typeCheckTimeoutMs("deno"), MERGE_GATE_TIMEOUT_MS);
+  assert(CARGO_MERGE_GATE_TIMEOUT_MS > MERGE_GATE_TIMEOUT_MS);
+});
+
+Deno.test("spawnTypeCheck - each toolchain's check gets its own limit, and a timeout names that limit (Issue #4787)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    await writeFile(`${dir}/app/deno.json`, "{}");
+    const cargo: TypeCheckProject = {
+      dir,
+      kind: "cargo",
+      args: ["check", "--workspace", "--all-targets"],
+    };
+    const deno: TypeCheckProject = {
+      dir: `${dir}/app`,
+      kind: "deno",
+      args: ["task", "check"],
+    };
+
+    const cargoLimits: number[] = [];
+    const cargoTimedOut = await spawnTypeCheck(
+      cargo,
+      recordingRun(cargoLimits, {
+        code: 0,
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+      }),
+    );
+    assertEquals(cargoLimits, [CARGO_MERGE_GATE_TIMEOUT_MS]);
+    assertEquals(cargoTimedOut.code, 124);
+    assertStringIncludes(cargoTimedOut.output, "timed out after 900000ms");
+    assert(!cargoTimedOut.output.includes("300000ms"));
+
+    const denoLimits: number[] = [];
+    const denoTimedOut = await spawnTypeCheck(
+      deno,
+      recordingRun(denoLimits, {
+        code: 0,
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+      }),
+    );
+    assertEquals(denoLimits, [MERGE_GATE_TIMEOUT_MS]);
+    assertEquals(denoTimedOut.code, 124);
+    assertStringIncludes(denoTimedOut.output, "timed out after 300000ms");
+
+    // A check that finishes inside its limit keeps its code and its output.
+    const finished = await spawnTypeCheck(
+      cargo,
+      recordingRun([], {
+        code: 101,
+        stdout: "",
+        stderr: "error[E0425]: cannot find value `synapse` in this scope",
+        timedOut: false,
+      }),
+    );
+    assertEquals(finished, {
+      code: 101,
+      output: "error[E0425]: cannot find value `synapse` in this scope",
+    });
   });
 });
