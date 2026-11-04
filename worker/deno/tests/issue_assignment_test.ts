@@ -41,7 +41,6 @@ import {
   type IssueAssignmentSeams,
   issueRunRoleTreatments,
   parseAssignmentMarker,
-  productionIssueAssignmentSeams,
   recordIssueAssignment,
   selectTrustedAssignment,
 } from "../lib/issue_assignment.ts";
@@ -51,7 +50,6 @@ import {
   HAIKU_ISSUE_EXECUTOR_EFFORT,
   HAIKU_ISSUE_EXECUTOR_MODEL,
 } from "../lib/issue_executor_agents.ts";
-import { getHostname } from "../lib/worker_identity.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const ISSUE = 3718;
@@ -985,16 +983,20 @@ Deno.test("issue assignment - a failing re-read after posting rejects and append
   });
 });
 
-Deno.test("issue assignment - the production seams record the machine hostname as the ledger host (Issue #4658)", () => {
-  // The per-host allocation reader filters ledger events on getHostname(), so
-  // the production seam must write that same identity. The seam reads
-  // VIBE_HOST_ID from the process environment, so the regression only shows
-  // when VIBE_HOST_ID is set to a value unlike the machine name. The test
-  // does not mutate the environment; run it with VIBE_HOST_ID set to exercise
-  // the regression.
-  const seams = productionIssueAssignmentSeams(
-    "/nonexistent-issue-assignment-work-dir",
-    () => Promise.reject(new Error("gh must not run while building seams")),
-  );
-  assertEquals(seams.host, getHostname());
+Deno.test("issue assignment - the production seams record the machine hostname as the ledger host (Issue #4658)", async () => {
+  const script = `
+    import { productionIssueAssignmentSeams } from "./lib/issue_assignment.ts";
+    import { getHostname } from "./lib/worker_identity.ts";
+    const seams = productionIssueAssignmentSeams("/nonexistent", () => Promise.reject(new Error("unexpected gh")));
+    if (seams.host !== getHostname() || seams.host === "different-report-host") throw new Error("ledger host differs from machine hostname");
+  `;
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: ["eval", script],
+    cwd: new URL("..", import.meta.url).pathname,
+    clearEnv: true,
+    env: { VIBE_HOST_ID: "different-report-host" },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assertEquals(result.success, true, new TextDecoder().decode(result.stderr));
 });

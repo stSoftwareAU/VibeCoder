@@ -2,7 +2,7 @@
 
 Continues the PR completion report and collector that #4709 landed
 (`deno task pr-completion-report`); nothing is rebuilt. This change adds trusted
-provenance for babysitter and milestone actions, complete all-head CI and
+provenance for babysitter and milestone actions, bounded CI history and
 blocker accounting, a post-merge CI view, per-host policy and heartbeat
 reporting, and a demonstrable rediscovery record. An `--auto` merge arm is now
 recorded as `merge-arm` and can never verify a later merge. The 24-hour
@@ -168,6 +168,38 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
 
 ## Test Plan
 
+- Review repair: CI collection lists a PR branch once and matches runs to its
+  observed commit heads. It reads checks only for heads with workflow runs;
+  other checks may be unobserved. A shared 5,000-call budget limits CI reads;
+  exhaustion discards the partial PR history and records a coverage note.
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - many commits require one CI listing and budget exhaustion is reported`
+  covers both the bounded listing and exhaustion. The obsolete per-commit
+  listing included checks on heads without workflow runs; the remaining
+  workflow and check history is covered by
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - CI history includes observed heads, workflow attempts and paged jobs`
+  and `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a CI run without a completion time has no duration`.
+  No duplicate CI collection implementation was found.
+- Review repair validation: `deno fmt --check`, `deno lint` and the whole-tree
+  `deno check` pass. The gate's `deno task test:unit` for the snapshot,
+  issue-assignment and audit-hook suites passes (144 tests); markdownlint
+  reports no issues.
+- The ledger-host test runs in a clean child with a distinct `VIBE_HOST_ID`.
+  Changing the ledger host to that value made
+  `worker/deno/tests/issue_assignment_test.ts::issue assignment - the production seams record the machine hostname as the ledger host (Issue #4658)`
+  fail with `ledger host differs from machine hostname`.
+- Test-change evidence: restoring the former audit-action discovery inference
+  made `worker/deno/tests/pr_completion_snapshot_test.ts::collect - the rollout check strands only PRs open at verification and at least a day old`
+  fail because PR 31 became discovered and processed instead of false. Restoring
+  fleet attribution and verification for unchained logs made
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`
+  fail with actor `fleet` instead of `unknown`, and
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`
+  fail with zero rather than one unknown merge. Restoring the former unknown
+  `git_pull` classification made
+  `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`
+  fail with `unknown` instead of `milestone`; the unlisted-caller assertions
+  remain in that test.
+
 - Review repair: named chain-verified worker comments retain fleet attribution;
   unnamed components remain unknown. Coverage:
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a named worker comment retains trusted attribution`.
@@ -193,7 +225,7 @@ Test-change evidence: reverting the `git_pull` classification made
 `worker/deno/tests/audit_hook_test.ts::audit_hook - a git_pull push to a milestone branch is a milestone action`
 fail with `unknown` instead of `milestone`. The obsolete unknown classification
 is replaced by milestone and branch-update classifications; unknown callers stay
-covered by `worker/deno/tests/audit_hook_test.ts::audit_hook - a push with no resolved caller is unknown, not milestone`.
+covered by `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`.
 Reverting the auto-arm classification made
 `worker/deno/tests/pr_completion_snapshot_test.ts::collect - auto-merge arms and withdrawals never verify a GitHub merge`
 fail with `merge` instead of `merge-arm`. The obsolete attribution of an arm as
@@ -206,7 +238,7 @@ and the collector, while the hook-driven test covers the journal path.
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a CI blocker on a merged PR never runs past the merge, recovered or not, and a failure after it is no blocker`.
   The removed serial exception is obsolete because injected seams preserve the
   real pass coverage in `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts::babysitter pass journals discovered, eligible and processed transitions on a live run`.
-  The unnamed push case remains covered by `worker/deno/tests/audit_hook_test.ts::audit_hook - a push with no resolved caller is unknown, not milestone`.
+  The unnamed push case remains covered by `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`.
   The pinned, timely auto-merge arm remains unknown in
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - auto-merge arming cannot verify a later merge`.
   No duplicate CI blocker implementation was found.
@@ -247,9 +279,8 @@ and the collector, while the hook-driven test covers the journal path.
 - The `windowClosed &&` operand of `ready` in
   `worker/deno/lib/pr_completion_report.ts` was a dead operand (`status` already
   returns `pending` first when the window is open), so it was removed rather than
-  tested. The `issue_assignment` host test is green under the gate whichever value
-  is written, because the gate strips `VIBE_HOST_ID`; it is red in a direct run
-  with `VIBE_HOST_ID` set.
+  tested. The `issue_assignment` host test supplies `VIBE_HOST_ID` in its child
+  process, including under the gate.
 - Callers checked: `productionIssueAssignmentSeams` (host reader
   `subscription_allocation_runtime.ts:248` again matches); `actionKindFor`
   callers all go through `record`.
@@ -265,7 +296,7 @@ and the collector, while the hook-driven test covers the journal path.
       actions"
     - Replaced by: `assertEquals(pushKindFor(["push", "origin", "milestone/foo"], caller), "milestone");`
       A resolved but unnamed caller must still be unknown, covered by
-      `worker/deno/tests/audit_hook_test.ts::audit_hook - a push with no resolved caller is unknown, not milestone`.
+      `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`.
   - Removed from `worker/deno/tests/pr_completion_report_test.ts`:
     `assertEquals(report.cohort.prCount, 7);` (also `openPrs` 2, `eligiblePrs` 6)
     - Obsolete: the fixture gained an eighth PR (open, owner-gate label) to cover

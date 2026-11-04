@@ -682,9 +682,16 @@ const GIT_PULL_FEATURE_STACK = [
   "    at async updatePrBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:1615:22)",
 ].join("\n");
 
-Deno.test("audit_hook - a push with no resolved caller is unknown, not milestone", () => {
+Deno.test("audit_hook - unnamed pushes stay unknown while milestone pushes are classified", () => {
   assertEquals(pushKind(undefined), "unknown");
   assertEquals(pushKind(callerIn("lib", "recent_activity.ts")), "unknown");
+  assertEquals(
+    pushKindFor(
+      ["push", "origin", "milestone/foo"],
+      callerIn("lib", "git_pull.ts"),
+    ),
+    "milestone",
+  );
 });
 
 Deno.test("audit_hook - a git_pull push to a milestone branch is a milestone action", () => {

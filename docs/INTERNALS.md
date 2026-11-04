@@ -1338,8 +1338,12 @@ into `--write-snapshot`, so an `--input` replay reports the truncation too.
 Paged event lists stop after ten pages, which is a coverage note. Every missing,
 unreadable or malformed local file is a coverage note, not a silent drop.
 
-**CI scope.** Collection paginates check runs, workflow attempts and jobs for
-all observed PR heads and commit heads, including open and closed-unmerged PRs.
+**CI scope.** Collection lists workflow runs by PR branch, matches them to
+observed PR and commit heads, and reads check runs only for heads with workflow
+runs. Other checks on heads without workflow runs are not observed. A shared
+5,000-call CI budget bounds each collection; exhaustion leaves a per-PR coverage
+note and discards that PR's partial CI history. Workflow attempts and paginated
+jobs are read, including for open and closed-unmerged PRs.
 Merge-commit runs are read for post-merge regressions only, and are kept out of
 the CI history that feeds the cost totals. Shared evidence is deduplicated by repository, run and attempt. Truncated history
 and missing durations remain visible; cost totals are calculated for delivered
@@ -1356,7 +1360,8 @@ it), was at least 24 hours old at it, and is not labelled `needs-human`. A PR
 that merged after the instant is therefore still stranded. Its discovered,
 eligible and processed transitions come from the babysitter's ordinary scan
 event ledger, not later audit actions. An unchanged head is recorded again on
-a later scan. Ledger write failures are
+the first scan of a later UTC day; same-day scans of that head add no row.
+Ledger write failures are
 logged without interrupting the pass; a torn final record is discarded on the
 next append. Every expected babysitter host and an
 explicit deployment inventory must be present for rollout coverage to be

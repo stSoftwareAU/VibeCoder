@@ -76,6 +76,8 @@ export interface CollectOptions {
   rolloutVerifiedAt?: string;
   /** Cap on PRs kept per repository in the cohort (default 500). */
   maxPrsPerRepo?: number;
+  /** Maximum GitHub calls devoted to CI per collection (default 5000). */
+  ciCallBudget?: number;
   /** GitHub read seam. */
   gh: GhJson;
 }
@@ -136,7 +138,7 @@ const REVERT_REFERENCE = /\bReverts?\s+#(\d{1,7})\b/gi;
 const QUOTED_PR_REFERENCE = /\(#(\d{1,7})\)/g;
 /** Shown once per collection: the CI scope limit, for the coverage notes. */
 const CI_SCOPE_NOTE =
-  "CI history is read from observed PR heads and commit heads; truncated API history is called out per PR";
+  "CI history covers workflow runs on observed heads and their check runs; heads without workflow runs may have unobserved checks, and truncated API history is called out per PR";
 
 /** A PR observed in the cohort, with the text the regressions and rollups read. */
 interface ObservedPr {
@@ -839,6 +841,7 @@ async function ciRunsFor(
   record: PrCompletionRecord,
   headShas: string[],
   notes: string[],
+  mergeCommit = false,
 ): Promise<CiRun[]> {
   const label = keyOf(record.repo, record.number);
   const rows: CiRun[] = [];
@@ -892,7 +895,28 @@ async function ciRunsFor(
   };
   const heads = [...new Set([record.headSha, ...headShas].filter(Boolean))];
   const workflowRuns = new Map<string, { run: Json; headSha: string }>();
-  for (const headSha of heads) {
+  const workflowPath = mergeCommit
+    ? `repos/${record.repo}/actions/runs?head_sha=${
+      encodeURIComponent(record.headSha)
+    }`
+    : `repos/${record.repo}/actions/runs?branch=${
+      encodeURIComponent(record.headRef)
+    }`;
+  const workflows = await fetchPages(
+    workflowPath,
+    "workflow_runs",
+    "workflow-run",
+  );
+  for (const run of workflows) {
+    const headSha = asText(requiredKey(run, "head_sha", "workflow run"));
+    if (headSha === null || !heads.includes(headSha)) continue;
+    workflowRuns.set(asId(run.id, `${label} workflow run`), { run, headSha });
+  }
+  for (
+    const headSha of new Set(
+      [...workflowRuns.values()].map((entry) => entry.headSha),
+    )
+  ) {
     // filter=all: otherwise GitHub lists only the latest run per check name.
     const checks = await fetchPages(
       `repos/${record.repo}/commits/${headSha}/check-runs?filter=all`,
@@ -916,18 +940,6 @@ async function ciRunsFor(
         startedAt: asText(check.started_at),
         completedAt: asText(check.completed_at),
       });
-    }
-    const workflows = await fetchPages(
-      `repos/${record.repo}/actions/runs?head_sha=${
-        encodeURIComponent(headSha)
-      }`,
-      "workflow_runs",
-      "workflow-run",
-      headSha,
-    );
-    for (const run of workflows) {
-      const runId = asId(run.id, `${label} workflow run`);
-      workflowRuns.set(runId, { run, headSha });
     }
   }
   for (const { run: listedRun, headSha } of workflowRuns.values()) {
@@ -1775,6 +1787,33 @@ export async function collectPrCompletionSnapshot(
   const blockers: Blocker[] = [];
   const ciRuns: CiRun[] = [];
   const postMergeRunsByPr = new Map<string, CiRun[]>();
+  let ciCallsRemaining = options.ciCallBudget ?? 5000;
+  if (!Number.isSafeInteger(ciCallsRemaining) || ciCallsRemaining < 0) {
+    throw new Error("ciCallBudget must be a non-negative safe integer");
+  }
+  class CiBudgetExhausted extends Error {}
+  const ciGh: GhJson = (path) => {
+    if (ciCallsRemaining === 0) throw new CiBudgetExhausted();
+    ciCallsRemaining--;
+    return options.gh(path);
+  };
+  const boundedCi = async (
+    record: PrCompletionRecord,
+    heads: string[],
+    mergeCommit = false,
+  ): Promise<CiRun[]> => {
+    try {
+      return await ciRunsFor(ciGh, record, heads, notes, mergeCommit);
+    } catch (error) {
+      if (!(error instanceof CiBudgetExhausted)) throw error;
+      notes.push(
+        `${
+          keyOf(record.repo, record.number)
+        }: CI history truncated; collection call budget exhausted`,
+      );
+      return [];
+    }
+  };
   let reviewEvents = 0;
   let prsWithReviewEvents = 0;
   for (const o of observed) {
@@ -1793,11 +1832,9 @@ export async function collectPrCompletionSnapshot(
         used,
       ),
     );
-    const prCiRuns = await ciRunsFor(
-      options.gh,
+    const prCiRuns = await boundedCi(
       record,
       evidence.commits.map((commit) => commit.sha),
-      notes,
     );
     ciRuns.push(...prCiRuns);
     blockers.push(
@@ -1815,11 +1852,10 @@ export async function collectPrCompletionSnapshot(
       } else {
         postMergeRunsByPr.set(
           keyOf(record.repo, record.number),
-          await ciRunsFor(
-            options.gh,
+          await boundedCi(
             { ...record, headSha: o.mergeCommitSha },
             [],
-            notes,
+            true,
           ),
         );
       }

@@ -1015,9 +1015,18 @@ function fakeGh(fixture: Fixture): GhJson {
       return fixture.checks?.[match[1]!] ?? { total_count: 0, check_runs: [] };
     }
     if ((match = /^repos\/[^/]+\/[^/]+\/actions\/runs$/.exec(base!))) {
-      const headSha = params.get("head_sha") ?? "";
-      return fixture.workflowRuns?.[headSha] ??
-        { total_count: 0, workflow_runs: [] };
+      const headSha = params.get("head_sha");
+      const entries = headSha === null
+        ? Object.entries(fixture.workflowRuns ?? {}).filter(([sha]) =>
+          !sha.startsWith("merge")
+        )
+        : Object.entries(fixture.workflowRuns ?? {}).filter(([sha]) =>
+          sha === headSha
+        );
+      const runs = entries.flatMap(([sha, body]) =>
+        (body.workflow_runs as Json[]).map((run) => ({ head_sha: sha, ...run }))
+      );
+      return { total_count: runs.length, workflow_runs: slice(runs) };
     }
     if (
       (match = /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/attempts\/(\d+)$/
@@ -1049,6 +1058,48 @@ function fakeGh(fixture: Fixture): GhJson {
 function emptyFixture(extra: Partial<Fixture> = {}): Fixture {
   return { calls: [], ...extra };
 }
+
+Deno.test("collect - many commits require one CI listing and budget exhaustion is reported", async () => {
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [pull(1, { merged_at: null, closed_at: null, state: "open" })],
+    },
+    commits: {
+      [pk(1)]: Array.from(
+        { length: 90 },
+        (_, i) => commit(`sha${i + 2}`, "2026-10-20T00:40:00Z"),
+      ),
+    },
+    workflowRuns: {
+      sha1: { total_count: 1, workflow_runs: [{ id: 55, head_sha: "sha1" }] },
+    },
+  });
+  const complete = emptyFixture({
+    pulls: fixture.pulls,
+    commits: fixture.commits,
+  });
+  await collectPrCompletionSnapshot(options(fakeGh(complete)));
+  assertEquals(
+    complete.calls.filter((path) =>
+      path.includes("/actions/runs") || path.includes("/check-runs")
+    ).length,
+    1,
+  );
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(fixture), { ciCallBudget: 1 }),
+  );
+  assertEquals(
+    fixture.calls.filter((path) =>
+      path.includes("/actions/runs") || path.includes("/check-runs")
+    ).length,
+    1,
+  );
+  assert(
+    snapshot.coverageNotes.some((note) =>
+      note.includes("CI history truncated")
+    ),
+  );
+});
 
 function options(
   gh: GhJson,
@@ -1756,6 +1807,8 @@ Deno.test("collect - an action repeated across two audit directories is counted 
 Deno.test("collect - a CI run without a completion time has no duration", async () => {
   const fixture = emptyFixture({
     pulls: { [REPO]: [pull(1)] },
+    workflowRuns: { sha1: { workflow_runs: [{ id: 55 }] } },
+    workflowAttempts: { "55:1": { status: "in_progress" } },
     checks: {
       sha1: {
         total_count: 3,
@@ -1783,44 +1836,47 @@ Deno.test("collect - a CI run without a completion time has no duration", async 
     },
   });
   const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
-  assertEquals(snapshot.input.ciRuns, [
-    {
-      repo: REPO,
-      prNumber: 1,
-      runId: "11",
-      durationMinutes: 10,
-      kind: "check_run",
-      headSha: "sha1",
-      durationSeconds: 600,
-      outcome: null,
-      startedAt: "2026-10-20T00:00:00Z",
-      completedAt: "2026-10-20T00:10:00Z",
-    },
-    {
-      repo: REPO,
-      prNumber: 1,
-      runId: "12",
-      durationMinutes: null,
-      kind: "check_run",
-      headSha: "sha1",
-      durationSeconds: null,
-      outcome: null,
-      startedAt: "2026-10-20T00:00:00Z",
-      completedAt: null,
-    },
-    {
-      repo: REPO,
-      prNumber: 1,
-      runId: "13",
-      durationMinutes: null,
-      kind: "check_run",
-      headSha: "sha1",
-      durationSeconds: null,
-      outcome: null,
-      startedAt: "2026-10-20T00:00:00Z",
-      completedAt: null,
-    },
-  ]);
+  assertEquals(
+    snapshot.input.ciRuns.filter((run) => run.kind === "check_run"),
+    [
+      {
+        repo: REPO,
+        prNumber: 1,
+        runId: "11",
+        durationMinutes: 10,
+        kind: "check_run",
+        headSha: "sha1",
+        durationSeconds: 600,
+        outcome: null,
+        startedAt: "2026-10-20T00:00:00Z",
+        completedAt: "2026-10-20T00:10:00Z",
+      },
+      {
+        repo: REPO,
+        prNumber: 1,
+        runId: "12",
+        durationMinutes: null,
+        kind: "check_run",
+        headSha: "sha1",
+        durationSeconds: null,
+        outcome: null,
+        startedAt: "2026-10-20T00:00:00Z",
+        completedAt: null,
+      },
+      {
+        repo: REPO,
+        prNumber: 1,
+        runId: "13",
+        durationMinutes: null,
+        kind: "check_run",
+        headSha: "sha1",
+        durationSeconds: null,
+        outcome: null,
+        startedAt: "2026-10-20T00:00:00Z",
+        completedAt: null,
+      },
+    ],
+  );
 });
 
 Deno.test("collect - CI history includes observed heads, workflow attempts and paged jobs", async () => {
@@ -1920,13 +1976,12 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
   );
   assert(
     fixture.calls.includes(
-      "repos/org/repo/actions/runs?head_sha=sha2&per_page=100&page=1",
+      "repos/org/repo/actions/runs?branch=issue-1&per_page=100&page=1",
     ),
   );
   assert(
-    fixture.calls.some((path) =>
-      path.startsWith("repos/org/repo/commits/sha2/check-runs?") &&
-      path.includes("filter=all")
+    !fixture.calls.some((path) =>
+      path.startsWith("repos/org/repo/commits/sha2/check-runs?")
     ),
   );
   // The merge commit's runs are read for post-merge regressions only, so they
@@ -3319,6 +3374,8 @@ Deno.test("collect - a page-truncated event list and a partial check-run list ar
   const fixture = emptyFixture({
     pulls: { [REPO]: [pull(50)] },
     reviews: { [pk(50)]: reviews },
+    workflowRuns: { sha50: { workflow_runs: [{ id: 55 }] } },
+    workflowAttempts: { "55:1": { status: "in_progress" } },
     checks: {
       sha50: {
         total_count: 3,
