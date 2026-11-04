@@ -78,14 +78,14 @@ Backend change; no UI file is touched. The real-sudo test in
   cargo's own "could not find `Cargo.toml`" output is still `failed`; probe exit
   2 runs with a private `CARGO_TARGET_DIR`; real `agent` readable versus
   inaccessible checkout; and (PR #4795 review, Issue #4782) a real-sudo test
-  with a worker-owned 0755 sub-directory project that runs its fast check, plus a
-  test that runs the real probe script on a 0555 directory and shows the fast
+  with a worker-owned 0755 sub-directory project that runs its fast check, plus
+  a test that runs the real probe script on a 0555 directory and shows the fast
   check runs while the default probe still refuses with `probe 3`.
 - Red checks: returning exit 1 directly for `GateAccountUnavailable` turned the
-  `unverified`/`deferred` test red; always throwing for an
-  absent manifest turned the missing-manifest test red. Setting
-  `requireWritableCheckout: true` in `spawnFastCheck` turned both new
-  sub-directory tests red (2 of 9 failed, `probe 3`). All restored.
+  `unverified`/`deferred` test red; always throwing for an absent manifest
+  turned the missing-manifest test red. Setting `requireWritableCheckout: true`
+  in `spawnFastCheck` turned both new sub-directory tests red (2 of 9 failed,
+  `probe 3`). All restored.
 - Edited existing tests: `tests/merge_fast_checks_test.ts` gained `isProbeCall`
   and `probePassed` helpers and the "isolates credentials" test returns early
   for the probe call. `tests/merge_fast_checks_credentials_4705_test.ts`:
