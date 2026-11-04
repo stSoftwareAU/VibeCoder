@@ -468,7 +468,7 @@ export async function spawnFastCheck(
     code !== 0 && check.kind === "deno" && readOnlyCheckout &&
     denoLockfileWriteRefused(check.dir, output)
   ) {
-    throw new GateAccountUnavailable(output);
+    throw new GateCheckoutUnwritable(output);
   }
   return { code, output };
 }
@@ -525,10 +525,7 @@ export async function runMergeFastChecks(
     try {
       result = await runner({ ...check, timeoutMs: remaining });
     } catch (err) {
-      if (
-        err instanceof GateCheckoutUnwritable && check.kind === "deno" &&
-        check.args[0] === "task" && check.args[1] !== "check"
-      ) {
+      if (err instanceof GateCheckoutUnwritable) {
         leftToCi.push(`${check.label}: ${err.message}`);
         continue;
       }

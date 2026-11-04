@@ -163,8 +163,8 @@ separate from the milestone gate's target.
 The worker provisions that root, deferring if it cannot; the separate
 trim-refused target remains on the ephemeral layer.
 The `check` task runs read-only when the milestone gate's Deno criteria hold.
-Other resolution tasks that cannot write the project are recorded as left to CI;
-if no check ran, the merge remains unverified.
+Any check blocked by the project write probe, or by a stale Deno lockfile write
+refusal, is recorded as left to CI; if no check ran, the merge remains unverified.
 
 A declared name must be a plain identifier. `IFS` and names starting with
 `_vibe_cc_` are the wrapper's own and are refused, so a declaration can never

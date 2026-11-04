@@ -32,6 +32,7 @@ import {
 } from "../lib/merge_fast_checks.ts";
 import {
   GateAccountUnavailable,
+  GateCheckoutUnwritable,
   runRepositoryCommand,
 } from "../lib/untrusted_gate_spawn.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
@@ -282,7 +283,7 @@ Deno.test("merge checks: write requirements follow each command", async () => {
   );
 });
 
-Deno.test("merge checks: unwritable project defers a writing check without repair", async () => {
+Deno.test("merge checks: unwritable project leaves a writing check to CI", async () => {
   await withCheckout({ "deno.json": "{}" }, async (dir) => {
     await Deno.chmod(dir, 0o555);
     try {
@@ -291,7 +292,10 @@ Deno.test("merge checks: unwritable project defers a writing check without repai
       const runner = (check: FastCheck) =>
         spawnFastCheck(check, {}, spawn, sudoAgent);
       const runChecks = () => runMergeFastChecks(dir, ["main.ts"], runner);
-      assertEquals((await runChecks()).status, "unverified");
+      const outcome = await runChecks();
+      assertEquals(outcome.status, "passed");
+      if (outcome.status !== "passed") throw new Error("expected passed");
+      assert(outcome.leftToCi.length > 0);
       const verdict = await verifyMergeBeforePush({
         repoDir: dir,
         headBeforeMerge: "abc",
@@ -305,12 +309,67 @@ Deno.test("merge checks: unwritable project defers a writing check without repai
         },
         logger: silentLogger(),
       });
-      assertEquals(verdict.kind, "deferred");
+      assertEquals(verdict.kind, "passed");
       assertEquals(repairs, 0);
       assertEquals(commands.length, 4);
     } finally {
       await Deno.chmod(dir, 0o700);
     }
+  });
+});
+
+Deno.test("merge checks: nested write-requiring Deno and Cargo checks are left to CI", async () => {
+  for (const kind of ["deno", "cargo"] as const) {
+    await withCheckout({}, async (dir) => {
+      const project = `${dir}/nested`;
+      await Deno.mkdir(project);
+      if (kind === "deno") {
+        await Deno.writeTextFile(
+          `${project}/deno.json`,
+          JSON.stringify({
+            tasks: { check: "deno check -q main.ts" },
+          }),
+        );
+        await Deno.writeTextFile(`${project}/deno.lock`, "{}");
+      } else {
+        await Deno.writeTextFile(`${project}/Cargo.toml`, CARGO_MANIFEST);
+      }
+      await Deno.chmod(project, 0o555);
+      try {
+        const { spawn } = realProbeSpawn();
+        const outcome = await runMergeFastChecks(
+          dir,
+          ["nested/main.ts"],
+          (check) => spawnFastCheck(check, {}, spawn, sudoAgent, {}, dir),
+        );
+        assertEquals(outcome.status, "passed");
+        if (outcome.status !== "passed") throw new Error("expected passed");
+        assert(outcome.ran.length > 0);
+        assert(outcome.leftToCi.some((label) =>
+          label.includes(
+            kind === "deno" ? "deno task check" : "cargo clippy",
+          )
+        ));
+        if (kind === "cargo") {
+          assert(
+            outcome.leftToCi.some((label) => label.includes("cargo test")),
+          );
+        }
+      } finally {
+        await Deno.chmod(project, 0o755);
+      }
+    });
+  }
+});
+
+Deno.test("merge checks: no runnable checks remains unverified", async () => {
+  await withCheckout({ "deno.json": "{}" }, async (dir) => {
+    const outcome = await runMergeFastChecks(
+      dir,
+      ["main.ts"],
+      () => Promise.reject(new GateCheckoutUnwritable("unwritable")),
+    );
+    assertEquals(outcome.status, "unverified");
   });
 });
 
@@ -380,7 +439,7 @@ Deno.test("merge checks: milestone cargo target does not block fast target", asy
   });
 });
 
-Deno.test("merge checks: a stale Deno lockfile permission refusal is unverified", async () => {
+Deno.test("merge checks: a stale Deno lockfile permission refusal is left to CI", async () => {
   await withCheckout({ "deno.json": "{}", "deno.lock": "{}" }, async (dir) => {
     const message =
       `Failed writing lockfile (for '${dir}/deno.lock'): Permission denied (os error 13)`;
@@ -399,8 +458,21 @@ Deno.test("merge checks: a stale Deno lockfile permission refusal is unverified"
           spawn,
           sudoAgent,
         ),
-      GateAccountUnavailable,
+      GateCheckoutUnwritable,
       "Failed writing lockfile",
+    );
+    const outcome = await runMergeFastChecks(dir, ["main.ts"], (check) => {
+      if (check.args[0] !== "check") {
+        return Promise.resolve({ code: 0, output: "" });
+      }
+      return spawnFastCheck(check, {}, spawn, sudoAgent);
+    });
+    assertEquals(outcome.status, "passed");
+    if (outcome.status !== "passed") throw new Error("expected passed");
+    assert(
+      outcome.leftToCi.some((label) =>
+        label.includes("Failed writing lockfile")
+      ),
     );
   });
 });

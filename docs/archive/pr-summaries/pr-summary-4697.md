@@ -44,8 +44,8 @@ flowchart LR
 - Fast checks omit the write probe only for cargo fmt, locked clippy and test,
   Deno fmt and lint, and a direct Deno check that meets the milestone gate's
   read-only criteria, including a qualifying `check` task. Other commands
-  require a writable checkout; resolution tasks refused by that probe are left
-  to CI when another check ran. A stale Deno lockfile permission refusal also defers the check.
+  require a writable checkout; checks refused by that probe or by a stale Deno
+  lockfile write refusal are left to CI when another check ran.
   The cargo target write check still runs, and a private target it asks for is
   placed under the clone root's `.vibe-fast-check-target` on the work volume:
   `/var/tmp` is a noexec scratch mount on Docker and Podman, while `agent`
@@ -80,6 +80,17 @@ Backend change; no UI file is touched. The real-sudo test in
 `0700` checkout was refused before any command ran.
 
 ## Test Plan
+
+- PR #4795 review follow-up: the obsolete deferral of write-requiring checks
+  in unwritable projects is replaced by leaving those checks to CI when another
+  check ran. Other access faults and runs with no completed checks remain
+  unverified. Coverage:
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: nested write-requiring Deno and Cargo checks are left to CI`,
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: unwritable project leaves a writing check to CI`,
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: no runnable checks remains unverified`,
+  and `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: a stale Deno lockfile permission refusal is left to CI`.
+  The first and last regressions failed before the fix. The milestone gate is
+  the related policy and its lockfile refusal classifier is reused.
 
 - PR #4795 task follow-up: the obsolete rule deferred every Deno task in an
   unwritable project. A `check` task now uses the milestone gate's read-only
@@ -165,8 +176,8 @@ Backend change; no UI file is touched. The real-sudo test in
   in unwritable projects. The fast target no longer shares the milestone target
   that an agent can own. Coverage:
   `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: write requirements follow each command`,
-  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: unwritable project defers a writing check without repair`,
-  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: a stale Deno lockfile permission refusal is unverified`,
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: unwritable project leaves a writing check to CI`,
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: a stale Deno lockfile permission refusal is left to CI`,
   and `worker/deno/tests/merge_fast_checks_access_4697_test.ts::merge checks: milestone cargo target does not block fast target`.
   The milestone gate is the other copy of the Deno read-only rule; its helper
   and lockfile refusal classifier are reused. The three access and target
