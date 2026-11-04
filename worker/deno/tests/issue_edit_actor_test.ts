@@ -9,7 +9,11 @@ import { resolveLastIssueEditor } from "../lib/issue_edit_actor.ts";
 
 interface GraphPayload {
   contentEdits?: Array<
-    { editedAt?: string | null; editor?: { login?: string } | null }
+    {
+      editedAt?: string | null;
+      diff?: string;
+      editor?: { login?: string } | null;
+    }
   >;
   renames?: Array<
     { createdAt?: string | null; actor?: { login?: string } | null }
@@ -261,4 +265,34 @@ Deno.test("issue_edit_actor - passes owner, name and number to the GraphQL call"
   assertEquals(args.includes("owner=owner"), true);
   assertEquals(args.includes("name=repo"), true);
   assertEquals(args.includes("number=42"), true);
+});
+
+Deno.test("issue_edit_actor - includeDiff asks for and returns each body edit's diff (Issue #4763)", async () => {
+  const captured: string[][] = [];
+  const gh = graphMock({
+    contentEdits: [
+      { editedAt: "2026-05-01T10:00:00Z", diff: "+x", editor: { login: "a" } },
+    ],
+    renames: [{ createdAt: "2026-05-01T09:00:00Z", actor: { login: "a" } }],
+  }, captured);
+
+  const withDiff = await resolveLastIssueEditor("owner/repo", 42, gh, {
+    includeDiff: true,
+  });
+  assertEquals(withDiff.ok, true);
+  if (withDiff.ok) {
+    assertEquals(
+      withDiff.actors.map((a) => [a.source, a.diff]),
+      [["content-edit", "+x"], ["rename", undefined]],
+    );
+  }
+  assertStringIncludes(captured[0]!.join(" "), "editedAt diff editor");
+
+  // Default: the query and the result stay as the content gate expects.
+  const plain = await resolveLastIssueEditor("owner/repo", 42, gh);
+  assertEquals(
+    plain.ok && plain.actors.every((a) => a.diff === undefined),
+    true,
+  );
+  assertEquals(captured[1]!.join(" ").includes("diff"), false);
 });

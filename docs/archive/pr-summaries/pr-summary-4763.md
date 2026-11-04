@@ -31,6 +31,17 @@ Version bump: no `VERSION` change was made by this PR.
 - An edit at or after the label add (same `>=` comparison the worker's
   content-integrity gate uses) by an empty, untrusted or fleet-worker login
   refuses the issue. Edits before the label add are ignored.
+- PR #4799 review: a body edit whose GitHub `diff` changes only worker
+  record-block lines (`Depends on #M`, `Deferred until ...`, the delimiters; see
+  `isWorkerRecordOnlyDiff` in `worker/deno/lib/worker_record_block.ts`) is
+  skipped, whoever made it, because the worker's gate hashes the body through
+  `stripWorkerRecordBlocks` and ignores it too. It fails closed: a missing or
+  empty diff, or any other changed line, still counts. The diff is read with
+  `resolveLastIssueEditor(..., { includeDiff: true })`; the content gate's own
+  query is unchanged. `requirementQuote` is matched against the body with
+  record blocks stripped. A `needs-human` removal by a trusted non-fleet login
+  at or after the newest counted edit re-approves, as in the worker's
+  `findTrustedReapproval`.
 - A gh failure during the claim check is a `fetch failed:` problem, so the
   review retries and is never a finding.
 
@@ -45,8 +56,8 @@ Backend/CLI change only; no UI files. Tests:
 
 ## Test Plan
 
-- `deno task test:unit tests/review_fleet_prs_test_policy_4655_test.ts tests/review_fleet_prs_test_policy_wiring_4655_test.ts`
-  (from `worker/deno`): 123 passed, 0 failed.
+- `deno task test:unit tests/review_fleet_prs_test_policy_4655_test.ts tests/review_fleet_prs_test_policy_wiring_4655_test.ts tests/worker_record_block_test.ts tests/issue_edit_actor_test.ts`
+  (from `worker/deno`, at the head): 156 passed, 0 failed.
 - Added in `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts`:
   `fleetWorkerLogins` policy test; a CONTRIBUTOR service-account issue with
   `top-priority` added by a trusted login is usable and a justified change is
@@ -54,7 +65,11 @@ Backend/CLI change only; no UI files. Tests:
   is refused with "not by a trusted author"; untrusted, empty-login,
   before-label and trusted-editor cases; an edit after the label by a fleet
   worker login that is also in `trustedLogins` is refused (and the same edit
-  before the label is not); a cross-repo issue is still refused without a
+  before the label is not); a fleet login's record-block-only edit after the
+  label keeps the issue usable while a prose or mixed edit, or one with no diff,
+  is refused; `needs-human` re-approval (trusted non-fleet accepted; fleet,
+  untrusted or earlier-than-edit refused); a record-block line is not a
+  requirement quote; `isWorkerRecordOnlyDiff` and `includeDiff` unit tests; a cross-repo issue is still refused without a
   timeline call; timeline and edit-history read failures give `fetch failed:`
   and a retry; `work-on` works as the approving label.
 - Edited expectation: the "policy defaults" test now also expects
@@ -63,6 +78,12 @@ Backend/CLI change only; no UI files. Tests:
   argument set to `[]` → red; edit check forced to never fire → red;
   `|| fleet.has(login)` deleted from the edit check → red (65 passed, 1 failed),
   green again once restored; same-repo condition forced true → red.
+  After the review fix: `isWorkerRecordOnlyDiff(a.diff)` replaced with
+  `!a.diff` → the record-block test red; `!reapproved` replaced with `true` →
+  the re-approval test red; both restored.
+- Unverified: GitHub's exact `userContentEdits.diff` format could not be queried
+  in this run (gh API access was denied); the parser assumes unified-style `+`/`-`
+  lines and fails closed otherwise.
 - `./quality.sh`: the only failing stage is deno tests, with three failures in
   files this PR does not touch (`completion_phase_repo_formatters_test.ts` ×2,
   `merge_fallback_issue_test.ts`); they fail on environment (cargo fmt commit,

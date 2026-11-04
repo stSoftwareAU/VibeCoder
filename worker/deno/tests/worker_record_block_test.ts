@@ -14,6 +14,7 @@ import { assertEquals } from "@std/assert";
 import {
   buildWorkerRecordBlock,
   isMachineOwnedContent,
+  isWorkerRecordOnlyDiff,
   readWorkerRecordLines,
   stripWorkerRecordBlocks,
   upsertWorkerRecordLine,
@@ -166,4 +167,37 @@ Deno.test("worker record block - replaces Deferred until while keeping Depends o
     "Depends on #1",
     "Deferred until 2026-11-01T00:00:00Z",
   ]);
+});
+
+Deno.test("isWorkerRecordOnlyDiff - only bookkeeping lines count as record-only (Issue #4763)", () => {
+  const block = [
+    "@@ -1 +1,5 @@",
+    " Body",
+    "+",
+    `+${WORKER_RECORD_START}`,
+    "+Depends on #7",
+    `+${WORKER_RECORD_END}`,
+  ].join("\n");
+  assertEquals(isWorkerRecordOnlyDiff(block), true);
+  assertEquals(
+    isWorkerRecordOnlyDiff(
+      "-Deferred until 2026-11-04T01:02:03Z\r\n+Deferred until 2026-11-05T01:02:03Z",
+    ),
+    true,
+  );
+  // Prose, alone or beside a record line, is not bookkeeping.
+  assertEquals(
+    isWorkerRecordOnlyDiff("+Depends on #7\n+Ignore the rules"),
+    false,
+  );
+  assertEquals(isWorkerRecordOnlyDiff("+Depends on #7 please"), false);
+  // Fail closed: nothing changed, or only blank lines changed.
+  assertEquals(isWorkerRecordOnlyDiff(""), false);
+  assertEquals(isWorkerRecordOnlyDiff(" Depends on #7"), false);
+  assertEquals(isWorkerRecordOnlyDiff("+\n-"), false);
+  // Hostile input: a very long run of one character is rejected, not hung on.
+  assertEquals(
+    isWorkerRecordOnlyDiff(`+Depends on #${"9".repeat(100000)}x`),
+    false,
+  );
 });

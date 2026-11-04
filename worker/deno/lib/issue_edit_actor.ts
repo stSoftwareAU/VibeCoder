@@ -38,6 +38,11 @@ export interface IssueEditActor {
   editedAt: number;
   /** Which record identified the actor. */
   source: "content-edit" | "rename";
+  /**
+   * GitHub's `diff` text for a body edit. Present only when the caller asked
+   * for it with `includeDiff`; absent for renames and for the default query.
+   */
+  diff?: string;
 }
 
 /**
@@ -64,6 +69,12 @@ export type IssueEditActorLookup =
 const EDIT_ACTOR_QUERY =
   `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(last:100){nodes{editedAt editor{login}}} timelineItems(last:100,itemTypes:[RENAMED_TITLE_EVENT]){nodes{... on RenamedTitleEvent{createdAt actor{login}}}}}}}`;
 
+/** {@link EDIT_ACTOR_QUERY} plus each body edit's `diff` (Issue #4763). */
+const EDIT_ACTOR_DIFF_QUERY = EDIT_ACTOR_QUERY.replace(
+  "nodes{editedAt editor{login}}",
+  "nodes{editedAt diff editor{login}}",
+);
+
 /** Shape of the GraphQL response consumed here. */
 interface EditActorResponse {
   errors?: unknown[];
@@ -72,7 +83,11 @@ interface EditActorResponse {
       issue?: {
         userContentEdits?: {
           nodes?: Array<
-            { editedAt?: string | null; editor?: { login?: string } | null }
+            {
+              editedAt?: string | null;
+              diff?: string | null;
+              editor?: { login?: string } | null;
+            }
           >;
         };
         timelineItems?: {
@@ -123,6 +138,8 @@ function byNewestFirst(a: IssueEditActor, b: IssueEditActor): number {
  * @param repo - Repository in "owner/repo" format
  * @param issueNumber - Issue number
  * @param ghFn - Injected `gh` CLI runner
+ * @param options - `includeDiff` also reads each body edit's `diff` text. Off
+ *   by default so the content-integrity gate's query stays small.
  * @returns Every recorded edit actor newest first (with `actor` as the newest
  *   and `null` when the issue has never been edited), or an error when the
  *   lookup could not be completed
@@ -131,6 +148,7 @@ export async function resolveLastIssueEditor(
   repo: string,
   issueNumber: number,
   ghFn: (args: string[]) => Promise<string>,
+  options?: { includeDiff?: boolean },
 ): Promise<IssueEditActorLookup> {
   const parts = splitRepo(repo);
   if (parts === null) {
@@ -144,7 +162,9 @@ export async function resolveLastIssueEditor(
         "api",
         "graphql",
         "-f",
-        `query=${EDIT_ACTOR_QUERY}`,
+        `query=${
+          options?.includeDiff ? EDIT_ACTOR_DIFF_QUERY : EDIT_ACTOR_QUERY
+        }`,
         "-F",
         `owner=${parts.owner}`,
         "-F",
@@ -209,6 +229,9 @@ export async function resolveLastIssueEditor(
       login: node?.editor?.login ?? "",
       editedAt,
       source: "content-edit",
+      ...(options?.includeDiff && typeof node?.diff === "string"
+        ? { diff: node.diff }
+        : {}),
     });
   }
 

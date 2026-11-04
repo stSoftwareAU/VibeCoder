@@ -76,7 +76,9 @@ escalation.
      `Part of #N` line; its title or body, never comments, and only when the
      author is trusted, or when the issue is in this PR's repo and a trusted,
      non-fleet-worker login added `top-priority` or `work-on` to it with no
-     untrusted edit since, the worker's own claim rule; service accounts stay
+     untrusted edit since (a worker record-block-only edit does not count, and a
+     trusted non-fleet `needs-human` removal after the last edit re-approves),
+     the worker's own claim rule; service accounts stay
      untrusted authors); and `failsWithoutChange` and
      `verification` are present where the contract requires them. The model's
      claim alone never approves. Arbitrary PR prose is never owner

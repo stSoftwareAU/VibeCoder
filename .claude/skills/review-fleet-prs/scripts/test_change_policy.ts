@@ -21,9 +21,15 @@ import type { TestCoverageRef } from "../../../../worker/deno/lib/fleet_review_l
 import { resolveSuppressionExcludedLogins } from "../../../../worker/deno/lib/fleet_authors.ts";
 import { LABEL_DEFAULTS } from "../../../../worker/deno/lib/config_defaults.ts";
 import {
+  fetchTimelineWithCache,
   getLabelLastAddInfoComplete,
+  lastRemoveInfoFromTimeline,
   wasLabelAddedByAllowedAuthor,
 } from "../../../../worker/deno/lib/issue_query.ts";
+import {
+  isWorkerRecordOnlyDiff,
+  stripWorkerRecordBlocks,
+} from "../../../../worker/deno/lib/worker_record_block.ts";
 import { resolveLastIssueEditor } from "../../../../worker/deno/lib/issue_edit_actor.ts";
 import type { RunGh } from "./needs_human.ts";
 
@@ -164,8 +170,10 @@ export function quoteFound(
 ): boolean {
   const q = normaliseWs(quote);
   if (q === "") return false;
+  // The worker's own record block is bookkeeping, never a requirement.
   return issues.some((i) =>
-    normaliseWs(i.title).includes(q) || normaliseWs(i.body).includes(q)
+    normaliseWs(i.title).includes(q) ||
+    normaliseWs(stripWorkerRecordBlocks(i.body)).includes(q)
   );
 }
 
@@ -304,9 +312,13 @@ interface Candidate {
  * The worker's own claim rule (Issue #4763), for a same-repo governing issue
  * whose author is not trusted. A trusted login that is not a fleet worker must
  * have added `top-priority` or `work-on` (the worker's own pickup labels), and
- * no untrusted account may have edited the issue since that add. Returns null
- * when the claim holds, otherwise the problem string. Any gh failure is a
- * `fetch failed:` problem, so the caller retries rather than raising a finding.
+ * no untrusted account may have edited the issue since that add. An edit whose
+ * diff only touches the worker's record block (`Depends on #M`, `Deferred
+ * until ...`) is routine bookkeeping that the worker's content gate ignores, so
+ * it does not count; and, as in the worker's `findTrustedReapproval`, a
+ * `needs-human` removal by a trusted non-fleet login after the newest counted
+ * edit re-approves it. Returns null when the claim holds, otherwise the
+ * problem string. Any gh failure is a `fetch failed:` problem, so the caller retries rather than raising a finding.
  */
 async function workerClaimProblem(
   repo: string,
@@ -342,21 +354,42 @@ async function workerClaimProblem(
     if (added === null) {
       return `${ref} is not by a trusted author: its approving label time cannot be read; it is ignored`;
     }
-    const lookup = await resolveLastIssueEditor(repo, number, runGh);
+    const lookup = await resolveLastIssueEditor(repo, number, runGh, {
+      includeDiff: true,
+    });
     if (!lookup.ok) {
       return `${FETCH_FAILED} linked issue ${ref} edit history could not be read: ${
         firstLine(lookup.error)
       }`;
     }
-    const editedSinceAdd = lookup.actors.filter((a) =>
-      a.editedAt >= added.addedAt
-    );
-    const untrustedEdit = editedSinceAdd.some((a) => {
+    const untrustedEdits = lookup.actors.filter((a) => {
+      if (a.editedAt < added.addedAt) return false;
+      // Only a body edit with a readable bookkeeping-only diff is skipped.
+      if (
+        a.source === "content-edit" && a.diff !== undefined &&
+        isWorkerRecordOnlyDiff(a.diff)
+      ) {
+        return false;
+      }
       const login = normaliseLogin(a.login);
       return login === "" || !trusted.has(login) || fleet.has(login);
     });
-    if (untrustedEdit) {
-      return `${ref} was edited by an untrusted account after its ${label} label was added; it is ignored`;
+    if (untrustedEdits.length > 0) {
+      const newestEdit = Math.max(...untrustedEdits.map((a) => a.editedAt));
+      const timeline = await fetchTimelineWithCache(repo, number, runGh);
+      if (timeline === null) {
+        return `${FETCH_FAILED} linked issue ${ref} timeline could not be read`;
+      }
+      const removal = lastRemoveInfoFromTimeline(
+        timeline,
+        LABEL_DEFAULTS.needsHumanLabel,
+      );
+      const reapproved = removal !== null && removal.removedAt >= newestEdit &&
+        trusted.has(normaliseLogin(removal.removedBy)) &&
+        !fleet.has(normaliseLogin(removal.removedBy));
+      if (!reapproved) {
+        return `${ref} was edited by an untrusted account after its ${label} label was added; it is ignored`;
+      }
     }
     return null;
   } catch (e) {

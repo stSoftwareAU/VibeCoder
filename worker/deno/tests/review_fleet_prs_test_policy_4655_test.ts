@@ -107,8 +107,11 @@ interface Fx {
   timeline?: Record<string, unknown[] | Error>;
   // Title and body edit history per issue (the GraphQL edit-actor lookup),
   // keyed "owner/repo#N". An Error fails the read.
-  editors?: Record<string, { editedAt: string; editor: string }[] | Error>;
+  editors?: Record<string, Editor[] | Error>;
 }
+
+// One body edit; `diff` is only served when the query asks for it.
+type Editor = { editedAt: string; editor: string; diff?: string };
 
 function answer(args: string[], fx: Fx): string {
   if (args[0] === "pr") {
@@ -120,9 +123,9 @@ function answer(args: string[], fx: Fx): string {
     const arg = (name: string) =>
       args.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
     const key = `${arg("owner")}/${arg("name")}#${arg("number")}`;
-    const v: { editedAt: string; editor: string }[] | Error =
-      fx.editors?.[key] ?? [];
+    const v: Editor[] | Error = fx.editors?.[key] ?? [];
     if (v instanceof Error) throw v;
+    const wantsDiff = args.some((a) => a.includes("editedAt diff editor"));
     return JSON.stringify({
       data: {
         repository: {
@@ -130,6 +133,7 @@ function answer(args: string[], fx: Fx): string {
             userContentEdits: {
               nodes: v.map((e) => ({
                 editedAt: e.editedAt,
+                ...(wantsDiff && e.diff !== undefined ? { diff: e.diff } : {}),
                 editor: { login: e.editor },
               })),
             },
@@ -395,6 +399,14 @@ Deno.test("quoteFound: plain substring after whitespace normalisation, no word m
   assertFalse(quoteFound("", issues));
   assertFalse(quoteFound("   ", issues));
   assertFalse(quoteFound("exactly four", issues));
+  // A line in the worker's record block is bookkeeping, not a requirement.
+  const recorded = [{
+    title: "T",
+    body:
+      "Body\n\n<!-- vibe-worker-record-start -->\nDepends on #9\n<!-- vibe-worker-record-end -->",
+  }];
+  assert(quoteFound("Body", recorded));
+  assertFalse(quoteFound("Depends on #9", recorded));
   assertEquals(normaliseWs("  a \n b  "), "a b");
 });
 
@@ -672,6 +684,7 @@ const ISSUE_KEY = "acme/widgets#4733";
 const ADDED_AT = "2026-11-02T18:32:00Z";
 const BEFORE_ADD = "2026-11-02T18:00:00Z";
 const AFTER_ADD = "2026-11-03T09:00:00Z";
+const LATER = "2026-11-03T10:00:00Z";
 const CLAIM = {
   trustedLogins: ["nleck"],
   fleetWorkerLogins: [FLEET_AUTHOR],
@@ -702,7 +715,7 @@ const labelled = (label: string, login: string, at: string) => ({
 // The fake for the claim cases: the issue, its timeline and its edit history.
 const claimFx = (
   timeline: unknown[] | Error,
-  editors?: { editedAt: string; editor: string }[] | Error,
+  editors?: Editor[] | Error,
 ): Fx => ({
   pr: CLOSES_4733,
   issues: { [ISSUE_KEY]: ISSUE_4733 },
@@ -786,7 +799,7 @@ Deno.test("claim rule: a label added by a fleet worker login, or by an unknown l
 });
 
 Deno.test("claim rule: an untrusted or unattributable edit after the label is ignored; before it or by a trusted login is fine", async () => {
-  const check = async (editors: { editedAt: string; editor: string }[]) => {
+  const check = async (editors: Editor[]) => {
     const g = fakeGh(
       claimFx([labelled("top-priority", "nleck", ADDED_AT)], editors),
     );
@@ -846,6 +859,91 @@ Deno.test("claim rule: an edit after the label by a fleet worker login is refuse
   const before = await run(BEFORE_ADD);
   assertEquals(before.issues.length, 1);
   assertEquals(before.problems, []);
+});
+
+// A unified-style diff that appends a worker record-block dependency line.
+const RECORD_DIFF = [
+  "@@ -1,2 +1,5 @@",
+  " Body text",
+  "+",
+  "+<!-- vibe-worker-record-start -->",
+  "+Depends on #4800",
+  "+<!-- vibe-worker-record-end -->",
+].join("\n");
+const PROSE_DIFF = ["@@ -1,2 +1,2 @@", "-Body text", "+Body text, changed"]
+  .join("\n");
+
+Deno.test("claim rule: a fleet worker's record-block edit after the label keeps the issue usable; a prose edit does not", async () => {
+  const policy = {
+    trustedLogins: ["nleck", FLEET_AUTHOR],
+    fleetWorkerLogins: [FLEET_AUTHOR],
+  };
+  const stranger = { ...ISSUE_4733, user: { login: "stranger" } };
+  const run = async (diff: string | undefined, editor = FLEET_AUTHOR) => {
+    const g = fakeGh({
+      ...claimFx([labelled("top-priority", "nleck", ADDED_AT)], [{
+        editedAt: AFTER_ADD,
+        editor,
+        diff,
+      }]),
+      issues: { [ISSUE_KEY]: stranger },
+    });
+    return await resolveGoverningIssues(FLEET, policy, g.runGh);
+  };
+
+  const record = await run(RECORD_DIFF);
+  assertEquals(record.problems, []);
+  assertEquals(record.issues.length, 1);
+
+  // The same bookkeeping diff by an untrusted login is skipped too: the
+  // exemption is for the edit, not the editor, as in the worker's gate.
+  assertEquals((await run(RECORD_DIFF, "mallory")).issues.length, 1);
+
+  // Prose edit by the fleet login: refused.
+  const prose = await run(PROSE_DIFF);
+  assertEquals(prose.issues, []);
+  assert(
+    prose.problems.some((p) => p.includes("edited by an untrusted account")),
+    JSON.stringify(prose.problems),
+  );
+
+  // A record line mixed with a prose change: refused.
+  const mixed = await run(`${RECORD_DIFF}\n${PROSE_DIFF}`);
+  assertEquals(mixed.issues, []);
+
+  // No diff served, or one with no changed line: fail closed.
+  assertEquals((await run(undefined)).issues, []);
+  assertEquals((await run("@@ -1 +1 @@\n context")).issues, []);
+});
+
+Deno.test("claim rule: a trusted non-fleet needs-human removal after the newest edit re-approves; a fleet or earlier removal does not", async () => {
+  const policy = {
+    trustedLogins: ["nleck", FLEET_AUTHOR],
+    fleetWorkerLogins: [FLEET_AUTHOR],
+  };
+  const stranger = { ...ISSUE_4733, user: { login: "stranger" } };
+  const unlabelled = (login: string, at: string) => ({
+    event: "unlabeled",
+    label: { name: "needs-human" },
+    actor: { login },
+    created_at: at,
+  });
+  const run = async (removal: unknown) => {
+    const g = fakeGh({
+      ...claimFx(
+        [labelled("top-priority", "nleck", ADDED_AT), removal],
+        [{ editedAt: AFTER_ADD, editor: "mallory", diff: PROSE_DIFF }],
+      ),
+      issues: { [ISSUE_KEY]: stranger },
+    });
+    return await resolveGoverningIssues(FLEET, policy, g.runGh);
+  };
+
+  assertEquals((await run(unlabelled("nleck", LATER))).issues.length, 1);
+  assertEquals((await run(unlabelled(FLEET_AUTHOR, LATER))).issues, []);
+  assertEquals((await run(unlabelled("mallory", LATER))).issues, []);
+  // Removed before the edit: the removal cannot bless content it never saw.
+  assertEquals((await run(unlabelled("nleck", ADDED_AT))).issues, []);
 });
 
 Deno.test("claim rule: a cross-repo issue by an untrusted author is refused without reading its timeline", async () => {

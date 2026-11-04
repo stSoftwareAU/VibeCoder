@@ -188,3 +188,32 @@ export function stripWorkerRecordBlocks(body: string): string {
   }
   return out + body.slice(cursor);
 }
+
+/**
+ * True when a body edit's `diff` changed nothing but worker bookkeeping
+ * (Issue #4763): every added or removed line is blank, a record-block
+ * delimiter, or a strict-grammar line `isMachineOwnedContent` permits.
+ *
+ * Reads GitHub's unified-style `diff` text: `+` and `-` lines are changes, any
+ * other line is context. Fails closed: a diff with no changed line, or any
+ * changed line outside the grammar, is not bookkeeping-only. The check is
+ * line-level, so a permitted line outside a block also passes; that text can
+ * only make the dependency or discovery gates skip an issue.
+ */
+export function isWorkerRecordOnlyDiff(diff: string): boolean {
+  let changed = 0;
+  for (const raw of diff.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (line[0] !== "+" && line[0] !== "-") continue;
+    const text = line.slice(1).trim();
+    if (text === "") continue;
+    changed++;
+    if (
+      text !== WORKER_RECORD_START && text !== WORKER_RECORD_END &&
+      !PERMITTED_LINE.test(text) && !DEFERRED_UNTIL_LINE.test(text)
+    ) {
+      return false;
+    }
+  }
+  return changed > 0;
+}
