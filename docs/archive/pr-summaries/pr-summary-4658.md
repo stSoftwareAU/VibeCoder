@@ -168,6 +168,28 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
 
 ## Test Plan
 
+- Review regression evidence: two delivered PRs share a five-call CI budget;
+  the first has a completed ten-minute workflow and the second is incomplete.
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - incomplete CI is reflected in delivered metrics and coverage`
+  asserts one incomplete delivery and both ratios unknown. Removing the run
+  ratio guard yielded `0.5` instead of null; removing the minutes guard yielded
+  `5` instead of null. The obsolete single-PR, zero-row fixture could not prove
+  either guard; the remaining incomplete waiting and regression flags are also
+  asserted by this test.
+  `worker/deno/tests/pr_completion_report_command_test.ts::pr-completion-report --collect passes the CI call budget to the collector`
+  observes budget exhaustion at zero; removing the CLI forwarding instead made
+  the fake receive an unexpected CI request. No duplicate ratio or CLI budget
+  forwarding rule was found.
+- Test-change evidence rerun: reverting the `git_pull` classification made
+  `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`
+  fail with actual `unknown`, expected `milestone`. Restoring fleet attribution
+  and verification for unchained review logs made
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`
+  fail with actual unknown-merged count `0`, expected `1`. The obsolete unknown
+  milestone classification is replaced by milestone attribution, while unnamed
+  callers stay unknown; the obsolete trusted unchained review is now unknown.
+  The named tests cover those remaining behaviours.
+
 - Review repair: CI collection lists a PR branch once and matches runs to its
   observed commit heads. It reads checks only for heads with workflow runs;
   other checks may be unobserved. A shared 5,000-call budget limits CI reads;

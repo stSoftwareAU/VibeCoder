@@ -1102,10 +1102,28 @@ Deno.test("collect - many commits require one CI listing and budget exhaustion i
 });
 
 Deno.test("collect - incomplete CI is reflected in delivered metrics and coverage", async () => {
-  const fixture = emptyFixture({ pulls: { [REPO]: [pull(1)] } });
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1), pull(2)] },
+    workflowRuns: { sha1: { workflow_runs: [{ id: 55 }] } },
+    workflowAttempts: {
+      "55:1": {
+        id: 55,
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T00:00:00Z",
+        updated_at: "2026-10-20T00:10:00Z",
+      },
+    },
+  });
   const snapshot = await collectPrCompletionSnapshot(
-    options(fakeGh(fixture), { ciCallBudget: 0 }),
+    options(fakeGh(fixture), { ciCallBudget: 5 }),
   );
+  assertEquals(snapshot.input.ciIncompletePrs, [{ repo: REPO, prNumber: 2 }]);
+  const runs = snapshot.input.ciRuns.filter((run) =>
+    run.kind === "workflow_run"
+  );
+  assertEquals(runs.length, 1);
+  assertEquals(runs[0]?.durationMinutes, 10);
   const report = buildPrCompletionReport(snapshot.input);
   assertEquals(report.coverage.deliveredChangesWithoutCiData, 1);
   assertEquals(report.delivery.ciRunsPerDeliveredChange, null);

@@ -156,6 +156,56 @@ Deno.test("pr-completion-report --collect rejects an invalid CI call budget", as
   }
 });
 
+Deno.test("pr-completion-report --collect passes the CI call budget to the collector", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const gh: GhJson = async (path) => {
+      if (path === "repos/org/repo") return { default_branch: "main" };
+      if (path.startsWith("repos/org/repo/pulls?")) {
+        return path.includes("page=1")
+          ? [{
+            number: 1,
+            state: "open",
+            created_at: "2026-10-20T00:00:00Z",
+            merged_at: null,
+            closed_at: null,
+            title: "Change",
+            body: "",
+            labels: [],
+            base: { ref: "main" },
+            head: { ref: "issue-1", sha: "sha1" },
+          }]
+          : [];
+      }
+      if (
+        path.startsWith("repos/org/repo/pulls/") ||
+        path.startsWith("repos/org/repo/issues/")
+      ) return [];
+      throw new Error(`unexpected CI request: ${path}`);
+    };
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        "audit-dir": dir,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        start: "2026-10-01T00:00:00Z",
+        end: "2026-11-01T00:00:00Z",
+        "ci-call-budget": "0",
+      },
+      { repos: ["org/repo"] } as unknown as WorkerConfig,
+      gh,
+    );
+    assertEquals(result.success, true, result.message);
+    assertStringIncludes(
+      result.message,
+      "CI history truncated; collection call budget exhausted",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("pr-completion-report --collect passes --max-prs-per-repo to the collector and reports the truncation", async () => {
   const dir = await Deno.makeTempDir();
   try {
