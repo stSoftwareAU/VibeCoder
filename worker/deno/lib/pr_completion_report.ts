@@ -12,6 +12,7 @@ export type PrActionKind =
   | "branch-update"
   | "review"
   | "dismissal"
+  | "merge-arm"
   | "merge"
   | "unknown";
 
@@ -212,8 +213,12 @@ export function prActionsFromAuditJournal(
       kind: entry.actionKind,
       timestamp: entry.timestamp,
       outcome: entry.outcome === "success" ? "confirmed" : "failed",
-      actor: chainVerified ? "fleet" : "unknown",
-      verified: chainVerified,
+      actor: chainVerified && entry.component !== undefined &&
+          entry.component !== "unknown" && entry.actionKind !== "unknown"
+        ? "fleet"
+        : "unknown",
+      verified: chainVerified && entry.component !== undefined &&
+        entry.component !== "unknown" && entry.actionKind !== "unknown",
     }];
   });
 }
@@ -430,6 +435,7 @@ export function buildPrCompletionReport(
         "branch-update",
         "review",
         "dismissal",
+        "merge-arm",
         "merge",
         "unknown",
       ] as const).includes(action.kind)

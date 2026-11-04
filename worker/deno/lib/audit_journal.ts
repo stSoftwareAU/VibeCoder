@@ -1452,11 +1452,14 @@ export function isAuditJournalName(name: string): boolean {
  * directory **and** the roster together.
  *
  * @param baseDir - Audit directory (default: resolved from the environment)
+ * @param options.recoverInterruptedAppends - Defaults to `true` for the
+ *   scheduled sweep; reporting passes `false` so verification never writes.
  * @returns Result carrying the sweep verdict; an absent directory is a
  *   clean, empty sweep only when nothing was ever observed
  */
 export async function verifyAllChains(
   baseDir?: string,
+  options: { recoverInterruptedAppends?: boolean } = {},
 ): Promise<Result<ChainSweep>> {
   const dir = resolveBaseDir(baseDir);
   const journalsOnDisk = new Set<string>();
@@ -1471,7 +1474,10 @@ export async function verifyAllChains(
   // shape is repaired; every other unreadable roster still fails loud.
   let rosterRepaired: RosterRecovery | undefined;
   try {
-    const healed = await readRosterHealed(dir);
+    const recover = options.recoverInterruptedAppends !== false;
+    const healed = recover
+      ? await readRosterHealed(dir)
+      : { contents: await readRosterContents(dir), repaired: null };
     rosterRepaired = healed.repaired ?? undefined;
     const contents = healed.contents;
     rostered = contents.journals;
@@ -1596,7 +1602,8 @@ export async function verifyAllChains(
     // a red one.
     let result = await verifyChain(path);
     if (
-      result.ok && !result.value.valid && !dirMissing &&
+      options.recoverInterruptedAppends !== false && result.ok &&
+      !result.value.valid && !dirMissing &&
       !damageAcknowledgements.has(name)
     ) {
       const settled = await settleAppendUnderLock(dir, path);

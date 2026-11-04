@@ -215,6 +215,7 @@ export function actionKindFor(
   args: readonly string[],
 ): AuditActionKind {
   if (info.verb === "pr-merge") {
+    if (args.includes("--auto")) return "merge-arm";
     return args.includes("--disable-auto") ? "unknown" : "merge";
   }
   if (info.verb === "pr-review") return "review";
@@ -245,6 +246,13 @@ export function actionKindFor(
     }
   }
   return "unknown";
+}
+
+/** The head SHA a direct merge is pinned to, when the command supplies one. */
+function headShaFor(args: readonly string[]): string | undefined {
+  const index = args.indexOf("--match-head-commit");
+  const sha = index >= 0 ? args[index + 1] : undefined;
+  return sha && /^[0-9a-f]{40}$/i.test(sha) ? sha : undefined;
 }
 
 /**
@@ -286,6 +294,9 @@ async function record(
       actionId: crypto.randomUUID(),
       component: componentFor(caller),
       actionKind: actionKindFor(info, caller, args),
+      ...(info.verb === "pr-merge" && headShaFor(args)
+        ? { headSha: headShaFor(args) }
+        : {}),
       ...(info.verb === "git-push" && opts.deliveredCommits !== undefined
         ? { deliveredCommits: opts.deliveredCommits }
         : {}),

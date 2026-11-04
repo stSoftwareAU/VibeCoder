@@ -21,6 +21,7 @@ export type AuditActionKind =
   | "branch-update"
   | "review"
   | "dismissal"
+  | "merge-arm"
   | "merge"
   | "unknown";
 

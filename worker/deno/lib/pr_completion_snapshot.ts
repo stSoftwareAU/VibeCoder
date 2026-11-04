@@ -153,6 +153,7 @@ interface Stamped {
 interface Review extends Stamped {
   id: string;
   state: string;
+  headSha?: string;
 }
 
 interface IssueEvent extends Stamped {
@@ -175,6 +176,7 @@ interface PrEvidence {
 interface GitHubEvent extends Stamped {
   kind: PrActionKind;
   id: string;
+  headSha?: string;
 }
 
 function keyOf(repo: string, number: number): string {
@@ -451,6 +453,7 @@ function parseReview(raw: unknown, what: string): Review | null {
   return {
     id: asId(o.id, what),
     state,
+    ...(asText(o.commit_id) ? { headSha: asText(o.commit_id)! } : {}),
     at: submitted,
     ms: utcMillis(submitted, `${what} submitted_at`),
   };
@@ -618,7 +621,13 @@ function gitHubEvents(
 ): GitHubEvent[] {
   const out: GitHubEvent[] = [];
   for (const review of evidence.reviews) {
-    out.push({ kind: "review", id: review.id, at: review.at, ms: review.ms });
+    out.push({
+      kind: "review",
+      id: review.id,
+      at: review.at,
+      ms: review.ms,
+      ...(review.headSha ? { headSha: review.headSha } : {}),
+    });
   }
   for (const event of evidence.issueEvents) {
     if (event.event === "review_dismissed") {
@@ -637,6 +646,7 @@ function gitHubEvents(
       id: observed.mergeCommitSha ?? "none",
       at: record.mergedAt,
       ms: utcMillis(record.mergedAt, "PR mergedAt"),
+      headSha: record.headSha,
     });
   }
   evidence.commits.forEach((commit, index) => {
@@ -679,11 +689,20 @@ function unmatchedActions(
         event.kind === "repair";
       if (action.outcome !== "confirmed") continue;
       if (
+        event.headSha !== undefined && action.headSha !== undefined &&
+        event.headSha !== action.headSha
+      ) continue;
+      if (event.kind === "review" && event.headSha !== undefined &&
+        action.headSha !== event.headSha) continue;
+      if (
         isCommit && action.kind !== "branch-update" &&
         !action.deliveredCommits?.includes(event.id)
       ) continue;
       const isPush = action.kind === "implementation" ||
         action.kind === "repair" || action.kind === "branch-update";
+      if (event.kind === "merge" && action.headSha !== record.headSha) {
+        continue;
+      }
       if (
         isCommit
           ? !isPush || (action.kind === "branch-update" && used.has(action))
@@ -694,7 +713,7 @@ function unmatchedActions(
       const actionMs = utcMillis(action.timestamp, "action timestamp");
       const gap = Math.abs(actionMs - event.ms);
       const inWindow = event.kind === "merge"
-        ? actionMs >= createdMs && actionMs <= event.ms + MATCH_WINDOW_MS
+        ? gap <= MATCH_WINDOW_MS
         : isCommit && action.kind === "branch-update"
         ? gap <= MATCH_WINDOW_MS
         : isCommit
@@ -1048,10 +1067,10 @@ function isPostedReview(value: unknown): value is LogRecord {
 }
 
 /**
- * Review actions from the review-fleet-prs skill's own logs. Each posted review
- * becomes a verified fleet `review` action, so it can match the GitHub review
- * event within {@link MATCH_WINDOW_MS} as an audit action does. The log is not
- * hash-chained, so this is a lower-trust source (docs/INTERNALS.md). Records for
+ * Review actions from the review-fleet-prs skill's own logs. A posted review
+ * may support matching the GitHub review event within {@link MATCH_WINDOW_MS},
+ * but remains unverified because the log is not hash-chained
+ * (docs/INTERNALS.md). Records for
  * PRs outside the cohort are ignored. A missing or unreadable file, and a
  * malformed line, is noted and skipped, never silently. The same record across
  * two logs is one action. Its head SHA is not carried because nothing uses it:
@@ -1096,11 +1115,12 @@ async function reviewLogActions(
         component: "reviewer",
         repo: record.repo,
         prNumber: record.number,
+        ...(record.headSha ? { headSha: record.headSha } : {}),
         kind: "review",
         timestamp: record.at,
         outcome: "confirmed",
-        actor: "fleet",
-        verified: true,
+        actor: "unknown",
+        verified: false,
       });
     }
   }
@@ -1144,7 +1164,9 @@ async function readAuditEntries(
   const byId = new Map<string, JournalEntry>();
   for (const dir of dirs) {
     try {
-      const swept = await verifyAllChains(dir);
+      const swept = await verifyAllChains(dir, {
+        recoverInterruptedAppends: false,
+      });
       let verified = false;
       if (!swept.ok) {
         complete = false;
@@ -1378,7 +1400,6 @@ export async function collectPrCompletionSnapshot(
     ...verifiedActions.filter((action) =>
       action.verified && action.actor === "fleet"
     ),
-    ...logActions,
   ];
   const fleetByPr = new Map<string, TrustedPrAction[]>();
   for (const action of verifiedFleet) {
@@ -1406,6 +1427,15 @@ export async function collectPrCompletionSnapshot(
     list.push(action);
     fleetByPr.set(key, list);
   }
+  const matchingByPr = new Map(
+    [...fleetByPr].map(([key, actions]) => [key, [...actions]]),
+  );
+  for (const action of logActions) {
+    const key = keyOf(action.repo, action.prNumber);
+    const list = matchingByPr.get(key) ?? [];
+    list.push(action);
+    matchingByPr.set(key, list);
+  }
 
   const used = new Set<TrustedPrAction>();
   const githubActions: TrustedPrAction[] = [];
@@ -1425,7 +1455,7 @@ export async function collectPrCompletionSnapshot(
       ...unmatchedActions(
         o,
         gitHubEvents(o, evidence),
-        fleetByPr.get(keyOf(record.repo, record.number)) ?? [],
+        matchingByPr.get(keyOf(record.repo, record.number)) ?? [],
         used,
       ),
     );

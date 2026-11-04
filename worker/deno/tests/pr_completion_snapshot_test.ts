@@ -96,6 +96,48 @@ Deno.test("collect - failed merge attempts cannot match events but do not taint 
   });
 });
 
+Deno.test("collect - auto-merge arming cannot verify a later merge", async () => {
+  await withDir(async (dir) => {
+    const args = ["pr", "merge", "1", "--repo", REPO, "--auto"];
+    const info = classifyGhMutation(args);
+    assert(info);
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "arm-case-push",
+        deliveredCommits: ["sha1"],
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: info.verb,
+        actionKind: actionKindFor(info, undefined, args),
+        actionId: "auto-merge-armed",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: {
+            [REPO]: [pull(1, { merged_at: "2026-10-22T02:00:00Z" })],
+          },
+          commits: {
+            [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")],
+          },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
+});
+
 Deno.test("collect - a confirmed update-branch accounts for its GitHub commit without a fix round", async () => {
   await withDir(async (dir) => {
     const args = [
@@ -573,7 +615,7 @@ Deno.test("collect - legacy push records cannot prove commit delivery", async ()
   });
 });
 
-Deno.test("collect - a later re-arm or failed disarm preserves merge evidence", async () => {
+Deno.test("collect - auto-merge arms and withdrawals never verify a GitHub merge", async () => {
   for (const failed of [false, true]) {
     await withDir(async (dir) => {
       await journal(dir, [
@@ -587,7 +629,7 @@ Deno.test("collect - a later re-arm or failed disarm preserves merge evidence", 
         },
         {
           verb: "pr-merge",
-          actionKind: "merge",
+          actionKind: "merge-arm",
           actionId: "arm",
           repo: REPO,
           prNumber: 1,
@@ -605,7 +647,7 @@ Deno.test("collect - a later re-arm or failed disarm preserves merge evidence", 
         ...(!failed
           ? [{
             verb: "pr-merge",
-            actionKind: "merge" as const,
+            actionKind: "merge-arm" as const,
             actionId: "rearm",
             repo: REPO,
             prNumber: 1,
@@ -623,7 +665,7 @@ Deno.test("collect - a later re-arm or failed disarm preserves merge evidence", 
         ),
       );
       assertEquals(
-        buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+        buildPrCompletionReport(snapshot.input).completion.unknownMerged,
         1,
       );
     });
@@ -740,11 +782,15 @@ async function journal(
 ): Promise<void> {
   _resetAuditCaches();
   for (const entry of entries) {
+    const withHead = entry.verb === "pr-merge" && entry.actionKind === "merge" &&
+        entry.headSha === undefined && entry.prNumber !== undefined
+      ? { ...entry, headSha: `sha${entry.prNumber}` }
+      : entry;
     const result = await recordMutation({
       runId: "run-1",
       outcome: "success",
       component: "worker",
-      ...entry,
+      ...withHead,
     }, { baseDir: dir, workerId: "test-worker", date: JOURNAL_DATE });
     assert(result.ok, result.ok ? "" : result.error.message);
   }
@@ -988,13 +1034,13 @@ Deno.test("collect - a push before a commit cannot have delivered it", async () 
   });
 });
 
-Deno.test("collect - a merge armed hours before GitHub records it matches; armed before creation or 15 minutes after does not", async () => {
+Deno.test("collect - an auto-merge arm never matches an asynchronous GitHub merge", async () => {
   await withDir(async (dir) => {
     // Auto-merge is armed (and journalled) long before GitHub merges the PR.
     await journal(dir, [
       {
         verb: "pr-merge",
-        actionKind: "merge",
+        actionKind: "merge-arm",
         actionId: "armed-13",
         repo: REPO,
         prNumber: 13,
@@ -1002,7 +1048,7 @@ Deno.test("collect - a merge armed hours before GitHub records it matches; armed
       },
       {
         verb: "pr-merge",
-        actionKind: "merge",
+        actionKind: "merge-arm",
         actionId: "armed-14",
         repo: REPO,
         prNumber: 14,
@@ -1010,7 +1056,7 @@ Deno.test("collect - a merge armed hours before GitHub records it matches; armed
       },
       {
         verb: "pr-merge",
-        actionKind: "merge",
+        actionKind: "merge-arm",
         actionId: "late-15",
         repo: REPO,
         prNumber: 15,
@@ -1031,22 +1077,14 @@ Deno.test("collect - a merge armed hours before GitHub records it matches; armed
       options(fakeGh(fixture), { auditDirs: [dir] }),
     );
     const ids = snapshot.input.actions.map((action) => action.actionId);
-    assert(
-      !ids.includes("gh:org/repo#13:merge:merge13"),
-      "armed three hours before the merge, the fleet action matches it",
-    );
-    assert(
-      ids.includes("gh:org/repo#14:merge:merge14"),
-      "armed before creation, the fleet action does not match the merge",
-    );
-    assert(
-      ids.includes("gh:org/repo#15:merge:merge15"),
-      "stamped 15 minutes after the merge, the fleet action does not match it",
-    );
+    assert(ids.includes("gh:org/repo#13:merge:merge13"));
+    assert(ids.includes("gh:org/repo#14:merge:merge14"));
+    assert(ids.includes("gh:org/repo#15:merge:merge15"));
     const armed13 = snapshot.input.actions.find((action) =>
       action.actionId === "armed-13"
     );
     assertEquals(armed13?.actor, "fleet");
+    assertEquals(armed13?.kind, "merge-arm");
   });
 });
 
@@ -1832,6 +1870,7 @@ function review(id: number, submittedAt: string): Json {
     id,
     state: "APPROVED",
     submitted_at: submittedAt,
+    commit_id: "sha1",
     user: { login: "review-bot[bot]" },
   };
 }
@@ -1899,7 +1938,7 @@ async function reviewedPr(
   );
 }
 
-Deno.test("collect - a review-log record within ten minutes of a GitHub review verifies its history, so the PR is unattended", async () => {
+Deno.test("collect - an unchained review log cannot verify a PR's history", async () => {
   await withDir(async (dir) => {
     const log = await writeLines(`${dir}/logs/log.jsonl`, [
       // Thirty seconds after GitHub's review, recorded at an older head.
@@ -1907,23 +1946,23 @@ Deno.test("collect - a review-log record within ten minutes of a GitHub review v
     ]);
     const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
     const report = buildPrCompletionReport(snapshot.input);
-    assertEquals(report.completion.unattendedMerged, 1);
-    assertEquals(report.completion.unknownMerged, 0);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
     assertEquals(
       snapshot.input.actions.some((action) =>
         action.actionId === "gh:org/repo#1:review:601"
       ),
-      false,
+      true,
       "the matched GitHub review must not stay an unknown action",
     );
     const logged = snapshot.input.actions.find((action) =>
       action.actionId === "review-log:org/repo#1:2026-10-20T01:00:30Z"
     );
     assertEquals(logged?.kind, "review");
-    assertEquals(logged?.actor, "fleet");
-    assertEquals(logged?.verified, true);
+    assertEquals(logged?.actor, "unknown");
+    assertEquals(logged?.verified, false);
     assertEquals(logged?.outcome, "confirmed");
-    assertEquals(logged?.headSha, undefined, "no head is carried over");
+    assertEquals(logged?.headSha, "older-head");
     assertEquals(
       snapshot.coverageNotes.some((note) =>
         note.includes("had no review-log source")
@@ -1983,7 +2022,7 @@ Deno.test("collect - a malformed review-log line is noted and skipped, while goo
       `review log ${log}: 1 malformed line(s) skipped`,
     );
     assertEquals(
-      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      buildPrCompletionReport(snapshot.input).completion.unknownMerged,
       1,
     );
     assertEquals(
@@ -2008,7 +2047,8 @@ Deno.test("collect - the same review-log record in two logs is one action, count
       1,
     );
     const report = buildPrCompletionReport(snapshot.input);
-    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
     assertEquals(report.coverage.unknownPrHistory, 0);
     assertEquals(report.delivery.reviewRounds, 1);
   });

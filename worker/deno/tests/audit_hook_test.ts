@@ -103,7 +103,15 @@ Deno.test("audit_hook - auditGhMutation journals a gh mutation", async () => {
 Deno.test("audit_hook - PR mutations carry a worker action id and PR number", async () => {
   await withAuditEnv(async (journalPath, opts) => {
     await auditGhMutation(
-      ["pr", "merge", "42", "--repo", "org/repo"],
+      [
+        "pr",
+        "merge",
+        "42",
+        "--repo",
+        "org/repo",
+        "--match-head-commit",
+        "a".repeat(40),
+      ],
       0,
       opts,
     );
@@ -113,8 +121,7 @@ Deno.test("audit_hook - PR mutations carry a worker action id and PR number", as
     const entry = loaded.value[0];
     assertEquals(entry?.actionKind, "merge");
     assertEquals(entry?.prNumber, 42);
-    // No caller hands the hook a head SHA, so the hook never writes one.
-    assertEquals(entry?.headSha, undefined);
+    assertEquals(entry?.headSha, "a".repeat(40));
     assertEquals(entry?.component, "unknown");
     assert(
       entry?.actionId !== undefined && /^[0-9a-f-]{36}$/.test(entry.actionId),
@@ -556,7 +563,7 @@ Deno.test("audit_hook - disarming auto-merge is not a merge", () => {
   );
   assertEquals(
     ghKind(["pr", "merge", "42", "--repo", "org/repo", "--auto"]),
-    "merge",
+    "merge-arm",
   );
 });
 
