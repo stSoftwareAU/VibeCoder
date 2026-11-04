@@ -63,14 +63,17 @@ interpolate it for display.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — For a repository whose CI runs a blocking mutants job, a PR is not
+- **partial** — For a repository whose CI runs a blocking mutants job, a PR is not
   reported ready or successfully validated while the worker's mutation check
   reports genuine unresolved survivors; any preserved draft/checkpoint remains
-  explicitly incomplete. A unit test covers this. — evidence:
+  explicitly incomplete. A unit test covers this. — reason: a mutants job in a
+  remote reusable workflow (`owner/repo/.github/workflows/...@ref`) is still not
+  detected, so a PR can be reported ready with unresolved survivors. Nested local
+  chains up to nine levels are covered. — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a nine-level nested reusable call with a mutation run is blocking at the depth cap`
   (detection, including nested chains); the hold itself is covered by
   `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor the repository's CI blocks on holds the PR as a draft`
-  — reviewer: met
+  — reviewer: partial
 - **met** — Repositories without one are unchanged. — evidence:
   `worker/deno/tests/ci_mutation_contract_test.ts::a nested reusable callee without workflow_call is not followed`
   and
