@@ -27,6 +27,7 @@ import {
   PublicationValidationFailedError,
   PublicationValidationUnavailableError,
   validateRepositoryForPublication,
+  validateSelfPushedHead,
 } from "./publication_validation.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
@@ -1745,12 +1746,21 @@ async function _processFeedbackWithHeartbeat(
   // once they have passed. One guard per round serves all three push calls.
   let publicationFailure: PublicationValidationFailedError | undefined;
   let publicationDeferred: PublicationValidationUnavailableError | undefined;
+  // `guardValidated` records whether the guard ran the gate at all: a head the
+  // agent pushed itself leaves the branch in sync, so the guard skips it and
+  // the self-push check below has to judge that head instead.
+  let guardValidated = false;
+  const runPublicationGate = processorDeps.validatePublication ??
+    validateRepositoryForPublication;
   const publicationGuard = createPublicationGuard({
     cwd: processorDeps.workDir ?? Deno.cwd(),
     repo,
     repoConfigs: processorDeps.repoConfigs,
     branchName: pushBranch,
-    validate: processorDeps.validatePublication,
+    validate: (request) => {
+      guardValidated = true;
+      return runPublicationGate(request);
+    },
   });
   const beforePush = async (): Promise<Result<void>> => {
     publicationFailure = undefined;
@@ -1919,6 +1929,8 @@ async function _processFeedbackWithHeartbeat(
 
   let pushSucceeded = false;
   let hasChanges = false;
+  // Issue #4625: the agent pushed a head the repository's checks rejected.
+  let selfPushRejected = false;
   // Issue #579: `undefined` means NOT MEASURED, which is not the same as
   // measured-and-zero. Initialising this to 0 is what let a failed push
   // helper produce `finalUnpushedCount === 0` and, with a local commit
@@ -2021,6 +2033,35 @@ async function _processFeedbackWithHeartbeat(
           beforeSha,
         });
         hasChanges = true;
+        // Issue #4625: a commit the agent pushed itself never reached the
+        // guard. Judge that head with the repository's own gate. It has
+        // already left the host, so a rejected or unrunnable head cannot be
+        // withdrawn: it is held or deferred, never reported as a clean push.
+        if (finalUnpushedCount === 0 && !guardValidated) {
+          const selfPushed = await validateSelfPushedHead({
+            cwd: processorDeps.workDir ?? Deno.cwd(),
+            repo,
+            repoConfigs: processorDeps.repoConfigs,
+            validate: runPublicationGate,
+          });
+          if (!selfPushed.ok) {
+            if (
+              selfPushed.error instanceof PublicationValidationUnavailableError
+            ) {
+              return await deferPublication(selfPushed.error);
+            }
+            if (selfPushed.error instanceof PublicationValidationFailedError) {
+              logger.error(
+                "The head the agent pushed itself failed the repository's checks",
+                { repo, prNumber, branch: pushBranch },
+              );
+              if (commentType === "pr_review") {
+                return await holdUnverifiedReview(selfPushed.error);
+              }
+              selfPushRejected = true;
+            }
+          }
+        }
       }
     }
   }
@@ -2072,6 +2113,8 @@ async function _processFeedbackWithHeartbeat(
       });
     }
   }
+
+  if (selfPushRejected) pushSucceeded = false;
 
   // Issue #4466: on a gated head the fix lands through a fix PR, and the
   // remote is the authority on whether a fix exists. The agent may have pushed

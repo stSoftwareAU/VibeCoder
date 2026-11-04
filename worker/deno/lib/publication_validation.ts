@@ -386,3 +386,19 @@ export function createPublicationGuard(
     return publicationVerdict(validation);
   };
 }
+
+/**
+ * Validate a head the AGENT pushed itself (Issue #4625). The worker's
+ * `beforePush` guard never sees such a push: by the time the round finalises
+ * the branch is in sync with its remote, so the guard has nothing to publish.
+ * The head has already left the host, so a failed or unavailable verdict
+ * cannot undo it; the caller must not report the round as a successful push.
+ */
+export async function validateSelfPushedHead(
+  options: PublicationRequest & {
+    validate?: typeof validateRepositoryForPublication;
+  },
+): Promise<Result<void>> {
+  const validate = options.validate ?? validateRepositoryForPublication;
+  return publicationVerdict(await validate(options));
+}

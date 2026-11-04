@@ -2084,6 +2084,7 @@ Deno.test("feedback turn limit stops drift and verifier recovery before publishi
 async function runPublicationRound(
   commentType: "pr_review" | "issue",
   validation: typeof validateRepositoryForPublication,
+  selfPushed = false,
 ) {
   const dir = await Deno.makeTempDir();
   const ghCalls: string[][] = [];
@@ -2124,6 +2125,20 @@ async function runPublicationRound(
         },
       },
       git: {
+        // A self-pushing agent leaves nothing for the worker to publish: the
+        // branch moved, the worker's own push (and its guard) never runs.
+        ...(selfPushed
+          ? {
+            captureBranchHead: async () => ({
+              ok: true as const,
+              value: "a".repeat(40),
+            }),
+            branchHeadChanged: async () => ({
+              ok: true as const,
+              value: true,
+            }),
+          }
+          : {}),
         commitAndPushPending: async (
           _branch,
           _message,
@@ -2134,6 +2149,17 @@ async function runPublicationRound(
           _format,
           beforePush,
         ) => {
+          if (selfPushed) {
+            return {
+              ok: true,
+              value: {
+                committedNewChanges: false,
+                commitsPushed: 0,
+                finalUnpushedCount: 0,
+                finalUnpushedSource: "remote-head",
+              },
+            };
+          }
           if (beforePush) {
             const verdict = await beforePush();
             verdicts.push(
@@ -2266,4 +2292,40 @@ Deno.test("feedback publication - a rejected head on a non-review comment is not
   );
   assertEquals(verdicts[0], "PublicationValidationFailedError");
   assertEquals(counts.pushes, 0, "a rejected head is not pushed");
+});
+
+Deno.test("feedback publication - a head the agent pushed itself is judged by the repository checks: held for a review, deferred when they cannot run (Issue #4625)", async () => {
+  const rejected = await runPublicationRound(
+    "pr_review",
+    failedPublication,
+    true,
+  );
+  assertEquals(
+    rejected.counts.marks,
+    0,
+    "a rejected head is not marked addressed",
+  );
+  assertEquals(rejected.result.ok, true);
+  if (rejected.result.ok) {
+    assertEquals(rejected.result.value.changesPushed, false);
+    assertStringIncludes(
+      rejected.result.value.summary,
+      "GATE OUTPUT: lint failed in lib/x.ts",
+    );
+  }
+
+  const deferred = await runPublicationRound(
+    "pr_review",
+    unavailablePublication,
+    true,
+  );
+  assertEquals(deferred.counts.marks, 0);
+  assertEquals(deferred.result.ok, true);
+  if (deferred.result.ok) {
+    assertEquals(deferred.result.value.processed, false);
+    assertStringIncludes(
+      deferred.result.value.summary,
+      "docker is not running",
+    );
+  }
 });

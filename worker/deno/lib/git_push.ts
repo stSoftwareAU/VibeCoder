@@ -1077,7 +1077,17 @@ export async function commitAndPushPending(
   // the later branch update runs CI a second time for the same fix. Placed
   // after the gates, so they judge only this pass's own commits.
   if (options.syncBaseBranch) {
-    await mergeBaseBeforePush(branchName, options.syncBaseBranch, options);
+    const synced = await mergeBaseBeforePush(
+      branchName,
+      options.syncBaseBranch,
+      options,
+    );
+    // Issue #4625: the merge made a head the gate above never saw. Judge that
+    // head too; a verdict on the pre-merge head does not stand in for it.
+    if (beforePush && synced?.kind === "updated") {
+      const verified = await beforePush();
+      if (!verified.ok) return verified;
+    }
   }
 
   // Step 2 — push any unpushed commits. pushUnpushedCommits handles

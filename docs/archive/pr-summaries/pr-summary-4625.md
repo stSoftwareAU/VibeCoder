@@ -15,6 +15,13 @@ are:
 - the completion recovery turns (`summary_rule_gate_retry.ts`,
   `screenshot_gate_retry.ts`, `pr_body_length.ts`).
 
+Two paths the first cut missed are now covered. When `syncBaseBranch` merges the
+base into the branch in the same push, `commitAndPushPending` runs the guard
+again on the merged head before pushing it. When the agent pushes its own
+commits in the CI or feedback lane, the lane validates the moved head after the
+run (`validateSelfPushedHead`); a rejected or unrunnable head is not reported as
+a successful push.
+
 In the CI lane an `unavailable` gate releases the PR: the retry charge is
 refunded (`refundCiCheckRetry`), no failed-push comment is written and the round
 returns `processed: false`. Closes #4625.
@@ -61,14 +68,15 @@ flowchart LR
 
 ## Evidence
 
-Backend only. Tests (all passed on this head, 264 tests in the targeted run):
+Backend only. Tests (all passed on this head in the targeted run):
 `worker/deno/tests/publication_validation_test.ts`,
 `worker/deno/tests/completion_phase_publication_validation_4625_test.ts`,
 `worker/deno/tests/fleet_pr_babysitter_validation_test.ts`,
 `worker/deno/tests/recovery_turn_publication_guard_4625_test.ts`,
 `worker/deno/tests/pr_ci_processor_test.ts`,
 `worker/deno/tests/pr_feedback_processor_test.ts`,
-`worker/deno/tests/pr_spelling_processor_test.ts`. They cover a real failing
+`worker/deno/tests/pr_spelling_processor_test.ts`,
+`worker/deno/tests/pr_push_base_sync_test.ts`. They cover a real failing
 command, a claimed-but-not-run check, edits after validation, zero Deno tests
 executed, an unavailable host, and Deno tests running in both an initial run and
 a repair.
@@ -83,7 +91,8 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
   `babysitter_fix_orchestration_test.ts`,
   `pr_feedback_review_dismissal_3383_test.ts`,
   `config_docs_consistency_test.ts`, `containment_docs_test.ts`,
-  `update_mode_docs_test.ts`: passed.
+  `update_mode_docs_test.ts` (the three docs-pin tests are unchanged from
+  `main`): passed.
 - `deno fmt --check` and `deno lint` on the changed `.ts` files: passed.
 - `./quality.sh` on this head: every stage passed except the parallel Deno test
   pass, where 2 of 32,486 tests failed:
@@ -95,8 +104,14 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
   is configured`
   on this host); this PR changes neither `repo_formatters.ts` nor that test. The
   serial Deno pass did not run after that failure.
+- Mutation check: it could not judge mutants because its baseline run of the
+  importing tests includes `completion_phase_repo_formatters_test.ts`, which
+  fails on this host for the `cargo-fmt` reason above, and the check requires an
+  all-green baseline. It is unchanged from `main` and passes where a Rust
+  toolchain is configured; no line of this change was found unpinned.
 
-Not done: commits an agent pushes itself in the CI and feedback lanes go through
-the agent's changed-file pre-push hook, not this full gate. Parity with
+Not done: the agent's own pre-push hook still checks changed files only, so a
+commit the agent pushes itself is judged by the full gate after it has left the
+host (the round is then not reported as a clean push), not before. Parity with
 mutation, clippy, cargo-deny and ShellCheck (#4617, #4630, #4626, #4631),
 durable retry (#4656) and review dismissal (#4657) belong to those issues.

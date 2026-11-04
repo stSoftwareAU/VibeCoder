@@ -7,7 +7,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -3776,6 +3780,99 @@ Deno.test("processCiFailure - a CI fix that fails the repository checks leaves o
       await remoteHead(),
       beforeRemote,
       "origin's branch must not move when the repository checks reject the head",
+    );
+    assertEquals(
+      comments.some((c) =>
+        c.includes("Repository checks failed before publication") &&
+        c.includes("GATE OUTPUT: lint failed in lib/x.ts")
+      ),
+      true,
+      `the gate output must reach the comment; got: ${comments.join(" | ")}`,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a head the agent pushed itself is judged by the repository checks and is not reported as a clean push (Issue #4625)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "ci-publication-" });
+  try {
+    const branch = "issue-4625-ci-fix";
+    const upstream = `${tmp}/upstream.git`;
+    const seed = `${tmp}/seed`;
+    const downstream = `${tmp}/downstream`;
+    await gitIn(tmp, ["init", "--bare", "-q", "-b", "main", upstream]);
+    await gitIn(tmp, ["clone", "-q", upstream, seed]);
+    await Deno.writeTextFile(`${seed}/README.md`, "seed\n");
+    await gitIn(seed, ["add", "README.md"]);
+    await gitIn(seed, ["commit", "-q", "-m", "seed"]);
+    await gitIn(seed, ["push", "-q", "origin", "main"]);
+    await gitIn(tmp, ["clone", "-q", upstream, downstream]);
+    await gitIn(downstream, ["checkout", "-q", "-b", branch]);
+    await gitIn(downstream, ["push", "-q", "-u", "origin", branch]);
+    const remoteHead = async () =>
+      (await gitIn(downstream, ["ls-remote", "origin", `refs/heads/${branch}`]))
+        .trim();
+    const beforeRemote = await remoteHead();
+
+    const comments: string[] = [];
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: openPrGh((args) => {
+          if (args[0] === "pr" && args[1] === "comment") {
+            comments.push(args[args.indexOf("--body") + 1] ?? "");
+          }
+          return Promise.resolve("");
+        }),
+      },
+      claude: {
+        runClaudeWithRetry: (async () => {
+          // The agent commits and pushes its fix itself, so the worker's own
+          // guard finds the branch in sync and has nothing to publish.
+          await Deno.writeTextFile(`${downstream}/fix.txt`, "fixed\n");
+          await gitIn(downstream, ["add", "fix.txt"]);
+          await gitIn(downstream, ["commit", "-q", "-m", "agent fix"]);
+          await gitIn(downstream, ["push", "-q", "origin", branch]);
+          return {
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          };
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      git: {
+        captureBranchHead,
+        branchHeadChanged,
+        commitAndPushPending,
+        recoverFromPushRejection,
+      } as unknown as Partial<GitDeps>,
+    });
+
+    const result = await processCiFailure(makeInput({ branchName: branch }), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${tmp}/state`,
+      workDir: downstream,
+      workRoot: tmp,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      qualityGateFn: () =>
+        Promise.resolve({ action: "passed", qualityOutput: "ok" }),
+      validatePublication: (() =>
+        Promise.resolve({
+          status: "failed",
+          head: null,
+          output: "GATE OUTPUT: lint failed in lib/x.ts",
+        })) as unknown as typeof validateRepositoryForPublication,
+    });
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.changesPushed, false);
+    }
+    assertNotEquals(
+      await remoteHead(),
+      beforeRemote,
+      "the agent's own push did reach origin; the round must still not claim it",
     );
     assertEquals(
       comments.some((c) =>

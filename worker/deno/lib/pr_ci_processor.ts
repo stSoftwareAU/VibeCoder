@@ -77,6 +77,7 @@ import {
   createPublicationGuard,
   PublicationValidationUnavailableError,
   validateRepositoryForPublication,
+  validateSelfPushedHead,
 } from "./publication_validation.ts";
 import {
   detachLaneWorktreeHead,
@@ -2200,12 +2201,21 @@ async function _processCiWithHeartbeat(
   // Issue #4625: the target repository's own gate must pass on the committed
   // head before any of it is published. One guard per round, shared by the
   // final push, the recovery and the retry finalise below.
+  // `guardValidated` records whether the guard ran the gate at all: a head the
+  // agent pushed itself leaves the branch in sync, so the guard skips it and
+  // the self-push check below has to judge that head instead.
+  let guardValidated = false;
+  const runPublicationGate = processorDeps.validatePublication ??
+    validateRepositoryForPublication;
   const beforePush = createPublicationGuard({
     cwd: processorDeps.workDir ?? Deno.cwd(),
     repo,
     repoConfigs: processorDeps.repoConfigs,
     branchName: pushBranch,
-    validate: processorDeps.validatePublication,
+    validate: (request) => {
+      guardValidated = true;
+      return runPublicationGate(request);
+    },
   });
   const finaliseResult = await deps.git.commitAndPushPending(
     pushBranch,
@@ -2349,6 +2359,26 @@ async function _processCiWithHeartbeat(
         // the remote — which is the whole of Issue #579 — so this only
         // re-opens the question, and the verification below answers it.
         pushSucceeded = finalUnpushedAfterPush === 0;
+        // Issue #4625: a commit the agent pushed itself never reached the
+        // guard. Judge that head with the repository's own gate; a rejected or
+        // unrunnable head is not reported as a successful push.
+        if (pushSucceeded && !guardValidated) {
+          const selfPushed = await validateSelfPushedHead({
+            cwd: processorDeps.workDir ?? Deno.cwd(),
+            repo,
+            repoConfigs: processorDeps.repoConfigs,
+            validate: runPublicationGate,
+          });
+          if (!selfPushed.ok) {
+            pushSucceeded = false;
+            noteDeferral(selfPushed.error);
+            pushFailureDetail = publicationFailureDetail(selfPushed.error);
+            logger.error(
+              "The head the agent pushed itself failed the repository's checks",
+              { repo, prNumber, branchName: pushBranch },
+            );
+          }
+        }
       }
     }
   }

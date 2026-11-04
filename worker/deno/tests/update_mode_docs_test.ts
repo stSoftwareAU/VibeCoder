@@ -83,7 +83,7 @@ Deno.test("SETUP.md - the update-mode section states both accepted modes and the
     "the default mode setup offers is not stated",
   );
   assert(
-    body.replace(/\s+/g, " ").includes(`loads as \`${DEFAULT_UPDATE_MODE}\``),
+    body.includes(`loads as \`${DEFAULT_UPDATE_MODE}\``),
     "SETUP.md does not say what an absent update_mode still loads as",
   );
 });

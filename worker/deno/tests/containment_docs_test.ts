@@ -392,7 +392,7 @@ Deno.test("CONTAINMENT.md's egress proxy section states the proxy opens no files
     ]
   ) {
     assert(
-      body.replace(/\s+/g, " ").includes(phrase),
+      body.includes(phrase),
       `the egress-proxy section must state "${phrase}" (missing from the section)`,
     );
   }
