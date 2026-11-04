@@ -131,6 +131,19 @@ scan-budget paragraph) and the module doc of
   114 passed in the parallel pass, 69 in the serial pass, 0 failed. `deno fmt`,
   `deno lint`, `deno check` and `markdownlint-cli2 docs/mutation-check.md`
   passed.
+- Mutation check (`ci_mutation_contract.ts:425`, dropping `blocking !== null`):
+  killed by `with two blocking workflows the first in sorted order is reported`
+  (two blocking workflows; the later one overwrote the first with the operand
+  dropped, the test went red; restored, 70 passed).
+- `listWorkflowFiles` (verifier finding at `ci_mutation_contract.ts:116`): the
+  function is module-private and its body is unchanged in this diff (only the
+  neighbouring `triggersOn` rename and new helpers moved around it). The other
+  eight "callers" the verifier listed in `supply_chain_gate.ts` and
+  `workflow_hygiene_check.ts` call those modules' own, separately defined
+  `listWorkflowFiles` (`supply_chain_gate.ts:883`,
+  `workflow_hygiene_check.ts:304`), not this one; the only caller of this one is
+  `findBlockingMutationJob`, whose tests all pass. Verdict for every listed
+  caller: unchanged.
 - Callers of `findBlockingMutationJob` checked: the completion phase and the
   review-fix mutation check both read only `workflow`, `job` as text,
   `cargoArgs` and `tool`; both see the reusable hit through the same function.

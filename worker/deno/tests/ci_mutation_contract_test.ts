@@ -1336,3 +1336,14 @@ Deno.test("a reusable callee whose jobs is a scalar or a list is not blocking", 
     });
   }
 });
+
+Deno.test("with two blocking workflows the first in sorted order is reported", async () => {
+  await withRepo({
+    "a-mutants.yml": prWorkflow("cargo mutants --package first"),
+    "b-mutants.yml": prWorkflow("cargo mutants --package second"),
+  }, async (repo) => {
+    const { blocking } = await findBlockingMutationJob(repo);
+    assertEquals(blocking?.workflow, "a-mutants.yml");
+    assertEquals(blocking?.cargoArgs, ["--package", "first"]);
+  });
+});
