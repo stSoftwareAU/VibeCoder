@@ -853,6 +853,8 @@ Deno.test("processSpellingFailure - Claude self-pushed: HEAD moved triggers succ
     // Issue #1679: the pass now claims a push only when the remote
     // confirms it, so the verification is stubbed as landed here.
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    validatePublication: () =>
+      Promise.resolve({ status: "passed", head: "test", gate: "ran" }),
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -1652,6 +1654,104 @@ Deno.test("processSpellingFailure - a spelling fix that fails the repository che
       beforeRemote,
       "origin's branch must not move when the repository checks reject the head",
     );
+    assertEquals(
+      comments.some((c) => c.includes("failed to push")),
+      true,
+      `the PR must be told the push failed; got: ${comments.join(" | ")}`,
+    );
+    assertEquals(
+      comments.some((c) => c.includes("I've pushed")),
+      false,
+      "no success claim may reach the PR",
+    );
+    assertEquals(
+      errors.some((e) =>
+        e.includes("Repository checks failed before publication") &&
+        e.includes("GATE OUTPUT: lint failed in src/x.ts")
+      ),
+      true,
+      `the gate output must reach the log; got: ${errors.join(" | ")}`,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("processSpellingFailure - a self-pushed spelling fix rejected by the repository checks is not reported as successful (Issue #4625)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "spelling-publication-" });
+  try {
+    const branch = "issue-4625-spelling-fix";
+    const upstream = `${tmp}/upstream.git`;
+    const seed = `${tmp}/seed`;
+    const downstream = `${tmp}/downstream`;
+    await gitIn(tmp, ["init", "--bare", "-q", "-b", "main", upstream]);
+    await gitIn(tmp, ["clone", "-q", upstream, seed]);
+    await Deno.writeTextFile(`${seed}/README.md`, "seed\n");
+    await gitIn(seed, ["add", "README.md"]);
+    await gitIn(seed, ["commit", "-q", "-m", "seed"]);
+    await gitIn(seed, ["push", "-q", "origin", "main"]);
+    await gitIn(tmp, ["clone", "-q", upstream, downstream]);
+    await gitIn(downstream, ["checkout", "-q", "-b", branch]);
+    await gitIn(downstream, ["push", "-q", "-u", "origin", branch]);
+    const remoteHead = async () =>
+      (await gitIn(downstream, ["ls-remote", "origin", `refs/heads/${branch}`]))
+        .trim();
+    const beforeRemote = await remoteHead();
+
+    const comments: string[] = [];
+    const { logger, errors } = makeRecordingLogger();
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: (args: string[]) => {
+          if (args[0] === "pr" && args[1] === "comment") {
+            comments.push(args[args.indexOf("--body") + 1] ?? "");
+          }
+          return Promise.resolve("");
+        },
+      },
+      claude: {
+        runClaudeWithRetry: (async () => {
+          // The agent publishes its own commit before the worker can guard it.
+          await Deno.writeTextFile(`${downstream}/fix.txt`, "fixed\n");
+          await gitIn(downstream, ["add", "fix.txt"]);
+          await gitIn(downstream, ["commit", "-q", "-m", "spelling fix"]);
+          await gitIn(downstream, ["push", "-q", "origin", branch]);
+          return {
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          };
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      git: {
+        captureBranchHead,
+        branchHeadChanged,
+        commitAndPushPending,
+        recoverFromPushRejection,
+      } as unknown as Partial<GitDeps>,
+    });
+
+    const result = await processSpellingFailure(
+      makeInput({ branchName: branch }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger,
+        deps,
+        workDir: downstream,
+        workRoot: tmp,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        validatePublication: verdictStub({
+          status: "failed",
+          head: null,
+          output: "GATE OUTPUT: lint failed in src/x.ts",
+        }),
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.changesPushed, false);
+    }
+    assertEquals((await remoteHead()) === beforeRemote, false);
     assertEquals(
       comments.some((c) => c.includes("failed to push")),
       true,

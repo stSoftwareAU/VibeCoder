@@ -1991,8 +1991,13 @@ Deno.test("feedback turn limit stops drift and verifier recovery before publishi
             _run,
             _format,
             beforePush,
+            beforeBaseMerge,
           ) => {
             finalisations++;
+            if (beforeBaseMerge) {
+              const verified = await beforeBaseMerge();
+              if (!verified.ok) return verified;
+            }
             if (beforePush) {
               const verified = await beforePush();
               if (!verified.ok) return verified;
@@ -2148,6 +2153,7 @@ async function runPublicationRound(
           _run,
           _format,
           beforePush,
+          beforeBaseMerge,
         ) => {
           if (selfPushed) {
             return {
@@ -2159,6 +2165,10 @@ async function runPublicationRound(
                 finalUnpushedSource: "remote-head",
               },
             };
+          }
+          if (beforeBaseMerge) {
+            const verified = await beforeBaseMerge();
+            if (!verified.ok) return verified;
           }
           if (beforePush) {
             const verdict = await beforePush();
@@ -2216,13 +2226,17 @@ const unavailablePublication: typeof validateRepositoryForPublication =
     reason: "docker is not running",
   });
 
-Deno.test("feedback publication - the repository checks run before the AI verifier, which never sees a rejected head (Issue #4625)", async () => {
+Deno.test("feedback publication - the verifier runs before the repository checks reject the head (Issue #4625)", async () => {
   const { result, counts, verdicts } = await runPublicationRound(
     "pr_review",
     failedPublication,
   );
   assertEquals(verdicts[0], "PublicationValidationFailedError");
-  assertEquals(counts.verifications, 0, "the verifier must not run");
+  assertEquals(
+    counts.verifications,
+    2,
+    "the verifier runs once per correction round",
+  );
   assertEquals(counts.pushes, 0, "a rejected head is not pushed");
   assertEquals(counts.marks, 0, "a rejected head is not marked addressed");
   assertEquals(
@@ -2242,19 +2256,19 @@ Deno.test("feedback publication - a head the checks pass reaches the verifier ex
   assertEquals(
     counts.verifications,
     1,
-    "the verifier runs once, after the checks",
+    "the verifier runs once before the checks",
   );
   assertEquals(counts.pushes, 1);
   assertEquals(result.ok, true);
 });
 
-Deno.test("feedback publication - an unavailable repository check defers the pr_review: no push, no verifier, no addressed mark (Issue #4625)", async () => {
+Deno.test("feedback publication - an unavailable repository check defers the pr_review: no push or addressed mark (Issue #4625)", async () => {
   const { result, counts, verdicts } = await runPublicationRound(
     "pr_review",
     unavailablePublication,
   );
   assertEquals(verdicts[0], "PublicationValidationUnavailableError");
-  assertEquals(counts.verifications, 0, "the verifier must not run");
+  assertEquals(counts.verifications, 1, "the verifier runs before the gate");
   assertEquals(counts.pushes, 0, "nothing is pushed");
   assertEquals(
     counts.marks,

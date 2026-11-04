@@ -893,6 +893,7 @@ export async function commitAndPushPending(
   runId?: string,
   formatBeforeGate?: () => Promise<void>,
   beforePush?: () => Promise<Result<void>>,
+  beforeBaseMerge?: () => Promise<Result<void>>,
 ): Promise<Result<CommitAndPushPendingResult>> {
   // Read-only default-branch guard (Issue #2584) — refuse up front, before
   // staging or committing anything, when the target is the default branch.
@@ -1064,10 +1065,9 @@ export async function commitAndPushPending(
     }
   }
 
-  // Issue #3784: inspect the committed, formatted head before it leaves the host.
-  // Unlike formatting, this callback is a gate: an error prevents the push.
-  if (beforePush) {
-    const verified = await beforePush();
+  // Issue #3784: inspect the committed fix before merging the base.
+  if (beforeBaseMerge) {
+    const verified = await beforeBaseMerge();
     if (!verified.ok) return verified;
   }
 
@@ -1075,19 +1075,18 @@ export async function commitAndPushPending(
   // same push (owner rule 2026-11-03). Every push to an open PR runs the full
   // CI; a fix pushed onto a branch that is behind leaves the PR BEHIND, and
   // the later branch update runs CI a second time for the same fix. Placed
-  // after the gates, so they judge only this pass's own commits.
+  // after the fix verifier, so it judges only this pass's own commits.
   if (options.syncBaseBranch) {
-    const synced = await mergeBaseBeforePush(
+    await mergeBaseBeforePush(
       branchName,
       options.syncBaseBranch,
       options,
     );
-    // Issue #4625: the merge made a head the gate above never saw. Judge that
-    // head too; a verdict on the pre-merge head does not stand in for it.
-    if (beforePush && synced?.kind === "updated") {
-      const verified = await beforePush();
-      if (!verified.ok) return verified;
-    }
+  }
+
+  if (beforePush) {
+    const verified = await beforePush();
+    if (!verified.ok) return verified;
   }
 
   // Step 2 — push any unpushed commits. pushUnpushedCommits handles
@@ -1098,7 +1097,13 @@ export async function commitAndPushPending(
     branchName,
     options,
     true,
-    beforePush,
+    beforeBaseMerge
+      ? async () => {
+        const verified = await beforeBaseMerge();
+        if (!verified.ok || !beforePush) return verified;
+        return await beforePush();
+      }
+      : beforePush,
   );
   if (!pushResult.ok) {
     return { ok: false, error: pushResult.error };

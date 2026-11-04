@@ -1741,9 +1741,9 @@ async function _processFeedbackWithHeartbeat(
     ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
   };
   // Issue #4625: the target repository's own checks run before anything is
-  // published, for every comment type that can publish. They are deterministic
-  // and cheap, so they run first; the AI verifier (pr_review only) runs only
-  // once they have passed. One guard per round serves all three push calls.
+  // published, for every comment type that can publish. The AI verifier
+  // judges the fix before the base merge; the guard judges the final head.
+  // One guard per round serves all three push calls.
   let publicationFailure: PublicationValidationFailedError | undefined;
   let publicationDeferred: PublicationValidationUnavailableError | undefined;
   // `guardValidated` records whether the guard ran the gate at all: a head the
@@ -1776,7 +1776,7 @@ async function _processFeedbackWithHeartbeat(
       }
       return verdict;
     }
-    return verifyBeforePush ? await verifyBeforePush() : verdict;
+    return verdict;
   };
   const finalise = () => {
     // A fresh finalise re-decides both verdicts: a stale one from an earlier
@@ -1793,6 +1793,7 @@ async function _processFeedbackWithHeartbeat(
       undefined,
       formatRound,
       beforePush,
+      verifyBeforePush,
     );
   };
   let finaliseResult = await finalise();
@@ -1954,7 +1955,12 @@ async function _processFeedbackWithHeartbeat(
         pushBranch,
         { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
         undefined,
-        beforePush,
+        async () => {
+          const verified = verifyBeforePush
+            ? await verifyBeforePush()
+            : { ok: true as const, value: undefined };
+          return verified.ok ? await beforePush() : verified;
+        },
       );
       if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
       const heldAfterRecovery = await holdPublication();
@@ -1977,6 +1983,7 @@ async function _processFeedbackWithHeartbeat(
           undefined,
           formatRound,
           beforePush,
+          verifyBeforePush,
         );
         if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
         const heldAfterRetry = await holdPublication();

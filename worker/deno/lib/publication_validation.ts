@@ -254,17 +254,13 @@ export async function validateRepositoryForPublication(
 }
 
 /**
- * Why a gate that exited non-zero was stopped by its timeout or starved of
- * disk, rather than rejecting the change. `undefined` when neither applies.
+ * Why a gate that exited non-zero was starved of disk rather than rejecting
+ * the change. `undefined` when no disk fault is reported.
  */
 function gateInfrastructureFault(
   output: string,
-  exitCode: number | undefined,
+  _exitCode: number | undefined,
 ): string | undefined {
-  if (exitCode !== undefined && GATE_TIMEOUT_EXIT_CODES.has(exitCode)) {
-    return `the repository gate timed out (exit ${exitCode}) and was killed ` +
-      `at its time limit`;
-  }
   const line = output.split("\n").find((candidate) =>
     DISK_FULL_PATTERN.test(candidate)
   );
@@ -281,6 +277,17 @@ function classify(
   head: string,
   exitCode: number | undefined,
 ): PublicationValidation {
+  if (
+    result.action !== "passed" && exitCode !== undefined &&
+    GATE_TIMEOUT_EXIT_CODES.has(exitCode)
+  ) {
+    return {
+      status: "failed",
+      head,
+      output:
+        `the repository gate timed out (exit ${exitCode}) and was killed at its time limit`,
+    };
+  }
   const text = redactedHeadTail(
     result.failureMessage ?? result.qualityOutput,
     OUTPUT_HEAD_CHARS,

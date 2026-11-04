@@ -141,6 +141,40 @@ Deno.test("a pass with nothing to push does not push a branch update on its own"
   }
 });
 
+Deno.test("base sync verifies the fix once and gates the merged head once", async () => {
+  const { root, clone } = await behindPrBranch();
+  try {
+    const startedAt = await git(clone, "rev-parse", "HEAD");
+    await Deno.writeTextFile(`${clone}/feature.txt`, "fixed\n");
+    const verified: string[] = [];
+    const gated: string[] = [];
+    const result = await commitAndPushPending(
+      "feature",
+      "fix",
+      { cwd: clone, expectedAncestor: startedAt, syncBaseBranch: "main" },
+      false,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        gated.push(await git(clone, "rev-parse", "HEAD"));
+        return { ok: true, value: undefined };
+      },
+      async () => {
+        verified.push(await git(clone, "rev-parse", "HEAD"));
+        return { ok: true, value: undefined };
+      },
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(verified.length, 1);
+    assertEquals(gated.length, 1);
+    assert(verified[0] !== gated[0]);
+    assertEquals(gated[0], await git(clone, "rev-parse", "HEAD"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("a conflicting base is not merged; the fix is left for the conflict lane", async () => {
   const { root, clone, advanceBase } = await behindPrBranch();
   try {
@@ -274,7 +308,7 @@ Deno.test("the merged head is validated before it is pushed; a verdict on the pr
           () => false,
         );
         seen.push({ head, hasBase });
-        // The gate passes the fix alone and rejects it once the base is in.
+        // The merged head must be rejected before it reaches origin.
         return hasBase
           ? { status: "failed", head, output: "BROKEN AFTER MERGE" }
           : { status: "passed", head, gate: "absent" };
@@ -294,8 +328,8 @@ Deno.test("the merged head is validated before it is pushed; a verdict on the pr
       undefined,
       guard,
     );
-    assertEquals(seen.map((s) => s.hasBase), [false, true]);
-    assertEquals(seen[1]!.head, await git(clone, "rev-parse", "HEAD"));
+    assertEquals(seen.map((s) => s.hasBase), [true]);
+    assertEquals(seen[0]!.head, await git(clone, "rev-parse", "HEAD"));
     assert(!result.ok, "a merged head the gate rejects must not be pushed");
     assert(result.error.message.includes("BROKEN AFTER MERGE"));
     const remote = (await git(clone, "ls-remote", "origin", "feature"))

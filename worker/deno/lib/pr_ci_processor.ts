@@ -37,11 +37,7 @@ import {
   withGraftContext,
 } from "./graft_context.ts";
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
-import {
-  getCiCheckRetryCount,
-  recordCiCheckRetry,
-  refundCiCheckRetry,
-} from "./pr_ci_checks.ts";
+import { getCiCheckRetryCount, recordCiCheckRetry } from "./pr_ci_checks.ts";
 import {
   type CheckAnnotation,
   decodeAnnotations,
@@ -2614,12 +2610,9 @@ async function _processCiWithHeartbeat(
   }
 
   // Issue #4625: the repository's checks could not run, so nothing was
-  // published and nothing was judged. Release the pull request: refund the
-  // retry charge, post no failed-push comment and write no attempt marker, so
-  // repeated infrastructure faults never reach the attempt cap (which would
-  // close the PR). The next scan retries.
+  // published and nothing was judged. Retain the local retry charge so a
+  // persistent fault reaches the per-check cap without an attempt marker.
   if (publicationDeferral !== undefined && !(hasChanges && pushSucceeded)) {
-    await refundCiCheckRetry(stateDir, repo, checkRunId);
     await recordCiMilestone(
       processorDeps,
       input,
@@ -2631,10 +2624,10 @@ async function _processCiWithHeartbeat(
         processed: false,
         changesPushed: false,
         annotationCount: annotations.length,
-        retryCount: newRetryCount - 1,
+        retryCount: newRetryCount,
         summary:
           `PR #${prNumber} (${checkName}) — push deferred: repository checks ` +
-          `could not run (${publicationDeferral}); no attempt charged, retried next scan`,
+          `could not run (${publicationDeferral}); retry charged`,
       },
     };
   }

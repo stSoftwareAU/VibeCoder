@@ -486,7 +486,7 @@ Deno.test("the real quality gate: a passing quality.sh publishes as ran", async 
   );
 });
 
-Deno.test("the real quality gate: exit 124 is unavailable, naming the timeout", async () => {
+Deno.test("the real quality gate: exit 124 is failed, naming the timeout", async () => {
   await withRepo(
     { "quality.sh": "#!/bin/sh\necho slow\nexit 124\n" },
     async (dir) => {
@@ -495,9 +495,9 @@ Deno.test("the real quality gate: exit 124 is unavailable, naming the timeout", 
           { cwd: dir, repo: REPO },
           { runGate: realGate },
         ),
-        "unavailable",
+        "failed",
       );
-      assertStringIncludes(v.reason, "timed out (exit 124)");
+      assertStringIncludes(v.output, "timed out (exit 124)");
     },
   );
 });
@@ -562,10 +562,10 @@ Deno.test("the real quality gate: ordinary failures stay failed", async (t) => {
   );
 });
 
-Deno.test("a gate killed by its timeout is unavailable, whatever its output", async (t) => {
+Deno.test("a gate killed by its timeout is failed, whatever its output", async (t) => {
   await withRepo({ "README.md": "hello\n" }, async (dir) => {
     for (const exitCode of [124, 137, 143]) {
-      await t.step(`exit ${exitCode} is unavailable`, async () => {
+      await t.step(`exit ${exitCode} is failed`, async () => {
         const v = expectStatus(
           await validateRepositoryForPublication(
             { cwd: dir, repo: REPO },
@@ -577,9 +577,9 @@ Deno.test("a gate killed by its timeout is unavailable, whatever its output", as
               }),
             },
           ),
-          "unavailable",
+          "failed",
         );
-        assertStringIncludes(v.reason, `timed out (exit ${exitCode})`);
+        assertStringIncludes(v.output, `timed out (exit ${exitCode})`);
       });
     }
 

@@ -17,13 +17,13 @@ are:
 
 Two paths the first cut missed are now covered. When `syncBaseBranch` merges the
 base into the branch in the same push, `commitAndPushPending` runs the guard
-again on the merged head before pushing it. When the agent pushes its own
-commits in the CI or feedback lane, the lane validates the moved head after the
+on the merged head before pushing it. When the agent pushes its own
+commits in the CI, feedback or spelling lane, the lane validates the moved head after the
 run (`validateSelfPushedHead`); a rejected or unrunnable head is not reported as
 a successful push.
 
-In the CI lane an `unavailable` gate releases the PR: the retry charge is
-refunded (`refundCiCheckRetry`), no failed-push comment is written and the round
+In the CI lane an `unavailable` gate releases the PR: the local retry charge is
+retained, no failed-push comment is written and the round
 returns `processed: false`. Closes #4625.
 
 Version bump: `VERSION` is not touched by this change.
@@ -53,8 +53,8 @@ flowchart LR
 ### Essential Design Decisions
 
 - Three outcomes: `passed`, `failed` (output goes back for repair) and
-  `unavailable` (missing tool, Docker or credential fault, disk full, timeout:
-  never pushed, never a content failure, retried later).
+  `unavailable` (missing tool, Docker or credential fault, disk full: never pushed, never a content failure, retried later; a gate timeout
+  is a charged failure).
 - The result is tied to the head: a dirty tree fails, and any new commit is
   validated afresh. A Deno run that executed zero tests fails. Default timeout
   is 30 minutes; a repository's `quality_check_timeout` overrides it.
@@ -133,3 +133,20 @@ commit the agent pushes itself is judged by the full gate after it has left the
 host (the round is then not reported as a clean push), not before. Parity with
 mutation, clippy, cargo-deny and ShellCheck (#4617, #4630, #4626, #4631),
 durable retry (#4656) and review dismissal (#4657) belong to those issues.
+
+- Review follow-up: CI deferrals retain their local retry charge; a gate timeout
+  is a failed verdict. The obsolete free-retry and timeout deferral expectations
+  are replaced by the bounded retry and failure coverage in
+  `worker/deno/tests/pr_ci_processor_test.ts::processCiFailure - an unavailable repository check releases the PR: retry charged, no comment, no marker (Issue #4625)`
+  and `worker/deno/tests/publication_validation_test.ts::a gate killed by its timeout is failed, whatever its output`.
+- The obsolete pre-merge repository gate and its ordering before the review
+  verifier are replaced by verification of the fix before base sync and one
+  gate on the resulting head. Coverage remains in
+  `worker/deno/tests/pr_push_base_sync_test.ts::the merged head is validated before it is pushed; a verdict on the pre-merge head does not stand in for it (Issue #4625)`
+  and `worker/deno/tests/pr_push_base_sync_test.ts::base sync verifies the fix once and gates the merged head once`.
+  The obsolete expectation that the repository gate precedes the verifier is
+  replaced by `worker/deno/tests/pr_feedback_processor_test.ts::feedback publication - the verifier runs before the repository checks reject the head (Issue #4625)`,
+  which still proves a rejected head is neither pushed nor marked addressed.
+  A rejected self-push remains unsuccessful, covered by
+  `worker/deno/tests/pr_spelling_processor_test.ts::processSpellingFailure - a self-pushed spelling fix rejected by the repository checks is not reported as successful (Issue #4625)`.
+  No mirrored rule was found for these push hooks.

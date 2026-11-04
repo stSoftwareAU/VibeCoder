@@ -37,6 +37,7 @@ import {
   createPublicationGuard,
   PublicationValidationUnavailableError,
   validateRepositoryForPublication,
+  validateSelfPushedHead,
 } from "./publication_validation.ts";
 
 // ---------------------------------------------------------------------------
@@ -472,13 +473,30 @@ async function _processSpellingWithHeartbeat(
   // Issue #4625: the target repository's own gate must pass on the committed
   // head before any of it is published. One guard per round, shared by the
   // final push, the recovery and the retry finalise below.
-  const beforePush = createPublicationGuard({
+  let guardValidated = false;
+  let publicationDeferred = false;
+  const runPublicationGate = processorDeps.validatePublication ??
+    validateRepositoryForPublication;
+  const guard = createPublicationGuard({
     cwd: processorDeps.workDir ?? Deno.cwd(),
     repo,
     repoConfigs: processorDeps.repoConfigs,
     branchName: input.branchName,
-    validate: processorDeps.validatePublication,
+    validate: (request) => {
+      guardValidated = true;
+      return runPublicationGate(request);
+    },
   });
+  const beforePush = async () => {
+    const result = await guard();
+    if (
+      !result.ok &&
+      result.error instanceof PublicationValidationUnavailableError
+    ) {
+      publicationDeferred = true;
+    }
+    return result;
+  };
   const finaliseResult = await deps.git.commitAndPushPending(
     input.branchName,
     `Fix spelling check failures: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
@@ -558,6 +576,9 @@ async function _processSpellingWithHeartbeat(
     }
   } else {
     pushAttemptFailed = true;
+    if (finaliseResult.error instanceof PublicationValidationUnavailableError) {
+      publicationDeferred = true;
+    }
     logger.error("commitAndPushPending failed", {
       error: publicationFailureDetail(finaliseResult.error),
     });
@@ -599,6 +620,22 @@ async function _processSpellingWithHeartbeat(
         // refused outright (Issue #1679) is not re-opened at all: the refusal
         // is the answer.
         pushSucceeded = !pushAttemptFailed && finalUnpushedAfterPush === 0;
+        if (pushSucceeded && !guardValidated) {
+          const verdict = await validateSelfPushedHead({
+            cwd: processorDeps.workDir ?? Deno.cwd(),
+            repo,
+            repoConfigs: processorDeps.repoConfigs,
+            validate: runPublicationGate,
+          });
+          if (!verdict.ok) {
+            pushSucceeded = false;
+            publicationDeferred = verdict.error instanceof
+              PublicationValidationUnavailableError;
+            logger.error("Self-pushed head failed publication validation", {
+              detail: publicationFailureDetail(verdict.error),
+            });
+          }
+        }
       }
     }
   }
@@ -634,6 +671,19 @@ async function _processSpellingWithHeartbeat(
         remoteSha: pushVerification.remoteSha,
       });
     }
+  }
+
+  if (publicationDeferred && !pushSucceeded) {
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        summary:
+          `PR #${prNumber} spelling fix deferred: repository checks could not run`,
+      },
+    };
   }
 
   // Reply with outcome — only claim "pushed" if push actually succeeded

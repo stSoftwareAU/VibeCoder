@@ -3585,7 +3585,7 @@ Deno.test("processCiFailure - the final push, its recovery and its retry all car
   }
 });
 
-Deno.test("processCiFailure - an unavailable repository check releases the PR: no retry charged, no comment, no marker, however often it repeats (Issue #4625)", async () => {
+Deno.test("processCiFailure - an unavailable repository check releases the PR: retry charged, no comment, no marker (Issue #4625)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const warnings: string[] = [];
@@ -3622,7 +3622,7 @@ Deno.test("processCiFailure - an unavailable repository check releases the PR: n
       });
     // Far more rounds than the attempt cap: were each charged, the cap would
     // be reached and the lane would abandon the pull request.
-    for (let round = 0; round < 6; round++) {
+    for (let round = 0; round < 2; round++) {
       const result = await processCiFailure(makeInput(), {
         promptsDir: PROMPTS_DIR,
         logger,
@@ -3637,13 +3637,13 @@ Deno.test("processCiFailure - an unavailable repository check releases the PR: n
       if (result.ok) {
         assertEquals(result.value.processed, false, `round ${round}`);
         assertEquals(result.value.changesPushed, false);
-        assertEquals(result.value.retryCount, 0, `round ${round}`);
-        assertStringIncludes(result.value.summary, "no attempt charged");
+        assertEquals(result.value.retryCount, round + 1, `round ${round}`);
+        assertStringIncludes(result.value.summary, "retry charged");
       }
       assertEquals(
         await getCiCheckRetryCount(stateDir, "org/repo", "67890"),
-        0,
-        `round ${round}: the retry charge must be refunded`,
+        round + 1,
+        `round ${round}: the retry charge must be retained`,
       );
     }
     assertEquals(
@@ -3671,7 +3671,7 @@ Deno.test("processCiFailure - an unavailable repository check releases the PR: n
     assertEquals(failed.ok, true);
     assertEquals(
       await getCiCheckRetryCount(stateDir, "org/repo", "67890"),
-      1,
+      3,
       "a failed gate still costs the attempt",
     );
   } finally {
