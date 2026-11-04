@@ -56,6 +56,8 @@ const COHORT = {
   observedAt: "2026-11-02T00:00:00Z",
 };
 const JOURNAL_DATE = "2026-10-25";
+const MINUTE = 60_000;
+const HOUR = 3_600_000;
 
 Deno.test("collect - failed merge attempts cannot match events but do not taint confirmed delivery", async () => {
   await withDir(async (dir) => {
@@ -1016,6 +1018,42 @@ Deno.test("collect - audit verification leaves interrupted history untouched", a
   });
 });
 
+Deno.test("collect - a damaged audit roster is reported and left untouched, because collection never repairs it", async () => {
+  await withDir(async (dir) => {
+    // The roster sits beside the audit directory, so both live under `dir`.
+    const auditDir = `${dir}/audit`;
+    await journal(auditDir, [{ verb: "issue-comment", actionId: "recorded" }]);
+    // Only the roster is damaged: its final line is an interrupted append.
+    await Deno.writeTextFile(rosterPath(auditDir), '{"journal":', {
+      append: true,
+    });
+    const rosterBefore = await Deno.readTextFile(rosterPath(auditDir));
+    const journalPath = auditFilePath({
+      baseDir: auditDir,
+      workerId: "test-worker",
+      date: JOURNAL_DATE,
+    });
+    const journalBefore = await Deno.readTextFile(journalPath);
+
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(emptyFixture()), { auditDirs: [auditDir] }),
+    );
+
+    assertEquals(
+      await Deno.readTextFile(rosterPath(auditDir)),
+      rosterBefore,
+      "collection must not repair the roster",
+    );
+    assertEquals(await Deno.readTextFile(journalPath), journalBefore);
+    assert(
+      snapshot.coverageNotes.some((note) =>
+        note.includes("chain sweep failed")
+      ),
+      "a damaged roster must stay visible in coverage",
+    );
+  });
+});
+
 Deno.test("collect - pages the cohort, filters by creation, and flags truncation", async () => {
   // 150 cohort PRs behind one PR newer than the cohort and one older.
   const after = pull(9_000, { created_at: "2026-11-05T00:00:00Z" });
@@ -1098,6 +1136,125 @@ Deno.test("collect - a GitHub merge matched to a verified fleet action is unatte
         .length,
       0,
     );
+  });
+});
+
+Deno.test("collect - a verified merge matches GitHub's merge only on the same head and within ten minutes either side", async () => {
+  // GitHub merges at 02:00. The window is symmetric, and the head must match.
+  const cases: Array<
+    { name: string; at: string; headSha?: string; matches: boolean }
+  > = [
+    { name: "11 minutes before", at: "2026-10-20T01:49:00Z", matches: false },
+    { name: "9 minutes before", at: "2026-10-20T01:51:00Z", matches: true },
+    { name: "11 minutes after", at: "2026-10-20T02:11:00Z", matches: false },
+    { name: "9 minutes after", at: "2026-10-20T02:09:00Z", matches: true },
+    {
+      name: "on another head, 1 minute before",
+      at: "2026-10-20T01:59:00Z",
+      headSha: "other-head",
+      matches: false,
+    },
+  ];
+  for (const c of cases) {
+    await withDir(async (dir) => {
+      await journal(dir, [
+        {
+          verb: "git-push",
+          actionKind: "implementation",
+          actionId: "window-push",
+          deliveredCommits: ["sha1"],
+          target: "issue-1",
+          timestamp: "2026-10-20T00:30:00Z",
+        },
+        {
+          verb: "pr-merge",
+          actionKind: "merge",
+          actionId: "window-merge",
+          repo: REPO,
+          prNumber: 1,
+          timestamp: c.at,
+          ...(c.headSha ? { headSha: c.headSha } : {}),
+        },
+      ]);
+      const snapshot = await collectPrCompletionSnapshot(
+        options(
+          fakeGh(emptyFixture({
+            pulls: { [REPO]: [pull(1)] },
+            commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+          })),
+          { auditDirs: [dir] },
+        ),
+      );
+      const report = buildPrCompletionReport(snapshot.input);
+      assertEquals(
+        report.completion.unattendedMerged,
+        c.matches ? 1 : 0,
+        `${c.name}: unattended`,
+      );
+      assertEquals(
+        report.completion.unknownMerged,
+        c.matches ? 0 : 1,
+        `${c.name}: unknown`,
+      );
+      assertEquals(
+        snapshot.input.actions.find((action) =>
+          action.actionId === "window-merge"
+        )?.githubEvents?.length ?? 0,
+        c.matches ? 1 : 0,
+        `${c.name}: matched GitHub events`,
+      );
+    });
+  }
+});
+
+Deno.test("collect - a pre-change merge entry with no headSha is read as unknown, so its PR is not unattended", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "git-push",
+      actionKind: "implementation",
+      actionId: "old-push",
+      deliveredCommits: ["sha1"],
+      target: "issue-1",
+      timestamp: "2026-10-20T00:30:00Z",
+    }]);
+    // journal() defaults a headSha onto merge entries, and pre-change merge
+    // entries never carried one. This entry is written directly, without it.
+    const written = await recordMutation({
+      runId: "run-1",
+      outcome: "success",
+      component: "worker",
+      actionId: "old-merge",
+      actionKind: "merge",
+      verb: "pr-merge",
+      repo: REPO,
+      prNumber: 1,
+      timestamp: "2026-10-20T02:00:00Z",
+    }, { baseDir: dir, workerId: "test-worker", date: JOURNAL_DATE });
+    assert(written.ok, written.ok ? "" : written.error.message);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    assertEquals(
+      snapshot.input.actions.find((action) => action.actionId === "old-merge")
+        ?.headSha,
+      undefined,
+    );
+    assert(
+      snapshot.input.actions.some((action) =>
+        action.actionId === "gh:org/repo#1:merge:merge1" &&
+        action.actor === "unknown"
+      ),
+      "the GitHub merge must stay an unknown action",
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
   });
 });
 
@@ -1560,7 +1717,7 @@ Deno.test("collect - a CI run without a completion time has no duration", async 
 
 Deno.test("collect - CI history includes observed heads, workflow attempts and paged jobs", async () => {
   const fixture = emptyFixture({
-    pulls: { [REPO]: [pull(1, { merged_at: "2026-10-20T00:01:00Z" })] },
+    pulls: { [REPO]: [pull(1, { merged_at: "2026-10-20T00:45:00Z" })] },
     commits: { [pk(1)]: [commit("sha2", "2026-10-20T00:40:00Z")] },
     workflowRuns: {
       sha1: {
@@ -1568,8 +1725,32 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
         workflow_runs: [{ id: 55, run_attempt: 2, workflow_id: 9 }],
       },
       sha2: { total_count: 0, workflow_runs: [] },
+      // The merge commit (merge1): its failure after the merge is the one
+      // post-merge regression, and its later attempt resolves it.
+      merge1: {
+        total_count: 1,
+        workflow_runs: [{ id: 77, run_attempt: 2, workflow_id: 9 }],
+      },
     },
     workflowAttempts: {
+      "77:1": {
+        id: 77,
+        workflow_id: 9,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "failure",
+        run_started_at: "2026-10-20T00:40:00Z",
+        updated_at: "2026-10-20T00:50:00Z",
+      },
+      "77:2": {
+        id: 77,
+        workflow_id: 9,
+        run_attempt: 2,
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T00:55:00Z",
+        updated_at: "2026-10-20T01:00:00Z",
+      },
       "55:1": {
         id: 55,
         workflow_id: 9,
@@ -1640,6 +1821,18 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
       path.includes("filter=all")
     ),
   );
+  // The merge commit's runs are read for post-merge regressions only, so they
+  // do not enter the CI history that feeds the cost totals.
+  assert(
+    fixture.calls.includes(
+      "repos/org/repo/actions/runs?head_sha=merge1&per_page=100&page=1",
+    ),
+  );
+  assertEquals(
+    snapshot.input.ciRuns.filter((run) => run.headSha === "merge1"),
+    [],
+  );
+  // The sha1 failure completed before the merge: a blocker, not a regression.
   assertEquals(snapshot.input.blockers, [{
     repo: REPO,
     prNumber: 1,
@@ -1647,13 +1840,170 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
     startedAt: "2026-10-20T00:05:00Z",
     endedAt: "2026-10-20T00:20:00Z",
   }]);
+  // The merge commit's failure completed after the merge: a post-merge
+  // regression, resolved by its later successful attempt.
   assertEquals(snapshot.input.regressions, [{
     repo: REPO,
     prNumber: 1,
-    detectedAt: "2026-10-20T00:05:00Z",
+    detectedAt: "2026-10-20T00:50:00Z",
     resolved: true,
     source: "post_merge_ci",
   }]);
+});
+
+/**
+ * Fixture parts for PR 1 (merged at 02:00 onto the merge commit `merge1`) with
+ * workflow run 77 (workflow 9) on that commit. Each attempt gives `conclusion`,
+ * `started` and `ended`, and the attempts are numbered from 1.
+ */
+function mergeCommitRun(attempts: Json[]): Partial<Fixture> {
+  return {
+    pulls: { [REPO]: [pull(1)] },
+    workflowRuns: {
+      merge1: {
+        total_count: 1,
+        workflow_runs: [{
+          id: 77,
+          run_attempt: attempts.length,
+          workflow_id: 9,
+        }],
+      },
+    },
+    workflowAttempts: Object.fromEntries(
+      attempts.map((attempt, index) => [
+        `77:${index + 1}`,
+        {
+          id: 77,
+          workflow_id: 9,
+          run_attempt: index + 1,
+          status: "completed",
+          conclusion: attempt.conclusion,
+          run_started_at: attempt.started,
+          updated_at: attempt.ended,
+        },
+      ]),
+    ),
+  };
+}
+
+const MERGE_FAILED = {
+  conclusion: "failure",
+  started: "2026-10-20T02:10:00Z",
+  ended: "2026-10-20T02:20:00Z",
+};
+
+Deno.test("collect - a failed run on the merge commit is a post-merge regression, resolved by a later successful attempt", async () => {
+  const cases: Array<{ name: string; attempts: Json[]; resolved: boolean }> = [
+    { name: "unrecovered", attempts: [MERGE_FAILED], resolved: false },
+    {
+      name: "recovered by a later attempt",
+      attempts: [MERGE_FAILED, {
+        conclusion: "success",
+        started: "2026-10-20T02:25:00Z",
+        ended: "2026-10-20T02:30:00Z",
+      }],
+      resolved: true,
+    },
+  ];
+  for (const c of cases) {
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(emptyFixture(mergeCommitRun(c.attempts)))),
+    );
+    assertEquals(snapshot.input.regressions, [{
+      repo: REPO,
+      prNumber: 1,
+      detectedAt: "2026-10-20T02:20:00Z",
+      resolved: c.resolved,
+      source: "post_merge_ci",
+    }], c.name);
+  }
+});
+
+Deno.test("collect - a cancelled run on the merge commit is not a post-merge regression", async () => {
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(emptyFixture(mergeCommitRun([{
+      conclusion: "cancelled",
+      started: "2026-10-20T02:10:00Z",
+      ended: "2026-10-20T02:20:00Z",
+    }])))),
+  );
+  assertEquals(snapshot.input.regressions, []);
+});
+
+Deno.test("collect - a failure on the PR head after the merge is not a post-merge regression", async () => {
+  // The head's run fails after the merge, but the merge commit has no runs.
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1)] },
+    workflowRuns: {
+      sha1: {
+        total_count: 1,
+        workflow_runs: [{ id: 55, run_attempt: 1, workflow_id: 9 }],
+      },
+    },
+    workflowAttempts: {
+      "55:1": {
+        id: 55,
+        workflow_id: 9,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "failure",
+        run_started_at: "2026-10-20T02:10:00Z",
+        updated_at: "2026-10-20T02:20:00Z",
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(snapshot.input.regressions, []);
+  // The merge commit was read, and found no runs: the head's failure is not it.
+  assert(
+    fixture.calls.includes(
+      "repos/org/repo/actions/runs?head_sha=merge1&per_page=100&page=1",
+    ),
+  );
+});
+
+Deno.test("collect - a merged PR without a merge commit SHA is noted, and its post-merge CI is not guessed", async () => {
+  for (const variant of ["null", "absent"]) {
+    const row = pull(1);
+    if (variant === "null") row.merge_commit_sha = null;
+    else delete row.merge_commit_sha;
+    const fixture = emptyFixture({
+      pulls: { [REPO]: [row] },
+      workflowRuns: {
+        sha1: {
+          total_count: 1,
+          workflow_runs: [{ id: 55, run_attempt: 1, workflow_id: 9 }],
+        },
+      },
+      workflowAttempts: {
+        "55:1": {
+          id: 55,
+          workflow_id: 9,
+          run_attempt: 1,
+          status: "completed",
+          conclusion: "success",
+          run_started_at: "2026-10-20T00:00:00Z",
+          updated_at: "2026-10-20T00:05:00Z",
+        },
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture)),
+    );
+    assertStringIncludes(
+      snapshot.coverageNotes.join("\n"),
+      `${
+        pk(1)
+      }: merge commit SHA is null or absent; post-merge CI is not observed`,
+      variant,
+    );
+    assertEquals(snapshot.input.regressions, [], variant);
+    assertEquals(
+      fixture.calls.some((path) => path.includes("head_sha=merge")),
+      false,
+      variant,
+    );
+  }
 });
 
 Deno.test("collect - blocker intervals are closed or open as the events dictate", async () => {
@@ -1737,6 +2087,153 @@ Deno.test("collect - blocker intervals are closed or open as the events dictate"
   ]);
   const report = buildPrCompletionReport(snapshot.input);
   assertEquals(report.waiting.openIntervals, 2);
+});
+
+Deno.test("collect - a CI failure fixed by a later run of the same workflow on a new head closes when that run completes", async () => {
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [pull(1, {
+        state: "open",
+        merged_at: null,
+        closed_at: null,
+        head: { ref: "issue-1", sha: "sha2" },
+      })],
+    },
+    commits: {
+      [pk(1)]: [
+        commit("sha1", "2026-10-20T00:01:00Z"),
+        commit("sha2", "2026-10-20T00:10:00Z"),
+      ],
+    },
+    workflowRuns: {
+      sha1: {
+        total_count: 1,
+        workflow_runs: [{ id: 60, run_attempt: 1, workflow_id: 9 }],
+      },
+      sha2: {
+        total_count: 1,
+        workflow_runs: [{ id: 61, run_attempt: 1, workflow_id: 9 }],
+      },
+    },
+    workflowAttempts: {
+      "60:1": {
+        id: 60,
+        workflow_id: 9,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "failure",
+        run_started_at: "2026-10-20T00:00:00Z",
+        updated_at: "2026-10-20T00:05:00Z",
+      },
+      "61:1": {
+        id: 61,
+        workflow_id: 9,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T00:12:00Z",
+        updated_at: "2026-10-20T00:20:00Z",
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(snapshot.input.blockers, [{
+    repo: REPO,
+    prNumber: 1,
+    blocker: "ci-failure",
+    startedAt: "2026-10-20T00:05:00Z",
+    endedAt: "2026-10-20T00:20:00Z",
+  }]);
+});
+
+Deno.test("collect - a CI blocker on a merged PR never runs past the merge, recovered or not, and a failure after it is no blocker", async () => {
+  // PR 1 merges at 00:10. Workflow 9 fails on sha1 before the merge and is
+  // recovered on sha2 after it. Workflow 10 fails before the merge and is never
+  // recovered. Workflow 11 fails after the merge, so it is not a blocker.
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [pull(1, {
+        created_at: "2026-10-20T00:00:00Z",
+        merged_at: "2026-10-20T00:10:00Z",
+        closed_at: "2026-10-20T00:10:00Z",
+      })],
+    },
+    commits: {
+      [pk(1)]: [
+        commit("sha1", "2026-10-20T00:01:00Z"),
+        commit("sha2", "2026-10-20T00:06:00Z"),
+      ],
+    },
+    workflowRuns: {
+      sha1: {
+        total_count: 3,
+        workflow_runs: [
+          { id: 60, run_attempt: 1, workflow_id: 9 },
+          { id: 62, run_attempt: 1, workflow_id: 10 },
+          { id: 64, run_attempt: 1, workflow_id: 11 },
+        ],
+      },
+      sha2: {
+        total_count: 1,
+        workflow_runs: [{ id: 61, run_attempt: 1, workflow_id: 9 }],
+      },
+    },
+    workflowAttempts: {
+      "60:1": {
+        id: 60,
+        workflow_id: 9,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "failure",
+        run_started_at: "2026-10-20T00:00:00Z",
+        updated_at: "2026-10-20T00:05:00Z",
+      },
+      "62:1": {
+        id: 62,
+        workflow_id: 10,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "failure",
+        run_started_at: "2026-10-20T00:02:00Z",
+        updated_at: "2026-10-20T00:07:00Z",
+      },
+      "64:1": {
+        id: 64,
+        workflow_id: 11,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "failure",
+        run_started_at: "2026-10-20T00:25:00Z",
+        updated_at: "2026-10-20T00:30:00Z",
+      },
+      "61:1": {
+        id: 61,
+        workflow_id: 9,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T00:25:00Z",
+        updated_at: "2026-10-20T00:30:00Z",
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(snapshot.input.blockers, [
+    {
+      repo: REPO,
+      prNumber: 1,
+      blocker: "ci-failure",
+      startedAt: "2026-10-20T00:05:00Z",
+      endedAt: "2026-10-20T00:10:00Z",
+    },
+    {
+      repo: REPO,
+      prNumber: 1,
+      blocker: "ci-failure",
+      startedAt: "2026-10-20T00:07:00Z",
+      endedAt: "2026-10-20T00:10:00Z",
+    },
+  ]);
 });
 
 Deno.test("collect - a revert of a merged cohort PR is a regression, including a hostile input (returns; a catastrophic pattern would hang)", async () => {
@@ -2005,6 +2502,61 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
   });
 });
 
+const BABYSITTER_HOSTS_NOTE =
+  "PR discovery events do not cover every expected babysitter host; rollout remains unknown";
+
+Deno.test("collect - rollout discovery is incomplete unless every expected babysitter host has discovery events", async () => {
+  const cases: Array<{ name: string; hosts: string[]; noted: boolean }> = [
+    { name: "a host is missing", hosts: ["host-a"], noted: true },
+    {
+      name: "every host is covered",
+      hosts: ["host-a", "host-b"],
+      noted: false,
+    },
+  ];
+  for (const c of cases) {
+    await withDir(async (dir) => {
+      for (const hostId of c.hosts) {
+        await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
+          event: "discovered",
+          hostId,
+          repo: REPO,
+          prNumber: 2,
+          headSha: "sha2",
+          recordedAt: "2026-10-26T00:00:00Z",
+        });
+      }
+      const snapshot = await collectPrCompletionSnapshot(options(
+        fakeGh(emptyFixture()),
+        {
+          babysitterStateDirs: [dir],
+          expected: {
+            components: ["worker", "babysitter"],
+            inventory: [
+              { hostId: "host-a", component: "babysitter" },
+              { hostId: "host-b", component: "babysitter" },
+            ],
+            revision: "rev1",
+            policyFingerprint: FP,
+            maxHeartbeatAgeHours: 24,
+          },
+          rolloutVerifiedAt: "2026-10-25T00:00:00Z",
+        },
+      ));
+      assertEquals(
+        snapshot.coverageNotes.includes(BABYSITTER_HOSTS_NOTE),
+        c.noted,
+        c.name,
+      );
+      assertEquals(
+        snapshot.input.rollout!.discoveryEvidenceComplete,
+        !c.noted,
+        c.name,
+      );
+    });
+  }
+});
+
 Deno.test("collect - a zero-PR cohort yields an empty, valid report", async () => {
   const snapshot = await collectPrCompletionSnapshot(options(
     fakeGh(emptyFixture({ pulls: { [REPO]: [] } })),
@@ -2215,8 +2767,8 @@ Deno.test("collect - the rollout check strands only PRs open at verification and
           [REPO]: [
             // Open at verification and five days old: stranded.
             pull(30, { ...open, created_at: "2026-10-20T00:00:00Z" }),
-            // Merged after verification, re-entered discovery: stranded, and
-            // rediscovered and processed by a confirmed fleet action.
+            // Merged after verification: still stranded, with no discovery or
+            // processing evidence (a later audit action proves neither).
             pull(31, {
               created_at: "2026-10-20T00:00:00Z",
               merged_at: "2026-10-26T00:00:00Z",
@@ -2420,7 +2972,7 @@ Deno.test("collect - an unchained review log cannot verify a PR's history", asyn
         action.actionId === "gh:org/repo#1:review:601"
       ),
       true,
-      "the matched GitHub review must not stay an unknown action",
+      "the GitHub review at a different head must stay an unknown action",
     );
     const logged = snapshot.input.actions.find((action) =>
       action.actionId === "review-log:org/repo#1:2026-10-20T01:00:30Z"

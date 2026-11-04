@@ -15,6 +15,20 @@ export interface PrDiscoveryEvent {
 
 const EVENT_LINE_LIMIT = 16_384;
 
+/**
+ * Map any host label (a free-form VIBE_HOST_ID or hostname) onto the identifier
+ * shape the event ledger and deployment heartbeat accept: characters outside
+ * [A-Za-z0-9_.-] become '-', leading non-alphanumerics are dropped, the result
+ * is trimmed to 128 characters, and an empty result falls back to 'host'.
+ */
+export function reportHostId(raw: string): string {
+  const mapped = raw.replace(/[^A-Za-z0-9_.-]/g, "-").replace(
+    /^[^A-Za-z0-9]+/,
+    "",
+  ).slice(0, 128);
+  return mapped || "host";
+}
+
 function validEvent(value: unknown): value is PrDiscoveryEvent {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;

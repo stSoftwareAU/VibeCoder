@@ -1125,7 +1125,8 @@ Exactly one of `--input` and `--collect` is required. Neither mode performs
 GitHub writes or changes host configuration. `--collect` writes only the
 optional `--write-snapshot <path>`, which holds the collected input so a later
 `--input` run reproduces the same report. Audit-chain verification disables
-interrupted-append recovery, so collection does not modify journals. A `--input`
+interrupted-append recovery, so collection modifies neither journals nor the
+audit roster. A `--input`
 snapshot is not authenticated.
 
 `--collect` reads these sources, all read-only. The audit journals are the
@@ -1137,7 +1138,8 @@ out under **Review-fleet-prs log** below:
   `[start, end)` (`--start` and `--end`, default the fourteen days ending now),
   paged newest first; each cohort PR's reviews, issue events and commits; and
   paginated check runs, workflow attempts and jobs for each observed PR head and
-  commit head, regardless of PR state.
+  commit head, regardless of PR state, and for the merge commit of each merged
+  PR (read for post-merge regressions only).
 - **Audit journals** in each `--audit-dir` (default the resolved audit
   directory). Each directory's chains are verified with `verifyAllChains` and
   each journal is read with `loadEntries`.
@@ -1166,11 +1168,16 @@ if any directory's chains fail, or a directory has no journals, every PR's
 chain sweep. Other JSONL files contribute unverified actions and a coverage
 note, and make the directory incomplete, even beside valid journals.
 
-**Match rule.** Reviews and dismissals match one verified fleet action of the
-same kind on the same PR within ten minutes. Each commit is attributed to the
-first confirmed, verified implementation, repair or milestone push whose recorded
-`deliveredCommits` contains that commit, at or after its committer date within
-the PR lifetime. The git chokepoint reads the remote branch head before pushing
+**Match rule.** A review or dismissal matches one verified fleet action of the
+same kind on the same PR within ten minutes either side of the GitHub event. A
+review may instead match one review-log record (see below). When the event and
+the action both carry a head SHA, the two must be equal. A journalled `review`
+records no head SHA, since only a direct `pr-merge` does, so it still matches a
+GitHub review that carries a `commit_id`. A merge matches on its head and within
+ten minutes either side of `mergedAt` (see **Merge window**). Each commit is
+attributed to a confirmed, verified implementation, repair or milestone push
+whose recorded `deliveredCommits` contains that commit, at or after its
+committer date within the PR lifetime. The git chokepoint reads the remote branch head before pushing
 and enumerates the old-to-local commit range. For a new destination it excludes
 history already in that remote's tracking refs. This range is recorded even for
 a failed push, but only a confirmed push can account for commits.
@@ -1187,13 +1194,19 @@ on the remote is excluded from a later fleet push's range. Legacy pushes without
 delivery evidence, unsupported push forms and shallow or unavailable history
 leave commits unknown rather than falling back to time-based attribution.
 
-**Merge window.** Auto-merge arming is recorded as `merge-arm` and does not
-verify a later merge. A synchronous fleet `merge` action matches a
-merge event when its timestamp lies from the PR's creation to ten minutes after
-`mergedAt`. An armed merge stamped before the PR existed does not match, nor
-does one stamped more than ten minutes after the merge. A verified, successful
-fleet disarm between the arm and GitHub's merge invalidates that arm. A later
-re-arm can match; failed disarms do not withdraw an arm.
+**Merge window.** A GitHub merge matches a verified, confirmed fleet `merge`
+action only when the action's `headSha` equals the PR's head SHA and its
+timestamp lies within ten minutes either side of `mergedAt`. An action stamped
+eleven minutes before or after the merge does not match, and nor does one on
+another head. A direct merge records its head when it is pinned with
+`--match-head-commit`. Auto-merge arming is recorded as `merge-arm` and never
+verifies a later merge. A verified, successful fleet disarm between the arm and
+GitHub's merge invalidates that arm. A later re-arm can match; failed disarms do
+not withdraw an arm. A merge entry written before merge entries carried a
+`headSha` (the pre-change shape) has no head to compare, so it never matches.
+Pre-change merge entries are therefore read as `unknown` for attribution: the
+GitHub merge stays `unknown`, and its PR is not counted as unattended on that
+account.
 
 **Push linking.** Production writes `git-push` entries with no repository, only
 the push target. Such a push links across every supplied repository by branch
@@ -1221,7 +1234,7 @@ review: a held PR is posted as a COMMENTED review.
 
 A record for a cohort PR becomes an unverified `review` action with actor
 `unknown` and outcome `confirmed`. It may support matching a GitHub review event
-within ten minutes, but does not establish trusted automation or make the PR's
+within ten minutes either side, but does not establish trusted automation or make the PR's
 history complete. The same record in two logs is one action. The record's head
 SHA is retained as supporting correlation evidence; it does not verify the
 event. An action links to its PR by repository and number whatever head it was
@@ -1261,19 +1274,29 @@ marker is recorded yet. A PR labelled `needs-human` is recorded as
 
 **Blockers produced.** `needs-human` (from the label, open until it is removed),
 `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
-commit, approval or dismissal), and `ci-failure` (opened when a workflow attempt
-completes unsuccessfully, closed by a later successful attempt of the same
-workflow and head). Other recovery and refresh waits are not yet represented as
-blocker intervals.
+commit, approval or dismissal), and `ci-failure` (opened when a workflow run
+completes with `failure`, `cancelled`, `timed_out` or `action_required`). A
+`ci-failure` closes at the first later successful run of the same workflow: a
+later attempt on the same head, or a later run on any other head of the PR. It
+never extends past the PR's merge or close. When the PR has ended, an open
+blocker ends at that moment, and a failure completed after it is not a blocker.
+Other recovery and refresh waits are not yet represented as blocker intervals.
 
 **Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
 when `N` is a merged cohort PR. It is detected at the earliest such revert and
 is resolved when that revert merged. Reverts of PRs outside the cohort are not
-observed. A failed workflow run on a merged PR's head, completed after the
-merge, is also recorded until a later successful attempt of the same workflow
-and head. Each text pattern reads a bounded slice (a title's first 1,000
-characters, a body's first 20,000) and has no nested or overlapping
+observed. Post-merge CI is recorded as `post_merge_ci`: a workflow run on a
+merged PR's merge commit (`merge_commit_sha`) that completes at or after the
+merge, with a `failure`, `timed_out` or `action_required` outcome. A `cancelled`
+run is not a failure, since a concurrency cancellation is not one. It is resolved
+by a later successful attempt of the same workflow on that commit. Post-merge
+visibility covers the merge commit only: runs on the PR head that finish after
+the merge are not post-merge regressions, and later default-branch commits are
+not observed. A merged PR whose merge commit SHA is null or absent has no
+post-merge CI observed, and a coverage note says so. Each text pattern reads a
+bounded slice (a title's first 1,000 characters, a body's first 20,000) and has
+no nested or overlapping
 quantifiers, so each runs in linear time over its slice. The tests feed long
 hostile titles and bodies to each pattern and assert the exact result.
 
@@ -1295,7 +1318,8 @@ unreadable or malformed local file is a coverage note, not a silent drop.
 
 **CI scope.** Collection paginates check runs, workflow attempts and jobs for
 all observed PR heads and commit heads, including open and closed-unmerged PRs.
-Shared evidence is deduplicated by repository, run and attempt. Truncated history
+Merge-commit runs are read for post-merge regressions only, and are kept out of
+the CI history that feeds the cost totals. Shared evidence is deduplicated by repository, run and attempt. Truncated history
 and missing durations remain visible; cost totals are calculated for delivered
 changes.
 
@@ -1311,13 +1335,15 @@ that merged after the instant is therefore still stranded. Its discovered,
 eligible and processed transitions come from the babysitter's ordinary scan
 event ledger, not later audit actions. Every expected babysitter host and an
 explicit deployment inventory must be present for rollout coverage to be
-complete; otherwise those counts are unknown. The check only reads discovery
+complete; otherwise those counts are unknown. A host is covered when a discovery
+event naming it appears in a supplied `--babysitter-state-dir`; an uncovered host
+adds the note "PR discovery events do not cover every expected babysitter host". The check only reads discovery
 evidence: it runs no discovery and writes nothing. PRs
 created before `cohort.start` are invisible to the check; an operator who needs
 them widens `--start`.
 
 **Limits.** `--collect` verifies audit chains with interrupted-append recovery
-disabled, so reporting does not repair journals. Truncated history and missing
+disabled, so reporting repairs neither journals nor the audit roster. Truncated history and missing
 durations remain coverage gaps.
 
 **Accepted limits.** These are known and not mitigated in this change:
