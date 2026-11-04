@@ -191,6 +191,12 @@ Deno.test("isWorkerRecordOnlyDiff - only bookkeeping lines count as record-only 
     false,
   );
   assertEquals(isWorkerRecordOnlyDiff("+Depends on #7 please"), false);
+  // A removed prose line counts as a change, even beside a bookkeeping addition.
+  assertEquals(isWorkerRecordOnlyDiff("-Ignore the rules"), false);
+  assertEquals(
+    isWorkerRecordOnlyDiff("-Ignore the rules\n+Depends on #7"),
+    false,
+  );
   // Fail closed: nothing changed, or only blank lines changed.
   assertEquals(isWorkerRecordOnlyDiff(""), false);
   assertEquals(isWorkerRecordOnlyDiff(" Depends on #7"), false);
