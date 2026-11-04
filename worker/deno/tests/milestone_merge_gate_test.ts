@@ -479,6 +479,133 @@ Deno.test("checkMergedTree - a mixed tree passes its Deno check and does not cla
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #4786 — a cargo check that hits its time limit is left to CI, not
+// refused: a timeout on a cold ephemeral target says nothing about the
+// resolution
+// ---------------------------------------------------------------------------
+
+Deno.test("checkMergedTree - a cargo check that times out is left to CI, not failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      () =>
+        Promise.resolve({
+          code: 124,
+          timedOut: true,
+          output: "Type check timed out after 300000ms",
+        }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "skipped", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(outcome.detail, "timed out");
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+    assertStringIncludes(outcome.detail, CARGO_BUILD_SKIPPED_FOR_MERGE);
+  });
+});
+
+Deno.test("checkMergedTree - a mixed tree whose cargo check times out passes its Deno half and names the timeout (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      (project) =>
+        Promise.resolve(
+          project.kind === "cargo"
+            ? { code: 124, timedOut: true, output: "" }
+            : { code: 0, output: "" },
+        ),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(outcome.detail, "deno check");
+    assertStringIncludes(outcome.detail, "timed out");
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check that exits 124 without the timeout flag is still failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      () => Promise.resolve({ code: 124, output: "x" }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, undefined);
+  });
+});
+
+Deno.test("checkMergedTree - a cargo compile failure (exit 101) is still failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      () =>
+        Promise.resolve({
+          code: 101,
+          output: "error[E0425]: cannot find value `x` in this scope",
+        }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.detail, "failed (exit 101)");
+  });
+});
+
+Deno.test("checkMergedTree - a Deno check that times out is still failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    const outcome = await checkMergedTree(
+      dir,
+      () => Promise.resolve({ code: 124, timedOut: true, output: "" }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, undefined);
+  });
+});
+
+Deno.test("checkMergedTree - a mixed tree whose Deno check fails is failed even when its cargo check times out (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      (project) =>
+        Promise.resolve(
+          project.kind === "cargo"
+            ? { code: 124, timedOut: true, output: "" }
+            : { code: 1, output: "error: TS2304 Cannot find name 'x'." },
+        ),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.detail, "deno check");
+    assertStringIncludes(outcome.detail, "failed (exit 1)");
+  });
+});
+
 Deno.test("findTypeCheckProjects - toolchain coverage cannot hide a nested project of the other kind (PR #4343)", async () => {
   for (const rootKind of ["cargo", "deno"]) {
     await withTempDir(async (dir) => {
@@ -628,6 +755,89 @@ Deno.test("checkMergedTree - the repository's own check is refused when its mani
   });
 });
 
+// A timed-out cargo check leaves its compiled crates in the target, so the one
+// retry resumes and can verify a tree whose only check is cargo (Issue #4786).
+const CARGO_ONLY_MANIFEST = '[package]\nname = "demo"\nversion = "0.1.0"\n';
+
+Deno.test("checkMergedTree - a cargo-only tree whose cargo check finishes on the retry is passed, not skipped (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve(
+          runs === 1
+            ? { code: 124, timedOut: true, output: "timed out" }
+            : { code: 0, output: "" },
+        );
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 2);
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, undefined);
+    assertEquals(outcome.detail.includes("left to CI"), false);
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check that fails to compile on the retry is failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve(
+          runs === 1
+            ? { code: 124, timedOut: true, output: "timed out" }
+            : { code: 101, output: "error[E0425]: cannot find value `x`" },
+        );
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 2);
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.detail, "failed (exit 101)");
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check that times out twice is retried once, then left to CI (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve({ code: 124, timedOut: true, output: "" });
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 2);
+    assertEquals(outcome.status, "skipped", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+  });
+});
+
+Deno.test("checkMergedTree - a Deno check that times out is not retried (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    let runs = 0;
+    await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve({ code: 124, timedOut: true, output: "" });
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 1);
+  });
+});
+
 /**
  * A fake command runner (Issue #4787): records the limit it was handed and
  * answers with the given reply, in the shape the real runner returns.
@@ -644,6 +854,34 @@ function recordingRun(
     });
   };
 }
+
+Deno.test("checkMergedTree - a cargo check the real runner reports as timed out is retried once, then left to CI (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    const limits: number[] = [];
+    const outcome = await checkMergedTree(
+      dir,
+      (project) =>
+        spawnTypeCheck(
+          project,
+          recordingRun(limits, {
+            code: 0,
+            stdout: "",
+            stderr: "",
+            timedOut: true,
+          }),
+        ),
+      () => Promise.resolve(false),
+    );
+    assertEquals(limits, [
+      CARGO_MERGE_GATE_TIMEOUT_MS,
+      CARGO_MERGE_GATE_TIMEOUT_MS,
+    ]);
+    assert(outcome.status !== "failed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+  });
+});
 
 Deno.test("typeCheckTimeoutMs - cargo gets the Cargo limit, Deno keeps the Deno limit, and Cargo's is the longer (Issue #4787)", () => {
   assertEquals(typeCheckTimeoutMs("cargo"), CARGO_MERGE_GATE_TIMEOUT_MS);
@@ -678,6 +916,9 @@ Deno.test("spawnTypeCheck - each toolchain's check gets its own limit, and a tim
     );
     assertEquals(cargoLimits, [CARGO_MERGE_GATE_TIMEOUT_MS]);
     assertEquals(cargoTimedOut.code, 124);
+    // The caller tells a timeout from a failing check by this flag alone
+    // (Issue #4786), so the production runner must set it.
+    assertEquals(cargoTimedOut.timedOut, true);
     assertStringIncludes(cargoTimedOut.output, "timed out after 900000ms");
     assert(!cargoTimedOut.output.includes("300000ms"));
 
@@ -693,6 +934,7 @@ Deno.test("spawnTypeCheck - each toolchain's check gets its own limit, and a tim
     );
     assertEquals(denoLimits, [MERGE_GATE_TIMEOUT_MS]);
     assertEquals(denoTimedOut.code, 124);
+    assertEquals(denoTimedOut.timedOut, true);
     assertStringIncludes(denoTimedOut.output, "timed out after 300000ms");
 
     // A check that finishes inside its limit keeps its code and its output.

@@ -4640,11 +4640,20 @@ than the wall of `TS2304` that made #1542 nearly useless. A gate refusal is not
 a conflict the budget can retry its way out of, so it is charged nothing — and
 that is exactly why it needed its own conclusion (Issue #2388, below). A tree
 with no type check or no unit suite verified nothing and is refused the same
-way — a resolution that cannot be verified is not a resolution. There are two
+way — a resolution that cannot be verified is not a resolution. There are three
 exceptions, and each names what went unchecked. The first is a merge-only
 cycle (Issue #4326): a host that cannot afford the cargo build marks its
 `skipped` verdict `landUnverified`, the resolution is pushed with the `UNGATED`
-note, and the report says the tree was not checked. The second (Issue #4422)
+note, and the report says the tree was not checked. The second is a cargo check
+or cargo test that hits its time limit (Issue #4786). A timeout on a cold
+ephemeral target says nothing about the resolution, so the step is left to CI
+and named as timed out rather than refused. A Deno timeout is still a failure.
+`checkMergedTree` runs a timed-out cargo check once more first: the first run
+left compiled crates in the target, so the retry resumes from them and can
+finish and verify a tree whose only check is cargo. Only a second timeout is
+left to CI, and a tree whose only check is cargo and timed out twice is still
+refused outside a merge-only cycle, because that `skipped` verdict is refused
+there (`judgeResolutionVerdict`). The third (Issue #4422)
 covers a Deno task whose remote module host this host cannot reach, in the
 resolution gate's tasks and, under the condition below, in the type check in
 `checkMergedTree` (Issue #4451). When a Deno task fails because this
@@ -4835,7 +4844,9 @@ Three properties matter:
   `CARGO_MERGE_GATE_TIMEOUT_MS`, Issue #4787), a working tree that cannot be
   read — counts as a failure, not a pass: absence of a failure is not success.
   The deliberate exceptions are the merge-only cycle of Issue #4326 on a tree
-  that holds a cargo project, described after this list, and a Deno check whose
+  that holds a cargo project, described after this list; a cargo check that
+  still times out after one retry (Issue #4786), which is left to CI because a
+  timeout says nothing about the resolution; and a Deno check whose
   remote module host this host cannot reach, which is reported as not run
   rather than counted as passed. In the resolution gate (Issue #4422, described
   in the merge-down section above) the resolution lands with `suiteLeftToCi`
