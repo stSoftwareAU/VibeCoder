@@ -5,10 +5,10 @@ directory a command runs in (`test -w "$1" || exit 3`, "probe 3"). Directories
 git creates inside a clone are group read-only, so every Deno project in a
 sub-directory (for example `worker/deno/deno.json`) was left to CI, and a tree
 whose only projects live in sub-directories came back `skipped` and was refused
-as unverified. `runRepositoryCommand` now takes `readOnlyCheckout`; when true the
-probe does not require the directory to be writable. `spawnTypeCheck` sets it for
-Deno projects, which cache in `DENO_DIR` and not in the project. Everything else
-keeps the requirement. Closes #4782.
+as unverified. `runRepositoryCommand` now takes `readOnlyCheckout`; when true
+the probe does not require the directory to be writable. `spawnTypeCheck` sets
+it for Deno projects, which cache in `DENO_DIR` and not in the project.
+Everything else keeps the requirement. Closes #4782.
 
 Version bump: `VERSION` is not touched by this change; the merged commit records
 the final version.
@@ -49,8 +49,8 @@ flowchart LR
 
 ### Undiscoverable Facts
 
-- The `agent` account dropped to in the real-sudo test is reachable on this host;
-  the test is skipped where it is not.
+- The `agent` account dropped to in the real-sudo test is reachable on this
+  host; the test is skipped where it is not.
 
 ## Evidence
 
@@ -77,15 +77,17 @@ directory was refused with `probe 3`.
   checked: `spawnTypeCheck` (passes it for Deno) and `spawnTask` (not passed,
   keeps the requirement).
 - Passed: `deno task test:unit` over `tests/untrusted_gate_spawn_test.ts`,
-  `tests/milestone_merge_gate_test.ts`, `tests/milestone_resolution_gate_test.ts`
-  (77 passed, 0 failed in parallel; 55 passed serially).
-- `./quality.sh`: every stage passed except `deno tests`, whose only failures are
-  the two Rust-formatter cases in `tests/completion_phase_repo_formatters_test.ts`
-  (lines 480 and 567, files this change does not touch; not compared against
-  `main`), and `markdownlint`, which flagged a wrapped `#4659` in
-  `docs/CONFIGURATION.md`; that was re-wrapped and the pre-push markdownlint
-  check then passed.
-- Docs updated: `docs/CONFIGURATION.md` (the `agent` account checkout paragraph).
+  `tests/milestone_merge_gate_test.ts`,
+  `tests/milestone_resolution_gate_test.ts` (77 passed, 0 failed in parallel; 55
+  passed serially).
+- `./quality.sh`: every stage passed except `deno tests`, whose only failures
+  are the two Rust-formatter cases in
+  `tests/completion_phase_repo_formatters_test.ts` (lines 480 and 567, files
+  this change does not touch; not compared against `main`), and `markdownlint`,
+  which flagged a wrapped `#4659` in `docs/CONFIGURATION.md`; that was
+  re-wrapped and the pre-push markdownlint check then passed.
+- Docs updated: `docs/CONFIGURATION.md` (the `agent` account checkout
+  paragraph).
 
 ## Not done
 
