@@ -23,6 +23,10 @@ import {
 } from "./prompt_delimiter.ts";
 import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
 import {
+  publicationDeferralBudgetSpent,
+  recordPublicationDeferral,
+} from "./publication_deferral_budget.ts";
+import {
   createPublicationGuard,
   PublicationValidationFailedError,
   PublicationValidationUnavailableError,
@@ -1140,6 +1144,42 @@ async function _processFeedbackWithHeartbeat(
     });
   }
 
+  // PR #4800 review: the scanner re-offers a released review or comment every
+  // cycle, so a head the repository's checks keep deferring would cost an
+  // agent session and a verifier session per cycle. After a few rounds the
+  // item waits, unspent, until the head changes (the key names the head).
+  const deferralKey = `feedback-${commentType}-${commentId}-${
+    beforeSha ?? "unknown-head"
+  }`;
+  if (
+    await publicationDeferralBudgetSpent(
+      processorDeps.workRoot,
+      repo,
+      deferralKey,
+    )
+  ) {
+    const detail =
+      "Repository checks kept deferring this feedback on the current head; " +
+      "it waits for a new head";
+    logger.warn(`PR feedback stood down: ${detail}`, {
+      repo,
+      prNumber,
+      commentType,
+    });
+    if (commentType === "pr_review") {
+      carrier.reviewSettlement = "released";
+    } else {
+      await releaseForRetry(repo, prNumber, commentType, commentId, deps, {
+        logger,
+        detail,
+      });
+    }
+    return {
+      ok: true as const,
+      value: { processed: false, changesPushed: false, summary: detail },
+    };
+  }
+
   // Read repo context (CLAUDE.md/AGENTS.md) for prompt injection (Issue #1325).
   // `workDir` already is the checkout, so it is read directly — appending the
   // repo name looked one level too deep and injected nothing (Issue #1673).
@@ -1895,6 +1935,7 @@ async function _processFeedbackWithHeartbeat(
   ) => {
     const detail =
       `The feedback is deferred and retried on a later cycle: ${deferred.message}`;
+    await recordPublicationDeferral(processorDeps.workRoot, repo, deferralKey);
     logger.warn("PR feedback deferred: repository checks could not run", {
       repo,
       prNumber,

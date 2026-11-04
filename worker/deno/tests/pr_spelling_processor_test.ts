@@ -18,6 +18,7 @@ import {
 } from "../lib/pr_spelling_processor.ts";
 import { prSpellingProcessorCommand } from "../commands/pr_spelling_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { MAX_PUBLICATION_DEFERRALS } from "../lib/publication_deferral_budget.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { commitAndPushPending } from "../lib/git_push.ts";
 import { recoverFromPushRejection } from "../lib/git_push_recovery.ts";
@@ -1530,12 +1531,25 @@ Deno.test("processSpellingFailure - a refused publication is reported as a faile
           false,
           "a refused publication is never a success",
         );
+        if (testCase.verdict.status === "unavailable") {
+          // A deferral is not a processed round: nothing is recorded, so the
+          // next cycle can retry it.
+          assertEquals(result.value.processed, false);
+          assertStringIncludes(result.value.summary, "deferred");
+        }
       }
       assertEquals(
         comments.some((c) => c.includes("I've pushed fixes")),
         false,
         "no success claim may reach the PR",
       );
+      if (testCase.verdict.status === "unavailable") {
+        assertEquals(
+          comments,
+          [],
+          "a deferred round posts nothing, neither a failed-push nor a no-changes reply",
+        );
+      }
       const refusal = errors.find((e) =>
         e.startsWith("commitAndPushPending failed")
       );
@@ -1772,5 +1786,168 @@ Deno.test("processSpellingFailure - a self-pushed spelling fix rejected by the r
     );
   } finally {
     await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("processSpellingFailure - a self-pushed head whose checks could not run is deferred: not processed, nothing posted (Issue #4625)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "spelling-publication-" });
+  try {
+    const branch = "issue-4625-spelling-fix";
+    const upstream = `${tmp}/upstream.git`;
+    const seed = `${tmp}/seed`;
+    const downstream = `${tmp}/downstream`;
+    await gitIn(tmp, ["init", "--bare", "-q", "-b", "main", upstream]);
+    await gitIn(tmp, ["clone", "-q", upstream, seed]);
+    await Deno.writeTextFile(`${seed}/README.md`, "seed\n");
+    await gitIn(seed, ["add", "README.md"]);
+    await gitIn(seed, ["commit", "-q", "-m", "seed"]);
+    await gitIn(seed, ["push", "-q", "origin", "main"]);
+    await gitIn(tmp, ["clone", "-q", upstream, downstream]);
+    await gitIn(downstream, ["checkout", "-q", "-b", branch]);
+    await gitIn(downstream, ["push", "-q", "-u", "origin", branch]);
+
+    const comments: string[] = [];
+    const { logger, errors } = makeRecordingLogger();
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: (args: string[]) => {
+          if (args[0] === "pr" && args[1] === "comment") {
+            comments.push(args[args.indexOf("--body") + 1] ?? "");
+          }
+          return Promise.resolve("");
+        },
+      },
+      claude: {
+        runClaudeWithRetry: (async () => {
+          await Deno.writeTextFile(`${downstream}/fix.txt`, "fixed\n");
+          await gitIn(downstream, ["add", "fix.txt"]);
+          await gitIn(downstream, ["commit", "-q", "-m", "spelling fix"]);
+          await gitIn(downstream, ["push", "-q", "origin", branch]);
+          return {
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          };
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      git: {
+        captureBranchHead,
+        branchHeadChanged,
+        commitAndPushPending,
+        recoverFromPushRejection,
+      } as unknown as Partial<GitDeps>,
+    });
+
+    const result = await processSpellingFailure(
+      makeInput({ branchName: branch }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger,
+        deps,
+        workDir: downstream,
+        workRoot: tmp,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        validatePublication: verdictStub({
+          status: "unavailable",
+          head: null,
+          reason: "docker is not running",
+        }),
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.processed, false);
+    assertEquals(result.value.changesPushed, false);
+    assertStringIncludes(result.value.summary, "deferred");
+    assertEquals(comments, [], "a deferred round posts nothing");
+    assertEquals(
+      errors.some((e) => e.includes("Self-pushed head failed publication")),
+      true,
+      `the self-push refusal is logged; got: ${errors.join(" | ")}`,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("processSpellingFailure - rounds the repository checks keep deferring stop at the bound and cost no agent session (PR #4800 review)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "spelling-bound-" });
+  try {
+    let sessions = 0;
+    const comments: string[] = [];
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: (args: string[]) => {
+          if (args[0] === "pr" && args[1] === "comment") {
+            comments.push(args[args.indexOf("--body") + 1] ?? "");
+          }
+          return Promise.resolve("");
+        },
+      },
+      claude: {
+        runClaudeWithRetry: (() => {
+          sessions++;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      git: {
+        commitAndPushPending: (async (
+          _branch: unknown,
+          _message: unknown,
+          _opts: unknown,
+          _allowDefault: unknown,
+          _preFlight: unknown,
+          _runId: unknown,
+          _format: unknown,
+          beforePush: unknown,
+        ) => {
+          const verdict = await (beforePush as () => Promise<Result<void>>)();
+          if (!verdict.ok) return verdict;
+          return {
+            ok: true,
+            value: {
+              committedNewChanges: true,
+              commitsPushed: 0,
+              finalUnpushedCount: 0,
+            },
+          };
+        }) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+    const round = (checkRunId: string) =>
+      processSpellingFailure(makeInput({ checkRunId }), {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        workDir: dir,
+        workRoot: dir,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        validatePublication: verdictStub({
+          status: "unavailable",
+          head: null,
+          reason: "docker is not running",
+        }),
+      });
+
+    for (let i = 0; i < MAX_PUBLICATION_DEFERRALS; i++) {
+      const result = await round("run-1");
+      assertEquals(result.ok && result.value.processed, false);
+    }
+    assertEquals(sessions, MAX_PUBLICATION_DEFERRALS);
+
+    const paused = await round("run-1");
+    assertEquals(sessions, MAX_PUBLICATION_DEFERRALS, "no further session");
+    assertEquals(paused.ok && paused.value.processed, false);
+    if (paused.ok) assertStringIncludes(paused.value.summary, "paused");
+    assertEquals(comments, [], "a bounded deferral posts nothing");
+
+    // A new check run (a new push) resets the budget.
+    await round("run-2");
+    assertEquals(sessions, MAX_PUBLICATION_DEFERRALS + 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });

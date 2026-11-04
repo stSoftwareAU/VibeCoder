@@ -33,8 +33,16 @@ import {
   type PushVerification,
   verifyPushLanded,
 } from "./push_claim_verification.ts";
+import { fenceQualityOutput } from "./untrusted_quality_output.ts";
+import {
+  loadRejectedPublicationOutput,
+  publicationDeferralBudgetSpent,
+  recordPublicationDeferral,
+  saveRejectedPublicationOutput,
+} from "./publication_deferral_budget.ts";
 import {
   createPublicationGuard,
+  PublicationValidationFailedError,
   PublicationValidationUnavailableError,
   validateRepositoryForPublication,
   validateSelfPushedHead,
@@ -298,6 +306,34 @@ async function _processSpellingWithHeartbeat(
 
   logger.info("Decoded annotations", { count: annotations.length });
 
+  // PR #4800 review: the scanner has no retry cap, so a check run whose fix
+  // the repository's own gate keeps deferring or rejecting stops costing an
+  // agent session after a few rounds. A new push brings a new check run.
+  const budgetKey = `spelling-${input.checkRunId}`;
+  if (
+    await publicationDeferralBudgetSpent(
+      processorDeps.workRoot,
+      repo,
+      budgetKey,
+    )
+  ) {
+    logger.warn(
+      "Spelling fix stood down: the repository checks deferred or rejected " +
+        "this check run's fix repeatedly; it resumes on the next check run",
+      { repo, prNumber, checkRunId: input.checkRunId },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        summary:
+          `PR #${prNumber} spelling fix paused: repository checks kept deferring or rejecting this check run's fix`,
+      },
+    };
+  }
+
   // Issue #1679: a head under a ruleset that refuses direct pushes can never
   // receive this pass's commits — the push is declined with GH013, once per
   // run, for as long as the PR is open. Stand down before the branch is
@@ -380,11 +416,23 @@ async function _processSpellingWithHeartbeat(
   );
 
   // Build prompt
+  // A head the repository's gate rejected last round: show the agent why.
+  const rejectedBefore = await loadRejectedPublicationOutput(
+    processorDeps.workRoot,
+    repo,
+    budgetKey,
+  );
+  const previousRejection = rejectedBefore === undefined
+    ? ""
+    : `\n\nThe repository's own checks rejected the previous attempt at this ` +
+      `fix. Make sure your change passes them:\n${
+        fenceQualityOutput(rejectedBefore).block
+      }`;
   const promptOptions: SpellingFixPromptOptions = {
     repo,
     prNumber: String(prNumber),
     checkName,
-    annotationDetails,
+    annotationDetails: annotationDetails + previousRejection,
     qualityInstructions,
     customInstructions,
     repoContextContent,
@@ -487,13 +535,17 @@ async function _processSpellingWithHeartbeat(
       return runPublicationGate(request);
     },
   });
+  let publicationRejected = false;
+  let rejectedOutput: string | undefined;
   const beforePush = async () => {
     const result = await guard();
-    if (
-      !result.ok &&
-      result.error instanceof PublicationValidationUnavailableError
-    ) {
-      publicationDeferred = true;
+    if (!result.ok) {
+      if (result.error instanceof PublicationValidationUnavailableError) {
+        publicationDeferred = true;
+      } else if (result.error instanceof PublicationValidationFailedError) {
+        publicationRejected = true;
+        rejectedOutput = result.error.message;
+      }
     }
     return result;
   };
@@ -631,6 +683,9 @@ async function _processSpellingWithHeartbeat(
             pushSucceeded = false;
             publicationDeferred = verdict.error instanceof
               PublicationValidationUnavailableError;
+            publicationRejected = verdict.error instanceof
+              PublicationValidationFailedError;
+            if (publicationRejected) rejectedOutput = verdict.error.message;
             logger.error("Self-pushed head failed publication validation", {
               detail: publicationFailureDetail(verdict.error),
             });
@@ -673,6 +728,19 @@ async function _processSpellingWithHeartbeat(
     }
   }
 
+  // Every round the gate blocked is charged to this check run, whether it
+  // could not run (deferred) or rejected the head, so the lane cannot loop.
+  if ((publicationDeferred || publicationRejected) && !pushSucceeded) {
+    await recordPublicationDeferral(processorDeps.workRoot, repo, budgetKey);
+    if (publicationRejected && rejectedOutput !== undefined) {
+      await saveRejectedPublicationOutput(
+        processorDeps.workRoot,
+        repo,
+        budgetKey,
+        rejectedOutput,
+      );
+    }
+  }
   if (publicationDeferred && !pushSucceeded) {
     return {
       ok: true,
