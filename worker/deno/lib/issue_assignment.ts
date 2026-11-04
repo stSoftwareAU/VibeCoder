@@ -50,6 +50,7 @@ import {
   STANDARDS_REVIEWER_AGENT_NAME,
 } from "./issue_executor_agents.ts";
 import { getHostname } from "./worker_identity.ts";
+import { escalationHostId } from "./host_escalation.ts";
 import {
   type WorkerBuildFacts,
   workerBuildFacts,
@@ -446,7 +447,7 @@ export function productionIssueAssignmentSeams(
   return {
     store: ghAssignmentMarkerStore(runGh),
     ledgerPath: lifecycleLedgerPath(workDir, getHostname()),
-    host: getHostname(),
+    host: escalationHostId(),
     runId: currentLifecycleRunId() ?? getRunId(),
     now: Date.now,
     mintId: () => crypto.randomUUID(),

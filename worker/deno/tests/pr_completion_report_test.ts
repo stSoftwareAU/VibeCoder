@@ -179,6 +179,62 @@ Deno.test("a login-looking field cannot change an action's actor; unknown stays 
   assertEquals(report.completion.humanAssistedMerged, 0);
 });
 
+Deno.test("CI accounting deduplicates shared evidence and keeps workflow and job units separate", () => {
+  const sharedWorkflow = {
+    repo: "org/repo",
+    prNumber: 6,
+    runId: "run-6",
+    attempt: 2,
+    kind: "workflow_run" as const,
+    durationMinutes: 5,
+    durationSeconds: 300,
+  };
+  const report = buildPrCompletionReport(input({
+    prs: [pr(6)],
+    actions: [
+      action(6, "implementation-6", "implementation", "fleet"),
+      action(6, "merge-6", "merge", "fleet"),
+    ],
+    ciRuns: [
+      sharedWorkflow,
+      { ...sharedWorkflow, prNumber: 6 },
+      {
+        repo: "org/repo",
+        prNumber: 6,
+        runId: "check-6",
+        kind: "check_run",
+        durationMinutes: 2,
+      },
+      {
+        repo: "org/repo",
+        prNumber: 6,
+        runId: "job-6",
+        kind: "job",
+        workflowRunId: "run-6",
+        attempt: 2,
+        durationMinutes: 1,
+        durationSeconds: 60,
+      },
+      {
+        repo: "org/repo",
+        prNumber: 6,
+        runId: "job-7",
+        kind: "job",
+        workflowRunId: "run-6",
+        attempt: 2,
+        durationMinutes: 2,
+        durationSeconds: 120,
+      },
+    ],
+  }));
+  assertEquals(report.delivery.ciWorkflowRuns, 1);
+  assertEquals(report.delivery.ciChecks, 1);
+  assertEquals(report.delivery.ciJobs, 2);
+  assertEquals(report.delivery.ciRuns, 1);
+  assertEquals(report.delivery.ciMinutes, 5);
+  assertEquals(report.delivery.ciJobMinutes, 3);
+});
+
 Deno.test("truncated repositories are echoed in coverage, default to none, and must be a list", () => {
   assertEquals(buildPrCompletionReport(input()).coverage.truncatedRepos, []);
   const report = buildPrCompletionReport(
@@ -323,6 +379,44 @@ Deno.test("deployment inventory reports missing and stale components as degraded
   assertEquals(report.deployment.missingComponents, ["babysitter", "reviewer"]);
   assertEquals(report.deployment.mismatchedComponents, ["worker"]);
   assertEquals(report.deployment.staleComponents, ["worker"]);
+});
+
+Deno.test("per-host deployment inventory does not let a fresh host mask a stale host", () => {
+  const report = buildPrCompletionReport(input({
+    deployments: [
+      {
+        hostId: "host-a",
+        component: "worker",
+        revision: "abcdef0123456789",
+        policyFingerprint: "a".repeat(64),
+        observedAt,
+      },
+      {
+        hostId: "host-b",
+        component: "worker",
+        revision: "abcdef0123456789",
+        policyFingerprint: "a".repeat(64),
+        observedAt: "2026-11-01T20:00:00.000Z",
+      },
+      {
+        component: "worker",
+        revision: "abcdef0123456789",
+        policyFingerprint: "a".repeat(64),
+        observedAt,
+      },
+    ],
+    expectedDeployment: {
+      ...input().expectedDeployment,
+      components: ["worker"],
+      inventory: [
+        { hostId: "host-a", component: "worker" },
+        { hostId: "host-b", component: "worker" },
+      ],
+    },
+  }));
+  assertEquals(report.deployment.status, "degraded");
+  assertEquals(report.deployment.staleHostComponents, ["host-b/worker"]);
+  assertEquals(report.deployment.missingHostComponents, []);
 });
 
 Deno.test("deployment report exposes mixed revision and policy observations", () => {

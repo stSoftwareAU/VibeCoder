@@ -24,6 +24,7 @@ import {
   runReviewRound,
 } from "../lib/review_round.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
+import { escalationHostId } from "../lib/host_escalation.ts";
 
 /** The CLI arguments, given as a JSON array of strings (parsed or not). */
 export function parseClaudeArgs(value: unknown): string[] {
@@ -85,6 +86,7 @@ export async function runReviewRoundCommand(
         : ".",
       deployment: {
         component: "reviewer",
+        hostId: escalationHostId(),
         codeRevision: env("VIBE_BUILD_COMMIT") ?? "unknown",
         policyFingerprint: await fingerprintWorkerReviewPolicy(config),
       },

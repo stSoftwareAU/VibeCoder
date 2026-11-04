@@ -71,6 +71,16 @@ export interface PrCompletionInput {
     prNumber: number;
     runId: string;
     durationMinutes: number | null;
+    /** Additive fields; older snapshots contain check runs only. */
+    kind?: "check_run" | "workflow_run" | "job";
+    headSha?: string;
+    attempt?: number;
+    workflowRunId?: string;
+    workflowId?: string;
+    outcome?: string | null;
+    durationSeconds?: number | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
   }>;
   regressions: Array<{
     repo: string;
@@ -80,12 +90,15 @@ export interface PrCompletionInput {
   }>;
   deployments: Array<{
     component: string;
+    hostId?: string;
     revision?: string;
     policyFingerprint?: string;
     observedAt: string;
   }>;
   expectedDeployment: {
     components: string[];
+    inventory?: Array<{ hostId: string; component: string }>;
+    inventoryComplete?: boolean;
     revision: string;
     policyFingerprint: string;
     maxHeartbeatAgeHours: number;
@@ -134,6 +147,10 @@ export interface PrCompletionReport {
     fixRounds: number;
     ciRuns: number;
     ciMinutes: number | null;
+    ciWorkflowRuns: number;
+    ciChecks: number;
+    ciJobs: number;
+    ciJobMinutes: number | null;
     ciRunsPerDeliveredChange: number | null;
     ciMinutesPerDeliveredChange: number | null;
   };
@@ -157,6 +174,10 @@ export interface PrCompletionReport {
     mismatchedComponents: string[];
     mixedRevisions: string[];
     mixedPolicies: string[];
+    expectedHostComponents: string[];
+    missingHostComponents: string[];
+    staleHostComponents: string[];
+    mismatchedHostComponents: string[];
   };
   rollout: {
     eligibleStrandedPrs: number;
@@ -281,6 +302,10 @@ function deploymentReport(
   const byComponent = new Map<string, typeof input.deployments>();
   for (const deployment of input.deployments) {
     timestamp(deployment.observedAt, "deployment.observedAt");
+    if (
+      deployment.hostId !== undefined &&
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(deployment.hostId)
+    ) throw new Error("deployment.hostId must be a host identifier");
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(deployment.component)) {
       throw new Error("deployment.component must be a component identifier");
     }
@@ -327,10 +352,57 @@ function deploymentReport(
       mixedPolicies.push(component);
     }
   }
+  const expectedHostComponents = (expected.inventory ?? []).map((item) =>
+    `${item.hostId}/${item.component}`
+  ).sort();
+  const missingHostComponents: string[] = [];
+  const staleHostComponents: string[] = [];
+  const mismatchedHostComponents: string[] = [];
+  if (expected.inventory !== undefined) {
+    const seen = new Set<string>();
+    for (const item of expected.inventory) {
+      if (
+        !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(item.hostId) ||
+        !expected.components.includes(item.component)
+      ) {
+        throw new Error("expectedDeployment.inventory has an invalid host/component");
+      }
+      const key = `${item.hostId}/${item.component}`;
+      if (seen.has(key)) {
+        throw new Error("expectedDeployment.inventory entries must be unique");
+      }
+      seen.add(key);
+      const rows = input.deployments.filter((row) =>
+        row.hostId === item.hostId && row.component === item.component
+      );
+      if (rows.length === 0) {
+        missingHostComponents.push(key);
+        continue;
+      }
+      const latest = rows.reduce((a, b) =>
+        timestamp(a.observedAt, "deployment.observedAt") >
+            timestamp(b.observedAt, "deployment.observedAt")
+          ? a
+          : b
+      );
+      if (
+        observedAt - timestamp(latest.observedAt, "deployment.observedAt") >
+          expected.maxHeartbeatAgeHours * 3_600_000
+      ) staleHostComponents.push(key);
+      if (
+        latest.revision !== expected.revision ||
+        latest.policyFingerprint !== expected.policyFingerprint
+      ) mismatchedHostComponents.push(key);
+    }
+  }
+  if (expected.inventoryComplete === false) {
+    missingHostComponents.push("inventory");
+  }
   return {
     status: missingComponents.length || staleComponents.length ||
         mismatchedComponents.length || mixedRevisions.length ||
-        mixedPolicies.length
+        mixedPolicies.length || missingHostComponents.length ||
+        staleHostComponents.length || mismatchedHostComponents.length
       ? "degraded"
       : "verified",
     observedAt: cohort.observedAt,
@@ -340,6 +412,10 @@ function deploymentReport(
     mismatchedComponents: mismatchedComponents.sort(),
     mixedRevisions: mixedRevisions.sort(),
     mixedPolicies: mixedPolicies.sort(),
+    expectedHostComponents,
+    missingHostComponents: missingHostComponents.sort(),
+    staleHostComponents: staleHostComponents.sort(),
+    mismatchedHostComponents: mismatchedHostComponents.sort(),
   };
 }
 
@@ -585,9 +661,6 @@ export function buildPrCompletionReport(
   }
   defaultBranchChanges = deliveredKeys.size;
 
-  const ciRows = input.ciRuns.filter((run) =>
-    deliveredKeys.has(keyOf(run.repo, run.prNumber))
-  );
   for (const run of input.ciRuns) {
     if (!run.runId || !Number.isSafeInteger(run.prNumber) || run.prNumber < 1) {
       throw new Error("CI run requires a run id and positive PR number");
@@ -598,13 +671,43 @@ export function buildPrCompletionReport(
     ) {
       throw new Error(`CI run ${run.runId} has an invalid duration`);
     }
+    if (
+      run.durationSeconds !== undefined && run.durationSeconds !== null &&
+      (!Number.isFinite(run.durationSeconds) || run.durationSeconds < 0)
+    ) {
+      throw new Error(`CI run ${run.runId} has an invalid durationSeconds`);
+    }
   }
-  const knownCi = ciRows.flatMap((run) =>
-    run.durationMinutes !== null && Number.isFinite(run.durationMinutes) &&
-      run.durationMinutes >= 0
-      ? [run.durationMinutes]
-      : []
+  const ciById = new Map<string, (typeof input.ciRuns)[number]>();
+  for (const run of input.ciRuns) {
+    if (!deliveredKeys.has(keyOf(run.repo, run.prNumber))) continue;
+    const kind = run.kind ?? "check_run";
+    const identity = `${run.repo}:${kind}:${run.runId}:${run.attempt ?? 1}`;
+    if (!ciById.has(identity)) ciById.set(identity, run);
+  }
+  const ciRows = [...ciById.values()];
+  const workflowRows = ciRows.filter((run) => run.kind === "workflow_run");
+  const checkRows = ciRows.filter((run) =>
+    run.kind === undefined || run.kind === "check_run"
   );
+  const jobRows = ciRows.filter((run) => run.kind === "job");
+  const primaryCiRows = workflowRows.length > 0 ? workflowRows : checkRows;
+  const durationMinutes = (run: (typeof input.ciRuns)[number]) =>
+    run.durationSeconds !== undefined
+      ? run.durationSeconds === null ? null : run.durationSeconds / 60
+      : run.durationMinutes;
+  const knownCi = primaryCiRows.flatMap((run) => {
+    const duration = durationMinutes(run);
+    return duration !== null && Number.isFinite(duration) && duration >= 0
+      ? [duration]
+      : [];
+  });
+  const knownJobMinutes = jobRows.flatMap((run) => {
+    const duration = durationMinutes(run);
+    return duration !== null && Number.isFinite(duration) && duration >= 0
+      ? [duration]
+      : [];
+  });
   const waiting: PrCompletionReport["waiting"] = {
     observedAt: input.cohort.observedAt,
     intervals: {},
@@ -743,16 +846,23 @@ export function buildPrCompletionReport(
       intermediateRollupPrs,
       reviewRounds,
       fixRounds,
-      ciRuns: ciRows.length,
-      ciMinutes: knownCi.length === ciRows.length &&
-          (ciRows.length > 0 || defaultBranchChanges === 0)
+      ciRuns: primaryCiRows.length,
+      ciMinutes: knownCi.length === primaryCiRows.length &&
+          (primaryCiRows.length > 0 || defaultBranchChanges === 0)
         ? knownCi.reduce((sum, value) => sum + value, 0)
         : null,
-      ciRunsPerDeliveredChange: defaultBranchChanges && ciRows.length
-        ? ciRows.length / defaultBranchChanges
+      ciWorkflowRuns: workflowRows.length,
+      ciChecks: checkRows.length,
+      ciJobs: jobRows.length,
+      ciJobMinutes: knownJobMinutes.length === jobRows.length &&
+          (jobRows.length > 0 || defaultBranchChanges === 0)
+        ? knownJobMinutes.reduce((sum, value) => sum + value, 0)
         : null,
-      ciMinutesPerDeliveredChange: defaultBranchChanges && ciRows.length &&
-          knownCi.length === ciRows.length
+      ciRunsPerDeliveredChange: defaultBranchChanges && primaryCiRows.length
+        ? primaryCiRows.length / defaultBranchChanges
+        : null,
+      ciMinutesPerDeliveredChange: defaultBranchChanges &&
+          primaryCiRows.length && knownCi.length === primaryCiRows.length
         ? knownCi.reduce((sum, value) => sum + value, 0) /
           defaultBranchChanges
         : null,
@@ -773,8 +883,9 @@ export function buildPrCompletionReport(
         !(actionsByPr.get(keyOf(pr.repo, pr.number)) ?? []).length
       ).length,
       unlinkedActions,
-      unknownCiDurations: ciRows.length - knownCi.length,
-      deliveredChangesWithoutCiData: defaultBranchChanges && ciRows.length === 0
+      unknownCiDurations: primaryCiRows.length - knownCi.length,
+      deliveredChangesWithoutCiData: defaultBranchChanges &&
+          primaryCiRows.length === 0
         ? defaultBranchChanges
         : 0,
       excludedPrs,

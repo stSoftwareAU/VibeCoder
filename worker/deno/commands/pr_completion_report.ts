@@ -69,6 +69,30 @@ function asList(value: unknown): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+/** Parse explicit `hostId/component` deployment inventory entries. */
+function asInventory(
+  value: unknown,
+): Array<{ hostId: string; component: string }> | undefined {
+  const items = asList(value);
+  if (!items) return undefined;
+  const parsed: Array<{ hostId: string; component: string }> = [];
+  for (const item of items) {
+    const slash = item.lastIndexOf("/");
+    const hostId = item.slice(0, slash);
+    const component = item.slice(slash + 1);
+    if (
+      slash <= 0 ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(hostId) ||
+      !/^[a-z][a-z0-9_-]{0,31}$/.test(component)
+    ) return undefined;
+    parsed.push({ hostId, component });
+  }
+  return new Set(parsed.map((entry) => `${entry.hostId}/${entry.component}`))
+      .size === parsed.length
+    ? parsed
+    : undefined;
+}
+
 /**
  * Run `--collect` with the given args and injected GitHub and environment
  * seams. The environment is read only for `VIBE_BUILD_COMMIT`.
@@ -142,6 +166,15 @@ export async function runPrCompletionCollect(
         "pr-completion-report failed: --review-log <log.jsonl,...> must name at least one file",
     };
   }
+  const inventoryArg = args["expected-inventory"];
+  const inventory = asInventory(inventoryArg);
+  if (inventoryArg !== undefined && inventory === undefined) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --expected-inventory must be a unique comma-separated list of hostId/component entries",
+    };
+  }
   const rolloutVerifiedAt = asText(args["rollout-verified-at"]);
   const writeSnapshot = asText(args["write-snapshot"]);
 
@@ -158,6 +191,7 @@ export async function runPrCompletionCollect(
       expected: {
         components: asList(args["expected-components"]) ??
           DEFAULT_EXPECTED_COMPONENTS,
+        ...(inventory ? { inventory } : {}),
         revision: expectedRevision,
         policyFingerprint,
         maxHeartbeatAgeHours: hours,

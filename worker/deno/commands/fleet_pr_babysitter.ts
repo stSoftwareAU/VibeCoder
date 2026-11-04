@@ -10,6 +10,7 @@ import { CODEX_OUTPUT_ADAPTER } from "../lib/codex_output_adapter.ts";
 import { loadConfig } from "../lib/config.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
+import { escalationHostId } from "../lib/host_escalation.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
@@ -2757,6 +2758,7 @@ export async function recordBabysitterDeployment(
     targetFile: `${stateDir}/deployment-health.json`,
     content: JSON.stringify({
       component: "babysitter",
+      hostId: escalationHostId(),
       codeRevision,
       policyFingerprint,
       observedAt,

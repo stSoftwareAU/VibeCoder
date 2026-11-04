@@ -678,6 +678,9 @@ interface Fixture {
   events?: Record<string, Json[]>;
   commits?: Record<string, Json[]>;
   checks?: Record<string, Json>;
+  workflowRuns?: Record<string, Json>;
+  workflowAttempts?: Record<string, Json>;
+  jobs?: Record<string, Json>;
   defaultBranch?: string;
   calls: string[];
 }
@@ -748,6 +751,30 @@ function fakeGh(fixture: Fixture): GhJson {
     ) {
       return fixture.checks?.[match[1]!] ?? { total_count: 0, check_runs: [] };
     }
+    if ((match = /^repos\/[^/]+\/[^/]+\/actions\/runs$/.exec(base!))) {
+      const headSha = params.get("head_sha") ?? "";
+      return fixture.workflowRuns?.[headSha] ?? { total_count: 0, workflow_runs: [] };
+    }
+    if (
+      (match = /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/attempts\/(\d+)$/.exec(
+        base!,
+      ))
+    ) {
+      const key = `${match[1]}:${match[2]}`;
+      const run = fixture.workflowAttempts?.[key];
+      if (!run) throw new Error(`missing workflow attempt fixture: ${key}`);
+      return run;
+    }
+    if (
+      (match = /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs$/.exec(
+        base!,
+      ))
+    ) {
+      return fixture.jobs?.[`${match[1]}:${match[2]}`] ?? {
+        total_count: 0,
+        jobs: [],
+      };
+    }
     throw new Error(`unrouted gh path: ${path}`);
   };
 }
@@ -804,6 +831,30 @@ async function withDir(body: (dir: string) => Promise<void>): Promise<void> {
     await Deno.remove(dir, { recursive: true });
   }
 }
+
+Deno.test("collect - audit verification leaves interrupted history untouched", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{ verb: "issue-comment", actionId: "recorded" }]);
+    const path = auditFilePath({
+      baseDir: dir,
+      workerId: "test-worker",
+      date: JOURNAL_DATE,
+    });
+    const original = await Deno.readTextFile(path);
+    await Deno.writeTextFile(path, `${original}{\"torn\":`);
+    const before = await Deno.readTextFile(path);
+
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(emptyFixture()), { auditDirs: [dir] }),
+    );
+
+    assertEquals(await Deno.readTextFile(path), before);
+    assert(
+      snapshot.coverageNotes.some((note) => note.includes("failed verification")),
+      "a broken journal remains visible in coverage",
+    );
+  });
+});
 
 Deno.test("collect - pages the cohort, filters by creation, and flags truncation", async () => {
   // 150 cohort PRs behind one PR newer than the cohort and one older.
@@ -1252,10 +1303,124 @@ Deno.test("collect - a CI run without a completion time has no duration", async 
   });
   const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
   assertEquals(snapshot.input.ciRuns, [
-    { repo: REPO, prNumber: 1, runId: "11", durationMinutes: 10 },
-    { repo: REPO, prNumber: 1, runId: "12", durationMinutes: null },
-    { repo: REPO, prNumber: 1, runId: "13", durationMinutes: null },
+    {
+      repo: REPO,
+      prNumber: 1,
+      runId: "11",
+      durationMinutes: 10,
+      kind: "check_run",
+      headSha: "sha1",
+      durationSeconds: 600,
+      outcome: null,
+      startedAt: "2026-10-20T00:00:00Z",
+      completedAt: "2026-10-20T00:10:00Z",
+    },
+    {
+      repo: REPO,
+      prNumber: 1,
+      runId: "12",
+      durationMinutes: null,
+      kind: "check_run",
+      headSha: "sha1",
+      durationSeconds: null,
+      outcome: null,
+      startedAt: "2026-10-20T00:00:00Z",
+      completedAt: null,
+    },
+    {
+      repo: REPO,
+      prNumber: 1,
+      runId: "13",
+      durationMinutes: null,
+      kind: "check_run",
+      headSha: "sha1",
+      durationSeconds: null,
+      outcome: null,
+      startedAt: "2026-10-20T00:00:00Z",
+      completedAt: null,
+    },
   ]);
+});
+
+Deno.test("collect - CI history includes observed heads, workflow attempts and paged jobs", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1)] },
+    commits: { [pk(1)]: [commit("sha2", "2026-10-20T00:40:00Z")] },
+    workflowRuns: {
+      sha1: {
+        total_count: 1,
+        workflow_runs: [{ id: 55, run_attempt: 2, workflow_id: 9 }],
+      },
+      sha2: { total_count: 0, workflow_runs: [] },
+    },
+    workflowAttempts: {
+      "55:1": {
+        id: 55,
+        workflow_id: 9,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "failure",
+        run_started_at: "2026-10-20T00:00:00Z",
+        updated_at: "2026-10-20T00:05:00Z",
+      },
+      "55:2": {
+        id: 55,
+        workflow_id: 9,
+        run_attempt: 2,
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T00:10:00Z",
+        updated_at: "2026-10-20T00:20:00Z",
+      },
+    },
+    jobs: {
+      "55:1": {
+        total_count: 1,
+        jobs: [{
+          id: 551,
+          status: "completed",
+          conclusion: "failure",
+          started_at: "2026-10-20T00:00:00Z",
+          completed_at: "2026-10-20T00:04:00Z",
+        }],
+      },
+      "55:2": {
+        total_count: 1,
+        jobs: [{
+          id: 552,
+          status: "completed",
+          conclusion: "success",
+          started_at: "2026-10-20T00:10:00Z",
+          completed_at: "2026-10-20T00:18:00Z",
+        }],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  assertEquals(
+    snapshot.input.ciRuns.filter((run) => run.kind === "workflow_run").map(
+      (run) => [run.headSha, run.attempt, run.outcome, run.durationSeconds],
+    ),
+    [
+      ["sha1", 1, "failure", 300],
+      ["sha1", 2, "success", 600],
+    ],
+  );
+  assertEquals(
+    snapshot.input.ciRuns.filter((run) => run.kind === "job").map((run) => [
+      run.attempt,
+      run.durationSeconds,
+    ]),
+    [[1, 240], [2, 480]],
+  );
+  assert(fixture.calls.includes("repos/org/repo/actions/runs?head_sha=sha2&per_page=100&page=1"));
+  assertEquals(snapshot.input.blockers, [{
+    repo: REPO,
+    prNumber: 1,
+    blocker: "ci-failure",
+    startedAt: "2026-10-20T00:05:00Z",
+    endedAt: "2026-10-20T00:20:00Z",
+  }]);
 });
 
 Deno.test("collect - blocker intervals are closed or open as the events dictate", async () => {
@@ -1387,6 +1552,7 @@ Deno.test("collect - deployments come from all three sources and missing or malf
       `${babysitter}/deployment-health.json`,
       JSON.stringify({
         component: "babysitter",
+        hostId: "host-a",
         codeRevision: "rev1",
         policyFingerprint: FP,
         observedAt: "2026-11-01T23:00:00Z",
@@ -1404,6 +1570,7 @@ Deno.test("collect - deployments come from all three sources and missing or malf
         attempts: [],
         deployment: {
           component: "reviewer",
+          hostId: "host-a",
           codeRevision: "rev1",
           policyFingerprint: FP,
           observedAt: "2026-11-01T22:00:00Z",
@@ -1444,6 +1611,11 @@ Deno.test("collect - deployments come from all three sources and missing or malf
         lifecycleLedgers: [ledger, `${dir}/absent.jsonl`],
         expected: {
           components: ["worker", "reviewer", "babysitter"],
+          inventory: [
+            { hostId: "host-a", component: "worker" },
+            { hostId: "host-a", component: "reviewer" },
+            { hostId: "host-a", component: "babysitter" },
+          ],
           revision: "rev1",
           policyFingerprint: FP,
           maxHeartbeatAgeHours: 24,

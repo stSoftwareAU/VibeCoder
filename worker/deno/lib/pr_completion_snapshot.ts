@@ -135,7 +135,7 @@ const REVERT_REFERENCE = /\bReverts?\s+#(\d{1,7})\b/gi;
 const QUOTED_PR_REFERENCE = /\(#(\d{1,7})\)/g;
 /** Shown once per collection: the CI scope limit, for the coverage notes. */
 const CI_SCOPE_NOTE =
-  "CI runs are read from each merged PR's final head SHA only; check runs on earlier pushes are not counted";
+  "CI history is read from observed PR heads and commit heads; truncated API history is called out per PR";
 
 /** A PR observed in the cohort, with the text the regressions and rollups read. */
 interface ObservedPr {
@@ -611,6 +611,44 @@ function blockersFor(
   return out;
 }
 
+/** Failed workflow runs remain blockers until a later successful rerun. */
+function ciBlockersFor(
+  record: PrCompletionRecord,
+  runs: readonly CiRun[],
+  observedAt: string,
+): Blocker[] {
+  const workflows = runs.filter((run) =>
+    run.kind === "workflow_run" && run.workflowId && run.completedAt &&
+    run.outcome
+  ).sort((a, b) =>
+    utcMillis(a.completedAt!, "workflow completedAt") -
+    utcMillis(b.completedAt!, "workflow completedAt")
+  );
+  const out: Blocker[] = [];
+  for (const failed of workflows) {
+    if (!new Set(["failure", "cancelled", "timed_out", "action_required"])
+      .has(failed.outcome!)) continue;
+    const startedAt = failed.completedAt!;
+    if (utcMillis(startedAt, "workflow completedAt") >
+      utcMillis(observedAt, "observedAt")) continue;
+    const recovered = workflows.find((candidate) =>
+      candidate.workflowId === failed.workflowId &&
+      candidate.headSha === failed.headSha &&
+      candidate.outcome === "success" && candidate.attempt! > failed.attempt! &&
+      utcMillis(candidate.completedAt!, "workflow completedAt") >=
+        utcMillis(startedAt, "workflow completedAt")
+    );
+    out.push({
+      repo: record.repo,
+      prNumber: record.number,
+      blocker: "ci-failure",
+      startedAt,
+      endedAt: recovered?.completedAt ?? null,
+    });
+  }
+  return out;
+}
+
 /**
  * The GitHub-observed events for one PR: submitted reviews, dismissals, the
  * merge, and each commit. Commit delivery requires a verified push's recorded range.
@@ -752,34 +790,160 @@ function unmatchedActions(
 async function ciRunsFor(
   gh: GhJson,
   record: PrCompletionRecord,
+  headShas: string[],
   notes: string[],
 ): Promise<CiRun[]> {
-  const path =
-    `repos/${record.repo}/commits/${record.headSha}/check-runs?per_page=${PER_PAGE}`;
-  const body = asObject(await gh(path), path);
-  const runs = asList(body.check_runs, path).map((run) =>
-    asObject(run, `${path} check run`)
-  );
-  const total = body.total_count;
   const label = keyOf(record.repo, record.number);
-  if (typeof total === "number" && total > runs.length) {
-    notes.push(`${label}: ${runs.length} of ${total} check runs listed`);
+  const rows: CiRun[] = [];
+  const fetchPages = async (
+    base: string,
+    field: "check_runs" | "workflow_runs" | "jobs",
+    source: string,
+    headSha?: string,
+  ): Promise<Json[]> => {
+    const items: Json[] = [];
+    let complete = false;
+    let totalCount: number | null = null;
+    for (let page = 1; page <= EVENT_PAGE_LIMIT; page++) {
+      const path = `${base}${base.includes("?") ? "&" : "?"}per_page=${PER_PAGE}&page=${page}`;
+      const body = asObject(await gh(path), path);
+      if (typeof body.total_count === "number") totalCount = body.total_count;
+      const batch = asList(requiredKey(body, field, path), path).map((item) =>
+        asObject(item, `${path} ${source}`)
+      );
+      items.push(...batch);
+      if (batch.length < PER_PAGE) {
+        complete = true;
+        break;
+      }
+    }
+    if (!complete) notes.push(`${label}: ${source} history truncated for ${headSha ?? base}`);
+    if (totalCount !== null && totalCount > items.length) {
+      notes.push(`${label}: ${items.length} of ${totalCount} ${source} listed for ${headSha ?? base}`);
+    }
+    return items;
+  };
+  const elapsedSeconds = (
+    start: unknown,
+    end: unknown,
+    sourceName: string,
+  ): number | null => {
+    if (typeof start !== "string" || typeof end !== "string") return null;
+    const seconds = (utcMillis(end, `${label} ${sourceName} completed_at`) -
+      utcMillis(start, `${label} ${sourceName} started_at`)) / 1000;
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+  };
+  const heads = [...new Set([record.headSha, ...headShas].filter(Boolean))];
+  const workflowRuns = new Map<string, { run: Json; headSha: string }>();
+  for (const headSha of heads) {
+    const checks = await fetchPages(
+      `repos/${record.repo}/commits/${headSha}/check-runs`,
+      "check_runs",
+      "check runs",
+      headSha,
+    );
+    for (const check of checks) {
+      const durationSeconds = check.status === "completed"
+        ? elapsedSeconds(check.started_at, check.completed_at, "check run")
+        : null;
+      rows.push({
+        repo: record.repo,
+        prNumber: record.number,
+        runId: String(asId(check.id, `${label} check run`)),
+        durationMinutes: durationSeconds === null
+          ? null
+          : durationSeconds / 60,
+        kind: "check_run",
+        headSha,
+        durationSeconds,
+        outcome: asText(check.conclusion),
+        startedAt: asText(check.started_at),
+        completedAt: asText(check.completed_at),
+      });
+    }
+    const workflows = await fetchPages(
+      `repos/${record.repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}`,
+      "workflow_runs",
+      "workflow-run",
+      headSha,
+    );
+    for (const run of workflows) {
+      const runId = asId(run.id, `${label} workflow run`);
+      workflowRuns.set(runId, { run, headSha });
+    }
   }
-  return runs.map((run) => {
-    const started = asText(run.started_at);
-    const completed = asText(run.completed_at);
-    const duration = run.status === "completed" && started !== null &&
-        completed !== null
-      ? (utcMillis(completed, `${label} check completed_at`) -
-        utcMillis(started, `${label} check started_at`)) / MINUTE_MS
-      : null;
-    return {
-      repo: record.repo,
-      prNumber: record.number,
-      runId: String(asId(run.id, `${label} check run`)),
-      durationMinutes: duration !== null && duration >= 0 ? duration : null,
-    };
-  });
+  for (const { run: listedRun, headSha } of workflowRuns.values()) {
+    const runId = asId(listedRun.id, `${label} workflow run`);
+    const latestAttempt = typeof listedRun.run_attempt === "number" &&
+        Number.isSafeInteger(listedRun.run_attempt) && listedRun.run_attempt > 0
+      ? listedRun.run_attempt
+      : 1;
+    const attemptLimit = 100;
+    if (latestAttempt > attemptLimit) {
+      notes.push(
+        `${label}: workflow run ${runId} has ${latestAttempt} attempts; history truncated at ${attemptLimit}`,
+      );
+    }
+    for (let attempt = 1; attempt <= Math.min(latestAttempt, attemptLimit); attempt++) {
+      const attemptPath =
+        `repos/${record.repo}/actions/runs/${runId}/attempts/${attempt}`;
+      const run = asObject(await gh(attemptPath), attemptPath);
+      const started = asText(run.run_started_at) ?? asText(run.created_at);
+      const durationSeconds = run.status === "completed"
+        ? elapsedSeconds(started, run.updated_at, "workflow run")
+        : null;
+      rows.push({
+        repo: record.repo,
+        prNumber: record.number,
+        runId,
+        attempt,
+        durationMinutes: durationSeconds === null
+          ? null
+          : durationSeconds / 60,
+        durationSeconds,
+        kind: "workflow_run",
+        workflowRunId: runId,
+        ...(typeof run.workflow_id === "number" ||
+            typeof run.workflow_id === "string"
+          ? { workflowId: String(run.workflow_id) }
+          : {}),
+        headSha,
+        outcome: asText(run.conclusion),
+        startedAt: started,
+        completedAt: asText(run.updated_at),
+      });
+      const jobs = await fetchPages(
+        `repos/${record.repo}/actions/runs/${runId}/attempts/${attempt}/jobs`,
+        "jobs",
+        "job",
+        headSha,
+      );
+      for (const job of jobs) {
+        const jobDuration = job.status === "completed"
+          ? elapsedSeconds(job.started_at, job.completed_at, "CI job")
+          : null;
+        rows.push({
+          repo: record.repo,
+          prNumber: record.number,
+          runId: String(asId(job.id, `${label} CI job`)),
+          attempt,
+          durationMinutes: jobDuration === null ? null : jobDuration / 60,
+          durationSeconds: jobDuration,
+          kind: "job",
+          workflowRunId: runId,
+          ...(typeof run.workflow_id === "number" ||
+              typeof run.workflow_id === "string"
+            ? { workflowId: String(run.workflow_id) }
+            : {}),
+          headSha,
+          outcome: asText(job.conclusion),
+          startedAt: asText(job.started_at),
+          completedAt: asText(job.completed_at),
+        });
+      }
+    }
+  }
+  return rows;
 }
 
 /** Revert targets named by a PR's title or body, each read over its bounded slice. */
@@ -840,6 +1004,7 @@ function deploymentRow(
   revision: unknown,
   fingerprint: unknown,
   observedAt: unknown,
+  hostId?: unknown,
 ): DeploymentRow | string {
   if (typeof component !== "string" || !COMPONENT_PATTERN.test(component)) {
     return "component is not a component identifier";
@@ -853,6 +1018,11 @@ function deploymentRow(
     return "policy fingerprint is not a SHA-256 fingerprint";
   }
   if (typeof observedAt !== "string") return "observedAt is missing";
+  if (
+    hostId !== undefined &&
+    (typeof hostId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(hostId))
+  ) return "hostId is not a host identifier";
   try {
     utcMillis(observedAt, "observedAt");
   } catch (error) {
@@ -860,6 +1030,7 @@ function deploymentRow(
   }
   return {
     component,
+    ...(typeof hostId === "string" ? { hostId } : {}),
     revision,
     policyFingerprint: fingerprint,
     observedAt,
@@ -928,6 +1099,7 @@ async function collectDeployments(
       o.codeRevision,
       o.policyFingerprint,
       o.observedAt,
+      o.hostId,
     );
     if (typeof row === "string") {
       notes.push(`babysitter heartbeat ${path}: ${row}; skipped`);
@@ -973,6 +1145,7 @@ async function collectDeployments(
         d.codeRevision,
         d.policyFingerprint,
         d.observedAt,
+        d.hostId,
       );
       if (typeof row === "string") {
         notes.push(`review-run record ${path}: ${row}; skipped`);
@@ -1023,6 +1196,7 @@ async function collectDeployments(
         treatment.workerCommit,
         treatment.reviewPolicyFingerprint,
         event.recordedAt,
+        event.host,
       );
       if (typeof row === "string") {
         notes.push(`lifecycle ledger ${path}: ${row}; row skipped`);
@@ -1351,6 +1525,11 @@ export async function collectPrCompletionSnapshot(
   }
 
   const notes: string[] = [];
+  if (options.expected.inventory === undefined) {
+    notes.push(
+      "no expected host/component deployment inventory supplied; per-host rollout status is unavailable",
+    );
+  }
   const truncatedRepos: string[] = [];
   const audit = await readAuditEntries(options.auditDirs, notes);
 
@@ -1459,9 +1638,14 @@ export async function collectPrCompletionSnapshot(
         used,
       ),
     );
-    if (record.state === "merged") {
-      ciRuns.push(...await ciRunsFor(options.gh, record, notes));
-    }
+    const prCiRuns = await ciRunsFor(
+      options.gh,
+      record,
+      evidence.commits.map((commit) => commit.sha),
+      notes,
+    );
+    ciRuns.push(...prCiRuns);
+    blockers.push(...ciBlockersFor(record, prCiRuns, options.cohort.observedAt));
   }
   if ((options.reviewLogs ?? []).length === 0 && reviewEvents > 0) {
     const events = reviewEvents === 1 ? "review event" : "review events";
@@ -1517,6 +1701,10 @@ export async function collectPrCompletionSnapshot(
     deployments,
     expectedDeployment: {
       components: [...options.expected.components],
+      ...(options.expected.inventory !== undefined
+        ? { inventory: options.expected.inventory.map((entry) => ({ ...entry })) }
+        : {}),
+      inventoryComplete: options.expected.inventory !== undefined,
       revision: options.expected.revision,
       policyFingerprint: options.expected.policyFingerprint,
       maxHeartbeatAgeHours: options.expected.maxHeartbeatAgeHours,
