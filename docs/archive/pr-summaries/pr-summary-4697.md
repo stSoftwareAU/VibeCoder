@@ -99,12 +99,11 @@ Backend change; no UI file is touched. The real-sudo test in
   refused. The test now makes both checkouts under `/tmp`. Run the way the
   mutation runner runs it (`deno test --no-check -A`, a fresh `0700` `TMPDIR`),
   the four covering test files pass (157 passed, 0 failed).
-- Passed at the head: `deno task test:unit` over
-  `worker/deno/tests/merge_fast_checks_access_4697_test.ts`,
-  `merge_fast_checks_test.ts`, `merge_fast_checks_credentials_4705_test.ts`,
-  `untrusted_gate_spawn_test.ts`, `pr_merge_conflict_processor_test.ts`,
-  `milestone_merge_gate_test.ts` and `milestone_resolution_gate_test.ts`
-  (227 passed, 0 failed, plus 41 passed, 0 failed in the second pass).
+- Passed at the head (`deno task test:unit`, run per file):
+  `worker/deno/tests/merge_fast_checks_access_4697_test.ts` (9 tests at head),
+  `worker/deno/tests/merge_fast_checks_test.ts` (36 tests at head) and
+  `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts` (6 tests at
+  head), 0 failed.
 - Docs updated: `docs/workflows/merge-conflicts.md` (the Issue #4616 bullet) and
   `docs/CONFIGURATION.md` (the `agent` account checkout paragraph).
 - Callers of `spawnFastCheck` checked: `verifyMergeBeforePush` default runner

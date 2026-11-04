@@ -131,11 +131,12 @@ The `agent` account can only run a gate command in a checkout it can reach. The
 image therefore gives group `vibework` search-only permission on the worker's
 home (`0710`) at build time, so the work root beneath it is reachable even on
 a read-only root filesystem. A checkout the account still cannot read, write
-(cargo target aside) or traverse leaves the command to CI rather than running as
-the worker (Issue #4659). A milestone resolution whose every check is left to CI
+(cargo target aside; the merge fast checks do not need write access either) or
+traverse leaves the command to CI rather than running as the worker
+(Issue #4659). A milestone resolution whose every check is left to CI
 this way verified nothing and is refused as unverified (Issue #1559, #4761).
-The merge fast checks use the same probe, through the same `runRepositoryCommand`
-path (Issue #4697). Before each check the account is probed for the checkout
+The merge fast checks use the same probe without its write test, through the same
+`runRepositoryCommand` path (Issue #4697). Before each check the account is probed for the checkout
 (traversal and a readable manifest, but not write access to the project
 directory, which the read-only checks do not need, Issue #4782), and a probe
 that fails, or an account that cannot reach the checkout, leaves the merge
