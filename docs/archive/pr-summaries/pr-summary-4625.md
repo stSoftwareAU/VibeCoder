@@ -75,6 +75,7 @@ Backend only. Tests (all passed on this head in the targeted run):
 `worker/deno/tests/recovery_turn_publication_guard_4625_test.ts`,
 `worker/deno/tests/pr_ci_processor_test.ts`,
 `worker/deno/tests/pr_feedback_processor_test.ts`,
+`worker/deno/tests/pr_feedback_processor_milestone_fix_test.ts`,
 `worker/deno/tests/pr_spelling_processor_test.ts`,
 `worker/deno/tests/pr_push_base_sync_test.ts`. They cover a real failing
 command, a claimed-but-not-run check, edits after validation, zero Deno tests
@@ -87,6 +88,12 @@ Docs updated: `docs/INTERNALS.md` (new section), `docs/CONFIGURATION.md`,
 
 ## Test Plan
 
+- Head push `c92357559`: `pr_feedback_processor_milestone_fix_test.ts` now
+  injects a passing `validatePublication` stub. Its mocked push never reaches
+  the publication guard, and the real gate finds no repository in the fake
+  `workDir` and reports `unavailable`, so those tests would otherwise stop at
+  the new post-run head validation. `deno task test:unit
+  tests/pr_feedback_processor_milestone_fix_test.ts`: 16 passed, 0 failed.
 - Targeted run of the files above plus `pr_ci_checks_test.ts`,
   `babysitter_fix_orchestration_test.ts`,
   `pr_feedback_review_dismissal_3383_test.ts`,
