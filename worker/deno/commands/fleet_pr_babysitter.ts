@@ -2795,6 +2795,7 @@ export async function recordBabysitterDeployment(
   config: Awaited<ReturnType<typeof loadConfig>>,
   codeRevision?: string,
   observedAt = new Date().toISOString(),
+  hostId = escalationHostId(),
 ): Promise<void> {
   codeRevision ??= Deno.env.get("VIBE_BUILD_COMMIT") ??
     await resolveBuildCommitStamp(
@@ -2806,7 +2807,7 @@ export async function recordBabysitterDeployment(
     targetFile: `${stateDir}/deployment-health.json`,
     content: JSON.stringify({
       component: "babysitter",
-      hostId: reportHostId(escalationHostId()),
+      hostId: reportHostId(hostId),
       codeRevision,
       policyFingerprint,
       observedAt,
@@ -2864,8 +2865,9 @@ async function shiftLeftPass(
   authors: string[],
   login: string,
   execute: boolean,
+  dir = babysitterStateDir(),
+  gh: (args: string[]) => Promise<string> = (args) => run("gh", args),
 ): Promise<void> {
-  const dir = babysitterStateDir();
   const path = `${dir}/shift-left-ledger.json`;
   try {
     await Deno.mkdir(dir, { recursive: true });
@@ -2878,7 +2880,7 @@ async function shiftLeftPass(
       ledger,
       nowMs: Date.now(),
       execute,
-      gh: (args) => run("gh", args),
+      gh,
       log: (line) => console.log(line),
       warn: (line) => console.warn(line),
       withWriteScope: withBabysitterWriteScope,
@@ -2898,8 +2900,20 @@ export async function pass(
   repositories: readonly string[],
   repoFilter?: string,
   prFilter?: number,
+  seams: {
+    gh?: (args: string[]) => Promise<string>;
+    tempDir?: string;
+    stateDir?: string;
+    hostId?: string;
+    repair?: () => Promise<void>;
+  } = {},
 ): Promise<void> {
-  await recoverTemporaryClones(Deno.env.get("TMPDIR") || "/tmp");
+  await recoverTemporaryClones(
+    seams.tempDir ?? Deno.env.get("TMPDIR") ?? "/tmp",
+  );
+  const stateDir = seams.stateDir ?? babysitterStateDir();
+  const gh = seams.gh ?? ((args: string[]) => run("gh", args));
+  const hostId = reportHostId(seams.hostId ?? escalationHostId());
   const authors = [
     ...new Set([login, ...config.fleetPrAuthors, ...config.serviceAccounts]),
   ];
@@ -2920,11 +2934,22 @@ export async function pass(
       authors,
       login,
       execute,
+      stateDir,
+      gh,
     );
   }
+  const recordDiscovery = async (
+    path: string,
+    event: Parameters<typeof appendPrDiscoveryEvent>[1],
+  ): Promise<void> => {
+    try {
+      await appendPrDiscoveryEvent(path, event);
+    } catch (error) {
+      console.warn(`[babysitter] discovery event not recorded: ${error}`);
+    }
+  };
   const discover = async (): Promise<RepairTask[]> => {
     const repairs: RepairTask[] = [];
-    const stateDir = babysitterStateDir();
     for (const repo of repositories) {
       if (repoFilter && repo !== repoFilter) continue;
       const skipMerge =
@@ -2933,9 +2958,9 @@ export async function pass(
         throw new Error(`Invalid repository: ${repo}`);
       }
       const prs: Pr[] = prFilter !== undefined
-        ? [await readPr(repo, prFilter)]
+        ? [await readPr(repo, prFilter, gh)]
         : JSON.parse(
-          await run("gh", [
+          await gh([
             "pr",
             "list",
             "--repo",
@@ -2951,11 +2976,11 @@ export async function pass(
       if (prFilter === undefined) {
         await appendTrackedPrs(stateDir, repo, prs, skipMerge);
         for (const pr of prs) {
-          await appendPrDiscoveryEvent(
+          await recordDiscovery(
             `${stateDir}/pr-discovery-events.jsonl`,
             {
               event: "discovered",
-              hostId: reportHostId(escalationHostId()),
+              hostId,
               repo,
               prNumber: pr.number,
               headSha: pr.headRefOid,
@@ -3006,11 +3031,11 @@ export async function pass(
           );
           continue;
         }
-        await appendPrDiscoveryEvent(
+        await recordDiscovery(
           `${stateDir}/pr-discovery-events.jsonl`,
           {
             event: "eligible",
-            hostId: reportHostId(escalationHostId()),
+            hostId,
             repo,
             prNumber: pr.number,
             headSha: pr.headRefOid,
@@ -3023,17 +3048,18 @@ export async function pass(
             key: `${repo}#${pr.number}`,
             version: `${pr.headRefOid}:${why}`,
             run: async () => {
-              await appendPrDiscoveryEvent(
+              await recordDiscovery(
                 `${stateDir}/pr-discovery-events.jsonl`,
                 {
                   event: "processed",
-                  hostId: reportHostId(escalationHostId()),
+                  hostId,
                   repo,
                   prNumber: pr.number,
                   headSha: pr.headRefOid,
                   recordedAt: new Date().toISOString(),
                 },
               );
+              if (seams.repair) return await seams.repair();
               return await withBabysitterWriteScope(
                 repo,
                 () =>

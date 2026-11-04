@@ -667,6 +667,7 @@ const GIT_PULL_FEATURE_STACK = [
 
 Deno.test("audit_hook - a push with no resolved caller is unknown, not milestone", () => {
   assertEquals(pushKind(undefined), "unknown");
+  assertEquals(pushKind(callerIn("lib", "recent_activity.ts")), "unknown");
 });
 
 Deno.test("audit_hook - a git_pull push to a milestone branch is a milestone action", () => {

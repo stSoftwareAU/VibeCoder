@@ -639,7 +639,7 @@ function ciBlockersFor(
   const out: Blocker[] = [];
   for (const failed of workflows) {
     if (
-      !new Set(["failure", "cancelled", "timed_out", "action_required"])
+      !new Set(["failure", "timed_out", "action_required"])
         .has(failed.outcome!)
     ) continue;
     const startedAt = failed.completedAt!;
@@ -661,6 +661,20 @@ function ciBlockersFor(
         utcMillis(endedAt, "workflow completedAt") > endCapMs)
     ) {
       endedAt = endCap;
+    }
+    const previous = out.at(-1);
+    if (
+      previous && (previous.endedAt === null ||
+        utcMillis(previous.endedAt, "blocker endedAt") >= startedMs)
+    ) {
+      if (
+        previous.endedAt !== null && (endedAt === null ||
+          utcMillis(endedAt, "blocker endedAt") >
+            utcMillis(previous.endedAt, "blocker endedAt"))
+      ) {
+        previous.endedAt = endedAt;
+      }
+      continue;
     }
     out.push({
       repo: record.repo,

@@ -157,6 +157,16 @@ const WORKER_CALLERS: ReadonlyArray<string> = [
   "pr_feedback_processor",
   "pr_maintenance",
   "git_pull",
+  "direct_merge",
+  "pr_manager",
+  "pr_auto_merge",
+  "pr_comments",
+  "pr_merge_conflict_processor",
+  "pr_spelling_processor",
+  "pre_push_gate_retry",
+  "screenshot_gate_retry",
+  "summary_rule_gate_retry",
+  "pr_body_length",
 ];
 
 /**

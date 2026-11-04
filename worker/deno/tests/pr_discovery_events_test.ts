@@ -20,6 +20,13 @@ Deno.test("PR discovery event ledger validates and deduplicates transitions", as
     await appendPrDiscoveryEvent(path, event);
     await appendPrDiscoveryEvent(path, event);
     assertEquals(await readPrDiscoveryEvents(path), [event]);
+    const later = { ...event, recordedAt: "2026-11-01T00:05:00Z" };
+    await appendPrDiscoveryEvent(path, later);
+    assertEquals(await readPrDiscoveryEvents(path), [event, later]);
+    await Deno.writeTextFile(path, '{"torn":', { append: true });
+    const next = { ...event, recordedAt: "2026-11-01T00:10:00Z" };
+    await appendPrDiscoveryEvent(path, next);
+    assertEquals(await readPrDiscoveryEvents(path), [event, later, next]);
     await assertRejects(
       () => appendPrDiscoveryEvent(path, { ...event, hostId: "../escape" }),
       Error,

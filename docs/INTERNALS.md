@@ -1287,11 +1287,13 @@ marker is recorded yet. A PR labelled `needs-human` is recorded as
 **Blockers produced.** `needs-human` (from the label, open until it is removed),
 `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
 commit, approval or dismissal), and `ci-failure` (opened when a workflow run
-completes with `failure`, `cancelled`, `timed_out` or `action_required`). A
+completes with `failure`, `timed_out` or `action_required`). A
 `ci-failure` closes at the first later successful run of the same workflow: a
 later attempt on the same head, or a later run on any other head of the PR. It
 never extends past the PR's merge or close. When the PR has ended, an open
 blocker ends at that moment, and a failure completed after it is not a blocker.
+Overlapping workflow failure intervals are combined so waiting time is not
+counted twice. Concurrency cancellations do not open a blocker.
 Other recovery and refresh waits are not yet represented as blocker intervals.
 
 **Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
@@ -1345,7 +1347,10 @@ the verification instant, was still open at it (no merge or close at or before
 it), was at least 24 hours old at it, and is not labelled `needs-human`. A PR
 that merged after the instant is therefore still stranded. Its discovered,
 eligible and processed transitions come from the babysitter's ordinary scan
-event ledger, not later audit actions. Every expected babysitter host and an
+event ledger, not later audit actions. An unchanged head is recorded again on
+a later scan. Ledger write failures are
+logged without interrupting the pass; a torn final record is discarded on the
+next append. Every expected babysitter host and an
 explicit deployment inventory must be present for rollout coverage to be
 complete; otherwise those counts are unknown. A host is covered when a discovery
 event naming it appears in a supplied `--babysitter-state-dir`; an uncovered host

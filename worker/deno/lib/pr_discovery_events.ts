@@ -56,27 +56,26 @@ export async function appendPrDiscoveryEvent(
   }
   await withFileLock(`${path}.lock`, async () => {
     try {
+      const bytes = await Deno.readFile(path);
+      if (bytes.length && bytes[bytes.length - 1] !== 10) {
+        const lastNewline = bytes.lastIndexOf(10);
+        await Deno.truncate(path, lastNewline + 1);
+      }
       const prior = await readPrDiscoveryEvents(path);
       if (
         prior.some((row) =>
           row.event === event.event && row.hostId === event.hostId &&
           row.repo === event.repo && row.prNumber === event.prNumber &&
-          row.headSha === event.headSha
+          row.headSha === event.headSha && row.recordedAt === event.recordedAt
         )
       ) return;
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
-    const file = await Deno.open(path, {
+    await Deno.writeTextFile(path, `${JSON.stringify(event)}\n`, {
       create: true,
       append: true,
-      write: true,
     });
-    try {
-      await file.write(new TextEncoder().encode(`${JSON.stringify(event)}\n`));
-    } finally {
-      file.close();
-    }
   });
 }
 

@@ -1,9 +1,4 @@
-// Process-state mutator suite (Issue #4658). These tests set PATH, HOME,
-// XDG_STATE_HOME, TMPDIR and VIBE_HOST_ID so the real `pass` runs against a
-// fake `gh`. They live apart from fleet_pr_babysitter_test.ts so that suite
-// stays in the parallel pass. This file is listed in
-// PROCESS_STATE_MUTATOR_TEST_FILES.
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   pass,
   recordBabysitterDeployment,
@@ -46,9 +41,8 @@ function passFixturePr(
 
 /**
  * Drive the real `pass` against a fake `gh` that answers `pr list` and
- * `pr view` from fixtures. HOME, XDG_STATE_HOME and TMPDIR live in a fresh
- * temp directory and PATH holds only the fake. Returns the discovery ledger
- * the pass wrote, and restores the environment afterwards.
+ * `pr view` from fixtures. Inject paths and a repair to keep the test isolated.
+ * Returns the discovery ledger the pass wrote.
  */
 async function runPassWithFakeGh(options: {
   execute: boolean;
@@ -58,40 +52,7 @@ async function runPassWithFakeGh(options: {
   prFilter?: number;
 }): Promise<PrDiscoveryEvent[]> {
   const root = await Deno.makeTempDir();
-  const names = ["PATH", "HOME", "XDG_STATE_HOME", "TMPDIR", "VIBE_HOST_ID"];
-  const saved = new Map(names.map((name) => [name, Deno.env.get(name)]));
   try {
-    const bin = `${root}/bin`;
-    await Deno.mkdir(bin);
-    const json = (value: unknown): string => {
-      const text = JSON.stringify(value);
-      assert(
-        !text.includes("'"),
-        "fixture JSON must not contain single quotes",
-      );
-      return text;
-    };
-    // printf is a shell builtin, so the fake needs no other PATH entry.
-    await Deno.writeTextFile(
-      `${bin}/gh`,
-      [
-        "#!/bin/sh",
-        `if [ "$1" = pr ] && [ "$2" = list ]; then printf '%s\\n' '${
-          json(options.list)
-        }'; exit 0; fi`,
-        `if [ "$1" = pr ] && [ "$2" = view ]; then printf '%s\\n' '${
-          json(options.view ?? {})
-        }'; exit 0; fi`,
-        "printf '%s\\n' '[]'",
-      ].join("\n") + "\n",
-    );
-    await Deno.chmod(`${bin}/gh`, 0o755);
-    await Deno.mkdir(`${root}/tmp`);
-    Deno.env.set("PATH", bin);
-    Deno.env.set("HOME", root);
-    Deno.env.set("XDG_STATE_HOME", `${root}/state`);
-    Deno.env.set("TMPDIR", `${root}/tmp`);
-    Deno.env.set("VIBE_HOST_ID", PASS_HOST);
     const config = {
       fleetPrAuthors: [PASS_LOGIN],
       serviceAccounts: [],
@@ -106,15 +67,25 @@ async function runPassWithFakeGh(options: {
       ["org/repo"],
       options.repoFilter,
       options.prFilter,
+      {
+        gh: (args) =>
+          Promise.resolve(JSON.stringify(
+            args[0] === "pr" && args[1] === "list"
+              ? options.list
+              : args[0] === "pr" && args[1] === "view"
+              ? options.view ?? {}
+              : [],
+          )),
+        tempDir: root,
+        stateDir: `${root}/state`,
+        hostId: PASS_HOST,
+        repair: () => Promise.resolve(),
+      },
     );
     return await readPrDiscoveryEvents(
-      `${root}/state/vibe-coder/fleet-pr-babysitter/pr-discovery-events.jsonl`,
+      `${root}/state/pr-discovery-events.jsonl`,
     );
   } finally {
-    for (const [name, value] of saved) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
-    }
     await Deno.remove(root, { recursive: true });
   }
 }
@@ -166,24 +137,59 @@ Deno.test("babysitter pass with a single-PR filter journals only the eligible tr
   );
 });
 
+Deno.test("a malformed discovery ledger does not stop a repair", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${root}/pr-discovery-events.jsonl`, "invalid\n");
+    let repaired = false;
+    await pass(
+      true,
+      PASS_LOGIN,
+      {} as unknown as Parameters<typeof pass>[2],
+      {
+        fleetPrAuthors: [PASS_LOGIN],
+        serviceAccounts: [],
+        repoConfig: {},
+      } as unknown as Parameters<typeof pass>[3],
+      `${root}/config.json`,
+      ["org/repo"],
+      "org/repo",
+      11,
+      {
+        gh: () =>
+          Promise.resolve(
+            JSON.stringify(passFixturePr(11, { mergeable: "CONFLICTING" })),
+          ),
+        tempDir: root,
+        stateDir: root,
+        hostId: PASS_HOST,
+        repair: () => {
+          repaired = true;
+          return Promise.resolve();
+        },
+      },
+    );
+    assertEquals(repaired, true);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("babysitter heartbeat maps a free-form VIBE_HOST_ID to a valid host id", async () => {
   const dir = await Deno.makeTempDir();
-  const saved = Deno.env.get("VIBE_HOST_ID");
   try {
-    Deno.env.set("VIBE_HOST_ID", PASS_HOST);
     await recordBabysitterDeployment(
       dir,
       buildDefaultWorkerConfig(),
       "abcdef0123456789",
       "2026-11-02T00:00:00.000Z",
+      PASS_HOST,
     );
     const heartbeat = JSON.parse(
       await Deno.readTextFile(`${dir}/deployment-health.json`),
     );
     assertEquals(heartbeat.hostId, "lab-box--");
   } finally {
-    if (saved === undefined) Deno.env.delete("VIBE_HOST_ID");
-    else Deno.env.set("VIBE_HOST_ID", saved);
     await Deno.remove(dir, { recursive: true });
   }
 });

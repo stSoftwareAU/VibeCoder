@@ -56,13 +56,11 @@ flowchart LR
   `reportHostId(escalationHostId())`, which maps any `VIBE_HOST_ID` to the
   report's host-id pattern so one odd value cannot abort a babysitter pass.
 
-- The tests that drive the real babysitter `pass` set PATH, HOME and TMPDIR
-  (`pass` spawns `gh` through PATH and reads TMPDIR with no injected seam), so
-  they live in `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts`, the
-  single entry in `PROCESS_STATE_MUTATOR_TEST_FILES`
-  (`worker/deno/lib/parallel_unsafe_test_manifest.ts`). That list's rule is
-  "shrink, never grow"; this is a recorded exception whose exit condition is
-  `pass` taking its `gh` runner and temp dir as parameters.
+- Discovery events are recorded on each pass, recover a torn final record,
+  and log write failures without stopping repairs. Test seams supply the GitHub
+  runner, temporary and state directories, host identity and repair operation.
+- CI failure intervals exclude cancellations and unite overlaps across workflows.
+  Named fleet mutation callers retain trusted attribution.
 
 ### Undiscoverable Facts
 
@@ -150,18 +148,25 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
   evidence: `worker/deno/tests/pr_completion_snapshot_test.ts:619` — reason:
   fixed in this diff (a hook-driven test added; its red comes from the hook's own
   kind assertion, the collector assertion alone does not go red)
-- **violation** — a new test file mutating `Deno.env` joined the process-state
-  mutator list, against its "shrink, never grow" rule —
-  evidence: `worker/deno/lib/parallel_unsafe_test_manifest.ts:101` — reason:
-  fixed in this diff (the env-mutating tests were isolated in one file; the
-  list's comment now names it as the single exception with its exit condition;
-  an injected `gh` seam on `pass` would remove it but was not done in this run)
+- **violation** — a discovery test mutated process state and joined the serial
+  manifest — evidence: `worker/deno/lib/parallel_unsafe_test_manifest.ts` —
+  reason: fixed with injected seams; the mutator list stays empty.
 - **clean** — Australian English; no hidden or secret file staged; new regexes
   anchored with bounded quantifiers; legacy shapes read as unknown; named tests
   exist; no members only tests read (`reportHostId`, `isAuditJournalSwitchedOff`
   have production callers).
 
 ## Test Plan
+
+- Review fixes: the obsolete per-run overlapping CI intervals are replaced by
+  one union interval; cancellation is not a failure. Remaining coverage:
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a CI blocker on a merged PR never runs past the merge, recovered or not, and a failure after it is no blocker`.
+  The removed serial exception is obsolete because injected seams preserve the
+  real pass coverage in `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts::babysitter pass journals discovered, eligible and processed transitions on a live run`.
+  The unnamed push case remains covered by `worker/deno/tests/audit_hook_test.ts::audit_hook - a push with no resolved caller is unknown, not milestone`.
+  The pinned, timely auto-merge arm remains unknown in
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - auto-merge arming cannot verify a later merge`.
+  No duplicate CI blocker implementation was found.
 
 - CI repair: both `pr-summary-ci` and its twin `pr-summary-check` permit
   `VIBE_AUDIT_DIR`, which the shared Git audit hook now reads. The actual CI
@@ -216,6 +221,8 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     - Required by: "trusted provenance for babysitter/reviewer and milestone
       actions"
     - Replaced by: `assertEquals(pushKindFor(["push", "origin", "milestone/foo"], caller), "milestone");`
+      A resolved but unnamed caller must still be unknown, covered by
+      `worker/deno/tests/audit_hook_test.ts::audit_hook - a push with no resolved caller is unknown, not milestone`.
   - Removed from `worker/deno/tests/pr_completion_report_test.ts`:
     `assertEquals(report.cohort.prCount, 7);` (also `openPrs` 2, `eligiblePrs` 6)
     - Obsolete: the fixture gained an eighth PR (open, owner-gate label) to cover

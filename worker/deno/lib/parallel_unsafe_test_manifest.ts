@@ -72,13 +72,7 @@
  * Paths are relative to `worker/deno`, the directory the gate runs
  * `deno test` from — the same convention as `INTEGRATION_TEST_FILES`.
  *
- * This list may **shrink, never grow**. It has one recorded exception, the
- * entry for `tests/fleet_pr_babysitter_pass_4658_test.ts` (Issue #4658), which
- * is described below. The jump from 92 entries to 135 at #940 was a one-time
- * correction to the classifier rather than a precedent for growth: #880 grepped
- * each suite's own text, so a helper's mutation was invisible to every suite
- * that imported it. Forty-three files were already unsafe and are now named.
- * A new *test* still may not join them.
+ * This list must stay empty.
  *
  * To remove a file, take the value as a
  * parameter or an injected seam instead of mutating the process — most of the
@@ -93,27 +87,8 @@
  * of the process environment only because they drove that vendor's client.
  * Driving the provider registry with a fake provider needs no credentials at
  * all, so the mutation had nothing left to do.
- *
- * **It holds one entry now, the recorded exception (Issue #4658).**
- * `tests/fleet_pr_babysitter_pass_4658_test.ts` drives the real exported
- * `pass` of the fleet PR babysitter with a fake `gh` on `PATH`, and points
- * `HOME` and `TMPDIR` at a temporary directory. It needs the process
- * environment because `pass` spawns `gh` through `PATH` and reads `TMPDIR`
- * with no injected seam. The list is intended to shrink to empty once `pass`
- * takes its `gh` runner and temporary directory as parameters; that is the
- * exit condition, and this entry should then be removed along with the
- * mutation.
- *
- * An entry is not an invitation. The classifier below still runs over every
- * suite, so a new mutator fails `parallel_safety_cap_test.ts` naming itself,
- * and adding it here to silence that is the thing this list exists to prevent.
- * The #4658 entry is the single exception, and it stands only until its exit
- * condition is met.
  */
-export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
-  // Drives the real `pass` with PATH/HOME/TMPDIR set for a fake gh (Issue #4658).
-  "tests/fleet_pr_babysitter_pass_4658_test.ts",
-];
+export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
 
 /**
  * Test files that assert on a real elapsed wall-clock reading (Issue #940).

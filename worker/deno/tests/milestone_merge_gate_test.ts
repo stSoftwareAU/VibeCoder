@@ -953,3 +953,161 @@ Deno.test("spawnTypeCheck - each toolchain's check gets its own limit, and a tim
     });
   });
 });
+
+Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothing into its directory, a cargo check keeps the write requirement (Issue #4782)", async () => {
+  const okResult = {
+    ok: true as const,
+    value: {
+      code: 0,
+      stdout: "",
+      stderr: "",
+      success: true,
+      timedOut: false,
+    },
+  };
+  const readOnlyFor = async (
+    files: Record<string, string>,
+    kind: "deno" | "cargo" = "deno",
+    args: string[] = kind === "cargo" ? ["check"] : ["check", "**/*.ts"],
+  ): Promise<boolean | undefined> => {
+    let seen: boolean | undefined;
+    const run: typeof runRepositoryCommand = (_executable, _args, options) => {
+      seen = options.readOnlyCheckout;
+      return Promise.resolve(okResult);
+    };
+    await withTempDir(async (dir) => {
+      for (const [name, body] of Object.entries(files)) {
+        await writeFile(`${dir}/app/${name}`, body);
+      }
+      await spawnTypeCheck({
+        dir: `${dir}/app`,
+        kind,
+        args,
+      }, run);
+    });
+    return seen;
+  };
+  // A committed lockfile and nothing else that writes: read-only.
+  assertEquals(
+    await readOnlyFor({ "deno.json": "{}", "deno.lock": "{}" }),
+    true,
+  );
+  for (
+    const [command, expected] of [
+      ["deno check --frozen --lock=deno.lock '**/*.ts'", true],
+      ["deno run -A gen.ts && deno check main.ts", false],
+      ["deno check main.ts\ndeno task gen", false],
+      ["deno check main.ts\rdeno task gen", false],
+      ["deno check main.ts > output.txt", false],
+      ["deno check $(touch generated.ts)", false],
+      ["deno check --lock=other.lock main.ts", false],
+      ["deno check '--vendor' main.ts", false],
+    ] as const
+  ) {
+    assertEquals(
+      await readOnlyFor(
+        {
+          "deno.json": JSON.stringify({ tasks: { check: command } }),
+          "deno.lock": "{}",
+        },
+        "deno",
+        ["task", "check"],
+      ),
+      expected,
+      command,
+    );
+  }
+  assertEquals(
+    await readOnlyFor({
+      "deno.jsonc": '{ // c\n "nodeModulesDir": "none" }',
+      "deno.lock": "{}",
+    }),
+    true,
+  );
+  // No lockfile: Deno may have to write one for an npm or remote import.
+  assertEquals(await readOnlyFor({ "deno.json": "{}" }), false);
+  // Vendoring can create or update files in the project directory.
+  assertEquals(
+    await readOnlyFor({
+      "deno.json": '{"vendor": true}',
+      "deno.lock": "{}",
+    }),
+    false,
+  );
+  // node_modules is written for "auto" and beside a package.json.
+  assertEquals(
+    await readOnlyFor({
+      "deno.json": '{"nodeModulesDir": "auto"}',
+      "deno.lock": "{}",
+    }),
+    false,
+  );
+  assertEquals(
+    await readOnlyFor({
+      "deno.json": "{}",
+      "deno.lock": "{}",
+      "package.json": "{}",
+    }),
+    false,
+  );
+  // A manifest that cannot be parsed fails closed.
+  assertEquals(
+    await readOnlyFor({ "deno.json": "{ nope", "deno.lock": "{}" }),
+    false,
+  );
+  // Cargo keeps the requirement even with a lockfile.
+  assertEquals(
+    await readOnlyFor({ "Cargo.toml": "", "Cargo.lock": "" }, "cargo"),
+    false,
+  );
+});
+
+Deno.test("spawnTypeCheck - a read-only lockfile write refusal is left to CI", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/app/deno.json`, "{}");
+    await writeFile(`${dir}/app/deno.lock`, "{}");
+    const project: TypeCheckProject = {
+      dir: `${dir}/app`,
+      kind: "deno",
+      args: ["check", "mod.ts"],
+    };
+    const refusal =
+      `error: Failed writing lockfile: Permission denied (os error 13) (for '${dir}/app/deno.lock')`;
+    const run = recordingRun([], {
+      code: 1,
+      stdout: "",
+      stderr: refusal,
+      timedOut: false,
+    });
+    const result = await spawnTypeCheck(project, run);
+    assertStringIncludes(
+      result.accountUnavailable ?? "",
+      "Failed writing lockfile",
+    );
+    const outcome = await checkMergedTree(
+      dir,
+      (p) => spawnTypeCheck(p, run),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "skipped");
+    assertStringIncludes(outcome.detail, "left to CI");
+    for (
+      const message of [
+        `error: Failed writing lockfile: Permission denied (os error 13) (for '${dir}/other/deno.lock')`,
+        `error: Permission denied (os error 13) (for '${dir}/app/mod.ts')`,
+        `error: Failed writing lockfile: disk full (for '${dir}/app/deno.lock')`,
+      ]
+    ) {
+      const failure = await spawnTypeCheck(
+        project,
+        recordingRun([], {
+          code: 1,
+          stdout: "",
+          stderr: message,
+          timedOut: false,
+        }),
+      );
+      assertEquals(failure.accountUnavailable, undefined);
+    }
+  });
+});

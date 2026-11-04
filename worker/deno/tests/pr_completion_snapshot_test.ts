@@ -27,6 +27,7 @@ import {
   actionKindFor,
   auditGhMutation,
   callerFromStack,
+  componentFor,
 } from "../lib/audit_hook.ts";
 import { appendPrDiscoveryEvent } from "../lib/pr_discovery_events.ts";
 import { classifyGhMutation } from "../lib/audit_mutation_classifier.ts";
@@ -106,6 +107,50 @@ Deno.test("collect - failed merge attempts cannot match events but do not taint 
   });
 });
 
+Deno.test("collect - a direct merge caller verifies while an unnamed component stays unknown", async () => {
+  await withDir(async (dir) => {
+    const caller = callerFromStack(
+      "Error\n    at direct (file:///repo/worker/deno/lib/direct_merge.ts:10:2)",
+    );
+    const component = componentFor(caller);
+    assertEquals(component, "worker");
+    await journal(dir, [
+      ...[1, 2].map((n) => ({
+        verb: "git-push",
+        actionKind: "implementation" as const,
+        actionId: `push-${n}`,
+        deliveredCommits: [`sha${n}`],
+        target: `issue-${n}`,
+        timestamp: "2026-10-20T00:30:00Z",
+      })),
+      ...[1, 2].map((n) => ({
+        verb: "pr-merge",
+        actionKind: "merge" as const,
+        actionId: `merge-${n}`,
+        component: n === 1 ? component : "unknown" as const,
+        repo: REPO,
+        prNumber: n,
+        timestamp: "2026-10-20T02:00:00Z",
+      })),
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1), pull(2)] },
+          commits: {
+            [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")],
+            [pk(2)]: [commit("sha2", "2026-10-20T00:25:00Z")],
+          },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
+});
+
 Deno.test("collect - auto-merge arming cannot verify a later merge", async () => {
   await withDir(async (dir) => {
     const args = ["pr", "merge", "1", "--repo", REPO, "--auto"];
@@ -126,14 +171,15 @@ Deno.test("collect - auto-merge arming cannot verify a later merge", async () =>
         actionId: "auto-merge-armed",
         repo: REPO,
         prNumber: 1,
-        timestamp: "2026-10-20T01:00:00Z",
+        headSha: "sha1",
+        timestamp: "2026-10-20T01:56:00Z",
       },
     ]);
     const snapshot = await collectPrCompletionSnapshot(
       options(
         fakeGh(emptyFixture({
           pulls: {
-            [REPO]: [pull(1, { merged_at: "2026-10-22T02:00:00Z" })],
+            [REPO]: [pull(1)],
           },
           commits: {
             [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")],
@@ -2166,11 +2212,13 @@ Deno.test("collect - a CI blocker on a merged PR never runs past the merge, reco
     },
     workflowRuns: {
       sha1: {
-        total_count: 3,
+        total_count: 5,
         workflow_runs: [
           { id: 60, run_attempt: 1, workflow_id: 9 },
           { id: 62, run_attempt: 1, workflow_id: 10 },
           { id: 64, run_attempt: 1, workflow_id: 11 },
+          { id: 65, run_attempt: 1, workflow_id: 12 },
+          { id: 66, run_attempt: 1, workflow_id: 12 },
         ],
       },
       sha2: {
@@ -2179,6 +2227,24 @@ Deno.test("collect - a CI blocker on a merged PR never runs past the merge, reco
       },
     },
     workflowAttempts: {
+      "65:1": {
+        id: 65,
+        workflow_id: 12,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "cancelled",
+        run_started_at: "2026-10-20T00:00:00Z",
+        updated_at: "2026-10-20T00:01:00Z",
+      },
+      "66:1": {
+        id: 66,
+        workflow_id: 12,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T00:01:00Z",
+        updated_at: "2026-10-20T00:03:00Z",
+      },
       "60:1": {
         id: 60,
         workflow_id: 9,
@@ -2224,13 +2290,6 @@ Deno.test("collect - a CI blocker on a merged PR never runs past the merge, reco
       prNumber: 1,
       blocker: "ci-failure",
       startedAt: "2026-10-20T00:05:00Z",
-      endedAt: "2026-10-20T00:10:00Z",
-    },
-    {
-      repo: REPO,
-      prNumber: 1,
-      blocker: "ci-failure",
-      startedAt: "2026-10-20T00:07:00Z",
       endedAt: "2026-10-20T00:10:00Z",
     },
   ]);
@@ -2379,6 +2438,14 @@ Deno.test("collect - deployments come from all three sources and missing or malf
 
 Deno.test("collect - the rollout check counts stranded, rediscovered and processed PRs by verified time", async () => {
   await withDir(async (dir) => {
+    await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
+      event: "discovered",
+      hostId: "host-a",
+      repo: REPO,
+      prNumber: 2,
+      headSha: "sha2",
+      recordedAt: "2026-10-24T00:00:00Z",
+    });
     for (
       const [number, event] of [
         [2, "discovered"],
