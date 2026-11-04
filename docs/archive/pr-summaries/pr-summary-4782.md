@@ -105,9 +105,12 @@ directory was refused with `probe 3`.
   The `untrusted_gate_spawn.ts` comments now describe the caller handling a
   possible lockfile write refusal.
 - Review fix: bypassing the write probe for arbitrary check tasks is obsolete;
-  tasks that chain commands, redirect output or use unrecognised flags retain the
-  probe, while a simple `deno check` remains eligible. Coverage:
+  tasks that chain commands (including newlines), redirect output or use
+  unrecognised flags retain the probe, while a simple `deno check` remains eligible. Coverage:
   `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a Deno check is read-only only when it writes nothing into its directory, a cargo check keeps the write requirement (Issue #4782)`.
+- The review follow-up rejects both LF and CR in check tasks before splitting
+  words, so a second command cannot bypass the write probe. The same test
+  covers both separators and the single-command path.
 - Red check for the verifier fix: forcing `readOnlyCheckout` true for every Deno
   project turned the `spawnTypeCheck` test red; restored.
 - Red checks: making `runRepositoryCommand` always require write turned the

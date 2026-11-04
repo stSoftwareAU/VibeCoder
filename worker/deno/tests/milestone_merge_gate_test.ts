@@ -996,6 +996,8 @@ Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothin
     const [command, expected] of [
       ["deno check --frozen --lock=deno.lock '**/*.ts'", true],
       ["deno run -A gen.ts && deno check main.ts", false],
+      ["deno check main.ts\ndeno task gen", false],
+      ["deno check main.ts\rdeno task gen", false],
       ["deno check main.ts > output.txt", false],
       ["deno check $(touch generated.ts)", false],
       ["deno check --lock=other.lock main.ts", false],

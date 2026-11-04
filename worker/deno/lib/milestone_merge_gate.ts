@@ -510,7 +510,7 @@ export async function denoCheckLeavesDirUntouched(
       );
       if (taskCheck) {
         const command = config?.tasks?.check;
-        if (typeof command !== "string") return false;
+        if (typeof command !== "string" || /[\r\n]/.test(command)) return false;
         // Accept only a simple invocation with known non-writing flags. Shell
         // expansions, operators and unknown options retain the write probe.
         const words = command.trim().split(/\s+/);
