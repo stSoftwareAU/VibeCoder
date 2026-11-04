@@ -201,7 +201,9 @@ never throw — a journalling failure can never abort or perturb the
 mutation it is recording.
 
 **The journal is the worker's, never the agent's (Issue #2400).** The hooks
-switch on wherever `WORK_DIR` is set, and the coding agent's environment is
+switch on wherever `WORK_DIR` is set, or where `VIBE_AUDIT_DIR` names an
+explicit journal directory. The babysitter uses the latter under its private
+state directory because it has no `WORK_DIR`. The coding agent's environment is
 the worker's minus a denylist — so anything the agent started, including the
 repository's own test suite driving real `git` against fixture repositories,
 used to append to the production trail under the worker's identity, and could

@@ -1318,10 +1318,12 @@ explicit inventory to establish complete rollout coverage.
 
 **Accepted limits.** These are known and not mitigated in this change:
 
-- The host babysitter has no `WORK_DIR`, which the audit hook requires to enable
-  journalling. Its repair pushes and review dismissals are never journalled, so
-  babysitter-repaired PRs stay unknown under `--collect`. Deployment heartbeats
-  do not provide mutation provenance.
+- The host babysitter has no `WORK_DIR`; its startup now points the existing
+  audit hook at a private `audit/` directory under its state directory through
+  `VIBE_AUDIT_DIR`. Its repair pushes and mutations routed through the shared
+  `gh` and `git` chokepoints are therefore journalled. The spawned repair agent
+  has journalling disabled so test or local commands cannot write into the
+  babysitter's host journal.
 - Babysitter repair and reviewer actions that bypass the audit hook remain
   unknown unless their existing evidence source records a correlatable action.
   The discovery-event log records state transitions, not mutation provenance.

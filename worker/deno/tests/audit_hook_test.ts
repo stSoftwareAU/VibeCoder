@@ -386,6 +386,7 @@ Deno.test("audit_hook - componentFor names the babysitter, reviewer and worker f
   );
   assertEquals(componentFor(callerIn("lib", "agent_pr_adoption.ts")), "worker");
   assertEquals(componentFor(callerIn("lib", "pr_maintenance.ts")), "worker");
+  assertEquals(componentFor(callerIn("lib", "git_pull.ts")), "worker");
   assertEquals(
     componentFor(callerIn("lib", "phases/completion_phase.ts")),
     "worker",
@@ -642,12 +643,9 @@ Deno.test("audit_hook - actionKindFor names a repair push from the babysitter an
   );
 });
 
-Deno.test("audit_hook - actionKindFor leaves a push from an unresolved or unlisted caller unknown", () => {
+Deno.test("audit_hook - milestone sync pushes through git_pull are repair actions", () => {
   assertEquals(pushKind(undefined), "unknown");
-  // A milestone sync push is reached through the `git` adapter in git_pull.ts
-  // (raiseMilestoneSyncPr's deps), not through milestone_sync_pr.ts, so the
-  // first module above the hook is git_pull.ts and it stays unknown.
-  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "unknown");
+  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "repair");
 });
 
 Deno.test("audit_hook - a push with no resolved caller is journalled as component and kind unknown", async () => {

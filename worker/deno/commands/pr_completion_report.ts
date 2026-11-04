@@ -10,8 +10,8 @@
  * `--review-log <log.jsonl,...>` as a lower-trust source (docs/INTERNALS.md).
  * Nothing is written to GitHub or host configuration. `--collect` writes only
  * the optional `--write-snapshot <path>`, which holds the collected input so a
- * later `--input` run can reproduce the report, and whatever `verifyAllChains`
- * settles in an audit directory it sweeps (an interrupted append, Issue #1074).
+ * later `--input` run can reproduce the report. Audit verification does not
+ * recover or modify interrupted journals.
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */

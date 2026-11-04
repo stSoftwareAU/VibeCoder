@@ -12,6 +12,9 @@ import { atomicWrite } from "../lib/file_utils.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 import { appendPrDiscoveryEvent } from "../lib/pr_discovery_events.ts";
 import { escalationHostId } from "../lib/host_escalation.ts";
+import { isAuditJournalSwitchedOff } from "../lib/audit_hook.ts";
+import { AUDIT_JOURNAL_OFF_ENV_VAR } from "../lib/agent_env.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
@@ -1643,7 +1646,10 @@ export function spawnBabysitterAgent(
     stdin: "null",
     stdout: "inherit",
     stderr: "piped",
-    env: babysitterAgentEnv(options.scratch, options.agentToken),
+    env: {
+      ...babysitterAgentEnv(options.scratch, options.agentToken),
+      [AUDIT_JOURNAL_OFF_ENV_VAR]: "1",
+    },
   });
 }
 
@@ -2742,6 +2748,44 @@ function babysitterStateDir(): string {
   }/vibe-coder/fleet-pr-babysitter`;
 }
 
+/** Give the babysitter a durable audit location when WORK_DIR is absent. */
+export async function ensureBabysitterAuditDir(
+  stateDir: string,
+  env: EnvLookup = processEnvLookup,
+  setEnv: (name: string, value: string) => void = (name, value) =>
+    Deno.env.set(name, value),
+  log: (message: string) => void = console.error,
+): Promise<string | undefined> {
+  if (env("VIBE_AUDIT_DIR") || env("WORK_DIR")) return undefined;
+  if (isAuditJournalSwitchedOff(env)) return undefined;
+  const dir = `${stateDir}/audit`;
+  try {
+    await Deno.mkdir(dir, { recursive: true });
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    log(`[babysitter] audit journal directory not created: ${cause}`);
+    return undefined;
+  }
+  setEnv("VIBE_AUDIT_DIR", dir);
+  return dir;
+}
+
+/** Set the babysitter quota directory and prepare its audit journal. */
+export async function prepareBabysitterStartUp(
+  home: string,
+  stateDir: string,
+  env: EnvLookup = processEnvLookup,
+  setEnv: (name: string, value: string) => void = (name, value) =>
+    Deno.env.set(name, value),
+  log: (message: string) => void = console.error,
+): Promise<void> {
+  setEnv(
+    "VIBE_GITHUB_QUOTA_WORK_DIR",
+    `${home}/.vibe-coder/fleet-pr-babysitter`,
+  );
+  await ensureBabysitterAuditDir(stateDir, env, setEnv, log);
+}
+
 /** Persist the babysitter's current build and resolved policy heartbeat. */
 export async function recordBabysitterDeployment(
   stateDir: string,
@@ -3040,10 +3084,7 @@ if (import.meta.main) {
   if (!home) throw new Error("HOME is not set");
   const app = await readBabysitterAppConfig(home);
   const login = await babysitterAppIdentity(app);
-  Deno.env.set(
-    "VIBE_GITHUB_QUOTA_WORK_DIR",
-    `${home}/.vibe-coder/fleet-pr-babysitter`,
-  );
+  await prepareBabysitterStartUp(home, babysitterStateDir());
   console.log(`Using GitHub App ${login} for babysitter requests.`);
   do {
     try {

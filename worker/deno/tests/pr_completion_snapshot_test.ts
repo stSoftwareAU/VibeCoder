@@ -932,6 +932,16 @@ Deno.test("collect - a GitHub merge matched to a verified fleet action is unatte
     assertEquals(report.completion.unattendedMerged, 1);
     assertEquals(report.completion.unknownMerged, 0);
     assertEquals(
+      snapshot.input.actions.find((action) => action.actionId === "a-merge-1")
+        ?.githubEvents,
+      [{ kind: "merge", id: "merge1", headSha: "sha1" }],
+    );
+    assertEquals(
+      snapshot.input.actions.find((action) => action.actionId === "a-push-1")
+        ?.githubEvents,
+      [{ kind: "implementation", id: "sha1" }],
+    );
+    assertEquals(
       snapshot.input.actions.filter((action) => action.actor === "unknown")
         .length,
       0,

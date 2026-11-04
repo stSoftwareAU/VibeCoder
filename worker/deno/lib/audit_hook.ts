@@ -8,9 +8,9 @@
  * journal. Every failure is swallowed so journalling can never abort — or
  * even perturb — the mutation it is recording.
  *
- * Gating: auditing is active in production (where `WORK_DIR` is set) and
- * can be force-disabled with `VIBE_AUDIT_DISABLED=1`. Unit tests that do
- * not set `WORK_DIR` therefore incur no journalling side-effects.
+ * Gating: auditing is active in production where `WORK_DIR` or
+ * `VIBE_AUDIT_DIR` is set, and can be force-disabled with
+ * `VIBE_AUDIT_DISABLED=1`. Unit tests that set neither remain inert.
  *
  * Both gating variables, the worker partition and the run id are read through
  * {@link AuditHookOptions} rather than straight off the process (Issue #963),
@@ -55,6 +55,16 @@ export interface AuditHookOptions extends RecordOptions {
   runId?: string;
 }
 
+/** True when the audit disable switch has a non-false value. */
+export function isAuditJournalSwitchedOff(
+  env: EnvLookup = processEnvLookup,
+): boolean {
+  const disabled = env("VIBE_AUDIT_DISABLED");
+  return Boolean(
+    disabled && disabled !== "0" && disabled.toLowerCase() !== "false",
+  );
+}
+
 /**
  * True when audit journalling should run for the current process.
  *
@@ -67,13 +77,9 @@ export interface AuditHookOptions extends RecordOptions {
 export function isAuditJournalEnabled(
   env: EnvLookup = processEnvLookup,
 ): boolean {
-  const disabled = env("VIBE_AUDIT_DISABLED");
-  if (disabled && disabled !== "0" && disabled.toLowerCase() !== "false") {
-    return false;
-  }
-  // Journalling is a production-runtime feature keyed to WORK_DIR. Without
-  // it there is no stable out-of-tree location to write to, so stay inert.
-  return Boolean(env("WORK_DIR"));
+  if (isAuditJournalSwitchedOff(env)) return false;
+  // An explicit journal directory supports workers without WORK_DIR.
+  return Boolean(env("VIBE_AUDIT_DIR") || env("WORK_DIR"));
 }
 
 /**
@@ -150,6 +156,7 @@ const WORKER_CALLERS: ReadonlyArray<string> = [
   "pr_ci_processor",
   "pr_feedback_processor",
   "pr_maintenance",
+  "git_pull",
 ];
 
 /**
@@ -174,6 +181,7 @@ const REPAIR_PUSH_CALLERS: ReadonlyArray<string> = [
   "pr_feedback_processor",
   "pr_merge_conflict_processor",
   "pr_spelling_processor",
+  "git_pull",
 ];
 
 /**

@@ -44,6 +44,8 @@ export interface TrustedPrAction {
   prNumber: number;
   headSha?: string;
   deliveredCommits?: string[];
+  /** GitHub events this verified audit action was matched to. */
+  githubEvents?: Array<{ kind: PrActionKind; id: string; headSha?: string }>;
   kind: PrActionKind;
   timestamp: string;
   outcome: "confirmed" | "failed" | "unknown";

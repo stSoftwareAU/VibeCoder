@@ -8,8 +8,8 @@
  * entry by a SHA-256 chain so that any single-entry corruption (or a
  * deleted interior entry) is detectable on verification.
  *
- * The journal lives OUTSIDE any repo working tree — under
- * `${WORK_DIR}/audit/` — so a bug in the worker that rewrites a repo's
+ * The journal lives OUTSIDE any repo working tree — under `VIBE_AUDIT_DIR`
+ * when set, otherwise `${WORK_DIR}/audit/` — so a bug in the worker that rewrites a repo's
  * history cannot rewrite the history of its own audit log. Files are
  * partitioned per worker and per UTC day:
  *   `${WORK_DIR}/audit/audit-<workerId>-YYYY-MM-DD.jsonl`
@@ -254,14 +254,23 @@ function sanitiseWorkerId(id: string): string {
  * Resolve the default audit base directory from the environment.
  *
  * @param override - Explicit directory, used verbatim when supplied.
- * @param env - Environment lookup for the `WORK_DIR`/`TMPDIR` fallback
- *   (Issue #963). Defaults to the real process environment.
+ * @param env - Environment lookup for the `VIBE_AUDIT_DIR`, `WORK_DIR` and
+ *   `TMPDIR` fallback (Issue #963). Defaults to the real process environment.
  */
 export function resolveBaseDir(
   override?: string,
   env: EnvLookup = processEnvLookup,
 ): string {
   if (override) return override;
+  const auditDir = env("VIBE_AUDIT_DIR");
+  if (auditDir) {
+    if (!auditDir.startsWith("/") || auditDir.split("/").includes("..")) {
+      throw new Error(
+        "VIBE_AUDIT_DIR must be an absolute path without a '..' segment",
+      );
+    }
+    return auditDir;
+  }
   const workDir = env("WORK_DIR");
   if (workDir) return `${workDir}/audit`;
   // Issue #1242: per-account, not the fixed `${TMPDIR}/vibe-audit` every

@@ -534,7 +534,8 @@ async function fetchEvidence(
  * Blocker intervals for one PR. `needs-human` is open from a label until its
  * removal. `changes-requested` is open from a CHANGES_REQUESTED review until
  * the next approval, dismissal or commit. An interval that never closes has
- * `endedAt: null`. CI-failing and hold blockers are not produced yet.
+ * `endedAt: null`. CI failures are added by {@link ciBlockersFor}; other
+ * blocker sources remain unrecorded.
  */
 function blockersFor(
   record: PrCompletionRecord,
@@ -707,8 +708,8 @@ function gitHubEvents(
  * Match reviews, dismissals and merges one-to-one; commits can share the first
  * confirmed implementation or repair push whose delivered range contains them.
  * Branch updates match one commit within MATCH_WINDOW_MS either side of the call.
- * Matched events add nothing: the audit action already stands for them. Unmatched events become `unknown` actions, never attributed
- * to a human or the fleet.
+ * Matched event identifiers are attached to the audit action. Unmatched events
+ * become `unknown` actions, never attributed to a human or the fleet.
  *
  * A review or dismissal matches within {@link MATCH_WINDOW_MS} of it. A merge
  * matches only a synchronous merge action on the same head shortly before the
@@ -773,6 +774,12 @@ function unmatchedActions(
     }
     if (best) {
       used.add(best);
+      best.githubEvents ??= [];
+      best.githubEvents.push({
+        kind: event.kind,
+        id: event.id,
+        ...(event.headSha ? { headSha: event.headSha } : {}),
+      });
       continue;
     }
     out.push({
