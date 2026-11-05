@@ -305,9 +305,16 @@ const UNINFORMATIVE_LINE_PATTERNS: readonly RegExp[] = [
 /** Whether `line` is one of the trailing lines that carries no diagnosis. */
 function isUninformativeLine(line: string): boolean {
   const trimmed = line.trim();
-  // Git indents the affected paths between the checkout cause and its advice.
-  return /^\t\S/.test(line) ||
-    UNINFORMATIVE_LINE_PATTERNS.some((pattern) => pattern.test(trimmed));
+  return UNINFORMATIVE_LINE_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+/**
+ * A path git lists under a refused checkout or merge: one tab-indented line
+ * per path, between the cause and its advice. Dropped before the
+ * {@link LAST_LINE_WINDOW} cut, so a long list cannot push the cause out of it.
+ */
+function isGitPathLine(line: string): boolean {
+  return /^\t\S/.test(line);
 }
 
 /**
@@ -319,7 +326,8 @@ function isUninformativeLine(line: string): boolean {
  * every line in the window is one of those, the true last line is kept: a
  * record that says something imperfect beats one that says nothing.
  * Git's checkout refusal also lists affected paths and ends with generic
- * advice and `Aborting`; those lines are skipped in favour of the refusal.
+ * advice and `Aborting`; the path lines are dropped before the window is cut
+ * (however many there are) and the rest are skipped in favour of the refusal.
  *
  * The line is filed into a public issue body and the failure message quotes
  * the agent's own output, so the message is handed to `redactedLineTail`
@@ -328,10 +336,18 @@ function isUninformativeLine(line: string): boolean {
  * span lines, and a rule that never sees the line above cannot match them.
  */
 export function diagnosticErrorLine(message: string): string {
-  const lines = redactedLineTail(message ?? "", LAST_LINE_WINDOW)
+  // Redact the whole message, drop git's path list, and only then cut the
+  // window: a refusal listing 20+ paths would otherwise lose its cause line.
+  // The setup path joins several refusals with "; ", gluing git's `Aborting`
+  // trailer onto the next command's line, so split it back onto its own line.
+  const allLines = redactedLineTail(message ?? "", Number.MAX_SAFE_INTEGER)
+    .replaceAll("Aborting; ", "Aborting\n")
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) => line.trim().length > 0);
+  const withoutPaths = allLines.filter((line) => !isGitPathLine(line));
+  const lines = (withoutPaths.length > 0 ? withoutPaths : allLines)
+    .slice(-LAST_LINE_WINDOW);
   const informative = lines.filter((line) => !isUninformativeLine(line));
   const candidates = informative.length > 0 ? informative : lines;
   const chosen = candidates.length > 0

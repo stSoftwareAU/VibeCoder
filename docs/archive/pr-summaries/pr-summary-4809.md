@@ -22,18 +22,23 @@ Version bump: `VERSION` is not touched by this change.
 
 ### Essential Design Decisions
 
-- Tab-indented lines (git's list of affected paths) and git's advice under a
-  refusal
+- Tab-indented lines (git's list of affected paths) are dropped after the whole
+  message is redacted and before the 20-line window is cut, so a refusal
+  listing any number of paths keeps its `would be overwritten` cause line (PR
+  #4816 review round 2). The setup path joins refusals with `; `, gluing
+  `Aborting` onto the next command's line, so `Aborting; ` is split back onto
+  its own line first. If every line is a path line, the true last line is
+  kept. Git's advice under a refusal
   (`Please commit your changes or stash them before you switch
   branches|merge.`
   for tracked edits,
   `Please move or remove them before you
   switch branches|merge.` for untracked
-  files) are skipped only when an informative line exists; otherwise the true
+  files) is skipped only when an informative line exists; otherwise the true
   last line is kept, as before.
-- Lines are now matched on their trimmed form but only `trimEnd` is applied
-  before the tab test, so the indentation is still visible to it; the chosen
-  line is trimmed before it is redacted and bounded.
+- Lines are matched on their trimmed form but only `trimEnd` is applied before
+  the tab test, so the indentation is still visible to it; the chosen line is
+  trimmed and redacted again before it is bounded.
 
 ### Undiscoverable Facts
 
@@ -60,7 +65,7 @@ with the real `git`.
   cause
 - **status** — `verified` — the new tests fail against the base
   `repo_fast_failure_tracker.ts` (49 passed, 3 failed) and pass with the fix
-  (the file now has 52 tests, all passing)
+  (the file now has 53 tests, all passing)
 - **regression test** —
   `worker/deno/tests/repo_fast_failure_tracker_test.ts::diagnosticErrorLine - Git checkout's Aborting trailer preserves its cause`
 
@@ -71,7 +76,13 @@ with the real `git`.
   (real git),
   `diagnosticErrorLine - a checkout refused over untracked files keeps its cause`
   (real git) and
-  `diagnosticErrorLine - a refused merge keeps its cause, not the advice and Aborting`.
+  `diagnosticErrorLine - a refused merge keeps its cause, not the advice and Aborting`
+  and (round 2)
+  `diagnosticErrorLine - a refusal listing more paths than the window keeps its cause (PR #4816 review)`
+  (real git, 30 tracked files edited locally, raw stderr and the
+  `createFeatureBranchFromBase`-wrapped form; red check against the head before
+  this round's fix: `Expected actual: "Aborting" to contain: "would be
+  overwritten by checkout"`).
   Red check: base production file restored, all three new tests fail (49
   passed, 3 failed); with only the `move or remove them` alternative removed, the
   untracked-file test fails
@@ -79,7 +90,7 @@ with the real `git`.
   before you switch branches." to contain: "untracked working tree files would
   be overwritten"`)
   and the other two pass.
-- `deno task test:unit tests/repo_fast_failure_tracker_test.ts`: 52 passed, 0
+- `deno task test:unit tests/repo_fast_failure_tracker_test.ts`: 53 passed, 0
   failed.
 - Existing `diagnosticErrorLine` tests (last non-empty line, multi-line secret
   redaction, length bound) pass unchanged.
@@ -94,6 +105,6 @@ with the real `git`.
   file; I did not compare against `main`.
 
 Not done: the cause of the #4658 abort itself is not investigated. After PR
-#4816 review round 1 the full `./quality.sh` was not re-run (targeted tests,
+#4816 review rounds 1 and 2 the full `./quality.sh` was not re-run (targeted tests,
 formatter and linter only). `deno task pr-summary-check` ran on the final
 summary: 0 gates blocked, 3 not checked (no issue body or labels supplied).
