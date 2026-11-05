@@ -35,9 +35,11 @@ Version bump: `VERSION` is not touched by this change.
 
 ### Essential Design Decisions
 
-- The step comes from an ordered table of patterns over the last log lines and
-  is published only as the table's label, never as log text: the issue is public
-  and the run may be on a private repository (module comment of
+- The step comes from an ordered table of patterns over the last log lines, with
+  one precedence rule ahead of it: an `[agent-progress]` line yields the agent
+  step before the table is read (`AGENT_PROGRESS_LINE` early return). It is
+  published only as a label, never as log text: the issue is public and the run
+  may be on a private repository (module comment of
   `worker/deno/lib/hard_kill_report.ts`).
 - Ticker lines (`[phase] … still running`, `[liveness]`, `Status:`) are skipped,
   since the ticker is the last line of a healthy run and names no step.
@@ -144,10 +146,8 @@ flowchart LR
   `hard_kill_report.ts` and its tests; `run_failure_issue.ts` only mentions the
   `**Phase:**` field in a comment.
 - `deno task test:unit`, run from `worker/deno`, one file at a time, 0 failed in
-  each: `tests/hard_kill_report_test.ts` (59 tests at head),
-  `tests/run_failure_issue_test.ts` (26 tests at head),
-  `tests/run_core_hard_kill_test.ts` (3 tests at head) and
-  `tests/run_core_production_deps_hard_kill_test.ts` (4 tests at head).
+  each: `tests/hard_kill_report_test.ts` (59 tests at head) and
+  `tests/run_failure_issue_test.ts` (26 tests at head).
 - `./quality.sh`: every stage passed except `deno tests`. The parallel pass ran
   32534 passed, 2 failed; the failures are
   `completion - an unformatted Rust change is formatted and committed, then passes the gate`
