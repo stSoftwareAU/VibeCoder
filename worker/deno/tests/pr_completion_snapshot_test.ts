@@ -22,7 +22,7 @@ import {
   recordMutation,
 } from "../lib/audit_journal.ts";
 import { rosterPath } from "../lib/audit_anchor.ts";
-import type { AuditMutation } from "../lib/audit_entry.ts";
+import type { AuditMutation, AuditOutcome } from "../lib/audit_entry.ts";
 import {
   actionKindFor,
   auditGhMutation,
@@ -933,6 +933,67 @@ Deno.test("collect - auto-merge arms and withdrawals never verify a GitHub merge
         buildPrCompletionReport(snapshot.input).completion.unknownMerged,
         1,
       );
+    });
+  }
+});
+
+Deno.test("collect - only a successful disarm at or after a direct merge withdraws it", async () => {
+  const args = ["pr", "merge", "1", "--repo", REPO, "--disable-auto"];
+  const info = classifyGhMutation(args);
+  assert(info);
+  // The disarm cases are inside the ten-minute window of the 02:00 GitHub
+  // merge and the merge action is pinned to the PR head, so only the
+  // withdrawal guard (outcome and ordering) decides whether it still counts.
+  const cases: Array<{ name: string; outcome: AuditOutcome; at: string }> = [
+    { name: "failed disarm after the merge", outcome: "error", at: "01:55:00" },
+    {
+      name: "successful disarm before the merge",
+      outcome: "success",
+      at: "01:30:00",
+    },
+  ];
+  for (const { name, outcome, at } of cases) {
+    await withDir(async (dir) => {
+      await journal(dir, [
+        {
+          verb: "git-push",
+          actionKind: "implementation",
+          actionId: "push-1",
+          deliveredCommits: ["sha1"],
+          target: "issue-1",
+          timestamp: "2026-10-20T01:00:00Z",
+        },
+        {
+          verb: info.verb,
+          actionKind: actionKindFor(info, undefined, args),
+          actionId: "disarm-1",
+          repo: REPO,
+          prNumber: 1,
+          outcome,
+          timestamp: `2026-10-20T${at}Z`,
+        },
+        {
+          verb: "pr-merge",
+          actionKind: "merge",
+          actionId: "direct-merge",
+          repo: REPO,
+          prNumber: 1,
+          headSha: "sha1",
+          timestamp: "2026-10-20T01:52:00Z",
+        },
+      ]);
+      const snapshot = await collectPrCompletionSnapshot(
+        options(
+          fakeGh(emptyFixture({
+            pulls: { [REPO]: [pull(1)] },
+            commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:30:00Z")] },
+          })),
+          { auditDirs: [dir] },
+        ),
+      );
+      const completion = buildPrCompletionReport(snapshot.input).completion;
+      assertEquals(completion.unattendedMerged, 1, name);
+      assertEquals(completion.unknownMerged, 0, name);
     });
   }
 });

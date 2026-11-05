@@ -181,13 +181,13 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     unknown in this test.
   - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`:
     `failsWithoutChange`: restoring `actor: "fleet"` and `verified: true` for
-    review-log actions fails at `pr_completion_snapshot_test.ts:3340` with
+    review-log actions fails at `pr_completion_snapshot_test.ts:3380` with
     actual `fleet`, expected `unknown`. The obsolete trusted attribution is
     replaced by unknown, unverified attribution; this test also retains the head
     and checks the unmatched GitHub review.
   - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`:
     `failsWithoutChange`: restoring `actor: "fleet"` and `verified: true` for
-    review-log actions fails at `pr_completion_snapshot_test.ts:3402` with
+    review-log actions fails at `pr_completion_snapshot_test.ts:3448` with
     actual `0`, expected `1` unknown merge. The obsolete trusted attribution is
     replaced by unknown attribution; this test also covers the malformed-line
     note and out-of-cohort exclusion.
@@ -209,6 +209,20 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     `collectPrCompletionSnapshot` with `false && ...` fails at
     `pr_completion_snapshot_test.ts:728` (`assert` that a merge action with
     actor `unknown` exists).
+  - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - only a successful disarm at or after a direct merge withdraws it`
+    (replaces the protection of the former "a later re-arm or failed disarm
+    preserves merge evidence" test, whose arms are now `merge-arm` and so can no
+    longer reach the guard): a direct merge pinned to `sha1` at 01:52 and a
+    GitHub merge at 02:00, with (a) a failed disarm at 01:55 and (b) a
+    successful disarm at 01:30, before the merge action. Both give
+    `unattendedMerged 1`, `unknownMerged 0`. Each guard operand in
+    `collectPrCompletionSnapshot` was removed alone: dropping
+    `entry.outcome === "success"` fails case (a) and dropping
+    `Date.parse(entry.timestamp) >= Date.parse(action.timestamp)` fails case
+    (b), each with an `AssertionError: Values are not equal` carrying the case
+    name. The arm/re-arm test
+    (`collect - auto-merge arms and withdrawals never verify a GitHub merge`)
+    keeps asserting that an arm never verifies a merge.
   - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - readable discovery events without an expected inventory leave rollout discovery unknown`:
     two stranded PRs, valid events and no inventory. Deleting the
     inventory-undefined block gives `discoveryEvidenceComplete` true instead of
@@ -228,10 +242,10 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
       processing and the pending target.
     - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`:
       review-log actions restored to `actor: "fleet"`, `verified: true` fail at
-      `pr_completion_snapshot_test.ts:3340` with actual `fleet`, expected
+      `pr_completion_snapshot_test.ts:3380` with actual `fleet`, expected
       `unknown`.
     - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`:
-      the same restoration fails at `pr_completion_snapshot_test.ts:3402` with
+      the same restoration fails at `pr_completion_snapshot_test.ts:3448` with
       actual `0`, expected `1` unknown merge.
   - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - the rollout check counts stranded, rediscovered and processed PRs by verified time`:
     obsolete: rediscovery evidence from audit actions (`review` journal
@@ -404,8 +418,8 @@ duplicate regression or discovery implementation was found.
 - Targeted run on the head of
   `worker/deno/tests/pr_completion_snapshot_test.ts`,
   `worker/deno/tests/pr_completion_report_test.ts` and
-  `worker/deno/tests/audit_hook_test.ts`: `ok | 142 passed | 0 failed`
-  (`pr_completion_snapshot_test.ts` has 74 tests at head). The other touched
+  `worker/deno/tests/audit_hook_test.ts`: `ok | 143 passed | 0 failed`
+  (`pr_completion_snapshot_test.ts` has 75 tests at head). The other touched
   suites were not re-run in the PR #4810 review-response round.
   `deno fmt
   --check`, `deno lint` and `deno check` on the changed files are
