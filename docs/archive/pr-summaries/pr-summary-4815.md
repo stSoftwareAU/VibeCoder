@@ -168,9 +168,10 @@ flowchart LR
 - Twin check: `grep -rn "Last log time\|\*\*Phase:\*\*"` finds only
   `hard_kill_report.ts` and its tests; `run_failure_issue.ts` only mentions the
   `**Phase:**` field in a comment.
-- `deno task test:unit`, run from `worker/deno`, one file at a time, 0 failed in
-  each: `worker/deno/tests/hard_kill_report_test.ts` (61 tests at head) and
-  `worker/deno/tests/run_failure_issue_test.ts` (26 tests at head).
+- `deno task test:unit`, run from `worker/deno`, one file at a time, 0 failed
+  in each (re-run on the head of PR #4819):
+  - `worker/deno/tests/hard_kill_report_test.ts` (61 tests at head)
+  - `worker/deno/tests/run_failure_issue_test.ts` (26 tests at head)
 - `./quality.sh` (run on an earlier head, before review fix 3; not re-run after
   it, skipped for budget): every stage passed except `deno tests`. The parallel
   pass ran 32534 passed, 2 failed; the failures are
