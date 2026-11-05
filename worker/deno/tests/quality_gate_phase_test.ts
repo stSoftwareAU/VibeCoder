@@ -208,6 +208,21 @@ Deno.test("isMissingCommandFailure - a long unmatched line returns false", () =>
   assertEquals(isMissingCommandFailure(hostile), false);
 });
 
+Deno.test("isMissingCommandFailure - a long malformed Deno output start returns false", () => {
+  const hostile = "-".repeat(200000) + " not output -";
+  assertEquals(isMissingCommandFailure(hostile), false);
+});
+
+Deno.test("isMissingCommandFailure - a long malformed output end does not hide a later shell report", () => {
+  const hostile = [
+    "------- output -------",
+    "-".repeat(200000) + " not output end -",
+    "----- output end -----",
+    "foo: command not found",
+  ].join("\n");
+  assertEquals(isMissingCommandFailure(hostile), true);
+});
+
 // =============================================================================
 // buildRetryPrompt tests
 // =============================================================================

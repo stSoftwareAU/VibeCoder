@@ -351,6 +351,25 @@ Deno.test("a failed publication check that passes after the repair turn is publi
   );
 });
 
+Deno.test("a failed gate that quotes a passing test's missing-command output reaches repair (Issue #4829)", async () => {
+  const quotedOutput = [
+    "------- output -------",
+    "foo: command not found",
+    "----- output end -----",
+    "launcher test ... ok (1ms)",
+    "other test ... FAILED (1ms)",
+  ].join("\n");
+  const run = await runPhase({
+    answers: [{ ...FAILED, output: quotedOutput }, PASSED_RAN],
+  });
+  assertEquals(run.result.status, "continue");
+  assertEquals(run.requests.length, 2);
+  assertEquals(run.prompts.length, 1);
+  assertStringIncludes(run.prompts[0]!, "foo: command not found");
+  assertStringIncludes(run.prompts[0]!, "other test ... FAILED");
+  assertEquals(count(run.events, "push"), 1, run.events.join(", "));
+});
+
 // (c) An unavailable gate is infrastructure: retried, never pushed, no repair turn.
 Deno.test("an unavailable publication check is a push failure, never pushed and no repair turn (Issue #4625)", async () => {
   const run = await runPhase({ answers: [UNAVAILABLE] });

@@ -674,6 +674,29 @@ Deno.test(
       });
     });
 
+    await t.step(
+      "a real shell report remains unavailable when a wrapper exits 1",
+      async () => {
+        const wrapperScript = [
+          "#!/bin/bash",
+          "bash -c 'definitely-missing-tool-4829' 2>&1",
+          "exit 1",
+          "",
+        ].join("\n");
+        await withRepo({ "quality.sh": wrapperScript }, async (dir) => {
+          const v = expectStatus(
+            await validateRepositoryForPublication(
+              { cwd: dir, repo: REPO },
+              { runGate: realGate },
+            ),
+            "unavailable",
+          );
+          assertStringIncludes(v.reason, "failed_missing_command");
+          assertStringIncludes(v.reason, "command not found");
+        });
+      },
+    );
+
     await t.step("a real missing command is still unavailable", async () => {
       await withRepo(
         {
@@ -694,6 +717,44 @@ Deno.test(
     });
   },
 );
+
+Deno.test("the quoted missing-command test output remains eligible for base reproduction", async () => {
+  _resetBaseGateOutcomes();
+  await withRepo(
+    {
+      "quality.sh": [
+        "#!/bin/bash",
+        "if [ -f regression.txt ]; then",
+        "  printf '%s\\n' '------- output -------' 'foo: command not found' '----- output end -----' 'other test ... FAILED (1ms)'",
+        "  exit 1",
+        "fi",
+        "exit 0",
+        "",
+      ].join("\n"),
+    },
+    async (dir) => {
+      await git(dir, "checkout", "--quiet", "-b", "feature");
+      await Deno.writeTextFile(`${dir}/regression.txt`, "new failure\n");
+      await git(dir, "add", "regression.txt");
+      await git(dir, "commit", "--quiet", "-m", "add regression");
+      let gateRuns = 0;
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO, baseRef: "main" },
+          {
+            runGate: (params, deps) => {
+              gateRuns++;
+              return realGate(params, deps);
+            },
+          },
+        ),
+        "failed",
+      );
+      assertStringIncludes(v.output, "other test ... FAILED");
+      assertEquals(gateRuns, 2, "head and base gates both ran");
+    },
+  );
+});
 
 Deno.test("a gate killed by its timeout is failed, whatever its output", async (t) => {
   await withRepo({ "README.md": "hello\n" }, async (dir) => {
