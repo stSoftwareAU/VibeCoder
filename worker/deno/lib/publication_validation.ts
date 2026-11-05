@@ -528,7 +528,8 @@ async function resolveBase(
  * host (the check-agnostic idea of `decidePreExistingGateFailure`, Issue
  * #1852). The base run happens in a throwaway detached worktree and is cached
  * per base SHA. Reproduces only when the base gate also failed and every
- * normalised output line of the head's failure is already in the base's.
+ * failure evidence line of the head (`failureEvidenceLines`) is already in the
+ * base's.
  * Anything unreadable, refused or different is "does not reproduce": the
  * failure stays a content verdict.
  *

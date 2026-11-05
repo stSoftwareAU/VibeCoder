@@ -6452,8 +6452,9 @@ The five lanes apply it as follows:
   sweeps (`lsof | kill -9`, `pgrep -f | kill -9`). Before the merge and before
   any Codex session, `probePublicationCapability` checks the fixed host
   properties on the clone (a separate account when the repository has a
-  `quality.sh`, Docker for a `docker_image`); a host that cannot starts no
-  session. A `failed` verdict is
+  `quality.sh` or a configured `quality_command`, Docker for a `docker_image`;
+  a repository with `skip_quality_check` is never refused); a host that cannot
+  starts no session. A `failed` verdict is
   thrown as a `BabysitterFailure` of class `code`, so the gate's output (a test
   named `needs-human`, a "timed out" line) can never change its class, and it
   counts one substantive attempt; `unavailable` is a `capability` failure and

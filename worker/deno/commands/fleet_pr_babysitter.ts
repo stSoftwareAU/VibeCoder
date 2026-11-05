@@ -1954,7 +1954,9 @@ export interface EscalationRequest {
 }
 
 /**
- * Record repeated no-progress. Only failed CI hands the cap to the stall ladder.
+ * Record repeated no-progress, or the `pause` reason when the repair is paused
+ * for another cause (a publication deferral). Only failed CI without a `pause`
+ * hands the cap to the stall ladder.
  */
 export async function escalateStuckRepair(
   request: EscalationRequest,

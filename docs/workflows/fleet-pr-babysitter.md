@@ -99,7 +99,9 @@ defaults to `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass
 Setup and `--check` also report, as an `ACTION:` line, a host with no separate
 `agent` account (`sudo -n -u agent` must work) or without Docker when a
 monitored repository runs its checks in a Docker image: repairs of a
-repository with a `quality.sh` need that account and are deferred without it.
+repository with a `quality.sh` or a configured `quality_command` need that
+account and are deferred without it (a repository with `skip_quality_check` is
+never refused).
 
 On the always-on Mac, rerun setup after manual testing and answer yes to the
 launch-agent question. You must also type `INSTALL` to confirm. Setup checks
