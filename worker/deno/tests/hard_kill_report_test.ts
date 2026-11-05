@@ -1124,6 +1124,10 @@ Deno.test("hardKillLastStep: an agent-progress line is the agent turn whatever i
       'grep -rn "Pre-PR verifier" docs',
       'grep -rn "Quality gate" docs',
       'grep -rn "3 of 3 carried-over lines" docs',
+      // Noise markers in the detail must not skip the line either.
+      'grep -rn "Status: " docs',
+      'grep -rn "[liveness]" docs',
+      'grep -rn "[phase] x: still running" docs',
     ]
   ) {
     const line = progress(detail);

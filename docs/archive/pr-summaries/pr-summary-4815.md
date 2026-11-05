@@ -37,7 +37,8 @@ Version bump: `VERSION` is not touched by this change.
 
 - The step comes from an ordered table of patterns over the last log lines, with
   one precedence rule ahead of it: an `[agent-progress]` line yields the agent
-  step before the table is read (`AGENT_PROGRESS_LINE` early return). It is
+  step before the noise skip and the table are read (`AGENT_PROGRESS_LINE` early
+  return, ahead of `STEP_NOISE`). It is
   published only as a label, never as log text: the issue is public and the run
   may be on a private repository (module comment of
   `worker/deno/lib/hard_kill_report.ts`).
@@ -120,8 +121,9 @@ flowchart LR
   - `hardKillLastStep after the verifier's checkout line is the verifier: the wedge is in or after it (Issue #4815 review)`
   - `hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)`
     (must-not-fire table: agent-progress lines whose `(last: Bash grep ...)`
-    detail names `mutation check`, `Pre-PR verifier`, `Quality gate` and
-    `carried-over lines` must give `agent turn`; controls: the same text outside
+    detail names `mutation check`, `Pre-PR verifier`, `Quality gate`,
+    `carried-over lines`, or the noise markers `Status: `, `[liveness]` and
+    `[phase] x: still running`, must give `agent turn`; controls: the same text outside
     an agent-progress line still matches its own step, and a ticker is still
     skipped as noise)
 - Red checks (each break made on its own, test run, then restored): ticker
@@ -130,7 +132,9 @@ flowchart LR
   → tests 1, 2, 4, 5, 6 red; body line removed → tests 1, 3, 4 red; occurrence
   suffix removed → test 6 red; per-line cap shrunk → tests 1, 2, 4, 5, 6 red.
   Review fix 2: with the `AGENT_PROGRESS_LINE` early return removed, the
-  agent-progress test went red at `grep -rn "mutation check" docs`. Review fix:
+  agent-progress test went red at `grep -rn "mutation check" docs`. Review
+  fix 3: with the agent-progress check moved back below the `STEP_NOISE` skip,
+  the same test went red at `grep -rn "Status: " docs`. Review fix:
   with the pattern table, body line and occurrence line restored to the earlier
   commit, the new gate-notes test went red at
   `mutation clean: 7 of 7 mutants killed`, the verifier-then-ticker test and the
@@ -148,7 +152,8 @@ flowchart LR
 - `deno task test:unit`, run from `worker/deno`, one file at a time, 0 failed in
   each: `tests/hard_kill_report_test.ts` (59 tests at head) and
   `tests/run_failure_issue_test.ts` (26 tests at head).
-- `./quality.sh`: every stage passed except `deno tests`. The parallel pass ran
+- `./quality.sh` (run on an earlier head, before review fix 3; not re-run
+  after it, skipped for budget): every stage passed except `deno tests`. The parallel pass ran
   32534 passed, 2 failed; the failures are
   `completion - an unformatted Rust change is formatted and committed, then passes the gate`
   and

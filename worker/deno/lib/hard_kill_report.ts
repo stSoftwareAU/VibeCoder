@@ -99,7 +99,8 @@ const STEP_NOISE: readonly RegExp[] = [
 /**
  * An agent-progress ticker line. It copies the agent's last tool call (a Bash
  * command, path or grep pattern) into `(last: ...)`, so the text can name any
- * step; such a line is the agent turn, whatever it quotes.
+ * step or a noise marker; such a line is the agent turn, whatever it quotes,
+ * and is classified before {@link STEP_NOISE} is applied.
  */
 const AGENT_PROGRESS_LINE = /\[agent-progress\]/;
 /**
@@ -450,8 +451,9 @@ export function hardKillLastStep(evidence: HardKillEvidence): string {
   ];
   for (const candidate of candidates) {
     const line = candidate.slice(0, STEP_SCAN_CHARS);
-    if (STEP_NOISE.some((noise) => noise.test(line))) continue;
+    // Before the noise skip: the quoted tool detail can hold noise text too.
     if (AGENT_PROGRESS_LINE.test(line)) return "agent turn";
+    if (STEP_NOISE.some((noise) => noise.test(line))) continue;
     for (const step of STEP_PATTERNS) {
       if (step.pattern.test(line)) return step.label;
     }
