@@ -136,8 +136,10 @@ flowchart LR
 - Per-operand red checks (PR #4819 review; each operand deleted on its own from
   `STEP_PATTERNS`, `deno test` of `tests/hard_kill_report_test.ts`, then
   restored): `\bQuality gate\b` → 1 failed (new test); `\[phase\] quality_gate`
-  → 1 failed (new test); `Running Claude Code` → 1 failed (new test); mutation
-  `gate` → 1 failed (new test); mutation `check` → 3 failed; `budget` → 3 failed
+  → 1 failed (new test); `Running <provider> with Ns timeout` (restored to the
+  earlier Claude-only literal) → 1 failed
+  (`hardKillLastStep recognises each provider's session ...`); mutation `gate` →
+  1 failed (new test); mutation `check` → 3 failed; `budget` → 3 failed
   (`mutation budget` case of the gate-notes test); `cap` → 1 failed
   (`mutation capped`); `mutants? killed` → 1 failed; `coverage carry-over` → 1
   failed (`coverage budget`); `carried-over lines` → 1 failed. The dead
@@ -167,7 +169,7 @@ flowchart LR
   `hard_kill_report.ts` and its tests; `run_failure_issue.ts` only mentions the
   `**Phase:**` field in a comment.
 - `deno task test:unit`, run from `worker/deno`, one file at a time, 0 failed in
-  each: `worker/deno/tests/hard_kill_report_test.ts` (60 tests at head) and
+  each: `worker/deno/tests/hard_kill_report_test.ts` (61 tests at head) and
   `worker/deno/tests/run_failure_issue_test.ts` (26 tests at head).
 - `./quality.sh` (run on an earlier head, before review fix 3; not re-run after
   it, skipped for budget): every stage passed except `deno tests`. The parallel
@@ -188,8 +190,8 @@ read; the serial test pass of the gate did not run.
   2026-11-05), each line as the last log line, 38140 lines. Base has no matcher,
   so there is no base count: the base branch cannot label a step. Head result:
   1875 `agent turn` (1363 `[agent-progress]` tickers, 512
-  `Running Claude Code ...` lines, including health checks), 262 `quality gate` (80
-  `Quality gate
+  `Running Claude Code ...` lines, including health checks), 262 `quality gate`
+  (80 `Quality gate
   passed`, 82 `Quality gate stage outcomes`, 2
   `Quality gate failed, running
   Claude fix attempt`, the rest
@@ -198,7 +200,8 @@ read; the serial test pass of the gate did not run.
   `agent turn` line is an agent-progress or claude_runner line, but the old
   matcher also counted health-check announcements and sessions as turns; the
   previous claim of zero false positives was incorrect. The old corpus did not
-  record their separate counts, so the exact false-positive count is unknown. Every note the two gates log (`N of M mutants killed`,
+  record their separate counts, so the exact false-positive count is unknown.
+  Every note the two gates log (`N of M mutants killed`,
   `mutation budget exhausted ...`, `mutation check not
   applicable ...`,
   `N of M carried-over lines still covered`,
@@ -223,15 +226,16 @@ read; the serial test pass of the gate did not run.
   attempt` lines
   only), so that shape is not covered by the corpus.
 
-- PR #4819 review: session starts now match the runner shape for every registered
-  provider. `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep recognises each provider's session and distinguishes the health announcement`
+- PR #4819 review: session starts now match the runner shape for every
+  registered provider.
+  `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep recognises each provider's session and distinguishes the health announcement`
   derives names from the registry and covers normal sessions, health
   announcements and probe sessions after a quality gate. The old Claude-only
-  matcher failed this test. Health announcements no longer match; probe
-  sessions still count as agent turns because the runner logs the same shape
-  for them and ordinary sessions. A current 30-file host-log sample contains 23
-  Claude health announcements and 23 matching 30-second session lines; it is
-  not the original 45-file corpus.
+  matcher failed this test. Health announcements no longer match; probe sessions
+  still count as agent turns because the runner logs the same shape for them and
+  ordinary sessions. A current 30-file host-log sample contains 23 Claude health
+  announcements and 23 matching 30-second session lines; it is not the original
+  45-file corpus.
 - TDD rule 3: the obsolete behaviour was skipping liveness and status lines and
   treating any `Running Claude Code` text as a session. Phase tickers are still
   skipped, and provider session starts remain labelled; coverage is
