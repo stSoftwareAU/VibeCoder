@@ -63,7 +63,7 @@ Mermaid: the verdict flow in the document passes `check-mermaid` (1,393 blocks).
   in `docs/security/README.md`; the document pins the upstream commit and links
   the upstream repo — evidence:
   `docs/security/security-constitution-gap-analysis.md`,
-  `docs/security/README.md:188` — reviewer: met
+  `docs/security/README.md:22` — reviewer: met
 - **met** — One row per upstream item (34 rows), each with one verdict: ADOPT,
   ALREADY COVERED (citing the control, file or issue) or SKIP (stating why) —
   evidence: 12 principles + 11 lessons + 5 shapes + 3 signals + 3 feature-abuse
