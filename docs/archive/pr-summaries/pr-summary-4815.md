@@ -4,9 +4,9 @@ The hard-kill issue for run `vibe-mw2hlf2s-1125d1` says only "wedged in
 completion", the same words as #4743, so nobody can tell which completion step
 froze. The filed issue and its follow-up lines now also carry a **last step**
 taken from a fixed list (`pre-PR verifier`, `mutation check`,
-`coverage carry-over check`, `quality gate`, `agent turn`, `unknown`). The
-wedge itself is not fixed and not diagnosed: this change makes the next
-recurrence name its step. Part of #4815.
+`coverage carry-over check`, `quality gate`, `agent turn`, `unknown`). The wedge
+itself is not fixed and not diagnosed: this change makes the next recurrence
+name its step. Part of #4815.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -24,11 +24,11 @@ Version bump: `VERSION` is not touched by this change.
   `vibe-mw2hlf2s-1125d1`) it is a GRQ-AutoTrader run whose last agent session
   ends with a successful pre-PR verifier result. For `vibe-mw2hlf2s-1125d1` the
   session ended 20:25:29Z, the last worker log line is 21:16:02Z and the
-  watchdog fired 22:17:09Z, which is 3 h 11 m after the run started
-  (19:05:30Z, decoded from the run id), the same offset as the other two. The
-  worker kept logging for 50 minutes after that agent finished. That points at
-  a later completion step, but the archive is needed to confirm it: a later
-  agent turn may have replaced this transcript.
+  watchdog fired 22:17:09Z, which is 3 h 11 m after the run started (19:05:30Z,
+  decoded from the run id), the same offset as the other two. The worker kept
+  logging for 50 minutes after that agent finished. That points at a later
+  completion step, but the archive is needed to confirm it: a later agent turn
+  may have replaced this transcript.
 
 ### Essential Design Decisions
 
@@ -68,17 +68,21 @@ flowchart LR
 
 ## Reproduction
 
-- **symptom** — the container wedges in `completion` and is reaped by the
-  11400 s launcher watchdog; the filed issue cannot say which step.
-- **status** — `not-run` — the wedge was not reproduced and is not claimed fixed.
-- **regression test** — `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep takes the mutation check from the tail and skips the ticker (Issue #4815)`
+- **symptom** — the container wedges in `completion` and is reaped by the 11400
+  s launcher watchdog; the filed issue cannot say which step.
+- **status** — `not-run` — the wedge was not reproduced and is not claimed
+  fixed.
+- **regression test** —
+  `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep takes the mutation check from the tail and skips the ticker (Issue #4815)`
 - reason: the freeze is a guest-wide stall on GRQ-3 (Apple `container`); no
-  in-guest evidence is readable from this host, so only the diagnostic gap
-  (the missing step in the issue) is covered by a test.
+  in-guest evidence is readable from this host, so only the diagnostic gap (the
+  missing step in the issue) is covered by a test.
 
 ## Acceptance Criteria
 
-- **missing** — the container no longer wedges in completion (the hard kill recurs) — reason: the cause is undiagnosed; no evidence of which step froze is readable here, and a behaviour change on a guess is what #4760 was
+- **missing** — the container no longer wedges in completion (the hard kill
+  recurs) — reason: the cause is undiagnosed; no evidence of which step froze is
+  readable here, and a behaviour change on a guess is what #4760 was
 
 ## Test Plan
 
@@ -111,11 +115,12 @@ flowchart LR
 - `./quality.sh`: every stage passed except `deno tests`. The parallel pass ran
   32534 passed, 2 failed; the failures are
   `completion - an unformatted Rust change is formatted and committed, then passes the gate`
-  and `completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit`
+  and
+  `completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit`
   in `worker/deno/tests/completion_phase_repo_formatters_test.ts` (lines 480 and
-  567), which this change does not touch; the same two failed in the #4743
-  work. I did not compare against `main`. The serial pass did not run because
-  the parallel pass failed.
+  567), which this change does not touch; the same two failed in the #4743 work.
+  I did not compare against `main`. The serial pass did not run because the
+  parallel pass failed.
 
 Not done: the wedge itself is not diagnosed or fixed; the GRQ-3 archive was not
 read; the serial test pass of the gate did not run.
