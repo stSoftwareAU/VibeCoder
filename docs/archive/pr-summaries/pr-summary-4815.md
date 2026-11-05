@@ -104,20 +104,16 @@ flowchart LR
 
 ## Test Plan
 
-- CI freshness repair for commit `9067d246`: the orphan test now waits for
-  the exact final `<marker> 300` command line and reparenting before `pgrep`,
-  avoiding a transient empty command line during `exec`. The surviving-process
-  assertion remains in
-  `worker/deno/tests/loop_supervisor_test.ts::loop.sh #4568 - a registered orphan with a different command survives`.
-  The integration workflow remains the authoritative process check on Linux.
-- CI repair: `worker/deno/tests/loop_supervisor_test.ts` captures the spawned
-  orphan's PID and waits for its command and reparenting before searching for
-  it. Previously the immediate search could race the background `exec`; the
-  test still checks the registered unrelated process survives the reaper.
-  `loop_supervisor_test.ts::loop.sh #4568 - a registered orphan with a different command survives`
-  covers that behaviour. Local `deno fmt --check`, `deno lint` and `deno check`
-  pass for the test file. The integration workflow command was run locally,
-  but this sandbox refuses `/bin/ps`, so the process test cannot complete here.
+- CI repair (PR #4819): in
+  `worker/deno/tests/loop_supervisor_test.ts::loop.sh #4568 - a registered orphan with a different command survives`
+  the orphan wait is a bounded poll for the final `<marker> 300` command line
+  and re-parenting to init, and it fails with the observed command and parent
+  if it never settles. The `pgrep -f` snapshot (and its helper) is removed: it
+  returned `[]` on CI although the process was alive. The test still asserts
+  the registered unrelated process survives the reaper. Local `deno fmt
+  --check`, `deno lint`, `deno check` and the test pass; the failure itself did
+  not reproduce locally, so the integration workflow stays the authoritative
+  check.
 - Added to `worker/deno/tests/hard_kill_report_test.ts`:
   - `hardKillLastStep takes the mutation check from the tail and skips the ticker (Issue #4815)`
   - `hardKillLastStep: the later tail line wins over an earlier one (Issue #4815)`

@@ -962,19 +962,6 @@ function killQuietly(pids: number[]): void {
   }
 }
 
-/** PIDs whose command line matches `pattern`, as `pgrep -f` reports them. */
-async function pgrepFull(pattern: string): Promise<number[]> {
-  const out = await new Deno.Command("pgrep", {
-    args: ["-f", pattern],
-    stdout: "piped",
-    stderr: "null",
-  }).output();
-  return new TextDecoder().decode(out.stdout)
-    .split("\n")
-    .map((line) => Number(line.trim()))
-    .filter((pid) => Number.isInteger(pid) && pid > 0);
-}
-
 /** The parent PID `ps` reports for `pid`, or undefined once it is gone. */
 async function parentPidOf(pid: number): Promise<number | undefined> {
   const out = await new Deno.Command("ps", {
@@ -1507,19 +1494,22 @@ Deno.test({
       const pid = Number(new TextDecoder().decode(result.stdout).trim());
       assert(result.success && Number.isInteger(pid) && pid > 0);
       pids = [pid];
-      // The shell may exit before nohup has exec'd the marker command. The
-      // forked shell and nohup both carry the marker in their argv too, so
-      // wait for the final `<marker> 300` command line: pgrep -f reads an
-      // empty cmdline while the PID is mid-exec.
-      for (let i = 0; i < 100; i++) {
-        if (
-          (await getCommand(pid)) === `${marker} 300` &&
-          await parentPidOf(pid) === 1
-        ) break;
-        await delay(100);
+      // The shell may exit before nohup has exec'd the marker command, and the
+      // forked shell and nohup carry the marker in their argv too. Wait for
+      // the final `<marker> 300` command line and for re-parenting to init;
+      // no pgrep snapshot, which read an empty cmdline mid-exec on CI.
+      let settled = false;
+      for (let i = 0; i < 100 && !settled; i++) {
+        settled = (await getCommand(pid)) === `${marker} 300` &&
+          await parentPidOf(pid) === 1;
+        if (!settled) await delay(100);
       }
-      assertEquals(await pgrepFull(marker), [pid]);
-      assertEquals(await parentPidOf(pid), 1);
+      assert(
+        settled,
+        `orphan ${pid} never became "${marker} 300" under init; command=${
+          JSON.stringify(await getCommand(pid))
+        } ppid=${await parentPidOf(pid)}`,
+      );
       await registerProbe(stateDir, pid, await Deno.realPath(harness.tmpDir));
       child = spawnLoopLogging(harness.tmpDir, { VIBE_STATE_DIR: stateDir });
       await delay(3000);
