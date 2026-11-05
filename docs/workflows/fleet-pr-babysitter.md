@@ -14,8 +14,19 @@ branch update reach GitHub in **one push**. A second push just to update the
 branch would run the whole CI again and roughly double the Actions cost of the
 repair. After Codex reports a completed fix, the babysitter commits the fix and
 the merge together as one merge commit, checks the fix (not the base's own
-changes) for whitespace errors and conflict markers, and rechecks the PR. It
-pushes only if the PR still matches the original head. A base merge on its own
+changes) for whitespace errors and conflict markers, runs the repository's own
+gate on the committed head (Issue #4625; run only as a separate account, never
+as the babysitter's own, which holds the fleet credentials, so a host with no
+such account defers the repair), and rechecks the PR. Whether the host can run
+that gate at all (a separate `agent` account, Docker for a `docker_image`
+repository) is probed on the clone before the merge and before any Codex
+session, so a host that cannot starts no session. Rounds deferred that way, or
+by the gate once the session has run, are counted per head and failure
+(`MAX_PUBLICATION_DEFERRALS`, three); after the third the babysitter posts one
+deduplicated pause comment and stops retrying until the head changes. The gate
+runs without the machine-wide port and process sweeps that the isolated worker
+container uses, so it cannot kill the operator's other processes. It pushes only
+if the gate passed and the PR still matches the original head. A base merge on its own
 is also pushed when the agent made no change, so the branch is never left
 behind. After a push, the babysitter synchronises the PR description from the
 summary committed at the pushed head, then publishes any description the agent
@@ -85,6 +96,14 @@ its bot to this host's fleet-lock identities. It checks and required commands.
 For a non-interactive preflight, use `--check` and `--app-id=<id>`; the key
 defaults to `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass
 `--key=<path>`.
+Setup and `--check` also report, as an `ACTION:` line, a host with no separate
+`agent` account (`sudo -n -u agent` must work) or without Docker when a
+monitored repository runs its checks in a Docker image: repairs of a
+repository with a `quality.sh` or a configured `quality_command` need that
+account, which must be able to enter the repair clone (the babysitter makes the
+clone traversable for it under `/tmp`, independently of `TMPDIR`), and are
+deferred without it (a repository with
+`skip_quality_check` is never refused).
 
 On the always-on Mac, rerun setup after manual testing and answer yes to the
 launch-agent question. You must also type `INSTALL` to confirm. Setup checks
@@ -134,7 +153,12 @@ failure is logged and the next pass retries. Organisation-specific extensions
 can use this to publish a separate babysitter heartbeat and failure record. Dry
 runs and runs limited to a repository or PR do not report service health.
 
-The host needs `gh`, `git` and `deno`. Codex CLI must be 0.164.0 or newer,
+The host needs `gh`, `git` and `deno`. A repository with a `quality.sh` or a
+configured `quality_command` also needs the separate `agent` account
+(`sudo -n -u agent` must work, and the account must be able to enter the repair
+clone, which the babysitter makes traversable), and Docker when that repository
+runs its checks in a Docker image. Repairs for such repositories are deferred
+without them. Codex CLI must be 0.164.0 or newer,
 because older versions may silently ignore the permissions profile; a
 pre-release counts when its base version is newer (0.166.0-alpha passes,
 0.164.0-beta does not). Setup and each repair check the `codex` on PATH before

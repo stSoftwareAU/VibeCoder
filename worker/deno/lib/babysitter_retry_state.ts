@@ -56,10 +56,16 @@ export interface BabysitterRetryRecord {
 /** A repair failure whose blocker class is known where it is thrown. */
 export class BabysitterFailure extends Error {
   readonly blockerClass: BabysitterBlockerClass;
+  /**
+   * `"publication"` marks a repair stopped because the repository's own checks
+   * could not run on this host. The fix loop counts these per head and stops
+   * starting sessions once the budget is spent (PR #4800 review).
+   */
   constructor(
     message: string,
     blockerClass: BabysitterBlockerClass,
     readonly retryAt?: number,
+    readonly deferral?: "publication",
   ) {
     super(message);
     this.name = "BabysitterFailure";

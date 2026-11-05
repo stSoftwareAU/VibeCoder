@@ -22,6 +22,7 @@ import {
   createMockDeps,
   type GitDeps,
 } from "../lib/issue_worker_wiring.ts";
+import { createPublicationGuard } from "../lib/publication_validation.ts";
 import type { PushLineageOptions } from "../lib/git_push_recovery.ts";
 import type { Logger } from "../types.ts";
 
@@ -135,6 +136,40 @@ Deno.test("a pass with nothing to push does not push a branch update on its own"
       undefined,
     );
     assertEquals(await git(clone, "rev-parse", "HEAD"), before);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("base sync verifies the fix once and gates the merged head once", async () => {
+  const { root, clone } = await behindPrBranch();
+  try {
+    const startedAt = await git(clone, "rev-parse", "HEAD");
+    await Deno.writeTextFile(`${clone}/feature.txt`, "fixed\n");
+    const verified: string[] = [];
+    const gated: string[] = [];
+    const result = await commitAndPushPending(
+      "feature",
+      "fix",
+      { cwd: clone, expectedAncestor: startedAt, syncBaseBranch: "main" },
+      false,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        gated.push(await git(clone, "rev-parse", "HEAD"));
+        return { ok: true, value: undefined };
+      },
+      async () => {
+        verified.push(await git(clone, "rev-parse", "HEAD"));
+        return { ok: true, value: undefined };
+      },
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(verified.length, 1);
+    assertEquals(gated.length, 1);
+    assert(verified[0] !== gated[0]);
+    assertEquals(gated[0], await git(clone, "rev-parse", "HEAD"));
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -254,4 +289,53 @@ Deno.test("a spelling fix asks for its PR's base to be merged in before the push
   assert(result.ok);
   assert(pushOptions.length >= 1);
   assertEquals(pushOptions[0]!.syncBaseBranch, "Develop");
+});
+
+Deno.test("the merged head is validated before it is pushed; a verdict on the pre-merge head does not stand in for it (Issue #4625)", async () => {
+  const { root, clone } = await behindPrBranch();
+  try {
+    const startedAt = await git(clone, "rev-parse", "HEAD");
+    await Deno.writeTextFile(`${clone}/feature.txt`, "feature, fixed\n");
+    const seen: Array<{ head: string; hasBase: boolean }> = [];
+    const guard = createPublicationGuard({
+      cwd: clone,
+      repo: "owner/repo",
+      branchName: "feature",
+      validate: async (request) => {
+        const head = await git(request.cwd, "rev-parse", "HEAD");
+        const hasBase = await Deno.stat(`${request.cwd}/base.txt`).then(
+          () => true,
+          () => false,
+        );
+        seen.push({ head, hasBase });
+        // The merged head must be rejected before it reaches origin.
+        return hasBase
+          ? { status: "failed", head, output: "BROKEN AFTER MERGE" }
+          : { status: "passed", head, gate: "absent" };
+      },
+    });
+    const result = await commitAndPushPending(
+      "feature",
+      "Fix CI failure",
+      {
+        cwd: clone,
+        expectedAncestor: startedAt,
+        syncBaseBranch: "main",
+      } as PushLineageOptions,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      guard,
+    );
+    assertEquals(seen.map((s) => s.hasBase), [true]);
+    assertEquals(seen[0]!.head, await git(clone, "rev-parse", "HEAD"));
+    assert(!result.ok, "a merged head the gate rejects must not be pushed");
+    assert(result.error.message.includes("BROKEN AFTER MERGE"));
+    const remote = (await git(clone, "ls-remote", "origin", "feature"))
+      .split(/\s+/)[0]!;
+    assertEquals(remote, startedAt, "origin must not have moved");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
