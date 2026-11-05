@@ -33,20 +33,6 @@ import {
   type PushVerification,
   verifyPushLanded,
 } from "./push_claim_verification.ts";
-import { fenceQualityOutput } from "./untrusted_quality_output.ts";
-import {
-  loadRejectedPublicationOutput,
-  publicationDeferralBudgetSpent,
-  recordPublicationDeferral,
-  saveRejectedPublicationOutput,
-} from "./publication_deferral_budget.ts";
-import {
-  createPublicationGuard,
-  PublicationValidationFailedError,
-  PublicationValidationUnavailableError,
-  validateRepositoryForPublication,
-  validateSelfPushedHead,
-} from "./publication_validation.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,12 +132,6 @@ export interface SpellingProcessorDeps {
     branchName: string,
     options?: { cwd?: string },
   ) => Promise<PushVerification>;
-  /**
-   * Repository-checks validator run before every push of a spelling fix
-   * (Issue #4625). Test seam: production leaves it unset and gets
-   * {@link validateRepositoryForPublication}.
-   */
-  validatePublication?: typeof validateRepositoryForPublication;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,17 +183,6 @@ export function formatAnnotations(annotations: CheckAnnotation[]): string {
       `- **${annotation.path}:${annotation.start_line}**: ${annotation.message}\n`;
   }
   return details;
-}
-
-/**
- * The push-failure detail for a `beforePush` refusal (Issue #4625). A gate
- * that could not run is deferred, not a content failure, so its detail says
- * so; a rejected head carries the gate's own output.
- */
-function publicationFailureDetail(error: Error): string {
-  return error instanceof PublicationValidationUnavailableError
-    ? `deferred: ${error.message}`
-    : error.message;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,34 +275,6 @@ async function _processSpellingWithHeartbeat(
 
   logger.info("Decoded annotations", { count: annotations.length });
 
-  // PR #4800 review: the scanner has no retry cap, so a check run whose fix
-  // the repository's own gate keeps deferring or rejecting stops costing an
-  // agent session after a few rounds. A new push brings a new check run.
-  const budgetKey = `spelling-${input.checkRunId}`;
-  if (
-    await publicationDeferralBudgetSpent(
-      processorDeps.workRoot,
-      repo,
-      budgetKey,
-    )
-  ) {
-    logger.warn(
-      "Spelling fix stood down: the repository checks deferred or rejected " +
-        "this check run's fix repeatedly; it resumes on the next check run",
-      { repo, prNumber, checkRunId: input.checkRunId },
-    );
-    return {
-      ok: true,
-      value: {
-        processed: false,
-        changesPushed: false,
-        annotationCount: annotations.length,
-        summary:
-          `PR #${prNumber} spelling fix paused: repository checks kept deferring or rejecting this check run's fix`,
-      },
-    };
-  }
-
   // Issue #1679: a head under a ruleset that refuses direct pushes can never
   // receive this pass's commits — the push is declined with GH013, once per
   // run, for as long as the PR is open. Stand down before the branch is
@@ -416,23 +357,11 @@ async function _processSpellingWithHeartbeat(
   );
 
   // Build prompt
-  // A head the repository's gate rejected last round: show the agent why.
-  const rejectedBefore = await loadRejectedPublicationOutput(
-    processorDeps.workRoot,
-    repo,
-    budgetKey,
-  );
-  const previousRejection = rejectedBefore === undefined
-    ? ""
-    : `\n\nThe repository's own checks rejected the previous attempt at this ` +
-      `fix. Make sure your change passes them:\n${
-        fenceQualityOutput(rejectedBefore).block
-      }`;
   const promptOptions: SpellingFixPromptOptions = {
     repo,
     prNumber: String(prNumber),
     checkName,
-    annotationDetails: annotationDetails + previousRejection,
+    annotationDetails,
     qualityInstructions,
     customInstructions,
     repoContextContent,
@@ -518,46 +447,12 @@ async function _processSpellingWithHeartbeat(
     expectedAncestor: beforeSha,
     ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
   };
-  // Issue #4625: the target repository's own gate must pass on the committed
-  // head before any of it is published. One guard per round, shared by the
-  // final push, the recovery and the retry finalise below.
-  let guardValidated = false;
-  let publicationDeferred = false;
-  const runPublicationGate = processorDeps.validatePublication ??
-    validateRepositoryForPublication;
-  const guard = createPublicationGuard({
-    cwd: processorDeps.workDir ?? Deno.cwd(),
-    repo,
-    repoConfigs: processorDeps.repoConfigs,
-    branchName: input.branchName,
-    validate: (request) => {
-      guardValidated = true;
-      return runPublicationGate(request);
-    },
-  });
-  let publicationRejected = false;
-  let rejectedOutput: string | undefined;
-  const beforePush = async () => {
-    const result = await guard();
-    if (!result.ok) {
-      if (result.error instanceof PublicationValidationUnavailableError) {
-        publicationDeferred = true;
-      } else if (result.error instanceof PublicationValidationFailedError) {
-        publicationRejected = true;
-        rejectedOutput = result.error.message;
-      }
-    }
-    return result;
-  };
   const finaliseResult = await deps.git.commitAndPushPending(
     input.branchName,
     `Fix spelling check failures: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
     pushOptions,
     false,
     preFlight,
-    undefined,
-    undefined,
-    beforePush,
   );
 
   let pushSucceeded = false;
@@ -588,14 +483,12 @@ async function _processSpellingWithHeartbeat(
       const recoveryResult = await deps.git.recoverFromPushRejection(
         input.branchName,
         { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
-        undefined,
-        beforePush,
       );
       // Issue #211: keep the reason the recovery failed — it names the step
       // that failed and carries git's stderr.
       let failureDetail = recoveryResult.ok
         ? undefined
-        : publicationFailureDetail(recoveryResult.error);
+        : recoveryResult.error.message;
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
@@ -603,9 +496,6 @@ async function _processSpellingWithHeartbeat(
           pushOptions,
           false,
           preFlight,
-          undefined,
-          undefined,
-          beforePush,
         );
         if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
           hasChanges = true;
@@ -614,7 +504,7 @@ async function _processSpellingWithHeartbeat(
         } else {
           failureDetail = retryFinalise.ok
             ? `retry after push recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
-            : publicationFailureDetail(retryFinalise.error);
+            : retryFinalise.error.message;
         }
       }
       if (!pushSucceeded) {
@@ -628,11 +518,8 @@ async function _processSpellingWithHeartbeat(
     }
   } else {
     pushAttemptFailed = true;
-    if (finaliseResult.error instanceof PublicationValidationUnavailableError) {
-      publicationDeferred = true;
-    }
     logger.error("commitAndPushPending failed", {
-      error: publicationFailureDetail(finaliseResult.error),
+      error: finaliseResult.error.message,
     });
   }
 
@@ -672,25 +559,6 @@ async function _processSpellingWithHeartbeat(
         // refused outright (Issue #1679) is not re-opened at all: the refusal
         // is the answer.
         pushSucceeded = !pushAttemptFailed && finalUnpushedAfterPush === 0;
-        if (pushSucceeded && !guardValidated) {
-          const verdict = await validateSelfPushedHead({
-            cwd: processorDeps.workDir ?? Deno.cwd(),
-            repo,
-            repoConfigs: processorDeps.repoConfigs,
-            validate: runPublicationGate,
-          });
-          if (!verdict.ok) {
-            pushSucceeded = false;
-            publicationDeferred = verdict.error instanceof
-              PublicationValidationUnavailableError;
-            publicationRejected = verdict.error instanceof
-              PublicationValidationFailedError;
-            if (publicationRejected) rejectedOutput = verdict.error.message;
-            logger.error("Self-pushed head failed publication validation", {
-              detail: publicationFailureDetail(verdict.error),
-            });
-          }
-        }
       }
     }
   }
@@ -726,32 +594,6 @@ async function _processSpellingWithHeartbeat(
         remoteSha: pushVerification.remoteSha,
       });
     }
-  }
-
-  // Every round the gate blocked is charged to this check run, whether it
-  // could not run (deferred) or rejected the head, so the lane cannot loop.
-  if ((publicationDeferred || publicationRejected) && !pushSucceeded) {
-    await recordPublicationDeferral(processorDeps.workRoot, repo, budgetKey);
-    if (publicationRejected && rejectedOutput !== undefined) {
-      await saveRejectedPublicationOutput(
-        processorDeps.workRoot,
-        repo,
-        budgetKey,
-        rejectedOutput,
-      );
-    }
-  }
-  if (publicationDeferred && !pushSucceeded) {
-    return {
-      ok: true,
-      value: {
-        processed: false,
-        changesPushed: false,
-        annotationCount: annotations.length,
-        summary:
-          `PR #${prNumber} spelling fix deferred: repository checks could not run`,
-      },
-    };
   }
 
   // Reply with outcome — only claim "pushed" if push actually succeeded
