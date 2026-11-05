@@ -18,7 +18,8 @@ Version bump: `VERSION` is not touched by this change.
   dropped the cause. Fixing the line selection makes the next failure
   diagnosable.
 - Chosen over special-casing checkout text: the existing uninformative-line list
-  already skips git's trailers, so the new lines join it.
+  already skips git's trailers, so the advice lines join it; the indented path
+  lines are dropped by a separate filter (see Essential Design Decisions).
 
 ### Essential Design Decisions
 
@@ -64,7 +65,7 @@ with the real `git`.
 - **symptom** — a fast-failure comment read `setup after 26s: Aborting`, with no
   cause
 - **status** — `verified` — the new tests fail against the base
-  `repo_fast_failure_tracker.ts` (49 passed, 3 failed) and pass with the fix
+  `repo_fast_failure_tracker.ts` (49 passed, 4 failed) and pass with the fix
   (the file now has 53 tests, all passing)
 - **regression test** —
   `worker/deno/tests/repo_fast_failure_tracker_test.ts::diagnosticErrorLine - Git checkout's Aborting trailer preserves its cause`
@@ -83,13 +84,13 @@ with the real `git`.
   `createFeatureBranchFromBase`-wrapped form; red check against the head before
   this round's fix: `Expected actual: "Aborting" to contain: "would be
   overwritten by checkout"`).
-  Red check: base production file restored, all three new tests fail (49
-  passed, 3 failed); with only the `move or remove them` alternative removed, the
+  Red check: base production file restored, all four new tests fail (49
+  passed, 4 failed); with only the `move or remove them` alternative removed, the
   untracked-file test fails
   (`Expected actual: "Please move or remove them
   before you switch branches." to contain: "untracked working tree files would
   be overwritten"`)
-  and the other two pass.
+  and the other three pass (52 passed, 1 failed).
 - `deno task test:unit tests/repo_fast_failure_tracker_test.ts`: 53 passed, 0
   failed.
 - Existing `diagnosticErrorLine` tests (last non-empty line, multi-line secret
