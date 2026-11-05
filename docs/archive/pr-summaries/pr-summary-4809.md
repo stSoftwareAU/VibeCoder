@@ -24,12 +24,12 @@ Version bump: `VERSION` is not touched by this change.
 ### Essential Design Decisions
 
 - Tab-indented lines (git's list of affected paths) are dropped after the whole
-  message is redacted and before the 20-line window is cut, so a refusal
-  listing any number of paths keeps its `would be overwritten` cause line (PR
-  #4816 review round 2). The setup path joins refusals with `; `, gluing
-  `Aborting` onto the next command's line, so `Aborting; ` is split back onto
-  its own line first. If every line is a path line, the true last line is
-  kept. Git's advice under a refusal
+  message is redacted and before the 20-line window is cut, so a refusal listing
+  any number of paths keeps its `would be overwritten` cause line (PR #4816
+  review round 2). The setup path joins refusals with `;`, gluing `Aborting`
+  onto the next command's line, so `Aborting;` is split back onto its own line
+  first. If every line is a path line, the true last line is kept. Git's advice
+  under a refusal
   (`Please commit your changes or stash them before you switch
   branches|merge.`
   for tracked edits,
@@ -82,10 +82,11 @@ with the real `git`.
   `diagnosticErrorLine - a refusal listing more paths than the window keeps its cause (PR #4816 review)`
   (real git, 30 tracked files edited locally, raw stderr and the
   `createFeatureBranchFromBase`-wrapped form; red check against the head before
-  this round's fix: `Expected actual: "Aborting" to contain: "would be
+  this round's fix:
+  `Expected actual: "Aborting" to contain: "would be
   overwritten by checkout"`).
-  Red check: base production file restored, all four new tests fail (49
-  passed, 4 failed); with only the `move or remove them` alternative removed, the
+  Red check: base production file restored, all four new tests fail (49 passed,
+  4 failed); with only the `move or remove them` alternative removed, the
   untracked-file test fails
   (`Expected actual: "Please move or remove them
   before you switch branches." to contain: "untracked working tree files would
@@ -96,9 +97,10 @@ with the real `git`.
 - Existing `diagnosticErrorLine` tests (last non-empty line, multi-line secret
   redaction, length bound) pass unchanged.
 - Docs: `docs/CONFIGURATION.md` fast-failure paragraph now says the detail skips
-  generic trailing lines such as `Aborting`, git's `Please commit your changes
-  or stash them…` / `Please move or remove them…` advice and the indented path
-  list.
+  generic trailing lines such as `Aborting`, git's
+  `Please commit your changes
+  or stash them…` / `Please move or remove them…`
+  advice and the indented path list.
 
 - `./quality.sh`: every stage passed except `deno tests`, which failed only
   `worker/deno/tests/completion_phase_repo_formatters_test.ts` (lines 480 and
@@ -106,6 +108,6 @@ with the real `git`.
   file; I did not compare against `main`.
 
 Not done: the cause of the #4658 abort itself is not investigated. After PR
-#4816 review rounds 1 and 2 the full `./quality.sh` was not re-run (targeted tests,
-formatter and linter only). `deno task pr-summary-check` ran on the final
+#4816 review rounds 1 and 2 the full `./quality.sh` was not re-run (targeted
+tests, formatter and linter only). `deno task pr-summary-check` ran on the final
 summary: 0 gates blocked, 3 not checked (no issue body or labels supplied).
