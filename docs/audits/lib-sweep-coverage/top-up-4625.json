@@ -1,0 +1,13 @@
+{
+  "issue": 4625,
+  "chunk": "top-up-4625",
+  "title": "top-up: publication validation and deferral budget modules",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4625",
+  "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: publication_validation.ts, publication_deferral_budget.ts (#4625)",
+  "status": "claimed",
+  "sweptAt": "392748f34b8b37382721b454da458bc035b1be21",
+  "paths": [
+    "worker/deno/lib/publication_deferral_budget.ts",
+    "worker/deno/lib/publication_validation.ts"
+  ]
+}

@@ -22,6 +22,17 @@ import {
   generateBoundaryId,
 } from "./prompt_delimiter.ts";
 import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
+import {
+  publicationDeferralBudgetSpent,
+  recordPublicationDeferral,
+} from "./publication_deferral_budget.ts";
+import {
+  createPublicationGuard,
+  PublicationValidationFailedError,
+  PublicationValidationUnavailableError,
+  validateRepositoryForPublication,
+  validateSelfPushedHead,
+} from "./publication_validation.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { prBaseForSync, resolvePreFlightSpec } from "./git_push.ts";
@@ -316,6 +327,12 @@ export interface PrFeedbackProcessorDeps {
    * `quality_credentials` (Issue #3750). Omitted → no gate.
    */
   repoConfigs?: Record<string, RepoConfig>;
+  /**
+   * Repository-checks validator run before every publication (Issue #4625).
+   * Test seam: production leaves it unset and gets
+   * {@link validateRepositoryForPublication}.
+   */
+  validatePublication?: typeof validateRepositoryForPublication;
   /**
    * Prompts directory the feedback template is read from (Issue #1024).
    *
@@ -1127,6 +1144,42 @@ async function _processFeedbackWithHeartbeat(
     });
   }
 
+  // PR #4800 review: the scanner re-offers a released review or comment every
+  // cycle, so a head the repository's checks keep deferring would cost an
+  // agent session and a verifier session per cycle. After a few rounds the
+  // item waits, unspent, until the head changes (the key names the head).
+  const deferralKey = `feedback-${commentType}-${commentId}-${
+    beforeSha ?? "unknown-head"
+  }`;
+  if (
+    await publicationDeferralBudgetSpent(
+      processorDeps.workRoot,
+      repo,
+      deferralKey,
+    )
+  ) {
+    const detail =
+      "Repository checks kept deferring this feedback on the current head; " +
+      "it waits for a new head";
+    logger.warn(`PR feedback stood down: ${detail}`, {
+      repo,
+      prNumber,
+      commentType,
+    });
+    if (commentType === "pr_review") {
+      carrier.reviewSettlement = "released";
+    } else {
+      await releaseForRetry(repo, prNumber, commentType, commentId, deps, {
+        logger,
+        detail,
+      });
+    }
+    return {
+      ok: true as const,
+      value: { processed: false, changesPushed: false, summary: detail },
+    };
+  }
+
   // Read repo context (CLAUDE.md/AGENTS.md) for prompt injection (Issue #1325).
   // `workDir` already is the checkout, so it is read directly — appending the
   // repo name looked one level too deep and injected nothing (Issue #1673).
@@ -1727,8 +1780,51 @@ async function _processFeedbackWithHeartbeat(
     expectedAncestor: beforeSha,
     ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
   };
-  const finalise = () =>
-    deps.git.commitAndPushPending(
+  // Issue #4625: the target repository's own checks run before anything is
+  // published, for every comment type that can publish. The AI verifier
+  // judges the fix before the base merge; the guard judges the final head.
+  // One guard per round serves all three push calls.
+  let publicationFailure: PublicationValidationFailedError | undefined;
+  let publicationDeferred: PublicationValidationUnavailableError | undefined;
+  // `guardValidated` records whether the guard ran the gate at all: a head the
+  // agent pushed itself leaves the branch in sync, so the guard skips it and
+  // the self-push check below has to judge that head instead.
+  let guardValidated = false;
+  const runPublicationGate = processorDeps.validatePublication ??
+    validateRepositoryForPublication;
+  const publicationGuard = createPublicationGuard({
+    cwd: processorDeps.workDir ?? Deno.cwd(),
+    repo,
+    repoConfigs: processorDeps.repoConfigs,
+    branchName: pushBranch,
+    validate: (request) => {
+      guardValidated = true;
+      return runPublicationGate(request);
+    },
+  });
+  const beforePush = async (): Promise<Result<void>> => {
+    publicationFailure = undefined;
+    publicationDeferred = undefined;
+    const verdict = await publicationGuard();
+    if (!verdict.ok) {
+      if (verdict.error instanceof PublicationValidationFailedError) {
+        publicationFailure = verdict.error;
+      } else if (
+        verdict.error instanceof PublicationValidationUnavailableError
+      ) {
+        publicationDeferred = verdict.error;
+      }
+      return verdict;
+    }
+    return verdict;
+  };
+  const finalise = () => {
+    // A fresh finalise re-decides both verdicts: a stale one from an earlier
+    // head must not block or defer a head the checks have not rejected.
+    publicationFailure = undefined;
+    publicationDeferred = undefined;
+    verifierFailure = undefined;
+    return deps.git.commitAndPushPending(
       pushBranch,
       `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
       pushOptions,
@@ -1736,23 +1832,32 @@ async function _processFeedbackWithHeartbeat(
       preFlight,
       undefined,
       formatRound,
+      beforePush,
       verifyBeforePush,
     );
+  };
   let finaliseResult = await finalise();
   if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
-  if (verifierFailure) {
+  // A repository-check rejection (Issue #4625) reuses the same single
+  // correction round as a verifier rejection, with the gate's output as data.
+  const blockedFailure = publicationFailure ?? verifierFailure;
+  if (blockedFailure) {
     // One code-capable correction only. The next finalise commits and checks
     // the new head from scratch, including a head changed by push recovery.
+    const correction = publicationFailure
+      ? "The repository's own checks rejected this head before publication. Resolve what they report, then commit locally without pushing."
+      : "The independent review-fix verifier blocked this round. Resolve all remaining asks, then commit locally without pushing.";
     const recovery = await runAgentTracked({
       ...agentRequest,
-      prompt:
-        `${agentRequest.prompt}\n\nThe independent review-fix verifier blocked this round. Resolve all remaining asks, then commit locally without pushing.\n${
-          fenceUntrustedIssueText(
-            verifierFailure.message,
-            "Verifier findings (untrusted data):",
-            generateBoundaryId(),
-          ).join("\n")
-        }`,
+      prompt: `${agentRequest.prompt}\n\n${correction}\n${
+        fenceUntrustedIssueText(
+          blockedFailure.message,
+          publicationFailure
+            ? "Repository check output (untrusted data):"
+            : "Verifier findings (untrusted data):",
+          generateBoundaryId(),
+        ).join("\n")
+      }`,
     }, { maxRetries: maxRateLimitRetries });
     if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
     if (recovery.ok && !recovery.value.timedOut) {
@@ -1821,6 +1926,44 @@ async function _processFeedbackWithHeartbeat(
       value: { processed: false, changesPushed: false, summary: message },
     };
   };
+  // Issue #4625: a head the repository's checks could not run on is deferred:
+  // the claim is released (a review is left unsettled) so the next scan
+  // retries, and nothing is charged or pushed. A head the checks rejected is
+  // held as a failed verifier is. Neither is marked addressed.
+  const deferPublication = async (
+    deferred: PublicationValidationUnavailableError,
+  ) => {
+    const detail =
+      `The feedback is deferred and retried on a later cycle: ${deferred.message}`;
+    await recordPublicationDeferral(processorDeps.workRoot, repo, deferralKey);
+    logger.warn("PR feedback deferred: repository checks could not run", {
+      repo,
+      prNumber,
+      commentType,
+      reason: deferred.message,
+    });
+    if (commentType === "pr_review") {
+      carrier.reviewSettlement = "released";
+    } else {
+      await releaseForRetry(repo, prNumber, commentType, commentId, deps, {
+        logger,
+        detail,
+      });
+    }
+    return {
+      ok: true as const,
+      value: { processed: false, changesPushed: false, summary: detail },
+    };
+  };
+  const holdPublication = async () => {
+    if (publicationDeferred) return await deferPublication(publicationDeferred);
+    if (publicationFailure && commentType === "pr_review") {
+      return await holdUnverifiedReview(publicationFailure);
+    }
+    return undefined;
+  };
+  const heldPublication = await holdPublication();
+  if (heldPublication) return heldPublication;
   if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
   if (commentType === "pr_review" && !finaliseResult.ok) {
     return await holdUnverifiedReview(finaliseResult.error);
@@ -1828,6 +1971,8 @@ async function _processFeedbackWithHeartbeat(
 
   let pushSucceeded = false;
   let hasChanges = false;
+  // Issue #4625: the agent pushed a head the repository's checks rejected.
+  let selfPushRejected = false;
   // Issue #579: `undefined` means NOT MEASURED, which is not the same as
   // measured-and-zero. Initialising this to 0 is what let a failed push
   // helper produce `finalUnpushedCount === 0` and, with a local commit
@@ -1851,9 +1996,16 @@ async function _processFeedbackWithHeartbeat(
         pushBranch,
         { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
         undefined,
-        verifyBeforePush,
+        async () => {
+          const verified = verifyBeforePush
+            ? await verifyBeforePush()
+            : { ok: true as const, value: undefined };
+          return verified.ok ? await beforePush() : verified;
+        },
       );
       if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
+      const heldAfterRecovery = await holdPublication();
+      if (heldAfterRecovery) return heldAfterRecovery;
       if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
       // Issue #211: keep the reason the recovery failed — it names the step
       // (fetch, merge conflict, rejected retry push, unconfirmed push)
@@ -1871,9 +2023,12 @@ async function _processFeedbackWithHeartbeat(
           preFlight,
           undefined,
           formatRound,
+          beforePush,
           verifyBeforePush,
         );
         if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
+        const heldAfterRetry = await holdPublication();
+        if (heldAfterRetry) return heldAfterRetry;
         if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
         if (retryFinalise.ok) {
           finalUnpushedCount = retryFinalise.value.finalUnpushedCount;
@@ -1926,6 +2081,35 @@ async function _processFeedbackWithHeartbeat(
           beforeSha,
         });
         hasChanges = true;
+        // Issue #4625: a commit the agent pushed itself never reached the
+        // guard. Judge that head with the repository's own gate. It has
+        // already left the host, so a rejected or unrunnable head cannot be
+        // withdrawn: it is held or deferred, never reported as a clean push.
+        if (finalUnpushedCount === 0 && !guardValidated) {
+          const selfPushed = await validateSelfPushedHead({
+            cwd: processorDeps.workDir ?? Deno.cwd(),
+            repo,
+            repoConfigs: processorDeps.repoConfigs,
+            validate: runPublicationGate,
+          });
+          if (!selfPushed.ok) {
+            if (
+              selfPushed.error instanceof PublicationValidationUnavailableError
+            ) {
+              return await deferPublication(selfPushed.error);
+            }
+            if (selfPushed.error instanceof PublicationValidationFailedError) {
+              logger.error(
+                "The head the agent pushed itself failed the repository's checks",
+                { repo, prNumber, branch: pushBranch },
+              );
+              if (commentType === "pr_review") {
+                return await holdUnverifiedReview(selfPushed.error);
+              }
+              selfPushRejected = true;
+            }
+          }
+        }
       }
     }
   }
@@ -1977,6 +2161,8 @@ async function _processFeedbackWithHeartbeat(
       });
     }
   }
+
+  if (selfPushRejected) pushSucceeded = false;
 
   // Issue #4466: on a gated head the fix lands through a fix PR, and the
   // remote is the authority on whether a fix exists. The agent may have pushed

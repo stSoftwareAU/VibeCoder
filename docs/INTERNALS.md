@@ -5809,7 +5809,9 @@ and last 2,000 characters: the head holds the `[PRE_PUSH_BLOCKED] ... command`
 line that names the failing check, the tail the end of its output, and GitHub
 refuses a comment body over 65,536 characters (a refusal `markIssueAsFailedOnce`
 swallows). Second, only a verdict on the branch's content carries the marker, a
-`PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan, an
+`PrePushGateBlockedError` from `gateUnpushedCommits` or a
+`PublicationValidationFailedError` raised by the push guard (reported by
+`publicationBlockedResult`): a check, a plan, an
 unsafe base ref, or any other non-infrastructure error from `runPrePushGate`
 (such as malformed hook input), which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
 `describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
@@ -6383,3 +6385,129 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [imgbb_upload.ts](../worker/deno/lib/imgbb_upload.ts)                                                             | ImgBB screenshot upload client                                                                                                                                                                                                  |
 |                             | [failure_message.ts](../worker/deno/lib/failure_message.ts)                                                       | Failure message formatting                                                                                                                                                                                                      |
 |                             | [subprocess_timeout.ts](../worker/deno/lib/subprocess_timeout.ts)                                                 | Subprocess timeout management                                                                                                                                                                                                   |
+
+#### Publication validation: the repository's own gate before publication (Issue #4625)
+
+Before a lane publishes agent-authored work, the runner runs the target
+repository's own gate on the committed head: `./quality.sh`, or its
+`quality_command`, in its `docker_image`, with its declared
+`quality_credentials`, using the same runner as the quality-gate phase, with a
+30-minute default timeout. `skip_quality_check` opts a repository out. The check
+is `validateRepositoryForPublication`, and its once-per-head `beforePush` guard
+is `createPublicationGuard`, both in
+`worker/deno/lib/publication_validation.ts`. It returns one of three outcomes,
+and only `passed` publishes:
+
+- `passed`: the gate ran and succeeded on a clean checkout (`gate: "ran"`), the
+  repository has no `quality.sh` (`gate: "absent"`), or the operator opted out
+  (`gate: "opted-out"`).
+- `failed`: the gate rejected the head, the working tree has uncommitted changes
+  the push would leave out, a Deno test run executed no tests, or the gate
+  reached its time limit. The output
+  goes back to the lane for repair.
+- `unavailable`: the gate could not run (a missing tool, a Docker or credential
+  fault, an unreadable checkout, a full disk), or it failed here in a way that
+  reproduces on the PR's base commit. For the last case a failing gate is re-run
+  once in a throwaway detached worktree of the base ref (`baseRef`, else
+  `origin/HEAD`, `origin/main` or `origin/master`), cached per base SHA; the
+  failure reproduces when the base gate also failed and every failure line of
+  the head is already in the base's (the idea of `decidePreExistingGateFailure`,
+  Issue #1852). The lines compared are `failureEvidenceLines`: each checkout
+  path is replaced by one token, and passing-test and count-only lines (`... ok`,
+  `ok | N passed`, `running N tests`) are dropped, so a head that adds a passing
+  test or runs in another directory does not look like a different failure. The
+  base tree's parent directory is made world-traversable so the separate
+  account can reach it. A host fault or a check already
+  red on the base is therefore not charged to the change. This is not a verdict
+  on the change: the lane defers the head and a later cycle retries it.
+
+The five lanes apply it as follows:
+
+- Issue completion runs it after the changed-file pre-push gate, and once more
+  on a head that the last-currency step merged. A `failed` verdict gets the one
+  in-run recovery turn; `unavailable` is retried as a push failure. The push
+  and the push-rejection recovery both carry the publication guard: a rejected
+  push is recovered by merging the remote branch in, and that merged head is
+  validated before it is pushed. A head already validated in the phase is not
+  validated twice.
+- CI repair and PR feedback run it in the `beforePush` guard of
+  `commitAndPushPending` and `recoverFromPushRejection`. Feedback runs the AI
+  review-fix verifier before merging the base and the gate on the resulting
+  head, and gives a `failed` verdict one correction round. In the CI lane an
+  `unavailable` verdict releases the pull request: the local retry charge
+  remains, no failed-push comment or attempt marker is written, and the round
+  returns `processed: false`. The per-check retry cap bounds repeated faults.
+- The completion recovery turns (summary-rule, screenshot and PR-body-length)
+  push the issue branch before completion's own gate, so each passes the same
+  `createPublicationGuard` as `beforePush`; a `failed` or `unavailable` verdict
+  leaves origin unmoved.
+- Babysitter repair runs it after the commit and before the push, with
+  `requireSeparateAccount`: the babysitter's account holds the fleet's
+  write-capable credentials (THREAT-MODEL control C37), so the PR's own code runs
+  only as the separate `agent` account. A host with no such account reports
+  `unavailable` and never runs the gate as the runner: the refusal is decided
+  before the gate is entered, so a refused gate runs no sweep and no spawn, and
+  it is repeated on the argv that would spawn. Because that gate runs on the
+  operator's host, it runs without the container-oriented port and process
+  sweeps (`lsof | kill -9`, `pgrep -f | kill -9`). Before the merge and before
+  any Codex session, `probePublicationCapability` checks the fixed host
+  properties on the clone (a separate account when the repository has a
+  `quality.sh` or a configured `quality_command`, Docker for a `docker_image`;
+  a repository with `skip_quality_check` is never refused); a host that cannot
+  starts no session. A `failed` verdict is
+  thrown as a `BabysitterFailure` of class `code`, so the gate's output (a test
+  named `needs-human`, a "timed out" line) can never change its class, and it
+  counts one substantive attempt; `unavailable` is a `capability` failure and
+  counts none. Each such deferral (the probe, or the gate after a session) is
+  charged to the PR, failure and head (`MAX_PUBLICATION_DEFERRALS`); the round
+  that spends the budget posts one deduplicated pause comment and records it as
+  the incident's escalation, so nothing more is started until the head changes.
+  The comparison base for a failing gate is the PR's own base (`origin/<base>`).
+- PR spelling fixes run it on the committed fix before the push. `unavailable`
+  defers the head to a later cycle, as in the other lanes.
+- The spelling and feedback scanners have no retry cap of their own, so each
+  charges one round (`publication_deferral_budget.ts`, `MAX_PUBLICATION_DEFERRALS`
+  = 3). Spelling charges a round when the gate defers or rejects a fix; feedback
+  charges one only when the gate defers it (`unavailable`), and a rejected feedback
+  head is not charged. Spelling keys the budget on the
+  check run, feedback on the comment and the head it started from. A spent
+  budget skips the agent and verifier sessions until the key changes (a new push).
+  The output of a head the gate rejected in the spelling lane is shown, fenced as
+  untrusted, to the next round for the same check run.
+
+A `passed` verdict is reused only while the checkout is clean and the head is
+unchanged. Any new commit or uncommitted edit is validated afresh. The gate's
+timeout defaults to 30 minutes (`PUBLICATION_GATE_TIMEOUT_SECONDS`), not the
+quality-gate phase's 10 minutes, and a repository's own `quality_check_timeout`
+still overrides it.
+
+A head the agent pushes itself in the CI, feedback and spelling lanes leaves
+the branch in sync with its remote, so the guard has nothing to publish. After the run the
+lane notices the moved head and, when the guard did not already run the gate,
+validates it through `validateSelfPushedHead`. That push has already left the
+host, so the verdict cannot withdraw it: a `failed` verdict means the round is
+not reported as a successful push (the CI lane writes the failed-push comment
+with the gate output; feedback holds a review, or does not report a push for a
+non-review comment), and an `unavailable` verdict defers the round as above.
+When the base is merged into the branch in the same push (`syncBaseBranch`),
+`commitAndPushPending` validates the merged head before pushing it.
+
+Known limits: the agent's own pre-push hook still checks changed files only, so
+a self-push is judged by the full gate after the fact, not before it. Non-review
+PR-feedback comments are marked processed before publication, so a gate failure
+there does not unmark them. Parity with the mutation, clippy, cargo-deny and
+ShellCheck checks (issues 4617, 4630, 4626 and 4631), durable retry (issue 4656)
+and review dismissal (issue 4657) are not part of this change.
+
+```mermaid
+flowchart LR
+    I["Issue completion<br/>after the pre-push gate"] --> V
+    C["CI repair<br/>beforePush guard"] --> V
+    F["PR feedback<br/>beforePush guard, after the verifier"] --> V
+    B["Babysitter repair<br/>after commit, before push"] --> V
+    S["PR spelling fixes<br/>before push"] --> V
+    V["Repository gate on the committed head<br/>quality.sh or quality_command"] --> R{"Outcome"}
+    R -->|"passed"| P["Publish"]
+    R -->|"failed"| X["Not pushed; output returned to the lane"]
+    R -->|"unavailable"| U["Not pushed; deferred, not a verdict"]
+```

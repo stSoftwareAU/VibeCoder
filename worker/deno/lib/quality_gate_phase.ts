@@ -324,6 +324,22 @@ export interface QualityGateParams {
 // =============================================================================
 
 /**
+ * A repository command would have run as the runner's own account where the
+ * caller required a separate one (THREAT-MODEL control C36). Thrown, never
+ * folded into the command's output, so it cannot read as a failing check.
+ */
+export class SeparateAccountRequiredError extends Error {
+  constructor() {
+    super(
+      "this host has no separate account to run the repository's own " +
+        "commands, and they must not run as the account that holds the " +
+        "fleet credentials",
+    );
+    this.name = "SeparateAccountRequiredError";
+  }
+}
+
+/**
  * Spawn a repository command with the allowlisted environment (Issue #572).
  *
  * `dropToUntrusted` is the quality-gate path (Issue #571): the command runs as
@@ -351,10 +367,16 @@ async function spawnRepositoryCommand(
   } | undefined,
   repoCredentialEnv: Record<string, string>,
   dropToUntrusted: boolean,
+  requireSeparateAccount = false,
 ): Promise<{ exitCode: number; output: string }> {
   const timeoutMs = options?.timeoutMs ?? REPOSITORY_COMMAND_TIMEOUT_MS;
   try {
     const dropped = dropToUntrusted ? await untrustedSpawn(cmd) : [...cmd];
+    // Read off the argv that would run, so the refusal is tied to what
+    // actually spawns rather than to a second probe (PR #4800 review).
+    if (requireSeparateAccount && untrustedAccountOf(dropped) === undefined) {
+      throw new SeparateAccountRequiredError();
+    }
     const env = untrustedQualityCommandEnv({
       spawnable: dropped,
       cwd: options?.cwd ?? Deno.cwd(),
@@ -428,6 +450,8 @@ async function spawnRepositoryCommand(
     }
     return { exitCode: result.code, output: stdout + stderr };
   } catch (err) {
+    // A refusal is a verdict about the host, not an exit code of the command.
+    if (err instanceof SeparateAccountRequiredError) throw err;
     return { exitCode: 1, output: String(err) };
   }
 }
@@ -459,6 +483,11 @@ export function createDefaultDeps(
    */
   repoCredentialEnv: Record<string, string> = {},
   probeTimeoutMs: number = PROBE_TIMEOUT_MS,
+  /**
+   * Refuse to spawn a repository command as the runner's own account: the
+   * spawn throws {@link SeparateAccountRequiredError} instead.
+   */
+  requireSeparateAccount = false,
 ): QualityGateDeps {
   return {
     getRepoConfig: (
@@ -488,7 +517,13 @@ export function createDefaultDeps(
     formatFailureMsg: formatQualityFailureMessage,
 
     runCommand: (cmd, options) =>
-      spawnRepositoryCommand(cmd, options, repoCredentialEnv, true),
+      spawnRepositoryCommand(
+        cmd,
+        options,
+        repoCredentialEnv,
+        true,
+        requireSeparateAccount,
+      ),
 
     cleanupPorts: async (): Promise<void> => {
       const ports =
