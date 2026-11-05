@@ -1113,6 +1113,38 @@ Deno.test("hardKillLastStep names the step for every note the two gates log (Iss
   }
 });
 
+Deno.test("hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)", () => {
+  // Each detail is text another table entry matches; only the agent-progress
+  // check stops the line taking that step's label.
+  const progress = (detail: string) =>
+    `[agent-progress] completion: 12m4s elapsed \u00b7 47 tool calls (last: Bash ${detail}, 8s ago)`;
+  for (
+    const detail of [
+      'grep -rn "mutation check" docs',
+      'grep -rn "Pre-PR verifier" docs',
+      'grep -rn "Quality gate" docs',
+      'grep -rn "3 of 3 carried-over lines" docs',
+    ]
+  ) {
+    const line = progress(detail);
+    const ev = makeEvidence({ lastLogLine: line }, {
+      workerLogTail: ["Pre-PR verifier reported findings", line].join("\n"),
+    });
+    assertEquals(hardKillLastStep(ev), "agent turn", detail);
+  }
+  // Control: the same text outside an agent-progress line still matches its
+  // own step, so the test above is not passing on a dead table entry.
+  const plain = makeEvidence({ lastLogLine: "mutation check ran" }, {
+    workerLogTail: "",
+  });
+  assertEquals(hardKillLastStep(plain), "mutation check");
+  // A ticker whose detail names a step is still skipped as noise first.
+  const ticker = makeEvidence({
+    lastLogLine: "[phase] quality_gate (x): still running \u00b7 5m0s elapsed",
+  }, { workerLogTail: "Pre-PR verifier released its disposable checkout" });
+  assertEquals(hardKillLastStep(ticker), "pre-PR verifier");
+});
+
 Deno.test("hardKillLastStep after the verifier's checkout line is the verifier: the wedge is in or after it (Issue #4815 review)", () => {
   const ev = makeEvidence({
     lastLogLine: "[phase] completion (x): still running · 5m0s elapsed",

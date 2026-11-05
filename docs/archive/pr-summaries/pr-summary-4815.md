@@ -116,11 +116,19 @@ flowchart LR
     `Pre-PR verifier released its
     disposable checkout` line)
   - `hardKillLastStep after the verifier's checkout line is the verifier: the wedge is in or after it (Issue #4815 review)`
+  - `hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)`
+    (must-not-fire table: agent-progress lines whose `(last: Bash grep ...)`
+    detail names `mutation check`, `Pre-PR verifier`, `Quality gate` and
+    `carried-over lines` must give `agent turn`; controls: the same text outside
+    an agent-progress line still matches its own step, and a ticker is still
+    skipped as noise)
 - Red checks (each break made on its own, test run, then restored): ticker
   filter removed → test 1 red; scan made forward → tests 1 and 2 red; fallback
   `unknown` changed → tests 3 and 5 red; raw line returned instead of the label
   → tests 1, 2, 4, 5, 6 red; body line removed → tests 1, 3, 4 red; occurrence
   suffix removed → test 6 red; per-line cap shrunk → tests 1, 2, 4, 5, 6 red.
+  Review fix 2: with the `AGENT_PROGRESS_LINE` early return removed, the
+  agent-progress test went red at `grep -rn "mutation check" docs`.
   Review fix: with the pattern table, body line and occurrence line restored to
   the earlier commit, the new gate-notes test went red at
   `mutation clean: 7 of 7 mutants killed`, the verifier-then-ticker test and the
@@ -136,7 +144,7 @@ flowchart LR
   `hard_kill_report.ts` and its tests; `run_failure_issue.ts` only mentions the
   `**Phase:**` field in a comment.
 - `deno task test:unit`, run from `worker/deno`, one file at a time, 0 failed in
-  each: `tests/hard_kill_report_test.ts` (58 tests at head),
+  each: `tests/hard_kill_report_test.ts` (59 tests at head),
   `tests/run_failure_issue_test.ts` (26 tests at head),
   `tests/run_core_hard_kill_test.ts` (3 tests at head) and
   `tests/run_core_production_deps_hard_kill_test.ts` (4 tests at head).
@@ -152,3 +160,7 @@ flowchart LR
 
 Not done: the wedge itself is not diagnosed or fixed; the GRQ-3 archive was not
 read; the serial test pass of the gate did not run.
+- Corpus run: 19 distinct `[agent-progress]` line shapes taken from `docs/`,
+  `lib/` and `tests/` (no worker log on this host holds agent-progress lines)
+  through `hardKillLastStep`: 19 `agent turn`, 0 false positives, 0 false
+  negatives. This is a small corpus, not a run over production logs.
