@@ -95,7 +95,14 @@ import {
   sharedBabysitterAttemptCount,
 } from "../lib/babysitter_retry_state.ts";
 import { enableAutoMerge } from "../lib/pr_auto_merge.ts";
-import { validateRepositoryForPublication } from "../lib/publication_validation.ts";
+import {
+  probePublicationCapability,
+  validateRepositoryForPublication,
+} from "../lib/publication_validation.ts";
+import {
+  MAX_PUBLICATION_DEFERRALS,
+  recordPublicationDeferral,
+} from "../lib/publication_deferral_budget.ts";
 import {
   acquireBranchUpdateLock,
   releaseBranchUpdateLock,
@@ -1382,6 +1389,8 @@ export async function finishBabysitterRepair(
         // The babysitter's account holds the fleet's write-capable
         // credentials (THREAT-MODEL C36): the PR's own code never runs as it.
         requireSeparateAccount: true,
+        // A failure the PR's own base shares is the host's, not the repair's.
+        baseRef: `origin/${pr.baseRefName}`,
       });
     if (validation.status === "failed") {
       console.error(
@@ -1402,6 +1411,8 @@ export async function finishBabysitterRepair(
       throw new BabysitterFailure(
         `repository checks unavailable, repair deferred: ${validation.reason}`,
         "capability",
+        undefined,
+        "publication",
       );
     }
     console.log(
@@ -1884,6 +1895,8 @@ export interface FixDeps {
   mergeBase?: typeof mergeBaseForRepair;
   armAutoMerge?: typeof armBabysitterAutoMerge;
   validate?: typeof validateRepositoryForPublication;
+  /** Whether this host can run the repository's checks, before any session. */
+  probeCapability?: typeof probePublicationCapability;
   escalate?: (request: EscalationRequest) => Promise<string>;
   stateDir?: string;
   dismiss?: BabysitterRepairFinishDeps["dismiss"];
@@ -1936,6 +1949,8 @@ export interface EscalationRequest {
   record: BabysitterRetryRecord;
   authors: string[];
   gh: (args: string[]) => Promise<string>;
+  /** Why the repair is paused, when it is not repeated no-progress. */
+  pause?: string;
 }
 
 /**
@@ -1948,7 +1963,9 @@ export async function escalateStuckRepair(
   const signature = babysitterFailureSignature(repo, prNumber, failureIdentity);
   const marker = buildDedupMarker(
     `${
-      failureIdentity === "failed CI" ? "auto-fix-cap" : "babysitter-handoff"
+      failureIdentity === "failed CI" && request.pause === undefined
+        ? "auto-fix-cap"
+        : "babysitter-handoff"
     }:${signature}:${record.observedHead}`,
   );
   const pages: unknown = JSON.parse(
@@ -1983,11 +2000,12 @@ export async function escalateStuckRepair(
       marker,
       BABYSITTER_HANDOFF_MARKER,
       "",
-      `Babysitter made no progress after ${record.attempts.substantive} consecutive substantive attempts. ${
-        failureIdentity === "failed CI"
-          ? "Eligible blocking red-CI stalls use the stall self-repair ladder."
-          : "This incident is paused until the head or review changes."
-      }`,
+      request.pause ??
+        `Babysitter made no progress after ${record.attempts.substantive} consecutive substantive attempts. ${
+          failureIdentity === "failed CI"
+            ? "Eligible blocking red-CI stalls use the stall self-repair ladder."
+            : "This incident is paused until the head or review changes."
+        }`,
       "Untrusted diagnostic evidence:",
       "```text",
       evidence.text.replaceAll(
@@ -2221,6 +2239,42 @@ export async function fix(
       );
     }
   };
+  /**
+   * Charge one repository-checks deferral to this head, and once the budget is
+   * spent stop retrying it: the host cannot run the checks, so another session
+   * cannot help. One deduplicated comment hands the PR on; a changed head
+   * starts a fresh budget (PR #4800 review).
+   */
+  const boundPublicationDeferral = async (
+    head: string,
+    message: string,
+  ): Promise<void> => {
+    const spent = await recordPublicationDeferral(
+      stateDir,
+      repo,
+      `babysitter-${initial.number}-${failureIdentity}-${head}`,
+    );
+    if (spent < MAX_PUBLICATION_DEFERRALS || retryRecord!.escalation) return;
+    const issue = await escalate({
+      repo,
+      prNumber: initial.number,
+      failureIdentity: failureIdentity!,
+      record: retryRecord!,
+      authors,
+      gh,
+      pause: `Babysitter paused this repair after ${spent} rounds in which ` +
+        `the repository's own checks could not run on this host. It resumes ` +
+        `when the head changes; fix the host (a separate \`agent\` account, ` +
+        `Docker, the tools quality.sh needs) or push the fix by hand.\n\n` +
+        `Last reason: ${redactSecrets(message).slice(0, 400)}`,
+    });
+    retryRecord = {
+      ...retryRecord!,
+      escalation: { issue, at: new Date().toISOString() },
+      nextAction: `paused at ${issue}; wait for a changed head or review`,
+    };
+    await saveBabysitterRetryState(stateDir, retryRecord);
+  };
   let exchange: string | undefined;
   try {
     const pr = await readPr(repo, initial.number, gh);
@@ -2446,6 +2500,27 @@ export async function fix(
       attemptMarkerRecorded = true;
       await settleSubstantiveOutcome(pr.headRefOid, "no-change");
       return;
+    }
+    // Before any merge or agent session (PR #4800 review): a host that cannot
+    // run the repository's own checks would otherwise spend a full session on a
+    // repair it can never publish, once per cooldown, for as long as it lasts.
+    const incapable = await (deps.probeCapability ??
+      probePublicationCapability)(
+        {
+          cwd: dir,
+          repo,
+          repoConfigs,
+          requireSeparateAccount: true,
+        },
+        {},
+      );
+    if (incapable !== undefined) {
+      throw new BabysitterFailure(
+        `repository checks cannot run on this host, no session started: ${incapable}`,
+        "capability",
+        undefined,
+        "publication",
+      );
     }
     const sync = await (deps.mergeBase ?? mergeBaseForRepair)(
       dir,
@@ -2728,6 +2803,9 @@ export async function fix(
         await saveBabysitterRetryState(stateDir, retryRecord);
         if (substantiveFailure) {
           await settleSubstantiveOutcome(retryRecord.observedHead, "no-change");
+        }
+        if (error instanceof BabysitterFailure && error.deferral) {
+          await boundPublicationDeferral(retryRecord.observedHead, message);
         }
       } catch (recordError) {
         console.warn(

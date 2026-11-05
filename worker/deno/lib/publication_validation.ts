@@ -35,12 +35,16 @@ import {
   type QualityGateParams,
   type QualityGateRunResult,
   runQualityGateCheck,
+  SeparateAccountRequiredError,
 } from "./quality_gate_phase.ts";
 import { resolveRepoCredentials } from "./repo_credentials.ts";
 import { redactedHeadTail } from "./redacted_text.ts";
 import { stripAnsi } from "./github_actions_log_fetcher.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
-import { canRunAsUntrustedUser } from "./untrusted_command_env.ts";
+import {
+  canRunAsUntrustedUser,
+  probeCommandSuccess,
+} from "./untrusted_command_env.ts";
 import { normaliseGateOutputLines } from "./baseline_gate.ts";
 
 export type PublicationValidation =
@@ -79,9 +83,28 @@ export interface PublicationValidationDeps {
   ) => Promise<QualityGateRunResult>;
   /**
    * Builds the base gate deps for a checkout from its declared credentials.
-   * Production: {@link createDefaultDeps}.
+   * `requireSeparateAccount` is the request's flag, for the spawn to refuse
+   * the runner account. Production: {@link createDefaultDeps}.
    */
-  createDeps?: (env: Record<string, string>) => QualityGateDeps;
+  createDeps?: (
+    env: Record<string, string>,
+    requireSeparateAccount?: boolean,
+  ) => QualityGateDeps;
+  /** Whether the container runtime a `docker_image` gate needs answers. */
+  dockerAvailable?: () => Promise<boolean>;
+}
+
+const SEPARATE_ACCOUNT_REASON =
+  "no separate account to run the repository's own commands without " +
+  "exposing the runner's credentials (THREAT-MODEL C36)";
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isFile;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }
 
 const OUTPUT_HEAD_CHARS = 4_000;
@@ -173,8 +196,16 @@ function gateDepsFor(
 ): QualityGateDeps {
   const resolve = (path: string) =>
     path.startsWith("/") ? path : `${cwd}/${path.replace(/^\.\//, "")}`;
+  const hostRun = canDrop !== undefined;
+  const noSweep = () => Promise.resolve();
   return {
     ...base,
+    // The port and process sweeps were written for the isolated worker
+    // container: `lsof | kill -9` and `pgrep -f | kill -9` across the whole
+    // machine. A caller that runs on a shared host (`requireSeparateAccount`)
+    // must not kill the operator's other processes, nor another repair's gate.
+    cleanupPorts: hostRun ? noSweep : base.cleanupPorts,
+    cleanupSubprocesses: hostRun ? noSweep : base.cleanupSubprocesses,
     // A configured command is a shell line, not a file to look for.
     fileExists: (path) =>
       customCommand ? Promise.resolve(true) : base.fileExists(resolve(path)),
@@ -184,12 +215,20 @@ function gateDepsFor(
         // Fail closed: the command would run as the runner (C36).
         observed.refusedAsRunner = true;
         throw new PublicationValidationUnavailableError(
-          "this host has no separate account to run the repository's own " +
-            "commands, and they must not run as the account that holds the " +
-            "fleet credentials",
+          SEPARATE_ACCOUNT_REASON,
         );
       }
-      const result = await base.runCommand(cmd, { ...options, cwd });
+      let result;
+      try {
+        result = await base.runCommand(cmd, { ...options, cwd });
+      } catch (error) {
+        // The spawn itself refused the runner account (the argv that would
+        // have run carried no separate account).
+        if (error instanceof SeparateAccountRequiredError) {
+          observed.refusedAsRunner = true;
+        }
+        throw error;
+      }
       // The gate result carries no exit code, so the most recent one is kept
       // for classify. The result itself is passed back unchanged.
       observed.exitCode = result.exitCode;
@@ -197,6 +236,52 @@ function gateDepsFor(
     },
     getCwd: () => cwd,
   };
+}
+
+/**
+ * Whether this host can run the repository's gate at all, answered without
+ * starting an agent session or the gate: the cheap, fixed properties of the
+ * host (PR #4800 review). A string is the reason it cannot; `undefined` means
+ * nothing found that stops it. A repository with no gate, or one that opted
+ * out of quality checks, is never refused. The tools `quality.sh` needs are
+ * not probed here: that needs the script's own text, which the gate reads.
+ */
+export async function probePublicationCapability(
+  request: PublicationRequest,
+  deps: Pick<
+    PublicationValidationDeps,
+    "canDropPrivileges" | "dockerAvailable"
+  >,
+): Promise<string | undefined> {
+  const config = request.repoConfigs?.[request.repo];
+  if (config?.skipQualityCheck) return undefined;
+  const command = config?.qualityCommand || "./quality.sh";
+  try {
+    if (
+      command === "./quality.sh" && !await isFile(`${request.cwd}/quality.sh`)
+    ) {
+      return undefined;
+    }
+    if (
+      request.requireSeparateAccount &&
+      !await (deps.canDropPrivileges ?? canRunAsUntrustedUser)()
+    ) {
+      return SEPARATE_ACCOUNT_REASON;
+    }
+    if (
+      config?.dockerImage &&
+      !await (deps.dockerAvailable ??
+        (() => probeCommandSuccess(["docker", "version"])))()
+    ) {
+      return "the repository's gate runs in a Docker image and Docker is not " +
+        "available on this host";
+    }
+  } catch (error) {
+    return `the host's capability to run the checks could not be probed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+  return undefined;
 }
 
 /**
@@ -226,7 +311,25 @@ export async function validateRepositoryForPublication(
     return { status: "passed", head: before.head, gate: "opted-out" };
   }
   const command = config?.qualityCommand || "./quality.sh";
+  // Probed at most once per request: two spawns whose answer cannot change.
+  let dropProbe: Promise<boolean> | undefined;
+  const canDrop = request.requireSeparateAccount
+    ? () => dropProbe ??= (deps.canDropPrivileges ?? canRunAsUntrustedUser)()
+    : undefined;
   try {
+    // Decided before the gate is entered, so a refused gate has no side
+    // effects: no credential mint, no sweep, no spawn (PR #4800 review). A
+    // repository with no gate to run is not refused.
+    if (
+      canDrop !== undefined && !(await canDrop()) &&
+      (command !== "./quality.sh" || await isFile(`${cwd}/quality.sh`))
+    ) {
+      return {
+        status: "unavailable",
+        head: before.head,
+        reason: SEPARATE_ACCOUNT_REASON,
+      };
+    }
     const credentials = await resolveRepoCredentials(
       repo,
       config?.qualityCredentials,
@@ -240,9 +343,13 @@ export async function validateRepositoryForPublication(
       };
     }
     const observed: { exitCode?: number; refusedAsRunner?: boolean } = {};
-    const baseDeps = (deps.createDeps ?? createDefaultDeps)(
-      credentials.value.env,
-    );
+    const baseDeps = deps.createDeps
+      ? deps.createDeps(credentials.value.env, request.requireSeparateAccount)
+      : createDefaultDeps(
+        credentials.value.env,
+        undefined,
+        request.requireSeparateAccount === true,
+      );
     const runGateAt = (dir: string, seen: typeof observed) =>
       (deps.runGate ?? runQualityGateCheck)(
         {
@@ -256,9 +363,7 @@ export async function validateRepositoryForPublication(
           baseDeps,
           command !== "./quality.sh",
           seen,
-          request.requireSeparateAccount
-            ? (deps.canDropPrivileges ?? canRunAsUntrustedUser)
-            : undefined,
+          canDrop,
         ),
       );
     // A throw from a refused spawn reaches the catch below as `unavailable`;
@@ -268,8 +373,7 @@ export async function validateRepositoryForPublication(
       return {
         status: "unavailable",
         head: before.head,
-        reason: "no separate account to run the repository's own commands " +
-          "without exposing the runner's credentials (THREAT-MODEL C36)",
+        reason: SEPARATE_ACCOUNT_REASON,
       };
     }
     const after = await inspectCheckout(cwd);
@@ -354,6 +458,44 @@ function isContentFailure(
     gateInfrastructureFault(result.qualityOutput, exitCode) === undefined;
 }
 
+/** A checkout's path as given and as the filesystem resolves it. */
+async function checkoutRoots(path: string): Promise<string[]> {
+  try {
+    const real = await Deno.realPath(path);
+    return real === path ? [path] : [real, path];
+  } catch (_error) {
+    // The checkout is gone; its path as given is all that can be replaced.
+    return [path];
+  }
+}
+
+/**
+ * Lines that say a test or step went well, or restate counts that move when a
+ * change adds or renames a test. They are not evidence of a failure, and a
+ * head that adds a passing test must not read as a different failure. Anchored
+ * alternations without nested quantifiers, so matching is linear.
+ */
+const NON_FAILURE_LINE =
+  /(?:\.\.\. (?:ok|ignored)\b|^(?:ok|FAILED) \| \d+ passed|^running \d+ tests? from |^test result: |^(?:Check|Download) )/;
+
+/**
+ * The normalised lines that evidence a gate failure: the output with each
+ * checkout path replaced by one token (a stack frame names the checkout it ran
+ * in, and the base runs in another), and passing or count-only lines dropped.
+ */
+export function failureEvidenceLines(
+  output: string,
+  roots: readonly string[],
+): string[] {
+  let text = output;
+  for (const root of [...roots].sort((a, b) => b.length - a.length)) {
+    if (root !== "") text = text.split(root).join("<checkout>");
+  }
+  return normaliseGateOutputLines(text).filter((line) =>
+    !NON_FAILURE_LINE.test(line)
+  );
+}
+
 /** What the gate did on a base commit, kept per `repo@sha` for the process. */
 const baseGateOutcomes = new Map<string, Promise<string[] | null>>();
 
@@ -412,7 +554,10 @@ async function reproducesOnBase(options: {
   const baseLines = await pending;
   if (baseLines === null) return undefined;
   const known = new Set(baseLines);
-  const headLines = normaliseGateOutputLines(options.headOutput);
+  const headLines = failureEvidenceLines(
+    options.headOutput,
+    await checkoutRoots(options.cwd),
+  );
   if (headLines.length === 0 || !headLines.every((line) => known.has(line))) {
     return undefined;
   }
@@ -429,6 +574,10 @@ async function runGateOnBase(
 ): Promise<string[] | null> {
   const dir = await Deno.makeTempDir({ prefix: "vibe-base-gate-" });
   try {
+    // A makeTempDir directory is 0700, and the gate runs as the separate
+    // `agent` account where the host has one: it must reach the tree, as it
+    // reaches the lane's own checkout. The tree holds a public clone.
+    await Deno.chmod(dir, 0o755);
     const added = await runGitCommand(
       ["worktree", "add", "--detach", "--force", `${dir}/tree`, sha],
       { cwd },
@@ -438,7 +587,10 @@ async function runGateOnBase(
       const { outcome, refused } = await runAt(`${dir}/tree`);
       if (refused) return null;
       return outcome.action === "failed" || outcome.action === "failed_fixable"
-        ? normaliseGateOutputLines(outcome.qualityOutput)
+        ? failureEvidenceLines(
+          outcome.qualityOutput,
+          await checkoutRoots(`${dir}/tree`),
+        )
         : null;
     } finally {
       await runGitCommand(["worktree", "remove", "--force", `${dir}/tree`], {

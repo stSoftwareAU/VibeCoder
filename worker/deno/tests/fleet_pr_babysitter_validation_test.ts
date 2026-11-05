@@ -31,6 +31,8 @@ const SCENARIO_TITLES: readonly string[] = [
   "a lock renewal that fails while the gate runs stops the push",
   "a repository config that cannot be loaded stops the repair before any agent runs or attempt is recorded",
   "a failed gate is a code failure whatever its output says, and counts one substantive attempt",
+  "a host that cannot run the repository checks starts no session and records a capability deferral",
+  "repeated unavailable rounds on one head stop at the bound and hand the PR on once",
 ];
 
 /**

@@ -26,8 +26,10 @@ import {
   saveBabysitterRetryState,
 } from "../../lib/babysitter_retry_state.ts";
 import { loadConfig } from "../../lib/config.ts";
+import { MAX_PUBLICATION_DEFERRALS } from "../../lib/publication_deferral_budget.ts";
 import type { BabysitterAppConfig } from "../../lib/fleet_babysitter_app.ts";
 import type {
+  probePublicationCapability,
   PublicationRequest,
   PublicationValidation,
   validateRepositoryForPublication,
@@ -35,6 +37,7 @@ import type {
 
 type Pr = Parameters<typeof fix>[1];
 type Validate = typeof validateRepositoryForPublication;
+type Probe = typeof probePublicationCapability;
 type Review = { id: number; state: string; user: { login: string } };
 
 const REPO = "owner/repo";
@@ -427,10 +430,14 @@ function validatorFor(
   };
 }
 
+/** A capability probe that finds nothing wrong with the host. */
+const capableHost: Probe = () => Promise.resolve(undefined);
+
 function repair(
   h: Host,
   validate: Validate,
   configPath = h.configPath,
+  probeCapability: Probe = capableHost,
 ): Promise<void> {
   const initial = { ...h.pr };
   return withBabysitterWriteScope(REPO, () =>
@@ -444,7 +451,7 @@ function repair(
       fakeGh,
       () => Promise.resolve(),
       3,
-      { armAutoMerge: () => Promise.resolve(), validate },
+      { armAutoMerge: () => Promise.resolve(), validate, probeCapability },
     ));
 }
 
@@ -598,6 +605,8 @@ Deno.test("the gate runs on the committed head in the clone, with the loaded rep
     // The babysitter's account holds the fleet credentials, so the PR's own
     // code must never run as it (THREAT-MODEL C36).
     assertEquals(call.request.requireSeparateAccount, true);
+    // The base failure comparison uses the PR's own base, not the default branch.
+    assertEquals(call.request.baseRef, "origin/main");
     assertEquals(
       call.request.repoConfigs,
       (await loadConfig(h.configPath)).repoConfig,
@@ -758,4 +767,95 @@ Deno.test("a failed gate is a code failure whatever its output says, and counts 
       assert(record.nextEligibleAt !== null, `${text}: the PR is retried`);
     });
   }
+});
+
+Deno.test("a host that cannot run the repository checks starts no session and records a capability deferral", async () => {
+  await withHost(async (h) => {
+    const asked: Parameters<Probe>[0][] = [];
+    const headsAsked: string[] = [];
+    const incapable: Probe = async (request) => {
+      asked.push(request);
+      headsAsked.push(await git(["rev-parse", "HEAD"], request.cwd));
+      return "no separate account to run the commands";
+    };
+    const seen: Seen[] = [];
+    await assertRejects(
+      () =>
+        repair(
+          h,
+          validatorFor(
+            h,
+            (head) => ({ status: "passed", head, gate: "ran" }),
+            seen,
+          ),
+          h.configPath,
+          incapable,
+        ),
+      Error,
+      "no session started",
+    );
+    assertEquals(h.agentRuns, 0);
+    assertEquals(seen.length, 0);
+    assertEquals(h.pushes.length, 0);
+    assertEquals(await upstreamFeature(h), h.head);
+    // The probe is asked about the PR's own checkout, with the C36 protection.
+    assertEquals(asked.length, 1);
+    assertEquals(asked[0]!.requireSeparateAccount, true);
+    assertEquals(asked[0]!.repo, REPO);
+    assertEquals(headsAsked, [h.head]);
+    const record = (await records(h))[0]!;
+    assertEquals(record.blockerClass, "capability");
+    assertEquals(record.attempts.substantive, 0);
+    assert(record.nextEligibleAt !== null);
+
+    // Positive control: a capable host runs the session and pushes.
+    await saveBabysitterRetryState(stateDir(h), {
+      ...record,
+      nextEligibleAt: null,
+    });
+    await repair(
+      h,
+      validatorFor(h, (head) => ({ status: "passed", head, gate: "ran" })),
+    );
+    assertEquals(h.agentRuns, 1);
+    assertEquals(h.pushes.length, 1);
+  });
+});
+
+Deno.test("repeated unavailable rounds on one head stop at the bound and hand the PR on once", async () => {
+  await withHost(async (h) => {
+    const unavailable = validatorFor(h, (head) => ({
+      status: "unavailable",
+      head,
+      reason: "failed_docker_infra: the docker daemon is down",
+    }));
+    const handoffs = () =>
+      h.ghCalls.filter((args) =>
+        args.includes("POST") &&
+        args.some((arg) => arg.includes("paused this repair"))
+      );
+    for (let round = 1; round <= MAX_PUBLICATION_DEFERRALS; round++) {
+      await assertRejects(() => repair(h, unavailable), Error, "unavailable");
+      assertEquals(h.agentRuns, round);
+      // Only the round that spends the budget hands the PR on.
+      assertEquals(
+        handoffs().length,
+        round === MAX_PUBLICATION_DEFERRALS ? 1 : 0,
+      );
+      const record = (await records(h))[0]!;
+      await saveBabysitterRetryState(stateDir(h), {
+        ...record,
+        nextEligibleAt: null,
+      });
+    }
+    const paused = (await records(h))[0]!;
+    assert(paused.escalation !== undefined, "the PR is paused for this head");
+    assertEquals(paused.attempts.substantive, 0);
+
+    // The cooldown is no longer what holds it back: another round on the same
+    // head starts no session and posts nothing more.
+    await repair(h, unavailable);
+    assertEquals(h.agentRuns, MAX_PUBLICATION_DEFERRALS);
+    assertEquals(handoffs().length, 1);
+  });
 });

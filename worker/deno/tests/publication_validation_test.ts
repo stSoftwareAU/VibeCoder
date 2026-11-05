@@ -16,6 +16,8 @@ import type { RepoConfig, Result } from "../types.ts";
 import {
   _resetBaseGateOutcomes,
   createPublicationGuard,
+  failureEvidenceLines,
+  probePublicationCapability,
   PUBLICATION_GATE_TIMEOUT_SECONDS,
   type PublicationValidation,
   PublicationValidationFailedError,
@@ -23,6 +25,7 @@ import {
   publicationVerdict,
   validateRepositoryForPublication,
 } from "../lib/publication_validation.ts";
+import { canRunAsUntrustedUser } from "../lib/untrusted_command_env.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
   createDefaultDeps,
@@ -30,6 +33,7 @@ import {
   type QualityGateParams,
   type QualityGateRunResult,
   runQualityGateCheck,
+  SeparateAccountRequiredError,
 } from "../lib/quality_gate_phase.ts";
 
 const REPO = "acme/widget";
@@ -1028,5 +1032,284 @@ Deno.test("a gate failure the base commit does not share stays failed", async (t
       );
       assertEquals(runs.length, 1);
     });
+  });
+});
+
+// --- A refused gate has no side effects (PR #4800 review) ---
+
+Deno.test("requireSeparateAccount: the real gate is never entered on a host that cannot drop", async () => {
+  await withRepo({ "quality.sh": "#!/bin/bash\nexit 0\n" }, async (dir) => {
+    const calls: string[] = [];
+    const createDeps = (): QualityGateDeps => ({
+      ...createDefaultDeps(),
+      cleanupPorts: () => {
+        calls.push("cleanupPorts");
+        return Promise.resolve();
+      },
+      cleanupSubprocesses: () => {
+        calls.push("cleanupSubprocesses");
+        return Promise.resolve();
+      },
+      runCommand: () => {
+        calls.push("runCommand");
+        return Promise.resolve({ exitCode: 0, output: "" });
+      },
+    });
+    const refused = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, requireSeparateAccount: true },
+        {
+          createDeps,
+          runGate: runQualityGateCheck,
+          canDropPrivileges: () => Promise.resolve(false),
+        },
+      ),
+      "unavailable",
+    );
+    assertStringIncludes(refused.reason, "separate account");
+    assertEquals(calls, []);
+
+    // Positive control: where the host can drop, the command runs, and the
+    // machine-wide sweeps still do not (they would kill the operator's own
+    // processes and another repair's gate).
+    expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, requireSeparateAccount: true },
+        {
+          createDeps,
+          runGate: runQualityGateCheck,
+          canDropPrivileges: () => Promise.resolve(true),
+        },
+      ),
+      "passed",
+    );
+    assertEquals(calls, ["runCommand"]);
+
+    // A caller in the isolated worker container keeps its sweeps.
+    calls.length = 0;
+    expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        { createDeps, runGate: runQualityGateCheck },
+      ),
+      "passed",
+    );
+    assertEquals(calls, ["cleanupPorts", "runCommand", "cleanupSubprocesses"]);
+  });
+});
+
+Deno.test("requireSeparateAccount: a repository with no gate is not refused", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const v = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, requireSeparateAccount: true },
+        {
+          runGate: runQualityGateCheck,
+          canDropPrivileges: () => Promise.resolve(false),
+        },
+      ),
+      "passed",
+    );
+    assertEquals(v.gate, "absent");
+  });
+});
+
+Deno.test("requireSeparateAccount: the default spawn refuses the runner account by the argv it would run", async () => {
+  const deps = createDefaultDeps({}, undefined, true);
+  if (await canRunAsUntrustedUser()) {
+    const ran = await deps.runCommand(["true"], { stdin: "null" });
+    assertEquals(ran.exitCode, 0);
+  } else {
+    let thrown: unknown;
+    try {
+      await deps.runCommand(["true"], { stdin: "null" });
+    } catch (error) {
+      thrown = error;
+    }
+    assertInstanceOf(thrown, SeparateAccountRequiredError);
+  }
+});
+
+Deno.test("probePublicationCapability: each fixed host property is named without running anything", async (t) => {
+  const none = () => Promise.resolve(false);
+  const yes = () => Promise.resolve(true);
+  await withRepo({ "quality.sh": "#!/bin/bash\nexit 0\n" }, async (dir) => {
+    const base = { cwd: dir, repo: REPO };
+    await t.step("a host that cannot drop is named", async () => {
+      const reason = await probePublicationCapability(
+        { ...base, requireSeparateAccount: true },
+        { canDropPrivileges: none },
+      );
+      assertStringIncludes(reason ?? "", "separate account");
+    });
+    await t.step(
+      "a host that can drop passes, as does a caller that does not ask",
+      async () => {
+        assertEquals(
+          await probePublicationCapability(
+            { ...base, requireSeparateAccount: true },
+            { canDropPrivileges: yes },
+          ),
+          undefined,
+        );
+        assertEquals(
+          await probePublicationCapability(base, { canDropPrivileges: none }),
+          undefined,
+        );
+      },
+    );
+    const docker: Record<string, RepoConfig> = {
+      [REPO]: { dockerImage: "node:22" } as RepoConfig,
+    };
+    await t.step(
+      "a docker_image repository on a host without Docker is named",
+      async () => {
+        const reason = await probePublicationCapability(
+          { ...base, repoConfigs: docker },
+          { dockerAvailable: none },
+        );
+        assertStringIncludes(reason ?? "", "Docker");
+        assertEquals(
+          await probePublicationCapability(
+            { ...base, repoConfigs: docker },
+            { dockerAvailable: yes },
+          ),
+          undefined,
+        );
+      },
+    );
+    await t.step("an opted-out repository is never refused", async () => {
+      assertEquals(
+        await probePublicationCapability(
+          {
+            ...base,
+            requireSeparateAccount: true,
+            repoConfigs: {
+              [REPO]: { skipQualityCheck: true } as RepoConfig,
+            },
+          },
+          { canDropPrivileges: none },
+        ),
+        undefined,
+      );
+    });
+  });
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    assertEquals(
+      await probePublicationCapability(
+        { cwd: dir, repo: REPO, requireSeparateAccount: true },
+        { canDropPrivileges: none },
+      ),
+      undefined,
+    );
+  });
+});
+
+// --- Real gate output on the base commit (PR #4800 review) ---
+
+/** A quality.sh that fails on a host fault and prints the checkout's own path. */
+const HOST_FAULT_QUALITY_SH = `#!/bin/bash
+echo "running $(wc -l < tests.txt | tr -d ' ') tests from ./x_test.ts"
+while read -r name; do echo "$name ... ok (2ms)"; done < tests.txt
+echo "cargo-fmt ... FAILED (3ms)"
+echo "error: rustup could not choose a version of cargo-fmt"
+echo "    at file://$PWD/lib/x.ts:10:5"
+echo "FAILED | $(wc -l < tests.txt | tr -d ' ') passed | 1 failed (9ms)"
+exit 1
+`;
+
+Deno.test("failureEvidenceLines: checkout paths and passing or count lines do not separate two runs", () => {
+  const head = failureEvidenceLines(
+    "a ... ok (1ms)\nb ... ok (2ms)\nboom ... FAILED (3ms)\n" +
+      "    at file:///work/head/lib/x.ts:1:2\nFAILED | 2 passed | 1 failed (9ms)\n",
+    ["/work/head"],
+  );
+  const base = failureEvidenceLines(
+    "a ... ok (4ms)\nboom ... FAILED (5ms)\n" +
+      "    at file:///tmp/base/tree/lib/x.ts:1:2\nFAILED | 1 passed | 1 failed (7ms)\n",
+    ["/tmp/base/tree"],
+  );
+  assertEquals(head, base);
+  assertEquals(head.length, 2);
+});
+
+Deno.test("a failure that is the same on the base reproduces despite checkout paths and an added passing test", async () => {
+  _resetBaseGateOutcomes();
+  await withRepo(
+    {
+      "quality.sh": HOST_FAULT_QUALITY_SH,
+      "tests.txt": "first\n",
+    },
+    async (dir) => {
+      await git(dir, "checkout", "--quiet", "-b", "feature");
+      await Deno.writeTextFile(`${dir}/tests.txt`, "first\nsecond\n");
+      await git(dir, "commit", "--quiet", "-am", "add a passing test");
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO, baseRef: "main" },
+          { runGate: realGate },
+        ),
+        "unavailable",
+      );
+      assertStringIncludes(v.reason, "reproduces on main@");
+    },
+  );
+});
+
+Deno.test("a head that adds a failure line the base lacks stays failed under the real gate", async () => {
+  _resetBaseGateOutcomes();
+  await withRepo(
+    {
+      "quality.sh": HOST_FAULT_QUALITY_SH,
+      "tests.txt": "first\n",
+    },
+    async (dir) => {
+      await git(dir, "checkout", "--quiet", "-b", "feature");
+      await Deno.writeTextFile(
+        `${dir}/quality.sh`,
+        HOST_FAULT_QUALITY_SH.replace(
+          "exit 1",
+          'echo "error: new regression in lib/x.ts"\nexit 1',
+        ),
+      );
+      await git(dir, "commit", "--quiet", "-am", "regress");
+      expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO, baseRef: "main" },
+          { runGate: realGate },
+        ),
+        "failed",
+      );
+    },
+  );
+});
+
+Deno.test("the base-commit tree is reachable by another account", async () => {
+  _resetBaseGateOutcomes();
+  await withFeatureBranch(async (dir) => {
+    const red: QualityGateRunResult = {
+      action: "failed",
+      qualityOutput: "1 test failed\n",
+    };
+    const modes: number[] = [];
+    const gate = (
+      _params: QualityGateParams,
+      deps: QualityGateDeps,
+    ): Promise<QualityGateRunResult> => {
+      const where = deps.getCwd();
+      if (where.includes("vibe-base-gate-")) {
+        const parent = where.slice(0, where.lastIndexOf("/"));
+        modes.push(Deno.statSync(parent).mode! & 0o055);
+      }
+      return Promise.resolve(red);
+    };
+    expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, baseRef: "main" },
+        { runGate: gate },
+      ),
+      "unavailable",
+    );
+    assertEquals(modes, [0o055]);
   });
 });

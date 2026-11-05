@@ -6410,9 +6410,14 @@ and only `passed` publishes:
   reproduces on the PR's base commit. For the last case a failing gate is re-run
   once in a throwaway detached worktree of the base ref (`baseRef`, else
   `origin/HEAD`, `origin/main` or `origin/master`), cached per base SHA; the
-  failure reproduces when the base gate also failed and every normalised output
-  line of the head's failure is already in the base's (the idea of
-  `decidePreExistingGateFailure`, Issue #1852). A host fault or a check already
+  failure reproduces when the base gate also failed and every failure line of
+  the head is already in the base's (the idea of `decidePreExistingGateFailure`,
+  Issue #1852). The lines compared are `failureEvidenceLines`: each checkout
+  path is replaced by one token, and passing-test and count-only lines (`... ok`,
+  `ok | N passed`, `running N tests`) are dropped, so a head that adds a passing
+  test or runs in another directory does not look like a different failure. The
+  base tree's parent directory is made world-traversable so the separate
+  account can reach it. A host fault or a check already
   red on the base is therefore not charged to the change. This is not a verdict
   on the change: the lane defers the head and a later cycle retries it.
 
@@ -6440,11 +6445,23 @@ The five lanes apply it as follows:
   `requireSeparateAccount`: the babysitter's account holds the fleet's
   write-capable credentials (THREAT-MODEL control C37), so the PR's own code runs
   only as the separate `agent` account. A host with no such account reports
-  `unavailable` and never runs the gate as the runner. A `failed` verdict is
+  `unavailable` and never runs the gate as the runner: the refusal is decided
+  before the gate is entered, so a refused gate runs no sweep and no spawn, and
+  it is repeated on the argv that would spawn. Because that gate runs on the
+  operator's host, it runs without the container-oriented port and process
+  sweeps (`lsof | kill -9`, `pgrep -f | kill -9`). Before the merge and before
+  any Codex session, `probePublicationCapability` checks the fixed host
+  properties on the clone (a separate account when the repository has a
+  `quality.sh`, Docker for a `docker_image`); a host that cannot starts no
+  session. A `failed` verdict is
   thrown as a `BabysitterFailure` of class `code`, so the gate's output (a test
   named `needs-human`, a "timed out" line) can never change its class, and it
   counts one substantive attempt; `unavailable` is a `capability` failure and
-  counts none.
+  counts none. Each such deferral (the probe, or the gate after a session) is
+  charged to the PR, failure and head (`MAX_PUBLICATION_DEFERRALS`); the round
+  that spends the budget posts one deduplicated pause comment and records it as
+  the incident's escalation, so nothing more is started until the head changes.
+  The comparison base for a failing gate is the PR's own base (`origin/<base>`).
 - PR spelling fixes run it on the committed fix before the push. `unavailable`
   defers the head to a later cycle, as in the other lanes.
 - The spelling and feedback scanners have no retry cap of their own, so each

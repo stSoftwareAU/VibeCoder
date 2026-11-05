@@ -1951,3 +1951,107 @@ Deno.test("processSpellingFailure - rounds the repository checks keep deferring 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("processSpellingFailure - rounds the repository checks reject stop at the bound, and the next round is shown why (PR #4800 review)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "spelling-rejected-" });
+  try {
+    const prompts: string[] = [];
+    const comments: string[] = [];
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: (args: string[]) => {
+          if (args[0] === "pr" && args[1] === "comment") {
+            comments.push(args[args.indexOf("--body") + 1] ?? "");
+          }
+          return Promise.resolve("");
+        },
+      },
+      claude: {
+        runClaudeWithRetry: ((options: { prompt?: string }) => {
+          prompts.push(options?.prompt ?? "");
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      git: {
+        commitAndPushPending: (async (
+          _branch: unknown,
+          _message: unknown,
+          _opts: unknown,
+          _allowDefault: unknown,
+          _preFlight: unknown,
+          _runId: unknown,
+          _format: unknown,
+          beforePush: unknown,
+        ) => {
+          const verdict = await (beforePush as () => Promise<Result<void>>)();
+          if (!verdict.ok) return verdict;
+          return {
+            ok: true,
+            value: {
+              committedNewChanges: true,
+              commitsPushed: 0,
+              finalUnpushedCount: 0,
+            },
+          };
+        }) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+    const round = (checkRunId: string, output: string) =>
+      processSpellingFailure(makeInput({ checkRunId }), {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        workDir: dir,
+        workRoot: dir,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        validatePublication: verdictStub({
+          status: "failed",
+          head: null,
+          output,
+        }),
+      });
+
+    // The first round has no earlier rejection to show.
+    await round("run-1", "SENTINEL-REJECTED-OUTPUT-ONE");
+    assertEquals(prompts.length, 1);
+    assertEquals(prompts[0]!.includes("SENTINEL-REJECTED-OUTPUT-ONE"), false);
+
+    // The second round is shown the first round's gate output.
+    await round("run-1", "SENTINEL-REJECTED-OUTPUT-TWO");
+    assertEquals(prompts.length, 2);
+    assertStringIncludes(prompts[1]!, "SENTINEL-REJECTED-OUTPUT-ONE");
+
+    for (let i = 2; i < MAX_PUBLICATION_DEFERRALS; i++) {
+      await round("run-1", "SENTINEL-REJECTED-OUTPUT-TWO");
+    }
+    assertEquals(prompts.length, MAX_PUBLICATION_DEFERRALS);
+
+    // A rejected head spends the budget just as an unavailable gate does.
+    const paused = await round("run-1", "SENTINEL-REJECTED-OUTPUT-TWO");
+    assertEquals(
+      prompts.length,
+      MAX_PUBLICATION_DEFERRALS,
+      "no further session",
+    );
+    assertEquals(paused.ok && paused.value.processed, false);
+    if (paused.ok) assertStringIncludes(paused.value.summary, "paused");
+    assertEquals(
+      comments.length,
+      MAX_PUBLICATION_DEFERRALS,
+      "one comment per round that ran, none once paused",
+    );
+
+    // A new check run restarts the budget and does not inherit the old output.
+    await round("run-2", "SENTINEL-REJECTED-OUTPUT-THREE");
+    assertEquals(prompts.length, MAX_PUBLICATION_DEFERRALS + 1);
+    assertEquals(
+      prompts[MAX_PUBLICATION_DEFERRALS]!.includes("SENTINEL-REJECTED-OUTPUT"),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

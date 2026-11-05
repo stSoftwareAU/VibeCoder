@@ -207,15 +207,99 @@ durable retry (#4656) and review dismissal (#4657) belong to those issues.
   `processed: false` and no comment in the deferred case; red with the early
   return disabled and with the charge removed) and
   `pr_feedback_processor_test.ts` (bound; red with the charge removed). Not
-  done: cheap capability probes before the agent starts; the capability decision
-  lives inside the gate runner, so a probe would duplicate it. The bound is what
-  limits the cost.
+  done in these two lanes: capability probes before the agent starts (the
+  babysitter has them, see review round 3); the bound limits their cost.
 - Base reproduction: a failing gate is re-run in a detached worktree of the base
-  ref, cached per base SHA; reproduces when every normalised head failure line
-  is in the base's. Tests: `publication_validation_test.ts` (reproduces and is
-  cached; base passes, head has a new line, no base ref: all stay `failed`). The
-  comparison base is `baseRef` when a caller supplies one, else `origin/HEAD`,
-  `origin/main` or `origin/master`; no lane passes `baseRef` yet, so a milestone
-  PR compares against the default branch.
+  ref, cached per base SHA; reproduces when every head failure line
+  (`failureEvidenceLines`, see review round 3) is in the base's. Tests:
+  `publication_validation_test.ts` (reproduces and is cached; base passes, head
+  has a new line, no base ref: all stay `failed`). The comparison base is
+  `baseRef` when a caller supplies one, else `origin/HEAD`, `origin/main` or
+  `origin/master`. Only the babysitter passes `baseRef` (the PR's own base); the
+  other lanes compare against the default branch, so a milestone PR there
+  compares against the wrong base and a shared failure stays `failed`.
 - Removed `refundCiCheckRetry` and its test (no caller); corrected the
   `publication_validation.ts` header so a gate timeout is under `failed`.
+
+## Review round 3 (PR #4800)
+
+Findings and what settles each:
+
+- Babysitter session cost on an incapable host: `probePublicationCapability`
+  (`publication_validation.ts`) runs on the clone before the base merge and
+  before the agent: a separate account when the repository has a gate
+  (`quality.sh` or a `quality_command`, not `skip_quality_check`), and Docker for
+  a `docker_image` repository. A failing probe throws a `capability`
+  `BabysitterFailure` with `deferral: "publication"`; so does the gate's
+  `unavailable` verdict after a session. The catch in `fix()` charges each such
+  deferral to PR, failure and head (`recordPublicationDeferral`); at
+  `MAX_PUBLICATION_DEFERRALS` it posts one deduplicated pause comment (the
+  handoff marker, with a `pause` text) and sets the retry record's `escalation`,
+  so no session starts until the head changes. Setup `--check` prints an
+  `ACTION:` line for a host with no `agent` account or no Docker, and
+  `docs/workflows/fleet-pr-babysitter.md` names the requirement. Scenarios in
+  `worker/deno/tests/fixtures/fleet_pr_babysitter_validation_scenarios.ts`
+  (11 scenarios at head): "a host that cannot run the repository checks starts
+  no session and records a capability deferral" (agentRuns 0, no push, probe
+  asked about the clone with `requireSeparateAccount`; red with the throw
+  disabled) and "repeated unavailable rounds on one head stop at the bound and
+  hand the PR on once" (red with the charge disabled).
+- Sweeps and refusal order: `gateDepsFor` replaces `cleanupPorts` and
+  `cleanupSubprocesses` with no-ops for a `requireSeparateAccount` caller, and
+  the account refusal is decided before the credential mint and the gate when
+  the repository has a gate. Container callers keep their sweeps. Test
+  `publication_validation_test.ts::requireSeparateAccount: the real gate is never entered on a host that cannot drop`
+  drives the real `runQualityGateCheck`: refused is `[]` calls, a droppable host
+  is `["runCommand"]`, a caller without the flag keeps
+  `["cleanupPorts", "runCommand", "cleanupSubprocesses"]`; red with the no-op
+  replacement removed. `...a repository with no gate is not refused` guards the
+  gate-exists operand.
+- Refusal tied to the spawned argv: `createDefaultDeps(env, timeout,
+  requireSeparateAccount)` makes the spawn throw `SeparateAccountRequiredError`
+  when `untrustedAccountOf(argv)` is undefined (rethrown, not folded into
+  command output). The in-process credential-denial profile for the gate (the
+  Codex profile of C36) is not built: it is a sandbox design of its own, and the
+  finding's fallback, `unavailable` where neither a separate account nor a denial
+  exists, is what this PR implements. Test:
+  `requireSeparateAccount: the default spawn refuses the runner account by the argv it would run`
+  (asserts the refusal where the host cannot drop, a successful run where it can).
+- Base comparison on real output: `failureEvidenceLines` replaces each checkout
+  path (as given and as resolved) with one token and drops `... ok`, `ok | N
+  passed` and `running N tests` lines; the base tree's parent is `chmod 0755`.
+  Tests: `a failure that is the same on the base reproduces despite checkout paths and an added passing test`
+  (a real `quality.sh` printing `file://$PWD/...`, the head adding a passing
+  test), `a head that adds a failure line the base lacks stays failed under the real gate`,
+  `failureEvidenceLines: ...`, `the base-commit tree is reachable by another account`.
+  Each red with its piece removed (path token, line filter, chmod).
+  The babysitter passes `baseRef: origin/<PR base>` (asserted in the "gate runs
+  on the committed head" scenario).
+- Spelling tests: `pr_spelling_processor_test.ts` (36 tests at head) adds
+  "rounds the repository checks reject stop at the bound, and the next round is
+  shown why". Red with `|| publicationRejected` removed, with the save of the
+  rejected output removed, and with the load removed.
+
+Branch outcomes: probe incapable (scenario 1) / capable (its positive control);
+deferral charge below the bound (scenario 2 rounds 1-2) / at the bound (round 3,
+pause posted once) / after the pause (round 4 starts no session);
+`requireSeparateAccount` refused vs droppable vs not requested
+(`publication_validation_test.ts`); gate present vs absent under the flag; docker
+probe unavailable/available and opted-out (`probePublicationCapability` test).
+exempt (untestable): the `quality.sh`-exists operand of the early refusal and the
+`command !== "./quality.sh"` operand give the same `unavailable` result as the
+later `runCommand` refusal, so no input tells them apart; the search was
+`publication_validation_test.ts` and the babysitter scenarios, which only see the
+result.
+
+Not done: capability probes in the spelling and feedback lanes (the 3-round
+bound limits them); the credential-denial profile for the gate; the tools
+`quality.sh` needs are not probed before the session (that needs the script's
+text; the gate still reports them as `unavailable`).
+
+Related existing rules checked: C36/C37 in `docs/THREAT-MODEL.md` (updated), the
+babysitter section of `docs/workflows/fleet-pr-babysitter.md` and
+`docs/INTERNALS.md` (updated). No other restatement of the sweeps or the
+comparison base was found. Targeted run on this head:
+`publication_validation_test.ts` (37 tests, 37 passed),
+`pr_spelling_processor_test.ts` (36 passed),
+`fleet_pr_babysitter_validation_test.ts` (11 scenarios passed), plus the babysitter,
+setup, retry-state and quality-gate unit tests (298 passed in the parallel pass).
