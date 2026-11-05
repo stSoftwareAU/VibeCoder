@@ -43,7 +43,7 @@ flowchart TD
     N --> Z
     C --> E["Mutate added lines, run covering tests"]
     E -- "runner error, no blocking CI job" --> X
-    E -- "runner error, blocking CI job: held" --> N2["Draft: validation incomplete, next action named"]
+    E -- "runner error, blocking CI job" --> N2["Noted; CI gives the verdict"]
     N2 --> Z
     E --> F{"Unexempted survivor?"}
     F -- yes --> X
@@ -138,15 +138,14 @@ blocking, because CI fails on them whatever the PR summary says:
    request as a draft over REST (it never arms auto-merge). The next run
    continues the branch and marks the pull request ready once no survivor is
    left.
-4. **Validation that cannot finish is held too.** A runner error, an unavailable
-   tool, a baseline build or test failure, a worker fault (the temporary
-   directory) or a budget or mutant cap that leaves mutants untested holds the
-   pull request as a draft, with no recovery turn for the budget case (a turn
-   cannot add mutants). The draft body and comment say validation is incomplete,
-   that the change is unvalidated (not passed), and name the next action: fix
-   the baseline or install the tool, free the temporary directory, or re-run
-   with a larger budget or a narrower change. The issue stays open and the next
-   run continues the branch.
+4. **Validation that cannot finish holds nothing.** A runner error, an
+   unavailable tool, a baseline build or test failure, a worker fault (the
+   temporary directory) or a budget or mutant cap that leaves mutants untested
+   is reported as unvalidated, never as a pass. The pull request is still raised
+   ready and armed, because CI's job gives the complete verdict. Holding it
+   could not converge: a Rust clean build and baseline can use the whole 300 s
+   budget on every re-run, and a draft skips the CI job that would decide
+   (Issue #4820). A draft whose next run reports no survivor is marked ready.
 
 A repository without such a job is unchanged: survivors are notes, auto-merge
 stays armed and summary exemptions still work.
@@ -157,8 +156,8 @@ flowchart TD
     B -- no --> C{"Runner error, unavailable tool or baseline failure?"}
     C -- no --> K{"Budget or cap left mutants untested?"}
     K -- no --> Z["Raise PR, auto-merge armed"]
-    K -- yes --> L["Draft: validation incomplete, next action named"]
-    C -- yes --> N["Draft: validation incomplete, next action named"]
+    K -- yes --> L["Raise PR, auto-merge armed; note says mutants are untested"]
+    C -- yes --> N["Raise PR, auto-merge armed; CI gives the verdict"]
     B -- yes --> R["One recovery turn, naming the CI job; exemptions do not count"]
     R --> S{"Survivor left after the turn?"}
     S -- no --> Z
