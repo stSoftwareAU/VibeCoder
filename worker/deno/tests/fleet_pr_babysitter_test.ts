@@ -102,6 +102,7 @@ import {
   spawnBabysitterAgent,
   syncBabysitterPrBodyBeforeDismissal,
   takePrBodyProposal,
+  temporaryCloneRoot,
   validateAndCommit,
   waitForPushedHead,
   withBabysitterWriteScope,
@@ -3865,4 +3866,10 @@ Deno.test("default git classifies mirror fetch timeout and clone disk exhaustion
       }
     });
   }
+});
+
+Deno.test("temporaryCloneRoot - an unset or empty TMPDIR falls back to /tmp", () => {
+  assertEquals(temporaryCloneRoot("/var/scratch"), "/var/scratch");
+  assertEquals(temporaryCloneRoot(undefined), "/tmp");
+  assertEquals(temporaryCloneRoot(""), "/tmp");
 });

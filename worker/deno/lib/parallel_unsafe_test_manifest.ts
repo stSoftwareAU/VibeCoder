@@ -72,7 +72,12 @@
  * Paths are relative to `worker/deno`, the directory the gate runs
  * `deno test` from — the same convention as `INTEGRATION_TEST_FILES`.
  *
- * This list must stay empty.
+ * This list may **shrink, never grow** — with one exception, which is what
+ * took it from 92 entries to 135 at the time it was written: correcting
+ * the classifier. #880 grepped
+ * each suite's own text, so a helper's mutation was invisible to every suite
+ * that imported it. Forty-three files were already unsafe and are now named.
+ * A new *test* still may not join them.
  *
  * To remove a file, take the value as a
  * parameter or an injected seam instead of mutating the process — most of the
@@ -80,13 +85,18 @@
  * (see `HostDiskMonitor`, `resolveDiskFloors`, `findIssuesByLabel`). Each file
  * removed is one more file that runs in the fast pass.
  *
- * **Issue #986 emptied the list, and #944/#969 are done for this category.**
- * The last seven entries were all CI-log suites, and #986 cleared them in one
+ * **It is now empty, and #944/#969 are done for this category.** The last
+ * seven entries were all CI-log suites, and Issue #986 cleared them in one
  * step rather than by migration: four were the tests of an integration that
  * left the repository, and the other three read a vendor's credentials out
  * of the process environment only because they drove that vendor's client.
  * Driving the provider registry with a fake provider needs no credentials at
  * all, so the mutation had nothing left to do.
+ *
+ * An empty list is not an invitation. The classifier below still runs over
+ * every suite, so a new mutator fails `parallel_safety_cap_test.ts` naming
+ * itself, and re-adding an entry here to silence it is the thing this list
+ * exists to prevent.
  */
 export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
 

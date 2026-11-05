@@ -784,6 +784,11 @@ export async function runRepairs(
   }
 }
 
+/** Temporary-clone root: an unset or empty `TMPDIR` falls back to `/tmp`. */
+export function temporaryCloneRoot(tmpdir: string | undefined): string {
+  return tmpdir || "/tmp";
+}
+
 /** Remove only babysitter clones whose owner process has exited. */
 export async function recoverTemporaryClones(root: string): Promise<void> {
   for await (const entry of Deno.readDir(root)) {
@@ -2909,7 +2914,7 @@ export async function pass(
   } = {},
 ): Promise<void> {
   await recoverTemporaryClones(
-    seams.tempDir ?? Deno.env.get("TMPDIR") ?? "/tmp",
+    seams.tempDir ?? temporaryCloneRoot(Deno.env.get("TMPDIR")),
   );
   const stateDir = seams.stateDir ?? babysitterStateDir();
   const gh = seams.gh ?? ((args: string[]) => run("gh", args));

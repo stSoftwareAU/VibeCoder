@@ -227,12 +227,25 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     two stranded PRs, valid events and no inventory. Deleting the
     inventory-undefined block gives `discoveryEvidenceComplete` true instead of
     false.
+  - `worker/deno/tests/fleet_pr_babysitter_test.ts::temporaryCloneRoot - an unset or empty TMPDIR falls back to /tmp`:
+    the clone root is `temporaryCloneRoot(Deno.env.get("TMPDIR"))` (`||`, as on
+    the base), so an empty `TMPDIR` no longer reaches `Deno.readDir("")`.
+    Changing `||` to `??` fails the test with
+    `AssertionError: Values are not
+    equal` on the empty-string case.
+  - `worker/deno/lib/parallel_unsafe_test_manifest.ts` is restored to the base
+    branch's text; this PR does not change that file.
   - The edited tests the review asked to show red were each reverted alone on
     the head and failed with an assertion mismatch (`failsWithoutChange`); the
     withdrawn-merge guard test is recorded above (it failed at `:728`):
-    - `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`:
-      `git_pull` milestone target classified `unknown` fails at
-      `audit_hook_test.ts:688` with actual `unknown`, expected `milestone`.
+    - `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`
+      (starts at `audit_hook_test.ts:685`), each re-run on the head with only
+      `actionKindFor` in `lib/audit_hook.ts` changed: the `git_pull` milestone
+      target classified `unknown` fails at `audit_hook_test.ts:688` with actual
+      `unknown`, expected `milestone`; widening the `git_pull` caller test to
+      any resolved caller fails at `audit_hook_test.ts:687` with actual
+      `branch-update`, expected `unknown` (the unlisted `recent_activity.ts`
+      caller stays unknown).
     - `worker/deno/tests/pr_completion_report_test.ts::rollout check separates eligibility, rediscovery and processing before the target window`:
       restoring `lib/pr_completion_report.ts` to `origin/main` fails at
       `pr_completion_report_test.ts:347` with actual `undefined`, expected `1`
