@@ -1493,21 +1493,29 @@ Deno.test({
     let pids: number[] = [];
     let child: Deno.ChildProcess | undefined;
     try {
-      await new Deno.Command("bash", {
+      const result = await new Deno.Command("bash", {
         args: [
           "-c",
-          'cd "$1"; nohup "$2" 300 >/dev/null 2>&1 &',
+          'cd "$1"; nohup "$2" 300 >/dev/null 2>&1 & echo $!',
           "bash",
           harness.tmpDir,
           marker,
         ],
-        stdout: "null",
+        stdout: "piped",
         stderr: "null",
       }).output();
-      pids = await pgrepFull(marker);
-      assertEquals(pids.length, 1);
-      const pid = pids[0];
-      assert(pid !== undefined);
+      const pid = Number(new TextDecoder().decode(result.stdout).trim());
+      assert(result.success && Number.isInteger(pid) && pid > 0);
+      pids = [pid];
+      // The shell may exit before nohup has exec'd the marker command.
+      for (let i = 0; i < 50; i++) {
+        if (
+          (await getCommand(pid)).includes(marker) &&
+          await parentPidOf(pid) === 1
+        ) break;
+        await delay(100);
+      }
+      assertEquals(await pgrepFull(marker), [pid]);
       assertEquals(await parentPidOf(pid), 1);
       await registerProbe(stateDir, pid, await Deno.realPath(harness.tmpDir));
       child = spawnLoopLogging(harness.tmpDir, { VIBE_STATE_DIR: stateDir });

@@ -104,6 +104,14 @@ flowchart LR
 
 ## Test Plan
 
+- CI repair: `worker/deno/tests/loop_supervisor_test.ts` captures the spawned
+  orphan's PID and waits for its command and reparenting before searching for
+  it. Previously the immediate search could race the background `exec`; the
+  test still checks the registered unrelated process survives the reaper.
+  `loop_supervisor_test.ts::loop.sh #4568 - a registered orphan with a different command survives`
+  covers that behaviour. Local `deno fmt --check`, `deno lint` and `deno check`
+  pass for the test file. The integration workflow command was run locally,
+  but this sandbox refuses `/bin/ps`, so the process test cannot complete here.
 - Added to `worker/deno/tests/hard_kill_report_test.ts`:
   - `hardKillLastStep takes the mutation check from the tail and skips the ticker (Issue #4815)`
   - `hardKillLastStep: the later tail line wins over an earlier one (Issue #4815)`
