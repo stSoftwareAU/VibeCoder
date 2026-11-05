@@ -2243,9 +2243,12 @@ async function prepareRepairClone(
 async function writeToolByproducts(dir: string): Promise<void> {
   await Deno.mkdir(`${dir}/crate`, { recursive: true });
   await Deno.writeTextFile(`${dir}/crate/default_1_0_2.profraw`, "raw\n");
+  await Deno.writeTextFile(`${dir}/crate/default_1_0_2.profdata`, "indexed\n");
   await Deno.writeTextFile(`${dir}/lcov.info`, "TN:\n");
   await Deno.mkdir(`${dir}/mutants.out`, { recursive: true });
   await Deno.writeTextFile(`${dir}/mutants.out/x.json`, "{}\n");
+  await Deno.mkdir(`${dir}/mutants.out.old`, { recursive: true });
+  await Deno.writeTextFile(`${dir}/mutants.out.old/x.json`, "{}\n");
 }
 
 Deno.test("a repair commit stages the tracked fix and leaves untracked tool byproducts out (Issue #4827)", async () => {
@@ -2261,8 +2264,10 @@ Deno.test("a repair commit stages the tracked fix and leaves untracked tool bypr
       "a.txt",
     );
     assert(await exists(`${dir}/crate/default_1_0_2.profraw`));
+    assert(await exists(`${dir}/crate/default_1_0_2.profdata`));
     assert(await exists(`${dir}/lcov.info`));
     assert(await exists(`${dir}/mutants.out/x.json`));
+    assert(await exists(`${dir}/mutants.out.old/x.json`));
   });
 });
 
@@ -2350,6 +2355,29 @@ Deno.test("the repair clone's info/exclude gets each byproduct pattern once, how
     for (const pattern of REPAIR_BYPRODUCT_EXCLUDES) {
       assertEquals(lines.filter((line) => line === pattern).length, 1, pattern);
     }
+  });
+});
+
+Deno.test("byproduct preparation rejects an unresolved git exclude path", async () => {
+  await withTempRoot(async (root) => {
+    await assertRejects(
+      () => excludeRepairByproducts(root, () => Promise.resolve("  \n")),
+      Error,
+      "git printed nothing",
+    );
+  });
+});
+
+Deno.test("byproduct preparation preserves a non-missing filesystem error", async () => {
+  await withTempRoot(async (root) => {
+    const dir = await prepareRepairClone(root);
+    const excludePath = `${dir}/.git/info/exclude`;
+    await Deno.remove(excludePath);
+    await Deno.mkdir(excludePath);
+    await assertRejects(
+      () => excludeRepairByproducts(dir, runGitForTest),
+      Error,
+    );
   });
 });
 
