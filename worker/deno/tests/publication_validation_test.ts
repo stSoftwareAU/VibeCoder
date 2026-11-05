@@ -1036,6 +1036,61 @@ Deno.test("a gate failure the base commit does not share stays failed", async (t
   });
 });
 
+Deno.test("a head whose PASSED count moved, failing the same way as the base, reproduces on the base", async (t) => {
+  const red = (output: string): QualityGateRunResult => ({
+    action: "failed",
+    qualityOutput: output,
+  });
+  await t.step("only the passing count differs", async () => {
+    _resetBaseGateOutcomes();
+    await withFeatureBranch(async (dir) => {
+      const v = expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO, baseRef: "main" },
+          {
+            runGate: gateByCheckout(
+              red(
+                "hardcoded branch names: PASSED (13 files scanned)\n1 test failed\n",
+              ),
+              red(
+                "hardcoded branch names: PASSED (12 files scanned)\n1 test failed\n",
+              ),
+              [],
+            ),
+          },
+        ),
+        "unavailable",
+      );
+      assertStringIncludes(v.reason, "reproduces on main@");
+    });
+  });
+  await t.step(
+    "the head also has a genuinely different failure line",
+    async () => {
+      _resetBaseGateOutcomes();
+      await withFeatureBranch(async (dir) => {
+        expectStatus(
+          await validateRepositoryForPublication(
+            { cwd: dir, repo: REPO, baseRef: "main" },
+            {
+              runGate: gateByCheckout(
+                red(
+                  "hardcoded branch names: PASSED (13 files scanned)\n1 test failed\nnew regression in change.txt\n",
+                ),
+                red(
+                  "hardcoded branch names: PASSED (12 files scanned)\n1 test failed\n",
+                ),
+                [],
+              ),
+            },
+          ),
+          "failed",
+        );
+      });
+    },
+  );
+});
+
 // --- A refused gate has no side effects (PR #4800 review) ---
 
 Deno.test("requireSeparateAccount: the real gate is never entered on a host that cannot drop", async () => {
@@ -1316,6 +1371,23 @@ Deno.test("failureEvidenceLines: checkout paths and passing or count lines do no
   );
   assertEquals(head, base);
   assertEquals(head.length, 2);
+});
+
+Deno.test("failureEvidenceLines drops a `<label>: PASSED` line but keeps FAILED and real failure lines", () => {
+  assertEquals(
+    failureEvidenceLines(
+      "hardcoded branch names: PASSED (13 files scanned)\n" +
+        "hardcoded branch names: FAILED (1 file)\n" +
+        "error: boom in lib/x.ts\n",
+      [],
+    ),
+    ["hardcoded branch names: FAILED (1 file)", "error: boom in lib/x.ts"],
+  );
+});
+
+Deno.test("failureEvidenceLines keeps a very long line with no colon, without hanging", () => {
+  const line = "a".repeat(100000);
+  assertEquals(failureEvidenceLines(line, []), [line]);
 });
 
 Deno.test("a failure that is the same on the base reproduces despite checkout paths and an added passing test", async () => {

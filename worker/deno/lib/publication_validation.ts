@@ -543,13 +543,17 @@ async function checkoutRoots(path: string): Promise<string[]> {
 }
 
 /**
- * Lines that say a test or step went well, or restate counts that move when a
- * change adds or renames a test. They are not evidence of a failure, and a
- * head that adds a passing test must not read as a different failure. Anchored
- * alternations without nested quantifiers, so matching is linear.
+ * Lines that say a test, step or check went well, or restate counts that move
+ * when a change adds or renames a test or file. They are not evidence of a
+ * failure, and a head that adds a passing test must not read as a different
+ * failure. The last alternative is the gate's per-check pass line,
+ * `<label>: PASSED` with an optional parenthesised count (for example
+ * `hardcoded branch names: PASSED (12 files scanned)`, see
+ * `lib/quality_gate.ts`). Anchored alternations without nested quantifiers, so
+ * matching is linear.
  */
 const NON_FAILURE_LINE =
-  /(?:\.\.\. (?:ok|ignored)\b|^(?:ok|FAILED) \| \d+ passed|^running \d+ tests? from |^test result: |^(?:Check|Download) )/;
+  /(?:\.\.\. (?:ok|ignored)\b|^(?:ok|FAILED) \| \d+ passed|^running \d+ tests? from |^test result: |^(?:Check|Download) |^[^:\n]{1,100}: PASSED\b)/;
 
 /**
  * The normalised lines that evidence a gate failure: the output with each
