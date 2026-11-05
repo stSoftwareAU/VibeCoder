@@ -75,6 +75,10 @@ regexes = [
   '''^\s*const restore = plantEnv\(\{ GH_TOKEN: "planted-4705-gh" \}\);\s*$''',
   '''^\s*\{ NPM_TOKEN: "synthetic-4705" \},\s*$''',
   '''^\s*const result = await runAsAgentForReal\(\{ NPM_TOKEN: "synthetic-4705" \}\);\s*$''',
+  # Issue #4674: the original runner-output redaction test used this counting
+  # digits fixture in its input and assertion. Range scans retain that commit;
+  # exempt only the exact synthetic value in those two contexts.
+  '''(?:GH_TOKEN=|!error\.message\.includes\(")gh[p]_123456789012345678901234567890123456''',
   # Issue #4659: this is an environment variable NAME, not a credential value.
   # Earlier commits declare it in both gate tests before moving it to their
   # shared harness. Exempt only the exact synthetic declaration, including

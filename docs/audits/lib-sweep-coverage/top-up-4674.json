@@ -1,0 +1,12 @@
+{
+  "issue": 4674,
+  "chunk": "top-up-4674",
+  "title": "top-up: runner-owned babysitter browser validation",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4674",
+  "definition": "Runner-owned local quality.sh validation for babysitter PR repairs, including its macOS sandbox profile, browser launch allowance, and credential-file isolation.",
+  "status": "claimed",
+  "sweptAt": "81c25ff92d6781d1ae8ac9fc5f4c2f7c0a6e63a4",
+  "paths": [
+    "worker/deno/lib/fleet_babysitter_validation.ts"
+  ]
+}

@@ -12,9 +12,72 @@ into the temporary clone without committing, for every kind of repair, so the
 agent works and runs its checks against up-to-date code and the fix and the
 branch update reach GitHub in **one push**. A second push just to update the
 branch would run the whole CI again and roughly double the Actions cost of the
-repair. After Codex reports a completed fix, the babysitter commits the fix and
-the merge together as one merge commit, checks the fix (not the base's own
-changes) for whitespace errors and conflict markers, and rechecks the PR. It
+repair. After Codex reports a completed fix, the babysitter runs the
+target repository's `quality.sh` before staging or committing on macOS. Linux
+retains validation inside the existing Codex permissions profile; its prompt
+requires the applicable local checks, and the runner does not inspect the gate
+script on Linux. It does not run repository code in the privileged runner. On macOS, that
+runner-owned check runs outside Codex's browser-restricting profile, under a
+separate sandbox that denies the worker configuration, configured credential
+paths, the user's Keychains directory and `securityd`; it receives no
+credential-shaped environment variables and keeps the clone's `.git` read-only.
+The runner permits signals only to processes in the same sandbox, so gates
+can terminate their own test workers and browser children. The live integration
+gate starts, terminates and reaps a background child to exercise this grant.
+
+Process-info is restricted to the same sandbox; process execution and
+forking are separate grants. The live integration probe for environment access uses a
+same-user process with a marker environment variable and an unsandboxed positive
+control. POSIX semaphore and shared-memory operations and pseudo-terminals
+(including /dev/ptmx and numbered /dev/ttys devices) are allowed for ordinary
+test workers. POSIX IPC names share the host namespace; operators must not
+store credentials in shared IPC objects. After every gate exit, including
+success, the runner kills the isolated process group before waiting for output
+pipes; timeout also destroys the pipes. These OS-level grants still require
+a successful macOS integration run.
+
+The runner permits only named logging, notification, font, WindowServer and sysmond
+Mach lookups, plus lookup and registration of browser rendezvous and
+Crashpad name prefixes (children look up the rendezvous server their parent
+registers). Sysmond supports `pgrep` but can expose other processes' arguments;
+operators must not put credentials in command-line arguments. Per-PID and
+process-group sysctl records are allowed; `kern.procargs2`, which also returns a process's environment, stays denied, so `ps -o command=` and `ps -o args=` print no arguments. A gate that needs full command lines from `ps` (VibeCoder's own `loop_supervisor_test.ts` is one) cannot pass in the runner: the check is returned to Codex once, the retry fails the same way, and the repair is discarded without a commit or push. The integration gate records what `ps -o command=` prints for a gate child; that has not yet run on macOS.
+Services that launch processes or containers and file-service lookups remain denied; a named
+lookup alone cannot authorise Chromium's
+`bootstrap_check_in` during startup. Registration is limited to those browser
+prefixes rather than arbitrary system service names.
+The selected babysitter App key and its canonical target are denied even when
+setup used a custom `--key` location. The policy file lives in a fresh
+runner-owned directory outside the agent's clone and scratch write grants;
+neither the agent nor the gate can replace it through scratch, and the runner
+removes the directory after validation. Before reading `quality.sh`, the runner
+requires a regular file directly in the canonical repository root, rejects
+symlinks and special files, and caps both its size and the read at 64 KiB.
+Relative `CONFIG_PATH` values (including the default `.config.json`) resolve
+against the runner's working directory before constructing protected paths.
+This lets browser checks launch Chromium without giving the check runner the
+listed credentials. `BABYSITTER_READY` means Codex has finished its repair and
+the runner may validate it; it does not mean `quality.sh` passed. A failed check
+is returned to Codex once with bounded output, and the runner repeats the gate
+before committing. The gate runs in its own process group; the 15-minute
+timeout sends SIGKILL to the whole group and closes inherited output pipes. Git staging, commit and push disable hooks as
+defence in depth. The .git and securityd denials follow overlapping allows in
+the profile. A retry may also replace the first PR-description proposal.
+Before it starts any Codex session on macOS, the runner proves the gate can
+run: when the clone has a `quality.sh`, it applies the same sandbox profile to
+a fixed `/usr/bin/true` probe. An unavailable sandbox (for example
+`sandbox_apply: Operation not permitted`) skips that PR with no attempt record
+and no agent session, so a watch pass does not spend a repair session on every
+cycle; the same classification after the agent finishes remains as a backstop.
+Browser cache variables (`PLAYWRIGHT_BROWSERS_PATH`, `CYPRESS_CACHE_FOLDER`,
+`PUPPETEER_CACHE_DIR`) that the operator has not set default to fresh
+directories under repair scratch that hold links to the host's installed
+builds (dot entries such as installer locks are not mirrored). They sit inside
+the gate's write grant, so a gate that runs `playwright install` can create
+its lock and fetch a missing revision, while installed builds are reused.
+Operator-set values are left unchanged.
+An unavailable sandbox is reported and prevents a push so a later pass can
+retry. Repositories without `quality.sh` have no runner-owned local gate. After validation, the babysitter commits the fix and the merge together as one merge commit, checks the fix (not the base's own changes) for whitespace errors and conflict markers, and rechecks the PR. It
 pushes only if the PR still matches the original head. A base merge on its own
 is also pushed when the agent made no change, so the branch is never left
 behind. After a push, the babysitter synchronises the PR description from the
@@ -47,6 +110,28 @@ base without required checks the helper uses its gated direct merge instead of a
 blind `--auto`. Merging soon after the gates pass leaves less time for the base
 to move on and cause conflicts. A failure to arm is logged as a WARNING and does
 not stop the repair.
+
+```mermaid
+sequenceDiagram
+    participant A as Codex repair agent
+    participant R as Babysitter runner
+    participant Q as Target quality.sh
+    participant G as GitHub
+    A->>R: BABYSITTER_READY and working tree
+    R->>Q: Run in credential-denying macOS sandbox
+    alt Gate passes
+        Q-->>R: exit 0
+        R->>R: Stage and commit
+        R->>G: Recheck PR head, then push
+    else Gate fails
+        Q-->>R: bounded diagnostics
+        R->>A: One repair attempt with fenced output
+        A-->>R: Updated fix
+        R->>Q: Re-run quality.sh
+    else Runner sandbox unavailable
+        R-->>G: No push, report capability failure
+    end
+```
 
 The shared repository list stays unchanged. The babysitter monitors only the
 configured repositories accessible to its selected GitHub App installation and
@@ -464,6 +549,14 @@ reproduces the failing step with the command the workflow runs and confirms it
 passes, and review and conflict repairs run the formatter, linter and type or
 compile check for the code they touched.
 
+Codex still runs checks it can safely run inside its per-spawn profile. The
+macOS runner owns the final local `quality.sh` result for every repair, including
+browser checks Codex cannot launch. A failed runner check is fed back for one
+repair attempt and must pass on revalidation before commit; a missing runner
+sandbox is reported as unavailable and does not produce a commit or push. The
+runner clears the attempt record for this unavailable-capability case so a
+later pass can retry.
+
 This MVP uses the configured GitHub App and Codex; it does not yet select
 providers by remaining quota, handle Dependabot, use per-repository quality
 commands, or review PRs. It does not change repository CI, review, or merge
@@ -471,3 +564,25 @@ rules. Test the read-only pass before running execution mode.
 
 To prepare a separate GitHub identity and API quota, follow the
 [babysitter GitHub App setup](fleet-pr-babysitter-github-app.md).
+
+
+### Browser integration check
+
+Run `cd worker/deno && deno task test:browser < /dev/null` on macOS with
+`CHROMIUM_PATH` pointing to a Chromium executable. This dedicated integration
+suite requires sandbox-exec and the macOS Keychain services. It fails loudly
+when prerequisites are absent. The ordinary unit suite uses self-contained
+command doubles and requires no browser. Linux repairs keep their existing
+agent validation and the credential boundary from #4593.
+
+### Installed browser caches
+
+The gate uses scratch HOME. Unset `PLAYWRIGHT_BROWSERS_PATH`,
+`CYPRESS_CACHE_FOLDER` and `PUPPETEER_CACHE_DIR` default to writable
+directories under repair scratch, with links to installed builds in the host's
+home. Installer state such as dot entries is not mirrored, so the gate can
+create its own locks and install missing builds. Explicit values of these three
+variables are preserved. Browser runtime profiles and temporary files belong
+in scratch. The runner first executes
+`/usr/bin/true` under the same policy. A failed sandbox startup is unavailable,
+does not trigger an agent repair retry, and releases the attempt record.

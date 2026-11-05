@@ -106,6 +106,54 @@ flowchart TD
 - **Repository Reset**: Each run resets to `origin/Develop`, recovering from partial edits
 - **Timeout Enforcement**: Two-stage termination (SIGTERM then SIGKILL) ensures processes are killed
 
+The runner permits signals only to processes in the same sandbox, so gates
+can terminate their own test workers and browser children. The live integration
+gate starts, terminates and reaps a background child to exercise this grant.
+
+Process inspection is restricted to the same sandbox; process execution and
+forking are separate grants. Sysctl reads allow named hardware and OS values
+and per-PID and process-group record prefixes, but not `kern.procargs2`. `kern.procargs2`, which also returns a process's environment, stays denied, so `ps -o command=` and `ps -o args=` print no arguments. A gate that needs full command lines from `ps` (VibeCoder's own `loop_supervisor_test.ts` is one) cannot pass in the runner: the check is returned to Codex once, the retry fails the same way, and the repair is discarded without a commit or push. The integration gate records what `ps -o command=` prints for a gate child; that has not yet run on macOS. The
+`com.apple.sysmond` lookup supports `pgrep` and can expose other processes'
+arguments: operators must not put credentials in command-line arguments. The
+live integration probe for environment access uses a
+same-user process with a marker environment variable and an unsandboxed positive
+control. POSIX semaphore and shared-memory operations and pseudo-terminals
+(including /dev/ptmx and numbered /dev/ttys devices) are allowed for ordinary
+test workers. POSIX IPC names share the host namespace; operators must not
+store credentials in shared IPC objects. After every gate exit, including
+success, the runner kills the isolated process group before waiting for output
+pipes; timeout also destroys the pipes. These OS-level grants still require
+a successful macOS integration run.
+
+The fleet PR babysitter also runs the target repository's `quality.sh` before
+committing a repair on macOS. Linux keeps the existing agent validation inside
+the Codex permissions profile; the privileged Linux runner executes no gate.
+The macOS runner requires a regular, non-symlink `quality.sh` directly in the
+canonical repository root and caps the file size and actual read at 64 KiB. On macOS it runs under a dedicated `sandbox-exec` profile:
+Codex's per-spawn profile remains unchanged, while the runner profile allows
+explicit named Mach lookups for logging, notifications, fonts, WindowServer and sysmond
+and lookup and registration of Chromium/Chrome rendezvous and
+Crashpad service name prefixes, but denies the configured worker, GitHub CLI, App, SSH,
+AWS, cloud, container and package-manager credential paths, the worker
+configuration file, the user's Keychains, and the `securityd` Mach service;
+the selected babysitter App key is denied even when setup used a custom
+`--key` path, including its symlink target. The clone's `.git` remains
+read-only. The runner writes its policy to a fresh temporary directory outside
+the agent's clone and scratch write grants, denies the gate access to that
+directory, and removes it after validation. It starts with an allowlisted environment,
+sets `HOME` and `TMPDIR` to repair scratch and uses a scratch-local `DENO_DIR`,
+so the gate receives no write-capable token or host credential cache.
+Registration is restricted to the browser's rendezvous and Crashpad name
+prefixes; it cannot publish arbitrary system service names. These browser
+names are visible in the login session's bootstrap namespace. The profile is
+not a general host-data or network boundary: repository code can read other
+host files and use outbound
+network access. A failed check is returned to the repair agent once; if the
+sandbox cannot start, the babysitter reports the capability failure and does
+not commit or push. `BABYSITTER_READY` marks agent readiness for this runner
+check, not a successful gate; a failed gate gets one repair pass and must pass
+again before commit. See [the babysitter workflow](docs/workflows/fleet-pr-babysitter.md).
+
 ### 🔒 Lockfile Enforcement at Every Deno Launch Site
 
 Every `deno run` launcher passes `--frozen --lock=worker/deno/deno.lock`, so a
