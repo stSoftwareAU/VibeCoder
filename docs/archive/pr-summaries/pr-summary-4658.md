@@ -233,8 +233,11 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     Changing `||` to `??` fails the test with
     `AssertionError: Values are not
     equal` on the empty-string case.
-  - `worker/deno/lib/parallel_unsafe_test_manifest.ts` is restored to the base
-    branch's text; this PR does not change that file.
+  - `worker/deno/lib/parallel_unsafe_test_manifest.ts`: the manifest's code and
+    policy text match the base branch. The only change is one doc-comment
+    sentence that said forty-three files "are now named" although the list has
+    since been emptied; it now reads "were named then; the list has since been
+    emptied (below)". Comment-only, so no test applies and none is claimed.
   - The edited tests the review asked to show red were each reverted alone on
     the head and failed with an assertion mismatch (`failsWithoutChange`); the
     withdrawn-merge guard test is recorded above (it failed at `:728`):
