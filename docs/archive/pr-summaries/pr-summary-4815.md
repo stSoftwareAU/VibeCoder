@@ -130,9 +130,9 @@ flowchart LR
   → tests 1, 2, 4, 5, 6 red; body line removed → tests 1, 3, 4 red; occurrence
   suffix removed → test 6 red; per-line cap shrunk → tests 1, 2, 4, 5, 6 red.
   Review fix 2: with the `AGENT_PROGRESS_LINE` early return removed, the
-  agent-progress test went red at `grep -rn "mutation check" docs`.
-  Review fix: with the pattern table, body line and occurrence line restored to
-  the earlier commit, the new gate-notes test went red at
+  agent-progress test went red at `grep -rn "mutation check" docs`. Review fix:
+  with the pattern table, body line and occurrence line restored to the earlier
+  commit, the new gate-notes test went red at
   `mutation clean: 7 of 7 mutants killed`, the verifier-then-ticker test and the
   follow-up test went red on the old wording.
 - Edited `worker/deno/tests/run_failure_issue_test.ts`: the hard-kill fixture
@@ -160,6 +160,7 @@ flowchart LR
 
 Not done: the wedge itself is not diagnosed or fixed; the GRQ-3 archive was not
 read; the serial test pass of the gate did not run.
+
 - Corpus run: 19 distinct `[agent-progress]` line shapes taken from `docs/`,
   `lib/` and `tests/` (no worker log on this host holds agent-progress lines)
   through `hardKillLastStep`: 19 `agent turn`, 0 false positives, 0 false
