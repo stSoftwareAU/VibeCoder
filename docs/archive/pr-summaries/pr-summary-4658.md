@@ -199,14 +199,20 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
   - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a journalled disarm cannot account for a GitHub merge`:
     the direct merge action (01:52), the successful disarm (01:55) and the
     GitHub merge (02:00) now sit inside the ten-minute window on one head, so
-    only the withdrawal guard makes the merge `unknownMerged 1`. Replacing the
-    guard with `false` fails the assertion that the merge is unknown.
+    only the withdrawal guard makes the merge `unknownMerged 1`. Obsolete: the
+    earlier 01:15 arm recorded as a merge, which an arm no longer is. Remaining:
+    a withdrawn direct merge cannot account for the GitHub merge (0 unattended,
+    1 unknown). `failsWithoutChange`: replacing the guard condition in
+    `collectPrCompletionSnapshot` with `false && ...` fails at
+    `pr_completion_snapshot_test.ts:728` (`assert` that a merge action with
+    actor `unknown` exists).
   - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - readable discovery events without an expected inventory leave rollout discovery unknown`:
     two stranded PRs, valid events and no inventory. Deleting the
     inventory-undefined block gives `discoveryEvidenceComplete` true instead of
     false.
-  - The four edited tests the review asked to show red were each reverted alone
-    on the head and failed with an assertion mismatch (`failsWithoutChange`):
+  - The edited tests the review asked to show red were each reverted alone on
+    the head and failed with an assertion mismatch (`failsWithoutChange`); the
+    withdrawn-merge guard test is recorded above (it failed at `:728`):
     - `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`:
       `git_pull` milestone target classified `unknown` fails with actual
       `unknown`, expected `milestone`.
