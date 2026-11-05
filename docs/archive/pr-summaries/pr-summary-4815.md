@@ -41,8 +41,9 @@ Version bump: `VERSION` is not touched by this change.
   return, ahead of `STEP_NOISE`). It is published only as a label, never as log
   text: the issue is public and the run may be on a private repository (module
   comment of `worker/deno/lib/hard_kill_report.ts`).
-- Ticker lines (`[phase] … still running`, `[liveness]`, `Status:`) are skipped,
-  since the ticker is the last line of a healthy run and names no step.
+- Phase ticker lines (`[phase] … still running`) are skipped, since the ticker
+  is the last line of a healthy run and names no step. The redundant liveness
+  and status filters were removed: their real log shapes match no step pattern.
 - The table matches the lines each step logs when it ends, built from the gates'
   own notes: `N of M mutants killed`, `mutation cap reached: …`,
   `mutation budget exhausted …`, `mutation check not applicable: …`,
@@ -187,15 +188,17 @@ read; the serial test pass of the gate did not run.
   2026-11-05), each line as the last log line, 38140 lines. Base has no matcher,
   so there is no base count: the base branch cannot label a step. Head result:
   1875 `agent turn` (1363 `[agent-progress]` tickers, 512
-  `Running Claude Code ...` lines), 262 `quality gate` (80
+  `Running Claude Code ...` lines, including health checks), 262 `quality gate` (80
   `Quality gate
   passed`, 82 `Quality gate stage outcomes`, 2
   `Quality gate failed, running
   Claude fix attempt`, the rest
   `[phase] quality_gate` started/continue lines), 252 `pre-PR verifier`, 139
   `mutation check`, 82 `coverage carry-over check`, 35530 `unknown`. Every
-  `agent turn` line is a genuine agent-progress or claude_runner line: 0 false
-  positives there. Every note the two gates log (`N of M mutants killed`,
+  `agent turn` line is an agent-progress or claude_runner line, but the old
+  matcher also counted health-check announcements and sessions as turns; the
+  previous claim of zero false positives was incorrect. The old corpus did not
+  record their separate counts, so the exact false-positive count is unknown. Every note the two gates log (`N of M mutants killed`,
   `mutation budget exhausted ...`, `mutation check not
   applicable ...`,
   `N of M carried-over lines still covered`,
@@ -219,3 +222,18 @@ read; the serial test pass of the gate did not run.
   these logs (two `Quality gate failed, running Claude fix
   attempt` lines
   only), so that shape is not covered by the corpus.
+
+- PR #4819 review: session starts now match the runner shape for every registered
+  provider. `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep recognises each provider's session and distinguishes the health announcement`
+  derives names from the registry and covers normal sessions, health
+  announcements and probe sessions after a quality gate. The old Claude-only
+  matcher failed this test. Health announcements no longer match; probe
+  sessions still count as agent turns because the runner logs the same shape
+  for them and ordinary sessions. A current 30-file host-log sample contains 23
+  Claude health announcements and 23 matching 30-second session lines; it is
+  not the original 45-file corpus.
+- TDD rule 3: the obsolete behaviour was skipping liveness and status lines and
+  treating any `Running Claude Code` text as a session. Phase tickers are still
+  skipped, and provider session starts remain labelled; coverage is
+  `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)`
+  and the provider session test above. No twin matcher was found.

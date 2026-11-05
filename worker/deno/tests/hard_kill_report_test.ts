@@ -16,6 +16,7 @@ import {
 import type { HardKillEvidence } from "../lib/hard_kill_evidence.ts";
 import type { CoverageCarryOverResult } from "../lib/coverage_carryover_gate.ts";
 import { evaluateCoverageCarryOverGate } from "../lib/coverage_carryover_gate.ts";
+import { agentProviderById, agentProviderIds } from "../lib/agent_provider.ts";
 import type { MutationCheckResult } from "../lib/mutation_gate.ts";
 import { evaluateMutationGate } from "../lib/mutation_gate.ts";
 import { HARD_KILL_EVIDENCE_VERSION } from "../lib/hard_kill_evidence.ts";
@@ -1154,6 +1155,43 @@ Deno.test("hardKillLastStep: each table operand names its step from the log shap
       ].join("\n"),
     });
     assertEquals(hardKillLastStep(ev), label, name);
+  }
+});
+
+Deno.test("hardKillLastStep recognises each provider's session and distinguishes the health announcement", () => {
+  for (const id of agentProviderIds()) {
+    const provider = agentProviderById(id);
+    assert(provider);
+    const earlier = "Quality gate passed attempt=1";
+    const session =
+      `Running ${provider.displayName} with 3600s timeout (60s grace period)...`;
+    assertEquals(
+      hardKillLastStep(makeEvidence({ lastLogLine: session }, {
+        workerLogTail: earlier,
+      })),
+      "agent turn",
+      id,
+    );
+    const announcement =
+      `Running ${provider.displayName} health check (30s timeout)...`;
+    assertEquals(
+      hardKillLastStep(makeEvidence({ lastLogLine: announcement }, {
+        workerLogTail: earlier,
+      })),
+      "quality gate",
+      id,
+    );
+    // A health probe invokes the same runner and its session line is identical
+    // in shape to a regular turn; the log alone cannot distinguish them.
+    const probeSession =
+      `Running ${provider.displayName} with 30s timeout (5s grace period)...`;
+    assertEquals(
+      hardKillLastStep(makeEvidence({ lastLogLine: probeSession }, {
+        workerLogTail: earlier,
+      })),
+      "agent turn",
+      id,
+    );
   }
 });
 

@@ -90,11 +90,9 @@ const PHASE_PATTERNS: readonly RegExp[] = [
 ];
 /** Cap on each candidate line scanned for a last step (cost guard). */
 const STEP_SCAN_CHARS = 2000;
-/** Ticker and status lines that name no step the run took; skipped. */
+/** Phase tickers can quote a step but do not identify the current step. */
 const STEP_NOISE: readonly RegExp[] = [
   /\[phase\][^\n]*still running/,
-  /\[liveness\]/,
-  /\bStatus: /,
 ];
 /**
  * An agent-progress ticker line. It copies the agent's last tool call (a Bash
@@ -126,7 +124,10 @@ const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
     pattern: /\bcoverage carry-over\b|\bcarried-over lines\b/i,
   },
   { label: "quality gate", pattern: /\bQuality gate\b|\[phase\] quality_gate/ },
-  { label: "agent turn", pattern: /Running Claude Code/ },
+  {
+    label: "agent turn",
+    pattern: /\bRunning [A-Za-z][A-Za-z ]{0,30} with \d+s timeout\b/,
+  },
 ];
 /**
  * `owner/repo#N`. Owner and repo draw from the same class, so a run of name
@@ -442,7 +443,7 @@ export function formatHardKillTitle(sig: HardKillSignature): string {
  * step the run had last reported, not necessarily the one it was in: the wedge
  * is in that step or a later one that logs nothing as it starts. The label is
  * that of the first candidate line (the last log line, then the log tail from its end)
- * that is not ticker or status noise and matches a table entry; `unknown` when
+ * that is not ticker noise and matches a table entry; `unknown` when
  * none does. Each line is capped at {@link STEP_SCAN_CHARS} before matching.
  * The label is never log text, so the public issue cannot carry it.
  */
