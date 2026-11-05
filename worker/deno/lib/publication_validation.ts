@@ -164,6 +164,17 @@ const GATE_TIMEOUT_EXIT_CODES: ReadonlySet<number> = new Set([124, 137, 143]);
 const DISK_FULL_PATTERN = /No space left on device|ENOSPC|Disk quota exceeded/i;
 
 /**
+ * Output lines that name or quote text rather than report the host's own
+ * error: a Deno test-result line (`<name> ... ok`), the same name in the
+ * failure listing (`<name> => file:line:col`), a quoted source line
+ * (`12 | ...`) and a pass-count line. A passing test called "names the ENOSPC
+ * export failure" must not make a failing gate read as a full disk. Anchored
+ * alternation without nested quantifiers, so matching is linear.
+ */
+const QUOTED_TEXT_LINE =
+  /(?:\.\.\. (?:ok|FAILED|ignored)\b| => \S+:\d+:\d+\s*$|^\s*\d+ \| |^(?:ok|FAILED) \| \d+ passed)/;
+
+/**
  * The gate's timeout when the repository sets no `quality_check_timeout`. The
  * quality-gate phase's 600-second default kills a repository whose own gate
  * takes longer, and that kill would then read as a content failure. A
@@ -511,7 +522,7 @@ function gateInfrastructureFault(
   _exitCode: number | undefined,
 ): string | undefined {
   const line = output.split("\n").find((candidate) =>
-    DISK_FULL_PATTERN.test(candidate)
+    !QUOTED_TEXT_LINE.test(candidate) && DISK_FULL_PATTERN.test(candidate)
   );
   if (line !== undefined) {
     return `the host ran out of disk: ${

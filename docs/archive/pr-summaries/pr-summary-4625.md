@@ -354,3 +354,38 @@ credential-denial profile for the gate; capability probes in the spelling and
 feedback lanes; the base comparison in the non-babysitter lanes still uses the
 default branch. Quality gate: `./quality.sh` on this head: Result PASSED (with
 skipped checks: config integration, checkov).
+
+## Completion-check round (pre-PR verifier and mutation check)
+
+- Disk-fault false positive (verifier finding,
+  `worker/deno/lib/publication_validation.ts` `gateInfrastructureFault`): the
+  disk-full match ran over every output line, so a failing Deno gate whose
+  passing transcript named a test such as `classifyBuildFailure - names the
+  ENOSPC export failure as builder storage ... ok` was reported `unavailable`
+  and never returned for repair. Lines that only name or quote text are now
+  skipped (`QUOTED_TEXT_LINE`: `... ok|FAILED|ignored` result lines, the
+  `name => file:line:col` failure listing, quoted `N | source` lines and the
+  `ok|FAILED | N passed` count line); a real error line such as
+  `write failed: No space left on device` still reads as a full disk. Test:
+  `publication_validation_test.ts::a failed gate that only names a disk fault in test names stays failed, with its output returned`
+  (red with the filter removed; the existing "full disk is unavailable" tests
+  still pass).
+- Mutation survivors in `fleet_pr_babysitter.ts`: the gate request fields
+  (1388 `repoConfigs`, 1391 `requireSeparateAccount`, 1393 `baseRef`) were
+  asserted only by the child-process scenarios, which the mutation runner does
+  not attribute to the module. `babysitter_fix_orchestration_test.ts::fix asks for the repository gate on the committed head as a separate account, with the loaded configs and the PR's base`
+  now asserts them in-process, and
+  `...a paused failed-CI repair is handed off as a handoff, not as the auto-fix cap`
+  pins `request.pause === undefined` (1968). Each of the five listed mutations
+  was applied by hand and turned the file's tests red.
+- Repository review checklist `capsec-safe-execution` ("Untrusted text reaches a
+  process or query only as data, through the platform's argument list or
+  parameter binding. A wrapper that is never called, or a check that rejects
+  every call, does not pass."): **met**. The gate and its probes spawn through
+  argv lists (`runGitCommand`, `Deno.Command` with an args array); the one
+  `sh -c` in `separateAccountCanReach` has a constant script that reads the
+  checkout and gate paths as positional parameters (`"$1"`, `"$2"`), never
+  spliced into the script text; the wrapper is called from
+  `validateRepositoryForPublication` and `probePublicationCapability`, and
+  `publication_validation_test.ts::requireSeparateAccount: ...` shows it passes
+  a reachable clone and rejects an unreachable one.

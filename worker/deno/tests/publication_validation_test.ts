@@ -633,6 +633,28 @@ Deno.test("a failed gate whose output reports a full disk is unavailable", async
   });
 });
 
+Deno.test("a failed gate that only names a disk fault in test names stays failed, with its output returned", async () => {
+  await withRepo({ "README.md": "hello\n" }, async (dir) => {
+    const output = [
+      "classifyBuildFailure - names the ENOSPC export failure as builder storage ... ok (3ms)",
+      "reports No space left on device as host disk ... FAILED (4ms)",
+      "ERRORS",
+      "reports No space left on device as host disk => ./tests/x_test.ts:12:6",
+      "  12 | const text = 'No space left on device';",
+      "FAILED | 10 passed | 1 failed",
+      "",
+    ].join("\n");
+    const v = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO },
+        { runGate: stubGate({ action: "failed", qualityOutput: output }) },
+      ),
+      "failed",
+    );
+    assertStringIncludes(v.output, "names the ENOSPC export failure");
+  });
+});
+
 Deno.test("the gate's runCommand returns its result unchanged in the checkout", async () => {
   await withRepo({ "README.md": "hello\n" }, async (dir) => {
     const seenCwd: string[] = [];

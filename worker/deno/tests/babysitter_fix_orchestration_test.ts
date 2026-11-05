@@ -28,6 +28,7 @@ import {
   listBabysitterRetryStates,
   saveBabysitterRetryState,
 } from "../lib/babysitter_retry_state.ts";
+import { loadConfig } from "../lib/config.ts";
 import { acquireBranchUpdateLock } from "../lib/pr_branch_lock.ts";
 
 const HEAD = "a".repeat(40);
@@ -1468,4 +1469,71 @@ Deno.test("stale conflict defers until GitHub recomputes mergeability", async ()
     await h.attempt();
     assertEquals(h.state.sessions, 0);
   });
+});
+
+Deno.test("fix asks for the repository gate on the committed head as a separate account, with the loaded configs and the PR's base (Issue #4625)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    const configPath = `${stateDir}-config.json`;
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify({
+        repos: [REPO],
+        repo_config: { [REPO]: { quality_command: "./check.sh" } },
+      }),
+    );
+    const expected = (await loadConfig(configPath)).repoConfig;
+    assertEquals(expected?.[REPO]?.qualityCommand, "./check.sh");
+    const requests: Array<Parameters<NonNullable<FixDeps["validate"]>>[0]> = [];
+    h.deps.validate = (request) => {
+      requests.push(request);
+      return Promise.resolve({ status: "passed", head: PUSHED, gate: "ran" });
+    };
+    h.state.changes = true;
+    await fix(
+      REPO,
+      basePr() as never,
+      [BOT],
+      BOT,
+      APP,
+      configPath,
+      h.gh,
+      () => Promise.resolve(),
+      3,
+      h.deps,
+    );
+    await Deno.remove(configPath);
+    assertEquals(requests.length, 1);
+    assertEquals(requests[0]!.repo, REPO);
+    assertEquals(requests[0]!.repoConfigs, expected);
+    assertEquals(requests[0]!.requireSeparateAccount, true);
+    assertEquals(requests[0]!.baseRef, "origin/main");
+    assertEquals(h.state.pushed, 1);
+  });
+});
+
+Deno.test("a paused failed-CI repair is handed off as a handoff, not as the auto-fix cap (Issue #4625)", async () => {
+  const writes: string[] = [];
+  const comments: Array<Record<string, unknown>> = [];
+  const request: EscalationRequest = {
+    repo: REPO,
+    prNumber: 1,
+    failureIdentity: "failed CI",
+    record: tracked({ evidence: ["line one"] }),
+    authors: [BOT],
+    gh: (args) => {
+      if (args.includes("POST")) {
+        const body = args[args.indexOf("--field") + 1]!.slice(5);
+        writes.push(body);
+        comments.push({ body, user: { login: BOT } });
+        return Promise.resolve('{"id":1}');
+      }
+      return Promise.resolve(JSON.stringify([comments]));
+    },
+    pause: "the host cannot run the repository checks",
+  };
+  await escalateStuckRepair(request);
+  assertEquals(writes.length, 1);
+  assertStringIncludes(writes[0]!, "babysitter-handoff:");
+  assert(!writes[0]!.includes("auto-fix-cap:"));
 });
