@@ -132,6 +132,9 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   };
   let retarget = false;
   let wrongParent = false;
+  let wrongParentReads = 0;
+  let mergeabilityReadings: string[] = [];
+  const retryWaits: number[] = [];
   let views = 0;
   const writes: string[][] = [];
   const comments: Array<
@@ -150,7 +153,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
           headRefOid: head,
           autoMergeRequest: {},
           reviewDecision: decision,
-          mergeable: "MERGEABLE",
+          mergeable: mergeabilityReadings.shift() ?? "MERGEABLE",
           mergeStateStatus: "BEHIND",
         }),
       );
@@ -203,7 +206,11 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     if (endpoint.includes("/git/commits/")) {
       return Promise.resolve(
         JSON.stringify({
-          parents: [{ sha: wrongParent ? "d".repeat(40) : baseHead }, {
+          parents: [{
+            sha: wrongParent || wrongParentReads-- > 0
+              ? "d".repeat(40)
+              : baseHead,
+          }, {
             sha: head,
           }],
         }),
@@ -253,7 +260,9 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       gh,
       base,
       undefined,
-      async () => {},
+      async (ms) => {
+        retryWaits.push(ms);
+      },
       { fleetAuthors: ["VibeCoderST"] },
     );
   const firstRequest = await request();
@@ -350,6 +359,21 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     false,
   );
   assertEquals(writes.length, 4);
+
+  decision = "APPROVED";
+  mergeabilityReadings = ["UNKNOWN", "MERGEABLE"];
+  retryWaits.length = 0;
+  const unknownThenReady = await request("main");
+  assertEquals(unknownThenReady.ok, true);
+  assert(retryWaits.length > 0);
+  assertEquals(writes.length, 5);
+
+  wrongParentReads = 1;
+  retryWaits.length = 0;
+  const staleThenCurrent = await request("main");
+  assertEquals(staleThenCurrent.ok, true);
+  assert(retryWaits.length > 0);
+  assertEquals(writes.length, 6);
 });
 
 Deno.test("ready updater rejects an invalid PR number before invoking gh", async () => {

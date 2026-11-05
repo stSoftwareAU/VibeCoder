@@ -23,6 +23,10 @@ import {
 import { checkPrBaseIntegrity } from "../lib/pr_base_integrity.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
+import {
+  readBranchRefreshRefusals,
+  writeBranchRefreshRefusals,
+} from "../lib/branch_refresh_refusal_streak.ts";
 
 const REPOS = [
   "stSoftwareAU/VibeCoder",
@@ -33,12 +37,16 @@ const FLEET = ["VibeCoderST", "stservice"];
 
 const warnings: { message: string }[] = [];
 const infos: { message: string; context?: Record<string, unknown> }[] = [];
-const logger: Pick<Logger, "info" | "warn"> = {
+const errors: { message: string; context?: Record<string, unknown> }[] = [];
+const logger: Pick<Logger, "info" | "warn" | "error"> = {
   info: (message: string, context?: Record<string, unknown>) => {
     infos.push({ message, context });
   },
   warn: (message: string) => {
     warnings.push({ message });
+  },
+  error: (message: string, context?: Record<string, unknown>) => {
+    errors.push({ message, context });
   },
 };
 
@@ -560,6 +568,123 @@ Deno.test("an armed, behind PR gets exactly one branch update and no merge attem
   assertEquals(state.recorded.map((r) => r.result), [
     AutoMergeResult.BranchUpdateRequested,
   ]);
+});
+
+Deno.test("repeated transient branch refresh refusals persist, notify once, and clear on recovery (Issue #4831)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "branch-refresh-streak-" });
+  const notifications: Array<{ active: boolean; streak: number }> = [];
+  const tracking = {
+    load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
+    save: (state: Awaited<ReturnType<typeof readBranchRefreshRefusals>>) =>
+      writeBranchRefreshRefusals(workDir, state, undefined, () => {}),
+    notify: ({ active, entry }: { active: boolean; entry: { streak: number } }) => {
+      notifications.push({ active, streak: entry.streak });
+      return Promise.resolve();
+    },
+  };
+  const { options } = harness({ [VC]: [{ number: 4831 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+    updateBranchFn: () =>
+      Promise.resolve({
+        ok: false as const,
+        error: new Error(
+          "required-check read failed: PR mergeability is still UNKNOWN",
+        ),
+      }),
+  });
+  try {
+    errors.length = 0;
+    const first = await sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+    });
+    assert(first.ok);
+    assertEquals(notifications, []);
+
+    const second = await sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+    });
+    assert(second.ok);
+    assertEquals(notifications, [{ active: true, streak: 2 }]);
+    assertEquals(errors.length, 1);
+
+    const afterRestart = {
+      ...tracking,
+      load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
+    };
+    const third = await sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: afterRestart,
+    });
+    assert(third.ok);
+    assertEquals(notifications, [{ active: true, streak: 2 }]);
+
+    const recovered = await sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: {
+        ...tracking,
+        load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
+      },
+      updateBranchFn: () => Promise.resolve({ ok: true, value: undefined }),
+    });
+    assert(recovered.ok);
+    assertEquals(notifications, [
+      { active: true, streak: 2 },
+      { active: false, streak: 3 },
+    ]);
+    assertEquals((await readBranchRefreshRefusals(workDir)).size, 0);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("a different or permanent refusal does not advance a transient streak (Issue #4831)", async () => {
+  const state = new Map();
+  const notifications: boolean[] = [];
+  const { options } = harness({ [VC]: [{ number: 4832 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+  });
+  const tracking = {
+    load: () => Promise.resolve(state),
+    save: (_state: typeof state) => Promise.resolve(),
+    notify: ({ active }: { active: boolean }) => {
+      notifications.push(active);
+      return Promise.resolve();
+    },
+  };
+  const run = (message: string) =>
+    sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+      updateBranchFn: () =>
+        Promise.resolve({ ok: false as const, error: new Error(message) }),
+    });
+
+  assert((await run("required-check read failed: PR mergeability is still UNKNOWN")).ok);
+  assert((await run("required-check read failed: PR test merge parents do not match its head and base")).ok);
+  assertEquals(notifications, []);
+  assert((await run("required-check read failed: PR test merge parents do not match its head and base")).ok);
+  assertEquals(notifications, [true]);
+  assert((await run("permission denied")).ok);
+  assertEquals(notifications, [true, false]);
 });
 
 Deno.test("an armed, current PR gets no update call and is merge-attempted as usual", async () => {

@@ -42,6 +42,14 @@ import {
   AutoMergeResult,
   type EnableAutoMergeResult,
 } from "./pr_auto_merge.ts";
+import {
+  BRANCH_REFRESH_REFUSAL_THRESHOLD,
+  classifyTransientBranchRefreshRefusal,
+  clearBranchRefreshRefusal,
+  recordBranchRefreshRefusal,
+  type BranchRefreshRefusalEntry,
+  type BranchRefreshRefusalState,
+} from "./branch_refresh_refusal_streak.ts";
 
 /** One open PR the sweep may act on. */
 export interface SweepablePr {
@@ -107,13 +115,25 @@ export interface SweepAutoMergeOptions {
    * Apply the shared refresh policy to an armed, behind PR. On a strict base
    * without a queue, readiness and shared per-base ownership decide whether
    * the `update-branch` request is issued (Issue #4613); every refusal is
-   * recorded and the sweep moves on.
+   * recorded and the sweep moves on. Repeated mergeability-unknown or stale
+   * test-merge refusals are tracked across passes when tracking is configured.
    */
   updateBranchFn: (
     repo: string,
     prNumber: number,
     baseRefName?: string,
   ) => Promise<Result<void>>;
+  /** Durable streak and one-comment escalation for repeated transient refusals. */
+  branchRefreshRefusals?: {
+    load: () => Promise<BranchRefreshRefusalState>;
+    save: (state: BranchRefreshRefusalState) => Promise<void>;
+    notify: (event: {
+      repo: string;
+      prNumber: number;
+      entry: BranchRefreshRefusalEntry;
+      active: boolean;
+    }) => Promise<void>;
+  };
   /**
    * Whether a base branch is behind a GitHub merge queue (Issue #4424). An
    * armed, behind PR on a queued base is not sent to `updateBranchFn`: the
@@ -147,7 +167,7 @@ export interface SweepAutoMergeOptions {
   /** Drop the repo's cached open-PR list after a merge attempt mutated it. */
   invalidateOpenPrCache: (repo: string) => Promise<void>;
   /** Logger. */
-  logger: Pick<Logger, "info" | "warn">;
+  logger: Pick<Logger, "info" | "warn" | "error">;
 }
 
 /** What one sweep did. */
@@ -193,8 +213,39 @@ export async function sweepAutoMerge(
     attemptMerge,
     recordOutcome,
     invalidateOpenPrCache,
+    branchRefreshRefusals,
     logger,
   } = options;
+
+  const refusalState = branchRefreshRefusals
+    ? await branchRefreshRefusals.load()
+    : new Map();
+  const listedRepos = new Set<string>();
+  const listedPrs = new Set<string>();
+  const clearRefusal = async (repo: string, prNumber: number) => {
+    const previous = clearBranchRefreshRefusal(refusalState, repo, prNumber);
+    if (previous?.notified && branchRefreshRefusals) {
+      try {
+        await branchRefreshRefusals.notify({
+          repo,
+          prNumber,
+          entry: previous,
+          active: false,
+        });
+        logger.info("Auto-merge branch-refresh refusal recovered", {
+          repo,
+          prNumber,
+          reason: previous.reason,
+        });
+      } catch (err) {
+        logger.warn("Could not update branch-refresh diagnostic comment", {
+          repo,
+          prNumber,
+          error: errorMessage(err),
+        });
+      }
+    }
+  };
 
   const summary: SweepAutoMergeSummary = {
     reposVisited: [],
@@ -251,6 +302,10 @@ export async function sweepAutoMerge(
         quota.repoDone();
         continue;
       }
+      listedRepos.add(repo);
+      for (const listedPr of prs) {
+        listedPrs.add(`${repo}#${listedPr.number}`);
+      }
 
       // Issue #1136: say what this repo contributed. Without these lines the
       // whole pass produced one log entry — the priority's name — so an
@@ -273,6 +328,7 @@ export async function sweepAutoMerge(
         if (
           pr.labels?.some((l) => l.name?.toLowerCase() === "needs-human")
         ) {
+          await clearRefusal(repo, pr.number);
           logger.info(
             "Auto-merge sweep: skipping needs-human PR — it waits on a person",
             { repo, prNumber: pr.number },
@@ -284,6 +340,7 @@ export async function sweepAutoMerge(
         // refusal as a failure. A draft is the author asking for eyes, not
         // a merge candidate — skip it, and say so once per process.
         if (pr.isDraft === true) {
+          await clearRefusal(repo, pr.number);
           const key = `${repo}#${pr.number}`;
           if (!announcedDrafts.has(key)) {
             announcedDrafts.add(key);
@@ -309,6 +366,7 @@ export async function sweepAutoMerge(
           reading = { unknown: true, error: errorMessage(err) };
         }
         if (!reading.open) {
+          await clearRefusal(repo, pr.number);
           summary.prsSkippedNotOpen++;
           logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
           continue;
@@ -320,11 +378,16 @@ export async function sweepAutoMerge(
         try {
           const check = await checkBaseIntegrity(repo, pr, armedNow);
           if (check.action === "hold") {
+            await clearRefusal(repo, pr.number);
             recordOutcome(repo, pr.number, check.outcome);
             continue;
           }
-          if (check.disarmed) armedNow = false;
+          if (check.disarmed) {
+            await clearRefusal(repo, pr.number);
+            armedNow = false;
+          }
         } catch (err) {
+          await clearRefusal(repo, pr.number);
           logger.warn("Auto-merge sweep base check threw — not arming", {
             repo,
             prNumber: pr.number,
@@ -356,6 +419,7 @@ export async function sweepAutoMerge(
           armedNow && reading.behind === true &&
           reading.changesRequested === true
         ) {
+          await clearRefusal(repo, pr.number);
           logger.info(
             "Auto-merge sweep: armed PR is behind its base, but a reviewer " +
               "requested changes (CHANGES_REQUESTED) — no branch update " +
@@ -369,6 +433,7 @@ export async function sweepAutoMerge(
           reading.mergeable !== "CONFLICTING" &&
           await isBaseQueued(repo, pr)
         ) {
+          await clearRefusal(repo, pr.number);
           logger.info(
             "Auto-merge sweep: armed PR is behind its base, which is behind a " +
               "GitHub merge queue — no branch update; the queue tests the PR " +
@@ -400,7 +465,48 @@ export async function sweepAutoMerge(
                   message: `branch update failed: ${update.error.message}`,
                 },
             );
+            if (update.ok) {
+              await clearRefusal(repo, pr.number);
+            } else {
+              const reason = classifyTransientBranchRefreshRefusal(
+                update.error.message,
+              );
+              if (!reason || !branchRefreshRefusals) {
+                await clearRefusal(repo, pr.number);
+              } else {
+                const entry = recordBranchRefreshRefusal(
+                  refusalState,
+                  repo,
+                  pr.number,
+                  reason,
+                );
+                if (
+                  entry.streak >= BRANCH_REFRESH_REFUSAL_THRESHOLD &&
+                  !entry.notified
+                ) {
+                  try {
+                    await branchRefreshRefusals.notify({
+                      repo,
+                      prNumber: pr.number,
+                      entry,
+                      active: true,
+                    });
+                    entry.notified = true;
+                    logger.error(
+                      "Fleet health: repeated transient branch-refresh refusal",
+                      { repo, prNumber: pr.number, reason, streak: entry.streak },
+                    );
+                  } catch (err) {
+                    logger.warn(
+                      "Could not post branch-refresh diagnostic comment",
+                      { repo, prNumber: pr.number, error: errorMessage(err) },
+                    );
+                  }
+                }
+              }
+            }
           } catch (err) {
+            await clearRefusal(repo, pr.number);
             recordOutcome(repo, pr.number, {
               result: AutoMergeResult.Failed,
               message: `branch update failed: ${errorMessage(err)}`,
@@ -408,6 +514,8 @@ export async function sweepAutoMerge(
           }
           continue;
         }
+
+        await clearRefusal(repo, pr.number);
 
         try {
           const outcome = await attemptMerge(repo, pr);
@@ -437,6 +545,15 @@ export async function sweepAutoMerge(
       }
       quota.repoDone();
     }
+    for (const [key] of refusalState) {
+      const separator = key.lastIndexOf("#");
+      const repo = key.slice(0, separator);
+      const prNumber = Number(key.slice(separator + 1));
+      if (listedRepos.has(repo) && !listedPrs.has(key)) {
+        await clearRefusal(repo, prNumber);
+      }
+    }
+    if (branchRefreshRefusals) await branchRefreshRefusals.save(refusalState);
     return { ok: true, value: summary };
   } catch (err) {
     return {
