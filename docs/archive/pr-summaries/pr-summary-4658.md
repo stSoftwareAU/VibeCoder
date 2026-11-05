@@ -175,19 +175,22 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
   and each test's name as `--filter` from `worker/deno`:
   - `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`:
     `failsWithoutChange`: replacing the `git_pull` target classification with
-    `unknown` fails with actual `unknown`, expected `milestone`. The obsolete
-    unknown classification for a milestone target is replaced by milestone
-    attribution; unnamed and unlisted callers remain unknown in this test.
+    `unknown` fails at `audit_hook_test.ts:688` with actual `unknown`, expected
+    `milestone`. The obsolete unknown classification for a milestone target is
+    replaced by milestone attribution; unnamed and unlisted callers remain
+    unknown in this test.
   - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an unchained review log cannot verify a PR's history`:
     `failsWithoutChange`: restoring `actor: "fleet"` and `verified: true` for
-    review-log actions fails with actual `fleet`, expected `unknown`. The
-    obsolete trusted attribution is replaced by unknown, unverified attribution;
-    this test also retains the head and checks the unmatched GitHub review.
+    review-log actions fails at `pr_completion_snapshot_test.ts:3340` with
+    actual `fleet`, expected `unknown`. The obsolete trusted attribution is
+    replaced by unknown, unverified attribution; this test also retains the head
+    and checks the unmatched GitHub review.
   - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored`:
     `failsWithoutChange`: restoring `actor: "fleet"` and `verified: true` for
-    review-log actions fails with actual `0`, expected `1` unknown merge. The
-    obsolete trusted attribution is replaced by unknown attribution; this test
-    also covers the malformed-line note and out-of-cohort exclusion.
+    review-log actions fails at `pr_completion_snapshot_test.ts:3402` with
+    actual `0`, expected `1` unknown merge. The obsolete trusted attribution is
+    replaced by unknown attribution; this test also covers the malformed-line
+    note and out-of-cohort exclusion.
 - PR #4810 review response (reproduced from `worker/deno` with `deno test -A`
   and the test's name as `--filter`):
   - `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a CI failure fixed by a later run of the same workflow on the same head closes when that run completes`:
@@ -214,8 +217,8 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     the head and failed with an assertion mismatch (`failsWithoutChange`); the
     withdrawn-merge guard test is recorded above (it failed at `:728`):
     - `worker/deno/tests/audit_hook_test.ts::audit_hook - unnamed pushes stay unknown while milestone pushes are classified`:
-      `git_pull` milestone target classified `unknown` fails with actual
-      `unknown`, expected `milestone`.
+      `git_pull` milestone target classified `unknown` fails at
+      `audit_hook_test.ts:688` with actual `unknown`, expected `milestone`.
     - `worker/deno/tests/pr_completion_report_test.ts::rollout check separates eligibility, rediscovery and processing before the target window`:
       restoring `lib/pr_completion_report.ts` to `origin/main` fails at
       `pr_completion_report_test.ts:347` with actual `undefined`, expected `1`
