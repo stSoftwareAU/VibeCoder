@@ -453,29 +453,15 @@ export async function requestReadyBranchUpdate(
       typeof pr.headRefOid === "string";
     const ready = (pr: ObjectValue) =>
       otherwiseReady(pr) && pr.mergeable === "MERGEABLE";
-    const current = await retryWithBackoff(async () => {
-      const live = await readLivePr();
-      if (
-        otherwiseReady(live) &&
-        (live.mergeable === "UNKNOWN" || live.mergeable === null)
-      ) {
-        throw new Error("PR mergeability is still UNKNOWN");
-      }
-      return live;
-    }, {
-      maxAttempts: 4,
-      ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
-      shouldRetry: (error) =>
-        error.message === "PR mergeability is still UNKNOWN",
-    });
-    if (!hasCurrentTarget(current)) {
+    const initial = await readLivePr();
+    if (!hasCurrentTarget(initial)) {
       return {
         ok: false,
         error: new Error("PR base or head changed before branch update"),
       };
     }
-    const baseRefName = current.baseRefName as string;
-    const headRefOid = current.headRefOid as string;
+    const baseRefName = initial.baseRefName as string;
+    const headRefOid = initial.headRefOid as string;
     const policy = await readStrictBasePolicy(
       repo,
       baseRefName,
@@ -488,12 +474,54 @@ export async function requestReadyBranchUpdate(
       };
     }
     if (!policy.strict) {
+      if (initial.mergeable === "UNKNOWN" || initial.mergeable === null) {
+        return {
+          ok: false,
+          error: new Error("PR no longer ready for a branch update"),
+        };
+      }
       return await requestBranchUpdate(
         repo,
         prNumber,
         gh,
         headRefOid,
       );
+    }
+    let current = initial;
+    if (
+      otherwiseReady(initial) &&
+      (initial.mergeable === "UNKNOWN" || initial.mergeable === null)
+    ) {
+      let firstRead = true;
+      current = await retryWithBackoff(async () => {
+        const live = firstRead ? initial : await readLivePr();
+        firstRead = false;
+        if (
+          !hasCurrentTarget(live) || live.baseRefName !== baseRefName ||
+          live.headRefOid !== headRefOid
+        ) return live;
+        if (
+          otherwiseReady(live) &&
+          (live.mergeable === "UNKNOWN" || live.mergeable === null)
+        ) {
+          throw new Error("PR mergeability is still UNKNOWN");
+        }
+        return live;
+      }, {
+        maxAttempts: 4,
+        ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
+        shouldRetry: (error) =>
+          error.message === "PR mergeability is still UNKNOWN",
+      });
+    }
+    if (
+      !hasCurrentTarget(current) || current.baseRefName !== baseRefName ||
+      current.headRefOid !== headRefOid
+    ) {
+      return {
+        ok: false,
+        error: new Error("PR base or head changed before branch update"),
+      };
     }
     if (!ready(current)) {
       return {
