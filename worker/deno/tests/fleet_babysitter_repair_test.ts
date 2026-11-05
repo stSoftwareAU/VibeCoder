@@ -116,8 +116,9 @@ async function repairScenario(
           `${root}/state/vibe-coder/fleet-pr-babysitter`,
         )
       ) {
-        // The shift-left ledger shares this directory with attempt markers.
-        if (entry.isFile && entry.name !== "deployment-health.json") {
+        // The ledgers and audit roster share this directory with attempt
+        // markers, which are the only `attempt-v2-*` files (babysitter_retry_state.ts).
+        if (entry.isFile && entry.name.startsWith("attempt-v2-")) {
           attempts.push(entry.name);
         }
       }
@@ -168,7 +169,7 @@ for (const scenario of ["ready", "multiline-ready"]) {
 for (
   const [scenario, cause] of [
     ["not-ready", "repair agent did not report runner findings fixed"],
-    ["missing-response", "repair agent did not write its completion response"],
+    ["missing-response", "agent did not write its completion response"],
     ["agent-failed", "agent failed to repair runner validation findings"],
     [
       "lock-lost-before-spawn",

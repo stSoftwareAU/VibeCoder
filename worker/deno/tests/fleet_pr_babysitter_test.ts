@@ -562,9 +562,9 @@ Deno.test("a pushed fix syncs the legacy body from its original head before dism
         renewalFailed: () => false,
         runCommand: async (command, args, cwd) => {
           if (command === "git" && args[0] === "status") return " M summary";
-          if (command === "git" && args[0] === "diff") return "";
+          if (command === "git" && args.includes("diff")) return "";
           if (command === "gh" && args[0] === "api") return "12345";
-          if (command === "git" && args[0] === "push") {
+          if (command === "git" && args.includes("push")) {
             pushArgs.push(args);
             events.push("push");
             return "";
@@ -745,9 +745,9 @@ Deno.test("Issue #4637: a pushed repair pins its body sync to the verified pushe
         renewalFailed: () => false,
         runCommand: async (command, args) => {
           if (command === "git" && args[0] === "status") return " M summary";
-          if (command === "git" && args[0] === "diff") return "";
+          if (command === "git" && args.includes("diff")) return "";
           if (command === "gh" && args[0] === "api") return "12345";
-          if (command === "git" && args[0] === "push") return "";
+          if (command === "git" && args.includes("push")) return "";
           if (command === "git" && args[0] === "rev-parse") {
             return fixture.headSha;
           }
@@ -1011,9 +1011,9 @@ function repairRunCommand(options: {
     if (command === "git" && args[0] === "status") {
       return options.changed ? " M summary" : "";
     }
-    if (command === "git" && args[0] === "diff") return "";
+    if (command === "git" && args.includes("diff")) return "";
     if (command === "gh" && args[0] === "api") return "12345";
-    if (command === "git" && args[0] === "push") {
+    if (command === "git" && args.includes("push")) {
       options.events?.push("push");
       return "";
     }
@@ -3265,24 +3265,18 @@ Deno.test("the proposal is returned as written, and the guard restores closing r
   }
 });
 
-<<<<<<< HEAD
-Deno.test("an empty PR description proposal is not applied, and an oversized one is rejected at intake", async () => {
-  const dir = await Deno.realPath(await Deno.makeTempDir());
-=======
 Deno.test("a runner repair may replace the first PR description proposal", async () => {
   const dir = await Deno.makeTempDir();
   try {
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "Retry proposal");
+    // The proposal is returned as written: closing references are restored by
+    // the description guard, not by the proposal reader (main's behaviour).
     assertEquals(
-      await takeRepairPrBodyProposal(
-        dir,
-        "Closes #4674",
-        "First proposal",
-      ),
-      "Retry proposal\n\nCloses #4674",
+      await takeRepairPrBodyProposal(dir, "First proposal"),
+      "Retry proposal",
     );
     assertEquals(
-      await takeRepairPrBodyProposal(dir, "Closes #4674", "First proposal"),
+      await takeRepairPrBodyProposal(dir, "First proposal"),
       "First proposal",
     );
   } finally {
@@ -3290,9 +3284,8 @@ Deno.test("a runner repair may replace the first PR description proposal", async
   }
 });
 
-Deno.test("an empty or oversized PR description proposal is not applied", async () => {
-  const dir = await Deno.makeTempDir();
->>>>>>> origin/issue-4674-babysitter-repairs-cannot-run-browser-checks-on-ma
+Deno.test("an empty PR description proposal is not applied, and an oversized one is rejected at intake", async () => {
+  const dir = await Deno.realPath(await Deno.makeTempDir());
   try {
     await Deno.writeTextFile(`${dir}/.babysitter-pr-body`, "  \n");
     assertEquals(await takePrBodyProposal(dir), undefined);
@@ -3311,7 +3304,6 @@ Deno.test("an empty or oversized PR description proposal is not applied", async 
   }
 });
 
-<<<<<<< HEAD
 // Issue #4731: the agent writes the proposal into the clone, so a planted link,
 // FIFO or oversized file must be refused before anything is published.
 Deno.test("a PR description proposal that is a symlink to a secret is refused without being read", async () => {
@@ -3433,11 +3425,8 @@ Deno.test("an oversized completion response is refused", async () => {
 
 // Issue #4677: CI is the gate, so a check this host cannot run is reported,
 // not a reason to discard an otherwise complete repair.
-Deno.test("a check the host cannot run is named but does not withhold readiness", () => {
-=======
 // Issue #4674: the runner owns the quality gate when Codex cannot launch a browser.
-Deno.test("agent browser limits hand the local gate to the runner", () => {
->>>>>>> origin/issue-4674-babysitter-repairs-cannot-run-browser-checks-on-ma
+Deno.test("a check the host cannot run is named, and agent browser limits hand the local gate to the runner", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
@@ -3459,7 +3448,7 @@ Deno.test("agent browser limits hand the local gate to the runner", () => {
     for (
       const text of [
         prompt,
-        buildRepairPrompt(why, 1, "owner/repo", "", "boom"),
+        buildRepairPrompt(why, 1, "owner/repo", "", undefined, "boom"),
       ]
     ) {
       assertStringIncludes(
@@ -3484,6 +3473,7 @@ Deno.test("runner check failure is fenced into the next repair prompt", () => {
     4674,
     "owner/repo",
     "",
+    undefined,
     failure,
   );
   assertStringIncludes(prompt, "runner's isolated quality.sh check failed");
@@ -3747,6 +3737,7 @@ for (const why of ["failed CI", "requested review changes", "merge conflict"]) {
       1,
       "owner/repo",
       "",
+      undefined,
       undefined,
       "linux",
     );

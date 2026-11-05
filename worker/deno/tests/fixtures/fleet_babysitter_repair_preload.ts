@@ -60,9 +60,13 @@ if (Deno.env.get("BABYSITTER_BLOCK_OPEN") === "1") {
 
 const pr = {
   state: "OPEN",
+  mergedAt: null,
   number: 1,
   title: "repair fixture",
-  body: "A description with no worker marker.",
+  // The body-proposal scenario's live PR closes #42, so the guard must keep it.
+  body: scenario === "body-proposal"
+    ? "Original body\n\nCloses\n#42"
+    : "A description with no worker marker.",
   closingIssuesReferences: [],
   author: { login: "fleet" },
   headRefName: "feature",
@@ -74,6 +78,7 @@ const pr = {
   mergeStateStatus: "CLEAN",
   reviewDecision: null,
   statusCheckRollup: [{ conclusion: "FAILURE" }],
+  files: [],
   // Already armed, so the repair does not arm auto-merge; arming has its own
   // tests in fleet_pr_babysitter_single_push_test.ts.
   autoMergeRequest: { enabledAt: null, mergeMethod: "MERGE" },
@@ -253,10 +258,14 @@ function commandOutput(
     if (args[0] === "exec") {
       agentCalls++;
       if (repair) record(`agent-${agentCalls}`);
-      Deno.writeTextFileSync(
-        `${args[args.indexOf("--cd") + 1]}/.babysitter-pr-body`,
-        "Reviewed PR description\n",
-      );
+      // The app pass (no repair scenario) proposes a description; repair
+      // scenarios propose only what they script, so their body is not edited.
+      if (!repair) {
+        Deno.writeTextFileSync(
+          `${args[args.indexOf("--cd") + 1]}/.babysitter-pr-body`,
+          "Reviewed PR description\n",
+        );
+      }
       Deno.writeTextFileSync(`${root}/agent-spawn.json`, JSON.stringify(args));
       const response = args[args.indexOf("--output-last-message") + 1]!;
       if (
