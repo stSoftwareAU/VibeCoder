@@ -360,20 +360,22 @@ skipped checks: config integration, checkov).
 - Disk-fault false positive (verifier finding,
   `worker/deno/lib/publication_validation.ts` `gateInfrastructureFault`): the
   disk-full match ran over every output line, so a failing Deno gate whose
-  passing transcript named a test such as `classifyBuildFailure - names the
-  ENOSPC export failure as builder storage ... ok` was reported `unavailable`
-  and never returned for repair. Lines that only name or quote text are now
-  skipped (`QUOTED_TEXT_LINE`: `... ok|FAILED|ignored` result lines, the
-  `name => file:line:col` failure listing, quoted `N | source` lines and the
-  `ok|FAILED | N passed` count line); a real error line such as
+  passing transcript named a test such as
+  `classifyBuildFailure - names the
+  ENOSPC export failure as builder storage ... ok`
+  was reported `unavailable` and never returned for repair. Lines that only name
+  or quote text are now skipped (`QUOTED_TEXT_LINE`: `... ok|FAILED|ignored`
+  result lines, the `name => file:line:col` failure listing, quoted `N | source`
+  lines and the `ok|FAILED | N passed` count line); a real error line such as
   `write failed: No space left on device` still reads as a full disk. Test:
   `publication_validation_test.ts::a failed gate that only names a disk fault in test names stays failed, with its output returned`
   (red with the filter removed; the existing "full disk is unavailable" tests
   still pass).
-- Mutation survivors in `fleet_pr_babysitter.ts`: the gate request fields
-  (1388 `repoConfigs`, 1391 `requireSeparateAccount`, 1393 `baseRef`) were
-  asserted only by the child-process scenarios, which the mutation runner does
-  not attribute to the module. `babysitter_fix_orchestration_test.ts::fix asks for the repository gate on the committed head as a separate account, with the loaded configs and the PR's base`
+- Mutation survivors in `fleet_pr_babysitter.ts`: the gate request fields (1388
+  `repoConfigs`, 1391 `requireSeparateAccount`, 1393 `baseRef`) were asserted
+  only by the child-process scenarios, which the mutation runner does not
+  attribute to the module.
+  `babysitter_fix_orchestration_test.ts::fix asks for the repository gate on the committed head as a separate account, with the loaded configs and the PR's base`
   now asserts them in-process, and
   `...a paused failed-CI repair is handed off as a handoff, not as the auto-fix cap`
   pins `request.pause === undefined` (1968). Each of the five listed mutations
