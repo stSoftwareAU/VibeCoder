@@ -71,21 +71,29 @@ phase's existing failed-verdict path passes the failure to a repair turn.
   136 passed, 0 failed.
 - `deno fmt --check`, `deno lint` and `deno check` on the four changed
   TypeScript files passed.
+- Pre-push recovery: `deno task check:manifests` passed (847 passed, 0 failed,
+  1 ignored), `deno task check` passed, and the production `runSemgrepCheck`
+  passed over four changed files with Semgrep 1.182.1. The reported JSR manifest
+  fetch failure and 10-second Semgrep probe timeout did not recur; no source or
+  gate-limit change was needed for these rechecks.
 - `deno task pr-summary-check --base origin/main` passed all applicable gates: 0
   blocked and 0 not checked.
 - The two formatter tests previously recorded as failing were not reproduced:
   `deno task test:unit tests/completion_phase_repo_formatters_test.ts` passed
   with 8 tests on both this branch and a detached `origin/main` worktree. Their
   earlier cause remains undetermined.
-- `./quality.sh < /dev/null` failed its Deno test-time budget: 83 unit tests
-  exceeded one second, including every test in the unchanged
-  `tests/fleet_pr_babysitter_validation_test.ts` and
-  `tests/launcher_harness_reclaim_stub_test.ts`. The parallel and serial Deno
-  test runs themselves passed; lint, type check and formatting passed. This
-  full-gate budget failure was not compared against `origin/main`.
+- The worker's pre-push gate reported JSR manifest-loading failures in
+  completeness, type checking and tests, plus a Semgrep probe timeout. The
+  recovery rechecks above did not reproduce those errors.
+- Recovery `deno task test:unit < /dev/null`: the parallel pass reported 32,656
+  passed, 0 failed and 5 ignored. The command exited 1 on its one-second
+  unit-test budget, reporting every test in the unchanged
+  `worker/deno/tests/fleet_pr_babysitter_validation_test.ts` and
+  `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` over budget. No
+  timing threshold or test was changed.
 - No twinned matcher or gate rule was found. Other `command not found` checks
   classify different failure text and were not changed.
 
-Not checked: whether the full-gate test-time budget failure also occurs on
-`origin/main`; the recorded formatter failures were not reproducible, so their
-cause is unknown.
+Not checked: the full gate after recovery, or whether the unit-test budget
+failure also occurs on `origin/main`. The causes of the unreproduced JSR,
+Semgrep probe and formatter failures remain unknown.
