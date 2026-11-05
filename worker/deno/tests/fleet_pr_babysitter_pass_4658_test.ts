@@ -192,8 +192,6 @@ Deno.test("a discovery write failure does not stop a repair", async () => {
 
 Deno.test("pass recovers temporary clones under /tmp when TMPDIR is set but empty", async () => {
   const root = await Deno.makeTempDir();
-  const saved = Deno.env.get("TMPDIR");
-  Deno.env.set("TMPDIR", "");
   try {
     const roots: string[] = [];
     await pass(
@@ -214,6 +212,7 @@ Deno.test("pass recovers temporary clones under /tmp when TMPDIR is set but empt
         gh: () => Promise.resolve("[]"),
         stateDir: `${root}/state`,
         hostId: PASS_HOST,
+        env: (name) => name === "TMPDIR" ? "" : undefined,
         recoverClones: (dir) => {
           roots.push(dir);
           return Promise.resolve();
@@ -222,8 +221,6 @@ Deno.test("pass recovers temporary clones under /tmp when TMPDIR is set but empt
     );
     assertEquals(roots, ["/tmp"]);
   } finally {
-    if (saved === undefined) Deno.env.delete("TMPDIR");
-    else Deno.env.set("TMPDIR", saved);
     await Deno.remove(root, { recursive: true });
   }
 });

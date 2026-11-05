@@ -2909,13 +2909,16 @@ export async function pass(
     gh?: (args: string[]) => Promise<string>;
     tempDir?: string;
     recoverClones?: (root: string) => Promise<void>;
+    /** Environment reader for TMPDIR; defaults to the process environment. */
+    env?: (name: string) => string | undefined;
     stateDir?: string;
     hostId?: string;
     repair?: () => Promise<void>;
   } = {},
 ): Promise<void> {
   await (seams.recoverClones ?? recoverTemporaryClones)(
-    seams.tempDir ?? temporaryCloneRoot(Deno.env.get("TMPDIR")),
+    seams.tempDir ??
+      temporaryCloneRoot((seams.env ?? ((n) => Deno.env.get(n)))("TMPDIR")),
   );
   const stateDir = seams.stateDir ?? babysitterStateDir();
   const gh = seams.gh ?? ((args: string[]) => run("gh", args));
