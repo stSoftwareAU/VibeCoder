@@ -19,6 +19,7 @@ today.
 | **[VulnHunter methodology evaluation](vulnhunter-methodology-evaluation.md)** | Adopt/skip evaluation of five VulnHunter defensive techniques (falsification, independent verification, evidence filter, remediation mapping, RED→GREEN) against the security-fix gate, the whole-tree sweep and the code-scanning feed |
 | **[Agent containment gap analysis](agent-containment-gap-analysis.md)** | Gap analysis of Anthropic's agent containment best practices against the run boundary: sandbox, egress, credentials, permissions, run limits, transcript monitoring and incident response, with seven verdicts and follow-ups #3698–#3703 |
 | **[CodeGuard assessment](codeguard-assessment.md)** | Assessment and attribution of CodeGuard ideas for useful, secure unattended coding, including existing controls and proposed follow-ups |
+| **[Security Constitution gap analysis](security-constitution-gap-analysis.md)** | Row-by-row assessment of KatTraxler/security-constitution (pinned commit) against the coding guidelines, the scan prompt's design lenses and the threat model: 34 verdicts, three ADOPTs bundled in follow-up #4817 |
 
 Related index entries outside this directory:
 

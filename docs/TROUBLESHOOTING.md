@@ -5,25 +5,24 @@ Common issues and their solutions. For a quick overview, see the
 
 ## 🐳 The worker runs in a container — where to look first
 
-The worker runs inside the container image — `container` is the default and
-the only run mode (Issue #4) — so host-level diagnosis starts with the runtime,
-the image and the mounted log
-directory ([Containment](CONTAINMENT.md), [Container Image](CONTAINER.md)).
-Everything below is run on the host, from the checkout — no `exec` into the
-container is needed.
+The worker runs inside the container image — `container` is the default and the
+only run mode (Issue #4) — so host-level diagnosis starts with the runtime, the
+image and the mounted log directory ([Containment](CONTAINMENT.md),
+[Container Image](CONTAINER.md)). Everything below is run on the host, from the
+checkout — no `exec` into the container is needed.
 
-**Check the run-mode setting first.** A `.config.json` (or `VIBE_RUN_MODE`)
-that still names one of the removed host modes — `native` or `seatbelt`, gone
-since Issue #4 — stops every launch before anything runs, with the removal
-explained. Ask the launcher what this host resolves to; the only good answer
-is `container`:
+**Check the run-mode setting first.** A `.config.json` (or `VIBE_RUN_MODE`) that
+still names one of the removed host modes — `native` or `seatbelt`, gone since
+Issue #4 — stops every launch before anything runs, with the removal explained.
+Ask the launcher what this host resolves to; the only good answer is
+`container`:
 
 ```bash
 deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 ```
 
-Nothing is ever coerced: a removed or misspelled mode is a loud failure, never
-a container run the operator did not know they were getting — and a missing
+Nothing is ever coerced: a removed or misspelled mode is a loud failure, never a
+container run the operator did not know they were getting — and a missing
 container runtime never falls back to the host.
 
 ```mermaid
@@ -95,8 +94,8 @@ container bridge is the usual finding, and a VPN or tunnel interface holding a
 default route is the usual reason for it. Restarting the container service or
 creating a fresh container network does **not** clear it — the fault is
 host-wide. Until a person fixes the route the host parks for 30 minutes at a
-time, claims nothing, and reports itself as unavailable capacity with the
-reason `container_egress_blocked`. There is no host run mode to fall back on:
+time, claims nothing, and reports itself as unavailable capacity with the reason
+`container_egress_blocked`. There is no host run mode to fall back on:
 containment is mandatory (Issue #4).
 
 When the probe finds the address unreachable **from the host as well**, the
@@ -113,7 +112,8 @@ slot-utilisation: host=GRQ-23 slots=2 wall=1800s available=3600s occupied=0s …
   unavailable=3600s unavailable_pct=100.0 unavailable_reason=container_egress_blocked
 ```
 
-and the [green-gate report](CONTAINMENT.md#green-gate-evidence-is-the-fleet-actually-running-contained)
+and the
+[green-gate report](CONTAINMENT.md#green-gate-evidence-is-the-fleet-actually-running-contained)
 for that host leads with it:
 
 ```text
@@ -126,24 +126,24 @@ for that host leads with it:
 A launcher that fails before claiming work has no issue to comment on, so the
 escalation goes to this host's own `callbacks.host_failure` hook — the
 operator's channel, whatever it is (Issue #2108, see
-[Callbacks](CALLBACKS.md#host-level-failures--callbackshost_failure)). It
-writes nothing to GitHub at all — the public escalation issues it once filed
-are gone, and [Release Notes](RELEASE-NOTES.md) carries that contract change.
-A crash *during* an issue still comments on that issue through the crash
-channel, which runs unchanged — but once a hook is configured it is the hook's
-exit status alone that says whether anybody was told.
+[Callbacks](CALLBACKS.md#host-level-failures--callbackshost_failure)). It writes
+nothing to GitHub at all — the public escalation issues it once filed are gone,
+and [Release Notes](RELEASE-NOTES.md) carries that contract change. A crash
+_during_ an issue still comments on that issue through the crash channel, which
+runs unchanged — but once a hook is configured it is the hook's exit status
+alone that says whether anybody was told.
 
 **With no hook configured**, the failure is reported to the host log and the
 self-heal events and nowhere else: `self-heal-summary` shows an `escalated`
-event carrying `hookStatus: no_hook_configured`, on the crossing and then on
-the streak's re-notify schedule. Nothing is retried, because there is nothing
-left to try. A malformed `callbacks` block is not the same thing and is never
-treated as one — it is reported as `config_invalid`, with the read's own error
-beside it.
+event carrying `hookStatus: no_hook_configured`, on the crossing and then on the
+streak's re-notify schedule. Nothing is retried, because there is nothing left
+to try. A malformed `callbacks` block is not the same thing and is never treated
+as one — it is reported as `config_invalid`, with the read's own error beside
+it.
 
 **With a hook configured**, a hook that exits non-zero, times out or cannot be
-spawned is retried on the next cycles, up to five attempts. Still undelivered
-at the cap, or a streak that ends before one ever landed, is recorded as an
+spawned is retried on the next cycles, up to five attempts. Still undelivered at
+the cap, or a streak that ends before one ever landed, is recorded as an
 `escalation_lost` event with result **failed** — a host that cannot report is
 itself the thing to look at.
 
@@ -162,16 +162,16 @@ A report naming `unknown-host` is a fault in the reporter, not a nameless
 machine: the outcome recorder was invoked without `--allow-sys=hostname`, so
 `Deno.hostname()` threw. The hook payload's `host` is how an operator's channel
 tells one machine's outage from another's, so every host in the fleet then
-reports as the same one. All four call sites pass the flag and a test holds
-them there (Issue #709); a recurrence means a fifth caller was added without it.
+reports as the same one. All four call sites pass the flag and a test holds them
+there (Issue #709); a recurrence means a fifth caller was added without it.
 
 ### The image store is filling the disk
 
 It should not: every launch prunes each `vibe-coder` tag other than the one this
-checkout resolves to, and names what it removed on the host log (
-see [Container Image](CONTAINER.md#superseded-tags-are-pruned-every-launch)).
-If old tags are still there, the prune is failing rather than idle, and the
-launcher log says why:
+checkout resolves to, and names what it removed on the host log ( see
+[Container Image](CONTAINER.md#superseded-tags-are-pruned-every-launch)). If old
+tags are still there, the prune is failing rather than idle, and the launcher
+log says why:
 
 ```bash
 # ${LOG_DIR} is this host's log directory — see "Where the logs land on the
@@ -211,16 +211,16 @@ overrides, and how to move an old `~/logs` across are all in
 repositories live on the `vibe-work` named volume, mounted at
 `/home/vibe/auto-issue-work` inside the container, so there is no
 `auto-issue-work` directory to look for on the host — `WORK_DIR` has no host
-default. Everything else the container writes is disposable and gone at the
-next launch.
+default. Everything else the container writes is disposable and gone at the next
+launch.
 
 ### A container that stopped answering (exit 87)
 
 A container VM can wedge: `<runtime> exec` hangs, nothing new appears in
-`${LOG_DIR}/worker.log`, and the host-side `container run` client never exits. The
-launcher no longer waits on it for ever — past the plan's
-watchdog deadline it kills the container, SIGKILLs the host-side client and
-runtime helper if the record survives that, and exits `87`:
+`${LOG_DIR}/worker.log`, and the host-side `container run` client never exits.
+The launcher no longer waits on it for ever — past the plan's watchdog deadline
+it kills the container, SIGKILLs the host-side client and runtime helper if the
+record survives that, and exits `87`:
 
 ```text
 [run.sh] watchdog: vibe-coder-66770 is still running after 11400s - reaping it
@@ -233,10 +233,13 @@ first leaves a `hard-kill-<container>-<epoch>.json` record in `${LOG_DIR}` with
 the last worker log lines and the runtime's boot logs, so the wedge can be read
 after the container is gone (see
 [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-wedged-container-watchdog)).
-The next worker start files that record as a `bug` issue carrying only the
-run's facts, then moves the file to `${LOG_DIR}/hard-kill-archive/`, where it
-is kept for up to 30 days or 2,000 files. The archive, not the issue, holds the
-evidence (see
+The next worker start files that record as a `bug` issue carrying only the run's
+facts and a last step logged, from a fixed list (`pre-PR verifier`,
+`mutation check`, `coverage carry-over check`, `quality gate`, `agent turn` or
+`unknown`; it is the last step the log reported, so the wedge is in or after it,
+and it is not part of the dedup signature), then moves the file to
+`${LOG_DIR}/hard-kill-archive/`, where it is kept for up to 30 days or 2,000
+files. The archive, not the issue, holds the evidence (see
 [a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)).
 Check whether the host is wedging repeatedly — a chronic offender needs the
 runtime itself looked at:
@@ -247,9 +250,9 @@ deno run worker/deno/mod.ts self-heal-summary | grep container_wedged
 
 ### What a runtime-detection failure looks like
 
-With no supported runtime, the launcher exits non-zero **before** doing
-anything else — there is no host mode to switch to (Issue #4), so the
-worker does not run at all:
+With no supported runtime, the launcher exits non-zero **before** doing anything
+else — there is no host mode to switch to (Issue #4), so the worker does not run
+at all:
 
 ```text
 No supported container runtime is available on darwin.
@@ -304,12 +307,13 @@ flowchart TD
 ```
 
 The re-probe decides the outcome, never the steps: a `brew install` that exits
-zero but leaves the service unable to answer is still a failed check
-. Without Homebrew nothing is offered and nothing is run — setup never
-downloads a `.pkg` or an installer script. `VIBE_NO_AUTO_INSTALL=true` keeps
-the report without the offer, and a non-interactive run (no TTY) never prompts —
-in both cases the report says the offer was withheld and why (Issue #33), and
-`./setup.sh --auto-install` consents in advance so a scripted run still installs.
+zero but leaves the service unable to answer is still a failed check . Without
+Homebrew nothing is offered and nothing is run — setup never downloads a `.pkg`
+or an installer script. `VIBE_NO_AUTO_INSTALL=true` keeps the report without the
+offer, and a non-interactive run (no TTY) never prompts — in both cases the
+report says the offer was withheld and why (Issue #33), and
+`./setup.sh --auto-install` consents in advance so a scripted run still
+installs.
 
 ### Linux: setup offers Docker, then Podman
 
@@ -317,11 +321,11 @@ The same offer runs on Debian/Ubuntu in the probe's own preference order —
 Docker (`sudo apt-get install -y docker.io`) first, Podman only if Docker is
 declined or has no plan, and one runtime is ever acted on. A binary that is
 present but not answering is started (`sudo systemctl start docker`,
-`podman machine start`) rather than reinstalled, and every sudo command is
-shown in the prompt before it runs.
+`podman machine start`) rather than reinstalled, and every sudo command is shown
+in the prompt before it runs.
 
-A fresh `docker.io` leaves you outside the `docker` group, so the re-probe
-still fails with a permission error: setup reports it with the
+A fresh `docker.io` leaves you outside the `docker` group, so the re-probe still
+fails with a permission error: setup reports it with the
 `sudo usermod -aG docker "$USER"` plus re-login instruction and **never** edits
 group membership itself. On a non-apt distribution nothing is offered and the
 manual hints stand.
@@ -330,9 +334,9 @@ manual hints stand.
 
 The **launcher** updates the worker checkout to its default branch (read from
 `origin/HEAD` — the example below shows `main`) on the host before each
-container launch, and says so loudly when it cannot (Issues #512, #513). The
-run still starts — on whatever the checkout already holds — so the symptom is
-a host stuck on an old commit, with this in `${LOG_DIR}/run_core.log` every cycle:
+container launch, and says so loudly when it cannot (Issues #512, #513). The run
+still starts — on whatever the checkout already holds — so the symptom is a host
+stuck on an old commit, with this in `${LOG_DIR}/run_core.log` every cycle:
 
 ```text
 Updating /Users/vibe/VibeCoder to origin/main
@@ -342,38 +346,37 @@ active development tree (branch fix/x, 3 uncommitted change(s)). Commit or
 stash that work, or give the worker its own dedicated clone.
 ```
 
-The usual cause is exactly what the message says: the worker's clone is
-doubling as somebody's development tree. Commit or stash the in-flight
-work — or better, move development elsewhere and leave the appliance clone
-alone (see [Deployment — dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone)).
+The usual cause is exactly what the message says: the worker's clone is doubling
+as somebody's development tree. Commit or stash the in-flight work — or better,
+move development elsewhere and leave the appliance clone alone (see
+[Deployment — dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone)).
 After three consecutive failures **spanning at least fifteen minutes** the host
 fires the `callbacks.host_failure` hook once with a `checkout_update` payload —
 the host, the streak, when it started, the diagnosis above and the checkout's
-branch and dirty-file count (Issues #2107, #2110). Nothing is filed on GitHub:
-a stuck host is the operator's own business, and the hook is where the operator
+branch and dirty-file count (Issues #2107, #2110). Nothing is filed on GitHub: a
+stuck host is the operator's own business, and the hook is where the operator
 already receives host-level faults. The span is part of the rule because the
 count alone was not measuring persistence: a transient host fault took the
-streak from 1 to 3 in eight seconds and escalated a glitch that was already
-over (Issue #1017). The streak lives at
-`~/logs/checkout-update-failure-streak` — the count and the first failure's
-timestamp — and resets on the first successful update.
+streak from 1 to 3 in eight seconds and escalated a glitch that was already over
+(Issue #1017). The streak lives at `~/logs/checkout-update-failure-streak` — the
+count and the first failure's timestamp — and resets on the first successful
+update.
 
-`No user exists for uid <n>` in that log is the *host's* directory services
+`No user exists for uid <n>` in that log is the _host's_ directory services
 failing to resolve the user the launcher is already running as, so git cannot
 find that user's `~/.ssh` or `~/.gitconfig`. It is neither a credentials nor a
-network fault — do not go looking at deploy keys — it is a known transient
-after sleep/wake and DirectoryService restarts, and it clears on its own. The
-update retries the git step in place, briefly, so a run that recovers within
-seconds never reaches the streak at all. A checkout that is *meant* to be left
-alone — a development tree, a CI merge commit — should set
-`VIBE_SKIP_CHECKOUT_UPDATE=1` instead, which skips the update loudly and
-raises nothing.
+network fault — do not go looking at deploy keys — it is a known transient after
+sleep/wake and DirectoryService restarts, and it clears on its own. The update
+retries the git step in place, briefly, so a run that recovers within seconds
+never reaches the streak at all. A checkout that is _meant_ to be left alone — a
+development tree, a CI merge commit — should set `VIBE_SKIP_CHECKOUT_UPDATE=1`
+instead, which skips the update loudly and raises nothing.
 
-That hook runs on the very host that is failing, so it is exactly the thing
-that can be broken too (Issues #1018, #2110). An invocation that returns
-anything but `ok` is retried on every later failing run, up to **five
-attempts**, and the evidence is queued at `~/logs/checkout-update-escalation` —
-one entry per streak, overwritten, carrying the attempt count:
+That hook runs on the very host that is failing, so it is exactly the thing that
+can be broken too (Issues #1018, #2110). An invocation that returns anything but
+`ok` is retried on every later failing run, up to **five attempts**, and the
+evidence is queued at `~/logs/checkout-update-escalation` — one entry per
+streak, overwritten, carrying the attempt count:
 
 ```text
 Checkout update escalation failed (hook status spawn_failed) on attempt 2 of 5,
@@ -394,9 +397,9 @@ Both outcomes are also `checkout_update` records in `~/logs/self-heal.jsonl` —
 
 **Recovery reports nothing.** A run that updates cleanly proves the condition
 has cleared, so no hook fires: the streak file and the queue are cleared
-together and one line goes to `run_core.log` saying the streak ended and
-whether its report was still undelivered. A queued report therefore never
-outlives the condition it describes.
+together and one line goes to `run_core.log` saying the streak ended and whether
+its report was still undelivered. A queued report therefore never outlives the
+condition it describes.
 
 A host with **no** `callbacks.host_failure` configured logs `no_hook_configured`
 once for the streak, and one whose `callbacks` block will not parse logs
@@ -424,10 +427,10 @@ working says so on every launch:
 
 ## 🩹 The launcher keeps overwriting my local fix
 
-Every launch updates the worker checkout before the container starts, so a
-patch applied by hand — a launcher fix while bringing a new platform up, for
-instance — is discarded by the next run. The update says so when it happens, on
-stderr and in `${LOG_DIR}/run_core.log`:
+Every launch updates the worker checkout before the container starts, so a patch
+applied by hand — a launcher fix while bringing a new platform up, for instance
+— is discarded by the next run. The update says so when it happens, on stderr
+and in `${LOG_DIR}/run_core.log`:
 
 ```text
 The checkout update changed /home/vibe/VibeCoder (HEAD 8b0f2c1a4d33 →
@@ -453,26 +456,25 @@ This is the debugging escape hatch, not a deployment setting. Once the fix is
 committed and pushed, drop the variable so the host resumes its own update mode
 — back onto `pinned_ref` on a frozen host, or the tip of the default branch on a
 dynamic one. A host that keeps it set runs whatever that checkout holds,
-forever.
-A host that must reproduce a known release wants
-[`update_mode: "frozen"`](CONFIGURATION.md#-host-side-checkout-update)
-instead, and a checkout that doubles as a development tree wants its own
+forever. A host that must reproduce a known release wants
+[`update_mode: "frozen"`](CONFIGURATION.md#-host-side-checkout-update) instead,
+and a checkout that doubles as a development tree wants its own
 [dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone).
 
 ## 🔔 "A new release of Vibe Coder is available"
 
 A frozen host pinned behind the newest release says so once per launch, at
-`WARNING` level: on stderr as `[run.sh] WARNING: …` (`[run.ps1] WARNING: …`
-on Windows, where `run.ps1 upgrade` does not exist yet and the pin moves by
-hand) and in `run_core.log` as `WARNING: …` (Issue #690):
+`WARNING` level: on stderr as `[run.sh] WARNING: …` (`[run.ps1] WARNING: …` on
+Windows, where `run.ps1 upgrade` does not exist yet and the pin moves by hand)
+and in `run_core.log` as `WARNING: …` (Issue #690):
 
 ```text
 [run.sh] WARNING: A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
 ```
 
-The host is behind the newest release, but it is still running its pin, and
-the notice is only telling you a newer release exists. Move the host when you
-choose to — see
+The host is behind the newest release, but it is still running its pin, and the
+notice is only telling you a newer release exists. Move the host when you choose
+to — see
 [Configuration — New-Release Notice](CONFIGURATION.md#-new-release-notice).
 
 The check itself can fail, and never blocks a launch:
@@ -483,13 +485,12 @@ list failed with exit code 1: …
 ```
 
 The launch continues on the checkout the host already has. The usual causes are
-an unreachable GitHub or a `gh` that is not authenticated on the host — the
-same material the launcher's other `gh` calls use.
+an unreachable GitHub or a `gh` that is not authenticated on the host — the same
+material the launcher's other `gh` calls use.
 
 ### The notice never appears
 
-Silence is the normal case, and it has four causes worth checking in this
-order:
+Silence is the normal case, and it has four causes worth checking in this order:
 
 1. **The host is dynamic.** `update_mode` is `dynamic`, or absent and therefore
    loaded as `dynamic`. Such a host installs the newest release at every launch,
@@ -504,15 +505,15 @@ order:
    `latest` are not part of the series.
 4. **The check failed.** That is never silent: look for the
    `[run.sh] warning: could not check for a newer release` line above on stderr,
-   and the matching `release-notice: failed …` line in `run_core.log`. Both
-   land on every launch that could not complete the check, and both quote the
-   check's own account of the failure — or say `timed out after 120s` when the
+   and the matching `release-notice: failed …` line in `run_core.log`. Both land
+   on every launch that could not complete the check, and both quote the check's
+   own account of the failure — or say `timed out after 120s` when the
    launcher's bound was what ended it. `no explanation given` means the check
    really wrote nothing (Issue #1020).
 
 Every warning line from this path goes to **both** places — stderr for whatever
-launched the host (a cron log, a LaunchAgent log) and `${LOG_DIR}/run_core.log` for
-the record — so a host launched from cron still leaves the evidence behind.
+launched the host (a cron log, a LaunchAgent log) and `${LOG_DIR}/run_core.log`
+for the record — so a host launched from cron still leaves the evidence behind.
 
 ### `./run.sh upgrade` says the release records no tool versions
 
@@ -539,11 +540,11 @@ validator rejects: the command writes all four values or none of them.
 
 ## 🔐 The worker exits on a credential preflight error
 
-The worker reads credential *files* and never an interactive login or a host
-credential store, so `gh auth login` and an interactive
-coding-agent login are not the fix — they are not even on the runtime path. The
-preflight aborts before any work with a named cause: `credential-dir-missing`,
-`credential-dir-empty`, `credential-dir-unreadable`, `github-credentials-missing`,
+The worker reads credential _files_ and never an interactive login or a host
+credential store, so `gh auth login` and an interactive coding-agent login are
+not the fix — they are not even on the runtime path. The preflight aborts before
+any work with a named cause: `credential-dir-missing`, `credential-dir-empty`,
+`credential-dir-unreadable`, `github-credentials-missing`,
 `provider-credentials-missing`, `credential-permissions-too-open`, or
 `unexpected-credential-material`.
 
@@ -583,18 +584,19 @@ somewhere else, set `PATH` in the crontab entry itself:
 A missing tool on the unattended `PATH` is silent by nature — the run still
 succeeds, only the bump is dropped. Symptoms and remedies:
 
-| Symptom                                                                    | Likely cause                                                                                        | Remedy                                                                                                                                                            |
-| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Bumps land on every host except one; PRs from that host carry no dep bump   | The repo's `bump-deps.sh` failed its tool pre-flight, so the bump was reverted as `rejected_by_script` | The rejection WARNING is followed by a `bump-deps.sh output tail (last 20 lines)` block in `${LOG_DIR}/worker.log` (secret-redacted) — read it for the cause (e.g. `ERROR: deno is required`), then confirm the tool resolves on that host's unattended `PATH` |
-| A repo gets an auto-filed `bump-deps.sh` fails on every run issue | The script was rejected on 3 consecutive runs, so bumps are effectively disabled for that repo | Fix the script in that repo — the issue body carries the redacted output tail. Apply `work-on` to schedule it; the streak clears (and the worker stops reporting) as soon as the script exits `0` again |
-| `ERROR: deno is required` from `bump-deps.sh` on a launchd/cron host        | Deno was installed by the official installer into `~/.deno/bin`, which the unattended `PATH` omits     | Confirm `~/.deno/bin/deno` exists; the bootstrap adds that directory to the driver and to spawned repo scripts, so a stale checkout of the worker is the usual cause  |
-| PRs into a `milestone/**` branch never carry a dep bump | Expected — the bump phase is skipped on every milestone child run (Issue #1775), recorded as `skipped_milestone_child` | Nothing to fix. The default branch's own PRs bump, and the periodic milestone sync carries those bumps down; the child PR body states the skip. Confirm with the `bump-deps: skipped — this run's PR targets a milestone branch` INFO line in `${LOG_DIR}/worker.log` |
-| PR body says the bump was "applied by the worker's bump-deps.sh after the summary was written", and the PR has a `chore: bump dependencies via bump-deps.sh` commit the agent did not write | Expected — the worker committed an `applied` bump after the agent's turn (Issue #4570) | Nothing to fix. Review the bump commit like any other change. An audit-reverted bump (`rejected_by_audit`) carries no such note |
-| A bump is reverted as `rejected_by_quarantine` | `bump-deps.sh` picked a version published inside `VIBE_BUMP_QUARANTINE_HOURS` (default 24h) | Expected — the embargo held. Re-run once the release has aged past the window, or fix the repo's script to honour `VIBE_BUMP_QUARANTINE_HOURS` itself |
-| `[bump-deps] Ignoring VIBE_BUMP_QUARANTINE_HOURS=…` in the log             | The window was set to `0`, a negative, fractional, or non-numeric value; it fell back to 24h           | Set the variable to a positive whole number of hours, or unset it. `0` does **not** disable the embargo — there is deliberately no silent off switch                 |
-| `Refusing screenshot setup: pinned npm package(s) did not clear the dependency-update quarantine window` | Either the pinned Playwright version was published inside the window, or its publish time could not be resolved (registry unreachable, 5xx, unknown version) — the message quotes which | The gate is fail-closed by design; re-run `setup.sh` once the npm registry is reachable, or wait for / re-pin a version that has aged past the window. There is no opt-out — an unverified version would otherwise be installed under `--allow-all` |
+| Symptom                                                                                                                                                                                     | Likely cause                                                                                                                                                                            | Remedy                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bumps land on every host except one; PRs from that host carry no dep bump                                                                                                                   | The repo's `bump-deps.sh` failed its tool pre-flight, so the bump was reverted as `rejected_by_script`                                                                                  | The rejection WARNING is followed by a `bump-deps.sh output tail (last 20 lines)` block in `${LOG_DIR}/worker.log` (secret-redacted) — read it for the cause (e.g. `ERROR: deno is required`), then confirm the tool resolves on that host's unattended `PATH`        |
+| A repo gets an auto-filed `bump-deps.sh` fails on every run issue                                                                                                                           | The script was rejected on 3 consecutive runs, so bumps are effectively disabled for that repo                                                                                          | Fix the script in that repo — the issue body carries the redacted output tail. Apply `work-on` to schedule it; the streak clears (and the worker stops reporting) as soon as the script exits `0` again                                                               |
+| `ERROR: deno is required` from `bump-deps.sh` on a launchd/cron host                                                                                                                        | Deno was installed by the official installer into `~/.deno/bin`, which the unattended `PATH` omits                                                                                      | Confirm `~/.deno/bin/deno` exists; the bootstrap adds that directory to the driver and to spawned repo scripts, so a stale checkout of the worker is the usual cause                                                                                                  |
+| PRs into a `milestone/**` branch never carry a dep bump                                                                                                                                     | Expected — the bump phase is skipped on every milestone child run (Issue #1775), recorded as `skipped_milestone_child`                                                                  | Nothing to fix. The default branch's own PRs bump, and the periodic milestone sync carries those bumps down; the child PR body states the skip. Confirm with the `bump-deps: skipped — this run's PR targets a milestone branch` INFO line in `${LOG_DIR}/worker.log` |
+| PR body says the bump was "applied by the worker's bump-deps.sh after the summary was written", and the PR has a `chore: bump dependencies via bump-deps.sh` commit the agent did not write | Expected — the worker committed an `applied` bump after the agent's turn (Issue #4570)                                                                                                  | Nothing to fix. Review the bump commit like any other change. An audit-reverted bump (`rejected_by_audit`) carries no such note                                                                                                                                       |
+| A bump is reverted as `rejected_by_quarantine`                                                                                                                                              | `bump-deps.sh` picked a version published inside `VIBE_BUMP_QUARANTINE_HOURS` (default 24h)                                                                                             | Expected — the embargo held. Re-run once the release has aged past the window, or fix the repo's script to honour `VIBE_BUMP_QUARANTINE_HOURS` itself                                                                                                                 |
+| `[bump-deps] Ignoring VIBE_BUMP_QUARANTINE_HOURS=…` in the log                                                                                                                              | The window was set to `0`, a negative, fractional, or non-numeric value; it fell back to 24h                                                                                            | Set the variable to a positive whole number of hours, or unset it. `0` does **not** disable the embargo — there is deliberately no silent off switch                                                                                                                  |
+| `Refusing screenshot setup: pinned npm package(s) did not clear the dependency-update quarantine window`                                                                                    | Either the pinned Playwright version was published inside the window, or its publish time could not be resolved (registry unreachable, 5xx, unknown version) — the message quotes which | The gate is fail-closed by design; re-run `setup.sh` once the npm registry is reachable, or wait for / re-pin a version that has aged past the window. There is no opt-out — an unverified version would otherwise be installed under `--allow-all`                   |
 
-See [Deployment — note on cron `PATH`](DEPLOYMENT.md#-recommended-using-cron-5-minute-intervals)
+See
+[Deployment — note on cron `PATH`](DEPLOYMENT.md#-recommended-using-cron-5-minute-intervals)
 for what the bootstrap covers.
 
 ## 🔍 Worker not picking up issues
@@ -618,9 +620,9 @@ occupancy) with actionable suggestions.
 - Check the issue is not already assigned (unless assigned to the worker itself)
 - Check there's no open PR for that repo (worker waits for PR review before
   starting new work)
-- A leftover `failed` label no longer blocks pickup: the worker strips it on
-  the next scan (Issue #4158). A recently failed issue waits out its cooldown
-  (2 h → 6 h → 24 h) before it is retried
+- A leftover `failed` label no longer blocks pickup: the worker strips it on the
+  next scan (Issue #4158). A recently failed issue waits out its cooldown (2 h →
+  6 h → 24 h) before it is retried
 - Check the issue doesn't have the `needs-human` label (issues escalated to a
   human are skipped until the label is removed — see
   [Worker escalation via `needs-human`](USAGE.md#-worker-escalation-via-needs-human))
@@ -689,14 +691,14 @@ flowchart TD
 
 ### Top-priority issue blocked but fleet works low-priority
 
-**Symptom:** a `top-priority` (or `work-on`) issue sits untouched while the fleet
-picks up `low-priority` or `idle-task` work.
+**Symptom:** a `top-priority` (or `work-on`) issue sits untouched while the
+fleet picks up `low-priority` or `idle-task` work.
 
-**Expected behaviour:** the issue is dependency-blocked, so the ladder skips it —
-but discovery then walks its `Depends on` / `Blocked by` chain and **promotes**
-the chain members it can work into the blocked issue's own tier for that scan. If
-the fleet is working something else instead, the chain produced no promotable
-member.
+**Expected behaviour:** the issue is dependency-blocked, so the ladder skips it
+— but discovery then walks its `Depends on` / `Blocked by` chain and
+**promotes** the chain members it can work into the blocked issue's own tier for
+that scan. If the fleet is working something else instead, the chain produced no
+promotable member.
 
 **Step 1 — check the scan log** (`${LOG_DIR}/worker.log`) for a promotion:
 
@@ -705,41 +707,42 @@ grep -E 'promoted-dependency=|chain-root-in-progress' "${LOG_DIR}/worker.log"
 ```
 
 `promoted-dependency=` is always written; `chain-root-in-progress` is
-**debug-only** and appears only when the host runs with `ISSUE_FINDER_DEBUG=true`,
-so do not read its absence as evidence of anything.
+**debug-only** and appears only when the host runs with
+`ISSUE_FINDER_DEBUG=true`, so do not read its absence as evidence of anything.
 
 A line of the form `[issue-finder] promoted-dependency=owner/repo#412 for #398`
-means the chain *was* promoted: `#412` is being worked at `#398`'s priority, and
+means the chain _was_ promoted: `#412` is being worked at `#398`'s priority, and
 nothing is wrong. Where the scan also prints a `selection-reasoning` line, its
 `configured-label-blocked=N` still counts `#398` as blocked — that counter is
-unaffected by promotion, so a non-zero value beside a promotion line is expected.
-It is printed only when the scan selected an issue from below the
+unaffected by promotion, so a non-zero value beside a promotion line is
+expected. It is printed only when the scan selected an issue from below the
 `configured-label` tier, so its absence is normal too.
 
 **Step 2 — read the gate comment on the blocked issue.** Every held
-`top-priority`/`work-on` issue carries one *Held by the fleet* comment naming
+`top-priority`/`work-on` issue carries one _Held by the fleet_ comment naming
 what holds it: an open PR on its stream, a milestone it waits on, or a
-dependency. It changes **no labels** and is edited in place when the gate
-moves, so it always names the current one (Issue #2535). When the walk ends at a
-root nobody can move, the dependency sentence also names the root and one of
-four reasons:
+dependency. It changes **no labels** and is edited in place when the gate moves,
+so it always names the current one (Issue #2535). When the walk ends at a root
+nobody can move, the dependency sentence also names the root and one of four
+reasons:
 
-| Reason in the comment            | What it means                                       | Fix                                                        |
-| -------------------------------- | --------------------------------------------------- | ---------------------------------------------------------- |
-| waiting on `@login`, who is assigned | A non-fleet account holds the root issue        | Unassign it, or wait for that person to finish             |
-| carries no discovery label       | The root has none of the configured labels          | Add `top-priority`, `work-on` or the repo's discovery label |
-| is `needs-human`                 | The root was escalated to a human                   | Resolve the blocker, then remove `needs-human`             |
-| cross-repo blocker … not monitored | The root lives in a repo absent from `repos`      | Add that repo to `.config.json` `repos`, or resolve it manually |
+| Reason in the comment                | What it means                                | Fix                                                             |
+| ------------------------------------ | -------------------------------------------- | --------------------------------------------------------------- |
+| waiting on `@login`, who is assigned | A non-fleet account holds the root issue     | Unassign it, or wait for that person to finish                  |
+| carries no discovery label           | The root has none of the configured labels   | Add `top-priority`, `work-on` or the repo's discovery label     |
+| is `needs-human`                     | The root was escalated to a human            | Resolve the blocker, then remove `needs-human`                  |
+| cross-repo blocker … not monitored   | The root lives in a repo absent from `repos` | Add that repo to `.config.json` `repos`, or resolve it manually |
 
 **Step 3 — the comment names no root and nothing is promoted?** A root assigned
 to a **fleet** account is not a fault: a sibling host is already working it, so
 the gate comment names the dependency and leaves the root out — and if any
-branch of the chain is fleet-held, no root sentence is added at all.
-With `ISSUE_FINDER_DEBUG=true` that case prints
+branch of the chain is fleet-held, no root sentence is added at all. With
+`ISSUE_FINDER_DEBUG=true` that case prints
 `[issue-finder] chain-root-in-progress repo=… issue=#N assignee=…`; without it
 there is no line at all, so rerun with the flag before concluding. Wait for that
-host to finish. If debug output shows no fleet-held root either, the chain member
-is most likely blocked further down — follow its own `Depends on` references.
+host to finish. If debug output shows no fleet-held root either, the chain
+member is most likely blocked further down — follow its own `Depends on`
+references.
 
 Design rationale:
 [Design Principles — A blocked issue promotes its chain rather than yielding the fleet](../DESIGN-PRINCIPLES.md#a-blocked-issue-promotes-its-chain-rather-than-yielding-the-fleet).
@@ -750,9 +753,9 @@ Internals:
 
 The per-iteration health gate has a third condition alongside Claude health and
 GitHub auth: **can this identity still see the repos it is configured to
-monitor?** (incident.) When two consecutive issue-list probes
-for a repo come back 404 / permission-denied, the host is marked unhealthy and
-the repos are named on two surfaces:
+monitor?** (incident.) When two consecutive issue-list probes for a repo come
+back 404 / permission-denied, the host is marked unhealthy and the repos are
+named on two surfaces:
 
 - **Worker log** (`${LOG_DIR}/worker.log`) — one greppable line per iteration:
 
@@ -764,12 +767,12 @@ the repos are named on two surfaces:
   grep '\[repo-access\]' "${LOG_DIR}"/worker.log | tail -n 5
   ```
 
-- **Loop result** — the iteration sets `lastHealthCheckPassed` to `false`,
-  so the host is recorded as unhealthy rather than green. Built-in fleet
-  health reporting was removed in Issue #805: nothing in the worker
-  publishes this to a dashboard.
+- **Loop result** — the iteration sets `lastHealthCheckPassed` to `false`, so
+  the host is recorded as unhealthy rather than green. Built-in fleet health
+  reporting was removed in Issue #805: nothing in the worker publishes this to a
+  dashboard.
 
-**What it means.** The worker authenticated fine — this condition sits *after*
+**What it means.** The worker authenticated fine — this condition sits _after_
 the Claude and `gh auth` checks — but the account it authenticated as cannot see
 the named repos. In the host-3 incident that was identity drift: valid
 credentials for the wrong user. Rate limiting is not this condition: a 403
@@ -796,9 +799,9 @@ gh issue list --repo <named repo> --limit 1
 1. **Wrong identity** — `gh auth status` shows an account other than the
    expected service account, or the named repo 404s for it. On hosts with no
    `gh_config_dir` the ambient `gh` config is used, so a stray `gh auth switch`
-   from any tooling on the host silently re-points the worker.
-   Log `gh` back in as the service account in the configured
-   `gh_config_dir`, and check the container's copy with
+   from any tooling on the host silently re-points the worker. Log `gh` back in
+   as the service account in the configured `gh_config_dir`, and check the
+   container's copy with
    `sed -n 's/^ *user: //p' ~/.vibe-coder/credentials/gh/hosts.yml`; if that
    names the wrong account, replace it as in Steps 3 to 5 of
    [Switching the Worker GitHub Identity](CONFIGURATION.md#-switching-the-worker-github-identity)
@@ -826,7 +829,8 @@ you see either:**
   or `work-on`)
 - The worker processes one milestone issue at a time — if there is an open PR
   targeting the milestone branch, the next issue will wait until it is merged
-- Check the worker log at `${LOG_DIR}/worker.log` for milestone-specific messages
+- Check the worker log at `${LOG_DIR}/worker.log` for milestone-specific
+  messages
 
 ## ⚠️ Milestone branch has merge conflicts
 
@@ -847,20 +851,20 @@ For more milestone troubleshooting, see the
 Sometimes Claude completes without error but produces no useful changes. Common
 causes and remedies:
 
-| Symptom                                    | Likely cause                                       | Remedy                                                                              |
-| ------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Claude exits 0 but no files changed        | Issue is ambiguous or already resolved             | Check issue description for clarity; add more detail                                |
-| PR created with empty diff                 | Claude misunderstood the task scope                | Review the prompt template version; add `custom_instructions` for the repo          |
-| `.pr_response_message` is empty            | Claude did not create the summary file             | Check Claude output in `${LOG_DIR}/worker.log` for errors during execution              |
-| Quality gate passes but CI fails           | Claude fixed the wrong thing                       | Review the annotations in the CI check run; the fix may address a different failure |
-| Claude output is truncated                 | Hit `claude_timeout` or `claude_no_output_timeout` | Increase timeout values in `.config.json` or simplify the issue scope               |
-| Commit message present but no code changes | Claude determined no changes were needed           | Check the PR comment — Claude explains why no changes were made                     |
+| Symptom                                    | Likely cause                                       | Remedy                                                                                                                                                          |
+| ------------------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude exits 0 but no files changed        | Issue is ambiguous or already resolved             | Check issue description for clarity; add more detail                                                                                                            |
+| PR created with empty diff                 | Claude misunderstood the task scope                | Review the prompt template version; add `custom_instructions` for the repo                                                                                      |
+| `.pr_response_message` is empty            | Claude did not create the summary file             | Check Claude output in `${LOG_DIR}/worker.log` for errors during execution                                                                                      |
+| Quality gate passes but CI fails           | Claude fixed the wrong thing                       | Review the annotations in the CI check run; the fix may address a different failure                                                                             |
+| Claude output is truncated                 | Hit `claude_timeout` or `claude_no_output_timeout` | Increase timeout values in `.config.json` or simplify the issue scope                                                                                           |
+| Commit message present but no code changes | Claude determined no changes were needed           | Check the PR comment — Claude explains why no changes were made                                                                                                 |
 | Run fails with `out_of_memory` (OOM)       | Claude exhausted heap memory (exit 137)            | Terminal by design — the worker errors out fast (not a rate-limit pause). Reduce issue scope or increase host memory; see INTERNALS "Out of memory is terminal" |
 
 **Diagnosing silent failures:**
 
-1. Check `${LOG_DIR}/worker.log` for the Claude execution section — look for exit
-   code, duration, and output size.
+1. Check `${LOG_DIR}/worker.log` for the Claude execution section — look for
+   exit code, duration, and output size.
 2. Check for rate limit messages (`rate limit`, `429`, `credit`, `quota`) which
    may cause early termination.
 3. If the issue recurs, add `custom_instructions` to the repository config with
@@ -875,20 +879,22 @@ Two different things, handled two different ways:
 
 - **Rate limit / overloaded** (API burst: `rate limit`, `429`, `overloaded`,
   `529`, credit/quota wording): a short jittered back-off, then a retry, then
-  the model-fallback ladder. Transient — the right response is to wait a
-  little and try again.
-- **Usage limit** (the Max subscription's 5-hour / weekly window: `Claude
-  usage limit reached`, `You've hit your limit`, `You've hit your session
-  limit`, `5-hour limit`, `weekly limit`, `out of extra usage`): **terminal
-  for the call**. The worker does not retry and does not fall back to a
-  cheaper model — the window is account-wide, so every model bills the same
-  exhausted budget. It parses the reset time from the message when there is
-  one (`resets 3am`, `|<epoch>`), writes the durable `.rate_limit_signal` in
-  `WORK_DIR` for that long (an hour when no time is given), and the main loop
-  pauses agent work until the window resets. Every other worker on the same
-  volume sees the signal and waits too. The issue is **not** blamed: the
-  failure classifies as infrastructure, so it keeps its `failed-once` retry
-  rather than being labelled failed.
+  the model-fallback ladder. Transient — the right response is to wait a little
+  and try again.
+- **Usage limit** (the Max subscription's 5-hour / weekly window:
+  `Claude
+  usage limit reached`, `You've hit your limit`,
+  `You've hit your session
+  limit`, `5-hour limit`, `weekly limit`,
+  `out of extra usage`): **terminal for the call**. The worker does not retry
+  and does not fall back to a cheaper model — the window is account-wide, so
+  every model bills the same exhausted budget. It parses the reset time from the
+  message when there is one (`resets 3am`, `|<epoch>`), writes the durable
+  `.rate_limit_signal` in `WORK_DIR` for that long (an hour when no time is
+  given), and the main loop pauses agent work until the window resets. Every
+  other worker on the same volume sees the signal and waits too. The issue is
+  **not** blamed: the failure classifies as infrastructure, so it keeps its
+  `failed-once` retry rather than being labelled failed.
 
 Both stderr and stdout are scanned — the CLI writes refusals to stderr, and a
 refused run has no stream-json result on stdout at all.
@@ -904,17 +910,18 @@ session, so the pre-spawn quota gate can place it on an eligible credential and
 the run carries on. When that gate reports none eligible — or the switch has
 already been made, or too little of the execute budget is left for another
 invocation to finish — the run parks instead. A parked run fails as
-*infrastructure*, so the issue is never blamed, and the claim-release comment
-names the branch and links the handover file. The next claim on that issue
-finds the pointer, checks the branch out, and resumes the session from where
-the window cut it off, so a later attempt continues the work rather than
-starting again.
+_infrastructure_, so the issue is never blamed, and the claim-release comment
+names the branch and links the handover file. The next claim on that issue finds
+the pointer, checks the branch out, and resumes the session from where the
+window cut it off, so a later attempt continues the work rather than starting
+again.
 
 The agent **health check** returns the same classification: a limited probe
-writes the signal instead of the loop re-running a billed probe every scan
-cycle for the whole window.
+writes the signal instead of the loop re-running a billed probe every scan cycle
+for the whole window.
 
-Look for `USAGE_LIMIT` / `RATE_LIMIT` security-log lines and `Rate limit signal
+Look for `USAGE_LIMIT` / `RATE_LIMIT` security-log lines and
+`Rate limit signal
 active — pausing until reset …` in the worker log.
 
 ## 🩺 `Claude health check failed — skipping cycle`
@@ -928,8 +935,8 @@ ERROR: Claude health check failed — skipping cycle: Health check error: Read-o
 ```
 
 - `Health check error: …` — the agent never started: the runner failed before
-  spawning it, typically because it could not write its temp or prompt files
-  (a read-only or full root filesystem). The same cause is also logged as
+  spawning it, typically because it could not write its temp or prompt files (a
+  read-only or full root filesystem). The same cause is also logged as
   `<agent> health check could not run: …` just above.
 - `Claude CLI exited <N>: …` — the agent ran and failed; the preceding
   `Health check details: exit=… stderr=… stdout=…` line has the evidence.
@@ -940,8 +947,8 @@ ERROR: Claude health check failed — skipping cycle: Health check error: Read-o
 
 ## 🔌 Circuit breaker activated (worker backing off)
 
-The worker includes a rate-limit circuit breaker that activates
-when all issues across all repos fail consecutively. When active:
+The worker includes a rate-limit circuit breaker that activates when all issues
+across all repos fail consecutively. When active:
 
 - The worker increases its sleep interval exponentially from `sleep_interval`
   (default `120` s since Issue #2446: 120s → 240s → 300s max, the cap being
@@ -951,8 +958,8 @@ when all issues across all repos fail consecutively. When active:
 
 **To resolve:**
 
-- Check `${LOG_DIR}/worker.log` for the underlying failure cause (e.g., rate limits,
-  network issues, auth expiry)
+- Check `${LOG_DIR}/worker.log` for the underlying failure cause (e.g., rate
+  limits, network issues, auth expiry)
 - The circuit breaker resets automatically on any successful issue processing
 - To force a reset, delete the state file: `rm WORK_DIR/.circuit_breaker_state`
 - The threshold before activation is configurable via
@@ -960,18 +967,16 @@ when all issues across all repos fail consecutively. When active:
 
 ## 🔁 Worker keeps retrying a failing issue
 
-The worker tracks failure counts per issue using persistent state.
-If an issue fails:
+The worker tracks failure counts per issue using persistent state. If an issue
+fails:
 
 1. **Every failure** — a failure record is posted, `failed-once` is kept on the
    issue, the issue is unassigned, and the escalating cooldown starts
 2. **Retry** — the worker claims it again when the cooldown ends. It is never
-   parked behind `failed` or handed to a human (Issue #4158): an assigned
-   issue is completed, and an issue that keeps failing is a Vibe Coder defect
-   to fix
+   parked behind `failed` or handed to a human (Issue #4158): an assigned issue
+   is completed, and an issue that keeps failing is a Vibe Coder defect to fix
 
-Failure state survives worker crashes and restarts. To see why it keeps
-failing:
+Failure state survives worker crashes and restarts. To see why it keeps failing:
 
 - Check the issue comments for crash reports or error details
 - The issue retry cooldown (`issue_retry_cooldown`, default: 600 seconds)
@@ -997,11 +1002,11 @@ recognised host fault (`clone-corrupt`, `clone-failed`, `disk-full`,
 (Issue #2954).
 
 **An issue labelled `failed-once` or `failed` for a host fault releases itself**
-once the host recovers — no action needed. Since Issue #2954 a coding run is
-no longer labelled for a host fault in the first place, so this self-release
-now covers labels left by earlier runs or by other run types. A failure
-comment caused by a broken worker clone or environment, rather than the
-issue's own code, carries a **Host fault:** line naming the kind:
+once the host recovers — no action needed. Since Issue #2954 a coding run is no
+longer labelled for a host fault in the first place, so this self-release now
+covers labels left by earlier runs or by other run types. A failure comment
+caused by a broken worker clone or environment, rather than the issue's own
+code, carries a **Host fault:** line naming the kind:
 
 | Kind                     | Meaning                                                                                                              |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
@@ -1012,35 +1017,35 @@ issue's own code, carries a **Host fault:** line naming the kind:
 
 A worker-authored `Parked as infrastructure (Issue #4360)` message means the
 host-disk guard deliberately stopped work after the floor was crossed. It keeps
-the `disk-full` host-fault class and does not consume an issue attempt, but it is
-not code-fixable and does not create a worker-fault diagnostic issue. An actual
-ENOSPC or read-only filesystem error remains code-fixable and can be recorded
-against the worker. A worker-authored reason with only `host disk below its
-floor` receives the same protective classification when a caller quotes the
-floor check without its park note; the phrase inside formatted agent output
-does not.
+the `disk-full` host-fault class and does not consume an issue attempt, but it
+is not code-fixable and does not create a worker-fault diagnostic issue. An
+actual ENOSPC or read-only filesystem error remains code-fixable and can be
+recorded against the worker. A worker-authored reason with only
+`host disk below its
+floor` receives the same protective classification when a
+caller quotes the floor check without its park note; the phrase inside formatted
+agent output does not.
 
 A `clone-corrupt` fault is usually self-healing: `setupRepo` moves the broken
 clone aside to `<repoPath>.corrupt-<UTC timestamp>` (kept for inspection, not
 deleted — any older `.corrupt-*` sibling for that repo is removed first) and
-re-clones automatically (Issue #2957). This recovery is capped at one
-re-clone per repo per 24 h, tracked in `clone_recoveries_<host>.json` on the
-work volume. Once the cap is used, setup fails with the original git error
-until the 24 h window elapses; after fixing the underlying corruption, an
-operator can delete that repo's entry (or the whole file) to allow another
-re-clone immediately.
+re-clones automatically (Issue #2957). This recovery is capped at one re-clone
+per repo per 24 h, tracked in `clone_recoveries_<host>.json` on the work volume.
+Once the cap is used, setup fails with the original git error until the 24 h
+window elapses; after fixing the underlying corruption, an operator can delete
+that repo's entry (or the whole file) to allow another re-clone immediately.
 
-A second corruption of the same repo on the same host inside the window is
-not an ordinary setup fault: something keeps damaging the clone. The run's
-failure carries a `clone-corrupt-repeat` payload, and the worker backs the
-repository off fleet-wide at once and escalates its tally diagnostic issue
-with a `needs-human` label and one comment carrying both corruption times,
-both git messages and the moved-aside path (Issue #2958). The worker reads
-that payload only from a setup-phase failure, and only from a line that begins
-with the marker, so a later phase's message that merely quotes it (an agent's
-PR summary, quality-gate output) never triggers the back-off (Issue #3446).
-The comment's checklist names what to check — disk health, the volume, a
-manual re-clone — and closing the diagnostic issue lifts the back-off.
+A second corruption of the same repo on the same host inside the window is not
+an ordinary setup fault: something keeps damaging the clone. The run's failure
+carries a `clone-corrupt-repeat` payload, and the worker backs the repository
+off fleet-wide at once and escalates its tally diagnostic issue with a
+`needs-human` label and one comment carrying both corruption times, both git
+messages and the moved-aside path (Issue #2958). The worker reads that payload
+only from a setup-phase failure, and only from a line that begins with the
+marker, so a later phase's message that merely quotes it (an agent's PR summary,
+quality-gate output) never triggers the back-off (Issue #3446). The comment's
+checklist names what to check — disk health, the volume, a manual re-clone — and
+closing the diagnostic issue lifts the back-off.
 
 The next time that repository's setup phase successfully creates a feature
 branch — proof the host's clone is healthy again — a sweep checks every open
@@ -1095,11 +1100,11 @@ you can tell whether an operation hung or genuinely failed.
 
 ## ⏳ Why did this run take three hours?
 
-Nothing is wrong. The cycle deadline stops *new* claims; it does not kill work
+Nothing is wrong. The cycle deadline stops _new_ claims; it does not kill work
 already in flight, and `progress_extension_enabled` is **on by default**
-(Issue #422), so a claim that keeps progressing keeps running. The whole model
-— soft claim gate, untruncated budget, extensions, hard-cap kill with the work
-in progress preserved — is on one page:
+(Issue #422), so a claim that keeps progressing keeps running. The whole model — soft
+claim gate, untruncated budget, extensions, hard-cap kill with the work in
+progress preserved — is on one page:
 [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model).
 
 So a run past `claude_timeout` means the deadline was re-armed while the run
@@ -1126,14 +1131,15 @@ kept making progress. Reconstruct what happened from three places:
 
    The clause after the semicolon is the signal that stalled: a silent agent
    (`tool activity stale (last tool call 483s ago, last agent output 400s ago,
-   window 300s)` — **both** clocks must be stale before the run is judged
-   dead, Issue #767), an unchanged working tree *with no descendant process
-   doing work*
+   window 300s)`
+   — **both** clocks must be stale before the run is judged dead, Issue #767),
+   an unchanged working tree _with no descendant process doing work_
    (`working tree unchanged and no descendant process doing work (external
-   idle) despite tool activity 31s ago`, Issue #508), or a working-tree probe
-   that could not answer (`unknown` is never treated as progress). A trailing
-   `Ns late` is the starved-timer signal and is measured against the **final**
-   deadline — an extended run that dies on time reports no lateness.
+   idle) despite tool activity 31s ago`,
+   Issue #508), or a working-tree probe that could not answer (`unknown` is
+   never treated as progress). A trailing `Ns late` is the starved-timer signal
+   and is measured against the **final** deadline — an extended run that dies on
+   time reports no lateness.
 
 3. **The issue** — the failure comment carries the same extension history, and
    the `## Issue run model stats` comment carries a **Deadline extensions**
@@ -1143,7 +1149,7 @@ If the count looks unreasonable, lower `progress_extension_grant_seconds` (each
 grant is shorter, so a stall is caught sooner), tighten
 `progress_extension_stall_seconds`, or set `progress_extension_enabled` to
 `false` to restore the unconditional one-hour kill. There is deliberately no
-ceiling on the *number* of grants — the concurrency slot pool bounds the blast
+ceiling on the _number_ of grants — the concurrency slot pool bounds the blast
 radius to one slot — but there is one on wall clock: every grant is bounded by
 the supervisor's cap (Issue #421).
 
@@ -1156,7 +1162,7 @@ supervisor's SIGTERM and the next cycle resumes it. Three log lines, in the
 order they appear:
 
 1. **The ceiling, at run start.** Grep `Run hard cap:` — it reports the cap
-   *this* run is under, which is the number to trust rather than any figure
+   _this_ run is under, which is the number to trust rather than any figure
    copied into documentation:
 
    ```bash
@@ -1169,8 +1175,8 @@ order they appear:
    for the kill grace and the WIP commit-and-push), leaving 10500s of runway
    ```
 
-2. **A clamped grant**, normally the last one granted. The cap does not refuse
-   a grant that would cross it — it shortens it, so the run uses the runway it
+2. **A clamped grant**, normally the last one granted. The cap does not refuse a
+   grant that would cross it — it shortens it, so the run uses the runway it
    has:
 
    ```bash
@@ -1204,15 +1210,15 @@ grep 'wind-down notice written' "${LOG_DIR}"/worker-*.log
 run hard cap, so the agent can stop waiting and preserve its work in progress
 ```
 
-The notice itself is `.vibe-run-budget.md` in the agent's checkout, refreshed
-on every later check and cleared at the start of the next run. It is hidden, so
-the enforced `.gitignore` keeps it out of every commit.
+The notice itself is `.vibe-run-budget.md` in the agent's checkout, refreshed on
+every later check and cleared at the start of the next run. It is hidden, so the
+enforced `.gitignore` keeps it out of every commit.
 
 It is written over a **wider** band than the ten-minute wind-down window
-(Issue #1138): the full quality gate needs closer to twenty minutes, so the
-notice starts refusing the gate while there is still more than ten minutes of
-runway. Above the window it says only that — the run continues, and the log
-line is `run-budget notice written` rather than `wind-down notice written`:
+(Issue #1138): the full quality gate needs closer to twenty minutes, so the notice
+starts refusing the gate while there is still more than ten minutes of runway.
+Above the window it says only that — the run continues, and the log line is
+`run-budget notice written` rather than `wind-down notice written`:
 
 ```bash
 grep 'run-budget notice written' ~/logs/worker-*.log
@@ -1235,17 +1241,17 @@ On the issue side such a run reads as a **scheduled release**, not a timeout
 `Released on schedule: … — WIP preserved, resumes next cycle` under the
 `scheduled-release` category, no `failed-once` label is applied, and the next
 claim resumes the branch. If you see "Claude ran out of time" instead, the run
-really did exhaust its own `claude_timeout` — that is the case worth
-re-scoping.
+really did exhaust its own `claude_timeout` — that is the case worth re-scoping.
 
 Such a comment then states what the progress extension did (Issue #768) —
 `Progress extension: base timeout 3600s, deadline armed at kill 5640s, agent
-elapsed 5645s, 4 extensions granted (+2040s); last check refused because …` —
-so the grants and the stalled signal are readable off the issue. `no extensions
-granted — last check refused because …` means the very first check refused and
-the deadline never moved. The `worker-*.log` kill line carries the same
-figures. With `progress_extension_enabled` set to `false` neither surface says
-anything about extensions.
+elapsed 5645s, 4 extensions granted (+2040s); last check refused because …`
+— so the grants and the stalled signal are readable off the issue.
+`no extensions
+granted — last check refused because …` means the very first
+check refused and the deadline never moved. The `worker-*.log` kill line carries
+the same figures. With `progress_extension_enabled` set to `false` neither
+surface says anything about extensions.
 
 When the run preserved work, the comment also names **where** (Issue #770):
 
@@ -1259,32 +1265,31 @@ The branch named is always the branch the push targeted — the resumed branch
 when a re-claim adopted one, never a name derived from the current title, so
 retitling an issue mid-flight cannot send you to a ref that does not exist. The
 handover link appears only when that file is committed on the branch
-(Issue #769); without it the line still names the branch. A run that preserved
-nothing names no branch at all.
+(Issue #769); without it the line still names the branch. A run that preserved nothing
+names no branch at all.
 
 The **next** claim reads that same file out of the resumed working tree and
-splices it into its execute prompt (Issue #771), so a resume on a different
-host — or under a non-Claude provider — is briefed with what the interrupted
-run actually did rather than a generic "review `git log`" paragraph. The log
-line to look for is `Handover file read from the resumed branch (Issue #771)`,
-or its counterpart naming the path when no file was there. The content is
-fenced as untrusted prior-run **status**, capped at 8,000 characters, and
-measured by the context budget — so an oversized handover shows up as
-truncated, never as a silently larger prompt.
+splices it into its execute prompt (Issue #771), so a resume on a different host
+— or under a non-Claude provider — is briefed with what the interrupted run
+actually did rather than a generic "review `git log`" paragraph. The log line to
+look for is `Handover file read from the resumed branch (Issue #771)`, or its
+counterpart naming the path when no file was there. The content is fenced as
+untrusted prior-run **status**, capped at 8,000 characters, and measured by the
+context budget — so an oversized handover shows up as truncated, never as a
+silently larger prompt.
 
 ## 🎞️ Capturing a full agent transcript
 
 The default observability for a long agent phase is the periodic
 `[agent-progress]` line in `worker-*.log`. When that is not enough — a stuck,
 failed or misbehaving session you want to diagnose after the fact without
-re-running it — set `"agent_transcript_enabled": true` in `.config.json` and
-the worker tees the agent's raw stream-json to
+re-running it — set `"agent_transcript_enabled": true` in `.config.json` and the
+worker tees the agent's raw stream-json to
 `~/logs/agent-<runid>[-<issue>].jsonl`:
 
-- Every line passes through the console secret redaction before
-  hitting disk.
-- Appends land per chunk, so a wedged session's transcript is inspectable
-  while it is still wedged.
+- Every line passes through the console secret redaction before hitting disk.
+- Appends land per chunk, so a wedged session's transcript is inspectable while
+  it is still wedged.
 - Transcripts rotate with the other logs and age out with the worker-log
   cleanup; a 100 MB per-invocation cap stops a runaway stream.
 - Without the key, nothing extra is written.
@@ -1292,26 +1297,26 @@ the worker tees the agent's raw stream-json to
 Two things to know before switching it on. The transcript is the **raw agent
 stream**, including repository content, so read
 [Agent transcripts](CONFIGURATION.md#-agent-transcripts) first. And the tee has
-to run for **every** run for a *failed* run to have a transcript — which run
+to run for **every** run for a _failed_ run to have a transcript — which run
 fails is not knowable in advance — so this is a standing setting, not something
 to switch on after the failure you wanted to diagnose.
 
-`DEBUG=true` no longer enables the tee (Issue #1141): a debug flag that
-silently starts capturing repository content is a surprise.
-`VIBE_AGENT_TRANSCRIPT` is internal plumbing the worker settles from the config
-key on every run, so exporting it by hand changes nothing.
+`DEBUG=true` no longer enables the tee (Issue #1141): a debug flag that silently
+starts capturing repository content is a surprise. `VIBE_AGENT_TRANSCRIPT` is
+internal plumbing the worker settles from the config key on every run, so
+exporting it by hand changes nothing.
 
 ## 💥 Worker crashed — what happened?
 
 If the worker exits unexpectedly, it does its best to clean up after itself and
 let you know:
 
-- **Crash notifications** — if configured, the worker posts a
-  comment on the GitHub issue it was working on and optionally fires a webhook.
-  Check the issue for a crash report with the exit code, signal name, timestamp,
-  work stage (what the worker was doing), elapsed time, system context (uptime,
-  disk free, memory pressure), worker log tail (with key errors highlighted),
-  and Claude output tail.
+- **Crash notifications** — if configured, the worker posts a comment on the
+  GitHub issue it was working on and optionally fires a webhook. Check the issue
+  for a crash report with the exit code, signal name, timestamp, work stage
+  (what the worker was doing), elapsed time, system context (uptime, disk free,
+  memory pressure), worker log tail (with key errors highlighted), and Claude
+  output tail.
 - **Automatic cleanup** — the crash cleanup handler unassigns the worker from
   any claimed issue and removes heartbeat files, so the issue becomes available
   for retry on the next run.
@@ -1339,17 +1344,18 @@ situations automatically.
 ## 🛡️ Security scan failure modes
 
 The worker's idle security scanner
-([Security Scans — Operator Manual](SECURITY-SCAN.md)) runs as an
-`idle-task` issue claimed through the standard priority dispatch. retired the per-host state files (`security_scan_idle.json`,
-`security_scan.lock`, `security-scan-state.json`); the only persistent
-state is the GitHub `idle-task` issue itself.
+([Security Scans — Operator Manual](SECURITY-SCAN.md)) runs as an `idle-task`
+issue claimed through the standard priority dispatch. retired the per-host state
+files (`security_scan_idle.json`, `security_scan.lock`,
+`security-scan-state.json`); the only persistent state is the GitHub `idle-task`
+issue itself.
 
-| Symptom                                                       | Likely cause                                                                                              | Remedy                                                                                                                                                                                                |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Logs repeat `[idle-task] action=skipped reason=duplicate`     | Every monitored repo already has an open `idle-task` issue, so the filer has nowhere to file a new one    | Let the worker claim and close the existing issues, or close stale ones by hand. The filer resumes on the next idle pass.                                                                              |
-| Idle-task issue stuck "in progress" after a crash             | Worker died after claiming the idle-task issue                                                            | The standard stuck-issue recovery (see § "Stuck issues") unassigns the issue after the no-heartbeat grace window so a fresh worker can pick it back up.                                              |
-| `security-scan-overflow` tracker issue created                | More than six findings in a single run                                                                    | Resolve the six filed issues (close, fix, or add a `security-scan-ignore` comment in source). Wait for the next idle trigger to run another batch.                                                    |
-| Filed finding is a false positive                             | Scanner over-flagged                                                                                      | Close the issue (the dedup marker prevents re-filing) **or** add `security-scan-ignore: SEC-… — author=<login> expires=<YYYY-MM-DD> reason` at the cited line so future scans skip it.                                                    |
+| Symptom                                                   | Likely cause                                                                                           | Remedy                                                                                                                                                                                 |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Logs repeat `[idle-task] action=skipped reason=duplicate` | Every monitored repo already has an open `idle-task` issue, so the filer has nowhere to file a new one | Let the worker claim and close the existing issues, or close stale ones by hand. The filer resumes on the next idle pass.                                                              |
+| Idle-task issue stuck "in progress" after a crash         | Worker died after claiming the idle-task issue                                                         | The standard stuck-issue recovery (see § "Stuck issues") unassigns the issue after the no-heartbeat grace window so a fresh worker can pick it back up.                                |
+| `security-scan-overflow` tracker issue created            | More than six findings in a single run                                                                 | Resolve the six filed issues (close, fix, or add a `security-scan-ignore` comment in source). Wait for the next idle trigger to run another batch.                                     |
+| Filed finding is a false positive                         | Scanner over-flagged                                                                                   | Close the issue (the dedup marker prevents re-filing) **or** add `security-scan-ignore: SEC-… — author=<login> expires=<YYYY-MM-DD> reason` at the cited line so future scans skip it. |
 
 ## 🔄 Checking if worker is running
 

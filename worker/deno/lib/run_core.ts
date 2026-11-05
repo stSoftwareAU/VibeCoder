@@ -4452,7 +4452,9 @@ async function runSlot(
         // hour, so it does not count.
         const siblings = pool.registry.slotHolds()
           .filter((h) => h.slotId !== slotId).length;
-        if (siblings === 0) {
+        // Issue #4823: a repository this scan was not shown still has work the
+        // slot may claim when the lane releases it, so its scan proves nothing.
+        if (siblings === 0 && excludedRepos.size === 0) {
           log(
             `stop reason=no-work — ${detail}; ` +
               "no sibling slot is running, so the pool drains and the cycle continues.",
@@ -4460,9 +4462,11 @@ async function runSlot(
           return;
         }
         log(
-          `${detail} — re-scanning in ${
-            rescanMs / 1000
-          }s while ${siblings} sibling slot(s) work (Issue #219).`,
+          `${detail} — re-scanning in ${rescanMs / 1000}s while ${
+            siblings > 0
+              ? `${siblings} sibling slot(s) work (Issue #219)`
+              : `the maintenance lane holds ${excludedRepos.size} repo(s) (Issue #4823)`
+          }.`,
         );
         // --- Per-slot idle accounting and idle hooks (Issue #925) ---
         //

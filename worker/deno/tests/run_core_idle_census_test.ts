@@ -368,10 +368,13 @@ Deno.test(
 
     await runCoreLoop(config, deps);
 
-    assertEquals(calls.length, 1);
-    // The pass did complete — for every repo it was allowed to see.
-    assertEquals(calls[0]!.completed, true);
-    assertEquals(calls[0]!.excluded, ["org/held"]);
+    // One from the slot waiting out the lease (Issue #4823), one for the cycle.
+    assertEquals(calls.length, 2);
+    for (const call of calls) {
+      // The pass did complete — for every repo it was allowed to see.
+      assertEquals(call.completed, true);
+      assertEquals(call.excluded, ["org/held"]);
+    }
   },
 );
 

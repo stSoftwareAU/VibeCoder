@@ -1048,6 +1048,8 @@ Deno.test("runFailureNamesReadableSource - a hard-kill body stays schedulable (I
     trigger: "watchdog",
     capturedAt: "2026-10-25T01:30:00.000Z",
     lastLogTimestamp: "2026-10-25 01:27:18Z",
+    lastLogLine: "",
+    evidence: { workerLogTail: "" },
   } as HardKillEvidence;
   const sig: HardKillSignature = {
     handler: "watchdog",

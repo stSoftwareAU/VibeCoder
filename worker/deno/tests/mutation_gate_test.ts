@@ -799,18 +799,13 @@ Deno.test("evaluateMutationGate - a blocking CI job with a budget-exhausted run 
     { tool: "deno_task", workflow: "Nightly", job: "deep-scan" },
   );
   assertFalse(v.blocked);
-  assertEquals(v.ciBlock, { workflow: "Nightly", job: "deep-scan" });
+  // Not a hold: no re-run can add to the budget, and CI gives the full verdict.
+  assertEquals(v.ciBlock, undefined);
   assertStringIncludes(
     v.note,
     "— the repository's CI job 'deep-scan' will still try every mutant",
   );
-  // Untested mutants are unvalidated: the PR is held with a named next action.
-  assert(v.incomplete !== undefined);
-  assertStringIncludes(buildMutationGateComment(v), "validation incomplete");
-  assertStringIncludes(buildMutationGateComment(v), "Next action:");
-  const noCi = evaluateMutationGate({ ...EXHAUSTED, survivors: [] }, "");
-  assertEquals(noCi.ciBlock, undefined);
-  assertEquals(noCi.incomplete, undefined);
+  assertStringIncludes(v.note, "untested, not passed");
 });
 
 Deno.test("evaluateMutationGate - a blocking CI job with no survivors does not hold the PR", () => {
@@ -824,7 +819,7 @@ Deno.test("evaluateMutationGate - a blocking CI job with no survivors does not h
   assertEquals(v.reason, "");
 });
 
-Deno.test("evaluateMutationGate - a blocking CI job holds an error as incomplete validation with a next action", () => {
+Deno.test("evaluateMutationGate - a blocking CI job leaves a runner error for CI to judge", () => {
   const ci = { workflow: "Mutants", job: "mutation-check" };
   const v = evaluateMutationGate(
     { kind: "error", reason: "npm ci failed" },
@@ -832,12 +827,7 @@ Deno.test("evaluateMutationGate - a blocking CI job holds an error as incomplete
     { ...ci, tool: "deno_task" },
   );
   assert(v.blocked);
-  assertEquals(v.ciBlock, ci);
-  assertStringIncludes(
-    v.incomplete?.nextAction ?? "",
-    "install the missing tool",
-  );
-  assertStringIncludes(buildMutationGateComment(v), "Next action:");
+  assertEquals(v.ciBlock, undefined);
   assertStringIncludes(
     v.reason,
     "mutation check failed to run (npm ci failed)",
@@ -853,18 +843,16 @@ Deno.test("evaluateMutationGate - a blocking CI job holds an error as incomplete
   );
   assertFalse(plain.reason.includes("unvalidated"));
   assertEquals(plain.ciBlock, undefined);
-  assertEquals(plain.incomplete, undefined);
 });
 
-Deno.test("evaluateMutationGate - a worker-fault error on a blocking CI repository is also held (Issue #4617)", () => {
+Deno.test("evaluateMutationGate - a worker-fault error on a blocking CI repository is named and not held (Issue #4820)", () => {
   const v = evaluateMutationGate(
     { kind: "error", reason: `${MUTATION_TEMP_DIR_UNWRITABLE}: /tmp full` },
     "",
     { tool: "deno_task", workflow: "CI", job: "mutants" },
   );
   assert(v.workerFault);
-  assertEquals(v.ciBlock, { workflow: "CI", job: "mutants" });
-  assertStringIncludes(v.incomplete?.nextAction ?? "", "temporary directory");
+  assertEquals(v.ciBlock, undefined);
 });
 
 Deno.test("evaluateMutationGate - a hostile CI job name is sanitised and capped (Issue #4617)", () => {
