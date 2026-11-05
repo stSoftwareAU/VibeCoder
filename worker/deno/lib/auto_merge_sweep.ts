@@ -496,21 +496,21 @@ export async function sweepAutoMerge(
                       active: true,
                     });
                     entry.notified = true;
-                    logger.error(
-                      "Fleet health: repeated transient branch-refresh refusal",
-                      {
-                        repo,
-                        prNumber: pr.number,
-                        reason,
-                        streak: entry.streak,
-                      },
-                    );
                   } catch (err) {
                     logger.warn(
                       "Could not post branch-refresh diagnostic comment",
                       { repo, prNumber: pr.number, error: errorMessage(err) },
                     );
                   }
+                  logger.error(
+                    "Fleet health: repeated transient branch-refresh refusal",
+                    {
+                      repo,
+                      prNumber: pr.number,
+                      reason,
+                      streak: entry.streak,
+                    },
+                  );
                 }
               }
             }

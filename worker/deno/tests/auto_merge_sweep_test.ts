@@ -717,6 +717,45 @@ Deno.test("a different or permanent refusal does not advance a transient streak 
   assertEquals(state.size, 0);
 });
 
+Deno.test("a failed diagnostic comment still raises fleet health and retries the branch refresh (Issue #4831)", async () => {
+  const state: BranchRefreshRefusalState = new Map();
+  let updates = 0;
+  errors.length = 0;
+  const { options } = harness({ [VC]: [{ number: 4834 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+    updateBranchFn: () => {
+      updates++;
+      return Promise.resolve({
+        ok: false as const,
+        error: new Error("PR mergeability is still UNKNOWN"),
+      });
+    },
+  });
+  const tracking = {
+    load: () => Promise.resolve(state),
+    save: (_state: typeof state) => Promise.resolve(),
+    notify: () => Promise.reject(new Error("comment API unavailable")),
+  };
+  const sweep = () =>
+    sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+    });
+
+  assert((await sweep()).ok);
+  assertEquals(errors.length, 0);
+  assert((await sweep()).ok);
+  assertEquals(errors.length, 1);
+  assertEquals(updates, 2);
+});
+
 Deno.test("branch-refresh escalation edits its trusted marker comment instead of duplicating it (Issue #4831)", async () => {
   const calls: string[][] = [];
   const comments: Array<{ id: number; body: string; author: string }> = [];
