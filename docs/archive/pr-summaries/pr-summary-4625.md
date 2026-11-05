@@ -109,6 +109,14 @@ coverage ledger `docs/audits/lib-sweep-coverage/top-up-4625.json`.
 
 ## Test Plan
 
+- CI repair: the base-tree reachability test runs with a private `TMPDIR` in
+  a child process, avoiding process-wide environment changes that race parallel
+  tests. The obsolete shared-environment setup is replaced by
+  `worker/deno/tests/publication_validation_test.ts::the base-commit tree is reachable by another account`,
+  which still checks every parent of the base tree, and
+  `worker/deno/tests/parallel_safety_cap_test.ts::parallel safety - no new test mutates process-wide state (Issue #880)`.
+  No mirrored rule changed.
+
 - Merge resolution: main replaces the orphan test's process-name snapshot with
   the shell's returned PID and waits for exec and re-parenting. The obsolete
   lookup is removed; the unrelated orphan must still survive, covered by

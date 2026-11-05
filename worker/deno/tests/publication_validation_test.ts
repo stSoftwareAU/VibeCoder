@@ -1464,45 +1464,62 @@ Deno.test("a head that adds a failure line the base lacks stays failed under the
 });
 
 Deno.test("the base-commit tree is reachable by another account", async () => {
+  if (Deno.env.get("VIBE_PRIVATE_TMP_TEST") !== "1") {
+    const privateTmp = await Deno.makeTempDir();
+    try {
+      const result = await new Deno.Command(Deno.execPath(), {
+        args: [
+          "task",
+          "test",
+          "--filter",
+          "the base-commit tree is reachable by another account",
+          "tests/publication_validation_test.ts",
+        ],
+        env: { TMPDIR: privateTmp, VIBE_PRIVATE_TMP_TEST: "1" },
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assertEquals(
+        result.success,
+        true,
+        decoder.decode(result.stdout) + decoder.decode(result.stderr),
+      );
+      assertStringIncludes(decoder.decode(result.stdout), "1 passed");
+    } finally {
+      await Deno.remove(privateTmp, { recursive: true });
+    }
+    return;
+  }
   _resetBaseGateOutcomes();
   await withFeatureBranch(async (dir) => {
-    const previousTmp = Deno.env.get("TMPDIR");
-    const privateTmp = await Deno.makeTempDir({ dir });
-    await Deno.chmod(privateTmp, 0o700);
-    Deno.env.set("TMPDIR", privateTmp);
-    try {
-      const red: QualityGateRunResult = {
-        action: "failed",
-        qualityOutput: "1 test failed\n",
-      };
-      const modes: number[] = [];
-      const gate = (
-        _params: QualityGateParams,
-        deps: QualityGateDeps,
-      ): Promise<QualityGateRunResult> => {
-        const where = deps.getCwd();
-        if (where.includes("vibe-base-gate-")) {
-          const parent = where.slice(0, where.lastIndexOf("/"));
-          let path = parent;
-          while (path !== "/") {
-            modes.push(Deno.statSync(path).mode! & 0o001);
-            path = path.slice(0, path.lastIndexOf("/")) || "/";
-          }
+    const red: QualityGateRunResult = {
+      action: "failed",
+      qualityOutput: "1 test failed\n",
+    };
+    const modes: number[] = [];
+    const gate = (
+      _params: QualityGateParams,
+      deps: QualityGateDeps,
+    ): Promise<QualityGateRunResult> => {
+      const where = deps.getCwd();
+      if (where.includes("vibe-base-gate-")) {
+        const parent = where.slice(0, where.lastIndexOf("/"));
+        let path = parent;
+        while (path !== "/") {
+          modes.push(Deno.statSync(path).mode! & 0o001);
+          path = path.slice(0, path.lastIndexOf("/")) || "/";
         }
-        return Promise.resolve(red);
-      };
-      expectStatus(
-        await validateRepositoryForPublication(
-          { cwd: dir, repo: REPO, baseRef: "main" },
-          { runGate: gate },
-        ),
-        "unavailable",
-      );
-      assertEquals(modes.length > 0, true);
-      assertEquals(modes.every((mode) => mode === 1), true);
-    } finally {
-      if (previousTmp === undefined) Deno.env.delete("TMPDIR");
-      else Deno.env.set("TMPDIR", previousTmp);
-    }
+      }
+      return Promise.resolve(red);
+    };
+    expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, baseRef: "main" },
+        { runGate: gate },
+      ),
+      "unavailable",
+    );
+    assertEquals(modes.length > 0, true);
+    assertEquals(modes.every((mode) => mode === 1), true);
   });
 });
