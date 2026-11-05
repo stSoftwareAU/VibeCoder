@@ -21,7 +21,7 @@
  * The issue lands in a public repository, and the killed run may have been
  * working a private one. So the issue carries only the facts the worker and
  * launcher wrote themselves (host, container, run, signature, trigger, reason,
- * times) and a last step drawn from a fixed label list. The log, transcript,
+ * times) and a last step logged, drawn from a fixed label list. The log, transcript,
  * boot and guest text, the last log line, the last tool call and the source
  * repository stay in the archived file on the host (Issue #4315 review;
  * SECURITY.md incident response). Every value that
@@ -100,11 +100,22 @@ const STEP_NOISE: readonly RegExp[] = [
  * The fixed vocabulary of last steps, checked in order. The label comes only
  * from this table, so no log text (the run may be on a private repository) is
  * published. It does not feed the dedup key `hard-kill-<handler>-<phase>`.
+ * Each pattern matches what its step logs when it ends, including the notes
+ * `evaluateMutationGate` and `evaluateCoverageCarryOverGate` return on every
+ * path (clean, capped, budget, not applicable). The pre-PR verifier, the
+ * mutation check and the coverage check log nothing as they start, so a label
+ * names the last step that logged: the wedge is in or after it.
  */
 const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
   { label: "pre-PR verifier", pattern: /Pre-PR verifier/ },
-  { label: "mutation check", pattern: /\bmutation (?:check|budget|gate)\b/i },
-  { label: "coverage carry-over check", pattern: /coverage carry-over/i },
+  {
+    label: "mutation check",
+    pattern: /\bmutants? killed\b|\bmutation (?:check|budget|gate|cap)\b/i,
+  },
+  {
+    label: "coverage carry-over check",
+    pattern: /\bcoverage carry-over\b|\bcarried-over lines\b/i,
+  },
   { label: "quality gate", pattern: /\bQuality gate\b|\[phase\] quality_gate/ },
   { label: "agent turn", pattern: /\[agent-progress\]|Running Claude Code/ },
 ];
@@ -418,8 +429,10 @@ export function formatHardKillTitle(sig: HardKillSignature): string {
 }
 
 /**
- * The last step the killed run took, from {@link STEP_PATTERNS}: the label of
- * the first candidate line (the last log line, then the log tail from its end)
+ * The last step the killed run logged, from {@link STEP_PATTERNS}. It is the
+ * step the run had last reported, not necessarily the one it was in: the wedge
+ * is in that step or a later one that logs nothing as it starts. The label is
+ * that of the first candidate line (the last log line, then the log tail from its end)
  * that is not ticker or status noise and matches a table entry; `unknown` when
  * none does. Each line is capped at {@link STEP_SCAN_CHARS} before matching.
  * The label is never log text, so the public issue cannot carry it.
@@ -443,7 +456,7 @@ export function hardKillLastStep(evidence: HardKillEvidence): string {
  * Issue body: marker first, then the facts the worker and launcher wrote. No
  * evidence text, last log line, tool call or source repository: the issue is
  * public and the run may have been working a private repository (see the
- * module comment). The last step is a fixed label from {@link STEP_PATTERNS},
+ * module comment). The last step logged is a fixed label from {@link STEP_PATTERNS},
  * never log text. The evidence stays in the archived file on the host.
  */
 export function formatHardKillBody(
@@ -460,7 +473,9 @@ export function formatHardKillBody(
     `**Run id:** \`${inlineText(evidence.runId, 200)}\``,
     `**Handler:** \`${sig.handler}\``,
     `**Phase:** \`${sig.phase}\``,
-    `**Last step:** \`${hardKillLastStep(evidence)}\``,
+    `**Last step logged:** \`${
+      hardKillLastStep(evidence)
+    }\` (the wedge is in or after this step)`,
     `**Trigger:** ${inlineText(evidence.trigger, 100)}`,
     `**Reason:** ${publicReason(evidence.trigger)}`,
     `**Captured at:** ${inlineText(evidence.capturedAt, 100)}`,
@@ -509,7 +524,7 @@ function formatHardKillOccurrenceLine(
     inlineText(evidence.host, 200)
   }\` — container \`${inlineText(evidence.container, 200)}\`, run \`${
     inlineText(evidence.runId, 200)
-  }\`, last step \`${hardKillLastStep(evidence)}\``;
+  }\`, last step logged \`${hardKillLastStep(evidence)}\``;
 }
 
 /** The first line of an error, redacted, for the decision's cause. */

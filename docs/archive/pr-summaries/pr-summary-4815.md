@@ -2,11 +2,13 @@
 
 The hard-kill issue for run `vibe-mw2hlf2s-1125d1` says only "wedged in
 completion", the same words as #4743, so nobody can tell which completion step
-froze. The filed issue and its follow-up lines now also carry a **last step**
-taken from a fixed list (`pre-PR verifier`, `mutation check`,
+froze. The filed issue and its follow-up lines now also carry a **last step
+logged** taken from a fixed list (`pre-PR verifier`, `mutation check`,
 `coverage carry-over check`, `quality gate`, `agent turn`, `unknown`). The wedge
 itself is not fixed and not diagnosed: this change makes the next recurrence
-name its step. Part of #4815.
+narrow it: the label is the last step the log reported, and the wedge is in that
+step or a later one that logs nothing as it starts (the verifier, the mutation
+check and the coverage check log nothing at their start). Part of #4815.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -38,6 +40,18 @@ Version bump: `VERSION` is not touched by this change.
   `worker/deno/lib/hard_kill_report.ts`).
 - Ticker lines (`[phase] … still running`, `[liveness]`, `Status:`) are skipped,
   since the ticker is the last line of a healthy run and names no step.
+- The table matches the lines each step logs when it ends, built from the gates'
+  own notes: `N of M mutants killed`, `mutation cap reached: …`,
+  `mutation budget exhausted …`, `mutation check not applicable: …`,
+  `N of M carried-over lines still covered`,
+  `coverage carry-over budget
+  exhausted …` and
+  `coverage carry-over check not applicable: …`. Because no start line exists,
+  the body reads `**Last step logged:** \`x\` (the wedge is in or after this
+  step)`and the
+  follow-up line reads`last step logged \`x\``. (PR #4819 review
+  chose naming the field honestly over adding start log lines to the completion
+  phase.)
 - The step is not part of the signature `hard-kill-<handler>-<phase>`, so
   existing dedup and the marker are unchanged.
 
@@ -94,24 +108,35 @@ flowchart LR
   - `hardKillLastStep returns promptly on 64 KiB lines (Issue #4815)` (hostile
     long-line cases; results asserted, no timing)
   - `a repeat kill's follow-up occurrence line names its last step (Issue #4815)`
+  - `hardKillLastStep names the step for every note the two gates log (Issue #4815 review)`
+    (fixtures are the `note` of `evaluateMutationGate` and
+    `evaluateCoverageCarryOverGate` for the clean, capped, budget and
+    not-applicable results, each after a
+    `Pre-PR verifier released its
+    disposable checkout` line)
+  - `hardKillLastStep after the verifier's checkout line is the verifier: the wedge is in or after it (Issue #4815 review)`
 - Red checks (each break made on its own, test run, then restored): ticker
   filter removed → test 1 red; scan made forward → tests 1 and 2 red; fallback
   `unknown` changed → tests 3 and 5 red; raw line returned instead of the label
   → tests 1, 2, 4, 5, 6 red; body line removed → tests 1, 3, 4 red; occurrence
   suffix removed → test 6 red; per-line cap shrunk → tests 1, 2, 4, 5, 6 red.
+  Review fix: with the pattern table, body line and occurrence line restored to
+  the earlier commit, the new gate-notes test went red at
+  `mutation clean: 7 of 7 mutants killed`, the verifier-then-ticker test and the
+  follow-up test went red on the old wording.
 - Edited `worker/deno/tests/run_failure_issue_test.ts`: the hard-kill fixture
   gained `evidence` and `lastLogLine` fields, because `formatHardKillBody` now
   reads them; no assertion was removed or changed. Production evidence always
   passes the strict parser, which fills both.
 - Docs: `docs/CALLBACKS.md` (Filing bullet) and `docs/TROUBLESHOOTING.md`
-  (wedged-container paragraph) name the last step and say it is not in the dedup
-  signature.
+  (wedged-container paragraph) name the last step logged, say the wedge is in or
+  after it and say it is not in the dedup signature.
 - Twin check: `grep -rn "Last log time\|\*\*Phase:\*\*"` finds only
   `hard_kill_report.ts` and its tests; `run_failure_issue.ts` only mentions the
   `**Phase:**` field in a comment.
 - `deno task test:unit` on `tests/hard_kill_report_test.ts`,
   `tests/run_failure_issue_test.ts`, `tests/run_core_hard_kill_test.ts` and
-  `tests/run_core_production_deps_hard_kill_test.ts`: 89 passed, 0 failed.
+  `tests/run_core_production_deps_hard_kill_test.ts`: 91 passed, 0 failed.
 - `./quality.sh`: every stage passed except `deno tests`. The parallel pass ran
   32534 passed, 2 failed; the failures are
   `completion - an unformatted Rust change is formatted and committed, then passes the gate`

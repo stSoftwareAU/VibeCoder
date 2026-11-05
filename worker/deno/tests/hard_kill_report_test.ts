@@ -14,6 +14,10 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import type { HardKillEvidence } from "../lib/hard_kill_evidence.ts";
+import type { CoverageCarryOverResult } from "../lib/coverage_carryover_gate.ts";
+import { evaluateCoverageCarryOverGate } from "../lib/coverage_carryover_gate.ts";
+import type { MutationCheckResult } from "../lib/mutation_gate.ts";
+import { evaluateMutationGate } from "../lib/mutation_gate.ts";
 import { HARD_KILL_EVIDENCE_VERSION } from "../lib/hard_kill_evidence.ts";
 import {
   defaultHardKillSeams,
@@ -1024,7 +1028,105 @@ Deno.test("hardKillLastStep takes the mutation check from the tail and skips the
   assertEquals(hardKillLastStep(ev), "mutation check");
   assertStringIncludes(
     formatHardKillBody(ev, hardKillSignature(ev)),
-    "**Last step:** `mutation check`",
+    "**Last step logged:** `mutation check`",
+  );
+});
+
+/** The note the gate logs for a mutation result, from the real gate. */
+function mutationNote(result: MutationCheckResult): string {
+  return evaluateMutationGate(result, "").note;
+}
+
+/** The note the gate logs for a coverage result, from the real gate. */
+function coverageNote(result: CoverageCarryOverResult): string {
+  return evaluateCoverageCarryOverGate(result, "").note;
+}
+
+Deno.test("hardKillLastStep names the step for every note the two gates log (Issue #4815 review)", () => {
+  const mutation: Record<string, MutationCheckResult> = {
+    clean: {
+      kind: "completed",
+      language: "deno",
+      survivors: [],
+      killed: 7,
+      total: 7,
+    },
+    capped: {
+      kind: "budget_exhausted",
+      language: "deno",
+      survivors: [],
+      killed: 3,
+      tested: 5,
+      total: 9,
+      budgetSeconds: 300,
+      limit: "mutant_cap",
+    },
+    budget: {
+      kind: "budget_exhausted",
+      language: "deno",
+      survivors: [],
+      killed: 3,
+      tested: 5,
+      total: 9,
+      budgetSeconds: 300,
+    },
+    notApplicable: { kind: "not_applicable", reason: "no Deno project" },
+  };
+  const coverage: Record<string, CoverageCarryOverResult> = {
+    clean: {
+      kind: "completed",
+      changedTests: ["a_test.ts"],
+      carried: 3,
+      uncovered: [],
+    },
+    budget: {
+      kind: "budget_exhausted",
+      changedTests: ["a_test.ts"],
+      budgetSeconds: 600,
+    },
+    notApplicable: { kind: "not_applicable", reason: "no tests changed" },
+  };
+  const cases: [string, string, string][] = [
+    ...Object.entries(mutation).map(([k, r]): [string, string, string] => [
+      `mutation ${k}`,
+      mutationNote(r),
+      "mutation check",
+    ]),
+    ...Object.entries(coverage).map(([k, r]): [string, string, string] => [
+      `coverage ${k}`,
+      coverageNote(r),
+      "coverage carry-over check",
+    ]),
+  ];
+  for (const [name, note, label] of cases) {
+    assert(note !== "", `${name}: the gate logs a note`);
+    // The verifier line precedes it, as in a real run, so a miss falls back
+    // to "pre-PR verifier" and the test goes red.
+    const ev = makeEvidence({ lastLogLine: note }, {
+      workerLogTail: [
+        "Pre-PR verifier released its disposable checkout",
+        note,
+        "[phase] completion (x): still running · 5m0s elapsed",
+      ].join("\n"),
+    });
+    assertEquals(hardKillLastStep(ev), label, `${name}: ${note}`);
+  }
+});
+
+Deno.test("hardKillLastStep after the verifier's checkout line is the verifier: the wedge is in or after it (Issue #4815 review)", () => {
+  const ev = makeEvidence({
+    lastLogLine: "[phase] completion (x): still running · 5m0s elapsed",
+  }, {
+    workerLogTail: [
+      "Pre-PR verifier released its disposable checkout",
+      "[phase] completion (x): still running · 5m0s elapsed",
+    ].join("\n"),
+  });
+  assertEquals(hardKillLastStep(ev), "pre-PR verifier");
+  const body = formatHardKillBody(ev, hardKillSignature(ev));
+  assertStringIncludes(
+    body,
+    "**Last step logged:** `pre-PR verifier` (the wedge is in or after this step)",
   );
 });
 
@@ -1043,7 +1145,7 @@ Deno.test("hardKillLastStep is unknown when no table entry matches or the tail i
   assertEquals(hardKillLastStep(none), "unknown");
   assertStringIncludes(
     formatHardKillBody(none, hardKillSignature(none)),
-    "**Last step:** `unknown`",
+    "**Last step logged:** `unknown`",
   );
 
   const empty = makeEvidence({ lastLogLine: "" }, { workerLogTail: "" });
@@ -1059,7 +1161,7 @@ Deno.test("hardKillLastStep posts the fixed label, never the private log text (I
     body.includes("private-repo-title-XYZ"),
     "the matched log text is not posted",
   );
-  assertStringIncludes(body, "**Last step:** `pre-PR verifier`");
+  assertStringIncludes(body, "**Last step logged:** `pre-PR verifier`");
 });
 
 Deno.test("hardKillLastStep returns promptly on 64 KiB lines (Issue #4815)", () => {
@@ -1099,7 +1201,7 @@ Deno.test("a repeat kill's follow-up occurrence line names its last step (Issue 
   assertEquals(gh.commentCalls.length, 1, "the repeat comments");
   assertStringIncludes(
     argAfter(gh.commentCalls[0]!, "--body"),
-    "last step `mutation check`",
+    "last step logged `mutation check`",
   );
 });
 
