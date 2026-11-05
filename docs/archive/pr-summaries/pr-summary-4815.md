@@ -104,6 +104,12 @@ flowchart LR
 
 ## Test Plan
 
+- CI freshness repair for commit `9067d246`: the orphan test now waits for
+  the exact final `<marker> 300` command line and reparenting before `pgrep`,
+  avoiding a transient empty command line during `exec`. The surviving-process
+  assertion remains in
+  `worker/deno/tests/loop_supervisor_test.ts::loop.sh #4568 - a registered orphan with a different command survives`.
+  The integration workflow remains the authoritative process check on Linux.
 - CI repair: `worker/deno/tests/loop_supervisor_test.ts` captures the spawned
   orphan's PID and waits for its command and reparenting before searching for
   it. Previously the immediate search could race the background `exec`; the
