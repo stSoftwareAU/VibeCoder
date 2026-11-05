@@ -1823,6 +1823,7 @@ async function _processFeedbackWithHeartbeat(
     // head must not block or defer a head the checks have not rejected.
     publicationFailure = undefined;
     publicationDeferred = undefined;
+    guardValidated = false;
     verifierFailure = undefined;
     return deps.git.commitAndPushPending(
       pushBranch,

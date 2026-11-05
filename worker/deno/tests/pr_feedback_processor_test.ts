@@ -2090,7 +2090,7 @@ Deno.test("feedback turn limit stops drift and verifier recovery before publishi
 async function runPublicationRound(
   commentType: "pr_review" | "issue",
   validation: typeof validateRepositoryForPublication,
-  selfPushed = false,
+  selfPushed: boolean | "correction" = false,
   sharedDir?: string,
 ) {
   const dir = sharedDir ?? await Deno.makeTempDir();
@@ -2157,7 +2157,10 @@ async function runPublicationRound(
           beforePush,
           beforeBaseMerge,
         ) => {
-          if (selfPushed) {
+          if (
+            selfPushed === true ||
+            (selfPushed === "correction" && counts.claude > 2)
+          ) {
             return {
               ok: true,
               value: {
@@ -2346,6 +2349,22 @@ Deno.test("feedback publication - a head the agent pushed itself is judged by th
       "docker is not running",
     );
   }
+});
+
+Deno.test("feedback publication - a correction self-push is checked after the first head is rejected", async () => {
+  let validations = 0;
+  const { result, counts } = await runPublicationRound(
+    "pr_review",
+    async (request) => {
+      validations++;
+      return await failedPublication(request);
+    },
+    "correction",
+  );
+  assertEquals(validations, 2);
+  assertEquals(counts.marks, 0);
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.changesPushed, false);
 });
 
 Deno.test("feedback publication - a review the checks keep deferring stops costing sessions at the bound and resumes on a new head (PR #4800 review)", async () => {

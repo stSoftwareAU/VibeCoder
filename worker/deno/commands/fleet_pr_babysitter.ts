@@ -2456,6 +2456,7 @@ export async function fix(
       (retryRecord.unpublishedAttempts ?? 0);
     await saveBabysitterRetryState(stateDir, retryRecord);
     dir = await Deno.makeTempDir({
+      dir: "/tmp",
       prefix: `fleet-pr-babysitter-${Deno.pid}-`,
     });
     // Canonical, so the no-follow reader's parent check holds for the clone.
@@ -2998,6 +2999,9 @@ async function pass(
   prFilter?: number,
 ): Promise<void> {
   await recoverTemporaryClones(Deno.env.get("TMPDIR") || "/tmp");
+  if ((Deno.env.get("TMPDIR") || "/tmp") !== "/tmp") {
+    await recoverTemporaryClones("/tmp");
+  }
   const authors = [
     ...new Set([login, ...config.fleetPrAuthors, ...config.serviceAccounts]),
   ];

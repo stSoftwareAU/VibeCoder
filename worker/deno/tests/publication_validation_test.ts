@@ -1466,29 +1466,43 @@ Deno.test("a head that adds a failure line the base lacks stays failed under the
 Deno.test("the base-commit tree is reachable by another account", async () => {
   _resetBaseGateOutcomes();
   await withFeatureBranch(async (dir) => {
-    const red: QualityGateRunResult = {
-      action: "failed",
-      qualityOutput: "1 test failed\n",
-    };
-    const modes: number[] = [];
-    const gate = (
-      _params: QualityGateParams,
-      deps: QualityGateDeps,
-    ): Promise<QualityGateRunResult> => {
-      const where = deps.getCwd();
-      if (where.includes("vibe-base-gate-")) {
-        const parent = where.slice(0, where.lastIndexOf("/"));
-        modes.push(Deno.statSync(parent).mode! & 0o055);
-      }
-      return Promise.resolve(red);
-    };
-    expectStatus(
-      await validateRepositoryForPublication(
-        { cwd: dir, repo: REPO, baseRef: "main" },
-        { runGate: gate },
-      ),
-      "unavailable",
-    );
-    assertEquals(modes, [0o055]);
+    const previousTmp = Deno.env.get("TMPDIR");
+    const privateTmp = await Deno.makeTempDir({ dir });
+    await Deno.chmod(privateTmp, 0o700);
+    Deno.env.set("TMPDIR", privateTmp);
+    try {
+      const red: QualityGateRunResult = {
+        action: "failed",
+        qualityOutput: "1 test failed\n",
+      };
+      const modes: number[] = [];
+      const gate = (
+        _params: QualityGateParams,
+        deps: QualityGateDeps,
+      ): Promise<QualityGateRunResult> => {
+        const where = deps.getCwd();
+        if (where.includes("vibe-base-gate-")) {
+          const parent = where.slice(0, where.lastIndexOf("/"));
+          let path = parent;
+          while (path !== "/") {
+            modes.push(Deno.statSync(path).mode! & 0o001);
+            path = path.slice(0, path.lastIndexOf("/")) || "/";
+          }
+        }
+        return Promise.resolve(red);
+      };
+      expectStatus(
+        await validateRepositoryForPublication(
+          { cwd: dir, repo: REPO, baseRef: "main" },
+          { runGate: gate },
+        ),
+        "unavailable",
+      );
+      assertEquals(modes.length > 0, true);
+      assertEquals(modes.every((mode) => mode === 1), true);
+    } finally {
+      if (previousTmp === undefined) Deno.env.delete("TMPDIR");
+      else Deno.env.set("TMPDIR", previousTmp);
+    }
   });
 });

@@ -661,7 +661,10 @@ async function runGateOnBase(
     dir: string,
   ) => Promise<{ outcome: QualityGateRunResult; refused: boolean }>,
 ): Promise<string[] | null> {
-  const dir = await Deno.makeTempDir({ prefix: "vibe-base-gate-" });
+  const dir = await Deno.makeTempDir({
+    dir: "/tmp",
+    prefix: "vibe-base-gate-",
+  });
   try {
     // A makeTempDir directory is 0700, and the gate runs as the separate
     // `agent` account where the host has one: it must reach the tree, as it

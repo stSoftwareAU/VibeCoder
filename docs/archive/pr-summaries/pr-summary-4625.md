@@ -1,5 +1,15 @@
 ## Summary
 
+PR #4826 review follow-up: each feedback finalisation resets its guard state,
+so a correction the agent pushes itself is checked even when the previous head
+was rejected. Repair clones and base-gate worktrees use `/tmp` independently of
+private `TMPDIR` parents; interrupted clone recovery scans both locations.
+Coverage: `worker/deno/tests/pr_feedback_processor_test.ts::feedback publication - a correction self-push is checked after the first head is rejected`,
+`worker/deno/tests/publication_validation_test.ts::the base-commit tree is reachable by another account`,
+and `worker/deno/tests/fixtures/fleet_pr_babysitter_validation_scenarios.ts::the gate runs on the committed head in the clone, with the loaded repository configs, before the push`.
+The obsolete last-directory-only permission assertion is supplemented with
+checks of every parent under a private `TMPDIR`. No mirrored rule was found.
+
 Every lane that publishes agent-authored work now runs the target repository's
 own gate (`./quality.sh`, or its `quality_command`, in its `docker_image` with
 its declared `quality_credentials`) on the committed head before the push. A

@@ -101,7 +101,8 @@ Setup and `--check` also report, as an `ACTION:` line, a host with no separate
 monitored repository runs its checks in a Docker image: repairs of a
 repository with a `quality.sh` or a configured `quality_command` need that
 account, which must be able to enter the repair clone (the babysitter makes the
-clone traversable for it), and are deferred without it (a repository with
+clone traversable for it under `/tmp`, independently of `TMPDIR`), and are
+deferred without it (a repository with
 `skip_quality_check` is never refused).
 
 On the always-on Mac, rerun setup after manual testing and answer yes to the

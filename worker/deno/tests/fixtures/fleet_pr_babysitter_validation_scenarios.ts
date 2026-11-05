@@ -595,37 +595,54 @@ Deno.test("a ready claim with a failed gate does not publish the head", async ()
 Deno.test("the gate runs on the committed head in the clone, with the loaded repository configs, before the push", async () => {
   await withHost(async (h) => {
     const seen: Seen[] = [];
-    await repair(
-      h,
-      validatorFor(
+    const previousTmp = Deno.env.get("TMPDIR");
+    const privateTmp = await Deno.makeTempDir({ dir: h.root });
+    await Deno.chmod(privateTmp, 0o700);
+    Deno.env.set("TMPDIR", privateTmp);
+    try {
+      const validate = validatorFor(
         h,
         (head) => ({ status: "passed", head, gate: "ran" }),
         seen,
-      ),
-    );
-    assertEquals(seen.length, 1);
-    const call = seen[0]!;
-    assertEquals(call.request.cwd, h.agentDirs[0]);
-    assertEquals(call.request.repo, REPO);
-    // The babysitter's account holds the fleet credentials, so the PR's own
-    // code must never run as it (THREAT-MODEL C36).
-    assertEquals(call.request.requireSeparateAccount, true);
-    // A base other than main tells the PR's base from a hard-coded default.
-    assertEquals(call.request.baseRef, "origin/release/2");
-    assertEquals(
-      call.request.repoConfigs,
-      (await loadConfig(h.configPath)).repoConfig,
-    );
-    assert(call.head !== h.head, "the commit exists when the gate runs");
-    assertEquals(call.upstream, h.head, "nothing is pushed yet");
-    assertEquals(call.pushes, 0);
-    // The gate runs as the separate account, which must enter and read the
-    // clone (a makeTempDir directory is 0700).
-    assertEquals(
-      call.mode & 0o055,
-      0o055,
-      "the clone is traversable and readable by other accounts",
-    );
+      );
+      await repair(
+        h,
+        async (request) => {
+          let path = request.cwd;
+          while (path !== "/") {
+            assertEquals((await Deno.stat(path)).mode! & 0o001, 1, path);
+            path = path.slice(0, path.lastIndexOf("/")) || "/";
+          }
+          return await validate(request);
+        },
+      );
+      assertEquals(seen.length, 1);
+      const call = seen[0]!;
+      assertEquals(call.request.cwd, h.agentDirs[0]);
+      assertEquals(call.request.repo, REPO);
+      // The babysitter's account holds the fleet credentials, so the PR's own
+      // code must never run as it (THREAT-MODEL C36).
+      assertEquals(call.request.requireSeparateAccount, true);
+      // A base other than main tells the PR's base from a hard-coded default.
+      assertEquals(call.request.baseRef, "origin/release/2");
+      assertEquals(
+        call.request.repoConfigs,
+        (await loadConfig(h.configPath)).repoConfig,
+      );
+      assert(call.head !== h.head, "the commit exists when the gate runs");
+      assertEquals(call.upstream, h.head, "nothing is pushed yet");
+      assertEquals(call.pushes, 0);
+      // The gate runs as the separate account, which must enter and read the
+      // clone (a makeTempDir directory is 0700).
+      assertEquals(
+        call.mode & 0o055,
+        0o055,
+        "the clone is traversable and readable by other accounts",
+      );
+    } finally {
+      if (previousTmp === undefined) Deno.env.delete("TMPDIR");
+      else Deno.env.set("TMPDIR", previousTmp);
+    }
   });
 });
 
