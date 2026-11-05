@@ -46,6 +46,7 @@ The issue states no acceptance-criteria heading and nothing it asks is left undo
   - quoting `$name` in the script → the diagnostic step went red (`expected failed, got passed`);
   - removing `PATH=/nonexistent` from the gate script → the missing-tool test went red (`expected unavailable, got passed`).
 - `deno task test:unit tests/publication_validation_test.ts < /dev/null`: passed (46 passed, 0 failed). `deno fmt --check` and `deno lint` on the file: clean.
+- `./quality.sh < /dev/null`: every stage passed except `deno tests`, whose only 2 failures are `worker/deno/tests/completion_phase_repo_formatters_test.ts` lines 480 and 567 (a Rust formatter case this change does not touch; not compared against `main`).
 - No existing test was edited or had assertions removed. No twinned rule found.
 
 Not checked: the private repository's own `quality.sh` and CI ShellCheck configuration, and the babysitter and repair lanes end to end for ShellCheck (they share the same `validateRepositoryForPublication` and are covered by #4625's own tests).
