@@ -57,8 +57,43 @@ Mermaid: the verdict flow in the document passes `check-mermaid` (1,393 blocks).
 
 ## Acceptance Criteria
 
-The issue states no criteria heading, and nothing it asks is left undone, so no
-`missing` entry is recorded.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — One PR adds a gap-analysis document under `docs/security/` and a row
+  in `docs/security/README.md`; the document pins the upstream commit and links
+  the upstream repo — evidence:
+  `docs/security/security-constitution-gap-analysis.md`,
+  `docs/security/README.md:188` — reviewer: met
+- **met** — One row per upstream item (34 rows), each with one verdict: ADOPT,
+  ALREADY COVERED (citing the control, file or issue) or SKIP (stating why) —
+  evidence: 12 principles + 11 lessons + 5 shapes + 3 signals + 3 feature-abuse
+  rows = 34; 3 ADOPT, 23 ALREADY COVERED, 8 SKIP — reviewer: met
+- **met** — GCP/Azure/OCI shapes are mapped to their AWS IaC or GitHub-token
+  equivalent, else SKIP with the reason — evidence: SHAPE-016 and FA-006 map to
+  `passrole-compute` / `assume-role-escalation`; FA-010 is SKIP with
+  `ssm-send-command` named as the nearest AWS chain — reviewer: met
+- **met** — All three surfaces and every cloud-IAM shape assessed, including
+  tenant isolation and provider service agents — evidence: the surfaces list; P5
+  (tenant isolation); SHAPE-001 and SIGNAL-001 (service agents) — reviewer: met
+- **met** — ADOPT bar applied (gap no control covers, file and concrete change
+  named, at most 150 words per prompt); weaker items are SKIP (low value) —
+  evidence: the Method section; P6, L5 and L11 are SKIP (low value); #4817 caps
+  the added text at 150 words — reviewer: met
+- **met** — At most 3 follow-up issues, each covering one file and bundling
+  every ADOPT for it — evidence: one follow-up, #4817, on
+  `prompts/security_scan/prompt.md`, holding all three ADOPTs — reviewer: met
+- **met** — Each follow-up is filed with `idle-task`, names the file and the
+  change, and is linked from the document's row — evidence: `gh issue view 4817`
+  shows the `idle-task` label; rows L4, SHAPE-021 and SHAPE-032 link to it —
+  reviewer: met
+- **met** — No follow-up adds a `needs-human` path, approval gate or owner step
+  — evidence: #4817 and the document add none — reviewer: met
+- **met** — The PR does not edit the prompts, `CODING-STANDARDS.md` or
+  `THREAT-MODEL.md`; the twin rule is not triggered — evidence:
+  `git diff main --name-only` lists only the new document,
+  `docs/security/README.md` and this summary — reviewer: met
+- **met** — Zero ADOPT verdicts is a valid outcome — evidence: not triggered, as
+  there are 3 ADOPTs; the rule does not apply — reviewer: met
 
 ## Test Plan
 
@@ -81,3 +116,6 @@ The issue states no criteria heading, and nothing it asks is left undone, so no
 - The JSON editions of the upstream registers were not read separately.
 - The follow-up #4817 is filed but not implemented; it is a separate `idle-task`
   PR.
+- The body of #4817 cites "Lessons 4 and 11" as a source, while the document
+  marks L11 SKIP and carries only the AWS slice under L4; the issue wording was
+  not edited.
