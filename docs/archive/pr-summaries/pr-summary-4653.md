@@ -66,10 +66,10 @@ The issue states no criteria heading, and nothing it asks is left undone, so no
 - markdownlint on the new files: 0 issues. `check-mermaid`: passed.
 - Related existing rules checked: the Secure Coding Principles, Repository Isolation
   and capability-security entries; none is changed.
-- `./quality.sh` did not finish inside the run's 600 s foreground bound on this head;
-  CI runs the full gate.
-
-<!-- vibe-quality-gate-skipped reason="the full ./quality.sh exceeded the 600 s foreground bound; markdownlint, check-mermaid and the docs reachability test passed; CI runs the full gate on the PR" -->
+- `./quality.sh` on the docs commit `3200cbdb` (the summary file is the only later
+  change): `Result: PASSED (with skipped checks)`. Every stage passed, including
+  mermaid, markdownlint, semgrep, deno tests, lint, type check and fmt; `config
+  integration` and `checkov` were skipped by the gate itself.
 
 ## Not done
 
