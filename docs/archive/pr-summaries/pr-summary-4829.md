@@ -23,8 +23,8 @@ flowchart LR
 
 ### Essential Design Decisions
 
-- Do not require exit code 127: a wrapper can preserve Bash's real missing-command
-  report but exit 1.
+- Do not require exit code 127: a wrapper can preserve Bash's real
+  missing-command report but exit 1.
 - An unclosed Deno output block stays ignored so malformed captured output is
   classified as a content failure, not an infrastructure deferral.
 - `QUOTED_TEXT_LINE` in `publication_validation.ts` is not reused. The
@@ -69,10 +69,10 @@ phase's existing failed-verdict path passes the failure to a repair turn.
   returned the three-file suite to green.
 - `deno task test:unit tests/quality_gate_phase_test.ts tests/publication_validation_test.ts tests/completion_phase_publication_validation_4625_test.ts`:
   136 passed, 0 failed.
-- `deno fmt --check`, `deno lint` and `deno check` on the four changed TypeScript
-  files passed.
-- `deno task pr-summary-check --base origin/main` passed all applicable gates:
-  0 blocked and 0 not checked.
+- `deno fmt --check`, `deno lint` and `deno check` on the four changed
+  TypeScript files passed.
+- `deno task pr-summary-check --base origin/main` passed all applicable gates: 0
+  blocked and 0 not checked.
 - The two formatter tests previously recorded as failing were not reproduced:
   `deno task test:unit tests/completion_phase_repo_formatters_test.ts` passed
   with 8 tests on both this branch and a detached `origin/main` worktree. Their
