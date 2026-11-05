@@ -894,6 +894,7 @@ Deno.test("requireSeparateAccount: with no separate account the repository's com
           createDeps,
           runGate: gateRunning(PASS),
           canDropPrivileges: () => Promise.resolve(true),
+          reachableBySeparateAccount: () => Promise.resolve(true),
         },
       ),
       "passed",
@@ -1079,6 +1080,7 @@ Deno.test("requireSeparateAccount: the real gate is never entered on a host that
           createDeps,
           runGate: runQualityGateCheck,
           canDropPrivileges: () => Promise.resolve(true),
+          reachableBySeparateAccount: () => Promise.resolve(true),
         },
       ),
       "passed",
@@ -1148,7 +1150,7 @@ Deno.test("probePublicationCapability: each fixed host property is named without
         assertEquals(
           await probePublicationCapability(
             { ...base, requireSeparateAccount: true },
-            { canDropPrivileges: yes },
+            { canDropPrivileges: yes, reachableBySeparateAccount: yes },
           ),
           undefined,
         );
@@ -1202,6 +1204,89 @@ Deno.test("probePublicationCapability: each fixed host property is named without
       ),
       undefined,
     );
+  });
+});
+
+// --- A separate account that cannot enter the clone (PR #4800 review) ---
+
+Deno.test("probePublicationCapability: a separate account that cannot enter the clone is named", async () => {
+  const yes = () => Promise.resolve(true);
+  const unreachable = () => Promise.resolve(false);
+  await withRepo({ "quality.sh": "#!/bin/bash\nexit 0\n" }, async (dir) => {
+    const base = { cwd: dir, repo: REPO, requireSeparateAccount: true };
+    const reason = await probePublicationCapability(base, {
+      canDropPrivileges: yes,
+      reachableBySeparateAccount: unreachable,
+    });
+    assertStringIncludes(reason ?? "", "cannot enter the checkout");
+    assertEquals(
+      await probePublicationCapability(base, {
+        canDropPrivileges: yes,
+        reachableBySeparateAccount: yes,
+      }),
+      undefined,
+    );
+  });
+});
+
+Deno.test("requireSeparateAccount: the reachability probe is asked about the checkout and its gate script", async () => {
+  await withRepo({ "quality.sh": "#!/bin/bash\nexit 0\n" }, async (dir) => {
+    const asked: Array<[string, string | undefined]> = [];
+    const reachable = (cwd: string, script: string | undefined) => {
+      asked.push([cwd, script]);
+      return Promise.resolve(true);
+    };
+    const request = { cwd: dir, repo: REPO, requireSeparateAccount: true };
+    await probePublicationCapability(request, {
+      canDropPrivileges: () => Promise.resolve(true),
+      reachableBySeparateAccount: reachable,
+    });
+    expectStatus(
+      await validateRepositoryForPublication(request, {
+        runGate: stubGate(PASS),
+        canDropPrivileges: () => Promise.resolve(true),
+        reachableBySeparateAccount: reachable,
+      }),
+      "passed",
+    );
+    assertEquals(asked, [
+      [dir, `${dir}/quality.sh`],
+      [dir, `${dir}/quality.sh`],
+    ]);
+  });
+});
+
+Deno.test("requireSeparateAccount: a clone the separate account cannot enter is unavailable, and the gate never runs", async () => {
+  await withRepo({ "quality.sh": "#!/bin/bash\nexit 0\n" }, async (dir) => {
+    const calls: GateCall[] = [];
+    const refused = expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, requireSeparateAccount: true },
+        {
+          runGate: stubGate(PASS, calls),
+          canDropPrivileges: () => Promise.resolve(true),
+          reachableBySeparateAccount: () => Promise.resolve(false),
+        },
+      ),
+      "unavailable",
+    );
+    assertStringIncludes(refused.reason, "cannot enter the checkout");
+    assertEquals(refused.head, await git(dir, "rev-parse", "HEAD"));
+    assertEquals(calls.length, 0);
+
+    // Positive control: the same clone, reachable by the separate account, runs the gate.
+    expectStatus(
+      await validateRepositoryForPublication(
+        { cwd: dir, repo: REPO, requireSeparateAccount: true },
+        {
+          runGate: stubGate(PASS, calls),
+          canDropPrivileges: () => Promise.resolve(true),
+          reachableBySeparateAccount: () => Promise.resolve(true),
+        },
+      ),
+      "passed",
+    );
+    assertEquals(calls.length, 1);
   });
 });
 

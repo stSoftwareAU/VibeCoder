@@ -407,6 +407,8 @@ interface Seen {
   head: string;
   upstream: string;
   pushes: number;
+  /** The clone's permission bits when the gate runs. */
+  mode: number;
 }
 
 /**
@@ -425,6 +427,7 @@ function validatorFor(
       head,
       upstream: await upstreamFeature(h),
       pushes: h.pushes.length,
+      mode: (await Deno.stat(request.cwd)).mode ?? 0,
     });
     return verdict(head);
   };
@@ -614,6 +617,13 @@ Deno.test("the gate runs on the committed head in the clone, with the loaded rep
     assert(call.head !== h.head, "the commit exists when the gate runs");
     assertEquals(call.upstream, h.head, "nothing is pushed yet");
     assertEquals(call.pushes, 0);
+    // The gate runs as the separate account, which must enter and read the
+    // clone (a makeTempDir directory is 0700).
+    assertEquals(
+      call.mode & 0o055,
+      0o055,
+      "the clone is traversable and readable by other accounts",
+    );
   });
 });
 

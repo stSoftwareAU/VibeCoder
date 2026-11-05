@@ -2460,6 +2460,10 @@ export async function fix(
     });
     // Canonical, so the no-follow reader's parent check holds for the clone.
     dir = await Deno.realPath(dir);
+    // The gate runs as the separate account, which must enter the clone (a
+    // makeTempDir directory is 0700); the clone holds a repository the fleet
+    // already reads. Nothing else is made writable by other accounts.
+    await Deno.chmod(dir, 0o755);
     scratch = await Deno.makeTempDir({
       prefix: `fleet-pr-babysitter-${Deno.pid}-`,
     });

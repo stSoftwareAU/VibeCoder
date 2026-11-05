@@ -44,6 +44,7 @@ import { isWorkerStatePath } from "./worker_state_paths.ts";
 import {
   canRunAsUntrustedUser,
   probeCommandSuccess,
+  UNTRUSTED_USER,
 } from "./untrusted_command_env.ts";
 import { normaliseGateOutputLines } from "./baseline_gate.ts";
 
@@ -92,11 +93,49 @@ export interface PublicationValidationDeps {
   ) => QualityGateDeps;
   /** Whether the container runtime a `docker_image` gate needs answers. */
   dockerAvailable?: () => Promise<boolean>;
+  /**
+   * Whether the separate account can enter the checkout and read the gate
+   * script (`script` is undefined for a configured command). Production:
+   * {@link separateAccountCanReach}.
+   */
+  reachableBySeparateAccount?: (
+    cwd: string,
+    script: string | undefined,
+  ) => Promise<boolean>;
 }
 
 const SEPARATE_ACCOUNT_REASON =
   "no separate account to run the repository's own commands without " +
   "exposing the runner's credentials (THREAT-MODEL C36)";
+
+const CLONE_UNREACHABLE_REASON =
+  "the separate account cannot enter the checkout, so the repository's own " +
+  "commands cannot run there (the clone must be traversable and readable by it)";
+
+/**
+ * Whether the separate account can enter `cwd` and read `script` (when given):
+ * the gate runs there as that account, so a checkout it cannot traverse is not
+ * a checkout the gate can run in. Argv only; the paths are never spliced into
+ * a shell line.
+ */
+export function separateAccountCanReach(
+  cwd: string,
+  script: string | undefined,
+): Promise<boolean> {
+  return probeCommandSuccess([
+    "sudo",
+    "-n",
+    "-u",
+    UNTRUSTED_USER,
+    "--",
+    "sh",
+    "-c",
+    'test -x "$1" && test -r "$1" && { [ -z "$2" ] || test -r "$2"; }',
+    "sh",
+    cwd,
+    script ?? "",
+  ]);
+}
 
 async function isFile(path: string): Promise<boolean> {
   try {
@@ -250,7 +289,9 @@ export async function probePublicationCapability(
   request: PublicationRequest,
   deps: Pick<
     PublicationValidationDeps,
-    "canDropPrivileges" | "dockerAvailable"
+    | "canDropPrivileges"
+    | "dockerAvailable"
+    | "reachableBySeparateAccount"
   >,
 ): Promise<string | undefined> {
   const config = request.repoConfigs?.[request.repo];
@@ -267,6 +308,15 @@ export async function probePublicationCapability(
       !await (deps.canDropPrivileges ?? canRunAsUntrustedUser)()
     ) {
       return SEPARATE_ACCOUNT_REASON;
+    }
+    if (
+      request.requireSeparateAccount &&
+      !await (deps.reachableBySeparateAccount ?? separateAccountCanReach)(
+        request.cwd,
+        command === "./quality.sh" ? `${request.cwd}/quality.sh` : undefined,
+      )
+    ) {
+      return CLONE_UNREACHABLE_REASON;
     }
     if (
       config?.dockerImage &&
@@ -316,6 +366,16 @@ export async function validateRepositoryForPublication(
   const canDrop = request.requireSeparateAccount
     ? () => dropProbe ??= (deps.canDropPrivileges ?? canRunAsUntrustedUser)()
     : undefined;
+  // Likewise probed at most once per request, as the separate account.
+  const gateScript = command === "./quality.sh"
+    ? `${cwd}/quality.sh`
+    : undefined;
+  let reachProbe: Promise<boolean> | undefined;
+  const canReach = () =>
+    reachProbe ??= (deps.reachableBySeparateAccount ?? separateAccountCanReach)(
+      cwd,
+      gateScript,
+    );
   try {
     // Decided before the gate is entered, so a refused gate has no side
     // effects: no credential mint, no sweep, no spawn (PR #4800 review). A
@@ -328,6 +388,19 @@ export async function validateRepositoryForPublication(
         status: "unavailable",
         head: before.head,
         reason: SEPARATE_ACCOUNT_REASON,
+      };
+    }
+    // The same gate, but the account can drop and cannot enter the clone: the
+    // gate would fail on permissions, which must not read as a verdict.
+    if (
+      canDrop !== undefined && await canDrop() &&
+      (command !== "./quality.sh" || await isFile(`${cwd}/quality.sh`)) &&
+      !await canReach()
+    ) {
+      return {
+        status: "unavailable",
+        head: before.head,
+        reason: CLONE_UNREACHABLE_REASON,
       };
     }
     const credentials = await resolveRepoCredentials(
