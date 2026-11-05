@@ -304,3 +304,41 @@ comparison base was found. Targeted run on this head:
 `pr_spelling_processor_test.ts` (36 passed),
 `fleet_pr_babysitter_validation_test.ts` (11 scenarios passed), plus the babysitter,
 setup, retry-state and quality-gate unit tests (298 passed in the parallel pass).
+
+## Review round 4 (PR #4800, redone as the current branch)
+
+The earlier PR #4800 was closed after its feedback run hit the turn limit; this
+branch carries that work plus the fixes for its last open review:
+
+- Babysitter clone reachable by the separate account: `fix()` now `chmod 0755`s
+  the `Deno.makeTempDir` clone (a 0700 directory the `agent` account could not
+  enter, so `Permission denied` would have been charged as a `code` failure).
+  Nothing else is made writable; `.git` and the tree stay operator-owned.
+  `probePublicationCapability` and `validateRepositoryForPublication` also ask
+  `separateAccountCanReach` (`sudo -n -u agent -- sh -c 'test -x dir && test -r
+  dir && test -r dir/quality.sh'`, argv list only): an unreachable checkout is
+  `unavailable` (probe: a capability deferral before any session), never
+  `failed`. Tests in `worker/deno/tests/publication_validation_test.ts`: the
+  probe names the unreachable clone and passes when reachable; the dep receives
+  `(dir, dir/quality.sh)`; an unreachable checkout returns `unavailable` with the
+  gate never run, and a reachable one runs it. The "gate runs on the committed
+  head" scenario in
+  `worker/deno/tests/fixtures/fleet_pr_babysitter_validation_scenarios.ts`
+  asserts the clone's mode is traversable and readable by others.
+- Base comparison on real VibeCoder output: `failureEvidenceLines` also drops
+  `<label>: PASSED` lines (`NON_FAILURE_LINE`), so a head that adds a file and
+  moves a `... PASSED (N files scanned)` count still reproduces a shared host
+  fault on the base. Tests:
+  `publication_validation_test.ts::a head whose PASSED count moved, failing the same way as the base, reproduces on the base`
+  and `...failureEvidenceLines drops a <label>: PASSED line but keeps FAILED and real failure lines`
+  (both red with the alternative removed; the over-matching and 100000-character
+  input cases pass either way and guard against over-matching and hangs).
+- Docs: `docs/workflows/fleet-pr-babysitter.md` and `docs/INTERNALS.md` name the
+  `agent` account, the traversable clone and Docker as host requirements for a
+  repository with a gate.
+
+Not done: the default sudo reachability probe was exercised only through the
+injected dep (no real `agent` account in this environment); the Codex
+credential-denial profile for the gate; capability probes in the spelling and
+feedback lanes; the base comparison in the non-babysitter lanes still uses the
+default branch. Quality gate: `./quality.sh` on this head: Result PASSED (with skipped checks: config integration, checkov).
