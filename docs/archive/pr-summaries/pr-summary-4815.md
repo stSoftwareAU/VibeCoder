@@ -106,14 +106,17 @@ flowchart LR
 
 - CI repair (PR #4819): in
   `worker/deno/tests/loop_supervisor_test.ts::loop.sh #4568 - a registered orphan with a different command survives`
-  the orphan wait is a bounded poll for the final `<marker> 300` command line
-  and re-parenting to init, and it fails with the observed command and parent
-  if it never settles. The `pgrep -f` snapshot (and its helper) is removed: it
-  returned `[]` on CI although the process was alive. The test still asserts
-  the registered unrelated process survives the reaper. Local `deno fmt
-  --check`, `deno lint`, `deno check` and the test pass; the failure itself did
-  not reproduce locally, so the integration workflow stays the authoritative
-  check.
+  the orphan is now a plain `nohup sleep 300` instead of a symlink to
+  `/bin/sleep` under another name. The symlink died at once on the runner
+  (`ps` found no process, command `""`), consistent with `sleep` being a
+  multi-call binary that dispatches on `argv[0]` (uutils coreutils on the
+  migrating `ubuntu-latest`); this is inferred from the log, not reproduced.
+  The wait is a bounded poll for the `sleep 300` command line and re-parenting
+  to init, and it fails with the observed command and parent if it never
+  settles. The `pgrep -f` snapshot (and its helper) is removed. The test still
+  asserts the registered process, whose command is not `loop.sh`, survives the
+  reaper. Local `deno fmt --check`, `deno lint` and the `#4568` tests pass;
+  the integration workflow stays the authoritative check.
 - Added to `worker/deno/tests/hard_kill_report_test.ts`:
   - `hardKillLastStep takes the mutation check from the tail and skips the ticker (Issue #4815)`
   - `hardKillLastStep: the later tail line wins over an earlier one (Issue #4815)`
