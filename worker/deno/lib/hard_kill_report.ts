@@ -111,7 +111,9 @@ const AGENT_PROGRESS_LINE = /\[agent-progress\]/;
  * `evaluateMutationGate` and `evaluateCoverageCarryOverGate` return on every
  * path (clean, capped, budget, not applicable). The pre-PR verifier, the
  * mutation check and the coverage check log nothing as they start, so a label
- * names the last step that logged: the wedge is in or after it.
+ * names the last step that logged: the wedge is in or after it. An
+ * `[agent-progress]` line never reaches this table: {@link hardKillLastStep}
+ * labels it `agent turn` first, so the table needs no entry for it.
  */
 const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
   { label: "pre-PR verifier", pattern: /Pre-PR verifier/ },
@@ -124,7 +126,7 @@ const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
     pattern: /\bcoverage carry-over\b|\bcarried-over lines\b/i,
   },
   { label: "quality gate", pattern: /\bQuality gate\b|\[phase\] quality_gate/ },
-  { label: "agent turn", pattern: /\[agent-progress\]|Running Claude Code/ },
+  { label: "agent turn", pattern: /Running Claude Code/ },
 ];
 /**
  * `owner/repo#N`. Owner and repo draw from the same class, so a run of name

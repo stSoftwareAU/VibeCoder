@@ -125,6 +125,24 @@ flowchart LR
     `[phase] x: still running`, must give `agent turn`; controls: the same text
     outside an agent-progress line still matches its own step, and a ticker is
     still skipped as noise)
+  - `hardKillLastStep: each table operand names its step from the log shapes the worker writes (PR #4819 review)`
+    (one case per operand the other tests did not reach, in the real logger
+    shape and after a `Pre-PR verifier released its disposable checkout` line:
+    `Quality gate passed attempt=1`, `[phase] quality_gate (o/r#N): started`,
+    `Running Claude Code with 3600s timeout ...`, and
+    `Mutation gate reported findings reason=1 mutant of changed lines survived ...`,
+    whose reason names no other entry so only `gate` matches)
+- Per-operand red checks (PR #4819 review; each operand deleted on its own from
+  `STEP_PATTERNS`, `deno test` of `tests/hard_kill_report_test.ts`, then
+  restored): `\bQuality gate\b` → 1 failed (new test); `\[phase\] quality_gate`
+  → 1 failed (new test); `Running Claude Code` → 1 failed (new test); mutation
+  `gate` → 1 failed (new test); mutation `check` → 3 failed; `budget` → 3 failed
+  (`mutation budget` case of the gate-notes test); `cap` → 1 failed
+  (`mutation capped`); `mutants? killed` → 1 failed; `coverage carry-over` → 1
+  failed (`coverage budget`); `carried-over lines` → 1 failed. The dead
+  `/\[agent-progress\]/` operand of the `agent turn` entry is removed:
+  `AGENT_PROGRESS_LINE` in `hardKillLastStep` returns first, so no input reached
+  it; the agent-progress test still covers that label.
 - Red checks (each break made on its own, test run, then restored): ticker
   filter removed → test 1 red; scan made forward → tests 1 and 2 red; fallback
   `unknown` changed → tests 3 and 5 red; raw line returned instead of the label
@@ -148,7 +166,7 @@ flowchart LR
   `hard_kill_report.ts` and its tests; `run_failure_issue.ts` only mentions the
   `**Phase:**` field in a comment.
 - `deno task test:unit`, run from `worker/deno`, one file at a time, 0 failed in
-  each: `tests/hard_kill_report_test.ts` (59 tests at head) and
+  each: `tests/hard_kill_report_test.ts` (60 tests at head) and
   `tests/run_failure_issue_test.ts` (26 tests at head).
 - `./quality.sh` (run on an earlier head, before review fix 3; not re-run after
   it, skipped for budget): every stage passed except `deno tests`. The parallel
@@ -164,7 +182,40 @@ flowchart LR
 Not done: the wedge itself is not diagnosed or fixed; the GRQ-3 archive was not
 read; the serial test pass of the gate did not run.
 
-- Corpus run: 19 distinct `[agent-progress]` line shapes taken from `docs/`,
-  `lib/` and `tests/` (no worker log on this host holds agent-progress lines)
-  through `hardKillLastStep`: 19 `agent turn`, 0 false positives, 0 false
-  negatives. This is a small corpus, not a run over production logs.
+- Corpus run (PR #4819 review): `hardKillLastStep` over every line of the 45
+  production worker logs on this host (`~/logs/worker-*.log.gz`, 2026-11-02 to
+  2026-11-05), each line as the last log line, 38140 lines. Base has no matcher,
+  so there is no base count: the base branch cannot label a step. Head result:
+  1875 `agent turn` (1363 `[agent-progress]` tickers, 512
+  `Running Claude Code ...` lines), 262 `quality gate` (80
+  `Quality gate
+  passed`, 82 `Quality gate stage outcomes`, 2
+  `Quality gate failed, running
+  Claude fix attempt`, the rest
+  `[phase] quality_gate` started/continue lines), 252 `pre-PR verifier`, 139
+  `mutation check`, 82 `coverage carry-over check`, 35530 `unknown`. Every
+  `agent turn` line is a genuine agent-progress or claude_runner line: 0 false
+  positives there. Every note the two gates log (`N of M mutants killed`,
+  `mutation budget exhausted ...`, `mutation check not
+  applicable ...`,
+  `N of M carried-over lines still covered`,
+  `coverage
+  carry-over check not applicable ...`) is labelled: 0 false
+  negatives for the step-ending lines. Observed look-alikes, accepted: 4
+  `Drift check reported
+  residual drift ...` lines and the
+  `Completion gates reported findings`, `PR-summary rule block` and
+  `Completion-gate findings remain` lines quote a gate's finding text in
+  `reason=`, so they take that gate's label (these are logged after that gate
+  ran, so the label is never earlier than the real position). A scan of the 207
+  lines with a broad independent pattern
+  (`mutant|mutation|carried-over|carry-over|verifier|quality gate|claude code`)
+  that came out `unknown` found none a step logs on finishing; they are
+  `Claude Code health check passed` (94),
+  `Mutation survivors remain ... raising
+  a draft` (15), drift-check,
+  review-fix and cycle-timing lines and quoted PR text. The multi-line
+  `Quality gate failed after fix attempt output=...` dump does not occur in
+  these logs (two `Quality gate failed, running Claude fix
+  attempt` lines
+  only), so that shape is not covered by the corpus.

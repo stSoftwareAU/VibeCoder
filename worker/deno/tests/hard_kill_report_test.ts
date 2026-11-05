@@ -1113,6 +1113,50 @@ Deno.test("hardKillLastStep names the step for every note the two gates log (Iss
   }
 });
 
+Deno.test("hardKillLastStep: each table operand names its step from the log shapes the worker writes (PR #4819 review)", () => {
+  // Shapes copied from the worker log (`logger.info` prefix, then message).
+  const logged = (message: string) =>
+    `[2026-11-03 05:15:07Z] INFO: [s1 stSoftwareAU/VibeCoder#4737] ${message} host=vibe-coder-11556:74`;
+  const cases: [string, string, string][] = [
+    [
+      "quality gate: 'Quality gate' operand",
+      "quality gate",
+      logged("Quality gate passed attempt=1"),
+    ],
+    [
+      "quality gate: '[phase] quality_gate' operand",
+      "quality gate",
+      logged("[phase] quality_gate (stSoftwareAU/VibeCoder#4737): started"),
+    ],
+    [
+      "agent turn: 'Running Claude Code' operand",
+      "agent turn",
+      logged(
+        "Running Claude Code with 3600s timeout (60s grace period) claude_timeout=3600 claude_max_turns=100...",
+      ),
+    ],
+    [
+      // The reason names no other table entry, so only 'gate' matches.
+      "mutation check: 'gate' operand",
+      "mutation check",
+      logged(
+        "Mutation gate reported findings reason=1 mutant of changed lines survived (no test went red)",
+      ),
+    ],
+  ];
+  for (const [name, label, line] of cases) {
+    // The verifier line precedes it, as in a real run, so a miss falls back
+    // to "pre-PR verifier" and the test goes red.
+    const ev = makeEvidence({ lastLogLine: line }, {
+      workerLogTail: [
+        logged("Pre-PR verifier released its disposable checkout"),
+        line,
+      ].join("\n"),
+    });
+    assertEquals(hardKillLastStep(ev), label, name);
+  }
+});
+
 Deno.test("hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)", () => {
   // Each detail is text another table entry matches; only the agent-progress
   // check stops the line taking that step's label.
