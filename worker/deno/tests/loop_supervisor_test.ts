@@ -1507,10 +1507,13 @@ Deno.test({
       const pid = Number(new TextDecoder().decode(result.stdout).trim());
       assert(result.success && Number.isInteger(pid) && pid > 0);
       pids = [pid];
-      // The shell may exit before nohup has exec'd the marker command.
-      for (let i = 0; i < 50; i++) {
+      // The shell may exit before nohup has exec'd the marker command. The
+      // forked shell and nohup both carry the marker in their argv too, so
+      // wait for the final `<marker> 300` command line: pgrep -f reads an
+      // empty cmdline while the PID is mid-exec.
+      for (let i = 0; i < 100; i++) {
         if (
-          (await getCommand(pid)).includes(marker) &&
+          (await getCommand(pid)) === `${marker} 300` &&
           await parentPidOf(pid) === 1
         ) break;
         await delay(100);
