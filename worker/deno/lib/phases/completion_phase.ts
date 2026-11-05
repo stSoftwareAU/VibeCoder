@@ -754,10 +754,8 @@ async function postCompletionAdvisory(
   const intro = state.mutationHold
     ? "The implementing run could not finish validation: the repository's " +
       `CI job \`${state.mutationHold.job}\` blocks on surviving mutants and ` +
-      (state.mutationHold.incomplete
-        ? "the worker's mutation check could not finish. "
-        : "the worker's mutation check still reports them after the one " +
-          "in-session recovery turn. ") +
+      "the worker's mutation check still reports them after the one " +
+      "in-session recovery turn. " +
       "This pull request is a draft and auto-merge " +
       "is not armed; the next run continues this branch."
     : "The implementing run was told about these findings once, in that same " +
@@ -3001,7 +2999,6 @@ async function completionBody(
         job: gate.ciBlock.job,
         workflow: gate.ciBlock.workflow,
         comment: buildMutationGateComment(gate),
-        ...(gate.incomplete ? { incomplete: gate.incomplete } : {}),
       }
       : undefined;
     mutationVerdict = {
