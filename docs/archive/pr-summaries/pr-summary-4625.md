@@ -143,8 +143,8 @@ coverage ledger `docs/audits/lib-sweep-coverage/top-up-4625.json`.
 - Mutation check (review round 3): with the baseline green, the survivors were
   `completion_phase.ts` (the HEAD read, the passed-head cache and the recovery
   guard's options) and `fleet_pr_babysitter.ts` (`requireSeparateAccount`).
-- `worker/deno/tests/completion_phase_publication_validation_4625_test.ts` (18
-  tests at head, 18 passed) now pins each: the HEAD read's cwd, exit code and
+- `worker/deno/tests/completion_phase_publication_validation_4625_test.ts` (19
+  tests at head, 19 passed) now pins each: the HEAD read's cwd, exit code and
   output, reuse of a passed head, the guard's `cwd`, `repo`, `repoConfigs`,
   `branchName` and `validate`, and that a guard block ends the run without a
   repair turn. Each was applied by hand and turned a test red.
@@ -203,6 +203,18 @@ durable retry (#4656) and review dismissal (#4657) belong to those issues.
   merged head validated before its push, rejected merged head never pushed
   (`pre_push_gate`), unavailable merged head retried (`push_failure`); the first
   is red with the first push's hook removed.
+- Review round 4 (pre-PR verifier): completion's publication check was skipped
+  on any fast-gate `noop`; with an unresolvable base the gate falls back to
+  unpushed-only, where `noop` means every commit is already on origin (WIP
+  checkpoints), so the head went unchecked. It now skips only when the base
+  resolved (`completion_phase.ts`, `gateBeforePush`). Test
+  `an already-pushed branch with an unresolvable base still runs the publication
+  check`;
+  red with the `comparableBase.ok` operand removed. The babysitter base-ref
+  assertions (`babysitter_fix_orchestration_test.ts`,
+  `fixtures/fleet_pr_babysitter_validation_scenarios.ts`) now use a `release/2`
+  base and expect `origin/release/2`; red when `fleet_pr_babysitter.ts` passes
+  the literal `origin/main`.
 - Deferral bounds: new `worker/deno/lib/publication_deferral_budget.ts`.
   Spelling (`spelling-<checkRunId>`) and feedback
   (`feedback-<type>-<id>-<head>`) stand down after 3 rounds, charged on
@@ -386,13 +398,13 @@ skipped checks: config integration, checkov).
   was applied by hand and turned the file's tests red.
 - PR #4826 CI repair: the in-process gate-request test now stubs the capability
   probe alongside its mocked checkout and validation. This keeps the request
-  assertions independent of the runner's separate-account availability; the
-  real probe remains covered by `publication_validation_test.ts`.
+  assertions independent of the runner's separate-account availability; the real
+  probe remains covered by `publication_validation_test.ts`.
 - PR #4826 integration CI repair: the orphan-survival test waits for the
   background sleep to appear in the process list before registering it. The
-  shell can exit before the child has executed sleep, making an immediate
-  lookup race. The test still requires exactly one process, an orphaned parent,
-  and survival after the probe sweep. No mirrored rule was found.
+  shell can exit before the child has executed sleep, making an immediate lookup
+  race. The test still requires exactly one process, an orphaned parent, and
+  survival after the probe sweep. No mirrored rule was found.
 - Repository review checklist `capsec-safe-execution` ("Untrusted text reaches a
   process or query only as data, through the platform's argument list or
   parameter binding. A wrapper that is never called, or a check that rejects

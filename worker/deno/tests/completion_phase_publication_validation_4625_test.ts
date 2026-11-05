@@ -66,6 +66,8 @@ interface Script {
   answers: PublicationValidation[];
   /** What the fast changed-file gate reports; `noop` means nothing ahead. */
   fastKind?: "passed" | "noop";
+  /** No base ref resolves, so the fast gate falls back to unpushed-only. */
+  baseUnresolvable?: boolean;
   /** Behind-count answered to each drift check (merge when non-zero). */
   behindOnCall?: (call: number) => number;
   repoConfig?: Record<string, RepoConfig>;
@@ -266,7 +268,10 @@ async function runPhase(script: Script): Promise<Run> {
               args[0] === "rev-parse" && joined.includes("--verify") &&
               joined.includes("^{commit}")
             ) {
-              stdout = "a".repeat(40) + "\n";
+              if (script.baseUnresolvable) code = 1;
+              else stdout = "a".repeat(40) + "\n";
+            } else if (script.baseUnresolvable && args[0] === "fetch") {
+              code = 1;
             }
             return Promise.resolve({
               ok: true as const,
@@ -406,6 +411,18 @@ Deno.test("a branch with nothing ahead of base does not run the publication chec
     false,
     `events: ${run.events.join(", ")}`,
   );
+});
+
+// (e2) An unresolvable base makes a noop mean "all pushed", not "nothing to check".
+Deno.test("an already-pushed branch with an unresolvable base still runs the publication check (Issue #4625)", async () => {
+  const run = await runPhase({
+    answers: [PASSED_RAN],
+    fastKind: "noop",
+    baseUnresolvable: true,
+  });
+  assertEquals(run.result.status, "continue");
+  assertEquals(run.requests.length, 1, "validatePublication was called");
+  assertEquals(run.events.includes("validate"), true);
 });
 
 // (f) The merged head from the last-currency push is validated before it is pushed.

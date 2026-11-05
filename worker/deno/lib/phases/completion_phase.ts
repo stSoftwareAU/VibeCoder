@@ -1956,9 +1956,12 @@ async function completionBody(
         comparableBase.ok ? comparableBase.value : undefined,
       );
       // Issue #4625: the repository's own gate must pass on the committed head
-      // before anything is published. A noop has nothing ahead of base to
-      // publish, so there is nothing to validate.
-      if (!fast.ok || fast.value.kind === "noop") return fast;
+      // before anything is published. A noop against a resolved base has
+      // nothing ahead of it to publish. With no resolved base the gate fell
+      // back to unpushed-only, so a noop means only that every commit is on
+      // origin already (WIP checkpoints): the head is still validated.
+      if (!fast.ok) return fast;
+      if (fast.value.kind === "noop" && comparableBase.ok) return fast;
       const validation = await validateHead({
         cwd: state.repoPath,
         repo,

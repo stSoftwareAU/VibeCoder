@@ -1492,10 +1492,11 @@ Deno.test("fix asks for the repository gate on the committed head as a separate 
       requests.push(request);
       return Promise.resolve({ status: "passed", head: PUSHED, gate: "ran" });
     };
+    h.state.pr = basePr({ baseRefName: "release/2" });
     h.state.changes = true;
     await fix(
       REPO,
-      basePr() as never,
+      basePr({ baseRefName: "release/2" }) as never,
       [BOT],
       BOT,
       APP,
@@ -1510,7 +1511,8 @@ Deno.test("fix asks for the repository gate on the committed head as a separate 
     assertEquals(requests[0]!.repo, REPO);
     assertEquals(requests[0]!.repoConfigs, expected);
     assertEquals(requests[0]!.requireSeparateAccount, true);
-    assertEquals(requests[0]!.baseRef, "origin/main");
+    // A base other than main tells the PR's base from a hard-coded default.
+    assertEquals(requests[0]!.baseRef, "origin/release/2");
     assertEquals(h.state.pushed, 1);
   });
 });

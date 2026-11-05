@@ -315,6 +315,8 @@ async function withHost(body: (h: Host) => Promise<void>): Promise<void> {
     await Deno.writeTextFile(`${work}/a.txt`, "first\n");
     await git(["add", "-A"], work);
     await git(["commit", "-q", "-m", "first"], work);
+    // The PR's base is not `main`, so a hard-coded base cannot pass.
+    await git(["branch", "release/2"], work);
     await git(["checkout", "-q", "-b", "feature"], work);
     await Deno.writeTextFile(`${work}/feature.txt`, "feature\n");
     await git(["add", "-A"], work);
@@ -380,7 +382,7 @@ function prFor(head: string, options: { failedCi: boolean }): Pr {
     author: { login: "fleet" },
     headRefName: "feature",
     headRefOid: head,
-    baseRefName: "main",
+    baseRefName: "release/2",
     isCrossRepository: false,
     isDraft: false,
     mergeable: "MERGEABLE",
@@ -608,8 +610,8 @@ Deno.test("the gate runs on the committed head in the clone, with the loaded rep
     // The babysitter's account holds the fleet credentials, so the PR's own
     // code must never run as it (THREAT-MODEL C36).
     assertEquals(call.request.requireSeparateAccount, true);
-    // The base failure comparison uses the PR's own base, not the default branch.
-    assertEquals(call.request.baseRef, "origin/main");
+    // A base other than main tells the PR's base from a hard-coded default.
+    assertEquals(call.request.baseRef, "origin/release/2");
     assertEquals(
       call.request.repoConfigs,
       (await loadConfig(h.configPath)).repoConfig,
