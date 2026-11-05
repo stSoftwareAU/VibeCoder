@@ -202,3 +202,64 @@ Deno.test("PR discovery dedup keys on the policy fingerprint and rejects a malfo
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("PR discovery events reject an unparsable timestamp and a non-string fingerprint", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = `${dir}/events.jsonl`;
+    const event = {
+      event: "discovered" as const,
+      hostId: "host-a",
+      repo: "org/repo",
+      prNumber: 17,
+      headSha: "head-1",
+      recordedAt: "2026-11-01T06:00:00Z",
+    };
+    // Controls: the same row with only the probed field made legal is accepted.
+    await appendPrDiscoveryEvent(path, event);
+    await appendPrDiscoveryEvent(path, {
+      ...event,
+      headSha: "head-2",
+      policyFingerprint: "a".repeat(64),
+    });
+    await assertRejects(
+      () =>
+        appendPrDiscoveryEvent(path, { ...event, recordedAt: "not-a-date" }),
+      Error,
+      "invalid PR discovery event",
+    );
+    // A one-element array stringifies to 64 hex characters, so only a typeof
+    // check refuses it.
+    await assertRejects(
+      () =>
+        appendPrDiscoveryEvent(path, {
+          ...event,
+          headSha: "head-3",
+          policyFingerprint: ["a".repeat(64)] as unknown as string,
+        }),
+      Error,
+      "invalid PR discovery event",
+    );
+    // The reader applies the same validation to ledger rows.
+    await Deno.writeTextFile(
+      `${path}.2026-11-02`,
+      `${JSON.stringify({ ...event, recordedAt: "not-a-date" })}\n`,
+    );
+    await assertRejects(
+      () => readPrDiscoveryEvents(path),
+      Error,
+      "line 1 is invalid",
+    );
+    await Deno.writeTextFile(
+      `${path}.2026-11-02`,
+      `${JSON.stringify({ ...event, policyFingerprint: ["a".repeat(64)] })}\n`,
+    );
+    await assertRejects(
+      () => readPrDiscoveryEvents(path),
+      Error,
+      "line 1 is invalid",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

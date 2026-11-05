@@ -272,14 +272,15 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     and `processed` events are at 06:00Z the same day (plus a legacy undated
     ledger row at 2026-10-24), so the reader's day-file filter does not skip
     them and only the row filter in `collectDiscoveryEvents` leaves them out.
-    `failsWithoutChange`: deleting
-    `if (Date.parse(row.recordedAt) < verifiedMs) continue;` fails the stranded
-    list with PR 1
-    `discovered: true, eligibilityConfirmed: true, processed:
-    true` instead
-    of `false`. The reader's day filter is redundant with the row filter for
-    outcomes (the row filter drops the same rows), so removing it alone is not
-    observable; it only bounds the bytes read.
+    `failsWithoutChange`: deleting the row filter
+    `if (Date.parse(row.recordedAt) < verifiedMs && row.policyFingerprint !== expectedFingerprint) continue;`
+    in `collectDiscoveryEvents` fails the stranded list with PR 1
+    `discovered: true, eligibilityConfirmed: true, processed: true` instead of
+    `false`. The row filter keeps a pre-verification row that carries the
+    expected policy fingerprint, so it no longer drops the same rows as the
+    reader's day filter: the day filter (`readPrDiscoveryEvents`) drops whole
+    earlier-day files, and removing it could therefore change outcomes. This
+    test does not pin the day filter.
   - Branch outcomes: the same-workflow different-run recovery operand
     (`candidate.runId !== failed.runId`) is reached by the same-head test above;
     the later-attempt operand (`candidate.attempt > failed.attempt`) by
@@ -442,8 +443,14 @@ duplicate regression or discovery implementation was found.
 - Targeted run on the head of
   `worker/deno/tests/pr_completion_snapshot_test.ts`,
   `worker/deno/tests/pr_completion_report_test.ts` and
-  `worker/deno/tests/audit_hook_test.ts`: `ok | 143 passed | 0 failed`
-  (`pr_completion_snapshot_test.ts` has 75 tests at head). The other touched
+  `worker/deno/tests/audit_hook_test.ts`: `ok | 144 passed | 0 failed`
+  (`pr_completion_snapshot_test.ts` has 76 tests at head); plus
+  `worker/deno/tests/pr_discovery_events_test.ts`: `ok | 9 passed | 0 failed`
+  (153 across the four files).
+  Mutation survivors `worker/deno/lib/pr_discovery_events.ts:59` (timestamp
+  operand) and `:61` (`typeof` operand of the fingerprint check) are each
+  killed by `PR discovery events reject an unparsable timestamp and a
+  non-string fingerprint` (each operand replaced with `true` alone: test red). The other touched
   suites were not re-run in the PR #4810 review-response round.
   `deno fmt
   --check`, `deno lint` and `deno check` on the changed files are

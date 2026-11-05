@@ -1368,8 +1368,10 @@ the verification instant, was still open at it (no merge or close at or before
 it), was at least 24 hours old at it, and is not labelled `needs-human`. A PR
 that merged after the instant is therefore still stranded. Its discovered,
 eligible and processed transitions come from the babysitter's ordinary scan
-event ledger, not later audit actions. An unchanged head is recorded again on
-the first scan of a later UTC day; same-day scans of that head add no row.
+event ledger, not later audit actions. An unchanged head under an unchanged
+review policy is recorded again on the first scan of a later UTC day; same-day
+scans of it add no row, but a same-day scan under a changed policy
+fingerprint does.
 Ledger write failures are
 logged without interrupting the pass; a torn final record is discarded on the
 next append. Every expected babysitter host and an
