@@ -548,5 +548,16 @@ duplicate regression or discovery implementation was found.
   and `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts::pass journals the policy fingerprint, and a changed policy writes a fresh same-day row`
   (key without fingerprint makes both fail). The pass-level TMPDIR test
   `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts::pass recovers temporary clones under /tmp when TMPDIR is set but empty`
-  sets `TMPDIR=""` and, through the new `recoverClones` seam, asserts `pass`
-  reads `/tmp`; reverting `pass` to `Deno.env.get("TMPDIR") ?? "/tmp"` fails it.
+  injects an environment reader returning `TMPDIR=""` (the `env` seam of
+  `pass`, default `Deno.env.get`) and, through the `recoverClones` seam,
+  asserts `pass` reads `/tmp`; changing `tmpdir || "/tmp"` in
+  `temporaryCloneRoot` to `??` fails it.
+- PR #4810 push 385e7fbe (head): the pass-level TMPDIR test no longer mutates
+  process state. `pass` in `worker/deno/commands/fleet_pr_babysitter.ts` gained
+  an optional `env?: (name: string) => string | undefined` seam, defaulting to
+  `Deno.env.get`, so production reads the same variable as before; the test
+  `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts::pass recovers temporary clones under /tmp when TMPDIR is set but empty`
+  passes `env: (name) => name === "TMPDIR" ? "" : undefined` instead of calling
+  `Deno.env.set`/`delete`, so parallel tests cannot see a changed `TMPDIR`.
+  Red check: with `temporaryCloneRoot` using `??` in place of `||`, the injected
+  empty value yields `""` and the test fails (`["/tmp"]` expected).
