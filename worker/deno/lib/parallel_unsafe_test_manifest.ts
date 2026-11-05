@@ -76,7 +76,8 @@
  * took it from 92 entries to 135 at the time it was written: correcting
  * the classifier. #880 grepped
  * each suite's own text, so a helper's mutation was invisible to every suite
- * that imported it. Forty-three files were already unsafe and are now named.
+ * that imported it. Forty-three files were already unsafe and were named
+ * then; the list has since been emptied (below).
  * A new *test* still may not join them.
  *
  * To remove a file, take the value as a

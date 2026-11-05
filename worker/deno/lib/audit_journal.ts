@@ -8,11 +8,13 @@
  * entry by a SHA-256 chain so that any single-entry corruption (or a
  * deleted interior entry) is detectable on verification.
  *
- * The journal lives OUTSIDE any repo working tree — under
- * `${WORK_DIR}/audit/` — so a bug in the worker that rewrites a repo's
- * history cannot rewrite the history of its own audit log. Files are
- * partitioned per worker and per UTC day:
- *   `${WORK_DIR}/audit/audit-<workerId>-YYYY-MM-DD.jsonl`
+ * The journal lives OUTSIDE any repo working tree — under `VIBE_AUDIT_DIR`
+ * when set, otherwise `${WORK_DIR}/audit/` — so a bug in the worker that
+ * rewrites a repo's history cannot rewrite the history of its own audit log.
+ * `VIBE_AUDIT_DIR` must be an absolute path with no `..` segment (see
+ * {@link resolveBaseDir}). Files are partitioned per worker and per UTC day:
+ *   `<audit directory>/audit-<workerId>-YYYY-MM-DD.jsonl`
+ * where `<audit directory>` is `VIBE_AUDIT_DIR` or `${WORK_DIR}/audit`.
  *
  * The chain alone only detects interior edits, so every append also
  * updates a **chain anchor** (`audit_anchor.ts`) holding the record count
@@ -128,7 +130,10 @@ export class AuditChainAnchorError extends Error {
 
 /** Options controlling where an entry is written. */
 export interface RecordOptions {
-  /** Base directory override (default: `${WORK_DIR}/audit`). */
+  /**
+   * Base directory override (default: `VIBE_AUDIT_DIR` when set, otherwise
+   * `${WORK_DIR}/audit`).
+   */
   baseDir?: string;
   /** Worker partition override (default: resolved from env). */
   workerId?: string;
@@ -254,14 +259,23 @@ function sanitiseWorkerId(id: string): string {
  * Resolve the default audit base directory from the environment.
  *
  * @param override - Explicit directory, used verbatim when supplied.
- * @param env - Environment lookup for the `WORK_DIR`/`TMPDIR` fallback
- *   (Issue #963). Defaults to the real process environment.
+ * @param env - Environment lookup for the `VIBE_AUDIT_DIR`, `WORK_DIR` and
+ *   `TMPDIR` fallback (Issue #963). Defaults to the real process environment.
  */
 export function resolveBaseDir(
   override?: string,
   env: EnvLookup = processEnvLookup,
 ): string {
   if (override) return override;
+  const auditDir = env("VIBE_AUDIT_DIR");
+  if (auditDir) {
+    if (!auditDir.startsWith("/") || auditDir.split("/").includes("..")) {
+      throw new Error(
+        "VIBE_AUDIT_DIR must be an absolute path without a '..' segment",
+      );
+    }
+    return auditDir;
+  }
   const workDir = env("WORK_DIR");
   if (workDir) return `${workDir}/audit`;
   // Issue #1242: per-account, not the fixed `${TMPDIR}/vibe-audit` every
@@ -1452,11 +1466,14 @@ export function isAuditJournalName(name: string): boolean {
  * directory **and** the roster together.
  *
  * @param baseDir - Audit directory (default: resolved from the environment)
+ * @param options.recoverInterruptedAppends - Defaults to `true` for the
+ *   scheduled sweep; reporting passes `false` so verification never writes.
  * @returns Result carrying the sweep verdict; an absent directory is a
  *   clean, empty sweep only when nothing was ever observed
  */
 export async function verifyAllChains(
   baseDir?: string,
+  options: { recoverInterruptedAppends?: boolean } = {},
 ): Promise<Result<ChainSweep>> {
   const dir = resolveBaseDir(baseDir);
   const journalsOnDisk = new Set<string>();
@@ -1471,7 +1488,10 @@ export async function verifyAllChains(
   // shape is repaired; every other unreadable roster still fails loud.
   let rosterRepaired: RosterRecovery | undefined;
   try {
-    const healed = await readRosterHealed(dir);
+    const recover = options.recoverInterruptedAppends !== false;
+    const healed = recover
+      ? await readRosterHealed(dir)
+      : { contents: await readRosterContents(dir), repaired: null };
     rosterRepaired = healed.repaired ?? undefined;
     const contents = healed.contents;
     rostered = contents.journals;
@@ -1596,7 +1616,8 @@ export async function verifyAllChains(
     // a red one.
     let result = await verifyChain(path);
     if (
-      result.ok && !result.value.valid && !dirMissing &&
+      options.recoverInterruptedAppends !== false && result.ok &&
+      !result.value.valid && !dirMissing &&
       !damageAcknowledgements.has(name)
     ) {
       const settled = await settleAppendUnderLock(dir, path);

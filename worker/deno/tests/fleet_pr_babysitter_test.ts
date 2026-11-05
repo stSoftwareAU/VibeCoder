@@ -102,12 +102,14 @@ import {
   spawnBabysitterAgent,
   syncBabysitterPrBodyBeforeDismissal,
   takePrBodyProposal,
+  temporaryCloneRoot,
   validateAndCommit,
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
+import { escalationHostId } from "../lib/host_escalation.ts";
 
 /** Run a real git command for fixtures and for the injected runner in clone tests. */
 async function runGitForTest(
@@ -2430,7 +2432,7 @@ Deno.test("concurrent repairs of one repo never mutate its mirror at the same ti
   });
 });
 
-Deno.test("babysitter deployment heartbeat stores only revision and policy fingerprint", async () => {
+Deno.test("babysitter deployment heartbeat stores host, revision and policy fingerprint", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const split = buildDefaultWorkerConfig();
@@ -2448,6 +2450,7 @@ Deno.test("babysitter deployment heartbeat stores only revision and policy finge
       await Deno.readTextFile(`${dir}/deployment-health.json`),
     );
     assertEquals(first.component, "babysitter");
+    assertEquals(first.hostId, escalationHostId());
     assertEquals(first.codeRevision, "abcdef0123456789");
     assertEquals(first.observedAt, "2026-11-02T00:00:00.000Z");
     assertEquals(
@@ -2946,6 +2949,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     XDG_CACHE_HOME: scratch,
     GH_TOKEN: agentToken,
     GH_CONFIG_DIR: `${scratch}/gh-config`,
+    VIBE_AUDIT_DISABLED: "1",
   });
   assertEquals(call.options.timeoutMs, 90 * 60_000);
   assertEquals(call.options.args, [
@@ -3862,4 +3866,10 @@ Deno.test("default git classifies mirror fetch timeout and clone disk exhaustion
       }
     });
   }
+});
+
+Deno.test("temporaryCloneRoot - an unset or empty TMPDIR falls back to /tmp", () => {
+  assertEquals(temporaryCloneRoot("/var/scratch"), "/var/scratch");
+  assertEquals(temporaryCloneRoot(undefined), "/tmp");
+  assertEquals(temporaryCloneRoot(""), "/tmp");
 });

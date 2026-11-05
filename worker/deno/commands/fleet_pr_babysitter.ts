@@ -10,6 +10,14 @@ import { CODEX_OUTPUT_ADAPTER } from "../lib/codex_output_adapter.ts";
 import { loadConfig } from "../lib/config.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
+import {
+  appendPrDiscoveryEvent,
+  reportHostId,
+} from "../lib/pr_discovery_events.ts";
+import { escalationHostId } from "../lib/host_escalation.ts";
+import { isAuditJournalSwitchedOff } from "../lib/audit_hook.ts";
+import { AUDIT_JOURNAL_OFF_ENV_VAR } from "../lib/agent_env.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
@@ -774,6 +782,11 @@ export async function runRepairs(
       "One or more PR repairs or scans failed",
     );
   }
+}
+
+/** Temporary-clone root: an unset or empty `TMPDIR` falls back to `/tmp`. */
+export function temporaryCloneRoot(tmpdir: string | undefined): string {
+  return tmpdir || "/tmp";
 }
 
 /** Remove only babysitter clones whose owner process has exited. */
@@ -1641,7 +1654,10 @@ export function spawnBabysitterAgent(
     stdin: "null",
     stdout: "inherit",
     stderr: "piped",
-    env: babysitterAgentEnv(options.scratch, options.agentToken),
+    env: {
+      ...babysitterAgentEnv(options.scratch, options.agentToken),
+      [AUDIT_JOURNAL_OFF_ENV_VAR]: "1",
+    },
   });
 }
 
@@ -2740,12 +2756,51 @@ function babysitterStateDir(): string {
   }/vibe-coder/fleet-pr-babysitter`;
 }
 
+/** Give the babysitter a durable audit location when WORK_DIR is absent. */
+export async function ensureBabysitterAuditDir(
+  stateDir: string,
+  env: EnvLookup = processEnvLookup,
+  setEnv: (name: string, value: string) => void = (name, value) =>
+    Deno.env.set(name, value),
+  log: (message: string) => void = console.error,
+): Promise<string | undefined> {
+  if (env("VIBE_AUDIT_DIR") || env("WORK_DIR")) return undefined;
+  if (isAuditJournalSwitchedOff(env)) return undefined;
+  const dir = `${stateDir}/audit`;
+  try {
+    await Deno.mkdir(dir, { recursive: true });
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    log(`[babysitter] audit journal directory not created: ${cause}`);
+    return undefined;
+  }
+  setEnv("VIBE_AUDIT_DIR", dir);
+  return dir;
+}
+
+/** Set the babysitter quota directory and prepare its audit journal. */
+export async function prepareBabysitterStartUp(
+  home: string,
+  stateDir: string,
+  env: EnvLookup = processEnvLookup,
+  setEnv: (name: string, value: string) => void = (name, value) =>
+    Deno.env.set(name, value),
+  log: (message: string) => void = console.error,
+): Promise<void> {
+  setEnv(
+    "VIBE_GITHUB_QUOTA_WORK_DIR",
+    `${home}/.vibe-coder/fleet-pr-babysitter`,
+  );
+  await ensureBabysitterAuditDir(stateDir, env, setEnv, log);
+}
+
 /** Persist the babysitter's current build and resolved policy heartbeat. */
 export async function recordBabysitterDeployment(
   stateDir: string,
   config: Awaited<ReturnType<typeof loadConfig>>,
   codeRevision?: string,
   observedAt = new Date().toISOString(),
+  hostId = escalationHostId(),
 ): Promise<void> {
   codeRevision ??= Deno.env.get("VIBE_BUILD_COMMIT") ??
     await resolveBuildCommitStamp(
@@ -2757,6 +2812,7 @@ export async function recordBabysitterDeployment(
     targetFile: `${stateDir}/deployment-health.json`,
     content: JSON.stringify({
       component: "babysitter",
+      hostId: reportHostId(hostId),
       codeRevision,
       policyFingerprint,
       observedAt,
@@ -2814,8 +2870,9 @@ async function shiftLeftPass(
   authors: string[],
   login: string,
   execute: boolean,
+  dir = babysitterStateDir(),
+  gh: (args: string[]) => Promise<string> = (args) => run("gh", args),
 ): Promise<void> {
-  const dir = babysitterStateDir();
   const path = `${dir}/shift-left-ledger.json`;
   try {
     await Deno.mkdir(dir, { recursive: true });
@@ -2828,7 +2885,7 @@ async function shiftLeftPass(
       ledger,
       nowMs: Date.now(),
       execute,
-      gh: (args) => run("gh", args),
+      gh,
       log: (line) => console.log(line),
       warn: (line) => console.warn(line),
       withWriteScope: withBabysitterWriteScope,
@@ -2839,7 +2896,7 @@ async function shiftLeftPass(
   }
 }
 
-async function pass(
+export async function pass(
   execute: boolean,
   login: string,
   app: BabysitterAppConfig,
@@ -2848,8 +2905,24 @@ async function pass(
   repositories: readonly string[],
   repoFilter?: string,
   prFilter?: number,
+  seams: {
+    gh?: (args: string[]) => Promise<string>;
+    tempDir?: string;
+    recoverClones?: (root: string) => Promise<void>;
+    /** Environment reader for TMPDIR; defaults to the process environment. */
+    env?: (name: string) => string | undefined;
+    stateDir?: string;
+    hostId?: string;
+    repair?: () => Promise<void>;
+  } = {},
 ): Promise<void> {
-  await recoverTemporaryClones(Deno.env.get("TMPDIR") || "/tmp");
+  await (seams.recoverClones ?? recoverTemporaryClones)(
+    seams.tempDir ??
+      temporaryCloneRoot((seams.env ?? ((n) => Deno.env.get(n)))("TMPDIR")),
+  );
+  const stateDir = seams.stateDir ?? babysitterStateDir();
+  const gh = seams.gh ?? ((args: string[]) => run("gh", args));
+  const hostId = reportHostId(seams.hostId ?? escalationHostId());
   const authors = [
     ...new Set([login, ...config.fleetPrAuthors, ...config.serviceAccounts]),
   ];
@@ -2870,11 +2943,31 @@ async function pass(
       authors,
       login,
       execute,
+      stateDir,
+      gh,
     );
   }
+  let policyFingerprint: Promise<string> | undefined;
   const discover = async (): Promise<RepairTask[]> => {
+    const recordDiscovery = async (
+      path: string,
+      event: Omit<
+        Parameters<typeof appendPrDiscoveryEvent>[1],
+        "policyFingerprint"
+      >,
+    ): Promise<void> => {
+      try {
+        // Stamped on each row so same-day dedup cannot hide a policy change.
+        policyFingerprint ??= fingerprintWorkerReviewPolicy(config);
+        await appendPrDiscoveryEvent(path, {
+          ...event,
+          policyFingerprint: await policyFingerprint,
+        });
+      } catch (error) {
+        console.warn(`[babysitter] discovery event not recorded: ${error}`);
+      }
+    };
     const repairs: RepairTask[] = [];
-    const stateDir = babysitterStateDir();
     for (const repo of repositories) {
       if (repoFilter && repo !== repoFilter) continue;
       const skipMerge =
@@ -2883,9 +2976,9 @@ async function pass(
         throw new Error(`Invalid repository: ${repo}`);
       }
       const prs: Pr[] = prFilter !== undefined
-        ? [await readPr(repo, prFilter)]
+        ? [await readPr(repo, prFilter, gh)]
         : JSON.parse(
-          await run("gh", [
+          await gh([
             "pr",
             "list",
             "--repo",
@@ -2900,6 +2993,19 @@ async function pass(
         );
       if (prFilter === undefined) {
         await appendTrackedPrs(stateDir, repo, prs, skipMerge);
+        for (const pr of prs) {
+          await recordDiscovery(
+            `${stateDir}/pr-discovery-events.jsonl`,
+            {
+              event: "discovered",
+              hostId,
+              repo,
+              prNumber: pr.number,
+              headSha: pr.headRefOid,
+              recordedAt: new Date().toISOString(),
+            },
+          );
+        }
       }
       for (const pr of prs) {
         if (prFilter !== undefined && pr.number !== prFilter) continue;
@@ -2943,13 +3049,36 @@ async function pass(
           );
           continue;
         }
+        await recordDiscovery(
+          `${stateDir}/pr-discovery-events.jsonl`,
+          {
+            event: "eligible",
+            hostId,
+            repo,
+            prNumber: pr.number,
+            headSha: pr.headRefOid,
+            recordedAt: new Date().toISOString(),
+          },
+        );
         console.log(`${repo}#${pr.number}: ${why}`);
         if (execute) {
           repairs.push({
             key: `${repo}#${pr.number}`,
             version: `${pr.headRefOid}:${why}`,
-            run: () =>
-              withBabysitterWriteScope(
+            run: async () => {
+              await recordDiscovery(
+                `${stateDir}/pr-discovery-events.jsonl`,
+                {
+                  event: "processed",
+                  hostId,
+                  repo,
+                  prNumber: pr.number,
+                  headSha: pr.headRefOid,
+                  recordedAt: new Date().toISOString(),
+                },
+              );
+              if (seams.repair) return await seams.repair();
+              return await withBabysitterWriteScope(
                 repo,
                 () =>
                   fix(
@@ -2963,7 +3092,8 @@ async function pass(
                     undefined,
                     resolveMaxAutoFixAttempts(config, repo),
                   ),
-              ),
+              );
+            },
           });
         }
       }
@@ -3001,10 +3131,7 @@ if (import.meta.main) {
   if (!home) throw new Error("HOME is not set");
   const app = await readBabysitterAppConfig(home);
   const login = await babysitterAppIdentity(app);
-  Deno.env.set(
-    "VIBE_GITHUB_QUOTA_WORK_DIR",
-    `${home}/.vibe-coder/fleet-pr-babysitter`,
-  );
+  await prepareBabysitterStartUp(home, babysitterStateDir());
   console.log(`Using GitHub App ${login} for babysitter requests.`);
   do {
     try {

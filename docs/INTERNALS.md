@@ -1124,9 +1124,10 @@ pr-completion-report --collect` builds that snapshot itself and reports on it.
 Exactly one of `--input` and `--collect` is required. Neither mode performs
 GitHub writes or changes host configuration. `--collect` writes only the
 optional `--write-snapshot <path>`, which holds the collected input so a later
-`--input` run reproduces the same report, plus whatever `verifyAllChains` settles
-in an audit directory it sweeps (an interrupted append, Issue #1074; see
-**Limits**). A `--input` snapshot is not authenticated.
+`--input` run reproduces the same report. Audit-chain verification disables
+interrupted-append recovery, so collection modifies neither journals nor the
+audit roster. A `--input`
+snapshot is not authenticated.
 
 `--collect` reads these sources, all read-only. The audit journals are the
 verified fleet source; the review-fleet-prs log is a lower-trust source, set
@@ -1136,11 +1137,12 @@ out under **Review-fleet-prs log** below:
   (default `config.repos`): the default branch; the pull requests created in
   `[start, end)` (`--start` and `--end`, default the fourteen days ending now),
   paged newest first; each cohort PR's reviews, issue events and commits; and
-  check runs for merged PRs.
+  paginated check runs, workflow attempts and jobs for each observed PR head and
+  commit head, regardless of PR state, and for the merge commit of each merged
+  PR (read for post-merge regressions only).
 - **Audit journals** in each `--audit-dir` (default the resolved audit
-  directory). Each directory's chains are verified with `verifyAllChains`, the
-  sweep `audit-chain-verify` runs at startup, and each journal is read with
-  `loadEntries`.
+  directory). Each directory's chains are verified with `verifyAllChains` and
+  each journal is read with `loadEntries`.
 - **Review-run records**: `<round>/review-run.json` under each
   `--review-run-dir`.
 - **Lifecycle ledgers** named by `--lifecycle-ledger`.
@@ -1150,10 +1152,35 @@ out under **Review-fleet-prs log** below:
   (comma-separated, one per host). Lower trust; see below.
 
 The expected deployment comes from `--expected-components` (default
-`worker,reviewer,babysitter`), `--expected-revision` (default
+`worker,reviewer,babysitter`), optional `--expected-inventory`
+(`hostId/component,...`), `--expected-revision` (default
 `VIBE_BUILD_COMMIT`; the command fails when neither is set), the policy
 fingerprint from `fingerprintWorkerReviewPolicy(config)`, and
 `--max-heartbeat-age-hours` (default 24).
+
+**Host identity.** Worker rows are keyed by the lifecycle ledger's `host`, the
+machine hostname from `getHostname()`. That is unchanged, so the subscription
+allocation reader still matches it. Babysitter rows (`deployment-health.json`)
+and the babysitter's daily `pr-discovery-events.jsonl.YYYY-MM-DD` files use
+`reportHostId(escalationHostId())`: `VIBE_HOST_ID` or the short hostname, with
+any character outside `[A-Za-z0-9_.-]` replaced by `-`, leading non-alphanumerics
+dropped, and at most 128 characters. Reviewer rows (`review-run.json`) are
+mapped by the same `reportHostId`, so a free-form `VIBE_HOST_ID` cannot make the
+report's host-id pattern reject them. An `--expected-inventory` entry therefore
+uses the machine hostname for a worker and the mapped id for a babysitter or a
+reviewer.
+
+Discovery appends deduplicate each event, host, repository, PR, head and
+policy fingerprint (the SHA-256 the heartbeat also records; legacy rows carry
+none) within each UTC day across processes, by reading the bounded daily file under the
+append lock. Collection also reads the legacy
+`pr-discovery-events.jsonl` and daily files intersecting the verification window,
+ending at the observation time or 14 days after verification, whichever is
+earlier. A combined 16 MiB read limit marks rollout evidence incomplete with a
+coverage note when exceeded. Because deduplication keeps the first row of a day,
+the rollout check counts a row stamped before the verification instant when it
+carries the expected policy fingerprint; rows with another or no fingerprint
+count only from the verification instant.
 
 **Cross-host evidence.** The command reads only the audit directories it is
 given. To include another host, export that host's journal directory and pass
@@ -1165,11 +1192,16 @@ if any directory's chains fail, or a directory has no journals, every PR's
 chain sweep. Other JSONL files contribute unverified actions and a coverage
 note, and make the directory incomplete, even beside valid journals.
 
-**Match rule.** Reviews and dismissals match one verified fleet action of the
-same kind on the same PR within ten minutes. Each commit is attributed to the
-first confirmed, verified implementation or repair push whose recorded
-`deliveredCommits` contains that commit, at or after its committer date within
-the PR lifetime. The git chokepoint reads the remote branch head before pushing
+**Match rule.** A review or dismissal matches one verified fleet action of the
+same kind on the same PR within ten minutes either side of the GitHub event. A
+review may instead match one review-log record (see below). When the event and
+the action both carry a head SHA, the two must be equal. A journalled `review`
+records no head SHA, since only a direct `pr-merge` does, so it still matches a
+GitHub review that carries a `commit_id`. A merge matches on its head and within
+ten minutes either side of `mergedAt` (see **Merge window**). Each commit is
+attributed to a confirmed, verified implementation, repair or milestone push
+whose recorded `deliveredCommits` contains that commit, at or after its
+committer date within the PR lifetime. The git chokepoint reads the remote branch head before pushing
 and enumerates the old-to-local commit range. For a new destination it excludes
 history already in that remote's tracking refs. This range is recorded even for
 a failed push, but only a confirmed push can account for commits.
@@ -1186,13 +1218,18 @@ on the remote is excluded from a later fleet push's range. Legacy pushes without
 delivery evidence, unsupported push forms and shallow or unavailable history
 leave commits unknown rather than falling back to time-based attribution.
 
-**Merge window.** Auto-merge journals the merge when it is armed, which can be
-hours before GitHub records `mergedAt`. So a fleet `merge` action matches a
-merge event when its timestamp lies from the PR's creation to ten minutes after
-`mergedAt`. An armed merge stamped before the PR existed does not match, nor
-does one stamped more than ten minutes after the merge. A verified, successful
-fleet disarm between the arm and GitHub's merge invalidates that arm. A later
-re-arm can match; failed disarms do not withdraw an arm.
+**Merge window.** A GitHub merge matches a verified, confirmed fleet `merge`
+action only when the action's `headSha` equals the PR's head SHA and its
+timestamp lies within ten minutes either side of `mergedAt`. An action stamped
+eleven minutes before or after the merge does not match, and nor does one on
+another head. A direct merge records its head when it is pinned with
+`--match-head-commit`. Auto-merge arming is recorded as `merge-arm` and never
+verifies a later merge; neither a disarm nor a re-arm verifies it. A merge entry
+written before merge entries carried a
+`headSha` (the pre-change shape) has no head to compare, so it never matches.
+Pre-change merge entries are therefore read as `unknown` for attribution: the
+GitHub merge stays `unknown`, and its PR is not counted as unattended on that
+account.
 
 **Push linking.** Production writes `git-push` entries with no repository, only
 the push target. Such a push links across every supplied repository by branch
@@ -1207,9 +1244,9 @@ record the branch `HEAD` names. Empty or `-`-prefixed targets cannot be linked
 either, and nor can a branch name shared by PRs in two repositories. An unlinked
 push leaves its commits as `unknown` actions.
 
-**Review-fleet-prs log (lower trust).** The review-fleet-prs skill posts its
-reviews through its own `gh` calls, which do not pass the audit hook, so no
-audit action records them. After each post, the skill appends one line to its
+**Review-fleet-prs log (supporting evidence only).** The review-fleet-prs skill
+posts its reviews through its own `gh` calls, which do not pass the audit hook,
+so no audit action records them. After each post, the skill appends one line to its
 `log.jsonl` (`LOG_FILE` in `.claude/skills/review-fleet-prs/scripts/review_log.ts`,
 in the skill's state directory, `stateDir()`). `--review-log <log.jsonl,...>`
 reads those files, one per host, with `parseLog`. The review-log contract and
@@ -1218,25 +1255,22 @@ and the skill, which re-exports them. There is no worker-to-skill import. Each r
 `outcome` of `approved`, `changes_requested` or `held`. Each is a posted GitHub
 review: a held PR is posted as a COMMENTED review.
 
-A record for a cohort PR becomes a verified fleet `review` action with actor
-`fleet`, outcome `confirmed` and the ID `review-log:<repo>#<number>:<at>`. The
-same record in two logs is one action. It matches a GitHub review event within
-ten minutes, as an audit action does. Matching uses the repository, the PR
-number and the time only. A review posted at an older head still matches, so the
-record's head SHA is not carried because nothing uses it. An action links to
-its PR by repository and number whatever head it was recorded at.
+A record for a cohort PR becomes an unverified `review` action with actor
+`unknown` and outcome `confirmed`. It may support matching a GitHub review event
+within ten minutes either side, but does not establish trusted automation or make the PR's
+history complete. The same record in two logs is one action. The record's head
+SHA is retained as supporting correlation evidence; it does not verify the
+event. An action links to its PR by repository and number whatever head it was
+recorded at.
 Records for PRs outside the cohort are ignored. A missing or unreadable file,
 and a malformed line, are coverage notes; the rest of the log is still used.
 
 **This log is not hash-chained or tamper-evident.** The audit-chain verification
-(`verifyAllChains`) does not cover it. It is trusted at the same level as the
-lifecycle ledger and the review-run records: the fleet account's own record,
-not a journal that the chain protects. A record can therefore make a review
-event verified, and so help a PR count as unattended. The review-fleet-prs
-skill still does not journal to the audit chain. A PR whose GitHub review
-events have neither an audit action nor a review-log record stays unknown. With
-no `--review-log` and any GitHub review event in the cohort, the coverage notes
-say `N review events on M PRs had no review-log source`.
+(`verifyAllChains`) does not cover it, so its records remain supporting evidence
+only. They can associate a review event with a timestamp and PR, but cannot
+verify the action. A review without a verified audit action therefore remains
+unknown for unattended completion. Missing or malformed records are noted in
+coverage.
 
 **Dismissals.** The review-fleet-prs skill makes no dismissal call; its `gate.ts`
 comments only describe the worker's dismissals. The worker dismisses a review
@@ -1251,28 +1285,46 @@ the PR number. A PUT to `…/reviews/<id>` with `state=DISMISSED` is also kind
 `dismissal`. The review-fleet-prs skill makes no dismissal call, so it has none
 to journal.
 
-**Unknown, never human.** A GitHub event with no matching verified fleet action
-becomes an `unknown` action: unverified, outcome unknown, with the ID
-`gh:<repo>#<number>:<kind>:<id>`. GitHub logins are never read, so no login
-makes an action human or fleet.
+**Unknown and human evidence.** A GitHub event with no matching verified fleet
+action becomes an `unknown` action: unverified, outcome unknown, with the ID
+`gh:<repo>#<number>:<kind>:<id>`. Human attribution requires affirmative,
+verified action evidence; an unmatched event remains unknown. Matched audit
+actions retain the kind and identifier of each GitHub event they account for.
 
 **Owner gates.** `ownerGateVerified` is always false today, because no hold
 marker is recorded yet. A PR labelled `needs-human` is recorded as
 `ownerGated` but stays in the eligible denominator.
 
-**Blockers produced.** `needs-human` (from the label, open until it is removed)
-and `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
-commit, approval or dismissal). CI-failing and hold blockers are not produced
-yet.
+**Blockers produced.** `needs-human` (from the label, open until it is removed),
+`changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
+commit, approval or dismissal), and `ci-failure` (opened when a workflow run
+completes with `failure`, `timed_out` or `action_required`). A
+`ci-failure` closes at the first later successful run of the same workflow: a
+later attempt of the failed run, or a different run on any head of the PR
+(including a ready-for-review or reopened run on the same head). It
+never extends past the PR's merge or close. When the PR has ended, an open
+blocker ends at that moment, and a failure completed after it is not a blocker.
+Overlapping workflow failure intervals are combined so waiting time is not
+counted twice. Concurrency cancellations do not open a blocker.
+Other recovery and refresh waits are not yet represented as blocker intervals.
 
-**Regression heuristic.** A cohort PR whose title opens `Revert "…"`, or whose
+**Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
 when `N` is a merged cohort PR. It is detected at the earliest such revert and
 is resolved when that revert merged. Reverts of PRs outside the cohort are not
-observed. Each pattern reads a bounded slice (a title's first 1,000 characters,
-a body's first 20,000) and has no nested or overlapping quantifiers, so each
-runs in linear time over its slice. The tests feed long hostile titles and
-bodies to each pattern and assert the exact result.
+observed. Post-merge CI is recorded as `post_merge_ci`: a workflow run on a
+merged PR's merge commit (`merge_commit_sha`) that completes at or after the
+merge, with a `failure`, `timed_out` or `action_required` outcome. A `cancelled`
+run is not a failure, since a concurrency cancellation is not one. It is resolved
+by a later successful attempt of the same workflow on that commit. Post-merge
+visibility covers the merge commit only: runs on the PR head that finish after
+the merge are not post-merge regressions, and later default-branch commits are
+not observed. A merged PR whose merge commit SHA is null or absent has no
+post-merge CI observed, and a coverage note says so. Each text pattern reads a
+bounded slice (a title's first 1,000 characters, a body's first 20,000) and has
+no nested or overlapping
+quantifiers, so each runs in linear time over its slice. The tests feed long
+hostile titles and bodies to each pattern and assert the exact result.
 
 **Rollup derivation.** A milestone PR (base `milestone/…`) gets a `rollupRoot`
 by ref only, never from its text. The root is the single cohort PR whose head
@@ -1290,9 +1342,21 @@ into `--write-snapshot`, so an `--input` replay reports the truncation too.
 Paged event lists stop after ten pages, which is a coverage note. Every missing,
 unreadable or malformed local file is a coverage note, not a silent drop.
 
-**CI scope.** CI minutes come only from the final head SHA's check runs of each
-merged PR. Check runs on earlier pushes are not counted. A coverage note says so
-whenever a merged PR is collected.
+**CI scope.** Collection lists workflow runs by PR branch, matches them to
+observed PR and commit heads, and reads check runs only for heads with workflow
+runs. Other checks on heads without workflow runs are not observed. A shared
+5,000-call CI budget bounds each collection; exhaustion leaves a per-PR coverage
+note and discards that PR's partial CI history. Workflow attempts and paginated
+jobs are read, including for open and closed-unmerged PRs.
+
+CI collection accepts `--ci-call-budget` (default 5000). A truncated PR is
+recorded in the snapshot; delivered CI ratios become unknown and the report
+marks CI-failure waiting and post-merge CI coverage incomplete as applicable.
+
+Merge-commit runs are read for post-merge regressions only, and are kept out of
+the CI history that feeds the cost totals. Shared evidence is deduplicated by repository, run and attempt. Truncated history
+and missing durations remain visible; cost totals are calculated for delivered
+changes.
 
 **Deployments.** A babysitter heartbeat is kept whatever its age, so the report
 can call it stale. Review-run and ledger rows older than the heartbeat window
@@ -1302,32 +1366,42 @@ timed by its `recordedAt`.
 **Rollout check** (`--rollout-verified-at`). A stranded PR was created before
 the verification instant, was still open at it (no merge or close at or before
 it), was at least 24 hours old at it, and is not labelled `needs-human`. A PR
-that merged after the instant is therefore still stranded, and is listed with
-its rediscovery and processing. It is rediscovered when a verified fleet action
-on it has a timestamp at or after that instant. It is processed when such an
-action is confirmed and is not of kind `unknown`. The check only reads
-ordinary-discovery evidence: it runs no discovery and writes nothing. PRs
+that merged after the instant is therefore still stranded. Its discovered,
+eligible and processed transitions come from the babysitter's ordinary scan
+event ledger, not later audit actions. An unchanged head under an unchanged
+review policy is recorded again on the first scan of a later UTC day; same-day
+scans of it add no row, but a same-day scan under a changed policy
+fingerprint does.
+Ledger write failures are
+logged without interrupting the pass; a torn final record is discarded on the
+next append. Every expected babysitter host and an
+explicit deployment inventory must be present for rollout coverage to be
+complete; otherwise those counts are unknown. A host is covered when a discovery
+event naming it appears in a supplied `--babysitter-state-dir`; an uncovered host
+adds the note "PR discovery events do not cover every expected babysitter host". The check only reads discovery
+evidence: it runs no discovery and writes nothing. PRs
 created before `cohort.start` are invisible to the check; an operator who needs
 them widens `--start`.
 
-**Limits.** `verifyAllChains` is the sweep `audit-chain-verify` runs at
-startup. It can settle an interrupted append in a journal it sweeps
-(Issue #1074), so `--collect` does not promise zero writes to a journal left
-mid-append. CI durations are fetched only for merged PRs, because the report
-counts CI only for delivered changes.
+**Limits.** `--collect` verifies audit chains with interrupted-append recovery
+disabled, so reporting repairs neither journals nor the audit roster. Truncated history and missing
+durations remain coverage gaps.
 
 **Accepted limits.** These are known and not mitigated in this change:
 
-- The host babysitter has no `WORK_DIR`, which the audit hook requires to
-  enable journalling. Its repair pushes and review dismissals are never
-  journalled, so babysitter-repaired PRs stay unknown under `--collect`.
-  Deployment heartbeats do not provide mutation provenance.
-- A merge armed by the fleet (`gh pr merge --auto`) and completed later by a
-  person is attributed to the fleet. The audit entry cannot see who clicked
-  merge, so verified human-merge detection is not produced.
-- Deployment rows are grouped per component, not per host. One host's missing
-  heartbeat is hidden while another host of the same component reports. The
-  operator supplies per-host state directories and checks the `coverage notes`.
+- The host babysitter has no `WORK_DIR`; its startup points the existing audit
+  hook at a private `audit/` directory under its state directory through
+  `VIBE_AUDIT_DIR`. Mutations routed through the shared `gh` and `git`
+  chokepoints are journalled. The spawned repair agent has journalling disabled
+  so its test or local commands cannot write into the host journal.
+- Reviewer skill actions that bypass the audit hook remain unknown unless a
+  trusted audit action records a correlatable event. Its unchained review log
+  remains supporting evidence only.
+- A GitHub event with no matching verified action stays unknown; arming
+  auto-merge cannot verify a later human merge.
+- Deployment rows are evaluated per expected host and component. Missing host
+  inventory, stale heartbeats, or legacy rows without host and policy evidence
+  degrade deployment verification.
 - Builds older than this change cannot verify journal entries that carry the
   new fields, nor read ledger rows that carry `reviewPolicyFingerprint`. Upgrade
   every host before exporting journals across them.

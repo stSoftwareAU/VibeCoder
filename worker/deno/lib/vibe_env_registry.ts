@@ -369,6 +369,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
       "the commit of the checkout the container runs, resolved by the launch " +
       "plan and carrying `-dirty` when that checkout was modified (Issue #1572)",
   },
+  VIBE_AUDIT_DIR: {
+    role: "launch_plumbing",
+    note:
+      "the audit-journal directory selected by the babysitter when WORK_DIR is absent",
+  },
   VIBE_RUN_ID: {
     role: "launch_plumbing",
     note: "the launcher-generated run identifier",

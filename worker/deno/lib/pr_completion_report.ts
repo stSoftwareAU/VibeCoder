@@ -9,9 +9,11 @@ export type PrState = "open" | "merged" | "closed";
 export type PrActionKind =
   | "implementation"
   | "repair"
+  | "milestone"
   | "branch-update"
   | "review"
   | "dismissal"
+  | "merge-arm"
   | "merge"
   | "unknown";
 
@@ -43,6 +45,8 @@ export interface TrustedPrAction {
   prNumber: number;
   headSha?: string;
   deliveredCommits?: string[];
+  /** GitHub events this verified audit action was matched to. */
+  githubEvents?: Array<{ kind: PrActionKind; id: string; headSha?: string }>;
   kind: PrActionKind;
   timestamp: string;
   outcome: "confirmed" | "failed" | "unknown";
@@ -70,33 +74,51 @@ export interface PrCompletionInput {
     prNumber: number;
     runId: string;
     durationMinutes: number | null;
+    /** Additive fields; older snapshots contain check runs only. */
+    kind?: "check_run" | "workflow_run" | "job";
+    headSha?: string;
+    attempt?: number;
+    workflowRunId?: string;
+    workflowId?: string;
+    outcome?: string | null;
+    durationSeconds?: number | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
   }>;
+  /** PRs whose CI history was truncated during collection. */
+  ciIncompletePrs?: Array<{ repo: string; prNumber: number }>;
   regressions: Array<{
     repo: string;
     prNumber: number;
     detectedAt: string;
     resolved: boolean;
+    source?: "revert" | "post_merge_ci";
   }>;
   deployments: Array<{
     component: string;
+    hostId?: string;
     revision?: string;
     policyFingerprint?: string;
     observedAt: string;
   }>;
   expectedDeployment: {
     components: string[];
+    inventory?: Array<{ hostId: string; component: string }>;
+    inventoryComplete?: boolean;
     revision: string;
     policyFingerprint: string;
     maxHeartbeatAgeHours: number;
   };
   rollout?: {
     verifiedAt: string;
+    discoveryEvidenceComplete?: boolean;
     strandedPrs: Array<{
       repo: string;
       prNumber: number;
       eligible: boolean;
-      rediscovered: boolean;
-      processed: boolean;
+      discovered?: boolean;
+      eligibilityConfirmed?: boolean;
+      processed?: boolean;
     }>;
   };
 }
@@ -113,6 +135,7 @@ export interface PrCompletionReport {
     ageingOpenPrs: number;
     closedUnmergedPrs: number;
     ownerGatedPrs: number;
+    unverifiedOwnerGateLabels: number;
   };
   completion: {
     eligiblePrs: number;
@@ -133,6 +156,10 @@ export interface PrCompletionReport {
     fixRounds: number;
     ciRuns: number;
     ciMinutes: number | null;
+    ciWorkflowRuns: number;
+    ciChecks: number;
+    ciJobs: number;
+    ciJobMinutes: number | null;
     ciRunsPerDeliveredChange: number | null;
     ciMinutesPerDeliveredChange: number | null;
   };
@@ -140,8 +167,10 @@ export interface PrCompletionReport {
     observedAt: string;
     intervals: Record<string, { count: number; seconds: number }>;
     openIntervals: number;
+    ciFailureComplete: boolean;
   };
   regressions: {
+    postMergeCiComplete: boolean;
     observed: number;
     unresolved: number;
     attributed: number;
@@ -156,12 +185,19 @@ export interface PrCompletionReport {
     mismatchedComponents: string[];
     mixedRevisions: string[];
     mixedPolicies: string[];
+    expectedHostComponents: string[];
+    missingHostComponents: string[];
+    staleHostComponents: string[];
+    mismatchedHostComponents: string[];
   };
   rollout: {
     eligibleStrandedPrs: number;
+    discoveredPrs: number;
+    eligibleEventPrs: number;
     rediscoveredPrs: number;
     processedPrs: number;
     notRediscoveredPrs: number;
+    unknownDiscoveryPrs: number;
   };
   targetEvaluation: {
     status: "pending" | "met" | "not_met" | "unavailable";
@@ -212,8 +248,12 @@ export function prActionsFromAuditJournal(
       kind: entry.actionKind,
       timestamp: entry.timestamp,
       outcome: entry.outcome === "success" ? "confirmed" : "failed",
-      actor: chainVerified ? "fleet" : "unknown",
-      verified: chainVerified,
+      actor: chainVerified && entry.component !== undefined &&
+          entry.component !== "unknown"
+        ? "fleet"
+        : "unknown",
+      verified: chainVerified && entry.component !== undefined &&
+        entry.component !== "unknown",
     }];
   });
 }
@@ -276,6 +316,10 @@ function deploymentReport(
   const byComponent = new Map<string, typeof input.deployments>();
   for (const deployment of input.deployments) {
     timestamp(deployment.observedAt, "deployment.observedAt");
+    if (
+      deployment.hostId !== undefined &&
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(deployment.hostId)
+    ) throw new Error("deployment.hostId must be a host identifier");
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(deployment.component)) {
       throw new Error("deployment.component must be a component identifier");
     }
@@ -322,10 +366,61 @@ function deploymentReport(
       mixedPolicies.push(component);
     }
   }
+  const expectedHostComponents = (expected.inventory ?? []).map((item) =>
+    `${item.hostId}/${item.component}`
+  ).sort();
+  const missingHostComponents: string[] = [];
+  const staleHostComponents: string[] = [];
+  const mismatchedHostComponents: string[] = [];
+  if (expected.inventory !== undefined) {
+    const seen = new Set<string>();
+    for (const item of expected.inventory) {
+      if (
+        !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(item.hostId) ||
+        !expected.components.includes(item.component)
+      ) {
+        throw new Error(
+          "expectedDeployment.inventory has an invalid host/component",
+        );
+      }
+      const key = `${item.hostId}/${item.component}`;
+      if (seen.has(key)) {
+        throw new Error("expectedDeployment.inventory entries must be unique");
+      }
+      seen.add(key);
+      const rows = input.deployments.filter((row) =>
+        row.hostId === item.hostId && row.component === item.component
+      );
+      if (rows.length === 0) {
+        missingHostComponents.push(key);
+        continue;
+      }
+      const latest = rows.reduce((a, b) =>
+        timestamp(a.observedAt, "deployment.observedAt") >
+            timestamp(b.observedAt, "deployment.observedAt")
+          ? a
+          : b
+      );
+      if (
+        observedAt - timestamp(latest.observedAt, "deployment.observedAt") >
+          expected.maxHeartbeatAgeHours * 3_600_000
+      ) staleHostComponents.push(key);
+      if (
+        latest.revision !== expected.revision ||
+        latest.policyFingerprint !== expected.policyFingerprint
+      ) mismatchedHostComponents.push(key);
+    }
+  }
+  if (
+    expected.inventoryComplete === false || expected.inventory === undefined
+  ) {
+    missingHostComponents.push("inventory");
+  }
   return {
     status: missingComponents.length || staleComponents.length ||
         mismatchedComponents.length || mixedRevisions.length ||
-        mixedPolicies.length
+        mixedPolicies.length || missingHostComponents.length ||
+        staleHostComponents.length || mismatchedHostComponents.length
       ? "degraded"
       : "verified",
     observedAt: cohort.observedAt,
@@ -335,6 +430,10 @@ function deploymentReport(
     mismatchedComponents: mismatchedComponents.sort(),
     mixedRevisions: mixedRevisions.sort(),
     mixedPolicies: mixedPolicies.sort(),
+    expectedHostComponents,
+    missingHostComponents: missingHostComponents.sort(),
+    staleHostComponents: staleHostComponents.sort(),
+    mismatchedHostComponents: mismatchedHostComponents.sort(),
   };
 }
 
@@ -427,9 +526,11 @@ export function buildPrCompletionReport(
       !([
         "implementation",
         "repair",
+        "milestone",
         "branch-update",
         "review",
         "dismissal",
+        "merge-arm",
         "merge",
         "unknown",
       ] as const).includes(action.kind)
@@ -467,7 +568,8 @@ export function buildPrCompletionReport(
     openPrs = 0,
     ageingOpenPrs = 0,
     closedUnmergedPrs = 0,
-    ownerGatedPrs = 0;
+    ownerGatedPrs = 0,
+    unverifiedOwnerGateLabels = 0;
   let unattendedMerged = 0,
     humanAssistedMerged = 0,
     unknownMerged = 0,
@@ -497,6 +599,7 @@ export function buildPrCompletionReport(
     } else closedUnmergedPrs++;
     const ownerGated = pr.ownerGated === true && pr.ownerGateVerified === true;
     if (ownerGated) ownerGatedPrs++;
+    else if (pr.ownerGated === true) unverifiedOwnerGateLabels++;
     if (pr.eligible !== false && !ownerGated) eligiblePrs++;
 
     const actions = actionsByPr.get(key) ?? [];
@@ -521,7 +624,8 @@ export function buildPrCompletionReport(
         action.actor === "fleet" && action.outcome === "confirmed"
       );
       const hasVerifiedImplementation = actions.some((action) =>
-        (action.kind === "implementation" || action.kind === "repair") &&
+        (action.kind === "implementation" || action.kind === "repair" ||
+          action.kind === "milestone") &&
         action.verified && action.actor === "fleet" &&
         action.outcome === "confirmed"
       );
@@ -578,10 +682,19 @@ export function buildPrCompletionReport(
     }
   }
   defaultBranchChanges = deliveredKeys.size;
-
-  const ciRows = input.ciRuns.filter((run) =>
-    deliveredKeys.has(keyOf(run.repo, run.prNumber))
+  const incompleteCi = new Set(
+    (input.ciIncompletePrs ?? []).map((pr) => keyOf(pr.repo, pr.prNumber)),
   );
+  const incompleteDelivered = new Set(
+    prs.filter((pr) =>
+      incompleteCi.has(keyOf(pr.repo, pr.number)) && pr.state === "merged" &&
+      pr.baseRef === pr.defaultBranch && pr.milestone !== true
+    ).map((pr) => pr.rollupRoot ?? keyOf(pr.repo, pr.number)),
+  );
+  const incompleteMerged = prs.some((pr) =>
+    pr.state === "merged" && incompleteCi.has(keyOf(pr.repo, pr.number))
+  );
+
   for (const run of input.ciRuns) {
     if (!run.runId || !Number.isSafeInteger(run.prNumber) || run.prNumber < 1) {
       throw new Error("CI run requires a run id and positive PR number");
@@ -592,17 +705,48 @@ export function buildPrCompletionReport(
     ) {
       throw new Error(`CI run ${run.runId} has an invalid duration`);
     }
+    if (
+      run.durationSeconds !== undefined && run.durationSeconds !== null &&
+      (!Number.isFinite(run.durationSeconds) || run.durationSeconds < 0)
+    ) {
+      throw new Error(`CI run ${run.runId} has an invalid durationSeconds`);
+    }
   }
-  const knownCi = ciRows.flatMap((run) =>
-    run.durationMinutes !== null && Number.isFinite(run.durationMinutes) &&
-      run.durationMinutes >= 0
-      ? [run.durationMinutes]
-      : []
+  const ciById = new Map<string, (typeof input.ciRuns)[number]>();
+  for (const run of input.ciRuns) {
+    if (!deliveredKeys.has(keyOf(run.repo, run.prNumber))) continue;
+    const kind = run.kind ?? "check_run";
+    const identity = `${run.repo}:${kind}:${run.runId}:${run.attempt ?? 1}`;
+    if (!ciById.has(identity)) ciById.set(identity, run);
+  }
+  const ciRows = [...ciById.values()];
+  const workflowRows = ciRows.filter((run) => run.kind === "workflow_run");
+  const checkRows = ciRows.filter((run) =>
+    run.kind === undefined || run.kind === "check_run"
   );
+  const jobRows = ciRows.filter((run) => run.kind === "job");
+  const primaryCiRows = workflowRows.length > 0 ? workflowRows : checkRows;
+  const durationMinutes = (run: (typeof input.ciRuns)[number]) =>
+    run.durationSeconds !== undefined
+      ? run.durationSeconds === null ? null : run.durationSeconds / 60
+      : run.durationMinutes;
+  const knownCi = primaryCiRows.flatMap((run) => {
+    const duration = durationMinutes(run);
+    return duration !== null && Number.isFinite(duration) && duration >= 0
+      ? [duration]
+      : [];
+  });
+  const knownJobMinutes = jobRows.flatMap((run) => {
+    const duration = durationMinutes(run);
+    return duration !== null && Number.isFinite(duration) && duration >= 0
+      ? [duration]
+      : [];
+  });
   const waiting: PrCompletionReport["waiting"] = {
     observedAt: input.cohort.observedAt,
     intervals: {},
     openIntervals: 0,
+    ciFailureComplete: incompleteCi.size === 0,
   };
   for (const blocker of input.blockers) {
     if (!/^[a-z][a-z0-9_-]{0,63}$/.test(blocker.blocker)) {
@@ -633,13 +777,26 @@ export function buildPrCompletionReport(
   const deployment = deploymentReport(input);
   const incompleteObservationWindow = observedAt < end;
   const stranded = input.rollout?.strandedPrs ?? [];
+  const discoveryComplete = input.rollout?.discoveryEvidenceComplete === true;
+  const discoveredPrs = discoveryComplete
+    ? stranded.filter((pr) => pr.eligible && pr.discovered).length
+    : 0;
   const rollout = {
     eligibleStrandedPrs: stranded.filter((pr) => pr.eligible).length,
-    rediscoveredPrs:
-      stranded.filter((pr) => pr.eligible && pr.rediscovered).length,
-    processedPrs: stranded.filter((pr) => pr.eligible && pr.processed).length,
-    notRediscoveredPrs:
-      stranded.filter((pr) => pr.eligible && !pr.rediscovered).length,
+    discoveredPrs,
+    rediscoveredPrs: discoveredPrs,
+    eligibleEventPrs: discoveryComplete
+      ? stranded.filter((pr) => pr.eligible && pr.eligibilityConfirmed).length
+      : 0,
+    processedPrs: discoveryComplete
+      ? stranded.filter((pr) => pr.eligible && pr.processed).length
+      : 0,
+    notRediscoveredPrs: discoveryComplete
+      ? stranded.filter((pr) => pr.eligible && !pr.discovered).length
+      : 0,
+    unknownDiscoveryPrs: discoveryComplete
+      ? 0
+      : stranded.filter((pr) => pr.eligible).length,
   };
   let targetEvaluation: PrCompletionReport["targetEvaluation"] = {
     status: "pending",
@@ -673,7 +830,8 @@ export function buildPrCompletionReport(
         action.actor === "human"
       );
       const implementation = actions.some((action) =>
-        (action.kind === "implementation" || action.kind === "repair") &&
+        (action.kind === "implementation" || action.kind === "repair" ||
+          action.kind === "milestone") &&
         action.verified && action.actor === "fleet" &&
         action.outcome === "confirmed"
       );
@@ -691,10 +849,13 @@ export function buildPrCompletionReport(
         timestamp(pr.mergedAt, "PR mergedAt") -
               timestamp(pr.createdAt, "PR createdAt") <= 86_400_000;
     }).length;
-    const ready = deployment.status === "verified" && observedAt >= rolloutEnd;
+    const windowClosed = observedAt >= rolloutEnd;
+    const ready = deployment.status === "verified" && discoveryComplete;
     targetEvaluation = {
-      status: !ready
+      status: !windowClosed
         ? "pending"
+        : !ready
+        ? "unavailable"
         : evaluationPrs.length === 0
         ? "unavailable"
         : successful / evaluationPrs.length >= 0.9
@@ -719,6 +880,7 @@ export function buildPrCompletionReport(
       ageingOpenPrs,
       closedUnmergedPrs,
       ownerGatedPrs,
+      unverifiedOwnerGateLabels,
     },
     completion: {
       eligiblePrs,
@@ -737,22 +899,33 @@ export function buildPrCompletionReport(
       intermediateRollupPrs,
       reviewRounds,
       fixRounds,
-      ciRuns: ciRows.length,
-      ciMinutes: knownCi.length === ciRows.length &&
-          (ciRows.length > 0 || defaultBranchChanges === 0)
+      ciRuns: primaryCiRows.length,
+      ciMinutes: knownCi.length === primaryCiRows.length &&
+          (primaryCiRows.length > 0 || defaultBranchChanges === 0)
         ? knownCi.reduce((sum, value) => sum + value, 0)
         : null,
-      ciRunsPerDeliveredChange: defaultBranchChanges && ciRows.length
-        ? ciRows.length / defaultBranchChanges
+      ciWorkflowRuns: workflowRows.length,
+      ciChecks: checkRows.length,
+      ciJobs: jobRows.length,
+      ciJobMinutes: knownJobMinutes.length === jobRows.length &&
+          (jobRows.length > 0 || defaultBranchChanges === 0)
+        ? knownJobMinutes.reduce((sum, value) => sum + value, 0)
         : null,
-      ciMinutesPerDeliveredChange: defaultBranchChanges && ciRows.length &&
-          knownCi.length === ciRows.length
-        ? knownCi.reduce((sum, value) => sum + value, 0) /
-          defaultBranchChanges
-        : null,
+      ciRunsPerDeliveredChange:
+        incompleteDelivered.size === 0 && defaultBranchChanges &&
+          primaryCiRows.length
+          ? primaryCiRows.length / defaultBranchChanges
+          : null,
+      ciMinutesPerDeliveredChange:
+        incompleteDelivered.size === 0 && defaultBranchChanges &&
+          primaryCiRows.length && knownCi.length === primaryCiRows.length
+          ? knownCi.reduce((sum, value) => sum + value, 0) /
+            defaultBranchChanges
+          : null,
     },
     waiting,
     regressions: {
+      postMergeCiComplete: !incompleteMerged,
       observed: regressionRows.length,
       unresolved: regressionRows.filter((row) => !row.resolved).length,
       attributed,
@@ -767,10 +940,11 @@ export function buildPrCompletionReport(
         !(actionsByPr.get(keyOf(pr.repo, pr.number)) ?? []).length
       ).length,
       unlinkedActions,
-      unknownCiDurations: ciRows.length - knownCi.length,
-      deliveredChangesWithoutCiData: defaultBranchChanges && ciRows.length === 0
+      unknownCiDurations: primaryCiRows.length - knownCi.length,
+      deliveredChangesWithoutCiData: primaryCiRows.length === 0
         ? defaultBranchChanges
-        : 0,
+        : [...incompleteDelivered].filter((key) => deliveredKeys.has(key))
+          .length,
       excludedPrs,
       incompleteObservationWindow,
       truncatedRepos: [...truncatedRepos],

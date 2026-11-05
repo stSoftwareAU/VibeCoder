@@ -8,9 +8,9 @@
  * journal. Every failure is swallowed so journalling can never abort — or
  * even perturb — the mutation it is recording.
  *
- * Gating: auditing is active in production (where `WORK_DIR` is set) and
- * can be force-disabled with `VIBE_AUDIT_DISABLED=1`. Unit tests that do
- * not set `WORK_DIR` therefore incur no journalling side-effects.
+ * Gating: auditing is active in production where `WORK_DIR` or
+ * `VIBE_AUDIT_DIR` is set, and can be force-disabled with
+ * `VIBE_AUDIT_DISABLED=1`. Unit tests that set neither remain inert.
  *
  * Both gating variables, the worker partition and the run id are read through
  * {@link AuditHookOptions} rather than straight off the process (Issue #963),
@@ -55,6 +55,16 @@ export interface AuditHookOptions extends RecordOptions {
   runId?: string;
 }
 
+/** True when the audit disable switch has a non-false value. */
+export function isAuditJournalSwitchedOff(
+  env: EnvLookup = processEnvLookup,
+): boolean {
+  const disabled = env("VIBE_AUDIT_DISABLED");
+  return Boolean(
+    disabled && disabled !== "0" && disabled.toLowerCase() !== "false",
+  );
+}
+
 /**
  * True when audit journalling should run for the current process.
  *
@@ -67,13 +77,9 @@ export interface AuditHookOptions extends RecordOptions {
 export function isAuditJournalEnabled(
   env: EnvLookup = processEnvLookup,
 ): boolean {
-  const disabled = env("VIBE_AUDIT_DISABLED");
-  if (disabled && disabled !== "0" && disabled.toLowerCase() !== "false") {
-    return false;
-  }
-  // Journalling is a production-runtime feature keyed to WORK_DIR. Without
-  // it there is no stable out-of-tree location to write to, so stay inert.
-  return Boolean(env("WORK_DIR"));
+  if (isAuditJournalSwitchedOff(env)) return false;
+  // An explicit journal directory supports workers without WORK_DIR.
+  return Boolean(env("VIBE_AUDIT_DIR") || env("WORK_DIR"));
 }
 
 /**
@@ -150,6 +156,17 @@ const WORKER_CALLERS: ReadonlyArray<string> = [
   "pr_ci_processor",
   "pr_feedback_processor",
   "pr_maintenance",
+  "git_pull",
+  "direct_merge",
+  "pr_manager",
+  "pr_auto_merge",
+  "pr_comments",
+  "pr_merge_conflict_processor",
+  "pr_spelling_processor",
+  "pre_push_gate_retry",
+  "screenshot_gate_retry",
+  "summary_rule_gate_retry",
+  "pr_body_length",
 ];
 
 /**
@@ -201,7 +218,12 @@ const IMPLEMENTATION_PUSH_CALLERS: ReadonlyArray<string> = [
  * alone.
  *
  * A `git push` is only `repair` or `implementation` when its caller positively
- * names the module that makes that push; any other push is `unknown`.
+ * names the module that makes that push; any other push is `unknown`. The one
+ * exception is `git_pull.ts`, which makes two kinds of push: a push whose
+ * target is a `milestone/` branch is `milestone` (the milestone sync), and any
+ * other push from it is `branch-update` (the plain fast-forward update of a PR
+ * branch that merges its base in). A `branch-update` is neither a fix round nor
+ * verified implementation evidence.
  *
  * Exported for tests; production reaches it only through {@link record}.
  *
@@ -215,6 +237,7 @@ export function actionKindFor(
   args: readonly string[],
 ): AuditActionKind {
   if (info.verb === "pr-merge") {
+    if (args.includes("--auto")) return "merge-arm";
     return args.includes("--disable-auto") ? "unknown" : "merge";
   }
   if (info.verb === "pr-review") return "review";
@@ -237,6 +260,11 @@ export function actionKindFor(
       .test(info.target ?? "")
   ) return "dismissal";
   if (info.verb === "git-push" && caller) {
+    if (caller.includes("git_pull")) {
+      return (info.target ?? "").startsWith("milestone/")
+        ? "milestone"
+        : "branch-update";
+    }
     if (REPAIR_PUSH_CALLERS.some((name) => caller.includes(name))) {
       return "repair";
     }
@@ -245,6 +273,13 @@ export function actionKindFor(
     }
   }
   return "unknown";
+}
+
+/** The head SHA a direct merge is pinned to, when the command supplies one. */
+function headShaFor(args: readonly string[]): string | undefined {
+  const index = args.indexOf("--match-head-commit");
+  const sha = index >= 0 ? args[index + 1] : undefined;
+  return sha && /^[0-9a-f]{40}$/i.test(sha) ? sha : undefined;
 }
 
 /**
@@ -286,6 +321,9 @@ async function record(
       actionId: crypto.randomUUID(),
       component: componentFor(caller),
       actionKind: actionKindFor(info, caller, args),
+      ...(info.verb === "pr-merge" && headShaFor(args)
+        ? { headSha: headShaFor(args) }
+        : {}),
       ...(info.verb === "git-push" && opts.deliveredCommits !== undefined
         ? { deliveredCommits: opts.deliveredCommits }
         : {}),

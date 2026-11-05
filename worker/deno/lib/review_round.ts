@@ -58,6 +58,7 @@ export interface ReviewRoundOptions {
   roundDir?: string;
   deployment?: {
     component: "reviewer";
+    hostId?: string;
     codeRevision: string;
     policyFingerprint: string;
   };

@@ -201,7 +201,9 @@ never throw — a journalling failure can never abort or perturb the
 mutation it is recording.
 
 **The journal is the worker's, never the agent's (Issue #2400).** The hooks
-switch on wherever `WORK_DIR` is set, and the coding agent's environment is
+switch on wherever `WORK_DIR` is set, or where `VIBE_AUDIT_DIR` names an
+explicit journal directory. The babysitter uses the latter under its private
+state directory because it has no `WORK_DIR`. The coding agent's environment is
 the worker's minus a denylist — so anything the agent started, including the
 repository's own test suite driving real `git` against fixture repositories,
 used to append to the production trail under the worker's identity, and could
@@ -221,8 +223,9 @@ the first module above the audit and `gh`/`git` chokepoints), plus the chain
 fields `prevHash` and `hash`.
 
 Six optional fields classify each mutation. Entries written by this build
-always carry `actionId`, `component` and `actionKind`, but `prNumber` is set
-only for a PR target and `headSha` is not set yet. `deliveredCommits` appears
+always carry `actionId`, `component` and `actionKind`. `prNumber` is set only
+for a PR target, and `headSha` only on a `gh pr merge` that carries
+`--match-head-commit`. `deliveredCommits` appears
 only on `git-push` entries whose command line the chokepoint can parse and
 whose history it can enumerate, whether or not the push succeeds.
 Entries written before this
@@ -235,20 +238,43 @@ change carry none of them:
   names.
 - `prNumber` — the PR number the mutation targets. It is present only when the
   target is a PR: a `pr-` verb with a numeric target, or a `/pulls/N` API path.
-- `headSha` — the PR head SHA, when a caller records one. No production writer
-  sets it yet, because the audit hooks take no head SHA, so entries written by
-  this build never carry it. `prActionsFromAuditJournal` reads it when present.
+- `headSha` — the head SHA a `gh pr merge` is pinned to. The audit hook reads
+  it from a `--match-head-commit` argument that carries a full 40-hex SHA, and
+  no other mutation carries it. The pin applies to an `--auto` arming as well
+  as a direct merge, so an arming entry can carry `headSha` while its
+  `actionKind` is `merge-arm`. `prActionsFromAuditJournal` reads it when
+  present.
 - `deliveredCommits` — full commit IDs absent from the remote branch before an
   attempted push, recorded for both successful and failed pushes. The git
   chokepoint reads the remote head and enumerates its old-to-local range.
   For a new destination, it excludes history in the remote's tracking refs.
   Unsupported push forms, unavailable history and shallow
   repositories omit this evidence; their commits remain unknown to the collector.
-- `actionKind` — `implementation`, `repair`, `branch-update`, `review`,
-  `dismissal`, `merge`, or `unknown`. `branch-update` records a PUT to
-  `repos/<repo>/pulls/<n>/update-branch`.
-  A `git push` is `implementation` or `repair` only when its caller
-  is a module the hook names; any other push is `unknown`.
+- `actionKind` — one of the following, decided from the verb, the target and
+  the resolved caller:
+  - `implementation` — a `git push` from a module the hook names as publishing
+    the run's own branch (for example `completion_phase` or `wip_checkpoint`).
+  - `repair` — a `git push` from a module the hook names as updating an existing
+    PR branch: the babysitter and the PR CI, feedback, merge-conflict and
+    spelling processors.
+  - `milestone` — a `git push` from `git_pull.ts` whose target is a `milestone/`
+    branch, which is the milestone sync.
+  - `branch-update` — a `PUT` to `repos/<repo>/pulls/<n>/update-branch`, or a
+    `git push` from `git_pull.ts` to any other target. The latter is the plain
+    fast-forward push that merges the base into a PR branch.
+  - `review` — a PR review submission.
+  - `dismissal` — a PR review dismissal.
+  - `merge-arm` — `gh pr merge --auto`, which arms auto-merge. It is never
+    evidence that a merge happened.
+  - `merge` — a direct `gh pr merge`, with neither `--auto` nor `--disable-auto`.
+  - `unknown` — anything else. This includes `gh pr merge --disable-auto`
+    without `--auto`, and any `git push` whose caller is unresolved or is not a
+    module named above.
+
+  A caller is matched by a module's file name appearing in its path. Only
+  `implementation`, `repair` and `milestone` count as implementation evidence in
+  the completion report, and only `repair` counts as a fix round, so a
+  `branch-update` is neither.
 
 An absent field does not change an entry's hash: the canonical payload leaves
 out every field that is not set, so an entry written before these fields
@@ -258,16 +284,24 @@ an entry that carries them, and its hash check fails for those entries.
 Verify the journal with a build that includes these fields.
 
 **Storage — outside the worker's repo working tree.** Entries are
-appended to `${WORK_DIR}/audit/audit-<workerId>-YYYY-MM-DD.jsonl`,
-rotated daily and partitioned per worker. Because the journal lives
-under `${WORK_DIR}/audit/` — a sibling of, never inside, any cloned
-repo — a bug in the worker that rewrites a repo's history cannot rewrite
-its own audit log. `audit` is a **reserved work-root name**
-([`stale_workdir.ts`](../worker/deno/lib/stale_workdir.ts)), as are the
+appended to `<audit directory>/audit-<workerId>-YYYY-MM-DD.jsonl`,
+rotated daily and partitioned per worker. The audit directory is
+`VIBE_AUDIT_DIR` when that variable is set, and otherwise
+`${WORK_DIR}/audit/`. `VIBE_AUDIT_DIR` takes precedence over `WORK_DIR`.
+It must be an absolute path with no `..` segment. A relative path, or one
+with a `..` segment, is refused and logged as
+`[SECURITY] [AUDIT_JOURNAL_REFUSED]`; the hook never falls back to another
+directory. Because the journal lives in the audit directory — a sibling of,
+never inside, any cloned repo — a bug in the worker that rewrites a repo's
+history cannot rewrite its own audit log. `audit` is a **reserved work-root
+name** ([`stale_workdir.ts`](../worker/deno/lib/stale_workdir.ts)), as are the
 `audit.roster.jsonl` and `audit.roster.seen` sidecars beside it — and any
 `audit.roster.jsonl.torn-<n>` a repair preserved (Issue #1202) — so no
 housekeeping sweep — tier reclaim, stale-workdir scan, worktree cleanup or
-the 90%-disk `nukeWorkDir` — may delete the trail. Before Issue #337 it
+the 90%-disk `nukeWorkDir` — may delete the trail. Those reserved names
+protect only the default `${WORK_DIR}/audit/` location: a `VIBE_AUDIT_DIR`
+that names another directory is not a work-root entry, so they do not cover
+it. Before Issue #337 it
 tiered as a disposable clone and was pruned, and the sweep below then
 reported the erasure the worker itself had caused.
 
@@ -286,7 +320,7 @@ surviving prefix still chains perfectly, and deleting the file leaves
 nothing to check. Every append therefore also updates a **chain anchor**
 ([`worker/deno/lib/audit_anchor.ts`](../worker/deno/lib/audit_anchor.ts))
 holding the record count and head hash outside the journal, at
-`${WORK_DIR}/audit/anchors/<journal>.anchor.json`:
+`<audit directory>/anchors/<journal>.anchor.json`:
 
 - A journal shorter than its anchor → `journal truncated`.
 - A journal whose anchored entry no longer carries the anchored hash →
