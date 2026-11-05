@@ -58,7 +58,8 @@ flowchart LR
   report's host-id pattern so one odd value cannot abort a babysitter pass.
 
 - Discovery events rotate into UTC-day files, deduplicate across processes per
-  day, recover a torn final record from a bounded tail, and log write failures
+  day (the key includes the babysitter's policy fingerprint, and the rollout
+  check counts a pre-verification row that carries the expected fingerprint), recover a torn final record from a bounded tail, and log write failures
   without stopping repairs. The collector reads relevant days and the legacy
   ledger up through the 14-day evaluation window up to a 16 MiB total limit;
   excess evidence leaves rollout unknown with a note. Test seams supply the
@@ -528,3 +529,17 @@ duplicate regression or discovery implementation was found.
   from the review skill; human attribution; owner-gate verification.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+- PR #4810 review repair (head after this push): daily deduplication can no
+  longer hide the first post-rollout scan. Events carry `policyFingerprint`
+  (from `fingerprintWorkerReviewPolicy`), it is part of the dedup key, and
+  `collectDiscoveryEvents` keeps a pre-verification row whose fingerprint equals
+  the expected one. Tests (each goes red when its guard is removed):
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a same-day dedup'd scan after verification still counts via the expected policy fingerprint`
+  (collector condition forced to `true` makes PR 2 discovered);
+  `worker/deno/tests/pr_discovery_events_test.ts::PR discovery dedup keys on the policy fingerprint and rejects a malformed one`
+  and `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts::pass journals the policy fingerprint, and a changed policy writes a fresh same-day row`
+  (key without fingerprint makes both fail). The pass-level TMPDIR test
+  `worker/deno/tests/fleet_pr_babysitter_pass_4658_test.ts::pass recovers temporary clones under /tmp when TMPDIR is set but empty`
+  sets `TMPDIR=""` and, through the new `recoverClones` seam, asserts `pass`
+  reads `/tmp`; reverting `pass` to `Deno.env.get("TMPDIR") ?? "/tmp"` fails it.

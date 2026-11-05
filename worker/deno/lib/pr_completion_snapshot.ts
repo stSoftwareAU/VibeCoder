@@ -1347,6 +1347,7 @@ async function collectDiscoveryEvents(
   directories: string[],
   verifiedMs: number,
   endMs: number,
+  expectedFingerprint: string,
   notes: string[],
 ): Promise<{
   events: Array<{ repo: string; prNumber: number; event: string }>;
@@ -1363,7 +1364,12 @@ async function collectDiscoveryEvents(
       for (const row of rows) {
         if (Date.parse(row.recordedAt) > endMs) continue;
         hosts.add(row.hostId);
-        if (Date.parse(row.recordedAt) < verifiedMs) continue;
+        // Same-day dedup keeps the first row per key, so a row already carrying
+        // the expected policy fingerprint stands for later scans too.
+        if (
+          Date.parse(row.recordedAt) < verifiedMs &&
+          row.policyFingerprint !== expectedFingerprint
+        ) continue;
         events.push({
           repo: row.repo,
           prNumber: row.prNumber,
@@ -1899,6 +1905,7 @@ export async function collectPrCompletionSnapshot(
       options.babysitterStateDirs ?? [],
       verifiedMs,
       Math.min(observedMs, verifiedMs + 14 * 86_400_000),
+      options.expected.policyFingerprint,
       notes,
     );
     const expectedBabysitterHosts = options.expected.inventory

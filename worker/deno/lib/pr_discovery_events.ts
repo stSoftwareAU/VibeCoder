@@ -11,6 +11,8 @@ export interface PrDiscoveryEvent {
   prNumber: number;
   headSha: string;
   recordedAt: string;
+  /** SHA-256 of the babysitter's resolved review policy; absent on legacy rows. */
+  policyFingerprint?: string;
 }
 
 const EVENT_LINE_LIMIT = 16_384;
@@ -23,6 +25,8 @@ function eventKey(event: PrDiscoveryEvent): string {
     event.repo,
     event.prNumber,
     event.headSha,
+    // A policy change must not be swallowed by a same-day row from the old one.
+    event.policyFingerprint ?? null,
   ]);
 }
 
@@ -52,7 +56,10 @@ function validEvent(value: unknown): value is PrDiscoveryEvent {
     Number.isSafeInteger(event.prNumber) && event.prNumber! > 0 &&
     typeof event.headSha === "string" && event.headSha.length > 0 &&
     typeof event.recordedAt === "string" &&
-    Number.isFinite(Date.parse(event.recordedAt));
+    Number.isFinite(Date.parse(event.recordedAt)) &&
+    (event.policyFingerprint === undefined ||
+      (typeof event.policyFingerprint === "string" &&
+        /^[0-9a-f]{64}$/.test(event.policyFingerprint)));
 }
 
 /** Append one transition under a cross-process lock; errors are not swallowed. */

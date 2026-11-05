@@ -166,3 +166,39 @@ Deno.test("PR discovery events accept every reportHostId mapping of a free-form 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("PR discovery dedup keys on the policy fingerprint and rejects a malformed one", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = `${dir}/events.jsonl`;
+    const event = {
+      event: "discovered" as const,
+      hostId: "host-a",
+      repo: "org/repo",
+      prNumber: 17,
+      headSha: "head-1",
+      recordedAt: "2026-11-01T06:00:00Z",
+      policyFingerprint: "a".repeat(64),
+    };
+    await appendPrDiscoveryEvent(path, event);
+    await appendPrDiscoveryEvent(path, {
+      ...event,
+      recordedAt: "2026-11-01T07:00:00Z",
+    });
+    const changed = {
+      ...event,
+      recordedAt: "2026-11-01T08:00:00Z",
+      policyFingerprint: "b".repeat(64),
+    };
+    await appendPrDiscoveryEvent(path, changed);
+    assertEquals(await readPrDiscoveryEvents(path), [event, changed]);
+    await assertRejects(
+      () =>
+        appendPrDiscoveryEvent(path, { ...event, policyFingerprint: "xyz" }),
+      Error,
+      "invalid PR discovery event",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

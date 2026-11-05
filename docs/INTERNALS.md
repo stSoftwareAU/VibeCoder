@@ -1170,13 +1170,17 @@ report's host-id pattern reject them. An `--expected-inventory` entry therefore
 uses the machine hostname for a worker and the mapped id for a babysitter or a
 reviewer.
 
-Discovery appends deduplicate each event, host, repository, PR and head within
-each UTC day across processes, by reading the bounded daily file under the
+Discovery appends deduplicate each event, host, repository, PR, head and
+policy fingerprint (the SHA-256 the heartbeat also records; legacy rows carry
+none) within each UTC day across processes, by reading the bounded daily file under the
 append lock. Collection also reads the legacy
 `pr-discovery-events.jsonl` and daily files intersecting the verification window,
 ending at the observation time or 14 days after verification, whichever is
 earlier. A combined 16 MiB read limit marks rollout evidence incomplete with a
-coverage note when exceeded.
+coverage note when exceeded. Because deduplication keeps the first row of a day,
+the rollout check counts a row stamped before the verification instant when it
+carries the expected policy fingerprint; rows with another or no fingerprint
+count only from the verification instant.
 
 **Cross-host evidence.** The command reads only the audit directories it is
 given. To include another host, export that host's journal directory and pass

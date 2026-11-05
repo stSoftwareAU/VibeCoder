@@ -55,6 +55,7 @@ async function runPassWithFakeGh(options: {
   const root = await Deno.makeTempDir();
   try {
     const config = {
+      ...buildDefaultWorkerConfig(),
       fleetPrAuthors: [PASS_LOGIN],
       serviceAccounts: [],
       repoConfig: {},
@@ -153,6 +154,7 @@ Deno.test("a discovery write failure does not stop a repair", async () => {
         PASS_LOGIN,
         {} as unknown as Parameters<typeof pass>[2],
         {
+          ...buildDefaultWorkerConfig(),
           fleetPrAuthors: [PASS_LOGIN],
           serviceAccounts: [],
           repoConfig: {},
@@ -181,6 +183,90 @@ Deno.test("a discovery write failure does not stop a repair", async () => {
       warnings.some((warning) =>
         warning.includes("discovery event not recorded")
       ),
+      true,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("pass recovers temporary clones under /tmp when TMPDIR is set but empty", async () => {
+  const root = await Deno.makeTempDir();
+  const saved = Deno.env.get("TMPDIR");
+  Deno.env.set("TMPDIR", "");
+  try {
+    const roots: string[] = [];
+    await pass(
+      false,
+      PASS_LOGIN,
+      {} as unknown as Parameters<typeof pass>[2],
+      {
+        ...buildDefaultWorkerConfig(),
+        fleetPrAuthors: [PASS_LOGIN],
+        serviceAccounts: [],
+        repoConfig: {},
+      } as unknown as Parameters<typeof pass>[3],
+      `${root}/config.json`,
+      ["org/repo"],
+      undefined,
+      undefined,
+      {
+        gh: () => Promise.resolve("[]"),
+        stateDir: `${root}/state`,
+        hostId: PASS_HOST,
+        recoverClones: (dir) => {
+          roots.push(dir);
+          return Promise.resolve();
+        },
+      },
+    );
+    assertEquals(roots, ["/tmp"]);
+  } finally {
+    if (saved === undefined) Deno.env.delete("TMPDIR");
+    else Deno.env.set("TMPDIR", saved);
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("pass journals the policy fingerprint, and a changed policy writes a fresh same-day row", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const run = (config: ReturnType<typeof buildDefaultWorkerConfig>) =>
+      pass(
+        false,
+        PASS_LOGIN,
+        {} as unknown as Parameters<typeof pass>[2],
+        {
+          ...config,
+          fleetPrAuthors: [PASS_LOGIN],
+          serviceAccounts: [],
+          repoConfig: {},
+        } as unknown as Parameters<typeof pass>[3],
+        `${root}/config.json`,
+        ["org/repo"],
+        undefined,
+        undefined,
+        {
+          gh: () => Promise.resolve(JSON.stringify([passFixturePr(11)])),
+          tempDir: root,
+          stateDir: `${root}/state`,
+          hostId: PASS_HOST,
+        },
+      );
+    const base = buildDefaultWorkerConfig();
+    await run(base);
+    await run(base);
+    await run({ ...base, issueSubAgentTier: "sonnet" });
+    const rows = await readPrDiscoveryEvents(
+      `${root}/state/pr-discovery-events.jsonl`,
+    );
+    assertEquals(rows.length, 2);
+    assertEquals(
+      rows.every((r) => /^[0-9a-f]{64}$/.test(r.policyFingerprint!)),
+      true,
+    );
+    assertEquals(
+      rows[0]!.policyFingerprint !== rows[1]!.policyFingerprint,
       true,
     );
   } finally {

@@ -2869,6 +2869,63 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
   });
 });
 
+Deno.test("collect - a same-day dedup'd scan after verification still counts via the expected policy fingerprint", async () => {
+  await withDir(async (dir) => {
+    const path = `${dir}/pr-discovery-events.jsonl`;
+    const row = (prNumber: number, policyFingerprint: string | undefined) => ({
+      event: "discovered" as const,
+      hostId: "host-a",
+      repo: REPO,
+      prNumber,
+      headSha: `sha${prNumber}`,
+      ...(policyFingerprint === undefined ? {} : { policyFingerprint }),
+    });
+    // PR 1: expected-policy scan at 06:00Z; the 13:00Z scan is deduplicated away.
+    await appendPrDiscoveryEvent(path, {
+      ...row(1, FP),
+      recordedAt: "2026-10-25T06:00:00Z",
+    });
+    await appendPrDiscoveryEvent(path, {
+      ...row(1, FP),
+      recordedAt: "2026-10-25T13:00:00Z",
+    });
+    // PR 2: an older policy's scan before verification must not count.
+    await appendPrDiscoveryEvent(path, {
+      ...row(2, "b".repeat(64)),
+      recordedAt: "2026-10-25T06:00:00Z",
+    });
+    const open = { state: "open", merged_at: null, closed_at: null };
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture({
+        pulls: {
+          [REPO]: [
+            pull(1, { ...open, created_at: "2026-10-20T00:00:00Z" }),
+            pull(2, { ...open, created_at: "2026-10-20T00:00:00Z" }),
+          ],
+        },
+      })),
+      {
+        auditDirs: [dir],
+        babysitterStateDirs: [dir],
+        expected: {
+          components: ["worker", "babysitter"],
+          inventory: [{ hostId: "host-a", component: "babysitter" }],
+          revision: "rev1",
+          policyFingerprint: FP,
+          maxHeartbeatAgeHours: 24,
+        },
+        rolloutVerifiedAt: "2026-10-25T12:00:00Z",
+      },
+    ));
+    assertEquals(
+      snapshot.input.rollout!.strandedPrs
+        .map((pr) => [pr.prNumber, pr.discovered])
+        .sort(),
+      [[1, true], [2, false]],
+    );
+  });
+});
+
 const BABYSITTER_HOSTS_NOTE =
   "PR discovery events do not cover every expected babysitter host; rollout remains unknown";
 

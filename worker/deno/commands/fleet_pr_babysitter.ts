@@ -2908,12 +2908,13 @@ export async function pass(
   seams: {
     gh?: (args: string[]) => Promise<string>;
     tempDir?: string;
+    recoverClones?: (root: string) => Promise<void>;
     stateDir?: string;
     hostId?: string;
     repair?: () => Promise<void>;
   } = {},
 ): Promise<void> {
-  await recoverTemporaryClones(
+  await (seams.recoverClones ?? recoverTemporaryClones)(
     seams.tempDir ?? temporaryCloneRoot(Deno.env.get("TMPDIR")),
   );
   const stateDir = seams.stateDir ?? babysitterStateDir();
@@ -2943,13 +2944,22 @@ export async function pass(
       gh,
     );
   }
+  let policyFingerprint: Promise<string> | undefined;
   const discover = async (): Promise<RepairTask[]> => {
     const recordDiscovery = async (
       path: string,
-      event: Parameters<typeof appendPrDiscoveryEvent>[1],
+      event: Omit<
+        Parameters<typeof appendPrDiscoveryEvent>[1],
+        "policyFingerprint"
+      >,
     ): Promise<void> => {
       try {
-        await appendPrDiscoveryEvent(path, event);
+        // Stamped on each row so same-day dedup cannot hide a policy change.
+        policyFingerprint ??= fingerprintWorkerReviewPolicy(config);
+        await appendPrDiscoveryEvent(path, {
+          ...event,
+          policyFingerprint: await policyFingerprint,
+        });
       } catch (error) {
         console.warn(`[babysitter] discovery event not recorded: ${error}`);
       }
