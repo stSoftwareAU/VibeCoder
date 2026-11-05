@@ -126,14 +126,10 @@ import {
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
 import {
-  BRANCH_REFRESH_REFUSAL_MARKER,
+  notifyBranchRefreshRefusal,
   readBranchRefreshRefusals,
   writeBranchRefreshRefusals,
 } from "./branch_refresh_refusal_streak.ts";
-import {
-  fetchMarkerComments,
-  updateIssueComment,
-} from "./marker_comment_pages.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestReadyBranchUpdate } from "./required_branch_checks_4613.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
@@ -3767,8 +3763,10 @@ export async function createProductionRunCoreDeps(
             }),
         branchRefreshRefusals: {
           load: () =>
-            readBranchRefreshRefusals(workDir, undefined, (message) =>
-              logger.warn(message)
+            readBranchRefreshRefusals(
+              workDir,
+              undefined,
+              (message) => logger.warn(message),
             ),
           save: (state) =>
             writeBranchRefreshRefusals(
@@ -3778,37 +3776,11 @@ export async function createProductionRunCoreDeps(
               (message) => logger.warn(message),
             ),
           notify: async ({ repo, prNumber, entry, active }) => {
-            const marker = `${BRANCH_REFRESH_REFUSAL_MARKER} repo="${repo}" pr="${prNumber}" -->`;
-            const reason = entry.reason === "mergeability-unknown"
-              ? "GitHub has not finished calculating mergeability"
-              : "GitHub's test-merge parents still lag the PR head or base";
-            const body = active
-              ? `${marker}\n### Branch refresh is still waiting\n\nThe strict-base branch refresh has been refused on ${entry.streak} consecutive passes because ${reason}. The worker will keep retrying it.\n`
-              : `${marker}\n### Branch refresh recovered\n\nThe strict-base branch refresh is no longer refused for ${reason}; automatic recovery continues.\n`;
-            const comments = await fetchMarkerComments(
-              repo,
-              prNumber,
-              BRANCH_REFRESH_REFUSAL_MARKER,
+            await notifyBranchRefreshRefusal(
+              { repo, prNumber, entry, active },
               gh,
+              (login) => isFleetAuthor(login, maintenanceAuthors),
             );
-            const own = comments.find((comment) =>
-              comment.body.startsWith(marker) &&
-              comment.author !== null &&
-              isFleetAuthor(comment.author, maintenanceAuthors)
-            );
-            if (own) {
-              await updateIssueComment(repo, own.id, body, gh);
-            } else {
-              await gh([
-                "pr",
-                "comment",
-                String(prNumber),
-                "--repo",
-                repo,
-                "--body",
-                body,
-              ]);
-            }
           },
         },
         // Issue #4424: an armed PR behind a merge queue is not updated — the

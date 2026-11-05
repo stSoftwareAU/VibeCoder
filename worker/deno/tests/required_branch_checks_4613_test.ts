@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   readRequiredChecksFailed,
   readRequiredChecksPassed,
@@ -337,11 +337,30 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     false,
   );
   retarget = false;
+  wrongParentReads = 1;
+  retryWaits.length = 0;
+  const staleThenCurrent = await request("main");
+  assertEquals(staleThenCurrent.ok, true);
+  assert(retryWaits.length > 0);
+  assertEquals(writes.length, 5);
+
   wrongParent = true;
-  assertEquals(
-    (await request("main")).ok,
-    false,
-  );
+  retryWaits.length = 0;
+  const staleExhausted = await request("main");
+  assertEquals(staleExhausted.ok, false);
+  if (!staleExhausted.ok) {
+    assertEquals(
+      staleExhausted.error.message.includes(
+        "PR test merge parents do not match its head and base",
+      ),
+      true,
+    );
+  }
+  assert(retryWaits.length >= 3);
+  for (const [index, base] of [2000, 4000, 8000].entries()) {
+    const wait = retryWaits.at(-3 + index)!;
+    assert(wait >= base && wait <= base * 2);
+  }
   wrongParent = false;
   assertEquals(
     (await request("other-base")).ok,
@@ -358,7 +377,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     (await request()).ok,
     false,
   );
-  assertEquals(writes.length, 4);
+  assertEquals(writes.length, 5);
 
   decision = "APPROVED";
   mergeabilityReadings = ["UNKNOWN", "MERGEABLE"];
@@ -366,13 +385,29 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   const unknownThenReady = await request("main");
   assertEquals(unknownThenReady.ok, true);
   assert(retryWaits.length > 0);
-  assertEquals(writes.length, 5);
+  assertEquals(writes.length, 6);
 
-  wrongParentReads = 1;
+  mergeabilityReadings = ["UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"];
   retryWaits.length = 0;
-  const staleThenCurrent = await request("main");
-  assertEquals(staleThenCurrent.ok, true);
-  assert(retryWaits.length > 0);
+  const unknownExhausted = await request("main");
+  assertEquals(unknownExhausted.ok, false);
+  if (!unknownExhausted.ok) {
+    assertEquals(
+      unknownExhausted.error.message.includes(
+        "PR mergeability is still UNKNOWN",
+      ),
+      true,
+    );
+  }
+  assertEquals(retryWaits.length, 3);
+  assertEquals(writes.length, 6);
+
+  decision = "REVIEW_REQUIRED";
+  mergeabilityReadings = ["UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"];
+  retryWaits.length = 0;
+  const unapprovedUnknown = await request("main");
+  assertEquals(unapprovedUnknown.ok, false);
+  assertEquals(retryWaits.length, 0);
   assertEquals(writes.length, 6);
 });
 

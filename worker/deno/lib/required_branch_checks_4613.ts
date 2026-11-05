@@ -444,16 +444,21 @@ export async function requestReadyBranchUpdate(
       (expectedBase === undefined || pr.baseRefName === expectedBase) &&
       typeof pr.headRefOid === "string" &&
       (expectedHead === undefined || pr.headRefOid === expectedHead);
-    const ready = (pr: ObjectValue) =>
+    const otherwiseReady = (pr: ObjectValue) =>
       pr.state === "OPEN" && pr.isDraft === false && !!pr.autoMergeRequest &&
-      pr.mergeable === "MERGEABLE" && pr.mergeStateStatus === "BEHIND" &&
+      pr.mergeStateStatus === "BEHIND" &&
       (pr.reviewDecision === "APPROVED" || pr.reviewDecision === "" ||
         pr.reviewDecision === null) &&
       typeof pr.baseRefName === "string" &&
       typeof pr.headRefOid === "string";
+    const ready = (pr: ObjectValue) =>
+      otherwiseReady(pr) && pr.mergeable === "MERGEABLE";
     const current = await retryWithBackoff(async () => {
       const live = await readLivePr();
-      if (live.mergeable === "UNKNOWN" || live.mergeable === null) {
+      if (
+        otherwiseReady(live) &&
+        (live.mergeable === "UNKNOWN" || live.mergeable === null)
+      ) {
         throw new Error("PR mergeability is still UNKNOWN");
       }
       return live;
@@ -569,16 +574,17 @@ export async function requestReadyBranchUpdate(
         }
       },
     );
-    const readCurrentTestMerge = () => retryWithBackoff(
-      () => readTestMerge(repo, prNumber, baseRefName, headRefOid, gh),
-      {
-        maxAttempts: 4,
-        ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
-        shouldRetry: (error) =>
-          error.message ===
-            "PR test merge parents do not match its head and base",
-      },
-    );
+    const readCurrentTestMerge = () =>
+      retryWithBackoff(
+        () => readTestMerge(repo, prNumber, baseRefName, headRefOid, gh),
+        {
+          maxAttempts: 4,
+          ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
+          shouldRetry: (error) =>
+            error.message ===
+              "PR test merge parents do not match its head and base",
+        },
+      );
     const merge = await readCurrentTestMerge();
     if (
       !await readRequiredChecksPassed(

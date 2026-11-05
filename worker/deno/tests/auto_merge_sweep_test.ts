@@ -24,6 +24,8 @@ import { checkPrBaseIntegrity } from "../lib/pr_base_integrity.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 import {
+  type BranchRefreshRefusalState,
+  notifyBranchRefreshRefusal,
   readBranchRefreshRefusals,
   writeBranchRefreshRefusals,
 } from "../lib/branch_refresh_refusal_streak.ts";
@@ -577,7 +579,9 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
     load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
     save: (state: Awaited<ReturnType<typeof readBranchRefreshRefusals>>) =>
       writeBranchRefreshRefusals(workDir, state, undefined, () => {}),
-    notify: ({ active, entry }: { active: boolean; entry: { streak: number } }) => {
+    notify: (
+      { active, entry }: { active: boolean; entry: { streak: number } },
+    ) => {
       notifications.push({ active, streak: entry.streak });
       return Promise.resolve();
     },
@@ -650,15 +654,16 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
 });
 
 Deno.test("a different or permanent refusal does not advance a transient streak (Issue #4831)", async () => {
-  const state = new Map();
+  const state: BranchRefreshRefusalState = new Map();
   const notifications: boolean[] = [];
+  let behind = true;
   const { options } = harness({ [VC]: [{ number: 4832 }] }, {
     prLiveState: () =>
       Promise.resolve({
         open: true,
         mergeable: "MERGEABLE",
         armed: true,
-        behind: true,
+        behind,
       }),
   });
   const tracking = {
@@ -678,13 +683,87 @@ Deno.test("a different or permanent refusal does not advance a transient streak 
         Promise.resolve({ ok: false as const, error: new Error(message) }),
     });
 
-  assert((await run("required-check read failed: PR mergeability is still UNKNOWN")).ok);
-  assert((await run("required-check read failed: PR test merge parents do not match its head and base")).ok);
-  assertEquals(notifications, []);
-  assert((await run("required-check read failed: PR test merge parents do not match its head and base")).ok);
-  assertEquals(notifications, [true]);
+  assert(
+    (await run("required-check read failed: PR mergeability is still UNKNOWN"))
+      .ok,
+  );
   assert((await run("permission denied")).ok);
+  assertEquals(notifications, []);
+  assert(
+    (await run(
+      "required-check read failed: PR test merge parents do not match its head and base",
+    )).ok,
+  );
+  assertEquals(notifications, []);
+  assert(
+    (await run(
+      "required-check read failed: PR test merge parents do not match its head and base",
+    )).ok,
+  );
+  assertEquals(notifications, [true]);
+  assert(
+    (await run("required-check read failed: PR mergeability is still UNKNOWN"))
+      .ok,
+  );
   assertEquals(notifications, [true, false]);
+  assert(
+    (await run("required-check read failed: PR mergeability is still UNKNOWN"))
+      .ok,
+  );
+  assertEquals(notifications, [true, false, true]);
+  behind = false;
+  assert((await run("unused transient refusal")).ok);
+  assertEquals(notifications, [true, false, true, false]);
+  assertEquals(state.size, 0);
+});
+
+Deno.test("branch-refresh escalation edits its trusted marker comment instead of duplicating it (Issue #4831)", async () => {
+  const calls: string[][] = [];
+  const comments: Array<{ id: number; body: string; author: string }> = [];
+  const gh = async (args: string[]) => {
+    calls.push(args);
+    if (args[0] === "api" && args[1]?.includes("/comments?")) {
+      return JSON.stringify(comments);
+    }
+    if (args[0] === "pr" && args[1] === "comment") {
+      comments.push({
+        id: 1,
+        body: args[args.indexOf("--body") + 1]!,
+        author: "VibeCoderST",
+      });
+      return "https://github.com/org/repo/issues/4833#issuecomment-1";
+    }
+    if (args[0] === "api" && args[1] === "-X") {
+      comments[0]!.body = args.find((arg) => arg.startsWith("body="))!.slice(5);
+      return "";
+    }
+    throw new Error(`unexpected gh args: ${args.join(" ")}`);
+  };
+  const event = {
+    repo: "org/repo",
+    prNumber: 4833,
+    entry: {
+      reason: "mergeability-unknown" as const,
+      streak: 2,
+      lastSeenAtMs: 1,
+      notified: true,
+    },
+    active: true,
+  };
+  const trusted = (login: string) => login === "VibeCoderST";
+
+  await notifyBranchRefreshRefusal(event, gh, trusted);
+  await notifyBranchRefreshRefusal(event, gh, trusted);
+  await notifyBranchRefreshRefusal({ ...event, active: false }, gh, trusted);
+
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]!.author, "VibeCoderST");
+  assert(comments[0]!.body.includes("Branch refresh recovered"));
+  assertEquals(calls.filter((args) => args[0] === "pr").length, 1);
+  assertEquals(
+    calls.filter((args) => args[0] === "api" && args[1] === "-X").length,
+    2,
+  );
 });
 
 Deno.test("an armed, current PR gets no update call and is merge-attempted as usual", async () => {

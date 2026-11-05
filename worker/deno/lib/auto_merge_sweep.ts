@@ -44,11 +44,11 @@ import {
 } from "./pr_auto_merge.ts";
 import {
   BRANCH_REFRESH_REFUSAL_THRESHOLD,
+  type BranchRefreshRefusalEntry,
+  type BranchRefreshRefusalState,
   classifyTransientBranchRefreshRefusal,
   clearBranchRefreshRefusal,
   recordBranchRefreshRefusal,
-  type BranchRefreshRefusalEntry,
-  type BranchRefreshRefusalState,
 } from "./branch_refresh_refusal_streak.ts";
 
 /** One open PR the sweep may act on. */
@@ -474,6 +474,10 @@ export async function sweepAutoMerge(
               if (!reason || !branchRefreshRefusals) {
                 await clearRefusal(repo, pr.number);
               } else {
+                const prior = refusalState.get(`${repo}#${pr.number}`);
+                if (prior?.notified && prior.reason !== reason) {
+                  await clearRefusal(repo, pr.number);
+                }
                 const entry = recordBranchRefreshRefusal(
                   refusalState,
                   repo,
@@ -494,7 +498,12 @@ export async function sweepAutoMerge(
                     entry.notified = true;
                     logger.error(
                       "Fleet health: repeated transient branch-refresh refusal",
-                      { repo, prNumber: pr.number, reason, streak: entry.streak },
+                      {
+                        repo,
+                        prNumber: pr.number,
+                        reason,
+                        streak: entry.streak,
+                      },
                     );
                   } catch (err) {
                     logger.warn(

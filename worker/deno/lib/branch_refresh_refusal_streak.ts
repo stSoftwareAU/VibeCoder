@@ -1,6 +1,10 @@
 /** Persisted consecutive transient branch-refresh refusals (Issue #4831). */
 
 import { atomicWrite } from "./file_utils.ts";
+import {
+  fetchMarkerComments,
+  updateIssueComment,
+} from "./marker_comment_pages.ts";
 
 export const BRANCH_REFRESH_REFUSAL_FILE = ".branch_refresh_refusals_v1";
 export const BRANCH_REFRESH_REFUSAL_MARKER =
@@ -19,7 +23,54 @@ export interface BranchRefreshRefusalEntry {
   notified: boolean;
 }
 
+export interface BranchRefreshRefusalEvent {
+  repo: string;
+  prNumber: number;
+  entry: BranchRefreshRefusalEntry;
+  active: boolean;
+}
+
 export type BranchRefreshRefusalState = Map<string, BranchRefreshRefusalEntry>;
+
+/** Post or update the single trusted diagnostic comment for a PR. */
+export async function notifyBranchRefreshRefusal(
+  event: BranchRefreshRefusalEvent,
+  gh: (args: string[]) => Promise<string>,
+  isTrustedAuthor: (login: string) => boolean,
+): Promise<void> {
+  const { repo, prNumber, entry, active } = event;
+  const marker =
+    `${BRANCH_REFRESH_REFUSAL_MARKER} repo="${repo}" pr="${prNumber}" -->`;
+  const reason = entry.reason === "mergeability-unknown"
+    ? "GitHub has not finished calculating mergeability"
+    : "GitHub's test-merge parents still lag the PR head or base";
+  const body = active
+    ? `${marker}\n### Branch refresh is still waiting\n\nThe strict-base branch refresh has been refused on ${entry.streak} consecutive passes because ${reason}. The worker will keep retrying it.\n`
+    : `${marker}\n### Branch refresh recovered\n\nThe strict-base branch refresh is no longer refused for ${reason}; automatic recovery continues.\n`;
+  const comments = await fetchMarkerComments(
+    repo,
+    prNumber,
+    BRANCH_REFRESH_REFUSAL_MARKER,
+    gh,
+  );
+  const own = comments.find((comment) =>
+    comment.body.startsWith(marker) && typeof comment.author === "string" &&
+    isTrustedAuthor(comment.author)
+  );
+  if (own) {
+    await updateIssueComment(repo, own.id, body, gh);
+  } else {
+    await gh([
+      "pr",
+      "comment",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      body,
+    ]);
+  }
+}
 
 export interface BranchRefreshRefusalIo {
   readTextFile(path: string): Promise<string>;
@@ -34,7 +85,10 @@ const productionIo: BranchRefreshRefusalIo = {
   },
 };
 
-export function branchRefreshRefusalKey(repo: string, prNumber: number): string {
+export function branchRefreshRefusalKey(
+  repo: string,
+  prNumber: number,
+): string {
   return `${repo}#${prNumber}`;
 }
 
@@ -44,7 +98,9 @@ export function classifyTransientBranchRefreshRefusal(
   if (message.includes("PR mergeability is still UNKNOWN")) {
     return "mergeability-unknown";
   }
-  if (message.includes("PR test merge parents do not match its head and base")) {
+  if (
+    message.includes("PR test merge parents do not match its head and base")
+  ) {
     return "test-merge-parents-stale";
   }
   return undefined;
