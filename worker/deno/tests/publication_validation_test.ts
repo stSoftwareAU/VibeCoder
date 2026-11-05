@@ -649,6 +649,52 @@ Deno.test({
   },
 });
 
+// Issue #4829: a failing test that quotes "command not found" inside Deno's
+// captured output block is a failed verdict. Only a shell's own report makes
+// the gate unavailable.
+Deno.test(
+  'the real quality gate: a failing gate whose output quotes "command not found" is a failed verdict, not unavailable (Issue #4829)',
+  async (t) => {
+    await t.step("the quoted text alone is failed", async () => {
+      const quotingScript = [
+        "#!/bin/sh",
+        "printf '%s\\n' '------- output -------' 'foo: command not found' '----- output end -----' 'launcher test ... ok (1ms)' 'other test ... FAILED (1ms)'",
+        "exit 1",
+        "",
+      ].join("\n");
+      await withRepo({ "quality.sh": quotingScript }, async (dir) => {
+        const v = expectStatus(
+          await validateRepositoryForPublication(
+            { cwd: dir, repo: REPO },
+            { runGate: realGate },
+          ),
+          "failed",
+        );
+        assertStringIncludes(v.output, "other test ... FAILED");
+      });
+    });
+
+    await t.step("a real missing command is still unavailable", async () => {
+      await withRepo(
+        {
+          "quality.sh":
+            "#!/bin/bash\nPATH=/nonexistent\ndefinitely-missing-tool\n",
+        },
+        async (dir) => {
+          const v = expectStatus(
+            await validateRepositoryForPublication(
+              { cwd: dir, repo: REPO },
+              { runGate: realGate },
+            ),
+            "unavailable",
+          );
+          assertStringIncludes(v.reason, "failed_missing_command");
+        },
+      );
+    });
+  },
+);
+
 Deno.test("a gate killed by its timeout is failed, whatever its output", async (t) => {
   await withRepo({ "README.md": "hello\n" }, async (dir) => {
     for (const exitCode of [124, 137, 143]) {
