@@ -384,6 +384,11 @@ skipped checks: config integration, checkov).
   probe alongside its mocked checkout and validation. This keeps the request
   assertions independent of the runner's separate-account availability; the
   real probe remains covered by `publication_validation_test.ts`.
+- PR #4826 integration CI repair: the orphan-survival test waits for the
+  background sleep to appear in the process list before registering it. The
+  shell can exit before the child has executed sleep, making an immediate
+  lookup race. The test still requires exactly one process, an orphaned parent,
+  and survival after the probe sweep. No mirrored rule was found.
 - Repository review checklist `capsec-safe-execution` ("Untrusted text reaches a
   process or query only as data, through the platform's argument list or
   parameter binding. A wrapper that is never called, or a check that rejects

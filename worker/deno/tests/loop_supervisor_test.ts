@@ -1504,7 +1504,12 @@ Deno.test({
         stdout: "null",
         stderr: "null",
       }).output();
-      pids = await pgrepFull(marker);
+      // The shell can exit before its background child has exec'd sleep.
+      for (let i = 0; i < 100; i++) {
+        pids = await pgrepFull(marker);
+        if (pids.length > 0) break;
+        await delay(100);
+      }
       assertEquals(pids.length, 1);
       const pid = pids[0];
       assert(pid !== undefined);
