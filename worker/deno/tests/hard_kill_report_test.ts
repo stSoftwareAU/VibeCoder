@@ -1196,8 +1196,8 @@ Deno.test("hardKillLastStep recognises each provider's session and distinguishes
 });
 
 Deno.test("hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)", () => {
-  // Each detail is text another table entry matches; only the agent-progress
-  // check stops the line taking that step's label.
+  // Details include other step patterns and log-like text; progress takes
+  // precedence over both step matching and the phase ticker filter.
   const progress = (detail: string) =>
     `[agent-progress] completion: 12m4s elapsed \u00b7 47 tool calls (last: Bash ${detail}, 8s ago)`;
   for (
@@ -1206,9 +1206,10 @@ Deno.test("hardKillLastStep: an agent-progress line is the agent turn whatever i
       'grep -rn "Pre-PR verifier" docs',
       'grep -rn "Quality gate" docs',
       'grep -rn "3 of 3 carried-over lines" docs',
-      // Noise markers in the detail must not skip the line either.
+      // These details resemble other worker log lines.
       'grep -rn "Status: " docs',
       'grep -rn "[liveness]" docs',
+      // A phase ticker quoted in the detail must not skip the line either.
       'grep -rn "[phase] x: still running" docs',
     ]
   ) {

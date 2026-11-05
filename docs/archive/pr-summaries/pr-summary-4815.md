@@ -135,10 +135,10 @@ flowchart LR
   - `hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)`
     (must-not-fire table: agent-progress lines whose `(last: Bash grep ...)`
     detail names `mutation check`, `Pre-PR verifier`, `Quality gate`,
-    `carried-over lines`, or the noise markers `Status:`, `[liveness]` and
-    `[phase] x: still running`, must give `agent turn`; controls: the same text
-    outside an agent-progress line still matches its own step, and a ticker is
-    still skipped as noise)
+    `carried-over lines`, the log-like text `Status:` and `[liveness]`, or the
+    phase ticker `[phase] x: still running`, must give `agent turn`; controls:
+    a mutation check outside an agent-progress line matches its own step, and a
+    ticker is still skipped as noise)
   - `hardKillLastStep: each table operand names its step from the log shapes the worker writes (PR #4819 review)`
     (one case per operand the other tests did not reach, in the real logger
     shape and after a `Pre-PR verifier released its disposable checkout` line:
@@ -148,7 +148,8 @@ flowchart LR
     whose reason names no other entry so only `gate` matches)
 - Per-operand red checks (PR #4819 review; each operand deleted on its own from
   `STEP_PATTERNS`, `deno test` of `tests/hard_kill_report_test.ts`, then
-  restored): `\bQuality gate\b` → 1 failed (new test); `\[phase\] quality_gate`
+  restored): `\bQuality gate\b` → 2 failed (table operand and provider tests);
+  `\[phase\] quality_gate`
   → 1 failed (new test); `Running <provider> with Ns timeout` (restored to the
   earlier Claude-only literal) → 1 failed
   (`hardKillLastStep recognises each provider's session ...`); mutation `gate` →
@@ -167,8 +168,8 @@ flowchart LR
   Review fix 2: with the `AGENT_PROGRESS_LINE` early return removed, the
   agent-progress test went red at `grep -rn "mutation check" docs`. Review fix
   3: with the agent-progress check moved back below the `STEP_NOISE` skip, the
-  same test went red at `grep -rn "Status: " docs`. Review fix: with the pattern
-  table, body line and occurrence line restored to the earlier commit, the new
+  same test went red at `grep -rn "[phase] x: still running" docs`. Review fix:
+  with the pattern table, body line and occurrence line restored to the earlier commit, the new
   gate-notes test went red at `mutation clean: 7 of 7 mutants killed`, the
   verifier-then-ticker test and the follow-up test went red on the old wording.
 - Edited `worker/deno/tests/run_failure_issue_test.ts`: the hard-kill fixture
@@ -202,7 +203,8 @@ read; the serial test pass of the gate did not run.
 - Corpus run (PR #4819 review): `hardKillLastStep` over every line of the 45
   production worker logs on this host (`~/logs/worker-*.log.gz`, 2026-11-02 to
   2026-11-05), each line as the last log line, 38140 lines. Base has no matcher,
-  so there is no base count: the base branch cannot label a step. Head result:
+  so there is no base count: the base branch cannot label a step. Earlier
+  Claude-only matcher result (not the current head):
   1875 `agent turn` (1363 `[agent-progress]` tickers, 512
   `Running Claude Code ...` lines, including health checks), 262 `quality gate`
   (80 `Quality gate
@@ -247,9 +249,16 @@ read; the serial test pass of the gate did not run.
   announcements and probe sessions after a quality gate. The old Claude-only
   matcher failed this test. Health announcements no longer match; probe sessions
   still count as agent turns because the runner logs the same shape for them and
-  ordinary sessions. A current 30-file host-log sample contains 23 Claude health
-  announcements and 23 matching 30-second session lines; it is not the original
-  45-file corpus.
+  ordinary sessions. A current run over the 30 available files from the same
+  date range (23,139 lines, each classified independently) gives 1,848 agent
+  turns (1,546 progress lines and 302 session lines), 206 quality gates, 114
+  pre-PR verifiers, 90 mutation checks, 62 coverage checks and 20,819 unknown.
+  The 23 health announcements are no longer labelled as agent turns. Their 23
+  associated probe sessions still are: at least 23 false positives if probes
+  are excluded from killed-run steps. There are 50 session lines with a
+  30-second timeout; the line alone cannot distinguish all probes from normal
+  sessions, so the total false-positive count is unknown. This sample is not
+  the original 45-file corpus.
 - TDD rule 3: the obsolete behaviour was skipping liveness and status lines and
   treating any `Running Claude Code` text as a session. Phase tickers are still
   skipped, and provider session starts remain labelled; coverage is
