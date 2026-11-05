@@ -962,19 +962,6 @@ function killQuietly(pids: number[]): void {
   }
 }
 
-/** PIDs whose command line matches `pattern`, as `pgrep -f` reports them. */
-async function pgrepFull(pattern: string): Promise<number[]> {
-  const out = await new Deno.Command("pgrep", {
-    args: ["-f", pattern],
-    stdout: "piped",
-    stderr: "null",
-  }).output();
-  return new TextDecoder().decode(out.stdout)
-    .split("\n")
-    .map((line) => Number(line.trim()))
-    .filter((pid) => Number.isInteger(pid) && pid > 0);
-}
-
 /** The parent PID `ps` reports for `pid`, or undefined once it is gone. */
 async function parentPidOf(pid: number): Promise<number | undefined> {
   const out = await new Deno.Command("ps", {
@@ -1488,32 +1475,39 @@ Deno.test({
   async fn() {
     const harness = await setupHarness({ runStub: LONG_RUN_STUB });
     const stateDir = join(harness.tmpDir, ".vibe-coder");
-    const marker = join(harness.tmpDir, "unrelated-sleep");
-    await Deno.symlink("/bin/sleep", marker);
+    // A plain `sleep`: a symlink under another name dies at once where `sleep`
+    // is a multi-call binary that dispatches on argv[0] (uutils coreutils).
+    const command = "sleep 300";
     let pids: number[] = [];
     let child: Deno.ChildProcess | undefined;
     try {
-      await new Deno.Command("bash", {
+      const result = await new Deno.Command("bash", {
         args: [
           "-c",
-          'cd "$1"; nohup "$2" 300 >/dev/null 2>&1 &',
+          'cd "$1"; nohup sleep 300 >/dev/null 2>&1 & echo $!',
           "bash",
           harness.tmpDir,
-          marker,
         ],
-        stdout: "null",
+        stdout: "piped",
         stderr: "null",
       }).output();
-      // The shell can exit before its background child has exec'd sleep.
-      for (let i = 0; i < 100; i++) {
-        pids = await pgrepFull(marker);
-        if (pids.length > 0) break;
-        await delay(100);
+      const pid = Number(new TextDecoder().decode(result.stdout).trim());
+      assert(result.success && Number.isInteger(pid) && pid > 0);
+      pids = [pid];
+      // The shell may exit before nohup has exec'd sleep: wait for the final
+      // command line and for re-parenting to init; no pgrep snapshot.
+      let settled = false;
+      for (let i = 0; i < 100 && !settled; i++) {
+        settled = (await getCommand(pid)) === command &&
+          await parentPidOf(pid) === 1;
+        if (!settled) await delay(100);
       }
-      assertEquals(pids.length, 1);
-      const pid = pids[0];
-      assert(pid !== undefined);
-      assertEquals(await parentPidOf(pid), 1);
+      assert(
+        settled,
+        `orphan ${pid} never became "${command}" under init; command=${
+          JSON.stringify(await getCommand(pid))
+        } ppid=${await parentPidOf(pid)}`,
+      );
       await registerProbe(stateDir, pid, await Deno.realPath(harness.tmpDir));
       child = spawnLoopLogging(harness.tmpDir, { VIBE_STATE_DIR: stateDir });
       await delay(3000);

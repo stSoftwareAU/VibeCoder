@@ -99,6 +99,10 @@ coverage ledger `docs/audits/lib-sweep-coverage/top-up-4625.json`.
 
 ## Test Plan
 
+- Merge resolution: main replaces the orphan test's process-name snapshot with
+  the shell's returned PID and waits for exec and re-parenting. The obsolete
+  lookup is removed; the unrelated orphan must still survive, covered by
+  `worker/deno/tests/loop_supervisor_test.ts::loop.sh #4568 - a registered orphan with a different command survives`.
 - CI repair: the review-dismissal scenario now invokes the separate verifier
   hook passed to `commitAndPushPending`, rather than the publication guard. The
   existing verifier rejection, recovery and body-sync assertions remain covered

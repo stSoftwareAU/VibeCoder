@@ -14,6 +14,11 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import type { HardKillEvidence } from "../lib/hard_kill_evidence.ts";
+import type { CoverageCarryOverResult } from "../lib/coverage_carryover_gate.ts";
+import { evaluateCoverageCarryOverGate } from "../lib/coverage_carryover_gate.ts";
+import { agentProviderById, agentProviderIds } from "../lib/agent_provider.ts";
+import type { MutationCheckResult } from "../lib/mutation_gate.ts";
+import { evaluateMutationGate } from "../lib/mutation_gate.ts";
 import { HARD_KILL_EVIDENCE_VERSION } from "../lib/hard_kill_evidence.ts";
 import {
   defaultHardKillSeams,
@@ -22,6 +27,7 @@ import {
   formatHardKillTitle,
   HARD_KILL_ARCHIVE_DIR,
   HARD_KILL_FAILURE_CLASS,
+  hardKillLastStep,
   type HardKillSeams,
   hardKillSignature,
   hardKillSource,
@@ -1005,6 +1011,317 @@ Deno.test("hardKillTerminalRun omits the run id when the evidence says unknown",
   const ev = makeEvidence({ runId: "unknown" });
   const run = hardKillTerminalRun(ev, hardKillSignature(ev));
   assertFalse("runId" in run);
+});
+
+Deno.test("hardKillLastStep takes the mutation check from the tail and skips the ticker (Issue #4815)", () => {
+  // The last line is a ticker that itself matches a table entry, so only the
+  // ticker filter stops it from being reported as the last step.
+  const ev = makeEvidence({
+    lastLogLine: "[phase] quality_gate (x): still running · 5m0s elapsed",
+  }, {
+    workerLogTail: [
+      "[phase] setup (x): ok",
+      "Pre-PR verifier released its disposable checkout",
+      "mutation budget exhausted after 7 of 7 mutants (300 s)",
+      "[phase] completion (x): still running · 5m0s elapsed",
+    ].join("\n"),
+  });
+  assertEquals(hardKillLastStep(ev), "mutation check");
+  assertStringIncludes(
+    formatHardKillBody(ev, hardKillSignature(ev)),
+    "**Last step logged:** `mutation check`",
+  );
+});
+
+/** The note the gate logs for a mutation result, from the real gate. */
+function mutationNote(result: MutationCheckResult): string {
+  return evaluateMutationGate(result, "").note;
+}
+
+/** The note the gate logs for a coverage result, from the real gate. */
+function coverageNote(result: CoverageCarryOverResult): string {
+  return evaluateCoverageCarryOverGate(result, "").note;
+}
+
+Deno.test("hardKillLastStep names the step for every note the two gates log (Issue #4815 review)", () => {
+  const mutation: Record<string, MutationCheckResult> = {
+    clean: {
+      kind: "completed",
+      language: "deno",
+      survivors: [],
+      killed: 7,
+      total: 7,
+    },
+    capped: {
+      kind: "budget_exhausted",
+      language: "deno",
+      survivors: [],
+      killed: 3,
+      tested: 5,
+      total: 9,
+      budgetSeconds: 300,
+      limit: "mutant_cap",
+    },
+    budget: {
+      kind: "budget_exhausted",
+      language: "deno",
+      survivors: [],
+      killed: 3,
+      tested: 5,
+      total: 9,
+      budgetSeconds: 300,
+    },
+    notApplicable: { kind: "not_applicable", reason: "no Deno project" },
+  };
+  const coverage: Record<string, CoverageCarryOverResult> = {
+    clean: {
+      kind: "completed",
+      changedTests: ["a_test.ts"],
+      carried: 3,
+      uncovered: [],
+    },
+    budget: {
+      kind: "budget_exhausted",
+      changedTests: ["a_test.ts"],
+      budgetSeconds: 600,
+    },
+    notApplicable: { kind: "not_applicable", reason: "no tests changed" },
+  };
+  const cases: [string, string, string][] = [
+    ...Object.entries(mutation).map(([k, r]): [string, string, string] => [
+      `mutation ${k}`,
+      mutationNote(r),
+      "mutation check",
+    ]),
+    ...Object.entries(coverage).map(([k, r]): [string, string, string] => [
+      `coverage ${k}`,
+      coverageNote(r),
+      "coverage carry-over check",
+    ]),
+  ];
+  for (const [name, note, label] of cases) {
+    assert(note !== "", `${name}: the gate logs a note`);
+    // The verifier line precedes it, as in a real run, so a miss falls back
+    // to "pre-PR verifier" and the test goes red.
+    const ev = makeEvidence({ lastLogLine: note }, {
+      workerLogTail: [
+        "Pre-PR verifier released its disposable checkout",
+        note,
+        "[phase] completion (x): still running · 5m0s elapsed",
+      ].join("\n"),
+    });
+    assertEquals(hardKillLastStep(ev), label, `${name}: ${note}`);
+  }
+});
+
+Deno.test("hardKillLastStep: each table operand names its step from the log shapes the worker writes (PR #4819 review)", () => {
+  // Shapes copied from the worker log (`logger.info` prefix, then message).
+  const logged = (message: string) =>
+    `[2026-11-03 05:15:07Z] INFO: [s1 stSoftwareAU/VibeCoder#4737] ${message} host=vibe-coder-11556:74`;
+  const cases: [string, string, string][] = [
+    [
+      "quality gate: 'Quality gate' operand",
+      "quality gate",
+      logged("Quality gate passed attempt=1"),
+    ],
+    [
+      "quality gate: '[phase] quality_gate' operand",
+      "quality gate",
+      logged("[phase] quality_gate (stSoftwareAU/VibeCoder#4737): started"),
+    ],
+    [
+      "agent turn: 'Running Claude Code' operand",
+      "agent turn",
+      logged(
+        "Running Claude Code with 3600s timeout (60s grace period) claude_timeout=3600 claude_max_turns=100...",
+      ),
+    ],
+    [
+      // The reason names no other table entry, so only 'gate' matches.
+      "mutation check: 'gate' operand",
+      "mutation check",
+      logged(
+        "Mutation gate reported findings reason=1 mutant of changed lines survived (no test went red)",
+      ),
+    ],
+  ];
+  for (const [name, label, line] of cases) {
+    // The verifier line precedes it, as in a real run, so a miss falls back
+    // to "pre-PR verifier" and the test goes red.
+    const ev = makeEvidence({ lastLogLine: line }, {
+      workerLogTail: [
+        logged("Pre-PR verifier released its disposable checkout"),
+        line,
+      ].join("\n"),
+    });
+    assertEquals(hardKillLastStep(ev), label, name);
+  }
+});
+
+Deno.test("hardKillLastStep recognises each provider's session and distinguishes the health announcement", () => {
+  for (const id of agentProviderIds()) {
+    const provider = agentProviderById(id);
+    assert(provider);
+    const earlier = "Quality gate passed attempt=1";
+    const session =
+      `Running ${provider.displayName} with 3600s timeout (60s grace period)...`;
+    assertEquals(
+      hardKillLastStep(makeEvidence({ lastLogLine: session }, {
+        workerLogTail: earlier,
+      })),
+      "agent turn",
+      id,
+    );
+    const announcement =
+      `Running ${provider.displayName} health check (30s timeout)...`;
+    assertEquals(
+      hardKillLastStep(makeEvidence({ lastLogLine: announcement }, {
+        workerLogTail: earlier,
+      })),
+      "quality gate",
+      id,
+    );
+    // A health probe invokes the same runner and its session line is identical
+    // in shape to a regular turn; the log alone cannot distinguish them.
+    const probeSession =
+      `Running ${provider.displayName} with 30s timeout (5s grace period)...`;
+    assertEquals(
+      hardKillLastStep(makeEvidence({ lastLogLine: probeSession }, {
+        workerLogTail: earlier,
+      })),
+      "agent turn",
+      id,
+    );
+  }
+});
+
+Deno.test("hardKillLastStep: an agent-progress line is the agent turn whatever its tool detail names (Issue #4815 review)", () => {
+  // Details include other step patterns and log-like text; progress takes
+  // precedence over both step matching and the phase ticker filter.
+  const progress = (detail: string) =>
+    `[agent-progress] completion: 12m4s elapsed \u00b7 47 tool calls (last: Bash ${detail}, 8s ago)`;
+  for (
+    const detail of [
+      'grep -rn "mutation check" docs',
+      'grep -rn "Pre-PR verifier" docs',
+      'grep -rn "Quality gate" docs',
+      'grep -rn "3 of 3 carried-over lines" docs',
+      // These details resemble other worker log lines.
+      'grep -rn "Status: " docs',
+      'grep -rn "[liveness]" docs',
+      // A phase ticker quoted in the detail must not skip the line either.
+      'grep -rn "[phase] x: still running" docs',
+    ]
+  ) {
+    const line = progress(detail);
+    const ev = makeEvidence({ lastLogLine: line }, {
+      workerLogTail: ["Pre-PR verifier reported findings", line].join("\n"),
+    });
+    assertEquals(hardKillLastStep(ev), "agent turn", detail);
+  }
+  // Control: the same text outside an agent-progress line still matches its
+  // own step, so the test above is not passing on a dead table entry.
+  const plain = makeEvidence({ lastLogLine: "mutation check ran" }, {
+    workerLogTail: "",
+  });
+  assertEquals(hardKillLastStep(plain), "mutation check");
+  // A ticker whose detail names a step is still skipped as noise first.
+  const ticker = makeEvidence({
+    lastLogLine: "[phase] quality_gate (x): still running \u00b7 5m0s elapsed",
+  }, { workerLogTail: "Pre-PR verifier released its disposable checkout" });
+  assertEquals(hardKillLastStep(ticker), "pre-PR verifier");
+});
+
+Deno.test("hardKillLastStep after the verifier's checkout line is the verifier: the wedge is in or after it (Issue #4815 review)", () => {
+  const ev = makeEvidence({
+    lastLogLine: "[phase] completion (x): still running · 5m0s elapsed",
+  }, {
+    workerLogTail: [
+      "Pre-PR verifier released its disposable checkout",
+      "[phase] completion (x): still running · 5m0s elapsed",
+    ].join("\n"),
+  });
+  assertEquals(hardKillLastStep(ev), "pre-PR verifier");
+  const body = formatHardKillBody(ev, hardKillSignature(ev));
+  assertStringIncludes(
+    body,
+    "**Last step logged:** `pre-PR verifier` (the wedge is in or after this step)",
+  );
+});
+
+Deno.test("hardKillLastStep: the later tail line wins over an earlier one (Issue #4815)", () => {
+  const ev = makeEvidence({ lastLogLine: "no step here" }, {
+    workerLogTail:
+      "mutation budget exhausted after 7 of 7 mutants (300 s)\nPre-PR verifier reported findings",
+  });
+  assertEquals(hardKillLastStep(ev), "pre-PR verifier");
+});
+
+Deno.test("hardKillLastStep is unknown when no table entry matches or the tail is empty (Issue #4815)", () => {
+  const none = makeEvidence({ lastLogLine: "nothing" }, {
+    workerLogTail: "also nothing",
+  });
+  assertEquals(hardKillLastStep(none), "unknown");
+  assertStringIncludes(
+    formatHardKillBody(none, hardKillSignature(none)),
+    "**Last step logged:** `unknown`",
+  );
+
+  const empty = makeEvidence({ lastLogLine: "" }, { workerLogTail: "" });
+  assertEquals(hardKillLastStep(empty), "unknown");
+});
+
+Deno.test("hardKillLastStep posts the fixed label, never the private log text (Issue #4815)", () => {
+  const ev = makeEvidence({
+    lastLogLine: "Pre-PR verifier for private-repo-title-XYZ",
+  });
+  const body = formatHardKillBody(ev, hardKillSignature(ev));
+  assertFalse(
+    body.includes("private-repo-title-XYZ"),
+    "the matched log text is not posted",
+  );
+  assertStringIncludes(body, "**Last step logged:** `pre-PR verifier`");
+});
+
+Deno.test("hardKillLastStep returns promptly on 64 KiB lines (Issue #4815)", () => {
+  // A bare "mutation " run matches no table entry, so it is unknown; the
+  // table needs "mutation check", "budget" or "gate" after the word.
+  const allA = makeEvidence({ lastLogLine: "a".repeat(64 * 1024) }, {
+    workerLogTail: "",
+  });
+  assertEquals(hardKillLastStep(allA), "unknown");
+
+  const bare = makeEvidence({
+    lastLogLine: "mutation ".repeat(7282),
+  }, { workerLogTail: "" });
+  assertEquals(hardKillLastStep(bare), "unknown");
+
+  // A match inside the 2000-character cap still counts on a 64 KiB line.
+  const leading = makeEvidence({
+    lastLogLine: "mutation check " + "mutation ".repeat(7282),
+  }, { workerLogTail: "" });
+  assertEquals(hardKillLastStep(leading), "mutation check");
+});
+
+Deno.test("a repeat kill's follow-up occurrence line names its last step (Issue #4815)", async () => {
+  const fs = fakeFs({
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4255", 1761355900)]: json(
+      makeEvidence({ container: "vibe-coder-s1-4255" }, {
+        workerLogTail:
+          `mutation budget exhausted after 7 of 7 mutants (300 s)\n${LAST_LOG_LINE}`,
+      }),
+    ),
+  });
+  const gh = fakeGh();
+  await report(fs, gh);
+
+  assertEquals(gh.creates.length, 1);
+  assertEquals(gh.commentCalls.length, 1, "the repeat comments");
+  assertStringIncludes(
+    argAfter(gh.commentCalls[0]!, "--body"),
+    "last step logged `mutation check`",
+  );
 });
 
 function assertThrowsWith(fn: () => unknown, fragment: string): void {
