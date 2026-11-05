@@ -134,23 +134,27 @@ coverage ledger `docs/audits/lib-sweep-coverage/top-up-4625.json`.
   `update_mode_docs_test.ts` (the three docs-pin tests are unchanged from
   `main`): passed.
 - `deno fmt --check` and `deno lint` on the changed `.ts` files: passed.
-- `./quality.sh` on this head earlier failed only the parallel Deno test pass,
-  on two cargo-fmt tests that need a configured `rustup` default (the host had
-  none). `worker/deno/tests/completion_phase_repo_formatters_test.ts` (8 tests
-  at head): on this host's re-run 6 passed and the same 2 cargo-fmt tests failed
-  for want of a `rustup` default. This PR changes neither `repo_formatters.ts`
-  nor that test.
+- `./quality.sh` on an earlier head failed only the parallel Deno test pass, on
+  two cargo-fmt tests that need a configured `rustup` default (that host had
+  none). They are in `worker/deno/tests/completion_phase_repo_formatters_test.ts`
+  (8 tests at head); re-run on this head, all of them pass. This PR changes
+  neither `repo_formatters.ts` nor that test.
 - Mutation check (review round 3): with the baseline green, the survivors were
   `completion_phase.ts` (the HEAD read, the passed-head cache and the recovery
   guard's options) and `fleet_pr_babysitter.ts` (`requireSeparateAccount`).
 - `worker/deno/tests/completion_phase_publication_validation_4625_test.ts` (19
-  tests at head, 19 passed) now pins each: the HEAD read's cwd, exit code and
-  output, reuse of a passed head, the guard's `cwd`, `repo`, `repoConfigs`,
-  `branchName` and `validate`, and that a guard block ends the run without a
-  repair turn. Each was applied by hand and turned a test red.
-- `worker/deno/tests/fleet_pr_babysitter_validation_test.ts` (1 test at head, 1
-  passed) already turned the `requireSeparateAccount` mutants red; its scenarios
-  run in a child `deno test` process the mutation check does not see.
+  tests at head) now pins each: the HEAD read's cwd, exit code and output, reuse
+  of a passed head, the guard's `cwd`, `repo`, `repoConfigs`, `branchName` and
+  `validate`, and that a guard block ends the run without a repair turn. Each
+  was applied by hand and turned a test red.
+- `worker/deno/tests/fleet_pr_babysitter_validation_test.ts` (1 test at head)
+  already turned the `requireSeparateAccount` mutants red; its scenarios run in
+  a child `deno test` process the mutation check does not see.
+- `worker/deno/tests/fixtures/fleet_pr_babysitter_validation_scenarios.ts:614`
+  exempt (untestable): the line is itself a test assertion (the `baseRef`
+  check); deleting an assertion cannot turn any test red, and the fixture runs
+  in a child process the mutation check does not see. Changing the
+  production `baseRef` value turns that scenario red.
 
 Not done: the agent's own pre-push hook still checks changed files only, so a
 commit the agent pushes itself is judged by the full gate after it has left the
