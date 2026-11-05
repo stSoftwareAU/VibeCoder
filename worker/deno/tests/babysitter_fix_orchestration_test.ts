@@ -1485,6 +1485,9 @@ Deno.test("fix asks for the repository gate on the committed head as a separate 
     const expected = (await loadConfig(configPath)).repoConfig;
     assertEquals(expected?.[REPO]?.qualityCommand, "./check.sh");
     const requests: Array<Parameters<NonNullable<FixDeps["validate"]>>[0]> = [];
+    // The checkout and validation are mocked, so the host capability probe
+    // must not depend on whether this test runner has a separate account.
+    h.deps.probeCapability = () => Promise.resolve(undefined);
     h.deps.validate = (request) => {
       requests.push(request);
       return Promise.resolve({ status: "passed", head: PUSHED, gate: "ran" });

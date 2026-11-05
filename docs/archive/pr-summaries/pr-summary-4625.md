@@ -380,6 +380,10 @@ skipped checks: config integration, checkov).
   `...a paused failed-CI repair is handed off as a handoff, not as the auto-fix cap`
   pins `request.pause === undefined` (1968). Each of the five listed mutations
   was applied by hand and turned the file's tests red.
+- PR #4826 CI repair: the in-process gate-request test now stubs the capability
+  probe alongside its mocked checkout and validation. This keeps the request
+  assertions independent of the runner's separate-account availability; the
+  real probe remains covered by `publication_validation_test.ts`.
 - Repository review checklist `capsec-safe-execution` ("Untrusted text reaches a
   process or query only as data, through the platform's argument list or
   parameter binding. A wrapper that is never called, or a check that rejects
