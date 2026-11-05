@@ -1496,6 +1496,70 @@ Deno.test("slot pool - a stop line with eligible work never claims there was non
   assertStringIncludes(stops[0]!, "considered=36 eligible=3 skipped=31");
 });
 
+Deno.test("slot pool - a slot waits out a lane lease that hid a repository, then claims its issue (Issue #4823)", async () => {
+  const registry = new InFlightRepoRegistry();
+  registry.tryAcquire("o/leased", 4129, "m1", { maintenance: true });
+  const config = createDefaultRunCoreConfig();
+  let now = 0;
+  const logs: string[] = [];
+  const claimed: number[] = [];
+  const queue = issueQueue([issue("o/leased", 7)]);
+  let scans = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => logs.push(m),
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    inFlightRepos: registry,
+    findNextIssue: (options) => {
+      const found = queue(options);
+      // The lane finishes only after both slots' scans found nothing.
+      if (++scans === 2) registry.releaseRepoLease("o/leased");
+      return found;
+    },
+    processIssue: (i) => {
+      claimed.push(i.issueNumber);
+      now += config.runDurationSeconds * 1000 + 1;
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(claimed, [7], `logs: ${logs.join(" | ")}`);
+  assertStringIncludes(
+    logs.join(" | "),
+    "while the maintenance lane holds 1 repo(s)",
+  );
+});
+
+Deno.test("slot pool - with no lane lease an empty scan still retires the slot at once (Issue #213)", async () => {
+  const cycleMs = createDefaultRunCoreConfig().runDurationSeconds * 1000;
+  let now = 0;
+  let scans = 0;
+  const logs: string[] = [];
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => logs.push(m),
+    inFlightRepos: new InFlightRepoRegistry(),
+    findNextIssue: () => {
+      // Ends the cycle after this pool, so only one pool's scans are counted.
+      if (++scans >= 2) now = cycleMs + 1;
+      return Promise.resolve({ ok: true as const, value: null });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(scans, 2, "one scan per slot, none repeated");
+  assertEquals(
+    logs.filter((m) => m.includes("stop reason=no-work")).length,
+    2,
+  );
+});
+
 // Live incident (#2403/#2404): every eligible issue was refused in the claim
 // path by stream affinity, the issue went on cooldown, and the next scan found
 // "10 eligible, none claimable" — blaming needs-human and pr-blocked.
