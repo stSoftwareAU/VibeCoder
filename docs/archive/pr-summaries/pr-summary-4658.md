@@ -270,10 +270,12 @@ grepped for the new audit kinds: `repair`, `implementation`, `merge`.
     Each was flipped alone (runId operand removed; attempt operand forced false)
     and a test went red. The inventory-undefined branch is covered by
     `collect - readable discovery events without an expected inventory leave rollout discovery unknown`;
-    the withdrawal-guard branches by `collect - a journalled disarm cannot
-    account for a GitHub merge` and `collect - only a successful disarm at or
-    after a direct merge withdraws it` (the latter covers the guard's outcome
-    and ordering operands), all in
+    the withdrawal-guard branches by
+    `collect - a journalled disarm cannot
+    account for a GitHub merge` and
+    `collect - only a successful disarm at or
+    after a direct merge withdraws it`
+    (the latter covers the guard's outcome and ordering operands), all in
     `worker/deno/tests/pr_completion_snapshot_test.ts`.
 
 - Review regression evidence: two delivered PRs share a five-call CI budget; the
