@@ -302,6 +302,171 @@ Deno.test("diagnosticErrorLine - bounds a very long line", () => {
   assert(diagnosticErrorLine(line).length <= 400);
 });
 
+Deno.test("diagnosticErrorLine - Git checkout's Aborting trailer preserves its cause", async () => {
+  await withWorkDir(async (workDir) => {
+    const repo = `${workDir}/repo`;
+    await Deno.mkdir(repo);
+    const runGit = async (args: string[]) => {
+      const result = await new Deno.Command("git", {
+        args,
+        cwd: repo,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    };
+
+    await runGit(["init", "-b", "main"]);
+    await runGit(["config", "user.name", "Test"]);
+    await runGit(["config", "user.email", "test@example.invalid"]);
+    await Deno.writeTextFile(`${repo}/tracked.txt`, "base\n");
+    await runGit(["add", "tracked.txt"]);
+    await runGit(["commit", "-m", "initial"]);
+    await runGit(["checkout", "-b", "other"]);
+    await Deno.writeTextFile(`${repo}/tracked.txt`, "other\n");
+    await runGit(["commit", "-am", "other"]);
+    await runGit(["checkout", "main"]);
+    await Deno.writeTextFile(`${repo}/tracked.txt`, "local edit\n");
+
+    const refusal = await new Deno.Command("git", {
+      args: ["checkout", "-B", "feature", "other"],
+      cwd: repo,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(refusal.code, 1);
+    const stderr = new TextDecoder().decode(refusal.stderr);
+    assertStringIncludes(stderr, "Your local changes");
+    assertStringIncludes(stderr, "Aborting");
+
+    const detail = diagnosticErrorLine(stderr);
+    assertStringIncludes(detail, "Your local changes");
+    assertEquals(
+      detail.includes("Aborting"),
+      false,
+      "the generic trailer is not diagnostic",
+    );
+  });
+});
+
+Deno.test("diagnosticErrorLine - a checkout refused over untracked files keeps its cause", async () => {
+  await withWorkDir(async (workDir) => {
+    const repo = `${workDir}/repo`;
+    await Deno.mkdir(repo);
+    const runGit = async (args: string[], expectedCode = 0) => {
+      const result = await new Deno.Command("git", {
+        args,
+        cwd: repo,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const stderr = new TextDecoder().decode(result.stderr);
+      assertEquals(result.code, expectedCode, stderr);
+      return stderr;
+    };
+
+    await runGit(["init", "-b", "main"]);
+    await runGit(["config", "user.name", "Test"]);
+    await runGit(["config", "user.email", "test@example.invalid"]);
+    await Deno.writeTextFile(`${repo}/base.txt`, "base\n");
+    await runGit(["add", "base.txt"]);
+    await runGit(["commit", "-m", "initial"]);
+    await runGit(["checkout", "-b", "other"]);
+    await Deno.writeTextFile(`${repo}/newfile.txt`, "other\n");
+    await runGit(["add", "newfile.txt"]);
+    await runGit(["commit", "-m", "other"]);
+    await runGit(["checkout", "main"]);
+    await Deno.writeTextFile(`${repo}/newfile.txt`, "untracked\n");
+
+    const stderr = await runGit(["checkout", "-B", "feature", "other"], 1);
+    assertStringIncludes(stderr, "untracked working tree files would be");
+    assertStringIncludes(stderr, "Please move or remove them");
+    assertStringIncludes(stderr, "Aborting");
+
+    const detail = diagnosticErrorLine(stderr);
+    assertStringIncludes(
+      detail,
+      "untracked working tree files would be overwritten",
+    );
+    assertEquals(detail.includes("Please move or remove"), false);
+    assertEquals(detail.includes("Aborting"), false);
+  });
+});
+
+Deno.test("diagnosticErrorLine - a refusal listing more paths than the window keeps its cause (PR #4816 review)", async () => {
+  await withWorkDir(async (workDir) => {
+    const repo = `${workDir}/repo`;
+    await Deno.mkdir(repo);
+    const runGit = async (args: string[], expectedCode = 0) => {
+      const result = await new Deno.Command("git", {
+        args,
+        cwd: repo,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const stderr = new TextDecoder().decode(result.stderr);
+      assertEquals(result.code, expectedCode, stderr);
+      return stderr;
+    };
+    const names = Array.from({ length: 30 }, (_, i) => `f${i}.txt`);
+
+    await runGit(["init", "-b", "main"]);
+    await runGit(["config", "user.name", "Test"]);
+    await runGit(["config", "user.email", "test@example.invalid"]);
+    for (const name of names) {
+      await Deno.writeTextFile(`${repo}/${name}`, "base\n");
+    }
+    await runGit(["add", "."]);
+    await runGit(["commit", "-m", "initial"]);
+    await runGit(["checkout", "-b", "other"]);
+    for (const name of names) {
+      await Deno.writeTextFile(`${repo}/${name}`, "other\n");
+    }
+    await runGit(["commit", "-am", "other"]);
+    await runGit(["checkout", "main"]);
+    for (const name of names) {
+      await Deno.writeTextFile(`${repo}/${name}`, "local\n");
+    }
+
+    const stderr = await runGit(["checkout", "-B", "feature", "other"], 1);
+    assertStringIncludes(stderr, "would be overwritten by checkout");
+    assertStringIncludes(stderr, "Aborting");
+    assertEquals(
+      stderr.split("\n").filter((l) => l.startsWith("\t")).length,
+      30,
+    );
+
+    const raw = diagnosticErrorLine(stderr);
+    assertStringIncludes(raw, "would be overwritten by checkout");
+    assertEquals(raw.includes("Aborting"), false);
+
+    // The setup path's wrapping: two start points, each refusal quoted.
+    const wrapped = "Failed to create feature branch 'issue-1' from 'main': " +
+      `git checkout -B issue-1 origin/main exited 1: ${stderr.trim()}; ` +
+      `git checkout -B issue-1 main exited 1: ${stderr.trim()}`;
+    const detail = diagnosticErrorLine(wrapped);
+    assertStringIncludes(detail, "would be overwritten by checkout");
+    assertEquals(detail.includes("Aborting"), false);
+  });
+});
+
+Deno.test("diagnosticErrorLine - a refused merge keeps its cause, not the advice and Aborting", () => {
+  const stderr =
+    "error: Your local changes to the following files would be overwritten by merge:\n\ttracked.txt\nPlease commit your changes or stash them before you merge.\nAborting";
+  const detail = diagnosticErrorLine(stderr);
+  assertStringIncludes(detail, "Your local changes");
+  assertEquals(
+    detail.includes("Aborting"),
+    false,
+    "the generic trailer is not diagnostic",
+  );
+  assertEquals(
+    detail.includes("Please commit"),
+    false,
+    "the merge advice is not diagnostic",
+  );
+});
+
 Deno.test("recordRepoFastFailure - three failures in the window back the repo off", async () => {
   await withWorkDir(async (workDir) => {
     const first = await record(workDir, 1_000);
