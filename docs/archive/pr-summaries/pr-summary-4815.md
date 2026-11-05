@@ -105,3 +105,17 @@ flowchart LR
 - Twin check: `grep -rn "Last log time\|\*\*Phase:\*\*"` finds only
   `hard_kill_report.ts` and its tests; `run_failure_issue.ts` only mentions the
   `**Phase:**` field in a comment.
+- `deno task test:unit` on `tests/hard_kill_report_test.ts`,
+  `tests/run_failure_issue_test.ts`, `tests/run_core_hard_kill_test.ts` and
+  `tests/run_core_production_deps_hard_kill_test.ts`: 89 passed, 0 failed.
+- `./quality.sh`: every stage passed except `deno tests`. The parallel pass ran
+  32534 passed, 2 failed; the failures are
+  `completion - an unformatted Rust change is formatted and committed, then passes the gate`
+  and `completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit`
+  in `worker/deno/tests/completion_phase_repo_formatters_test.ts` (lines 480 and
+  567), which this change does not touch; the same two failed in the #4743
+  work. I did not compare against `main`. The serial pass did not run because
+  the parallel pass failed.
+
+Not done: the wedge itself is not diagnosed or fixed; the GRQ-3 archive was not
+read; the serial test pass of the gate did not run.
