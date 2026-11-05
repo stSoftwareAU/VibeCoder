@@ -201,7 +201,7 @@ function harness(
     if (command === "git" && args.includes("--porcelain")) {
       return Promise.resolve(state.changes ? " M file.ts" : "");
     }
-    if (command === "git" && args[0] === "push") {
+    if (command === "git" && args.includes("push")) {
       state.pushed++;
       return Promise.resolve("");
     }
@@ -1379,7 +1379,8 @@ Deno.test("git transport outages and maintenance timeout do not spend repair att
     await withState(async (stateDir) => {
       const h = harness(stateDir);
       h.state.changes = true;
-      h.state.runFailures.push({ match: "git push", message });
+      // The push may carry `-c core.hooksPath=/dev/null` before the subcommand.
+      h.state.runFailures.push({ match: " push ", message });
       await assertRejects(() => h.attempt());
       const [record] = await records(stateDir);
       assertEquals(record!.blockerClass, "race");
@@ -1438,7 +1439,7 @@ Deno.test("git transport outages and maintenance timeout do not spend repair att
       await withState(async (stateDir) => {
         const h = harness(stateDir);
         h.state.changes = true;
-        h.state.runFailures.push({ match: `git ${operation}`, message });
+        h.state.runFailures.push({ match: ` ${operation} `, message });
         await assertRejects(() => h.attempt());
         const [record] = await records(stateDir);
         assertEquals(record!.blockerClass, "infrastructure");

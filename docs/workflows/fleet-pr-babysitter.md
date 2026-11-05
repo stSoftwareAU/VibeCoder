@@ -66,9 +66,10 @@ the profile. A retry may also replace the first PR-description proposal.
 Before it starts any Codex session on macOS, the runner proves the gate can
 run: when the clone has a `quality.sh`, it applies the same sandbox profile to
 a fixed `/usr/bin/true` probe. An unavailable sandbox (for example
-`sandbox_apply: Operation not permitted`) skips that PR with no attempt record
-and no agent session, so a watch pass does not spend a repair session on every
-cycle; the same classification after the agent finishes remains as a backstop.
+`sandbox_apply: Operation not permitted`) holds that PR with no agent session,
+recorded as a host-capability blocker with a bounded cooldown that consumes no
+repair attempt, so a watch pass does not spend a session each cycle; the same
+classification after the agent finishes remains as a backstop.
 Browser cache variables (`PLAYWRIGHT_BROWSERS_PATH`, `CYPRESS_CACHE_FOLDER`,
 `PUPPETEER_CACHE_DIR`) that the operator has not set default to fresh
 directories under repair scratch that hold links to the host's installed
@@ -554,8 +555,9 @@ macOS runner owns the final local `quality.sh` result for every repair, includin
 browser checks Codex cannot launch. A failed runner check is fed back for one
 repair attempt and must pass on revalidation before commit; a missing runner
 sandbox is reported as unavailable and does not produce a commit or push. The
-runner clears the attempt record for this unavailable-capability case so a
-later pass can retry.
+retry state records it as a host-capability blocker with a bounded cooldown and
+no consumed repair attempt, so a later pass retries once the host (or a capable
+host) can run the gate.
 
 This MVP uses the configured GitHub App and Codex; it does not yet select
 providers by remaining quota, handle Dependabot, use per-repository quality
@@ -585,4 +587,5 @@ create its own locks and install missing builds. Explicit values of these three
 variables are preserved. Browser runtime profiles and temporary files belong
 in scratch. The runner first executes
 `/usr/bin/true` under the same policy. A failed sandbox startup is unavailable,
-does not trigger an agent repair retry, and releases the attempt record.
+does not trigger an agent repair retry, and is recorded as a host-capability
+blocker (no repair attempt consumed).

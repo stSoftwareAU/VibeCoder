@@ -2,6 +2,14 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { writeBabysitterAppConfig } from "../lib/fleet_babysitter_app.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 
+/** The host-local retry record written as `attempt-v2-<signature>.json`. */
+interface RetryRecord {
+  blockerClass: string;
+  lastOutcome: string;
+  nextEligibleAt: string | null;
+  attempts: { infrastructure: number; substantive: number };
+}
+
 /** Real CLI, filesystem and orchestration, with offline GitHub/tool boundaries. */
 async function repairScenario(
   scenario: string,
@@ -11,6 +19,7 @@ async function repairScenario(
     stderr: string;
     events: string[];
     attempts: string[];
+    attemptRecords: RetryRecord[];
     appliedBody: string | undefined;
     proposedBody: string | undefined;
   }) => void,
@@ -110,16 +119,17 @@ async function repairScenario(
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
     const attempts: string[] = [];
+    const attemptRecords: RetryRecord[] = [];
+    const stateDir = `${root}/state/vibe-coder/fleet-pr-babysitter`;
     try {
-      for await (
-        const entry of Deno.readDir(
-          `${root}/state/vibe-coder/fleet-pr-babysitter`,
-        )
-      ) {
+      for await (const entry of Deno.readDir(stateDir)) {
         // The ledgers and audit roster share this directory with attempt
         // markers, which are the only `attempt-v2-*` files (babysitter_retry_state.ts).
         if (entry.isFile && entry.name.startsWith("attempt-v2-")) {
           attempts.push(entry.name);
+          attemptRecords.push(
+            JSON.parse(await Deno.readTextFile(`${stateDir}/${entry.name}`)),
+          );
         }
       }
     } catch (error) {
@@ -137,7 +147,14 @@ async function repairScenario(
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
-    check({ ...output.value, events, attempts, appliedBody, proposedBody });
+    check({
+      ...output.value,
+      events,
+      attempts,
+      attemptRecords,
+      appliedBody,
+      proposedBody,
+    });
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -224,12 +241,24 @@ Deno.test("babysitter CLI preserves current closing references in a retry body p
   });
 });
 
-Deno.test("babysitter CLI releases attempt after unavailable runner capability", async () => {
+// A missing runner capability is recoverable: it is retried later on a capable
+// host (Issue #4656), so it is recorded as a capability retry, not a repair attempt.
+Deno.test("babysitter CLI records an unavailable runner as a capability retry, not a repair attempt", async () => {
   await repairScenario("unavailable", (result) => {
     assertEquals(result.success, false);
     assertStringIncludes(result.stderr, "Runner validation unavailable");
     assertEquals(result.events, ["agent-1", "gate-1"]);
-    assertEquals(result.attempts, []);
+    assertEquals(result.attempts.length, 1);
+    const [record] = result.attemptRecords;
+    assertEquals(record!.blockerClass, "capability");
+    assertEquals(record!.attempts.substantive, 0);
+    assertEquals(record!.attempts.infrastructure, 1);
+    assert(
+      record!.nextEligibleAt !== null &&
+        Date.parse(record!.nextEligibleAt) > Date.now(),
+      `nextEligibleAt must be a future time: ${record!.nextEligibleAt}`,
+    );
+    assertStringIncludes(record!.lastOutcome, "Runner validation unavailable");
     assertEquals(result.appliedBody, undefined);
   });
 });
@@ -280,9 +309,7 @@ for (const scenario of ["linux-symlink", "linux-oversized"]) {
   });
 }
 
-Deno.test("babysitter CLI starts no agent and records no attempt when sandbox apply fails", async () => {
-  // Two passes over the same head: the probe fails before any agent session,
-  // so a repeated pass cannot start one either.
+Deno.test("babysitter CLI reports an unavailable sandbox probe and starts no agent", async () => {
   await repairScenario("probe-unavailable", (result) => {
     assertEquals(result.success, false);
     assertStringIncludes(result.stderr, "Runner validation unavailable");
@@ -291,7 +318,29 @@ Deno.test("babysitter CLI starts no agent and records no attempt when sandbox ap
       "sandbox_apply: Operation not permitted",
     );
     assertEquals(result.events, []);
-    assertEquals(result.attempts, []);
+    assertEquals(result.attempts.length, 1);
+    assertEquals(result.attemptRecords[0]!.blockerClass, "capability");
+    assertEquals(result.attemptRecords[0]!.attempts.substantive, 0);
+    assertEquals(result.attemptRecords[0]!.attempts.infrastructure, 1);
+    assertEquals(result.appliedBody, undefined);
+  });
+});
+
+// Two passes over the same head: the probe fails before any agent session, and
+// the capability backoff holds the second pass, which neither starts an agent
+// nor records a second retry.
+Deno.test("babysitter CLI holds a probe-unavailable head across passes without a second record", async () => {
+  await repairScenario("probe-unavailable", (result) => {
+    assertEquals(result.events, []);
+    assertEquals(result.attempts.length, 1);
+    const [record] = result.attemptRecords;
+    assertEquals(record!.blockerClass, "capability");
+    assertEquals(record!.attempts.substantive, 0);
+    assertEquals(record!.attempts.infrastructure, 1);
+    assertStringIncludes(
+      record!.lastOutcome,
+      "sandbox_apply: Operation not permitted",
+    );
     assertEquals(result.appliedBody, undefined);
   }, 2);
 });
