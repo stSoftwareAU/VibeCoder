@@ -14,10 +14,6 @@ import { ensureBabysitterCodex } from "../lib/fleet_babysitter_codex.ts";
 import { fetchWithTimeout, runWithTimeout } from "../lib/subprocess_timeout.ts";
 import { escapeXml } from "../lib/xml_escape.ts";
 import {
-  canRunAsUntrustedUser,
-  probeCommandSuccess,
-} from "../lib/untrusted_command_env.ts";
-import {
   listBabysitterRepositories,
   selectBabysitterInstallation,
   selectBabysitterRepositories,
@@ -124,24 +120,6 @@ async function main(): Promise<number> {
   }
   await ensureBabysitterCodex(home);
   await runGhCommand(["--version"]);
-  // The repository's own gate runs before a repair is pushed, and only as a
-  // separate account (THREAT-MODEL C37): name what this host cannot do now,
-  // not after an agent session has been spent on it.
-  if (!await canRunAsUntrustedUser()) {
-    console.log(
-      "ACTION: this host has no separate `agent` account (`sudo -n -u agent` fails). " +
-        "The babysitter will not run a repository's own quality.sh as its own account, " +
-        "so it will start no repair session for a repository that has one.",
-    );
-  }
-  if (
-    Object.values(config.repoConfig ?? {}).some((repo) => repo.dockerImage) &&
-    !await probeCommandSuccess(["docker", "version"])
-  ) {
-    console.log(
-      "ACTION: a monitored repository runs its checks in a Docker image and Docker is not available on this host.",
-    );
-  }
   if (checkOnly && !argument("app-id")) {
     throw new Error("--check requires --app-id");
   }

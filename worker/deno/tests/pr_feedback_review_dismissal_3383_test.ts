@@ -280,17 +280,6 @@ interface RunOptions {
   unpushedState?: number | "error" | "throw";
 }
 
-/**
- * A repository-checks stub that always passes (Issue #4625). The scenario
- * checkout is not a git repository, so the real validator would report
- * `unavailable` and defer before the verifier or push under test ran.
- */
-const passingPublication = async () => ({
-  status: "passed" as const,
-  head: "0".repeat(40),
-  gate: "absent" as const,
-});
-
 async function runScenario(options: RunOptions) {
   const captured = options.captured ?? {
     comments: [],
@@ -359,8 +348,8 @@ async function runScenario(options: RunOptions) {
           if (options.finaliseError) {
             return { ok: false, error: new Error(options.finaliseError) };
           }
-          if (options.feedbackVerifierFn && args[8]) {
-            const verdict = await args[8]();
+          if (options.feedbackVerifierFn && args[7]) {
+            const verdict = await args[7]();
             if (!verdict.ok) return verdict;
           }
           options.events.push("commitAndPushPending");
@@ -404,7 +393,6 @@ async function runScenario(options: RunOptions) {
         return { ok: true, value: { status: "updated", issueNumber: 42 } };
       },
       ...(options.verifyPushFn ? { verifyPushFn: options.verifyPushFn } : {}),
-      validatePublication: passingPublication,
     };
 
     const result = await processPrFeedback(options.input, processorDeps);
