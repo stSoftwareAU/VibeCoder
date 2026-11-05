@@ -567,6 +567,88 @@ Deno.test("the real quality gate: ordinary failures stay failed", async (t) => {
   );
 });
 
+// ShellCheck is installed in the worker image; the tests skip where it is not.
+const SHELLCHECK_PRESENT = await new Deno.Command("shellcheck", {
+  args: ["--version"],
+  stdin: "null",
+  stdout: "null",
+  stderr: "null",
+}).output().then((o) => o.success, () => false);
+
+Deno.test({
+  name:
+    "the real quality gate: a ShellCheck diagnostic from quality.sh is a failed verdict (Issue #4741)",
+  ignore: !SHELLCHECK_PRESENT,
+  fn: async (t) => {
+    const qualityScript = "#!/bin/bash\nset -euo pipefail\nshellcheck bad.sh\n";
+
+    await t.step(
+      "a script with SC2086 fails, naming the diagnostic",
+      async () => {
+        await withRepo(
+          {
+            "quality.sh": qualityScript,
+            "bad.sh": "#!/bin/bash\nname=$1\necho $name\n",
+          },
+          async (dir) => {
+            const v = expectStatus(
+              await validateRepositoryForPublication(
+                { cwd: dir, repo: REPO },
+                { runGate: realGate },
+              ),
+              "failed",
+            );
+            assertStringIncludes(v.output, "SC2086");
+          },
+        );
+      },
+    );
+
+    await t.step("the same gate passes once the script is clean", async () => {
+      await withRepo(
+        {
+          "quality.sh": qualityScript,
+          "bad.sh": '#!/bin/bash\nname=$1\necho "$name"\n',
+        },
+        async (dir) => {
+          const v = expectStatus(
+            await validateRepositoryForPublication(
+              { cwd: dir, repo: REPO },
+              { runGate: realGate },
+            ),
+            "passed",
+          );
+          assertEquals(v.gate, "ran");
+        },
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "the real quality gate: a gate whose ShellCheck is not installed is unavailable, never a pass (Issue #4741)",
+  ignore: false,
+  fn: async () => {
+    await withRepo(
+      {
+        "quality.sh": "#!/bin/bash\nPATH=/nonexistent\nshellcheck clean.sh\n",
+        "clean.sh": "#!/bin/bash\necho ok\n",
+      },
+      async (dir) => {
+        const v = expectStatus(
+          await validateRepositoryForPublication(
+            { cwd: dir, repo: REPO },
+            { runGate: realGate },
+          ),
+          "unavailable",
+        );
+        assertStringIncludes(v.reason, "failed_missing_command");
+      },
+    );
+  },
+});
+
 Deno.test("a gate killed by its timeout is failed, whatever its output", async (t) => {
   await withRepo({ "README.md": "hello\n" }, async (dir) => {
     for (const exitCode of [124, 137, 143]) {
