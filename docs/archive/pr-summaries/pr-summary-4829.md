@@ -71,8 +71,8 @@ phase's existing failed-verdict path passes the failure to a repair turn.
   136 passed, 0 failed.
 - `deno fmt --check`, `deno lint` and `deno check` on the four changed
   TypeScript files passed.
-- Pre-push recovery: `deno task check:manifests` passed (847 passed, 0 failed,
-  1 ignored), `deno task check` passed, and the production `runSemgrepCheck`
+- Pre-push recovery: `deno task check:manifests` passed (847 passed, 0 failed, 1
+  ignored), `deno task check` passed, and the production `runSemgrepCheck`
   passed over four changed files with Semgrep 1.182.1. The reported JSR manifest
   fetch failure and 10-second Semgrep probe timeout did not recur; no source or
   gate-limit change was needed for these rechecks.
