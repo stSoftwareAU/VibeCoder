@@ -447,8 +447,12 @@ flowchart TD
   is not a recognised worker phase. Log text cannot invent public signatures.
 - **Filing.** One issue is filed in `stSoftwareAU/VibeCoder` with the label
   `bug`. Its body carries the marker `<!-- VIBE_RUN_FAILURE:<signature> -->`,
-  the host, the container, the run id, the handler, the phase, the trigger, the
-  fixed reason for that trigger and the capture and last-log times. Posted facts
+  the host, the container, the run id, the handler, the phase, the last step,
+  the trigger, the fixed reason for that trigger and the capture and last-log
+  times. The last step is one of `pre-PR verifier`, `mutation check`,
+  `coverage carry-over check`, `quality gate`, `agent turn` or `unknown`,
+  matched from a fixed table of log patterns; no log text is posted with it.
+  It is not part of the dedup signature. Posted facts
   must match the launcher shapes: hostname, `vibe-coder-*` container name,
   `vibe-<base36>-<six-hex>` run id (or `unknown`), `watchdog` or `pre_launch`
   trigger, and timestamps. Free-text reasons or malformed facts are kept and

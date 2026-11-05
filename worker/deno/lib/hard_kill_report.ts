@@ -21,9 +21,10 @@
  * The issue lands in a public repository, and the killed run may have been
  * working a private one. So the issue carries only the facts the worker and
  * launcher wrote themselves (host, container, run, signature, trigger, reason,
- * times). The log, transcript, boot and guest text, the last log line, the
- * last tool call and the source repository stay in the archived file on the
- * host (Issue #4315 review; SECURITY.md incident response). Every value that
+ * times) and a last step drawn from a fixed label list. The log, transcript,
+ * boot and guest text, the last log line, the last tool call and the source
+ * repository stay in the archived file on the host (Issue #4315 review;
+ * SECURITY.md incident response). Every value that
  * is posted is still redacted, bounded and made safe for an issue body.
  * Every GitHub and file call is wrapped: nothing here throws into the
  * worker's start-up path.
@@ -86,6 +87,26 @@ const PHASE_PATTERNS: readonly RegExp[] = [
   /\[phase\]\s*([A-Za-z0-9_-]+)/,
   /\bphase=([A-Za-z0-9_-]+)/,
   /\[agent-progress\]\s*([A-Za-z0-9_-]+):/,
+];
+/** Cap on each candidate line scanned for a last step (cost guard). */
+const STEP_SCAN_CHARS = 2000;
+/** Ticker and status lines that name no step the run took; skipped. */
+const STEP_NOISE: readonly RegExp[] = [
+  /\[phase\][^\n]*still running/,
+  /\[liveness\]/,
+  /\bStatus: /,
+];
+/**
+ * The fixed vocabulary of last steps, checked in order. The label comes only
+ * from this table, so no log text (the run may be on a private repository) is
+ * published. It does not feed the dedup key `hard-kill-<handler>-<phase>`.
+ */
+const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
+  { label: "pre-PR verifier", pattern: /Pre-PR verifier/ },
+  { label: "mutation check", pattern: /\bmutation (?:check|budget|gate)\b/i },
+  { label: "coverage carry-over check", pattern: /coverage carry-over/i },
+  { label: "quality gate", pattern: /\bQuality gate\b|\[phase\] quality_gate/ },
+  { label: "agent turn", pattern: /\[agent-progress\]|Running Claude Code/ },
 ];
 /**
  * `owner/repo#N`. Owner and repo draw from the same class, so a run of name
@@ -397,10 +418,33 @@ export function formatHardKillTitle(sig: HardKillSignature): string {
 }
 
 /**
+ * The last step the killed run took, from {@link STEP_PATTERNS}: the label of
+ * the first candidate line (the last log line, then the log tail from its end)
+ * that is not ticker or status noise and matches a table entry; `unknown` when
+ * none does. Each line is capped at {@link STEP_SCAN_CHARS} before matching.
+ * The label is never log text, so the public issue cannot carry it.
+ */
+export function hardKillLastStep(evidence: HardKillEvidence): string {
+  const candidates = [
+    evidence.lastLogLine,
+    ...evidence.evidence.workerLogTail.split("\n").reverse(),
+  ];
+  for (const candidate of candidates) {
+    const line = candidate.slice(0, STEP_SCAN_CHARS);
+    if (STEP_NOISE.some((noise) => noise.test(line))) continue;
+    for (const step of STEP_PATTERNS) {
+      if (step.pattern.test(line)) return step.label;
+    }
+  }
+  return "unknown";
+}
+
+/**
  * Issue body: marker first, then the facts the worker and launcher wrote. No
  * evidence text, last log line, tool call or source repository: the issue is
  * public and the run may have been working a private repository (see the
- * module comment). The evidence stays in the archived file on the host.
+ * module comment). The last step is a fixed label from {@link STEP_PATTERNS},
+ * never log text. The evidence stays in the archived file on the host.
  */
 export function formatHardKillBody(
   evidence: HardKillEvidence,
@@ -416,6 +460,7 @@ export function formatHardKillBody(
     `**Run id:** \`${inlineText(evidence.runId, 200)}\``,
     `**Handler:** \`${sig.handler}\``,
     `**Phase:** \`${sig.phase}\``,
+    `**Last step:** \`${hardKillLastStep(evidence)}\``,
     `**Trigger:** ${inlineText(evidence.trigger, 100)}`,
     `**Reason:** ${publicReason(evidence.trigger)}`,
     `**Captured at:** ${inlineText(evidence.capturedAt, 100)}`,
@@ -464,7 +509,7 @@ function formatHardKillOccurrenceLine(
     inlineText(evidence.host, 200)
   }\` — container \`${inlineText(evidence.container, 200)}\`, run \`${
     inlineText(evidence.runId, 200)
-  }\``;
+  }\`, last step \`${hardKillLastStep(evidence)}\``;
 }
 
 /** The first line of an error, redacted, for the decision's cause. */

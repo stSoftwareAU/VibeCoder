@@ -234,7 +234,10 @@ the last worker log lines and the runtime's boot logs, so the wedge can be read
 after the container is gone (see
 [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-wedged-container-watchdog)).
 The next worker start files that record as a `bug` issue carrying only the
-run's facts, then moves the file to `${LOG_DIR}/hard-kill-archive/`, where it
+run's facts and a last step from a fixed list (`pre-PR verifier`,
+`mutation check`, `coverage carry-over check`, `quality gate`, `agent turn` or
+`unknown`; it is not part of the dedup signature), then moves the file to
+`${LOG_DIR}/hard-kill-archive/`, where it
 is kept for up to 30 days or 2,000 files. The archive, not the issue, holds the
 evidence (see
 [a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)).
