@@ -7,8 +7,9 @@ logged** taken from a fixed list (`pre-PR verifier`, `mutation check`,
 `coverage carry-over check`, `quality gate`, `agent turn`, `unknown`). The wedge
 itself is not fixed and not diagnosed: this change makes the next recurrence
 narrow it: the label is the last step the log reported, and the wedge is in that
-step or a later one that logs nothing as it starts (the verifier, the mutation
-check and the coverage check log nothing at their start). Part of #4815.
+step or a later one that logs nothing as it starts (the mutation check and the
+coverage check log nothing at their start; the verifier's agent session does log
+its start, which the table labels `agent turn`). Part of #4815.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -75,7 +76,7 @@ and the `[phase] completion (…): still running · …` ticker.
 flowchart LR
     T["worker log tail<br/>(archived on the host)"] --> S["hardKillLastStep:<br/>skip ticker, first table match from the end"]
     S --> L["fixed label"]
-    L --> B["public issue body: Last step"]
+    L --> B["public issue body: Last step logged"]
     L --> O["follow-up occurrence line"]
     T -. "never posted" .-> B
 ```
@@ -134,9 +135,11 @@ flowchart LR
 - Twin check: `grep -rn "Last log time\|\*\*Phase:\*\*"` finds only
   `hard_kill_report.ts` and its tests; `run_failure_issue.ts` only mentions the
   `**Phase:**` field in a comment.
-- `deno task test:unit` on `tests/hard_kill_report_test.ts`,
-  `tests/run_failure_issue_test.ts`, `tests/run_core_hard_kill_test.ts` and
-  `tests/run_core_production_deps_hard_kill_test.ts`: 91 passed, 0 failed.
+- `deno task test:unit`, run from `worker/deno`, one file at a time, 0 failed in
+  each: `tests/hard_kill_report_test.ts` (58 tests at head),
+  `tests/run_failure_issue_test.ts` (26 tests at head),
+  `tests/run_core_hard_kill_test.ts` (3 tests at head) and
+  `tests/run_core_production_deps_hard_kill_test.ts` (4 tests at head).
 - `./quality.sh`: every stage passed except `deno tests`. The parallel pass ran
   32534 passed, 2 failed; the failures are
   `completion - an unformatted Rust change is formatted and committed, then passes the gate`
