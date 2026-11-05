@@ -144,9 +144,10 @@ different protocol. The clone's `info/exclude` also lists the tool byproducts
 so an untracked copy is never committed as part of a fix (Issue #4827). The
 exclusion covers untracked paths only; a file the repository tracks is still
 committed when a repair edits it. If the fetch fails, the repair fails with git's
-cause, the mirror is kept, and the next pass retries. Passes never remove mirrors; delete a
-mirror directory to force a fresh download. Codex reads the filesystem under its
-permissions profile, so it can read a mirror, but it cannot write to one because
+cause, the mirror is kept, and the next pass retries. Passes never remove
+mirrors; delete a mirror directory to force a fresh download. Codex reads the
+filesystem under its permissions profile, so it can read a mirror, but it
+cannot write to one because
 its write grants are only the clone and scratch directory. Mirrors are not among
 the `~/.vibe-coder/fleet-pr-babysitter*` denylist entries, so do not treat them
 as credential-protected.

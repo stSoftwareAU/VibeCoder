@@ -1,6 +1,9 @@
 ## Summary
 
-The babysitter's repair clone now appends `*.profraw`, `*.profdata`, `lcov.info`, `/mutants.out/` and `/mutants.out.old/` to its `info/exclude` right after cloning, so `git status --porcelain` and `git add -A` ignore those untracked byproducts. A session that leaves only byproducts reports "agent made no changes"; a real fix is committed without them. Closes #4827.
+The babysitter repair clone now excludes the five coverage and mutation output
+patterns in its local `info/exclude`. Tracked fixes are still committed, while
+untracked byproducts stay on disk and do not trigger an empty repair commit.
+Closes #4827.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -8,13 +11,18 @@ Version bump: `VERSION` is not touched by this change.
 
 ### Intent and Rationale
 
-- The runner stages with `git add -A`, so it cannot tell a fix from a local coverage or mutation run's output. `info/exclude` fixes that at the source without refusing or failing anything.
+- The babysitter stages all changes with `git add -A`; excluding known tool output
+  makes its existing status and staging flow distinguish real edits from local
+  coverage and mutation artifacts.
 
 ### Essential Design Decisions
 
-- `info/exclude` rather than `.gitignore` or a staging filter: it is local to the clone, touches no tracked file, and applies to untracked paths only, so a repo that tracks `lcov.info` still commits edits to it.
-- The exclude path is resolved with `git rev-parse --git-path info/exclude` (same approach as `codegraph_context.ts`); errors throw rather than continue with an unprotected clone.
-- The file is read with a plain read, not the no-follow read: the clone is fresh and the agent has not run yet.
+- Use the clone's `info/exclude`, not the repository's `.gitignore`, so no
+  tracked repository configuration changes and existing tracked outputs remain
+  editable.
+- Resolve the exclude path through `git rev-parse --git-path info/exclude`;
+  preparation fails loudly if git or filesystem access cannot prepare it.
+- Preserve existing exclude content and append only missing patterns.
 
 ### Undiscoverable Facts
 
@@ -22,13 +30,34 @@ Version bump: `VERSION` is not touched by this change.
 
 ## Evidence
 
-Backend/CLI change; no UI. Tests in `worker/deno/tests/fleet_pr_babysitter_test.ts` (all named "Issue #4827"): the commit holds only the tracked edit and the byproducts stay on disk; a byproducts-only session logs "agent made no changes" and never calls `validateAndCommit`; a tracked `lcov.info` edit is still committed; the helper is idempotent and handles a missing trailing newline.
+Backend/CLI change; no UI. The repair flow now prepares the local exclude file
+before the agent runs; its existing status check and staging command then
+ignore those untracked paths.
+
+```mermaid
+flowchart TD
+    A[Clone repair branch] --> B[Append tool patterns to info/exclude]
+    B --> C[Agent runs repair and local checks]
+    C --> D{Tracked changes remain?}
+    D -->|No| E[Report agent made no changes]
+    D -->|Yes| F[Commit tracked fix; leave excluded files on disk]
+```
 
 ## Test Plan
 
-- `deno task test:unit tests/fleet_pr_babysitter_test.ts tests/fleet_pr_babysitter_single_push_test.ts`: 127 passed, 0 failed.
-- Red check: removing the `excludeRepairByproducts` call from `cloneForRepair` turned the commit test and the byproducts-only test red (`validateAndCommit must not run`); the tracked-file and idempotence tests are positive controls and stay green by design.
-- Callers of `cloneForRepair` checked: the production caller (`deps.clone ?? cloneForRepair`) and existing clone tests, which use real git or reject before the new step.
-- Docs: `docs/workflows/fleet-pr-babysitter.md` repair-clone paragraph updated.
-- Fixture `worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts`: answers `git rev-parse --git-path info/exclude` (the new clone step; without it `tests/fleet_babysitter_app_test.ts` "production repair forwards CONFIG_PATH and denies canonical credential targets" failed with `Unexpected fixture command: git rev-parse --git-path info/exclude`) and `/bin/kill -0` (the leftover-clone liveness probe, which that test also hit on this host). `deno task test:unit tests/fleet_babysitter_app_test.ts`: 19 passed, 0 failed.
-- `./quality.sh`: lint, type check, fmt, markdownlint and semgrep passed. The deno parallel pass failed only on the two `tests/completion_phase_repo_formatters_test.ts` cargo-fmt tests, which fail identically on an unmodified `origin/main` worktree (pre-existing on this host, unrelated), plus the `fleet_babysitter_app_test.ts` failure fixed above. The serial pass did not run because the parallel pass failed.
+- `worker/deno/tests/fleet_pr_babysitter_test.ts`: real temporary git repositories
+  verify all five output types stay on disk and out of a fix commit; byproducts
+  alone produce "agent made no changes" without calling `validateAndCommit`; a
+  tracked `lcov.info` edit is committed; repeated preparation preserves existing
+  exclude lines; unresolved git output and filesystem errors fail loudly.
+- Regression wiring check: removing only the `cloneForRepair` preparation call
+  made the tracked-fix and byproducts-only tests fail (118 passed, 2 failed).
+- `deno task test:unit tests/fleet_pr_babysitter_test.ts tests/fleet_pr_babysitter_single_push_test.ts tests/fleet_babysitter_app_test.ts` — 148 passed, 0 failed.
+- `deno task test:unit tests/completion_phase_repo_formatters_test.ts` — 8 passed, 0 failed; the earlier checkpoint's cargo-fmt failures did not reproduce.
+- `deno lint`, `deno check` on the changed TypeScript files, `deno fmt --check` on the changed TypeScript and manual, and `deno task check:manifests` — passed; manifest check ran 847 tests (0 failed, 1 ignored).
+- `./quality.sh < /dev/null` — failed in the Deno test stage on `tests/merge_fallback_issue_test.ts::createFallbackFlagFiler - routes the label creation through the caller's gh (Issue #2310)`: expected the label creation through the injected `gh`, but observed `gh issue create`. The same test fails on clean `origin/main` (28 passed, 1 failed), so it is a pre-existing base-branch failure; this change does not touch that code or test. Quality-gate config integration and Checkov were skipped by the gate because their local prerequisites were unavailable.
+- Documentation: `docs/workflows/fleet-pr-babysitter.md`, repair-clone section updated. No existing test assertions were removed.
+
+### Deno regression avoided
+
+- Kept implementation and validation Deno-native; added no Node tooling or dependencies.
