@@ -121,7 +121,7 @@ async function sweepOnePr(
       logger: createLogger({ write: () => {} }),
       config: {
         ...buildDefaultWorkerConfig(),
-        workDir,
+        workDir: ownedWorkDir,
         repos: [REPO],
         allowedAuthors: [WORKER_USER],
         fleetPrAuthors: [],

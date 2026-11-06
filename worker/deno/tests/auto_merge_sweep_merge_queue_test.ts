@@ -92,6 +92,7 @@ async function runSweep(f: SweepFixture): Promise<SweepRun> {
       warn: (message: string) => {
         warns.push(message);
       },
+      error: () => {},
     },
   });
   return { updated, attempted, queueQuestions, infos, warns };
