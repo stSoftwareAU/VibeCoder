@@ -50,7 +50,7 @@ COHORT_END='2026-10-15T00:00:00Z'
 VERIFIED_AT='2026-10-15T00:00:00Z'
 AUDIT_DIRS='/path/worker-audit,/path/reviewer-audit,/path/babysitter-audit'
 EXPECTED_INVENTORY='worker-host/worker,review-host/reviewer,babysitter-host/babysitter'
-EXPECTED_REVISION='40-character-deployment-commit-sha'
+EXPECTED_REVISION="$(git rev-parse HEAD)"
 deno task pr-completion-report --collect --repos "$REPOS" --start "$COHORT_START" --end "$COHORT_END" --rollout-verified-at "$VERIFIED_AT" --write-snapshot /tmp/pr-completion.json --audit-dir "$AUDIT_DIRS" --expected-inventory "$EXPECTED_INVENTORY" --expected-revision "$EXPECTED_REVISION"
 deno task pr-completion-report --input /tmp/pr-completion.json
 ```
