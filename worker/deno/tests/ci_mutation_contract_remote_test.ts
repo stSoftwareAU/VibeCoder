@@ -491,6 +491,52 @@ Deno.test("a mutants job that no required check covers is not blocking", async (
   });
 });
 
+Deno.test("required checks scan long needs chains and aliased lists within budget", async () => {
+  const lines = [
+    "on: pull_request",
+    "jobs:",
+    "  mutants:",
+    "    steps:",
+    "      - run: cargo mutants",
+    "  alias0:",
+    "    needs: &shared [mutants]",
+  ];
+  for (let i = 1; i <= 3000; i++) {
+    lines.push(`  j${i}:`, `    needs: ${i === 1 ? "alias0" : `j${i - 1}`}`);
+  }
+  for (let i = 0; i < 100; i++) {
+    lines.push(`  alias${i + 1}:`, "    needs: *shared");
+  }
+  await withRepo({ "ci.yml": lines.join("\n") }, async (repo) => {
+    const result = await findBlockingMutationJob(repo, {
+      requiredChecks: ["j3000"],
+    });
+    assertEquals(result.blocking?.job, "mutants");
+    assertEquals(result.blocking?.aggregator, "j3000");
+    assertEquals(result.unreadable, []);
+  });
+});
+
+Deno.test("required checks charge aliased needs edges to the scan budget", async () => {
+  const names = Array.from({ length: 1100 }, (_, i) => `a${i}`);
+  const lines = [
+    "on: pull_request",
+    "jobs:",
+    `  a0: {needs: &shared [${names.join(", ")}]}`,
+    ...names.slice(1).map((name) => `  ${name}: {needs: *shared}`),
+    `  gate: {needs: [${names.join(", ")}]}`,
+  ];
+  await withRepo({ "ci.yml": lines.join("\n") }, async (repo) => {
+    assertEquals(
+      await findBlockingMutationJob(repo, { requiredChecks: ["gate"] }),
+      {
+        blocking: null,
+        unreadable: ["ci.yml"],
+      },
+    );
+  });
+});
+
 Deno.test("the scan continues past a job that is not required", async () => {
   await withRepo({
     "ci.yml": [

@@ -145,6 +145,16 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- Review follow-up: required-check dependency coverage is computed once per
+  workflow and caller prefix, with aliased needs lists shared and traversed
+  edges charged to the scan budget. The previous repeated dependency walk is
+  replaced; required checks still cover transitive feeders and oversized scans
+  are unreadable. Coverage:
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::required checks scan long needs chains and aliased lists within budget`
+  and
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::required checks charge aliased needs edges to the scan budget`.
+  No twinned implementation was found.
+
 - Review follow-up: cargo test-tool arguments bypass the nextest probe, and
   fallback preserves a package named nextest, covered by
   `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - cargo test tool passes through without a nextest probe`

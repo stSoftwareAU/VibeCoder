@@ -496,6 +496,7 @@ function blockingJobHit(
   budget: { remaining: number },
   chain: readonly string[],
   required: readonly string[],
+  feederCache: FeederCache,
   prefix = "",
   inherited = false,
 ): JobHit | null {
@@ -507,6 +508,7 @@ function blockingJobHit(
     jobs,
     jobName,
     required,
+    feederCache,
     prefix,
     callee !== null,
   );
@@ -542,6 +544,7 @@ function blockingJobHit(
           callee.file,
         ],
         required,
+        feederCache,
         childPrefix,
         childrenCovered,
       );
@@ -622,19 +625,30 @@ export async function findBlockingMutationJob(
 
     const seen = new WeakSet<object>();
     const budget = { remaining: MAX_WORKFLOW_BYTES };
+    const feederCache: FeederCache = { budget, graphs: new WeakMap() };
     for (const [jobName, job] of Object.entries(doc.jobs)) {
       let hit: JobHit | null;
       try {
-        hit = blockingJobHit(job, doc.jobs, jobName, parsed, seen, budget, [
-          name,
-        ], required);
+        hit = blockingJobHit(
+          job,
+          doc.jobs,
+          jobName,
+          parsed,
+          seen,
+          budget,
+          [
+            name,
+          ],
+          required,
+          feederCache,
+        );
       } catch (error) {
         if (!(error instanceof WorkflowScanBudgetExceeded)) throw error;
         unreadable.push(name);
         break;
       }
       if (hit !== null) {
-        const feeds = requiredFeeder(doc.jobs, jobName, required);
+        const feeds = requiredFeeder(doc.jobs, jobName, required, feederCache);
         const aggregator = feeds ?? findAggregator(doc.jobs, jobName);
         blocking = {
           workflow: name,
@@ -728,47 +742,80 @@ async function fetchRemoteWorkflows(
  * are known and neither the job nor anything that needs it is among them. A
  * job name holding an expression cannot be matched, so it counts as required.
  */
+interface FeederCache {
+  budget: { remaining: number };
+  graphs: WeakMap<Mapping, Map<string, Map<string, string[]>>>;
+}
+
 function requiredFeeder(
   jobs: Mapping,
   jobName: string,
   required: readonly string[],
+  cache: FeederCache,
   prefix = "",
   skipOwn = false,
 ): string | null | undefined {
   if (required.length === 0) return undefined;
-  const reports = (key: string): boolean => {
-    const job = jobs[key];
-    const name = isMapping(job) && typeof job.name === "string"
-      ? job.name
-      : key;
-    return (name.includes("${{") &&
-      required.some((context) => context.startsWith(prefix))) ||
-      required.some((context) =>
-        context === `${prefix}${name}` ||
-        (context.startsWith(`${prefix}${name} (`) &&
-          !context.slice((`${prefix}${name} (`).length).includes(" / "))
-      );
-  };
-  if (!skipOwn && reports(jobName)) return undefined;
-  const seen = new Set([jobName]);
-  const queue = [jobName];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    for (const [name, job] of Object.entries(jobs)) {
-      if (seen.has(name) || !isMapping(job)) continue;
-      const needs = job.needs;
-      const needed = typeof needs === "string"
-        ? [needs]
-        : Array.isArray(needs)
-        ? needs
-        : [];
-      if (!needed.includes(current)) continue;
-      if (reports(name)) return name;
-      seen.add(name);
-      queue.push(name);
-    }
+  let prefixes = cache.graphs.get(jobs);
+  if (prefixes === undefined) {
+    prefixes = new Map();
+    cache.graphs.set(jobs, prefixes);
   }
-  return null;
+  let coverage = prefixes.get(prefix);
+  if (coverage === undefined) {
+    const charge = () => {
+      if (--cache.budget.remaining < 0) throw new WorkflowScanBudgetExceeded();
+    };
+    const entries = Object.entries(jobs);
+    const needsByJob = new Map<string, readonly string[]>();
+    const arrays = new WeakMap<object, string[]>();
+    const queue: Array<[string, string]> = [];
+    coverage = new Map();
+    for (const [key, job] of entries) {
+      charge();
+      if (!isMapping(job)) continue;
+      const name = typeof job.name === "string" ? job.name : key;
+      const reports = required.some((context) => {
+        charge();
+        return (name.includes("${{") && context.startsWith(prefix)) ||
+          context === `${prefix}${name}` ||
+          (context.startsWith(`${prefix}${name} (`) &&
+            !context.slice(`${prefix}${name} (`.length).includes(" / "));
+      });
+      if (reports) queue.push([key, key]);
+      const needs = job.needs;
+      if (typeof needs === "string") needsByJob.set(key, [needs]);
+      else if (Array.isArray(needs)) {
+        let normalised = arrays.get(needs);
+        if (normalised === undefined) {
+          normalised = [];
+          for (const item of needs) {
+            charge();
+            if (typeof item === "string") normalised.push(item);
+          }
+          arrays.set(needs, normalised);
+        }
+        needsByJob.set(key, normalised);
+      }
+    }
+    // Keep two distinct required sources so a reusable caller can ignore its
+    // own check while still finding a different required downstream job.
+    for (let i = 0; i < queue.length; i++) {
+      const [key, source] = queue[i]!;
+      const sources = coverage.get(key) ?? [];
+      if (sources.includes(source) || sources.length === 2) continue;
+      sources.push(source);
+      coverage.set(key, sources);
+      for (const dependency of needsByJob.get(key) ?? []) {
+        charge();
+        queue.push([dependency, source]);
+      }
+    }
+    prefixes.set(prefix, coverage);
+  }
+  const sources = coverage.get(jobName) ?? [];
+  if (!skipOwn && sources.includes(jobName)) return undefined;
+  return sources.find((source) => source !== jobName) ?? null;
 }
 
 /** Bound both allocation and reads, including a file growing after lstat. */
