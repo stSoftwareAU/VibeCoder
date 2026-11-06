@@ -164,6 +164,47 @@ int main(int argc, char **argv) {
           processBaseline.ok ? processBaseline.value.stderr : "probe failed"
         }`,
       );
+      // [DEBUG-c7e1] which profile variant denies kern.procargs2 for a host pid
+      {
+        const full = buildBabysitterValidationProfile(root, scratch, [
+          secret,
+          secretLink,
+          keychainDir,
+        ]);
+        const variants: Record<string, string> = {
+          current: full,
+          denyPrefix:
+            `${full}\n(deny sysctl-read (sysctl-name-prefix "kern.procargs"))`,
+          noProcessInfo: `${
+            full.split("\n").filter((r) => !r.startsWith("(allow process-info"))
+              .join("\n")
+          }`,
+          denyProcessInfoAll: `${full}\n(deny process-info*)`,
+          denyProcessInfoOthers:
+            `${full}\n(deny process-info* (target others))`,
+          denyProcessInfoPidinfo: `${full}\n(deny process-info-pidinfo)`,
+          minimal:
+            '(version 1)\n(deny default)\n(allow process-exec)\n(allow file-read* (subpath "/"))',
+        };
+        for (const [label, body] of Object.entries(variants)) {
+          const path = `${scratch}/variant-${label}.sb`;
+          await Deno.writeTextFile(path, body, { mode: 0o600 });
+          const r = await runWithTimeout(
+            "/usr/bin/sandbox-exec",
+            ["-f", path, `${root}/process-probe`, String(markerProcess.pid)],
+            { timeoutMs: 10_000, quiet: true },
+          );
+          console.log(
+            `[DEBUG-c7e1] ${label}: ${
+              r.ok
+                ? `code=${r.value.code} stderr=${
+                  JSON.stringify(r.value.stderr)
+                }`
+                : "runner error"
+            }`,
+          );
+        }
+      }
       const restrictedLaunch = await runWithTimeout(
         "/usr/bin/sandbox-exec",
         ["-f", restrictedPath, chromium, ...browserArgs],
