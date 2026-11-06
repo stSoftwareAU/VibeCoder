@@ -30,8 +30,8 @@ the issue title no longer read as references to other issues. An issue titled
 ## Evidence
 
 Backend change; no visual evidence applies. `ensureDraftContinuationPr` has one
-caller (`worker/deno/lib/phases/execute_phase.ts`), which passes `ctx.issueTitle`
-unchanged.
+caller (`worker/deno/lib/phases/execute_phase.ts`), which passes
+`ctx.issueTitle` unchanged.
 
 ## Acceptance Criteria
 
@@ -47,5 +47,6 @@ undone beyond the optional retitle recorded above.
   998 and 997 and accepts 5. Red against the unfixed code (title was
   `WIP: Add caching [#999] and (Issue #998) see #997 (#5)`), green after.
 - `draft_continuation_4146_test.ts`, `draft_continuation_mutation_hold_test.ts`,
-  `draft_ready_ci_4160_test.ts` and `completion_phase_pr_title_injection_test.ts`
-  passed (22). No existing assertion was removed or edited.
+  `draft_ready_ci_4160_test.ts` and
+  `completion_phase_pr_title_injection_test.ts` passed (22). No existing
+  assertion was removed or edited.
