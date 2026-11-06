@@ -88,6 +88,8 @@ sequenceDiagram
 - **met** — Test: an enforced plan calls `startEgressSidecar` before the run and
   `stopEgressSidecar` after it, including when the run throws. — evidence:
   `worker/deno/tests/fleet_babysitter_container_egress_4738_test.ts::enforced egress: the sidecar starts before the spawn and stops after it, on success, a throw and a non-zero exit`
+  and
+  `::default sidecar stop reports cleanup failures after the repair`
   — reviewer: met
 - **met** — Test: an egress set-up failure throws with its cause, and no repair
   container is spawned. — evidence:
@@ -148,7 +150,7 @@ sequenceDiagram
 
 ## Test Plan
 
-- Added `worker/deno/tests/fleet_babysitter_container_egress_4738_test.ts` (14
+- Added `worker/deno/tests/fleet_babysitter_container_egress_4738_test.ts` (15
   tests, listed above and under Acceptance Criteria). It also covers: teardown
   problems and throws logged without hiding the result, preflight failures
   before any egress step, key-mounting helper args refused, the default Apple
@@ -168,22 +170,17 @@ sequenceDiagram
   disabled → red; teardown message without token redaction → red; cause = last
   line instead of the last attempt line → red; env not passed to the default
   helper → red; helper temp dir not removed → red; non-zero helper exit on stop
-  ignored → red.
+  ignored → red; default sidecar stop replaced by a no-op → red.
 - Mutation survivors (#4769 retry): the unreadable-exit fallback is pinned by
   the test "a helper whose exit status cannot be read counts as a failed exit
   with code -1 and no signal", and the poll `pause` by "pause waits for the time
   given before it resolves". Both are in the egress test file, and
   `readExitStatus` and `pause` are exported for them.
-- `exempt (untestable)`: default `stopSidecar` = `stopEgressSidecar`. Replacing
-  it by a no-op leaves the suite green because the real function with empty plan
-  keys runs no runtime command. Harness search: `egress_sidecar` tests
-  (`git grep -l stopEgressSidecar worker/deno/tests`) call it only with an
-  injected runner, none can stage a real docker/podman. The sidecar's own tests
-  cover `stopEgressSidecar` itself. The 60 s SIGKILL escalation of the Apple
-  helper stop is likewise untested: a real 60 s wait cannot run in a unit test
+- `exempt (untestable)`: the 60 s SIGKILL escalation of the Apple helper stop
+  is untested: a real 60 s wait cannot run in a unit test
   and the grace is not injectable.
 - Callers of `runBabysitterRepairContainer` checked: none outside its test files
   (`git grep -n runBabysitterRepairContainer`); not wired into `fix()` (#4774).
 - Results:
-  `deno task test:unit tests/fleet_babysitter_container_4738_test.ts tests/fleet_babysitter_container_egress_4738_test.ts`
-  passed (50 passed, 0 failed) on the final code head.
+  `deno task test:unit tests/fleet_babysitter_container_egress_4738_test.ts`
+  passed (15 passed, 0 failed) after the review fix.

@@ -7,7 +7,7 @@
  * wiring. Fake deps stand in for the runtime and the egress steps, and record
  * every call in one ordered event list. The default Apple helper runs for real
  * against a stub script in a temp checkout, and the default sidecar wiring runs
- * for real where it refuses or returns before any runtime call. Every env reader
+ * for real with a missing runtime to observe cleanup failures. Every env reader
  * is injected, so no test reads the host environment and none sets a variable.
  */
 
@@ -909,6 +909,36 @@ Deno.test("default sidecar wiring: the real start refuses an enforced plan with 
     assertEquals(result, { containerName: at(control.built, 0, "build") });
     assertEquals(control.spawns.length, 1, "the control spawns once");
     assertEquals(control.logged, [], "the default stop reports no problem");
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("default sidecar stop reports cleanup failures after the repair", async () => {
+  const f = await makeFixture();
+  try {
+    const wiring = defaultWiring(hostEnv(`${f.root}/home`), (name) => ({
+      ...fakePlan(f.root, name, "enforced"),
+      proxyStopArgs: ["rm", "-f", `${name}-proxy`],
+      networkRemoveArgs: ["network", "rm", `${name}-network`],
+    }));
+    const result = await runBabysitterRepairContainer(inputFor(f), {
+      ...wiring.deps,
+      startSidecar: () => Promise.resolve(),
+      log: (message) => wiring.logged.push(message),
+    });
+    assertEquals(result, { containerName: at(wiring.built, 0, "build") });
+    assertEquals(wiring.spawns.length, 1);
+    assert(
+      wiring.logged.some((message) =>
+        message.includes("could not remove the egress proxy (exit 1)")
+      ),
+    );
+    assert(
+      wiring.logged.some((message) =>
+        message.includes("could not remove the egress network (exit 1)")
+      ),
+    );
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }
