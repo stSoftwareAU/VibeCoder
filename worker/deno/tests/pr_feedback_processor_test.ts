@@ -20,6 +20,15 @@ import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import {
+  buildSummaryDigestMarker,
+  PR_SUMMARY_DIGEST_PREFIX,
+  prSummaryDigest,
+  syncPrBodyFromSummary,
+} from "../lib/pr_body_sync.ts";
+import { WORKER_PR_MARKER_PREFIX } from "../lib/pr_body.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
+import { verifyPushLanded } from "../lib/push_claim_verification.ts";
 import type { Logger } from "../types.ts";
 import type {
   ClaudeDeps,
@@ -487,6 +496,136 @@ Deno.test("processPrFeedback - syncs the PR body once after a verified push", as
   assertEquals(calls[0]?.prNumber, 42);
   assertEquals(calls[0]?.repo, "org/repo");
   assertEquals(calls[0]?.beforeSha, DEFAULT_MOCK_HEAD_SHA);
+});
+
+Deno.test("processPrFeedback - syncs a landed self-push before a turn-limit failure", async () => {
+  const root = await Deno.makeTempDir();
+  const remote = `${root}/remote.git`;
+  const repoPath = `${root}/repo`;
+  const branchName = "issue-42-feedback";
+  const summaryPath = `${repoPath}/docs/archive/pr-summaries/pr-summary-42.md`;
+  const oldSummary = "## Summary\n\nPrevious summary. Closes #42.\n";
+  const newSummary = "## Summary\n\nRewritten summary. Closes #42.\n";
+  const ghCalls: string[][] = [];
+  const events: string[] = [];
+  let currentBody = "";
+  let headSha = "";
+
+  const git = async (cwd: string, args: string[]) => {
+    const result = await new Deno.Command("git", {
+      args,
+      cwd,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    if (result.code !== 0) {
+      throw new Error(
+        `git ${args.join(" ")} failed: ${new TextDecoder().decode(result.stderr)}`,
+      );
+    }
+    return new TextDecoder().decode(result.stdout).trim();
+  };
+
+  try {
+    await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
+      recursive: true,
+    });
+    await git(root, ["init", "--bare", "-q", remote]);
+    await git(repoPath, ["init", "-q"]);
+    await git(repoPath, ["config", "user.name", "Test worker"]);
+    await git(repoPath, ["config", "user.email", "worker@example.test"]);
+    await git(repoPath, ["checkout", "-b", branchName]);
+    await Deno.writeTextFile(summaryPath, oldSummary);
+    await git(repoPath, ["add", "docs/archive/pr-summaries/pr-summary-42.md"]);
+    await git(repoPath, ["commit", "-m", "Initial PR summary"]);
+    await git(repoPath, ["remote", "add", "origin", remote]);
+    await git(repoPath, ["push", "-u", "origin", branchName]);
+    const oldSha = await git(repoPath, ["rev-parse", "HEAD"]);
+    currentBody =
+      `${oldSummary}\n---\n\n🤖 Processed by: old-worker\n` +
+      `${WORKER_PR_MARKER_PREFIX}42 -->\n` +
+      buildSummaryDigestMarker(await prSummaryDigest(oldSummary));
+
+    const gh = openPrGh(async (args) => {
+      ghCalls.push(args);
+      if (args[0] === "pr" && args[1] === "view") {
+        return JSON.stringify({
+          state: "OPEN",
+          mergeable: "CONFLICTING",
+          body: currentBody,
+          files: [],
+          headRefOid: headSha || oldSha,
+          headRefName: branchName,
+        });
+      }
+      if (args[0] === "pr" && args[1] === "edit") {
+        const bodyPath = args[args.indexOf("--body-file") + 1];
+        currentBody = await Deno.readTextFile(bodyPath);
+        events.push("body-edit");
+        return "";
+      }
+      return "";
+    });
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: gh,
+      },
+      claude: {
+        runClaudeWithRetry: async () => {
+          if (headSha === "") {
+            await Deno.writeTextFile(summaryPath, newSummary);
+            await git(repoPath, ["add", "docs/archive/pr-summaries/pr-summary-42.md"]);
+            await git(repoPath, ["commit", "-m", "Rewrite PR summary"]);
+            await git(repoPath, ["push", "origin", branchName]);
+            headSha = await git(repoPath, ["rev-parse", "HEAD"]);
+            return {
+              ok: true,
+              value: { output: "Pushed the summary rewrite", exitCode: 0, timedOut: false },
+            };
+          }
+          return {
+            ok: false,
+            error: new AgentTurnLimitError("error_max_turns"),
+          };
+        },
+      },
+      pr: {
+        handlePrCommentFailure: async () => {
+          events.push("failure-accounted");
+          return { ok: true, value: undefined };
+        },
+      },
+    });
+
+    const result = await processPrFeedback(makeInput({ branchName }), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      workDir: repoPath,
+      workRoot: root,
+      qualityInstructions: "",
+      verifyPushFn: (branch, options) => verifyPushLanded(branch, options),
+      syncPrBodyFn: (input, syncDeps) =>
+        syncPrBodyFromSummary(input, {
+          ...syncDeps,
+          runGitCommand,
+        }),
+      driftCheckFn: async (_input, driftDeps) => {
+        await driftDeps.runAgent({ prompt: "drift check", readOnly: true });
+        return { status: "clean", checked: [] };
+      },
+    });
+
+    assertEquals(result.ok, false);
+    if (!result.ok) assertStringIncludes(result.error.message, "error_max_turns");
+    const edits = ghCalls.filter((args) => args[0] === "pr" && args[1] === "edit");
+    assertEquals(edits.length, 1);
+    assertStringIncludes(currentBody, "Rewritten summary.");
+    assertEquals(events, ["body-edit", "failure-accounted"]);
+    assertStringIncludes(currentBody, PR_SUMMARY_DIGEST_PREFIX);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 Deno.test("processPrFeedback - syncs the PR body when nothing was pushed and nothing is left unpushed (Issue #3315)", async () => {

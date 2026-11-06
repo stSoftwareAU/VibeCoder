@@ -1270,9 +1270,56 @@ async function _processFeedbackWithHeartbeat(
   // Issue #3404: every agent invocation of this run goes through here, so the
   // run's stats are collected in one place whichever helper retries it.
   const turnLimit: { failure?: Error } = {};
+  let bodySyncAttempted = false;
+  const syncBody = async (committedHeadSha?: string) => {
+    if (bodySyncAttempted || fixBranch !== undefined) return;
+    bodySyncAttempted = true;
+    await runPrBodySync(
+      {
+        repo,
+        prNumber,
+        repoPath: processorDeps.workDir,
+        beforeSha,
+        workerName: processorDeps.workerName ?? "",
+        githubUser: processorDeps.githubUser ??
+          Deno.env.get("GITHUB_USER") ?? "",
+        runId: getRunId(),
+        branchName: input.branchName,
+        ...(committedHeadSha !== undefined ? { committedHeadSha } : {}),
+      },
+      {
+        runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
+        runGitCommand: deps.git.runGitCommand,
+        logger,
+      },
+      processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary,
+    );
+  };
+  const syncBodyFromVerifiedHead = async () => {
+    if (bodySyncAttempted || fixBranch !== undefined) return;
+    try {
+      const verification = await (processorDeps.verifyPushFn ??
+        verifyPushLanded)(pushBranch, {
+        cwd: processorDeps.workDir,
+      });
+      if (verification.landed && verification.remoteSha !== undefined) {
+        await syncBody(verification.remoteSha);
+      }
+    } catch (error) {
+      // A best-effort body refresh must not replace the turn-limit failure.
+      logger.warn("Turn-limit PR body sync failed", {
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   const failTurnLimit = async (
     error: Error,
   ): Promise<Result<PrFeedbackResult>> => {
+    // Claude may have pushed a rewritten summary before a later invocation
+    // hit its cap. Pin the refresh to the verified remote commit, then keep
+    // the original failure outcome and accounting.
+    await syncBodyFromVerifiedHead();
     await chargeReviewFailure(error.message);
     return { ok: false, error };
   };
@@ -1792,27 +1839,6 @@ async function _processFeedbackWithHeartbeat(
       if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
     }
   }
-  const syncBody = async () => {
-    await runPrBodySync(
-      {
-        repo,
-        prNumber,
-        repoPath: processorDeps.workDir,
-        beforeSha,
-        workerName: processorDeps.workerName ?? "",
-        githubUser: processorDeps.githubUser ??
-          Deno.env.get("GITHUB_USER") ?? "",
-        runId: getRunId(),
-        branchName: input.branchName,
-      },
-      {
-        runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
-        runGitCommand: deps.git.runGitCommand,
-        logger,
-      },
-      processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary,
-    );
-  };
   const holdUnverifiedReview = async (failure: Error) => {
     // An agent may already have pushed the corrected summary. Refresh that
     // visible head even when another finding still blocks this review (#3982).
