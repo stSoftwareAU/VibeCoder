@@ -363,9 +363,9 @@ function observedPr(
 }
 
 /**
- * Observe one repository's cohort PRs. Pages stop at the first page whose
- * last PR predates the cohort, at a short page, or at the page bound; a bound
- * reached while the cohort may continue marks the repository truncated.
+ * Observe cohort PRs and, during rollout verification, older candidates.
+ * Rollout discovery scans to exhaustion or the page bound: an age cutoff
+ * cannot rule out stranded PRs on later pages. Bound exhaustion is incomplete.
  */
 async function observeRepo(
   gh: GhJson,
@@ -387,12 +387,6 @@ async function observeRepo(
   }
   const startMs = utcMillis(cohort.start, "cohort.start");
   const endMs = utcMillis(cohort.end, "cohort.end");
-  const rolloutCutoffMs = rolloutVerifiedAt === undefined
-    ? null
-    : utcMillis(rolloutVerifiedAt, "rolloutVerifiedAt") - STRANDED_AGE_MS;
-  const stopBeforeMs = rolloutCutoffMs === null
-    ? startMs
-    : Math.min(startMs, rolloutCutoffMs);
   const pageBound = Math.ceil(maxPrs / PER_PAGE);
   const kept: Json[] = [];
   const rolloutKept: Json[] = [];
@@ -413,18 +407,18 @@ async function observeRepo(
       );
       if (createdMs >= startMs && createdMs < endMs) kept.push(pr);
       else if (
-        rolloutCutoffMs !== null && createdMs < startMs &&
-        createdMs <= rolloutCutoffMs
+        rolloutVerifiedAt !== undefined && createdMs < startMs
       ) rolloutKept.push(pr);
     }
     const oldest = utcMillis(
       asText(batch[batch.length - 1]!.created_at) ?? "",
       `${repo} pull request created_at`,
     );
-    if (oldest < stopBeforeMs || batch.length < PER_PAGE) break;
+    if (batch.length < PER_PAGE) break;
+    if (rolloutVerifiedAt === undefined && oldest < startMs) break;
     if (page >= pageBound) {
       truncated = true;
-      rolloutIncomplete = rolloutCutoffMs !== null;
+      rolloutIncomplete = rolloutVerifiedAt !== undefined;
       break;
     }
   }
@@ -748,13 +742,12 @@ function ciBlockersFor(
 }
 
 /** Time spent between a recorded failed repair and its next confirmed repair. */
-function recoveryBlockersFor(
+export function recoveryBlockersFor(
   record: PrCompletionRecord,
   actions: readonly TrustedPrAction[],
 ): Blocker[] {
   const endCap = record.mergedAt ?? record.closedAt ?? record.observedAt ??
     null;
-  const endCapMs = endCap === null ? null : utcMillis(endCap, "PR end");
   const repairs = actions.filter((action) =>
     action.verified && action.kind === "repair"
   ).sort((a, b) =>
@@ -762,33 +755,39 @@ function recoveryBlockersFor(
     utcMillis(b.timestamp, "repair action timestamp")
   );
   const out: Blocker[] = [];
-  for (const [index, failed] of repairs.entries()) {
-    if (failed.outcome !== "failed") continue;
-    const startedMs = utcMillis(failed.timestamp, "repair action timestamp");
-    if (endCapMs !== null && startedMs > endCapMs) continue;
-    const recovered = repairs.slice(index + 1).find((action) =>
-      action.outcome === "confirmed" &&
-      utcMillis(action.timestamp, "repair action timestamp") >= startedMs
-    );
-    const recoveredAt = recovered?.timestamp ?? null;
-    const endedAt = endCap !== null && (recoveredAt === null ||
-        endCapMs !== null &&
-          utcMillis(recoveredAt, "repair recovery timestamp") > endCapMs)
-      ? endCap
-      : recoveredAt;
+  let pending: string | null = null;
+  for (const action of repairs) {
+    if (
+      endCap !== null &&
+      utcMillis(action.timestamp, "repair timestamp") >
+        utcMillis(endCap, "PR end")
+    ) break;
+    if (action.outcome === "failed") pending ??= action.timestamp;
+    if (action.outcome === "confirmed" && pending !== null) {
+      out.push({
+        repo: record.repo,
+        prNumber: record.number,
+        blocker: "repair-recovery",
+        startedAt: pending,
+        endedAt: action.timestamp,
+      });
+      pending = null;
+    }
+  }
+  if (pending !== null) {
     out.push({
       repo: record.repo,
       prNumber: record.number,
       blocker: "repair-recovery",
-      startedAt: failed.timestamp,
-      endedAt,
+      startedAt: pending,
+      endedAt: endCap,
     });
   }
   return out;
 }
 
 /** Time spent waiting for checks after a trusted reviewer branch refresh. */
-function branchRefreshBlockersFor(
+export function branchRefreshBlockersFor(
   record: PrCompletionRecord,
   actions: readonly TrustedPrAction[],
   runs: readonly CiRun[],
@@ -811,7 +810,8 @@ function branchRefreshBlockersFor(
     const startedMs = utcMillis(action.timestamp, "branch update timestamp");
     if (endCapMs !== null && startedMs > endCapMs) return [];
     const completed = runs.flatMap((run) =>
-      run.kind === "workflow_run" && run.headSha &&
+      (run.kind === "workflow_run" || run.kind === "check_run") &&
+        run.outcome && run.headSha &&
         commitShas.includes(run.headSha) && run.completedAt &&
         utcMillis(run.completedAt, "workflow completedAt") >= startedMs
         ? [run.completedAt]
@@ -821,8 +821,8 @@ function branchRefreshBlockersFor(
       utcMillis(b, "workflow completedAt")
     )[0] ?? null;
     const endedAt = endCap !== null && (completed === null ||
-        endCapMs !== null &&
-          utcMillis(completed, "workflow completedAt") > endCapMs)
+        utcMillis(completed, "workflow completedAt") >
+          utcMillis(endCap, "PR end"))
       ? endCap
       : completed;
     return [{
@@ -1178,7 +1178,9 @@ async function ciRunsFor(
         durationSeconds,
         outcome: asText(check.conclusion),
         startedAt: asText(check.started_at),
-        completedAt: asText(check.completed_at),
+        completedAt: check.status === "completed"
+          ? asText(check.completed_at)
+          : null,
       });
     }
   }
@@ -1223,7 +1225,7 @@ async function ciRunsFor(
         headSha,
         outcome: asText(run.conclusion),
         startedAt: started,
-        completedAt: asText(run.updated_at),
+        completedAt: run.status === "completed" ? asText(run.updated_at) : null,
       });
       const jobs = await fetchPages(
         `repos/${record.repo}/actions/runs/${runId}/attempts/${attempt}/jobs`,
@@ -1890,8 +1892,8 @@ function linkBranchPush(
  * Whether a cohort PR is stranded at the rollout verification instant: created
  * before it, still open at it (no merge or close at or before it), at least
  * {@link STRANDED_AGE_MS} old at it, and not owner-gated. A PR that merged after
- * the instant is stranded. PRs created before the cohort start never reach
- * this check.
+ * the instant is stranded. Older rollout candidates are checked separately
+ * from cohort PRs.
  */
 function strandedAt(pr: PrCompletionRecord, verifiedMs: number): boolean {
   const createdMs = utcMillis(pr.createdAt, "PR createdAt");

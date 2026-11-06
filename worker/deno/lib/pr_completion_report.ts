@@ -744,7 +744,21 @@ export function buildPrCompletionReport(
     run.kind === undefined || run.kind === "check_run"
   );
   const jobRows = ciRows.filter((run) => run.kind === "job");
-  const primaryCiRows = workflowRows.length > 0 ? workflowRows : checkRows;
+  // Workflow checks/jobs describe the same work. Retain check-only heads even
+  // when another delivered PR (or an earlier head) has workflow evidence.
+  const workflowHeads = new Set(
+    workflowRows.map((run) =>
+      `${keyOf(run.repo, run.prNumber)}:${run.headSha ?? ""}`
+    ),
+  );
+  const primaryCiRows = [
+    ...workflowRows,
+    ...checkRows.filter((run) =>
+      !workflowHeads.has(
+        `${keyOf(run.repo, run.prNumber)}:${run.headSha ?? ""}`,
+      )
+    ),
+  ];
   const durationMinutes = (run: (typeof input.ciRuns)[number]) =>
     run.durationSeconds !== undefined
       ? run.durationSeconds === null ? null : run.durationSeconds / 60
