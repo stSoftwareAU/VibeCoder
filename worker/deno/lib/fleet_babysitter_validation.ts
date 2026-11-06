@@ -146,6 +146,7 @@ export function buildBabysitterValidationProfile(
     "(allow network*)",
     `(deny file-write* (subpath ${quoteProfilePath(`${dir}/.git`)}))`,
     '(deny mach-lookup (global-name "com.apple.securityd"))',
+    '(deny sysctl-read (sysctl-name "kern.procargs2"))',
   ].join("\n");
 }
 

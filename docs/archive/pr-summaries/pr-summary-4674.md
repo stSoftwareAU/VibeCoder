@@ -53,6 +53,9 @@ validation. Part of #4674 while the native macOS run is pending. Version bump:
   a guard page: Invalid argument`; it was unrelated to the
   exercised browser and containment paths and has been removed. Process queries
   remain covered with native probes.
+- The third native attempt showed the profile's process-information allowance
+  also exposed `kern.procargs2` for a host process. The profile now explicitly
+  denies that environment query while retaining same-sandbox process queries.
 - The repository's existing browser integration now supplies unsandboxed
   positive controls for the credential files, symlink targets, Keychains,
   `securityd`, unrelated Mach lookup, process environment, and `.git` write
@@ -126,6 +129,8 @@ sequenceDiagram
   runtime probe aborted under the native `sandbox-exec` profile; native
   process-query probes and actual Chromium rendering remain covered by the
   integration test.
+- `worker/deno/tests/fleet_babysitter_validation_test.ts` asserts the explicit
+  `kern.procargs2` deny; removing the rule makes this policy assertion fail.
 - `worker/deno/tests/fleet_pr_babysitter_test.ts` — 120 passed on the final
   prompt code. CI, review and conflict prompts are checked for Darwin and Linux;
   Linux names unavailable checks for CI and does not direct checks to a runner
@@ -161,11 +166,14 @@ sequenceDiagram
   validation integration and tests.
 - `deno task test:browser` — attempted locally; failed at the platform guard
   with actual `linux`, expected `darwin`, before any macOS containment
-  assertions ran. Native runs 42149859357 and 42150505327 exposed, respectively,
-  the unavailable direct `securityd` lookup and the synthetic gate's Deno CPU
-  probe aborting with `failed to allocate a guard page: Invalid argument`; both
-  probes have been corrected or removed. The next native run remains required
-  and is not claimed as passed.
+  assertions ran. Native runs 42149859357, 42150505327 and 42151050379 exposed,
+  respectively, the unavailable direct `securityd` lookup, the synthetic gate's
+  Deno CPU probe aborting with
+  `failed to allocate a guard page: Invalid
+  argument`, and access to a host
+  process environment through `kern.procargs2`. The first two test issues were
+  corrected; the last now has an explicit deny and needs confirmation on the
+  next native run, so no Mac pass is claimed.
 - No `deno.lock` change. Updated `SECURITY.md`, threat-model control C37 and the
   fleet babysitter manual to describe checkpoint recovery and the macOS CI
   evidence path.

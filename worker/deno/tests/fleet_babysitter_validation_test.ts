@@ -1148,6 +1148,11 @@ Deno.test("validation scopes process inspection and sysctls and permits gate res
     '(allow sysctl-read (sysctl-name-prefix "kern.proc.pid."))',
     '(allow sysctl-read (sysctl-name-prefix "kern.proc.pgrp."))',
   ]);
+  assert(
+    rules.includes(
+      '(deny sysctl-read (sysctl-name "kern.procargs2"))',
+    ),
+  );
   for (const rule of sysctls.filter((rule) => !prefixes.includes(rule))) {
     assertMatch(
       rule,
