@@ -31,7 +31,8 @@ Version bump: No version change was made for this fix.
   refusal raises the diagnostic; a reason change starts a new streak.
 - Approval, required-check, target-SHA, merge-queue and strict-base ownership
   guards remain in the refresh path. Recovery, loss of eligibility and unrelated
-  refusals clear the streak and any active diagnostic.
+  refusals clear the streak and any active diagnostic. An unreadable live state
+  or a thrown base-integrity check preserves both until a later decisive pass.
 
 ### Undiscoverable Facts
 
@@ -94,8 +95,10 @@ flowchart TD
   condition also made it fail.
 - `worker/deno/tests/auto_merge_sweep_test.ts::repeated transient branch refresh refusals persist, notify once, and clear on recovery (Issue #4831)`
   — persists through a new sweep read, posts once at streak two, and clears on
-  recovery. Removing the streak threshold, persisted read or recovery clear made
-  the corresponding assertion fail.
+  recovery. Unreadable live state and a thrown base check preserve the escalated
+  entry and notification, and the next refusal advances the same streak. The
+  new preservation assertion failed before the review fix. Removing the streak
+  threshold, persisted read or recovery clear also made its assertion fail.
 - `worker/deno/tests/auto_merge_sweep_test.ts::a different or permanent refusal does not advance a transient streak (Issue #4831)`
   — checks reason changes, permanent refusals and eligibility loss.
 - `worker/deno/tests/auto_merge_sweep_test.ts::branch-refresh escalation edits its trusted marker comment instead of duplicating it (Issue #4831)`

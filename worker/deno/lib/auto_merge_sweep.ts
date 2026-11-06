@@ -366,7 +366,7 @@ export async function sweepAutoMerge(
           reading = { unknown: true, error: errorMessage(err) };
         }
         if (!reading.open) {
-          await clearRefusal(repo, pr.number);
+          if (reading.open === false) await clearRefusal(repo, pr.number);
           summary.prsSkippedNotOpen++;
           logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
           continue;
@@ -387,7 +387,6 @@ export async function sweepAutoMerge(
             armedNow = false;
           }
         } catch (err) {
-          await clearRefusal(repo, pr.number);
           logger.warn("Auto-merge sweep base check threw — not arming", {
             repo,
             prNumber: pr.number,

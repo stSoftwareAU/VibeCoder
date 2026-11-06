@@ -633,6 +633,32 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
     }]);
     assertEquals(errors.length, 1);
 
+    const escalated = await readBranchRefreshRefusals(workDir);
+    for (
+      const interrupted of [
+        {
+          prLiveState: () =>
+            Promise.resolve({ unknown: true as const, error: "read failed" }),
+        },
+        { checkBaseIntegrity: () => Promise.reject(new Error("read failed")) },
+      ]
+    ) {
+      const skipped = await sweepAutoMerge({
+        ...options,
+        ...interrupted,
+        repos: [VC],
+        branchRefreshRefusals: tracking,
+      });
+      assert(skipped.ok);
+      assertEquals(await readBranchRefreshRefusals(workDir), escalated);
+      assertEquals(notifications, [{
+        repo: VC,
+        prNumber: 4831,
+        active: true,
+        streak: 2,
+      }]);
+    }
+
     const afterRestart = {
       ...tracking,
       load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),

@@ -14,7 +14,10 @@ import {
   extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
 } from "./pr_body.ts";
-import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
+import {
+  extractPartOfIssueNumbers,
+  findMissingCriteria,
+} from "./missing_criterion_close_guard.ts";
 import { runGhCommand } from "./github.ts";
 import {
   prTitleMatchesIssue,
@@ -183,6 +186,19 @@ export interface ClosedPR {
   merged?: boolean;
   /** Issues the PR body's closing keywords name (Issue #1528); see MergedPR. */
   closingRefs?: number[];
+  /**
+   * Issues the PR body names only as `Part of #N` (Issue #3177): work left
+   * unfinished, so a merge does not end the issue for the fleet. Absent on
+   * an older cache row — treat as none.
+   */
+  partOfRefs?: number[];
+  /**
+   * The body's `partial` / `missing` closure entries (Issue #3177). The
+   * closers leave every issue such a merged PR names open, queued to finish,
+   * so its merge does not end the issue for the fleet either. Absent on an
+   * older cache row — treat as none.
+   */
+  missingCriteria?: string[];
 }
 
 /**
@@ -201,6 +217,10 @@ export interface ClosedPRWithMerge {
   closedAt: string | null;
   /** Issues the PR body's closing keywords name (Issue #1528); see MergedPR. */
   closingRefs?: number[];
+  /** Issues the body names only as `Part of #N` (Issue #3177); see ClosedPR. */
+  partOfRefs?: number[];
+  /** The body's unmet closure entries (Issue #3177); see ClosedPR. */
+  missingCriteria?: string[];
 }
 
 /**
@@ -3264,6 +3284,12 @@ export async function fetchClosedPRsByUser(
       closingRefs: extractClosingIssueNumbers(
         typeof item.body === "string" ? item.body : "",
       ),
+      partOfRefs: extractPartOfIssueNumbers(
+        typeof item.body === "string" ? item.body : "",
+      ),
+      missingCriteria: findMissingCriteria(
+        typeof item.body === "string" ? item.body : "",
+      ),
     });
   }
 
@@ -3413,6 +3439,10 @@ export async function fetchRecentlyClosedPRsForFleet(
           closedAt: pr.closedAt ?? pr.mergedAt ?? "",
           merged: true,
           ...(pr.closingRefs ? { closingRefs: pr.closingRefs } : {}),
+          ...(pr.partOfRefs ? { partOfRefs: pr.partOfRefs } : {}),
+          ...(pr.missingCriteria?.length
+            ? { missingCriteria: pr.missingCriteria }
+            : {}),
         });
         continue;
       }
@@ -3446,8 +3476,17 @@ export function mergedPrNamesIssue(
   pr: ClosedPR,
   issueNumber: number,
 ): boolean {
-  return (pr.closingRefs ?? []).includes(issueNumber) ||
-    prTitleMatchesIssue(pr.title, issueNumber);
+  // Issue #3177: the closers leave an issue open, queued to finish, when the
+  // merged PR's closure block marks a criterion `partial` or `missing` —
+  // even under `Closes #N`. The scan must agree, or
+  // the issue and every issue that depends on it are stranded for good.
+  if ((pr.missingCriteria ?? []).length > 0) return false;
+  if ((pr.closingRefs ?? []).includes(issueNumber)) return true;
+  // Issue #3177: a body that says only `Part of #N` left the work unfinished
+  // on purpose, and the closers keep the issue open to resume it. The title
+  // still says `(Issue #N)`, so letting it decide stranded the issue for good.
+  if ((pr.partOfRefs ?? []).includes(issueNumber)) return false;
+  return prTitleMatchesIssue(pr.title, issueNumber);
 }
 
 /**
