@@ -220,6 +220,82 @@ Deno.test("a proposal that only says Part of a fully met issue is left as writte
   assertStringIncludes(output, "Part of #4637");
 });
 
+Deno.test("a fully met issue that the proposal names as Refs or Related to is not closed again (Issue #4637)", () => {
+  for (
+    const ref of [
+      "Refs #4637",
+      "Ref #4637",
+      "refs: #4637",
+      "References #4637",
+      "Related to #4637",
+      "relates to #4637",
+      "Refs owner/repo#4637",
+    ]
+  ) {
+    const proposal = `Rewritten.\n\n${ref}`;
+    const output = guardPrBodyProposal({
+      proposal,
+      liveBody: liveBodyFor(4637, "Closes #4637"),
+      summary: FULLY_MET_SUMMARY,
+      repo: REPO,
+      headRefName: "feature",
+    });
+    assertEquals(output, proposal + "\n\n" + buildIdempotencyMarker(4637), ref);
+    assertEquals(closingKeywordLine(output, 4637), null, ref);
+  }
+});
+
+Deno.test("a Refs to a fully met issue in another repository does not settle its close (Issue #4637)", () => {
+  const output = guardPrBodyProposal({
+    proposal: "Rewritten.\n\nRefs owner/other#4637",
+    liveBody: liveBodyFor(4637, "Closes #4637"),
+    summary: FULLY_MET_SUMMARY,
+    repo: REPO,
+    headRefName: "feature",
+  });
+  assertStringIncludes(output, "\n\nCloses #4637\n\n");
+});
+
+Deno.test("a Refs inside a code span or fence does not settle a fully met issue's close (Issue #4637)", () => {
+  const output = guardPrBodyProposal({
+    proposal: "Rewritten.\n\n`Refs #4637`\n\n```\nRefs #4637\n```",
+    liveBody: liveBodyFor(4637, "Closes #4637"),
+    summary: FULLY_MET_SUMMARY,
+    repo: REPO,
+    headRefName: "feature",
+  });
+  assertStringIncludes(output, "\n\nCloses #4637\n\n");
+});
+
+Deno.test("a Refs to a partly met issue is not a closing reference and adds no closing keyword (Issue #4637)", () => {
+  const proposal = "Rewritten.\n\nRefs #4674";
+  const output = guardPrBodyProposal({
+    proposal,
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+    headRefName: "feature",
+  });
+  assertEquals(closingKeywordLine(output, 4674), null);
+  assertEquals(output, proposal + "\n\n" + buildIdempotencyMarker(4674));
+});
+
+Deno.test("a 50,000-character run of spaces and refs fragments returns with the close added (Issue #4637)", () => {
+  const proposal = " ".repeat(50_000) + "refs ".repeat(2_000) + "!";
+  const output = guardPrBodyProposal({
+    proposal,
+    liveBody: liveBodyFor(4637, "Closes #4637"),
+    summary: FULLY_MET_SUMMARY,
+    repo: REPO,
+    headRefName: "feature",
+  });
+  assertSameText(
+    output,
+    `${proposal}\n\nCloses #4637\n\n${buildIdempotencyMarker(4637)}`,
+    "hostile refs fragments",
+  );
+});
+
 Deno.test("an unrelated closing reference to another issue is restored beside a withheld issue", () => {
   const output = guardPrBodyProposal({
     proposal: "Work.\n\nClose #4674.",

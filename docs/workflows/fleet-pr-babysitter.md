@@ -215,14 +215,17 @@ unchanged head, the description steps run in order:
    is kept only when the summary committed at the pushed head has no `partial`
    or `missing` criterion and the proposal, if any, has no `partial` or
    `missing` criterion of its own. The summary's own wording does not decide it:
-   a fully met summary whose text names no closing keyword for the issue and no
-   explicit `Part of #N` gets `Closes #N` appended, as the canonical assembler
-   does. A bare mention such as "addresses the review on #N" is not a closing
-   claim and does not stop the append. The summary is read with the shared
-   committed loader (`loadCommittedPrSummary`) at the verified pushed head sha,
-   using `git ls-tree` and `git show`. The working tree is never read. The
-   loader tries the same candidate paths as the sync, in order: the canonical
-   `docs/archive/pr-summaries/pr-summary-<N>.md`, the legacy
+   a fully met summary whose text names no closing keyword for the issue gets
+   `Closes #N` appended, as the canonical assembler does, unless the text names
+   the issue as an explicit `Part of #N`, `Refs #N` or `Related to #N` (in this
+   repository, or with no repository given). That non-closing reference is
+   honoured and is not overridden with `Closes #N`. A bare mention such as
+   "addresses the review on #N", or another repository's `owner/repo#N`, is not
+   a closing claim and does not stop the append. The summary is read with the
+   shared committed loader (`loadCommittedPrSummary`) at the verified pushed
+   head sha, using `git ls-tree` and `git show`. The working tree is never read.
+   The loader tries the same candidate paths as the sync, in order: the
+   canonical `docs/archive/pr-summaries/pr-summary-<N>.md`, the legacy
    `docs/pr-summary-<N>.md`, then `.pr_summary`. A failed read leaves the review
    open. An unmet criterion, a missing committed summary or unknown evidence
    gives `Part of #N`. So does a negated sentence such as "does not close #N",
