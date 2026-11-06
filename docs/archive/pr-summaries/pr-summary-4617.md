@@ -14,10 +14,10 @@ agreement:
   `owner/repo/.github/workflows/x.yml@ref` is followed when the worker can read
   the file (`gh api repos/<owner>/<repo>/contents/...`), through the same
   nine-level bound and cycle guard as local calls, at most eight distinct remote
-  files. Relative calls inside a remote workflow use its repository and ref.
-  One that cannot be read is listed as unreadable, never read as
-  non-blocking. Remote files are inspected only through a caller, never as
-  this repository's top-level PR workflows.
+  files. Relative calls inside a remote workflow use its repository and ref. One
+  that cannot be read is listed as unreadable, never read as non-blocking.
+  Remote files are inspected only through a caller, never as this repository's
+  top-level PR workflows.
 - **The real required-check contract.** The worker reads the base branch's
   required checks (rulesets and classic protection) and counts a mutation job
   only when its check, or the check of a job that needs it directly or through
@@ -139,6 +139,12 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- CI repair: the Checkov registration test no longer relies on a live container
+  runtime responding to an image probe. A prohibited Checkov config makes the
+  registered stage fail deterministically; registration when the workflow is
+  present and absence otherwise remain covered by
+  `worker/deno/tests/checkov_check_test.ts::runQualityGate - registers checkov only where checkov.yml exists`.
+  Route detection remains covered by the Checkov probe tests in that file.
 - Review follow-up: the obsolete expectation that a relative call in a remote
   workflow is ignored is replaced by following the remote file at the caller's
   ref, while failed reads remain unreadable. Coverage:
@@ -148,12 +154,14 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
   `worker/deno/tests/ci_mutation_contract_remote_test.ts::matrix reusable callers match the required child, not its sibling`.
   Both tests failed before the fix. No twinned detector was found.
 - CI repair: checked the mutation runner's explicit abort signal and its two
-  hard-stop paths; `deno task test:unit tests/spawn_timeout_check_test.ts
-  tests/mutation_runner_test.ts` passed (97 tests). The PR-summary freshness
-  command reads commit history, so this summary update becomes visible to that
-  check after the babysitter commits it.
-- Review follow-up: reusable checks match the full caller and child name;
-  a sibling is no longer treated as the mutation job. Required feeders still
+  hard-stop paths;
+  `deno task test:unit tests/spawn_timeout_check_test.ts
+  tests/mutation_runner_test.ts`
+  passed (97 tests). The PR-summary freshness command reads commit history, so
+  this summary update becomes visible to that check after the babysitter commits
+  it.
+- Review follow-up: reusable checks match the full caller and child name; a
+  sibling is no longer treated as the mutation job. Required feeders still
   count, as verified by
   `worker/deno/tests/ci_mutation_contract_remote_test.ts::reusable mutation jobs match their own required checks and feeders`.
   The runner probes nextest before passing the CI flag and reports a missing
