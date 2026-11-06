@@ -16,6 +16,10 @@ import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts"
 import { createLogger } from "../lib/logger.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { resetAnnouncedDraftsForTest } from "../lib/auto_merge_sweep.ts";
+import {
+  BRANCH_REFRESH_REFUSAL_FILE,
+  BRANCH_REFRESH_REFUSAL_MARKER,
+} from "../lib/branch_refresh_refusal_streak.ts";
 import { renderPreprReviewRequest } from "../lib/prepr_review_record.ts";
 
 import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
@@ -32,12 +36,20 @@ const PR_NUMBER = 42;
 async function sweepOnePr(
   live: { armed: boolean; labels: string[]; behind: boolean },
   comments = "[]",
+  mergeabilityReadings: Array<string | null> = [],
+  workDir?: string,
 ): Promise<string[][]> {
   resetAnnouncedDraftsForTest();
   const refresh = strictRefreshFixture(REPO, "main", WORKER_USER);
   const calls: string[][] = [];
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
+    if (
+      args[0] === "api" &&
+      args.some((arg) => arg.includes(BRANCH_REFRESH_REFUSAL_MARKER))
+    ) {
+      return Promise.resolve("[]");
+    }
     if (
       (args[0] === "api" && args[1] !== "graphql" &&
         !args[1]?.endsWith("/comments")) ||
@@ -55,12 +67,15 @@ async function sweepOnePr(
       }]));
     }
     if (args[0] === "pr" && args[1] === "view") {
+      const mergeable = mergeabilityReadings.length
+        ? mergeabilityReadings.shift()
+        : "MERGEABLE";
       return Promise.resolve(JSON.stringify({
         state: "OPEN",
         isDraft: false,
         baseRefName: "main",
         headRefOid: "a".repeat(40),
-        mergeable: "MERGEABLE",
+        mergeable,
         autoMergeRequest: live.armed
           ? { enabledAt: "2026-01-01T00:00:00Z" }
           : null,
@@ -96,16 +111,17 @@ async function sweepOnePr(
     return Promise.resolve("");
   };
 
-  const workDir = await Deno.makeTempDir({ prefix: "auto-merge-disarm-" });
+  const ownedWorkDir = workDir ??
+    await Deno.makeTempDir({ prefix: "auto-merge-disarm-" });
   try {
     const { deps } = await createProductionRunCoreDeps({
-      repoDir: workDir,
-      workDir,
+      repoDir: ownedWorkDir,
+      workDir: ownedWorkDir,
       githubUser: WORKER_USER,
       logger: createLogger({ write: () => {} }),
       config: {
         ...buildDefaultWorkerConfig(),
-        workDir,
+        workDir: ownedWorkDir,
         repos: [REPO],
         allowedAuthors: [WORKER_USER],
         fleetPrAuthors: [],
@@ -115,7 +131,11 @@ async function sweepOnePr(
     const result = await deps.ensureAutoMerge!();
     assert(result.ok, "the sweep itself must succeed");
   } finally {
-    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+    if (!workDir) {
+      await Deno.remove(ownedWorkDir, { recursive: true }).catch(() =>
+        undefined
+      );
+    }
   }
   return calls;
 }
@@ -163,10 +183,47 @@ for (
       calls.some((c) =>
         c.includes("PUT") && c.some((arg) => arg.endsWith("/update-branch"))
       ),
-      "the eligible armed PR requested a branch refresh",
+      `the eligible armed PR requested a branch refresh: ${
+        JSON.stringify(calls)
+      }`,
     );
   });
 }
+
+Deno.test("production ensureAutoMerge persists and escalates a repeated transient refresh refusal (Issue #4831)", async () => {
+  const workDir = await Deno.makeTempDir({
+    prefix: "auto-merge-refresh-escalation-",
+  });
+  try {
+    await Deno.writeTextFile(
+      `${workDir}/${BRANCH_REFRESH_REFUSAL_FILE}`,
+      JSON.stringify({
+        [`${REPO}#${PR_NUMBER}`]: {
+          reason: "mergeability-unknown",
+          streak: 1,
+          lastSeenAtMs: Date.now(),
+          notified: false,
+        },
+      }),
+    );
+    const calls = await sweepOnePr(
+      { armed: true, labels: [], behind: true },
+      "[]",
+      ["MERGEABLE", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"],
+      workDir,
+    );
+    assert(
+      calls.some((args) => args[0] === "pr" && args[1] === "comment"),
+      "production ensureAutoMerge must post the held-PR diagnostic",
+    );
+    const state = JSON.parse(
+      await Deno.readTextFile(`${workDir}/${BRANCH_REFRESH_REFUSAL_FILE}`),
+    );
+    assertEquals(state[`${REPO}#${PR_NUMBER}`].notified, true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
 
 import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
 

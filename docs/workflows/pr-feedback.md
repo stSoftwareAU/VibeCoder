@@ -856,6 +856,15 @@ test PRs against their future head; conflicts remain on the repair path.
   and merge are pending, then a later pass releases it after merge, closure,
   failed required checks or bounded expiry. The same required-check contract
   applies across those lanes; optional pending or skipped jobs do not block.
+  GitHub may temporarily report `UNKNOWN` mergeability or a test-merge commit
+  whose parents lag the live head/base. The shared refresh checks re-read those
+  states up to three times in the same pass, using the standard retry backoff,
+  while retaining the approval, check, target-SHA and ownership guards. If one
+  of those transient refusals recurs on two consecutive passes, the sweep
+  updates one marked diagnostic comment on the PR and emits a fleet-health
+  error log; it continues trying automatically. Recovery or loss of refresh
+  eligibility clears the streak and marks an existing diagnostic comment
+  recovered.
 - **Removed from a merge queue** (Issue #4424) — a PR the queue removed at its
   current head is not armed until a new head arrives, and a queued base is
   never merged directly (`merge-queue-removed`,
@@ -976,7 +985,10 @@ After feedback fixes and quality checks, the PR is auto-merged._
 ## 🔁 A branch that can never be updated (Issue #335)
 
 A branch update that fails is retried on the next cycle — correct for a
-transient failure, useless for a permanent one. One branch in
+transient failure, useless for a permanent one. Strict-base refreshes also
+retry GitHub's transient mergeability and test-merge-parent calculations
+within the same pass, then escalate a matching refusal that spans two
+consecutive passes. One branch in
 `stSoftwareAU/NEAT-AI-core` logged the same
 `Failed to checkout branch 'issue-3832-detect-cycles-linear'` warning **65
 times** across days: nothing counted the repeats, nothing escalated, and the
