@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4831",
   "definition": "Retry transient UNKNOWN mergeability and stale test-merge parent reads during an armed strict-base branch refresh, then persist repeated refusals and surface a held-PR diagnostic and fleet-health signal.",
   "status": "claimed",
-  "sweptAt": "17f4b06bd0d04307973895a8a270bae56755f3a5",
+  "sweptAt": "0bc8f344d488563152682d2181948dee8e71dd51",
   "paths": [
     "worker/deno/lib/branch_refresh_refusal_streak.ts"
   ]

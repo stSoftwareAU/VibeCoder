@@ -64,7 +64,8 @@ flowchart TD
   `docs/workflows/pr-feedback.md` to describe same-pass retries and the
   diagnostic exception to conflict-only no-comment wording.
 - Registered the new refusal-streak module in the lib-sweep coverage ledger at
-  `docs/audits/lib-sweep-coverage/top-up-4831.json`.
+  `docs/audits/lib-sweep-coverage/top-up-4831.json`, with `sweptAt`
+  pointing to the merge base on `main` so it remains reachable after squash merge.
 - No `deno.lock` dependency changes; Deno-native tooling was used.
 
 ## Reproduction
