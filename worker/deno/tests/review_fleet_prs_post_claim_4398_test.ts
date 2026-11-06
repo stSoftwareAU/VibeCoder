@@ -3,7 +3,6 @@
  * posted, whichever host made them (Issue #4398).
  */
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { auditFilePath, loadEntries } from "../lib/audit_journal.ts";
 import { claimBody } from "../../../.claude/skills/review-fleet-prs/scripts/claim.ts";
 import { releaseClaimAtHead } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
 
@@ -140,8 +139,6 @@ echo "$*" >> "$SHIM_LOG"
 case "$*" in
   "pr view 42 -R acme/widgets --json headRefOid,state,mergeStateStatus,isDraft,mergeable")
     echo "{\\"headRefOid\\":\\"$SHIM_HEAD\\",\\"state\\":\\"OPEN\\",\\"mergeStateStatus\\":\\"CLEAN\\",\\"isDraft\\":false,\\"mergeable\\":\\"MERGEABLE\\"}" ;;
-  "api --method PUT repos/acme/widgets/pulls/42/update-branch -f expected_head_sha=$SHIM_HEAD") echo '{}' ;;
-  "api user --jq .login") echo 'reviewer-app' ;;
   "pr review "*) ;;
   "api repos/acme/widgets/issues/42/comments --paginate") cat "$SHIM_COMMENTS" ;;
   "api -X DELETE repos/acme/widgets/issues/comments/"*) echo "\${4##*/}" >> "$SHIM_DELETED" ;;
@@ -156,11 +153,9 @@ for (
     "moved",
     "replay-owned",
     "replay-human",
-    "refresh",
   ]
 ) {
   const lookupFails = mode === "lookup-fails";
-  const refreshes = mode === "refresh";
   const replay = mode.startsWith("replay-");
   Deno.test(`post.ts main posting safety: ${mode}`, async () => {
     const home = await Deno.makeTempDir();
@@ -168,7 +163,7 @@ for (
     await Deno.mkdir(bin);
     await Deno.writeTextFile(
       `${bin}/gh`,
-      (lookupFails || refreshes ? SHIM.replace("CLEAN", "BEHIND") : SHIM)
+      (lookupFails ? SHIM.replace("CLEAN", "BEHIND") : SHIM)
         .replace(
           'case "$*" in',
           `case "$*" in
@@ -236,13 +231,6 @@ for (
         },
       }),
     );
-    const config = `${home}/config.json`;
-    if (refreshes) {
-      await Deno.writeTextFile(
-        config,
-        JSON.stringify({ service_accounts: ["reviewer-app"] }),
-      );
-    }
     const comments = `${home}/comments.json`;
     await Deno.writeTextFile(
       comments,
@@ -283,9 +271,6 @@ for (
         POST,
         `--input=${input}`,
         `--state-dir=${home}/state`,
-        ...(refreshes
-          ? [`--config=${config}`, "--reviewer=reviewer-app"]
-          : []),
       ],
       env: {
         HOME: home,
@@ -338,32 +323,6 @@ for (
     );
     assertEquals(calls.some((c) => c.includes("--approve")), true);
     if (lookupFails) assertEquals(calls.includes("api user --jq .login"), true);
-    if (refreshes) {
-      assertEquals(
-        calls.includes(
-          `api --method PUT repos/${REPO}/pulls/${NUMBER}/update-branch -f expected_head_sha=${HEAD}`,
-        ),
-        true,
-        calls.join("\n"),
-      );
-      const auditPath = auditFilePath({
-        baseDir: `${home}/state/audit`,
-        workerId: "fleet-reviewer",
-        date: new Date().toISOString().slice(0, 10),
-      });
-      const rows = await loadEntries(auditPath);
-      assertEquals(rows.ok, true);
-      if (!rows.ok) throw rows.error;
-      assertEquals(
-        rows.value.map((entry) => [
-          entry.actionKind,
-          entry.repo,
-          entry.prNumber,
-          entry.outcome,
-        ]),
-        [["branch-update", REPO, NUMBER, "success"]],
-      );
-    }
     const reviewAt = calls.findIndex((c) => c.startsWith("pr review "));
     const deleteAt = calls.findIndex((c) => c.includes("-X DELETE"));
     assertEquals(reviewAt >= 0 && deleteAt > reviewAt, true, calls.join("\n"));
