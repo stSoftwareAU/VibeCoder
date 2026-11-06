@@ -45,7 +45,7 @@ sequenceDiagram
     else Typed capability failure after ready
         Q-->>R: Unavailable
         R->>R: Save scanned patch for unchanged head
-        R-->>G: No push; persist capability retry
+        R-->>G: No push, persist capability retry
         G-->>R: Later eligible pass
         R->>R: Reapply patch and validate again
     end

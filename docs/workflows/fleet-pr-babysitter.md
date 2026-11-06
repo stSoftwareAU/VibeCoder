@@ -137,7 +137,7 @@ sequenceDiagram
         R->>Q: Re-run quality.sh
     else Runner sandbox unavailable
         R->>R: Save scanned patch for unchanged head
-        R-->>G: No push; schedule capability retry
+        R-->>G: No push, schedule capability retry
         G-->>R: Next eligible pass on capable host
         R->>R: Reapply checkpoint in fresh clone
         R->>Q: Re-run required gate
