@@ -143,7 +143,7 @@ const REVERT_REFERENCE = /\bReverts?\s+#(\d{1,7})\b/gi;
 const QUOTED_PR_REFERENCE = /\(#(\d{1,7})\)/g;
 /** Shown once per collection: the CI scope limit, for the coverage notes. */
 const CI_SCOPE_NOTE =
-  "CI history covers workflow runs on observed heads and their check runs; heads without workflow runs may have unobserved checks, and truncated API history is called out per PR";
+  "CI history reads check runs on every observed PR head and workflow attempts/jobs on heads with workflow runs; truncated API history is called out per PR";
 
 /** A PR observed in the cohort, with the text the regressions and rollups read. */
 interface ObservedPr {
@@ -363,9 +363,9 @@ function observedPr(
 }
 
 /**
- * Observe one repository's cohort PRs. Pages stop at the first page whose
- * last PR predates the cohort, at a short page, or at the page bound; a bound
- * reached while the cohort may continue marks the repository truncated.
+ * Observe cohort PRs and, during rollout verification, outside-cohort candidates.
+ * Rollout discovery scans to exhaustion or the page bound: an age cutoff
+ * cannot rule out stranded PRs on later pages. Bound exhaustion is incomplete.
  */
 async function observeRepo(
   gh: GhJson,
@@ -373,7 +373,13 @@ async function observeRepo(
   cohort: CollectOptions["cohort"],
   maxPrs: number,
   truncatedRepos: string[],
-): Promise<{ observed: ObservedPr[]; openBeforeCohort: number }> {
+  rolloutVerifiedAt?: string,
+): Promise<{
+  observed: ObservedPr[];
+  rolloutCandidates: ObservedPr[];
+  rolloutComplete: boolean;
+  openBeforeCohort: number;
+}> {
   const repoInfo = asObject(await gh(`repos/${repo}`), `repos/${repo}`);
   const defaultBranch = asText(repoInfo.default_branch);
   if (defaultBranch === null) {
@@ -381,9 +387,14 @@ async function observeRepo(
   }
   const startMs = utcMillis(cohort.start, "cohort.start");
   const endMs = utcMillis(cohort.end, "cohort.end");
+  const verifiedMs = rolloutVerifiedAt === undefined
+    ? undefined
+    : utcMillis(rolloutVerifiedAt, "rolloutVerifiedAt");
   const pageBound = Math.ceil(maxPrs / PER_PAGE);
   const kept: Json[] = [];
+  const rolloutKept: Json[] = [];
   let truncated = false;
+  let rolloutIncomplete = false;
   for (let page = 1;; page++) {
     const batch = asList(
       await gh(
@@ -398,14 +409,19 @@ async function observeRepo(
         `${repo} pull request created_at`,
       );
       if (createdMs >= startMs && createdMs < endMs) kept.push(pr);
+      else if (
+        verifiedMs !== undefined && createdMs < verifiedMs
+      ) rolloutKept.push(pr);
     }
     const oldest = utcMillis(
       asText(batch[batch.length - 1]!.created_at) ?? "",
       `${repo} pull request created_at`,
     );
-    if (oldest < startMs || batch.length < PER_PAGE) break;
+    if (batch.length < PER_PAGE) break;
+    if (rolloutVerifiedAt === undefined && oldest < startMs) break;
     if (page >= pageBound) {
-      truncated = true;
+      truncated = oldest >= startMs;
+      rolloutIncomplete = rolloutVerifiedAt !== undefined;
       break;
     }
   }
@@ -413,8 +429,15 @@ async function observeRepo(
     kept.length = maxPrs;
     truncated = true;
   }
+  if (rolloutKept.length > maxPrs) {
+    rolloutKept.length = maxPrs;
+    rolloutIncomplete = true;
+  }
   if (truncated) truncatedRepos.push(repo);
   const observed = kept.map((pr) =>
+    observedPr(pr, repo, defaultBranch, cohort.observedAt)
+  );
+  const rolloutCandidates = rolloutKept.map((pr) =>
     observedPr(pr, repo, defaultBranch, cohort.observedAt)
   );
   deriveRollupRoots(observed);
@@ -425,7 +448,12 @@ async function observeRepo(
     pageBound,
     truncatedRepos,
   );
-  return { observed, openBeforeCohort };
+  return {
+    observed,
+    rolloutCandidates,
+    rolloutComplete: !rolloutIncomplete,
+    openBeforeCohort,
+  };
 }
 
 /**
@@ -563,8 +591,8 @@ async function fetchEvidence(
  * Blocker intervals for one PR. `needs-human` is open from a label until its
  * removal. `changes-requested` is open from a CHANGES_REQUESTED review until
  * the next approval, dismissal or commit. An interval that never closes has
- * `endedAt: null`. CI failures are added by {@link ciBlockersFor}; other
- * blocker sources remain unrecorded.
+ * `endedAt: null`. CI failures, failed-repair recovery and reviewer branch
+ * refresh waits are added from their recorded evidence.
  */
 function blockersFor(
   record: PrCompletionRecord,
@@ -713,6 +741,98 @@ function ciBlockersFor(
     });
   }
   return out;
+}
+
+/** Time spent between a recorded failed repair and its next confirmed repair. */
+export function recoveryBlockersFor(
+  record: PrCompletionRecord,
+  actions: readonly TrustedPrAction[],
+): Blocker[] {
+  const endCap = record.mergedAt ?? record.closedAt ?? null;
+  const repairs = actions.filter((action) =>
+    action.verified && action.kind === "repair"
+  ).sort((a, b) =>
+    utcMillis(a.timestamp, "repair action timestamp") -
+    utcMillis(b.timestamp, "repair action timestamp")
+  );
+  const out: Blocker[] = [];
+  let pending: string | null = null;
+  for (const action of repairs) {
+    if (
+      endCap !== null &&
+      utcMillis(action.timestamp, "repair timestamp") >
+        utcMillis(endCap, "PR end")
+    ) break;
+    if (action.outcome === "failed") pending ??= action.timestamp;
+    if (action.outcome === "confirmed" && pending !== null) {
+      out.push({
+        repo: record.repo,
+        prNumber: record.number,
+        blocker: "repair-recovery",
+        startedAt: pending,
+        endedAt: action.timestamp,
+      });
+      pending = null;
+    }
+  }
+  if (pending !== null) {
+    out.push({
+      repo: record.repo,
+      prNumber: record.number,
+      blocker: "repair-recovery",
+      startedAt: pending,
+      endedAt: endCap,
+    });
+  }
+  return out;
+}
+
+/** Time spent waiting for checks after a trusted reviewer branch refresh. */
+export function branchRefreshBlockersFor(
+  record: PrCompletionRecord,
+  actions: readonly TrustedPrAction[],
+  runs: readonly CiRun[],
+): Blocker[] {
+  const endCap = record.mergedAt ?? record.closedAt ?? null;
+  const endCapMs = endCap === null ? null : utcMillis(endCap, "PR end");
+  return actions.flatMap((action) => {
+    if (
+      !action.verified || action.actor !== "fleet" ||
+      action.kind !== "branch-update" ||
+      action.outcome !== "confirmed"
+    ) return [];
+    const commitShas = action.githubEvents?.filter((event) =>
+      event.kind === "implementation" || event.kind === "repair"
+    ).map((event) =>
+      event.id
+    ) ?? [];
+    if (commitShas.length === 0) return [];
+    const startedMs = utcMillis(action.timestamp, "branch update timestamp");
+    if (endCapMs !== null && startedMs > endCapMs) return [];
+    const completed = runs.flatMap((run) =>
+      (run.kind === "workflow_run" || run.kind === "check_run") &&
+        run.outcome && run.headSha &&
+        commitShas.includes(run.headSha) && run.completedAt &&
+        utcMillis(run.completedAt, "workflow completedAt") >= startedMs
+        ? [run.completedAt]
+        : []
+    ).sort((a, b) =>
+      utcMillis(a, "workflow completedAt") -
+      utcMillis(b, "workflow completedAt")
+    )[0] ?? null;
+    const endedAt = endCap !== null && (completed === null ||
+        utcMillis(completed, "workflow completedAt") >
+          utcMillis(endCap, "PR end"))
+      ? endCap
+      : completed;
+    return [{
+      repo: record.repo,
+      prNumber: record.number,
+      blocker: "branch-refresh",
+      startedAt: action.timestamp,
+      endedAt,
+    }];
+  });
 }
 
 /**
@@ -1036,11 +1156,7 @@ async function ciRunsFor(
     if (headSha === null || !heads.includes(headSha)) continue;
     workflowRuns.set(asId(run.id, `${label} workflow run`), { run, headSha });
   }
-  for (
-    const headSha of new Set(
-      [...workflowRuns.values()].map((entry) => entry.headSha),
-    )
-  ) {
+  for (const headSha of mergeCommit ? [] : heads) {
     // filter=all: otherwise GitHub lists only the latest run per check name.
     const checks = await fetchPages(
       `repos/${record.repo}/commits/${headSha}/check-runs?filter=all`,
@@ -1062,7 +1178,9 @@ async function ciRunsFor(
         durationSeconds,
         outcome: asText(check.conclusion),
         startedAt: asText(check.started_at),
-        completedAt: asText(check.completed_at),
+        completedAt: check.status === "completed"
+          ? asText(check.completed_at)
+          : null,
       });
     }
   }
@@ -1107,7 +1225,7 @@ async function ciRunsFor(
         headSha,
         outcome: asText(run.conclusion),
         startedAt: started,
-        completedAt: asText(run.updated_at),
+        completedAt: run.status === "completed" ? asText(run.updated_at) : null,
       });
       const jobs = await fetchPages(
         `repos/${record.repo}/actions/runs/${runId}/attempts/${attempt}/jobs`,
@@ -1774,8 +1892,8 @@ function linkBranchPush(
  * Whether a cohort PR is stranded at the rollout verification instant: created
  * before it, still open at it (no merge or close at or before it), at least
  * {@link STRANDED_AGE_MS} old at it, and not owner-gated. A PR that merged after
- * the instant is stranded. PRs created before the cohort start never reach
- * this check.
+ * the instant is stranded. Older rollout candidates are checked separately
+ * from cohort PRs.
  */
 function strandedAt(pr: PrCompletionRecord, verifiedMs: number): boolean {
   const createdMs = utcMillis(pr.createdAt, "PR createdAt");
@@ -1833,6 +1951,9 @@ export async function collectPrCompletionSnapshot(
   const humanActorIds = new Set(options.humanActorIds ?? []);
 
   const notes: string[] = [];
+  notes.push(
+    "babysitter retry cooldowns without a repair push are not measured as repair-recovery waits; follow-up: #4658",
+  );
   if (options.expected.inventory === undefined) {
     notes.push(
       "no expected host/component deployment inventory supplied; per-host rollout status is unavailable",
@@ -1842,6 +1963,8 @@ export async function collectPrCompletionSnapshot(
   const audit = await readAuditEntries(options.auditDirs, notes);
 
   const observed: ObservedPr[] = [];
+  const rolloutCandidates: ObservedPr[] = [];
+  let rolloutPrsComplete = true;
   let openPrsBeforeCohort = 0;
   for (const repo of repos) {
     const repoObservation = await observeRepo(
@@ -1850,8 +1973,11 @@ export async function collectPrCompletionSnapshot(
       options.cohort,
       maxPrs,
       truncatedRepos,
+      options.rolloutVerifiedAt,
     );
     observed.push(...repoObservation.observed);
+    rolloutCandidates.push(...repoObservation.rolloutCandidates);
+    rolloutPrsComplete &&= repoObservation.rolloutComplete;
     openPrsBeforeCohort += repoObservation.openBeforeCohort;
   }
   for (const o of observed) o.record.actionsComplete = audit.complete;
@@ -1883,6 +2009,41 @@ export async function collectPrCompletionSnapshot(
     new Set(observed.map(({ record }) => keyOf(record.repo, record.number))),
     notes,
   );
+  const rolloutCandidatesByKey = new Map<string, ObservedPr>();
+  for (const candidate of rolloutCandidates) {
+    if (
+      strandedAt(
+        candidate.record,
+        utcMillis(
+          options.rolloutVerifiedAt!,
+          "rolloutVerifiedAt",
+        ),
+      )
+    ) {
+      const evidence = await fetchEvidence(
+        options.gh,
+        candidate.record.repo,
+        candidate.record.number,
+        notes,
+      );
+      const actions = verifiedActions.filter((action) =>
+        action.repo === candidate.record.repo &&
+        action.prNumber === candidate.record.number
+      );
+      unmatchedActions(
+        candidate,
+        gitHubEvents(candidate, evidence),
+        actions.filter((action) => action.actor === "fleet"),
+        new Set<TrustedPrAction>(),
+        humanActorIds,
+      );
+      verifyOwnerGate(candidate.record, evidence, actions);
+      rolloutCandidatesByKey.set(
+        keyOf(candidate.record.repo, candidate.record.number),
+        candidate,
+      );
+    }
+  }
   const verifiedFleet = [
     ...verifiedActions.filter((action) =>
       action.verified && action.actor === "fleet"
@@ -1973,6 +2134,7 @@ export async function collectPrCompletionSnapshot(
     blockers.push(...blockersFor(record, evidence));
     const events = gitHubEvents(o, evidence);
     const fleet = fleetByPr.get(keyOf(record.repo, record.number)) ?? [];
+    blockers.push(...recoveryBlockersFor(record, fleet));
     const unmatched = unmatchedActions(o, events, fleet, used, humanActorIds);
     // Reserve the log row for a matched reviewer post before another GitHub
     // review can claim it. Unmatched journal actions cannot supersede logs.
@@ -2022,6 +2184,7 @@ export async function collectPrCompletionSnapshot(
     ciRuns.push(...prCiRuns);
     blockers.push(
       ...ciBlockersFor(record, prCiRuns, options.cohort.observedAt),
+      ...branchRefreshBlockersFor(record, fleet, prCiRuns),
     );
     // Merge-commit runs feed only the post-merge regressions, not CI cost
     // totals, so they are read separately and kept out of `ciRuns`.
@@ -2068,6 +2231,7 @@ export async function collectPrCompletionSnapshot(
       options.expected.policyFingerprint,
       notes,
     );
+    discovery.complete &&= rolloutPrsComplete;
     const expectedBabysitterHosts = options.expected.inventory
       ?.filter((item) => item.component === "babysitter")
       .map((item) => item.hostId) ?? [];
@@ -2085,7 +2249,12 @@ export async function collectPrCompletionSnapshot(
     rollout = {
       verifiedAt: options.rolloutVerifiedAt,
       discoveryEvidenceComplete: discovery.complete,
-      strandedPrs: records.filter((pr) => strandedAt(pr, verifiedMs)).map(
+      strandedPrs: [
+        ...records,
+        ...[...rolloutCandidatesByKey.values()].map((candidate) =>
+          candidate.record
+        ),
+      ].filter((pr) => strandedAt(pr, verifiedMs)).map(
         (pr) => {
           const events = discovery.events.filter((event) =>
             event.repo === pr.repo && event.prNumber === pr.number

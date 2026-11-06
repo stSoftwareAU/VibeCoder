@@ -227,7 +227,10 @@ always carry `actionId`, `component` and `actionKind`. `prNumber` is set only
 for a PR target, and `headSha` only on a `gh pr merge` that carries
 `--match-head-commit`. `deliveredCommits` appears
 only on `git-push` entries whose command line the chokepoint can parse and
-whose history it can enumerate, whether or not the push succeeds.
+whose history it can enumerate, whether or not the push succeeds. The reviewer's
+gate and post paths also call the canonical audit writer for their
+`update-branch` request, recording the PR number and request outcome; the
+collector correlates the resulting commit from GitHub's PR commit list.
 Entries written before this
 change carry none of them:
 

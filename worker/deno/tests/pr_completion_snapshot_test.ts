@@ -41,13 +41,17 @@ import {
 import {
   buildPrCompletionReport,
   formatPrCompletionReport,
+  type PrCompletionInput,
+  type PrCompletionRecord,
   type TrustedPrAction,
 } from "../lib/pr_completion_report.ts";
 import {
+  branchRefreshBlockersFor,
   type CollectedSnapshot,
   type CollectOptions,
   collectPrCompletionSnapshot,
   type GhJson,
+  recoveryBlockersFor,
 } from "../lib/pr_completion_snapshot.ts";
 
 import {
@@ -1134,7 +1138,7 @@ function emptyFixture(extra: Partial<Fixture> = {}): Fixture {
   return { calls: [], ...extra };
 }
 
-Deno.test("collect - many commits require one CI listing and budget exhaustion is reported", async () => {
+Deno.test("collect - every observed commit head gets CI checks and budget exhaustion is reported", async () => {
   const fixture = emptyFixture({
     pulls: {
       [REPO]: [pull(1, { merged_at: null, closed_at: null, state: "open" })],
@@ -1158,7 +1162,7 @@ Deno.test("collect - many commits require one CI listing and budget exhaustion i
     complete.calls.filter((path) =>
       path.includes("/actions/runs") || path.includes("/check-runs")
     ).length,
-    1,
+    92,
   );
   const snapshot = await collectPrCompletionSnapshot(
     options(fakeGh(fixture), { ciCallBudget: 1 }),
@@ -1174,6 +1178,34 @@ Deno.test("collect - many commits require one CI listing and budget exhaustion i
       note.includes("CI history truncated")
     ),
   );
+});
+
+Deno.test("collect - check runs are read for an observed head with no workflow runs", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1)] },
+    checks: {
+      sha1: {
+        total_count: 1,
+        check_runs: [{
+          id: 91,
+          status: "completed",
+          conclusion: "success",
+          started_at: "2026-10-20T00:00:00Z",
+          completed_at: "2026-10-20T00:04:00Z",
+        }],
+      },
+    },
+  });
+
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+
+  assertEquals(snapshot.input.ciRuns.map((run) => [run.kind, run.runId]), [[
+    "check_run",
+    "91",
+  ]]);
+  assert(fixture.calls.includes(
+    "repos/org/repo/commits/sha1/check-runs?filter=all&per_page=100&page=1",
+  ));
 });
 
 Deno.test("collect - incomplete CI is reflected in delivered metrics and coverage", async () => {
@@ -1193,7 +1225,9 @@ Deno.test("collect - incomplete CI is reflected in delivered metrics and coverag
   const snapshot = await collectPrCompletionSnapshot(
     options(fakeGh(fixture), { ciCallBudget: 5 }),
   );
-  assertEquals(snapshot.input.ciIncompletePrs, [{ repo: REPO, prNumber: 2 }]);
+  assertEquals(snapshot.input.ciIncompletePrs, [
+    { repo: REPO, prNumber: 2 },
+  ]);
   const runs = snapshot.input.ciRuns.filter((run) =>
     run.kind === "workflow_run"
   );
@@ -2287,9 +2321,12 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
     ),
   );
   assert(
-    !fixture.calls.some((path) =>
+    fixture.calls.some((path) =>
       path.startsWith("repos/org/repo/commits/sha2/check-runs?")
     ),
+  );
+  assert(
+    !fixture.calls.some((path) => path.includes("/commits/merge1/check-runs")),
   );
   // The merge commit's runs are read for post-merge regressions only, so they
   // do not enter the CI history that feeds the cost totals.
@@ -2576,6 +2613,107 @@ Deno.test("collect - blocker intervals are closed or open as the events dictate"
   ]);
   const report = buildPrCompletionReport(snapshot.input);
   assertEquals(report.waiting.openIntervals, 2);
+});
+
+Deno.test("collect - recorded repair recovery and reviewer refresh waits are attributed", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "repair",
+        actionId: "repair-failed",
+        repo: REPO,
+        prNumber: 1,
+        outcome: "error",
+        timestamp: "2026-10-20T00:00:00Z",
+      },
+      {
+        verb: "git-push",
+        actionKind: "repair",
+        actionId: "repair-retried",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "api-put",
+        target: `repos/${REPO}/pulls/1/update-branch`,
+        actionKind: "branch-update",
+        component: "reviewer",
+        actionId: "reviewer-refresh",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:00:00Z",
+      },
+    ]);
+    const fixture = emptyFixture({
+      pulls: {
+        [REPO]: [pull(1, {
+          state: "open",
+          merged_at: null,
+          closed_at: null,
+        })],
+      },
+      commits: {
+        [pk(1)]: [
+          commit("sha1", "2026-10-20T00:00:00Z"),
+          commit(
+            "sha2",
+            "2026-10-20T01:01:00Z",
+          ),
+        ],
+      },
+      workflowRuns: {
+        sha2: {
+          total_count: 1,
+          workflow_runs: [{ id: 77, run_attempt: 1, workflow_id: 9 }],
+        },
+      },
+      workflowAttempts: {
+        "77:1": {
+          id: 77,
+          workflow_id: 9,
+          run_attempt: 1,
+          status: "completed",
+          conclusion: "success",
+          run_started_at: "2026-10-20T01:02:00Z",
+          updated_at: "2026-10-20T01:20:00Z",
+        },
+      },
+    });
+
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), { auditDirs: [dir] }),
+    );
+
+    assertEquals(
+      snapshot.input.blockers.filter((row) =>
+        row.blocker === "repair-recovery" || row.blocker === "branch-refresh"
+      ),
+      [
+        {
+          repo: REPO,
+          prNumber: 1,
+          blocker: "repair-recovery",
+          startedAt: "2026-10-20T00:00:00Z",
+          endedAt: "2026-10-20T00:30:00Z",
+        },
+        {
+          repo: REPO,
+          prNumber: 1,
+          blocker: "branch-refresh",
+          startedAt: "2026-10-20T01:00:00Z",
+          endedAt: "2026-10-20T01:20:00Z",
+        },
+      ],
+    );
+    assertEquals(
+      snapshot.input.actions.find((action) =>
+        action.actionId === "reviewer-refresh"
+      )?.githubEvents,
+      [{ kind: "repair", id: "sha2" }],
+    );
+  });
 });
 
 Deno.test("collect - a CI failure fixed by a later run of the same workflow on a new head closes when that run completes", async () => {
@@ -2966,6 +3104,16 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
       headSha: "sha2",
       recordedAt: "2026-10-24T00:00:00Z",
     });
+    for (const event of ["discovered", "eligible", "processed"] as const) {
+      await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
+        event,
+        hostId: "host-a",
+        repo: REPO,
+        prNumber: 6,
+        headSha: "sha6",
+        recordedAt: "2026-10-26T00:00:00Z",
+      });
+    }
     for (
       const [number, event] of [
         [2, "discovered"],
@@ -3030,6 +3178,7 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
             created_at: "2026-10-20T00:00:00Z",
             labels: [{ name: "needs-human" }],
           }),
+          pull(6, { ...open, created_at: "2026-09-01T00:00:00Z" }),
         ],
       },
     });
@@ -3081,15 +3230,22 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
         eligibilityConfirmed: false,
         processed: false,
       },
+      {
+        prNumber: 6,
+        discovered: true,
+        eligibilityConfirmed: true,
+        processed: true,
+      },
     ]);
     assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, true);
     assertEquals(snapshot.input.rollout!.verifiedAt, "2026-10-25T12:00:00Z");
     const report = buildPrCompletionReport(snapshot.input);
-    assertEquals(report.rollout.eligibleStrandedPrs, 4);
-    assertEquals(report.rollout.discoveredPrs, 2);
-    assertEquals(report.rollout.eligibleEventPrs, 2);
-    assertEquals(report.rollout.rediscoveredPrs, 2);
-    assertEquals(report.rollout.processedPrs, 1);
+    assertEquals(report.cohort.prCount, 5);
+    assertEquals(report.rollout.eligibleStrandedPrs, 5);
+    assertEquals(report.rollout.discoveredPrs, 3);
+    assertEquals(report.rollout.eligibleEventPrs, 3);
+    assertEquals(report.rollout.rediscoveredPrs, 3);
+    assertEquals(report.rollout.processedPrs, 2);
     assertEquals(report.rollout.notRediscoveredPrs, 2);
     assertEquals(report.rollout.unknownDiscoveryPrs, 0);
   });
@@ -5193,4 +5349,657 @@ Deno.test("collect - one review pairs with its nearest action, leaving the farth
     );
     assertEquals(find(snapshot, "farther")?.githubEvents, undefined);
   });
+});
+
+Deno.test("collect regression - rollout scans beyond the first pre-cohort page and reports scan bounds", async () => {
+  await withDir(async (dir) => {
+    await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
+      event: "discovered",
+      hostId: "host-a",
+      repo: REPO,
+      prNumber: 101,
+      headSha: "sha101",
+      recordedAt: "2026-10-26T00:00:00Z",
+    });
+    const open = { state: "open", merged_at: null, closed_at: null };
+    const pulls = [
+      ...Array.from({ length: 99 }, (_, i) => pull(i + 1, open)),
+      pull(100, { ...open, created_at: "2026-09-20T00:00:00Z" }),
+      pull(101, { ...open, created_at: "2026-09-19T00:00:00Z" }),
+    ];
+    for (const maxPrs of [100, 200]) {
+      const snapshot = await collectPrCompletionSnapshot(
+        options(fakeGh(emptyFixture({ pulls: { [REPO]: pulls } })), {
+          maxPrsPerRepo: maxPrs,
+          rolloutVerifiedAt: "2026-10-25T00:00:00Z",
+          babysitterStateDirs: [dir],
+          expected: {
+            components: ["babysitter"],
+            inventory: [{ hostId: "host-a", component: "babysitter" }],
+            revision: "rev1",
+            policyFingerprint: FP,
+            maxHeartbeatAgeHours: 24,
+          },
+        }),
+      );
+      assertEquals(snapshot.input.prs.length, 99);
+      assertEquals(
+        snapshot.input.rollout!.strandedPrs.filter((p) => p.prNumber >= 100)
+          .map((p) => p.prNumber),
+        maxPrs === 100 ? [100] : [100, 101],
+      );
+      assertEquals(
+        snapshot.input.rollout!.discoveryEvidenceComplete,
+        maxPrs === 200,
+      );
+      assertEquals(snapshot.truncatedRepos.includes(REPO), false);
+      const report = buildPrCompletionReport(snapshot.input);
+      assertEquals(report.cohort.prCount, 99);
+    }
+    const result = await runPrCompletionCollect(
+      {
+        ...cliArgs,
+        "audit-dir": dir,
+        "rollout-verified-at": "2026-10-25T00:00:00Z",
+        "babysitter-state-dir": dir,
+        "expected-inventory": "host-a/babysitter",
+        "max-prs-per-repo": "200",
+      },
+      { repos: [REPO] } as unknown as WorkerConfig,
+      fakeGh(emptyFixture({ pulls: { [REPO]: pulls } })),
+      () => undefined,
+    );
+    assertEquals(result.success, true, result.message);
+    assertEquals(result.data?.report.rollout.eligibleStrandedPrs, 101);
+    assertEquals(result.data?.report.cohort.prCount, 99);
+  });
+});
+
+Deno.test("collect regression - repeated failed repairs form one recovery interval", async () => {
+  for (const recovered of [true, false]) {
+    await withDir(async (dir) => {
+      await journal(dir, [
+        {
+          verb: "git-push",
+          actionKind: "repair",
+          actionId: "fail1",
+          repo: REPO,
+          prNumber: 1,
+          outcome: "error",
+          timestamp: "2026-10-20T00:00:00Z",
+        },
+        {
+          verb: "git-push",
+          actionKind: "repair",
+          actionId: "fail2",
+          repo: REPO,
+          prNumber: 1,
+          outcome: "error",
+          timestamp: "2026-10-20T00:10:00Z",
+        },
+        ...(recovered
+          ? [{
+            verb: "git-push",
+            actionKind: "repair" as const,
+            actionId: "recover",
+            repo: REPO,
+            prNumber: 1,
+            timestamp: "2026-10-20T00:30:00Z",
+          }]
+          : []),
+      ]);
+      const snapshot = await collectPrCompletionSnapshot(
+        options(
+          fakeGh(
+            emptyFixture({
+              pulls: {
+                [REPO]: [
+                  pull(1, { state: "open", merged_at: null, closed_at: null }),
+                ],
+              },
+            }),
+          ),
+          {
+            auditDirs: [dir],
+            cohort: { ...COHORT, observedAt: "2026-10-20T01:00:00Z" },
+          },
+        ),
+      );
+      assertEquals(
+        buildPrCompletionReport(snapshot.input).waiting.openIntervals,
+        recovered ? 0 : 1,
+      );
+      assertEquals(
+        buildPrCompletionReport(snapshot.input).waiting
+          .intervals["repair-recovery"],
+        { count: 1, seconds: recovered ? 1800 : 3600 },
+      );
+    });
+  }
+});
+
+Deno.test("collect regression - refresh waits require completed CI and accept external checks", async () => {
+  for (const external of [false, true]) {
+    await withDir(async (dir) => {
+      await journal(dir, [{
+        verb: "api-put",
+        target: `repos/${REPO}/pulls/1/update-branch`,
+        actionKind: "branch-update",
+        component: "reviewer",
+        actionId: "refresh",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:00:00Z",
+      }]);
+      const snapshot = await collectPrCompletionSnapshot(
+        options(
+          fakeGh(emptyFixture({
+            pulls: {
+              [REPO]: [
+                pull(1, { state: "open", merged_at: null, closed_at: null }),
+              ],
+            },
+            commits: { [pk(1)]: [commit("sha2", "2026-10-20T01:01:00Z")] },
+            workflowRuns: external
+              ? {}
+              : { sha2: { workflow_runs: [{ id: 77, run_attempt: 1 }] } },
+            workflowAttempts: {
+              "77:1": {
+                status: "in_progress",
+                conclusion: null,
+                run_started_at: "2026-10-20T01:02:00Z",
+                updated_at: "2026-10-20T01:03:00Z",
+              },
+            },
+            checks: external
+              ? {
+                sha2: {
+                  total_count: 1,
+                  check_runs: [{
+                    id: 88,
+                    status: "completed",
+                    conclusion: "success",
+                    started_at: "2026-10-20T01:02:00Z",
+                    completed_at: "2026-10-20T01:20:00Z",
+                  }],
+                },
+              }
+              : {},
+          })),
+          {
+            auditDirs: [dir],
+            cohort: { ...COHORT, observedAt: "2026-10-20T02:00:00Z" },
+          },
+        ),
+      );
+      if (!external) {
+        assertEquals(
+          snapshot.input.ciRuns.find((run) => run.kind === "workflow_run")
+            ?.completedAt,
+          null,
+        );
+      }
+      assertEquals(
+        snapshot.input.blockers.filter((b) => b.blocker === "branch-refresh")
+          .map((b) => b.endedAt),
+        [external ? "2026-10-20T01:20:00Z" : null],
+      );
+      assertEquals(
+        buildPrCompletionReport(snapshot.input).waiting.openIntervals,
+        external ? 0 : 1,
+      );
+      assertEquals(
+        buildPrCompletionReport(snapshot.input).waiting
+          .intervals["branch-refresh"]?.seconds,
+        external ? 1200 : 3600,
+      );
+    });
+  }
+});
+
+Deno.test("collect regression - mixed workflow and check-only heads retain delivery cost without duplicates", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1), pull(2)] },
+    commits: { [pk(1)]: [commit("sha1", "2026-10-20T01:01:00Z")] },
+    workflowRuns: { sha2: { workflow_runs: [{ id: 77, run_attempt: 1 }] } },
+    workflowAttempts: {
+      "77:1": {
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T01:00:00Z",
+        updated_at: "2026-10-20T01:20:00Z",
+      },
+    },
+    checks: Object.fromEntries([1, 2].map((n) => [`sha${n}`, {
+      total_count: 1,
+      check_runs: [{
+        id: 80 + n,
+        status: "completed",
+        conclusion: "success",
+        started_at: "2026-10-20T01:00:00Z",
+        completed_at: `2026-10-20T01:${n === 1 ? "10" : "20"}:00Z`,
+      }],
+    }])),
+    jobs: {
+      "77:1": {
+        total_count: 1,
+        jobs: [{
+          id: 82,
+          status: "completed",
+          conclusion: "success",
+          started_at: "2026-10-20T01:00:00Z",
+          completed_at: "2026-10-20T01:20:00Z",
+        }],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.delivery.ciRunsPerDeliveredChange, 1);
+  assertEquals(report.delivery.ciMinutesPerDeliveredChange, 15);
+  assertEquals(report.delivery.ciJobs, 1);
+  assertEquals(report.delivery.ciChecks, 2);
+  assertEquals(report.delivery.ciMinutes, 30);
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "repair",
+        actionId: "failed1",
+        repo: REPO,
+        prNumber: 1,
+        outcome: "error",
+        timestamp: "2026-10-20T00:00:00Z",
+      },
+      {
+        verb: "git-push",
+        actionKind: "repair",
+        actionId: "failed2",
+        repo: REPO,
+        prNumber: 1,
+        outcome: "error",
+        timestamp: "2026-10-20T00:10:00Z",
+      },
+      {
+        verb: "git-push",
+        actionKind: "repair",
+        actionId: "recovered",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "api-put",
+        target: `repos/${REPO}/pulls/1/update-branch`,
+        actionKind: "branch-update",
+        component: "reviewer",
+        actionId: "refresh",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:00:00Z",
+      },
+    ]);
+    const result = await runPrCompletionCollect(
+      { ...cliArgs, "audit-dir": dir },
+      { repos: [REPO] } as unknown as WorkerConfig,
+      fakeGh(fixture),
+      () => undefined,
+    );
+    assertEquals(result.success, true, result.message);
+    assertEquals(result.data?.report.delivery.ciRunsPerDeliveredChange, 1);
+    assertEquals(result.data?.report.delivery.ciMinutesPerDeliveredChange, 15);
+    assertEquals(result.data?.report.waiting.intervals["repair-recovery"], {
+      count: 1,
+      seconds: 1800,
+    });
+    assertEquals(result.data?.report.waiting.intervals["branch-refresh"], {
+      count: 1,
+      seconds: 600,
+    });
+  });
+});
+
+Deno.test("collect regression - one PR retains check-only and workflow heads", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1)] },
+    commits: { [pk(1)]: [commit("sha2", "2026-10-20T01:01:00Z")] },
+    workflowRuns: { sha2: { workflow_runs: [{ id: 77, run_attempt: 1 }] } },
+    workflowAttempts: {
+      "77:1": {
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T01:00:00Z",
+        updated_at: "2026-10-20T01:20:00Z",
+      },
+    },
+    checks: Object.fromEntries([1, 2].map((n) => [`sha${n}`, {
+      total_count: 1,
+      check_runs: [{
+        id: 80 + n,
+        status: "completed",
+        conclusion: "success",
+        started_at: "2026-10-20T01:00:00Z",
+        completed_at: `2026-10-20T01:${n === 1 ? "10" : "20"}:00Z`,
+      }],
+    }])),
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  const delivery = buildPrCompletionReport(snapshot.input).delivery;
+  assertEquals(delivery.ciRuns, 2);
+  assertEquals(delivery.ciMinutes, 30);
+  assertEquals(delivery.ciChecks, 2);
+});
+
+function blockerRecord(
+  extra: Partial<PrCompletionRecord> = {},
+): PrCompletionRecord {
+  return {
+    repo: REPO,
+    number: 1,
+    createdAt: "2026-10-20T00:00:00Z",
+    baseRef: "main",
+    defaultBranch: "main",
+    headRef: "issue-1",
+    headSha: "sha1",
+    state: "open",
+    mergedAt: null,
+    actionsComplete: true,
+    ...extra,
+  };
+}
+function blockerAction(extra: Partial<TrustedPrAction> = {}): TrustedPrAction {
+  return {
+    actionId: "action",
+    runId: "run",
+    component: "reviewer",
+    repo: REPO,
+    prNumber: 1,
+    kind: "repair",
+    timestamp: "2026-10-20T00:00:00Z",
+    outcome: "failed",
+    actor: "fleet",
+    verified: true,
+    ...extra,
+  };
+}
+
+Deno.test("recovery boundaries - trust, kind, outcomes, ordering and terminal caps", () => {
+  const at = (minute: number) =>
+    `2026-10-20T00:${String(minute).padStart(2, "0")}:00Z`;
+  const fail = blockerAction();
+  const success = blockerAction({ timestamp: at(30), outcome: "confirmed" });
+  const expected = (
+    end: string | null,
+    start = at(0),
+  ) => [{
+    repo: REPO,
+    prNumber: 1,
+    blocker: "repair-recovery",
+    startedAt: start,
+    endedAt: end,
+  }];
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [fail, success]),
+    expected(at(30)),
+  );
+  assertEquals(recoveryBlockersFor(blockerRecord(), [fail]), expected(null));
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [{ ...fail, verified: false }]),
+    [],
+  );
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [{ ...fail, kind: "review" }]),
+    [],
+  );
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [fail, {
+      ...success,
+      verified: false,
+    }]),
+    expected(null),
+  );
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [fail, {
+      ...success,
+      kind: "implementation",
+    }]),
+    expected(null),
+  );
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [fail, {
+      ...success,
+      outcome: "unknown",
+    }]),
+    expected(null),
+  );
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [success, {
+      ...fail,
+      timestamp: at(10),
+    }, fail]),
+    expected(at(30)),
+  );
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [{ ...success, timestamp: at(0) }, {
+      ...fail,
+      timestamp: at(10),
+    }]),
+    expected(null, at(10)),
+  );
+  for (
+    const cap of [{
+      closedAt: at(20),
+      observedAt: at(50),
+    }, { mergedAt: at(20), closedAt: at(40), observedAt: at(50) }]
+  ) {
+    const record = blockerRecord(cap);
+    assertEquals(recoveryBlockersFor(record, [fail]), expected(at(20)));
+    assertEquals(
+      recoveryBlockersFor(record, [fail, success]),
+      expected(at(20)),
+    );
+    assertEquals(
+      recoveryBlockersFor(record, [fail, { ...success, timestamp: at(15) }]),
+      expected(at(15)),
+    );
+    assertEquals(
+      recoveryBlockersFor(record, [{ ...fail, timestamp: at(30) }]),
+      [],
+    );
+  }
+});
+
+Deno.test("refresh boundaries - trusted fleet updates require correlated completion and honour end caps", () => {
+  const at = (minute: number) =>
+    `2026-10-20T01:${String(minute).padStart(2, "0")}:00Z`;
+  const action = blockerAction({
+    kind: "branch-update",
+    timestamp: at(0),
+    outcome: "confirmed",
+    githubEvents: [{ kind: "implementation", id: "sha2" }],
+  });
+  const run: PrCompletionInput["ciRuns"][number] = {
+    repo: REPO,
+    prNumber: 1,
+    runId: "77",
+    kind: "workflow_run",
+    durationMinutes: 20,
+    headSha: "sha2",
+    outcome: "success",
+    completedAt: at(20),
+  };
+  const expected = (
+    end: string | null,
+  ) => [{
+    repo: REPO,
+    prNumber: 1,
+    blocker: "branch-refresh",
+    startedAt: at(0),
+    endedAt: end,
+  }];
+  assertEquals(
+    branchRefreshBlockersFor(blockerRecord(), [action], [run]),
+    expected(at(20)),
+  );
+  assertEquals(
+    branchRefreshBlockersFor(blockerRecord(), [action], []),
+    expected(null),
+  );
+  for (
+    const patch of [
+      { verified: false },
+      { actor: "human" as const },
+      { actor: "unknown" as const },
+      { kind: "review" as const },
+      { outcome: "failed" as const },
+      { outcome: "unknown" as const },
+      { githubEvents: undefined },
+      { githubEvents: [] },
+      { githubEvents: [{ kind: "merge" as const, id: "sha2" }] },
+    ]
+  ) {
+    assertEquals(
+      branchRefreshBlockersFor(blockerRecord(), [{ ...action, ...patch }], [
+        run,
+      ]),
+      [],
+      JSON.stringify(patch),
+    );
+  }
+  assertEquals(
+    branchRefreshBlockersFor(blockerRecord(), [{
+      ...action,
+      githubEvents: [{ kind: "repair", id: "sha2" }],
+    }], [run]),
+    expected(at(20)),
+  );
+  for (
+    const patch of [
+      { headSha: "other" },
+      { headSha: undefined },
+      { completedAt: null },
+      { outcome: null },
+      { completedAt: "2026-10-20T00:59:00Z" },
+      { kind: "job" as const },
+    ]
+  ) {
+    assertEquals(
+      branchRefreshBlockersFor(blockerRecord(), [action], [{
+        ...run,
+        ...patch,
+      }]),
+      expected(null),
+    );
+  }
+  assertEquals(
+    branchRefreshBlockersFor(blockerRecord(), [action], [{
+      ...run,
+      kind: "check_run",
+    }]),
+    expected(at(20)),
+  );
+  for (
+    const cap of [{
+      closedAt: at(10),
+      observedAt: at(50),
+    }, { mergedAt: at(10), closedAt: at(40), observedAt: at(50) }]
+  ) {
+    const record = blockerRecord(cap);
+    assertEquals(
+      branchRefreshBlockersFor(record, [action], [run]),
+      expected(at(10)),
+    );
+    assertEquals(
+      branchRefreshBlockersFor(record, [action], []),
+      expected(at(10)),
+    );
+    assertEquals(
+      branchRefreshBlockersFor(record, [action], [{
+        ...run,
+        completedAt: at(5),
+      }]),
+      expected(at(5)),
+    );
+    assertEquals(
+      branchRefreshBlockersFor(record, [{ ...action, timestamp: at(30) }], []),
+      [],
+    );
+  }
+});
+
+Deno.test("collect boundaries - older candidate cap and future PRs keep rollout coverage honest", async () => {
+  await withDir(async (dir) => {
+    await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
+      event: "discovered",
+      hostId: "host-a",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      recordedAt: "2027-01-01T00:00:00Z",
+    });
+    const open = { state: "open", merged_at: null, closed_at: null };
+    for (const maxPrsPerRepo of [1, 2, 3]) {
+      const snapshot = await collectPrCompletionSnapshot(
+        options(
+          fakeGh(emptyFixture({
+            pulls: {
+              [REPO]: [
+                pull(4, { ...open, created_at: "2027-02-01T00:00:00Z" }),
+                pull(3, { ...open, created_at: "2026-12-01T00:00:00Z" }),
+                pull(1, { ...open, created_at: "2026-09-20T00:00:00Z" }),
+                pull(2, { ...open, created_at: "2026-09-19T00:00:00Z" }),
+              ],
+            },
+          })),
+          {
+            maxPrsPerRepo,
+            rolloutVerifiedAt: "2027-01-01T00:00:00Z",
+            babysitterStateDirs: [dir],
+            cohort: { ...COHORT, observedAt: "2027-01-02T00:00:00Z" },
+            expected: {
+              components: ["babysitter"],
+              inventory: [{ hostId: "host-a", component: "babysitter" }],
+              revision: "rev1",
+              policyFingerprint: FP,
+              maxHeartbeatAgeHours: 24,
+            },
+          },
+        ),
+      );
+      assertEquals(snapshot.input.prs, []);
+      assertEquals(
+        snapshot.input.rollout!.strandedPrs.map((p) => p.prNumber),
+        [3, 1, 2].slice(0, maxPrsPerRepo),
+      );
+      assertEquals(
+        snapshot.input.rollout!.discoveryEvidenceComplete,
+        maxPrsPerRepo === 3,
+      );
+      assertEquals(snapshot.truncatedRepos, []);
+      assertEquals(buildPrCompletionReport(snapshot.input).cohort.prCount, 0);
+    }
+  });
+});
+
+Deno.test("collect boundaries - ordinary cohort collection stops before unnecessary older pages", async () => {
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: Array.from(
+        { length: 100 },
+        (_, n) => pull(n + 1, { created_at: "2026-09-01T00:00:00Z" }),
+      ),
+    },
+  });
+  const gh = fakeGh(fixture);
+  const snapshot = await collectPrCompletionSnapshot(options(async (path) => {
+    const query = new URLSearchParams(path.split("?")[1]);
+    if (path.includes("/pulls?") && query.get("state") === "open") return [];
+    if (path.includes("/pulls?") && query.get("page") === "2") {
+      throw new Error("older history unavailable");
+    }
+    return await gh(path);
+  }, { maxPrsPerRepo: 200 }));
+  assertEquals(snapshot.input.prs, []);
+  assertEquals(snapshot.truncatedRepos, []);
+  assertEquals(buildPrCompletionReport(snapshot.input).cohort.prCount, 0);
 });

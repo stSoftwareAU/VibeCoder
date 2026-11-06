@@ -1137,8 +1137,9 @@ out under **Review-fleet-prs log** below:
   (default `config.repos`): the default branch; the pull requests created in
   `[start, end)` (`--start` and `--end`, default the fourteen days ending now),
   paged newest first; each cohort PR's reviews, issue events and commits; and
-  paginated check runs, workflow attempts and jobs for each observed PR head and
-  commit head, regardless of PR state, and for the merge commit of each merged
+  paginated check runs for every observed PR head, including heads without
+  workflow runs; workflow attempts and jobs for heads with workflow runs; and
+  commit-head checks regardless of PR state, plus the merge commit of each merged
   PR (read for post-merge regressions only).
 - **Audit journals** in each `--audit-dir` (default the resolved audit
   directory). Each directory's chains are verified with `verifyAllChains` and
@@ -1261,6 +1262,10 @@ shared hash-chained audit writer in `<reviewer-state>/audit`. Successful
 attempts carry the reviewer component, PR number, reviewed head and action ID;
 failed attempts remain failed evidence. Supply this local or exported directory
 with `--audit-dir` alongside the worker and babysitter audit directories.
+The gate and post paths also journal each reviewer `update-branch` request as a
+`branch-update` action tied to its PR. Its resulting commit is correlated from
+the PR commit list within the same ten-minute action window; the request does
+not claim the previous head as the refreshed head.
 An audit-append refusal is reported on stderr and leaves no verified action.
 After each successful post, the skill also appends one line to its
 `log.jsonl` (`LOG_FILE` in `.claude/skills/review-fleet-prs/scripts/review_log.ts`,
@@ -1345,7 +1350,16 @@ never extends past the PR's merge or close. When the PR has ended, an open
 blocker ends at that moment, and a failure completed after it is not a blocker.
 Overlapping workflow failure intervals are combined so waiting time is not
 counted twice. Concurrency cancellations do not open a blocker.
-Other recovery and refresh waits are not yet represented as blocker intervals.
+A `repair-recovery` interval runs from a failed verified repair action to the
+next confirmed repair action, with repeated failures combined into one wait;
+`branch-refresh` runs from a verified branch update to the first completed
+workflow run or external check on its correlated commit. A running workflow's
+last update is not completion evidence. Both waits are capped by the PR's
+merge or close; otherwise they remain open and their duration is measured to
+observation time. Missing action or commit evidence remains
+unknown rather than being inferred from a login or branch name.
+Babysitter retry cooldowns from failed attempts without a repair push are not
+measured as recovery waits. Issue #4658 remains open for that follow-up.
 
 **Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
@@ -1374,7 +1388,9 @@ rollup, not a delivered change, so the root's merge is the one delivery.
 
 **Truncation.** Pull requests are read newest first until the page holding the
 cohort's oldest PR, up to 500 per repository. `--max-prs-per-repo <n>` sets that
-cap to a positive integer. A repository that reaches the cap is listed as
+cap to a positive integer. Rollout verification also reads older pages until
+exhaustion or the bound; exhausting that older scan leaves rollout evidence
+incomplete. A repository with potentially unseen cohort PRs is listed as
 truncated: the command prints a `TRUNCATED` line, returns the repository in its
 data, and records it in `coverage.truncatedRepos`. The same field is written
 into `--write-snapshot`, so an `--input` replay reports the truncation too.
@@ -1382,9 +1398,10 @@ Paged event lists stop after ten pages, which is a coverage note. Every missing,
 unreadable or malformed local file is a coverage note, not a silent drop.
 
 **CI scope.** Collection lists workflow runs by PR branch, matches them to
-observed PR and commit heads, and reads check runs only for heads with workflow
-runs. Other checks on heads without workflow runs are not observed. A shared
-5,000-call CI budget bounds each collection; exhaustion leaves a per-PR coverage
+observed PR and commit heads, and reads check runs for every observed head,
+including heads without workflow runs. Workflow attempts and paginated jobs are
+read for heads with workflow runs. A shared 5,000-call CI budget bounds each
+collection; exhaustion leaves a per-PR coverage
 note and discards that PR's partial CI history. Workflow attempts and paginated
 jobs are read, including for open and closed-unmerged PRs.
 
@@ -1395,7 +1412,9 @@ marks CI-failure waiting and post-merge CI coverage incomplete as applicable.
 Merge-commit runs are read for post-merge regressions only, and are kept out of
 the CI history that feeds the cost totals. Shared evidence is deduplicated by repository, run and attempt. Truncated history
 and missing durations remain visible; cost totals are calculated for delivered
-changes.
+changes. Cost totals retain check-only heads alongside workflow heads;
+checks on a head already represented by workflow runs are excluded from those
+totals to avoid counting workflow jobs twice.
 
 **Deployments.** A babysitter heartbeat is kept whatever its age, so the report
 can call it stale. Review-run and ledger rows older than the heartbeat window
@@ -1420,9 +1439,14 @@ explicit deployment inventory must be present for rollout coverage to be
 complete; otherwise those counts are unknown. A host is covered when a discovery
 event naming it appears in a supplied `--babysitter-state-dir`; an uncovered host
 adds the note "PR discovery events do not cover every expected babysitter host". The check only reads discovery
-evidence: it runs no discovery and writes nothing. PRs
-created before `cohort.start` are invisible to the check; an operator who needs
-them widens `--start`.
+evidence: it runs no discovery and writes nothing. PRs created before
+`cohort.start` are invisible to the cohort denominator. When rollout verification
+is requested, the collector separately scans older PRs until pagination is
+exhausted or the scan cap is reached, and applies the 24-hour age threshold
+when selecting stranded PRs for rollout discovery without adding them to the
+measurement denominator. The same per-repository PR
+scan cap applies; reaching it while candidates may remain makes discovery
+evidence incomplete rather than treating unseen PRs as rediscovered.
 
 **Limits.** `--collect` verifies audit chains with interrupted-append recovery
 disabled, so reporting repairs neither journals nor the audit roster. Truncated history and missing

@@ -163,7 +163,10 @@ escalation.
    without a merge queue, a shared persisted owner lets one PR refresh at a
    time across hosts and lanes until it merges, fails required checks, closes,
    or the bounded owner expires. Other bases retain the existing updater
-   behaviour; merge-queue bases are not refreshed just for being behind.
+   behaviour; merge-queue bases are not refreshed just for being behind. The
+   reviewer gate and post paths journal each `update-branch` API request through
+   the hash-chained audit writer with its PR number and action outcome. Export
+   that audit directory with the review records for completion reports.
    A PR is never brought up to date before its review: the approval
    would then be of a head nobody read. Conflicting Dependabot PRs wait with
    no push or comment (see
