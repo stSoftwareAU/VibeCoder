@@ -846,6 +846,13 @@ function unmatchedActions(
     }
     if (best) {
       used.add(best);
+      if (
+        best.runId === REVIEW_LOG_RUN && event.actorId !== null &&
+        humanActorIds.has(event.actorId)
+      ) {
+        best.actor = "human";
+        best.verified = true;
+      }
       best.githubEvents ??= [];
       best.githubEvents.push({
         kind: event.kind,

@@ -1300,8 +1300,9 @@ explicit `--human-actor-id` allowlist. The unknown action is unverified, outcome
 unknown, with the ID `gh:<repo>#<number>:<kind>:<id>`. Matched audit actions
 take precedence and retain the kind and identifier of each GitHub event they
 account for, even if the event's account is also in the human allowlist. A
-review-log match is supporting evidence only and does not independently verify
-completion.
+review-log match is supporting evidence only; when the matched GitHub review
+has an allowlisted numeric actor id, that actor id—not the log—verifies human
+attribution.
 
 **Owner gates.** `ownerGateVerified` is always false today, because no hold
 marker is recorded yet. A PR labelled `needs-human` is recorded as

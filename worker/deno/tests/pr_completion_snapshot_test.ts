@@ -1852,6 +1852,47 @@ Deno.test("collect - configured numeric GitHub actors identify unmatched human a
   assertEquals(report.completion.unattendedMerged, 0);
 });
 
+Deno.test("collect - a configured human repair followed by a bot merge is human-assisted", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(2)] },
+    events: {
+      [pk(2)]: [{
+        id: 504,
+        event: "merged",
+        created_at: "2026-10-20T02:00:00Z",
+        actor: { id: 7001, login: "merge-bot[bot]" },
+      }],
+    },
+    commits: {
+      [pk(2)]: [
+        {
+          ...commit("initial", "2026-10-20T00:10:00Z"),
+          author: { id: 7001, login: "merge-bot[bot]" },
+        },
+        {
+          ...commit("human-fix", "2026-10-20T01:10:00Z"),
+          author: { id: 8001, login: "maintainer" },
+        },
+      ],
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(fixture), { humanActorIds: ["8001"] }),
+  );
+  const repair = snapshot.input.actions.find((action) =>
+    action.kind === "repair"
+  );
+  const merge = snapshot.input.actions.find((action) =>
+    action.kind === "merge"
+  );
+  assertEquals(repair?.actor, "human");
+  assertEquals(repair?.verified, true);
+  assertEquals(merge?.actor, "unknown");
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.completion.humanAssistedMerged, 1);
+  assertEquals(report.completion.unattendedMerged, 0);
+});
+
 Deno.test("collect - malformed GitHub actor identities fail loudly", async () => {
   for (const actor of [{ login: "missing-id" }, { id: "not-numeric" }]) {
     const fixture = emptyFixture({
@@ -1874,6 +1915,38 @@ Deno.test("collect - malformed GitHub actor identities fail loudly", async () =>
       expected,
     );
   }
+});
+
+Deno.test("collect - a review log needs an allowlisted GitHub actor to verify its human attribution", async () => {
+  await withDir(async (dir) => {
+    const path = `${dir}/review.jsonl`;
+    await Deno.writeTextFile(path, logLine(2, "2026-10-20T01:00:00Z"));
+    const fixture = emptyFixture({
+      pulls: { [REPO]: [pull(2)] },
+      reviews: {
+        [pk(2)]: [
+          {
+            id: 501,
+            state: "APPROVED",
+            submitted_at: "2026-10-20T01:00:00Z",
+            user: { id: 8003, login: "reviewer" },
+          },
+        ],
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), {
+        reviewLogs: [path],
+        humanActorIds: ["8003"],
+      }),
+    );
+    const review = snapshot.input.actions.find((action) =>
+      action.actionId.startsWith("review-log:")
+    );
+    assertEquals(review?.actor, "human");
+    assertEquals(review?.verified, true);
+    assertEquals(review?.githubEvents?.map((event) => event.id), ["501"]);
+  });
 });
 
 Deno.test("collect - a verified fleet merge takes precedence over a configured human actor", async () => {
