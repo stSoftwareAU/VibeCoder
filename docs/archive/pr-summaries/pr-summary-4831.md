@@ -91,7 +91,7 @@ flowchart TD
 - `deno check --frozen --lock=deno.lock` on the changed production modules — passed.
 - `deno fmt --check` on the eight changed TypeScript files — passed.
 - `deno task check:manifests` — passed, 847 tests, 0 failed, 1 ignored.
-- `./quality.sh` — failed the unit-test time-budget check: `tests/launcher_harness_reclaim_stub_test.ts`, `tests/parallel_safety_cap_test.ts` and `tests/standalone_turn_limit_3701_test.ts` exceeded 1 second; parallel and serial suites, lint, type check, formatting and remaining completed checks passed. Config integration and Checkov were skipped by the environment.
+- `./quality.sh < /dev/null` (final head) — every stage passed except `deno tests` (parallel pass: 32615 passed, 2 failed). The two failures are `tests/completion_phase_repo_formatters_test.ts` lines 480 and 567 ("formatter should commit the Rust fix"), a Rust-formatter fixture this change does not touch; the serial pass did not run because of them. Config integration and Checkov were skipped by the environment.
 
 ## Deno regression avoided
 
