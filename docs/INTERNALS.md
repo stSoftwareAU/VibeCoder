@@ -1151,6 +1151,15 @@ out under **Review-fleet-prs log** below:
 - **Review-fleet-prs log**: each `log.jsonl` named by `--review-log`
   (comma-separated, one per host). Lower trust; see below.
 
+Unmatched GitHub reviews, dismissals, merges and commit authors remain unknown
+unless `--human-actor-id <id,...>` explicitly lists their numeric GitHub user
+ids. This operator-supplied allowlist is affirmative evidence of human
+intervention; login names and bot suffixes do not classify actors. A matching
+verified fleet journal action takes precedence, including when automation used
+an account also listed as human. Keep automation account ids out of this list.
+Missing actor ids, unmatched review logs and unmatched fleet history remain
+unknown.
+
 The expected deployment comes from `--expected-components` (default
 `worker,reviewer,babysitter`), optional `--expected-inventory`
 (`hostId/component,...`), `--expected-revision` (default
@@ -1286,10 +1295,13 @@ the PR number. A PUT to `…/reviews/<id>` with `state=DISMISSED` is also kind
 to journal.
 
 **Unknown and human evidence.** A GitHub event with no matching verified fleet
-action becomes an `unknown` action: unverified, outcome unknown, with the ID
-`gh:<repo>#<number>:<kind>:<id>`. Human attribution requires affirmative,
-verified action evidence; an unmatched event remains unknown. Matched audit
-actions retain the kind and identifier of each GitHub event they account for.
+action becomes an `unknown` action unless its numeric actor id appears in the
+explicit `--human-actor-id` allowlist. The unknown action is unverified, outcome
+unknown, with the ID `gh:<repo>#<number>:<kind>:<id>`. Matched audit actions
+take precedence and retain the kind and identifier of each GitHub event they
+account for, even if the event's account is also in the human allowlist. A
+review-log match is supporting evidence only and does not independently verify
+completion.
 
 **Owner gates.** `ownerGateVerified` is always false today, because no hold
 marker is recorded yet. A PR labelled `needs-human` is recorded as

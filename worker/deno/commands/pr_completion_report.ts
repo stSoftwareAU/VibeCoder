@@ -8,6 +8,8 @@
  * babysitter heartbeats are read from local or exported directories. The
  * review-fleet-prs skill's own `log.jsonl` files are read from
  * `--review-log <log.jsonl,...>` as a lower-trust source (docs/INTERNALS.md).
+ * `--human-actor-id <id,...>` explicitly identifies GitHub numeric account ids
+ * as human evidence when their event is not matched to a verified fleet action.
  * Nothing is written to GitHub or host configuration. `--collect` writes only
  * the optional `--write-snapshot <path>`, which holds the collected input so a
  * later `--input` run can reproduce the report. Audit verification does not
@@ -20,6 +22,7 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { resolveBaseDir } from "../lib/audit_journal.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import {
+  ACTOR_ID_PATTERN,
   buildPrCompletionReport,
   fingerprintWorkerReviewPolicy,
   formatPrCompletionReport,
@@ -182,6 +185,21 @@ export async function runPrCompletionCollect(
         "pr-completion-report failed: --review-log <log.jsonl,...> must name at least one file",
     };
   }
+  const humanActorArg = args["human-actor-id"];
+  const humanActorIds = humanActorArg === undefined
+    ? undefined
+    : asList(humanActorArg);
+  if (
+    humanActorArg !== undefined &&
+    (humanActorIds === undefined ||
+      humanActorIds.some((id) => !ACTOR_ID_PATTERN.test(id)))
+  ) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --human-actor-id must be a comma-separated list of numeric GitHub user ids",
+    };
+  }
   const inventoryArg = args["expected-inventory"];
   const inventory = asInventory(inventoryArg);
   if (inventoryArg !== undefined && inventory === undefined) {
@@ -202,6 +220,9 @@ export async function runPrCompletionCollect(
       auditDirs: asList(args["audit-dir"]) ?? [resolveBaseDir()],
       reviewRunDirs: asList(args["review-run-dir"]),
       reviewLogs,
+      ...(humanActorIds !== undefined
+        ? { humanActorIds: [...new Set(humanActorIds)] }
+        : {}),
       lifecycleLedgers: asList(args["lifecycle-ledger"]),
       babysitterStateDirs: asList(args["babysitter-state-dir"]),
       expected: {

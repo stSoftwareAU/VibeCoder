@@ -9,11 +9,11 @@
  * never reach the network. Nothing here writes to GitHub or to host
  * configuration.
  *
- * A GitHub event is never attributed to a human or to the fleet from a login:
- * it becomes a `TrustedPrAction` with actor `unknown` unless a verified fleet
- * action of the same kind sits within {@link MATCH_WINDOW_MS} of it. Those
- * actions are audit actions, plus, as a lower-trust source, the review-fleet-prs
- * skill's own review log (`reviewLogs`), which is not hash-chained.
+ * A GitHub event is never attributed from its login. A matching verified fleet
+ * action takes precedence; otherwise, a numeric actor id must appear in the
+ * explicit human allowlist or the event remains unknown. Review-fleet-prs logs
+ * can support a review match but are not hash-chained or sufficient to verify
+ * completion.
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */
@@ -32,6 +32,7 @@ import {
 import { runGhCommand } from "./github.ts";
 import { REVIEW_RUN_FILE } from "./review_run_record.ts";
 import {
+  ACTOR_ID_PATTERN,
   PR_REPO_PATTERN,
   type PrActionKind,
   prActionsFromAuditJournal,
@@ -74,6 +75,8 @@ export interface CollectOptions {
   expected: PrCompletionInput["expectedDeployment"];
   /** When set, the rollout check runs against this verification instant. */
   rolloutVerifiedAt?: string;
+  /** Numeric GitHub user ids whose unmatched actions affirm human intervention. */
+  humanActorIds?: readonly string[];
   /** Cap on PRs kept per repository in the cohort (default 500). */
   maxPrsPerRepo?: number;
   /** Maximum GitHub calls devoted to CI per collection (default 5000). */
@@ -156,6 +159,7 @@ interface Stamped {
 interface Review extends Stamped {
   id: string;
   state: string;
+  actorId: string | null;
   headSha?: string;
 }
 
@@ -163,10 +167,12 @@ interface IssueEvent extends Stamped {
   id: string;
   event: string;
   label: string | null;
+  actorId: string | null;
 }
 
 interface Commit extends Stamped {
   sha: string;
+  actorId: string | null;
 }
 
 interface PrEvidence {
@@ -180,6 +186,7 @@ interface GitHubEvent extends Stamped {
   kind: PrActionKind;
   id: string;
   headSha?: string;
+  actorId: string | null;
 }
 
 function keyOf(repo: string, number: number): string {
@@ -223,6 +230,19 @@ function stamped(value: unknown, what: string): Stamped {
   const at = asText(value);
   if (at === null) throw new Error(`${what} is missing`);
   return { at, ms: utcMillis(at, what) };
+}
+
+/** A numeric GitHub actor id, or null when the API names no account. */
+function actorIdOf(raw: Json, key: string, what: string): string | null {
+  const rawActor = requiredKey(raw, key, what);
+  if (rawActor === null) return null;
+  const actor = asObject(rawActor, `${what}.${key}`);
+  const id = asId(requiredKey(actor, "id", `${what}.${key}`), `${what}.${key}`);
+  const value = String(id);
+  if (!ACTOR_ID_PATTERN.test(value)) {
+    throw new Error(`${what}.${key}.id must be a numeric GitHub user id`);
+  }
+  return value;
 }
 
 function byTime<T extends Stamped>(a: T, b: T): number {
@@ -456,6 +476,7 @@ function parseReview(raw: unknown, what: string): Review | null {
   return {
     id: asId(o.id, what),
     state,
+    actorId: actorIdOf(o, "user", what),
     ...(asText(o.commit_id) ? { headSha: asText(o.commit_id)! } : {}),
     at: submitted,
     ms: utcMillis(submitted, `${what} submitted_at`),
@@ -471,6 +492,7 @@ function parseIssueEvent(raw: unknown, what: string): IssueEvent {
     id: asId(o.id, what),
     event: asText(o.event) ?? "",
     label,
+    actorId: actorIdOf(o, "actor", what),
     ...stamped(o.created_at, `${what} created_at`),
   };
 }
@@ -481,7 +503,11 @@ function parseCommit(raw: unknown, what: string): Commit {
   const committer = asObject(commit.committer, `${what}.committer`);
   const sha = asText(o.sha);
   if (sha === null) throw new Error(`${what} has no sha`);
-  return { sha, ...stamped(committer.date, `${what} committer date`) };
+  return {
+    sha,
+    actorId: actorIdOf(o, "author", what),
+    ...stamped(committer.date, `${what} committer date`),
+  };
 }
 
 /** The GitHub evidence for one PR; truncated lists are noted, never silent. */
@@ -703,6 +729,7 @@ function gitHubEvents(
       id: review.id,
       at: review.at,
       ms: review.ms,
+      actorId: review.actorId,
       ...(review.headSha ? { headSha: review.headSha } : {}),
     });
   }
@@ -713,16 +740,23 @@ function gitHubEvents(
         id: event.id,
         at: event.at,
         ms: event.ms,
+        actorId: event.actorId,
       });
     }
   }
   const { record } = observed;
   if (record.mergedAt !== null) {
+    const mergeEvents = evidence.issueEvents.filter((event) =>
+      event.event === "merged"
+    );
     out.push({
       kind: "merge",
-      id: observed.mergeCommitSha ?? "none",
+      id: mergeEvents.length === 1
+        ? mergeEvents[0]!.id
+        : observed.mergeCommitSha ?? "none",
       at: record.mergedAt,
       ms: utcMillis(record.mergedAt, "PR mergedAt"),
+      actorId: mergeEvents.length === 1 ? mergeEvents[0]!.actorId : null,
       headSha: record.headSha,
     });
   }
@@ -732,6 +766,7 @@ function gitHubEvents(
       id: commit.sha,
       at: commit.at,
       ms: commit.ms,
+      actorId: commit.actorId,
     });
   });
   return out;
@@ -743,8 +778,8 @@ function gitHubEvents(
  * stamped at or after the commit and within the PR's lifetime; several commits
  * may share one such push. A branch update accounts for one commit within
  * MATCH_WINDOW_MS either side of its call. Matched event identifiers are
- * attached to the audit action. Unmatched events become `unknown` actions, never
- * attributed to a human or the fleet.
+ * attached to the audit action. Unmatched events remain unknown unless their
+ * numeric GitHub actor id is explicitly configured as human evidence.
  *
  * A review or dismissal matches a verified fleet action of its kind within
  * {@link MATCH_WINDOW_MS} either side of it. A review's head is compared only
@@ -759,6 +794,7 @@ function unmatchedActions(
   events: GitHubEvent[],
   verifiedFleet: TrustedPrAction[],
   used: Set<TrustedPrAction>,
+  humanActorIds: ReadonlySet<string>,
 ): TrustedPrAction[] {
   const { record } = observed;
   const out: TrustedPrAction[] = [];
@@ -818,6 +854,7 @@ function unmatchedActions(
       });
       continue;
     }
+    const human = event.actorId !== null && humanActorIds.has(event.actorId);
     out.push({
       actionId: `gh:${record.repo}#${record.number}:${event.kind}:${event.id}`,
       runId: GITHUB_OBSERVATION_RUN,
@@ -826,9 +863,9 @@ function unmatchedActions(
       prNumber: record.number,
       kind: event.kind,
       timestamp: event.at,
-      outcome: "unknown",
-      actor: "unknown",
-      verified: false,
+      outcome: human ? "confirmed" : "unknown",
+      actor: human ? "human" : "unknown",
+      verified: human,
     });
   }
   return out;
@@ -1698,6 +1735,14 @@ export async function collectPrCompletionSnapshot(
   if (!Number.isSafeInteger(maxPrs) || maxPrs < 1) {
     throw new Error("maxPrsPerRepo must be a positive integer");
   }
+  for (const id of options.humanActorIds ?? []) {
+    if (!ACTOR_ID_PATTERN.test(id)) {
+      throw new Error(
+        `humanActorIds entry ${id} is not a numeric GitHub user id`,
+      );
+    }
+  }
+  const humanActorIds = new Set(options.humanActorIds ?? []);
 
   const notes: string[] = [];
   if (options.expected.inventory === undefined) {
@@ -1853,6 +1898,7 @@ export async function collectPrCompletionSnapshot(
         gitHubEvents(o, evidence),
         matchingByPr.get(keyOf(record.repo, record.number)) ?? [],
         used,
+        humanActorIds,
       ),
     );
     const prCiRuns = await boundedCi(

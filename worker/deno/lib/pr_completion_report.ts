@@ -224,6 +224,9 @@ export interface PrCompletionReport {
 /** The repository pattern every PR observation must satisfy. */
 export const PR_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
+/** Numeric GitHub user ids configured as affirmative human-action evidence. */
+export const ACTOR_ID_PATTERN = /^\d{1,20}$/;
+
 const keyOf = (repo: string, number: number) => `${repo}#${number}`;
 
 /** Convert only PR-linked journal entries; the caller supplies chain integrity. */

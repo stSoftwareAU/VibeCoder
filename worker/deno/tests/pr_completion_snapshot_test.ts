@@ -1032,7 +1032,7 @@ function pull(number: number, extra: Json = {}): Json {
 }
 
 function commit(sha: string, date: string): Json {
-  return { sha, commit: { committer: { date } } };
+  return { sha, author: null, commit: { committer: { date } } };
 }
 
 /**
@@ -1774,13 +1774,13 @@ Deno.test("collect - unmatched GitHub merges and approvals are unknown, never hu
           id: 501,
           state: "APPROVED",
           submitted_at: "2026-10-20T01:00:00Z",
-          user: { login: "release-bot[bot]" },
+          user: { id: 7001, login: "release-bot[bot]" },
         },
         {
           id: 502,
           state: "COMMENTED",
           submitted_at: "2026-10-20T01:10:00Z",
-          user: { login: "alice" },
+          user: { id: 7002, login: "alice" },
         },
       ],
     },
@@ -1810,6 +1810,109 @@ Deno.test("collect - unmatched GitHub merges and approvals are unknown, never hu
   assertEquals(report.completion.humanAssistedMerged, 0);
   assertEquals(report.completion.unattendedMerged, 0);
   assertEquals(report.completion.unknownMerged, 1);
+});
+
+Deno.test("collect - configured numeric GitHub actors identify unmatched human actions", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(2)] },
+    reviews: {
+      [pk(2)]: [{
+        id: 501,
+        state: "APPROVED",
+        submitted_at: "2026-10-20T01:00:00Z",
+        user: { id: 8003, login: "reviewer" },
+      }],
+    },
+    events: {
+      [pk(2)]: [{
+        id: 504,
+        event: "merged",
+        created_at: "2026-10-20T02:00:00Z",
+        actor: { id: 8002, login: "merger" },
+      }],
+    },
+    commits: {
+      [pk(2)]: [{
+        ...commit("sha2", "2026-10-20T00:10:00Z"),
+        author: { id: 8001, login: "author" },
+      }],
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(fixture), { humanActorIds: ["8001", "8002", "8003"] }),
+  );
+  assertEquals(snapshot.input.actions.length, 3);
+  for (const action of snapshot.input.actions) {
+    assertEquals(action.actor, "human");
+    assertEquals(action.verified, true);
+    assertEquals(action.outcome, "confirmed");
+  }
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.completion.humanAssistedMerged, 1);
+  assertEquals(report.completion.unattendedMerged, 0);
+});
+
+Deno.test("collect - malformed GitHub actor identities fail loudly", async () => {
+  for (const actor of [{ login: "missing-id" }, { id: "not-numeric" }]) {
+    const fixture = emptyFixture({
+      pulls: { [REPO]: [pull(2)] },
+      reviews: {
+        [pk(2)]: [{
+          id: 501,
+          state: "APPROVED",
+          submitted_at: "2026-10-20T01:00:00Z",
+          user: actor,
+        }],
+      },
+    });
+    const expected = "id" in actor
+      ? ".user.id must be a numeric GitHub user id"
+      : ".user is missing id";
+    await assertRejects(
+      () => collectPrCompletionSnapshot(options(fakeGh(fixture))),
+      Error,
+      expected,
+    );
+  }
+});
+
+Deno.test("collect - a verified fleet merge takes precedence over a configured human actor", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-merge",
+      actionKind: "merge",
+      actionId: "fleet-merge",
+      repo: REPO,
+      prNumber: 2,
+      timestamp: "2026-10-20T02:00:00Z",
+    }]);
+    const fixture = emptyFixture({
+      pulls: { [REPO]: [pull(2)] },
+      events: {
+        [pk(2)]: [{
+          id: 504,
+          event: "merged",
+          created_at: "2026-10-20T02:00:00Z",
+          actor: { id: 8002, login: "automation-user" },
+        }],
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), {
+        auditDirs: [dir],
+        humanActorIds: ["8002"],
+      }),
+    );
+    const merge = snapshot.input.actions.find((action) =>
+      action.actionId === "fleet-merge"
+    );
+    assertEquals(merge?.actor, "fleet");
+    assertEquals(merge?.verified, true);
+    assertEquals(merge?.githubEvents?.map((event) => event.id), ["504"]);
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.humanAssistedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
 });
 
 Deno.test("collect - a broken audit chain leaves its actions unverified and the history incomplete", async () => {
@@ -2290,18 +2393,21 @@ Deno.test("collect - blocker intervals are closed or open as the events dictate"
         {
           id: 1,
           event: "labeled",
+          actor: { id: 7001, login: "bot" },
           label: { name: "needs-human" },
           created_at: "2026-10-20T10:00:00Z",
         },
         {
           id: 2,
           event: "unlabeled",
+          actor: { id: 7001, login: "bot" },
           label: { name: "needs-human" },
           created_at: "2026-10-20T12:00:00Z",
         },
         {
           id: 3,
           event: "labeled",
+          actor: { id: 7001, login: "bot" },
           label: { name: "needs-human" },
           created_at: "2026-10-20T14:00:00Z",
         },
@@ -2313,11 +2419,13 @@ Deno.test("collect - blocker intervals are closed or open as the events dictate"
           id: 9,
           state: "CHANGES_REQUESTED",
           submitted_at: "2026-10-20T15:00:00Z",
+          user: { id: 7002, login: "reviewer" },
         },
         {
           id: 10,
           state: "CHANGES_REQUESTED",
           submitted_at: "2026-10-20T17:00:00Z",
+          user: { id: 7002, login: "reviewer" },
         },
       ],
     },
@@ -3367,7 +3475,7 @@ function review(id: number, submittedAt: string): Json {
     state: "APPROVED",
     submitted_at: submittedAt,
     commit_id: "sha1",
-    user: { login: "review-bot[bot]" },
+    user: { id: 7001, login: "review-bot[bot]" },
   };
 }
 
@@ -3608,7 +3716,7 @@ Deno.test("collect - explicit null and empty values are accepted as the empty st
     id: 602,
     state: "PENDING",
     submitted_at: null,
-    user: { login: "alice" },
+    user: { id: 7002, login: "alice" },
   };
   const fixture = emptyFixture({
     pulls: { [REPO]: [open] },
@@ -3633,6 +3741,7 @@ Deno.test("collect - a page-truncated event list and a partial check-run list ar
     id: i + 1,
     state: "COMMENTED",
     submitted_at: "2026-10-20T01:00:00Z",
+    user: { id: 7002, login: "reviewer" },
   }));
   const fixture = emptyFixture({
     pulls: { [REPO]: [pull(50)] },
@@ -3781,14 +3890,14 @@ Deno.test("collect - human-looking logins on a matched PR never downgrade it fro
     const fixture = emptyFixture({
       pulls: {
         [REPO]: [pull(31, {
-          user: { login: "alice", type: "User" },
+          user: { id: 7002, login: "alice", type: "User" },
           merged_by: { login: "alice", type: "User" },
         })],
       },
       commits: {
         [pk(31)]: [{
           ...commit("sha31", "2026-10-20T00:25:00Z"),
-          author: { login: "alice", type: "User" },
+          author: { id: 7002, login: "alice", type: "User" },
           committer: { login: "alice", type: "User" },
         }],
       },
