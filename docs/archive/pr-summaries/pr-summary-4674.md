@@ -47,6 +47,12 @@ validation. Part of #4674 while the native macOS run is pending. Version bump:
   direct positive control is unavailable on this GitHub runner. The test now
   uses the successful external `security list-keychains` command as its positive
   control and checks the same command is denied inside the profile.
+- The second native attempt exposed that the synthetic gate's extra Deno
+  `node:os` CPU probe aborts under this profile with Rust's
+  `failed to allocate
+  a guard page: Invalid argument`; it was unrelated to the
+  exercised browser and containment paths and has been removed. Process queries
+  remain covered with native probes.
 - The repository's existing browser integration now supplies unsandboxed
   positive controls for the credential files, symlink targets, Keychains,
   `securityd`, unrelated Mach lookup, process environment, and `.git` write
@@ -115,6 +121,11 @@ sequenceDiagram
   execution, skipped aggregate, tolerated failure, conditional gate skip and
   missing `needs` result wiring; the real `gate.sh` rejects skipped and failed
   jobs and accepts two successes.
+- Removed from `worker/deno/integration/fleet_babysitter_browser.ts`: the
+  synthetic gate's `deno eval` CPU-count probe. Obsolete: that unrelated Deno
+  runtime probe aborted under the native `sandbox-exec` profile; native
+  process-query probes and actual Chromium rendering remain covered by the
+  integration test.
 - `worker/deno/tests/fleet_pr_babysitter_test.ts` — 120 passed on the final
   prompt code. CI, review and conflict prompts are checked for Darwin and Linux;
   Linux names unavailable checks for CI and does not direct checks to a runner
@@ -150,9 +161,11 @@ sequenceDiagram
   validation integration and tests.
 - `deno task test:browser` — attempted locally; failed at the platform guard
   with actual `linux`, expected `darwin`, before any macOS containment
-  assertions ran. Native run 42149859357 then failed at the direct `securityd`
-  bootstrap positive control after its Keychain CLI control passed; the updated
-  native workflow is pending and is not claimed as passed.
+  assertions ran. Native runs 42149859357 and 42150505327 exposed, respectively,
+  the unavailable direct `securityd` lookup and the synthetic gate's Deno CPU
+  probe aborting with `failed to allocate a guard page: Invalid argument`; both
+  probes have been corrected or removed. The next native run remains required
+  and is not claimed as passed.
 - No `deno.lock` change. Updated `SECURITY.md`, threat-model control C37 and the
   fleet babysitter manual to describe checkpoint recovery and the macOS CI
   evidence path.
