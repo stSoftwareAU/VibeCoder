@@ -188,6 +188,12 @@ export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
     "toolchain self-check (Issue #1956) — the rebuild a Windows host must " +
     "not skip; 17s",
   ],
+  [
+    "tests/fleet_babysitter_browser_workflow_test.ts",
+    "validates the required macOS browser workflow and invokes gate.sh with " +
+    "skipped, failed and successful job results so skipped checks cannot " +
+    "be mistaken for a pass (Issue #4674); under 1s",
+  ],
 ]);
 
 /**

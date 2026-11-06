@@ -3745,6 +3745,7 @@ for (const why of ["failed CI", "requested review changes", "merge conflict"]) {
       prompt,
       "Also run the checks in the repository\u0027s local gate",
     );
+    assertStringIncludes(prompt, "name it in your final response");
     assertStringIncludes(
       prompt,
       "does not by itself withhold BABYSITTER_READY",
