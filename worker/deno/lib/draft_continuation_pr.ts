@@ -20,6 +20,7 @@
 
 import { withholdIssueClose } from "./missing_criterion_close_guard.ts";
 import { mdSafe } from "./mutation_gate.ts";
+import { buildPrTitle } from "./pr_title_build.ts";
 
 /** Marks a PR body as a draft continuation (timed out, or criteria unmet). */
 export const DRAFT_CONTINUATION_MARKER = "<!-- vibe-draft-continuation -->";
@@ -73,7 +74,8 @@ export async function ensureDraftContinuationPr(args: {
       "--head",
       branchName,
       "--title",
-      `WIP: ${issueTitle} (#${issueNumber})`,
+      // Issue #4679: scrubbed, so an issue-title `[#999]` is no reference.
+      `WIP: ${buildPrTitle(issueTitle, issueNumber)}`,
       "--body",
       buildDraftContinuationBody(issueNumber),
     ]);
