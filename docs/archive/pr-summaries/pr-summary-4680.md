@@ -18,11 +18,12 @@ A PR-only check never runs on the base head, so the worker also reads
 commit-bound evidence from the same workflow: the runs of the same check (same
 app and workflow file) on the head of a pull request merged as the base head,
 but only when that commit's tree is identical to the base head's tree. A red
-there is a verified base defect and takes the existing deferral (the `Depends
-on` issue and `vibe-ci-fix-deferred` marker, resumed by the existing scanner
-when the blocker closes); a green refutes the claim. When no such commit exists
-or any lookup fails, the claim stays unverified (held, not deferred). The worker
-does not re-run the check on the base tree. Part of #4680.
+there is a verified base defect and takes the existing deferral (the
+`Depends
+on` issue and `vibe-ci-fix-deferred` marker, resumed by the existing
+scanner when the blocker closes); a green refutes the claim. When no such commit
+exists or any lookup fails, the claim stays unverified (held, not deferred). The
+worker does not re-run the check on the base tree. Part of #4680.
 
 Version bump: `VERSION` is not changed by this PR.
 
@@ -103,18 +104,20 @@ flowchart TD
   commit-bound evidence from the same workflow." — evidence:
   `worker/deno/lib/ci_base_branch_check.ts::readTreeEquivalentVerdict`,
   `worker/deno/tests/ci_base_branch_check_test.ts::a PR-only check red on the
-  merged PR's identical tree is red, bound to that commit` — reviewer: partial —
-  reason: the same check from the same workflow on a commit with the base head's
-  tree is now read, but only the check's conclusion is compared; the failing
-  step or log is not compared with the PR's failure signature, and the worker
-  does not re-run the check on the base tree.
+  merged PR's identical tree is red, bound to that commit`
+  — reviewer: partial — reason: the same check from the same workflow on a
+  commit with the base head's tree is now read, but only the check's conclusion
+  is compared; the failing step or log is not compared with the PR's failure
+  signature, and the worker does not re-run the check on the base tree.
 - **met** — "Once a base defect is verified, use the existing deduplicated
   base-repair/dependency mechanism and automatically resume the PR when that
   repair lands" for a PR-only workflow — evidence:
   `worker/deno/tests/pr_ci_processor_deferral_test.ts::a PR-only workflow red
   on the merged PR's identical tree defers, charging no attempt and paging no
-  human`, `worker/deno/tests/pr_maintenance_ci_deferral_test.ts::once the named
-  issue closes the check is returned again` — reviewer: met
+  human`,
+  `worker/deno/tests/pr_maintenance_ci_deferral_test.ts::once the named
+  issue closes the check is returned again`
+  — reviewer: met
 
 ## Test Plan
 
@@ -122,13 +125,12 @@ flowchart TD
   green, newest wins, differing tree, other workflow, cancelled, other commit,
   several heads, a cancelled head run, failed and malformed lookups, and the
   `--jq` request shapes of the check-runs and check-run calls (the surviving
-  mutations at lines 140, 167, 245 and 246 each turn a test red: the
-  non-Actions app with no workflow path, and the asserted `--jq` arguments).
-  Earlier: (25): red, green, no-run,
-  other-workflow, other-app, stale, unresolved identity, non-success
-  conclusions, errors. Red checks: removing the workflow-path comparison, the
-  head-SHA filter, the GitHub Actions no-workflow-path guard and the missing
-  app-slug error each turned one test red.
+  mutations at lines 140, 167, 245 and 246 each turn a test red: the non-Actions
+  app with no workflow path, and the asserted `--jq` arguments). Earlier: (25):
+  red, green, no-run, other-workflow, other-app, stale, unresolved identity,
+  non-success conclusions, errors. Red checks: removing the workflow-path
+  comparison, the head-SHA filter, the GitHub Actions no-workflow-path guard and
+  the missing app-slug error each turned one test red.
 - `worker/deno/tests/pr_ci_processor_deferral_test.ts`: PR-only no-run hold,
   same-named other-workflow check, other PR's red run, stale run, unreadable
   identity, hold bound of two, resumption to deferral once the base is red,
