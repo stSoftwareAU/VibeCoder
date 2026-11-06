@@ -24,9 +24,8 @@ Version bump: No version change was made for this fix.
   (`mergeable: null` or no `merge_commit_sha`) or stale test-merge parents. The
   non-strict path is unchanged from the base: it sends the update at once with
   no mergeability check, so every other `requestReadyBranchUpdate` caller keeps
-  its previous result there. Each retry path
-  uses `retryWithBackoff` with four total reads and its normal 2/4/8-second
-  delays plus jitter.
+  its previous result there. Each retry path uses `retryWithBackoff` with four
+  total reads and its normal 2/4/8-second delays plus jitter.
 - Refusal streaks are keyed by repository, PR and stable transient reason in the
   versioned `.branch_refresh_refusals_v1` file. The second consecutive matching
   refusal raises the diagnostic; a reason change starts a new streak.
