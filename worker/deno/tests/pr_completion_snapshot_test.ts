@@ -2116,6 +2116,22 @@ Deno.test("collect - no audit directory means the actions are not complete", asy
   );
 });
 
+Deno.test("collect - coverage does not claim babysitter retry cooldowns are unmeasured", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(emptyFixture()), { auditDirs: [dir] }),
+    );
+    assertEquals(
+      snapshot.coverageNotes.some((note) =>
+        note.includes(
+          "babysitter retry cooldowns without a repair push are not measured",
+        )
+      ),
+      false,
+    );
+  });
+});
+
 Deno.test("collect - an action repeated across two audit directories is counted once", async () => {
   await withDir(async (hostA) => {
     await withDir(async (hostB) => {
@@ -5743,6 +5759,26 @@ Deno.test("recovery boundaries - trust, kind, outcomes, ordering and terminal ca
     expected(at(30)),
   );
   assertEquals(recoveryBlockersFor(blockerRecord(), [fail]), expected(null));
+  const dismissal = blockerAction({
+    kind: "dismissal",
+    timestamp: at(20),
+    outcome: "confirmed",
+  });
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [fail, dismissal]),
+    expected(at(20)),
+  );
+  for (
+    const invalid of [{ ...dismissal, verified: false }, {
+      ...dismissal,
+      actor: "human" as const,
+    }, { ...dismissal, outcome: "failed" as const }]
+  ) {
+    assertEquals(
+      recoveryBlockersFor(blockerRecord(), [fail, invalid]),
+      expected(null),
+    );
+  }
   assertEquals(
     recoveryBlockersFor(blockerRecord(), [{ ...fail, verified: false }]),
     [],

@@ -8,6 +8,7 @@
   "sweptAt": "31746f7f933492ccde7192e590c6b97cd0296097",
   "paths": [
     "worker/deno/commands/pr_completion_report.ts",
+    "worker/deno/lib/babysitter_attempt_audit.ts",
     "worker/deno/lib/fleet_review_hold.ts",
     "worker/deno/lib/fleet_review_log.ts",
     "worker/deno/lib/fleet_review_post.ts",

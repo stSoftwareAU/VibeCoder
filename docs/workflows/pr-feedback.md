@@ -219,7 +219,8 @@ of the summary alone, Issue #4234) — whichever push
 changed it, this run's or an earlier one. A pr_feedback run also re-syncs
 when it pushed nothing and has no commits left unpushed, so a run that
 answers a finding without a push still refreshes a stale body (Issue #3315).
-Exits on a turn limit, agent error, timeout or scheduled release also check
+Exits on a turn limit, agent error, timeout, scheduled release, held review or
+failed final push also check
 the PR branch against the remote and sync the summary committed at that verified
 head before settling the run. Later local commits and working-tree edits stay
 unpublished; an unconfirmed remote head is skipped.
@@ -236,7 +237,7 @@ it with `gh pr edit <n> --body-file <file>` and name that in
 **Priority 1.64 — Reconcile PR Body Digests** (Issue #3760) covers pushes the
 worker did not make. The re-sync above runs only on the worker's own runs (PR
 feedback, CI fix and merge conflict, after their push; PR feedback also checks
-on interrupted exits and runs it when nothing is left unpushed, Issue #3315),
+on interrupted or failed finalisation exits and runs it when nothing is left unpushed, Issue #3315),
 so a review-fix commit pushed by
 hand, from a laptop or an interactive Claude Code session, never reaches it:
 the live description stayed on the old summary until some later worker push.

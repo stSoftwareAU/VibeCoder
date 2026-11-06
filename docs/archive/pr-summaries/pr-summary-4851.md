@@ -1,4 +1,4 @@
-# PR feedback body sync on interrupted exits
+# PR feedback body sync on interrupted and failed finalisation exits
 
 ## Summary
 
@@ -6,7 +6,9 @@ PR feedback refreshes the body from the summary committed at the confirmed
 remote head before recording a turn-limit failure, including a push within the
 first invocation. A later local commit or uncommitted rewrite cannot leak into
 the published body. Agent-error, timeout and scheduled-release exits also
-refresh a landed summary before returning. Closes #4851.
+refresh a landed summary before returning. Held reviews and failed final pushes
+also refresh from the verified remote, even if local work remains. Legacy bodies
+compare their summary against that remote commit. Closes #4851.
 
 Version bump: No version change was made for this fix.
 
@@ -58,24 +60,37 @@ Read `docs/USAGE.md`'s PR Summary File section and
 `docs/workflows/pr-feedback.md`'s summary-refresh explanation; both now describe
 the interrupted exits and exclusion of local-only content. The shared body-sync
 contract comments also describe the opt-in descendant check. The existing
-normal-push, no-change and held-review entry points retain their guards.
+normal-push and no-change entry points retain their guards. Held reviews and
+failed final pushes now use the same verified remote-head refresh.
 
 ## Test Plan
 
-- `worker/deno/tests/pr_feedback_processor_test.ts` — 50 tests passed. Six
-  real-push cases cover later and initial turn limits, a subsequent local-only
+- `worker/deno/tests/pr_feedback_processor_test.ts` covers a landed self-push
+  followed by finalisation failure, a held review with a local-only commit, and
+  a legacy body whose later local commit restores the old summary. Each requires
+  one edit containing the pushed summary and excludes local and uncommitted work.
+- `worker/deno/tests/pr_body_sync_test.ts` rejects a failed ancestry command;
+  this covers the error operand of the lineage guard.
+- The obsolete held-review rule requiring zero local unpushed commits is replaced
+  by a verified remote-head requirement. The remaining behaviour excludes
+  unverified heads and retains the held outcome, covered by
+  `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts::review-fix hold - body sync requires a verified remote`
+  and the real-Git held-review case above.
+
+- `worker/deno/tests/pr_feedback_processor_test.ts` — real-push cases cover
+  later and initial turn limits, a subsequent local-only
   commit, agent error, scheduled release and timeout. Every case leaves a
   different uncommitted summary and checks body content, digest, run ID, edit
   count and outcome. The turn-limit cases preserve the original error object.
 - The new failure-path safety test covers gated heads, unreachable remotes,
   thrown verification, unsuccessful sync results and thrown sync errors. It
   checks sync exclusion, warning output and exactly one failure charge.
-- `worker/deno/tests/pr_body_sync_test.ts` — 60 tests passed, including the new
+- `worker/deno/tests/pr_body_sync_test.ts` includes the new
   opted-in local-lineage rejection and the existing strict adoption and moved
   remote-head protections.
-- `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts` — 31 tests
-  passed, retaining review settlement and held-review zero-unpushed guards.
-- The combined focused run passed all 141 tests. The expanded real-push test
+- `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts` retains review
+  settlement and verifies the remote-head guard on held reviews.
+- The expanded real-push test
   retains every original assertion and strengthens the failure assertion to
   preserve the original error; no existing assertion was weakened or removed.
 - Targeted mutation checks failed with assertions for all eight changes tested:

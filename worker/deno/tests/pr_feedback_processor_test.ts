@@ -506,6 +506,9 @@ for (
     "initial error",
     "finish deadline",
     "timeout",
+    "finalise failure",
+    "legacy local restore",
+    "held review with local commit",
   ] as const
 ) {
   Deno.test(`processPrFeedback - syncs a landed self-push before ${exit}`, async () => {
@@ -561,7 +564,9 @@ for (
       const oldSha = await git(repoPath, ["rev-parse", "HEAD"]);
       currentBody = `${oldSummary}\n---\n\n🤖 Processed by: old-worker\n` +
         `${WORKER_PR_MARKER_PREFIX}42 -->\n` +
-        buildSummaryDigestMarker(await prSummaryDigest(oldSummary));
+        (exit === "legacy local restore"
+          ? ""
+          : buildSummaryDigestMarker(await prSummaryDigest(oldSummary)));
 
       const gh = openPrGh(async (args) => {
         ghCalls.push(args);
@@ -602,6 +607,14 @@ for (
               await git(repoPath, ["commit", "-m", "Rewrite PR summary"]);
               await git(repoPath, ["push", "origin", branchName]);
               headSha = await git(repoPath, ["rev-parse", "HEAD"]);
+              if (exit === "held review with local commit") {
+                await Deno.writeTextFile(summaryPath, localSummary);
+                await git(repoPath, [
+                  "add",
+                  "docs/archive/pr-summaries/pr-summary-42.md",
+                ]);
+                await git(repoPath, ["commit", "-m", "Local-only follow-up"]);
+              }
               // The body must describe the pushed commit, never these edits.
               await Deno.writeTextFile(summaryPath, dirtySummary);
               if (exit === "initial turn limit") {
@@ -623,8 +636,14 @@ for (
                 },
               };
             }
-            if (exit === "local commit then turn limit") {
-              await Deno.writeTextFile(summaryPath, localSummary);
+            if (
+              exit === "local commit then turn limit" ||
+              exit === "legacy local restore"
+            ) {
+              await Deno.writeTextFile(
+                summaryPath,
+                exit === "legacy local restore" ? oldSummary : localSummary,
+              );
               await git(repoPath, [
                 "add",
                 "docs/archive/pr-summaries/pr-summary-42.md",
@@ -635,6 +654,27 @@ for (
             return { ok: false, error: turnLimitError };
           },
         },
+        git: {
+          runGitCommand,
+          branchHeadChanged: async () => ({
+            ok: true,
+            value: (await git(repoPath, ["rev-parse", "HEAD"])) !== oldSha,
+          }),
+          captureBranchHead: async () => ({
+            ok: true,
+            value: await git(repoPath, ["rev-parse", "HEAD"]),
+          }),
+          ...(exit === "finalise failure" ||
+              exit === "held review with local commit"
+            ? {
+              commitAndPushPending: (() =>
+                Promise.resolve({
+                  ok: false,
+                  error: new Error("pre-flight failed"),
+                })) as unknown as GitDeps["commitAndPushPending"],
+            }
+            : {}),
+        },
         pr: {
           handlePrCommentFailure: async () => {
             events.push("failure-accounted");
@@ -642,36 +682,53 @@ for (
         },
       });
 
-      const result = await processPrFeedback(makeInput({ branchName }), {
-        promptsDir: PROMPTS_DIR,
-        logger: makeSilentLogger(),
-        deps,
-        workDir: repoPath,
-        workRoot: root,
-        qualityInstructions: "",
-        verifyPushFn: (branch, options) => verifyPushLanded(branch, options),
-        syncPrBodyFn: (input, syncDeps) =>
-          syncPrBodyFromSummary(input, {
-            ...syncDeps,
-            runGitCommand,
-          }),
-        driftCheckFn: async (_input, driftDeps) => {
-          await driftDeps.runAgent({ prompt: "drift check", readOnly: true });
-          return { status: "clean", checked: [] };
+      const result = await processPrFeedback(
+        makeInput({
+          branchName,
+          ...(exit === "held review with local commit"
+            ? { commentType: "pr_review" }
+            : {}),
+        }),
+        {
+          promptsDir: PROMPTS_DIR,
+          logger: makeSilentLogger(),
+          deps,
+          workDir: repoPath,
+          workRoot: root,
+          qualityInstructions: "",
+          verifyPushFn: (branch, options) => verifyPushLanded(branch, options),
+          syncPrBodyFn: (input, syncDeps) =>
+            syncPrBodyFromSummary(input, {
+              ...syncDeps,
+              runGitCommand,
+            }),
+          driftCheckFn: async (_input, driftDeps) => {
+            if (
+              exit !== "finalise failure" &&
+              exit !== "held review with local commit"
+            ) {
+              await driftDeps.runAgent({
+                prompt: "drift check",
+                readOnly: true,
+              });
+            }
+            return { status: "clean", checked: [] };
+          },
         },
-      });
+      );
 
       const edits = ghCalls.filter((args) =>
         args[0] === "pr" && args[1] === "edit"
       );
       assertEquals(edits.length, 1);
       assertStringIncludes(currentBody, "Rewritten summary.");
+      assertEquals(currentBody.includes("Previous summary."), false);
       assertEquals(currentBody.includes("Local-only follow-up."), false);
       assertEquals(currentBody.includes("Uncommitted draft."), false);
       assertStringIncludes(currentBody, `🏷️ Run id: \`${getRunId()}\``);
       assertEquals(
         events,
-        exit === "finish deadline"
+        exit === "finish deadline" || exit === "finalise failure"
           ? ["body-edit"]
           : ["body-edit", "failure-accounted"],
       );
@@ -679,15 +736,19 @@ for (
         currentBody,
         buildSummaryDigestMarker(await prSummaryDigest(newSummary)),
       );
-      assertEquals(result.ok, exit === "finish deadline");
-      if (exit.includes("turn limit")) {
+      assertEquals(
+        result.ok,
+        exit === "finish deadline" || exit === "finalise failure" ||
+          exit === "held review with local commit",
+      );
+      if (exit.includes("turn limit") || exit === "legacy local restore") {
         assertEquals(result.ok ? undefined : result.error, turnLimitError);
       } else if (!result.ok) {
         assertStringIncludes(
           result.error.message,
           exit === "timeout" ? "timed out" : "agent failed after push",
         );
-      } else {
+      } else if (exit !== "finalise failure") {
         assertEquals(result.value.processed, false);
       }
     } finally {

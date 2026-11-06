@@ -1294,13 +1294,25 @@ Deno.test("review-fix verifier - a pre-flight failure cannot turn a rebuttal int
   );
 });
 
-for (const unpushedState of [0, 2, "error", "throw"] as const) {
-  Deno.test(`review-fix hold - body sync requires measured zero unpushed commits: ${unpushedState}`, async () => {
+for (const remoteState of ["confirmed", "unconfirmed", "throw"] as const) {
+  Deno.test(`review-fix hold - body sync requires a verified remote: ${remoteState}`, async () => {
     const events: string[] = [];
     const { result, captured } = await runScenario({
       input: makeInput(),
       events,
-      unpushedState,
+      unpushedState: 2,
+      verifyPushFn: () => {
+        if (remoteState === "throw") throw new Error("remote unavailable");
+        return Promise.resolve(
+          remoteState === "confirmed"
+            ? {
+              landed: false,
+              remoteSha: "abc123",
+              reason: "local work remains",
+            }
+            : { landed: false, reason: "remote unavailable" },
+        );
+      },
       feedbackVerifierFn: (input, deps) => {
         assertEquals(input.branchName, makeInput().branchName);
         assertEquals(input.workerName, "");
@@ -1314,7 +1326,7 @@ for (const unpushedState of [0, 2, "error", "throw"] as const) {
     });
     assertEquals(
       events.filter((e) => e === "sync-body").length,
-      unpushedState === 0 ? 1 : 0,
+      remoteState === "confirmed" ? 1 : 0,
     );
     assertEquals(result.ok && result.value.processed, false);
     assertEquals(result.ok && result.value.changesPushed, false);
@@ -1326,7 +1338,7 @@ for (const unpushedState of [0, 2, "error", "throw"] as const) {
       e.startsWith("handlePrCommentFailure:")
     );
     assertEquals(failures.length, 1);
-    if (unpushedState === 0) {
+    if (remoteState === "confirmed") {
       assert(events.indexOf("sync-body") < events.indexOf(failures[0]!));
     }
     // Issue #4291: never a label or a disarm.

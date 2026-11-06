@@ -102,8 +102,8 @@ re-syncs under the same condition, and also when it pushed nothing and has no
 commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
-file. Feedback exits on a turn limit, agent error, timeout or scheduled
-release also check the PR branch against the remote and sync the summary
+file. Feedback exits on a turn limit, agent error, timeout, scheduled
+release, held review or failed final push also check the PR branch against the remote and sync the summary
 committed at that verified head before settling the run. Later local commits
 and working-tree edits stay unpublished; an unconfirmed remote head is skipped.
 So the description never drifts from a summary rewritten after creation,

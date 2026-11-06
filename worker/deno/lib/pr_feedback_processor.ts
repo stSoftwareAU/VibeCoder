@@ -1849,31 +1849,7 @@ async function _processFeedbackWithHeartbeat(
     // An agent may already have pushed the corrected summary. Refresh that
     // visible head even when another finding still blocks this review (#3982).
     // Never publish a description of commits that remain local or unmeasured.
-    if (fixBranch === undefined) {
-      try {
-        const unpushed =
-          await (processorDeps.describeUnpushedFn ?? describeUnpushedCommits)(
-            pushBranch,
-            { cwd: processorDeps.workDir },
-          );
-        if (unpushed.ok && unpushed.value.count === 0) {
-          await syncBody();
-        } else {
-          logger.warn("Held review body sync skipped", {
-            prNumber,
-            reason: unpushed.ok
-              ? `${unpushed.value.count} commits remain unpushed`
-              : unpushed.error.message,
-          });
-        }
-      } catch (error) {
-        // A failed measurement or sync must not suppress the review failure.
-        logger.warn("Held review body sync failed", {
-          prNumber,
-          error: String(error),
-        });
-      }
-    }
+    await syncBodyFromVerifiedHead();
     const message =
       `Review-fix verification did not clear. The review remains outstanding.\n\n${failure.message}`;
     await chargeReviewFailure(message);
@@ -2092,10 +2068,7 @@ async function _processFeedbackWithHeartbeat(
   // earlier push may have rewritten the summary without the body ever being
   // refreshed — the sync itself decides staleness by comparing the summary
   // digest recorded in the body, so calling it when nothing moved is safe.
-  // A run that still has commits left unpushed, or one whose unpushed count
-  // was never measured, must not sync: the local summary may not be on the
-  // remote yet, so the body could be rewritten to describe content the
-  // reviewer cannot see.
+  // When local work remains, pin the refresh to the verified remote head.
   //
   // PR #3353 review: "nothing left unpushed" only proves this checkout is not
   // AHEAD of the remote branch — it can still be BEHIND a concurrent
@@ -2110,6 +2083,8 @@ async function _processFeedbackWithHeartbeat(
     ((pushSucceeded && hasChanges) || nothingLeftToPush)
   ) {
     await syncBody();
+  } else if (fixBranch === undefined && hasChanges && !pushSucceeded) {
+    await syncBodyFromVerifiedHead();
   }
 
   // Read .pr_response_message if Claude created one (Issue #1458).

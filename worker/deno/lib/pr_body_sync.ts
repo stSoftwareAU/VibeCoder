@@ -514,7 +514,7 @@ export async function buildSyncedPrBodyCandidate(
         "diff",
         "--name-only",
         input.beforeSha,
-        "HEAD",
+        input.committedHeadSha ?? "HEAD",
         "--",
         summaryRelPath,
       ],
