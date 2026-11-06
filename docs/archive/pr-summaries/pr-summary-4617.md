@@ -84,6 +84,10 @@ flowchart TD
 
 ## Evidence
 
+The #4617 security-sweep coverage slice also claims `ci_mutation_lookup.ts`,
+which reads required checks and remote workflow text through the injected GitHub
+runner. This repairs the CI ledger coverage failure without claiming a sweep.
+
 Backend-only change; no UI file is touched. Tests call the real verdict function
 (`worker/deno/tests/mutation_gate_test.ts`) and the real runner with stubbed
 processes (`worker/deno/tests/mutation_runner_test.ts`). Docs read and updated:
@@ -126,6 +130,8 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- `worker/deno/tests/lib_sweep_coverage_test.ts` verifies that every module is
+  claimed by exactly one security-sweep slice.
 - Added in `worker/deno/tests/mutation_gate_test.ts`: a baseline failure, a
   missing `cargo-mutants`, an unrelated runner error (each with a positive
   control that the other two actions are absent and that "unvalidated, not
