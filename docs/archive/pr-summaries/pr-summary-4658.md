@@ -1,206 +1,107 @@
 ## Summary
 
-Complete trusted owner-gate collection and exception reporting in the existing
-PR completion report. Actual fleet review posts now write hash-chained action
-provenance. The collector verifies current owner-only holds separately from
-generic `needs-human` labels, and reports their reasons alongside regressions.
-
-The explicit `--human-actor-id` allowlist identifies unmatched GitHub review,
-dismissal and merge actors. Eligible verified fleet actions take precedence over
-closer unchained review logs. Commit author metadata remains unknown; it cannot
-establish who performed implementation or repair.
-
-Part of #4658.
+Completed the remaining trusted completion reporting in the existing collector.
+Check runs now cover every observed PR head, recovery and refresh waits use
+verified action evidence, reviewer branch refreshes are journalled, and rollout
+discovery includes stranded PRs older than the measurement cohort without
+changing its denominator. The provisional 90% within-24-hours target remains
+pending two-week operational evaluation; no achieved result or baseline is
+claimed. Closes #4658.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Generic `needs-human` labels must not improve completion figures by removing
-  stalled PRs from eligibility or rollout discovery.
-- A genuine owner exception needs current reviewer-contract evidence and
-  verified action provenance; a label, login or unchained log is insufficient.
-- Git author metadata survives automated cherry-picks and cannot authenticate
-  human repair. The report still recognises recorded trusted human actions.
+- Preserve stalled and older stranded PRs in the report and rollout check so
+  missing history cannot improve completion rates or conceal rediscovery gaps.
+- Attribute repair, review, dismissal, branch refresh and merge activity from
+  verified action records; account identity alone does not prove unattended
+  work.
 
 ### Essential Design Decisions
 
-- The reviewer post producer uses the existing CLI runner and canonical audit
-  writer. Export `<reviewer-state>/audit` with the other `--audit-dir` sources;
-  failed posts retain failed evidence, and append refusals are reported.
-- Current owner gates require an open labelled PR, complete review history, the
-  latest submitted review on its current head carrying the canonical COMMENTED
-  owner hold, and a matching verified reviewer action. Generic, stale,
-  superseded, legacy and log-only evidence stays unverified.
-- The hold policy and body contract are shared with the review writer. New
-  snapshot evidence and exception rows are additive; old verified-owner
-  snapshots remain readable without fabricated detailed evidence.
-- Matching ranks eligible verified fleet actions before timestamp proximity.
-  Human-ID promotion cannot overwrite an already verified action, including an
-  audit run whose ID happens to be `review-log`.
+- Cohort PRs and older rollout candidates are collected separately. Older
+  candidates affect rollout verification, not delivery denominators.
+- Repair-recovery intervals end at the next confirmed repair. Branch-refresh
+  intervals end when checks on the correlated updated commit complete, capped by
+  the PR terminal state or observation time.
+- Missing, truncated or unverified action evidence remains unknown or
+  incomplete; it is never inferred from login or branch names.
+- Reviewer `update-branch` actions use the existing hash-chained audit journal.
+  The prior head is not represented as the resulting refreshed commit.
 
 ### Undiscoverable Facts
 
-- Both attribution defects reproduced before the fix through the collector and
-  CLI collection seam: each incorrectly reported one human-assisted merge. Their
-  regression tests now report zero for the same cases.
-- No live fleet cohort or post-rollout measurement was collected. There is no
-  claimed baseline or achieved 90% operational target.
+- No live fleet cohort or two-week post-rollout measurement was collected. The
+  target is available for operational evaluation but is not reported as met.
+- Expected host inventory and exported audit journals determine fleet coverage;
+  absent evidence degrades or leaves metrics unknown.
 
 ## Evidence
 
-Read the **PR completion evidence report** section in `docs/INTERNALS.md` and
-updated it for actor trust, reviewer audit exports, owner-gate verification and
-exception reporting. Updated the reviewer skill's posting documentation in
-`.claude/skills/review-fleet-prs/SKILL.md`. Registered both new helper modules
-in the existing #4658 library sweep slice.
+This is a backend collector and CLI change; no visual evidence applies. The
+repeatable collection and replay path is:
 
-The real posting boundary is exercised by
-`worker/deno/tests/pr_completion_snapshot_test.ts::collect - actual reviewer posting journals genuine owner holds and preserves failed posts`:
-the canonical review body is posted through an injected CLI seam, the real audit
-writer records the attempt, and the collector verifies the resulting chain. Only
-the successful post verifies a gate. The test also checks formatted exception
-output. This backend change needs no visual evidence.
+```sh
+cd worker/deno
+REPOS='owner/repo'
+COHORT_START='2026-10-01T00:00:00Z'
+COHORT_END='2026-10-15T00:00:00Z'
+VERIFIED_AT='2026-10-15T00:00:00Z'
+AUDIT_DIRS='/path/worker-audit,/path/reviewer-audit,/path/babysitter-audit'
+EXPECTED_INVENTORY='worker-host/worker,review-host/reviewer,babysitter-host/babysitter'
+EXPECTED_REVISION='40-character-deployment-commit-sha'
+deno task pr-completion-report --collect --repos "$REPOS" --start "$COHORT_START" --end "$COHORT_END" --rollout-verified-at "$VERIFIED_AT" --write-snapshot /tmp/pr-completion.json --audit-dir "$AUDIT_DIRS" --expected-inventory "$EXPECTED_INVENTORY" --expected-revision "$EXPECTED_REVISION"
+deno task pr-completion-report --input /tmp/pr-completion.json
+```
 
-The closer-log regression uses a GitHub review and log at 01:00:00 and a
-verified fleet action at 01:00:05. The authenticated fleet match wins and is not
-promoted to human. The automated-commit regression retains an allowlisted
-maintainer as author on an unsigned commit; its repair remains unknown. Both
-scenarios also run through `runPrCompletionCollect`, covering the collector
-result consumed by command dispatch and its existing callers.
+The collector is read-only except for the explicitly requested snapshot file.
+See the **PR completion evidence report** section of `docs/INTERNALS.md` for
+evidence sources, coverage limits and deployment arguments.
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — Verify genuine owner gates separately from generic needs-human
-  labels. — evidence:
-  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - genuine owner gates need a current verified reviewer hold, never a generic label`;
-  `::collect - actual reviewer posting journals genuine owner holds and preserves failed posts`;
-  `::collect - owner gates preserve incomplete provenance and historical rollout eligibility`
-  — reviewer: met
-- **met** — Report genuine owner-only exceptions and regressions alongside it. —
-  evidence:
-  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - reports genuine owner-only exceptions with provenance alongside regressions`;
-  actual posting test checks formatted output — reviewer: met
-- **missing** — Complete blocker accounting for recovery and refresh waits using
-  the records from #4656 and #4613; these are not yet represented as blocker
-  intervals.
-- **missing** — Journal the reviewer's branch refresh through the canonical
-  audit writer as a branch-update, so its resulting merge commit has trusted
-  provenance.
-
-The independent Spec reviewer reviewed the changed diff and issue body,
-confirmed both criteria met, and independently ran the 136 focused tests.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **clean** — Independent Standards review checked Deno placement, canonical
-  audit and hold-policy reuse, additive legacy compatibility, conservative
-  attribution, meaningful test replacement and operator documentation; no new
-  dependency, duplicated policy, unnecessary abstraction or reinvented
-  standard-library operation was found.
-
-The former author-based human-repair assertion was intentionally replaced:
-self-set authorship is not authenticated action provenance. The replacement
-collector and CLI tests fail with the old promotion. Recorded human repair
-followed by a fleet merge remains covered by
-`worker/deno/tests/pr_completion_report_test.ts::PR completion report deduplicates repeated observations and separates trusted outcomes`.
-
-Generic needs-human labels no longer exclude PRs from rollout eligibility;
-verified owner holds at verification remain excluded. The updated coverage is
-`worker/deno/tests/pr_completion_snapshot_test.ts::collect - the rollout check counts stranded, rediscovered and processed PRs by verified time`
-and
-`::collect - the rollout check strands only PRs open at verification and at least a day old`.
+```mermaid
+flowchart LR
+    A[GitHub cohort and older rollout candidates] --> C[Read-only collector]
+    B[Verified worker, reviewer and babysitter evidence] --> C
+    C --> D[Snapshot and dated report]
+    D --> E[Cohort outcomes and blockers]
+    D --> F[Separate rollout discovery check]
+```
 
 ## Test Plan
 
-- A verified review matched to GitHub supersedes one matching legacy log row;
-  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a matched fleet review supersedes its review log without double counting`
-  covers both unattended completion and review rounds. Unmatched logs remain
-  covered by `::collect - an unchained review log cannot verify a PR's history`.
-  Owner exception and historical rollout tests use distinct review and audit
-  timestamps, including a pair straddling the verification instant.
-- Review matching reserves a matched reviewer post's duplicate log before
-  matching other GitHub events. The previous late removal could erase another
-  review's attribution; unmatched reviews remain unknown or explicitly human.
-  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a second review remains attributed when a fleet log is duplicated`
-  covers both outcomes, and
-  `::collect - a non-reviewer audit action cannot supersede a review log` covers
-  the component boundary. No parallel matching rule was found.
+- `worker/deno/tests/pr_completion_snapshot_test.ts` — the all-head check-run
+  case first failed against the prior collector, then passed after collection
+  was extended; the suite passed with 102 tests. It also covers recovery and
+  branch-refresh intervals, pre-cohort stranded PRs, deduplication, manual
+  repair followed by bot merge, human-account automation, unknown history,
+  milestone rollups, owner gates and zero denominator.
+- `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` and
+  `worker/deno/tests/review_fleet_prs_dependabot_test.ts` — passed in the full
+  test run; branch-refresh journal success and refusal are covered through the
+  reviewer production paths.
+- `worker/deno/tests/pr_completion_report_test.ts` and
+  `worker/deno/tests/pr_completion_report_command_test.ts` — passed, 47 tests.
+- `deno lint`, full Deno type check and `deno fmt` — passed in `./quality.sh`.
+- `./quality.sh < /dev/null` — failed its unit-test time budget. The parallel
+  and serial Deno suites passed, but 84 tests exceeded the one-second unit-test
+  budget; `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` accounts for
+  two (3.40 seconds total) and is unchanged from the base branch. Markdownlint,
+  semgrep, Mermaid, completeness checks and other available checks passed.
+  Config integration and Checkov were skipped because the local
+  configuration/tool was unavailable.
+- Regression visibility remains separate: post-merge failures do not change
+  completion success.
 
-- Reviews, dismissals and merges pair with verified actions one-to-one by
-  nearest gap, not event order.
-  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a nearer review takes the fleet action; an earlier allowlisted review stays a human action`
-  puts an allowlisted COMMENTED review five minutes before the fleet hold on the
-  same head (open and merged variants): the gate verifies, the earlier review is
-  a verified human action and `humanAssistedMerged` is 1. It failed
-  (`merged=false`) against the previous event-order pairing and passes now.
-  `::collect - a commit delivered by two confirmed pushes is accounted for by the nearer push, in either journal order`
-  covers the per-commit nearest-action choice: two pushes list one commit at
-  different gaps and the nearer takes it in both journal orders. It fails when
-  the choice becomes "last match wins" (`found !== null`) or "first match wins"
-  (`!best`). The dead `!best &&` operand was removed.
-- `deno task test:unit tests/pr_completion_snapshot_test.ts tests/pr_completion_report_command_test.ts tests/pr_completion_report_test.ts < /dev/null`
-  — passed, 147 tests after the review fix. Covers genuine and generic gates,
-  owner exceptions with regressions, real posting provenance, failed posts,
-  stale and superseded holds, legacy snapshots, truncated evidence and
-  historical rollout timing.
-- Reviewer posting, test-policy and Dependabot suites — passed, 82 tests; after
-  moving the producer into the worker library, posting and hold-policy suites
-  passed again, 66 tests, including granular-permission posting.
-- Owner verification and exception tests failed before implementation; the
-  actual-posting test failed before the producer wrote audit evidence.
-- Deleting dismissal `actorId` forwarding (the original line 743 mutant) made
-  `::collect - configured numeric GitHub actors identify unmatched reviews, dismissals and merges`
-  fail. Restored code passes.
-- The original line 850 and 864 null guards were semantically redundant:
-  validated allowlists contain only numeric strings and cannot contain null.
-  Removed both guards instead of retaining dead conditions or claiming an
-  exemption.
-  `::collect - null GitHub actors stay unknown with and without a review-log match`
-  verifies null identities on both matching paths, dismissals and merges.
-- The in-pairing `trust` rank was dead: the verified-fleet candidates and the
-  unchained review-log candidates are matched in two separate calls, so each
-  call ranked a uniform set. Removed it; fleet-over-log priority stays pinned by
-  the two closer-log tests. Removing the verified-action promotion guard made
-  the `review-log` run-ID collision test fail. Restored code passes.
-- Removing the reviewer-footer guard made the isolated missing-footer owner
-  matrix case fail. Restored code passes.
-- Changed TypeScript formatting, lint and type checks — passed. Library sweep
-  coverage — passed, 39 tests after registering the new helper modules.
-- `./quality.sh < /dev/null` — failed its unit-test time budget on a test file
-  this PR does not change,
-  `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` (2 tests at head,
-  passing). Both parallel and serial repository-wide test passes succeeded.
-  Completeness, security scans, Markdown checks, lint, type checking and
-  formatting passed. Configuration integration and Checkov were skipped because
-  their required local configuration/tooling was unavailable.
-- Mutation survivors (review-fix round): five tests added to
-  `worker/deno/tests/pr_completion_snapshot_test.ts` — review action vs merge
-  event, merge action listing a commit, push stamped before its commit, branch
-  update contested by two commits, one review with two nearby actions. Each
-  mutant (dropped `!isPush`, dropped kind check, dropped `actionMs >= event.ms`,
-  dropped commit-event skip, dropped `assigned.has`, `return undefined` for the
-  merge-head and window refusals) was applied by hand and turned at least one
-  test red. Dead lines removed instead of tested: the pairing `trust` rank, the
-  `used.has(action)` operand for review-type events (the pairing loop rechecks
-  it), the `isCommit &&` operand before `branch-update` (only commit events can
-  meet a branch-update action), and the `implementation`/`repair` operand pair
-  (now one `COMMIT_EVENT_KINDS` set). No line is exempt.
-- `pr-summary-check` with the issue body and labels supplied — zero blocked
-  gates and zero unchecked gates; independent review provenance passed.
-- Rule copies checked: hold policy markers/parser and fixed hold-body headers
-  now share `fleet_review_hold.ts` between writer and collector. Actor-ID
-  validation shares `ACTOR_ID_PATTERN` between collector and CLI. No prompt
-  policy or parallel gate implementation was changed.
+## Deno regression avoided
+
+- Kept collection, tests and commands Deno-native; no Node tooling or dependency
+  was added.
 
 ## Merge verification
 
-The worker re-runs its quality gate and pre-PR verifier before raising the PR.
-The local full gate's outstanding result is the unchanged launcher timing budget
-failure described above. Live deployment, the two-week operational measurement,
-configuration integration and Checkov were not verified here; exported reviewer
-audit evidence is required for live owner verification.
+The repository quality gate is not fully green because of the unchanged
+unit-test timing-budget failure described above. CI, live fleet coverage and the
+two-week operational evaluation remain pending.
+
+Version bump: none; `VERSION` is unchanged.
