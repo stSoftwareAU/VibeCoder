@@ -27,11 +27,15 @@ the body before dismissal, so a prior failed publication can be repaired. A
 failed body publication or a stale repair checkout leaves the review open. A
 partial or missing verdict, or a head or description that moves while the fixes
 are verified also leaves the review open, without blocking the push. A verifier
-outage (the verifier failed, was not checked, or could not get its credential)
-additionally keeps the pending-publication record and ends the pass as an
+outage (the verifier failed, was not checked, could not get its credential, or
+the head or description moved while the fixes were verified) additionally keeps
+the pending-publication record. When the pass pushed nothing, it also ends as an
 infrastructure failure with infrastructure backoff, so the next scan re-runs only
 the publication and the verification, never the agent, and no substantive attempt
-is spent. A pass that leaves its reviews open is journalled as a failed repair. Harmless skips, such as an unrelated
+is spent. After a push the outage ends no pass as a failure and sets no backoff:
+the kept record is retried on the next scan. A pass that pushed nothing and left
+its reviews open is journalled as a failed repair; a pass that pushed is not.
+Harmless skips, such as an unrelated
 marker-less PR or an already-current description, do not block dismissal. GitHub
 CI then runs the repository's quality and regression checks on the updated
 branch.
@@ -145,8 +149,9 @@ runs and runs limited to a repository or PR do not report service health.
 
 The host needs `gh`, `git` and `deno`, and the Claude CLI with a working Claude
 credential for the review verifier (Issue #4657). Without them the verifier
-reports an outage and every review stays open, retried under infrastructure
-backoff. Codex CLI must be 0.164.0 or newer,
+reports an outage and every review stays open. A pass that pushed nothing is
+retried under infrastructure backoff; after a push the kept publication record
+is retried on the next scan, with no backoff. Codex CLI must be 0.164.0 or newer,
 because older versions may silently ignore the permissions profile; a
 pre-release counts when its base version is newer (0.166.0-alpha passes,
 0.164.0-beta does not). Setup and each repair check the `codex` on PATH before

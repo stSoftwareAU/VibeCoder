@@ -4,11 +4,12 @@ The fleet PR babysitter no longer dismisses a requested review because its agent
 said `BABYSITTER_READY`. After the fix is pushed and the description is
 published and read back, the existing independent review-fix verifier judges
 each review's findings at that head and description. Only a review whose every
-finding is judged `fixed` is dismissed. A partial, missing or duplicate verdict,
-or a head or description that moves during verification keeps the review open
-and never blocks the push. A verifier outage also keeps the review open and
-keeps the pending publication, so the next scan re-verifies without running the
-agent, under infrastructure backoff. The verifier runs with its own read-only
+finding is judged `fixed` is dismissed. A partial, missing or duplicate verdict
+keeps the review open and never blocks the push. A verifier outage (including a
+head or description that moves during verification) also keeps the review open
+and keeps the pending publication, so the next scan re-verifies without running
+the agent; a pass that pushed nothing also backs off as an infrastructure
+failure. The verifier runs with its own read-only
 token and no Bash, never the runner's write token. Closes #4657.
 
 ```mermaid
@@ -18,9 +19,9 @@ flowchart TD
     C -->|fails| X[Throw: reviews stay open, next scan retries]
     C --> D[Verifier: one verdict per finding at published head]
     D -->|partial, missing, duplicate| K[Review stays open, push stands]
-    D -->|outage: not checked, throw, no credential| O[Review stays open, publication record kept, infrastructure backoff, next scan re-verifies]
+    D -->|outage: not checked, throw, no credential| O[Review stays open, publication record kept, infrastructure backoff if nothing was pushed, next scan re-verifies]
     D --> E{Head or description moved?}
-    E -->|yes| K
+    E -->|yes| O
     E -->|no| F[Dismiss only reviews with every finding fixed]
 ```
 
@@ -131,8 +132,7 @@ flowchart TD
   called), outside-id verdict, duplicate verdict, a review arriving during
   repair, and a CI repair with no reviews. Result: 16 passed, 0 failed.
 - PR #4849 review, added to
-  `worker/deno/tests/babysitter_fix_orchestration_test.ts` (47 tests at head, 47
-  passed, 0 failed), all through the real `fix()`: a no-change repair with a
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts` (47 tests at head), all through the real `fix()`: a no-change repair with a
   verifier outage (infrastructure class, no substantive attempt, no escalation,
   one journalled attempt, publication kept, next scan re-verifies and dismisses
   with no second agent session); a resumed publication whose verifier is still
@@ -145,7 +145,8 @@ flowchart TD
   protected paths and `/proc` denied; a write-granting token is refused), and
   `worker/deno/tests/pre_pr_verifier_3395_test.ts` one test for `parentEnv` and
   `extraDisallowedTools` reaching the model run. Those files plus
-  `fleet_pr_babysitter_test.ts`, `fleet_pr_babysitter_single_push_test.ts`,
+  `worker/deno/tests/fleet_pr_babysitter_test.ts` (116 tests at head),
+  `fleet_pr_babysitter_single_push_test.ts`,
   `fleet_pr_babysitter_pass_4658_test.ts` and
   `babysitter_attempt_audit_test.ts`: 240 passed, 0 failed.
 - PR #4849 review red checks (each restored): `fix()` not throwing on an outage
@@ -169,7 +170,7 @@ flowchart TD
   description-changed test red (1 failed); letting a verifier throw escape →
   verifier-throws test red.
 - `docs/audits/lib-sweep-coverage/top-up-4657.json` claims the new module;
-  `deno task test:unit tests/lib_sweep_coverage_test.ts`: 39 passed.
+  `worker/deno/tests/lib_sweep_coverage_test.ts` (39 tests at head, not changed by this PR).
 - The ledger's `sweptAt` points to the merge base on `origin/main`, rather than
   a temporary feature-branch checkpoint, so it survives a squash merge.
 - Full gate `./quality.sh` at the head after the PR #4849 review fixes: every
@@ -180,6 +181,11 @@ flowchart TD
   `completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit`
   in `completion_phase_repo_formatters_test.ts`, which this change does not
   touch (they also failed on #4786's run).
+- Mutation survivors (PR #4849): `fleet_pr_babysitter.ts` `verdict?.unavailable`
+  guard carried a redundant `unavailable === undefined` operand (the result is
+  `unavailable ?? outage` either way), so the operand was removed; the
+  `finish` initial value was never read (the publication callback always runs
+  or the sync throws), so it is now a definite-assignment declaration.
 - Mutation check and the independent Spec/Standards reviewers were not run: the
   issue states no `## Acceptance Criteria` list.
 

@@ -1425,7 +1425,7 @@ async function reviewsVerifiedAtPublishedHead(options: {
       verified.push(review);
       continue;
     }
-    if (unavailable === undefined && verdict?.unavailable === true) {
+    if (verdict?.unavailable === true) {
       outage ??= String(verdict.reason ?? "the verifier was unavailable");
     }
     const reason = unavailable ??
@@ -1447,7 +1447,9 @@ async function reviewsVerifiedAtPublishedHead(options: {
 
 /**
  * What a finished repair did with the reviews it addressed (Issue #4657).
- * `reviewsDismissed` is true only when at least one review was dismissed. An
+ * `reviewsDismissed` is true when the verifier judged at least one review
+ * fixed and the dismiss step was given it (a review no longer requested is
+ * skipped there). An
  * `outage` is why the verifier could not judge (it failed, was not checked, or
  * the head or description moved): the pending-publication record is then kept,
  * so the next scan re-verifies without running the agent again.
@@ -1560,7 +1562,8 @@ export async function finishBabysitterRepair(
     proposal: change.proposal,
     pushed: expectedHead !== pr.headRefOid || !!change.pushedByEarlierRepair,
   });
-  let finish: BabysitterRepairFinish = { reviewsDismissed: false };
+  // The publication callback always runs or the sync throws, so it assigns this.
+  let finish!: BabysitterRepairFinish;
   try {
     await syncBabysitterRepairBody(
       repo,
