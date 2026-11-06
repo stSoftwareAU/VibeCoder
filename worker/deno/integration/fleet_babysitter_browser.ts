@@ -171,35 +171,48 @@ int main(int argc, char **argv) {
           secretLink,
           keychainDir,
         ]);
+        const deny = "(deny process-info-pidinfo)";
         const variants: Record<string, string> = {
-          current: full,
-          denyPrefix:
-            `${full}\n(deny sysctl-read (sysctl-name-prefix "kern.procargs"))`,
-          noProcessInfo: `${
-            full.split("\n").filter((r) => !r.startsWith("(allow process-info"))
-              .join("\n")
-          }`,
-          denyProcessInfoAll: `${full}\n(deny process-info*)`,
-          denyProcessInfoOthers:
-            `${full}\n(deny process-info* (target others))`,
-          denyProcessInfoPidinfo: `${full}\n(deny process-info-pidinfo)`,
-          minimal:
-            '(version 1)\n(deny default)\n(allow process-exec)\n(allow file-read* (subpath "/"))',
+          denyOnly: `${full}\n${deny}`,
+          allowSameSandbox:
+            `${full}\n${deny}\n(allow process-info-pidinfo (target same-sandbox))`,
+          allowPgrp:
+            `${full}\n${deny}\n(allow process-info-pidinfo (target pgrp))`,
+          allowSelf:
+            `${full}\n${deny}\n(allow process-info-pidinfo (target self))`,
+          allowChildren:
+            `${full}\n${deny}\n(allow process-info-pidinfo (target children))`,
+          allowSameSandboxAndPgrp:
+            `${full}\n${deny}\n(allow process-info-pidinfo (target same-sandbox))\n(allow process-info-pidinfo (target pgrp))`,
         };
+        await Deno.writeTextFile(
+          `${root}/variant-probe.sh`,
+          `#!/bin/bash
+/bin/sleep 20 &
+c=$!
+./process-probe "$1" 2>/dev/null; echo -n "host=$? "
+./process-probe "$c" 2>/dev/null; echo -n "child=$? "
+p=$(/bin/ps -o ppid= -p $$ | /usr/bin/tr -d ' '); echo -n "ps_ppid_ok=$([ "$p" = "$PPID" ] && echo y || echo n) "
+/usr/bin/pgrep -P $$ | /usr/bin/grep -qx "$c"; echo -n "pgrep=$? "
+/bin/ps -o command= -p "$c" >/dev/null 2>&1; echo "ps_command=$?"
+kill "$c" 2>/dev/null
+`,
+          { mode: 0o700 },
+        );
         for (const [label, body] of Object.entries(variants)) {
           const path = `${scratch}/variant-${label}.sb`;
           await Deno.writeTextFile(path, body, { mode: 0o600 });
           const r = await runWithTimeout(
             "/usr/bin/sandbox-exec",
-            ["-f", path, `${root}/process-probe`, String(markerProcess.pid)],
-            { timeoutMs: 10_000, quiet: true },
+            ["-f", path, `${root}/variant-probe.sh`, String(markerProcess.pid)],
+            { timeoutMs: 15_000, quiet: false, cwd: root },
           );
           console.log(
             `[DEBUG-c7e1] ${label}: ${
               r.ok
-                ? `code=${r.value.code} stderr=${
-                  JSON.stringify(r.value.stderr)
-                }`
+                ? `code=${r.value.code} out=${
+                  JSON.stringify(r.value.stdout)
+                } stderr=${JSON.stringify(r.value.stderr.slice(0, 300))}`
                 : "runner error"
             }`,
           );
