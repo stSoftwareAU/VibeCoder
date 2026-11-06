@@ -29,7 +29,8 @@ flowchart TD
 
 - The proposal is the agent's deliberate choice. A non-closing reference can
   only leave an issue open, so honouring it never closes anything on agent
-  authority. The unmet-criterion path is unchanged and still withholds the close.
+  authority. The unmet-criterion path is unchanged and still withholds the
+  close.
 
 ### Essential Design Decisions
 
@@ -51,7 +52,8 @@ flowchart TD
 ## Evidence
 
 - `deno task test:unit tests/babysitter_pr_body_guard_test.ts
-  tests/fleet_pr_babysitter_test.ts`: 163 tests passed before the review fixes;
+  tests/fleet_pr_babysitter_test.ts`:
+  163 tests passed before the review fixes;
   `tests/babysitter_pr_body_guard_test.ts` alone: 48 passed after them.
 - Production reader of the new constant: `NON_CLOSING_REF_RE` is read in
   `namesClosingOrPartOf` in `worker/deno/lib/babysitter_pr_body_guard.ts`.
@@ -88,12 +90,12 @@ flowchart TD
   the finding outstanding until publication is verified — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a failed description edit keeps reviews open, and a retry at the same head publishes and dismisses`
   — reviewer: met
-- **met** — On a no-code-change repair, publish only a supportable correction;
-  a proposal is data, not authority — evidence:
+- **met** — On a no-code-change repair, publish only a supportable correction; a
+  proposal is data, not authority — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a repair with no code change withholds the close after the sync and dismisses last`
   — reviewer: met
-- **met** — Marker-less body, marker-bearing stale digest and summary-only repair
-  are updated before the repair is reported complete — evidence:
+- **met** — Marker-less body, marker-bearing stale digest and summary-only
+  repair are updated before the repair is reported complete — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a clean-tree babysitter retry repairs a marker-less stale body before dismissal`
   — reviewer: met
 - **met** — #4716 regression: `Closes #4674` becomes `Part of #4674` beside a
@@ -140,7 +142,8 @@ flowchart TD
   close; a `Refs` in a code span or fence does not; a partly met issue with
   `Refs` adds no closing keyword; three hostile inputs; a proposal that starts
   with `Refs #4637`.
-- Added in `worker/deno/tests/fleet_pr_babysitter_test.ts`: `a proposal that
+- Added in `worker/deno/tests/fleet_pr_babysitter_test.ts`:
+  `a proposal that
   names a fully met issue as Refs is not given Closes #N (Issue #4637)`.
 - Red checks: removing `NON_CLOSING_REF_RE` from `namesClosingOrPartOf` turned
   the Refs test red (`Values are not equal: Refs #4637`); changing the lead
