@@ -19,6 +19,55 @@ import {
 
 const REMOTE = "acme/ci/.github/workflows/mutants.yml@v1";
 
+Deno.test("reusable mutation jobs match their own required checks and feeders", async () => {
+  const pipeline =
+    "on: workflow_call\njobs:\n  tests:\n    steps:\n      - run: cargo test\n  mutants:\n    steps:\n      - run: cargo mutants\n  gate:\n    needs: mutants\n    steps:\n      - run: echo ok\n";
+  for (const remote of [false, true]) {
+    const uses = remote ? REMOTE : "./.github/workflows/pipeline.yml";
+    await withRepo({
+      "ci.yml": `on: pull_request\njobs:\n  build:\n    uses: ${uses}\n`,
+      ...(remote ? {} : { "pipeline.yml": pipeline }),
+    }, async (repo) => {
+      const { fetchRemoteWorkflow } = reader({ [REMOTE]: pipeline });
+      for (
+        const [check, expected] of [["build / tests", false], [
+          "build / mutants",
+          true,
+        ], ["build / gate", true]] as const
+      ) {
+        const result = await findBlockingMutationJob(repo, {
+          fetchRemoteWorkflow,
+          requiredChecks: [check],
+        });
+        assertEquals(result.blocking !== null, expected, check);
+      }
+    });
+  }
+});
+
+Deno.test("nested reusable checks match the complete child path", async () => {
+  await withRepo({
+    "ci.yml":
+      "on: pull_request\njobs:\n  build:\n    uses: ./.github/workflows/mid.yml\n",
+    "mid.yml":
+      "on: workflow_call\njobs:\n  inner:\n    uses: ./.github/workflows/end.yml\n",
+    "end.yml":
+      "on: workflow_call\njobs:\n  tests:\n    steps:\n      - run: cargo test\n  mutants:\n    steps:\n      - run: cargo mutants\n",
+  }, async (repo) => {
+    for (
+      const [check, expected] of [["build / inner / tests", false], [
+        "build / inner / mutants",
+        true,
+      ]] as const
+    ) {
+      const result = await findBlockingMutationJob(repo, {
+        requiredChecks: [check],
+      });
+      assertEquals(result.blocking !== null, expected, check);
+    }
+  });
+});
+
 async function withRepo(
   workflows: Record<string, string>,
   body: (repo: string) => Promise<void>,

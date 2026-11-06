@@ -772,6 +772,34 @@ function rustFake(outcomes: string | null, proc: ProcessResult) {
 
 const rsInput = { repoPath: REPO, diff: RS_DIFF, budgetSeconds: 60, jobs: 2 };
 
+Deno.test("runMutationCheck rust - missing nextest is reported as a missing tool", async () => {
+  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args) => {
+    assertEquals(args, ["nextest", "--version"]);
+    return {
+      code: 101,
+      stdout: "",
+      stderr: "error: no such command: `nextest`",
+      timedOut: false,
+    };
+  });
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--test-tool", "nextest"],
+  }, f.seams);
+  assert(r.kind === "error");
+  assertStringIncludes(r.reason, "cargo-nextest is not installed");
+  assert(!r.reason.startsWith(MUTATION_BASELINE_FAILS));
+  assertStringIncludes(
+    evaluateMutationGate(r, "", {
+      workflow: "ci.yml",
+      job: "mutants",
+      tool: "cargo",
+    }).reason,
+    "install it",
+  );
+  assertEquals(f.calls.length, 1);
+});
+
 Deno.test("runMutationCheck rust - an uncreatable temp dir is a worker-fault error and no cargo runs", async () => {
   const f = rustFake(outcomesJson([]), ok(0));
   f.seams.makeTempDir = () =>

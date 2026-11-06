@@ -3,6 +3,7 @@
 import type { Result } from "../types.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
+import { retryWithBackoff } from "./retry.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
   acquireBaseRefreshOwner,
@@ -392,6 +393,9 @@ export async function readRequiredChecksFailed(
   });
 }
 
+/** GitHub is still recomputing the test merge; a later read may succeed. */
+const TEST_MERGE_PENDING = "PR test merge is still being computed";
+
 /** Confirm GitHub's test merge belongs to the same PR head and current base. */
 async function readTestMerge(
   repo: string,
@@ -406,6 +410,12 @@ async function readTestMerge(
   );
   const prHead = object(pr.head, "PR head");
   const prBase = object(pr.base, "PR base");
+  if (
+    pr.state === "open" && prHead.sha === head && prBase.ref === base &&
+    (pr.mergeable === null || pr.merge_commit_sha == null)
+  ) {
+    throw new Error(TEST_MERGE_PENDING);
+  }
   if (
     pr.state !== "open" || pr.mergeable !== true || prHead.sha !== head ||
     prBase.ref !== base ||
@@ -433,7 +443,7 @@ async function readTestMerge(
   return { mergeSha: pr.merge_commit_sha, baseSha: prBase.sha };
 }
 
-/** Re-read the PR and its current-head contract before asking for a refresh. */
+/** Re-read the PR and current-head contract before asking for a refresh. */
 export async function requestReadyBranchUpdate(
   repo: string,
   prNumber: number,
@@ -473,22 +483,28 @@ export async function requestReadyBranchUpdate(
       (expectedBase === undefined || pr.baseRefName === expectedBase) &&
       typeof pr.headRefOid === "string" &&
       (expectedHead === undefined || pr.headRefOid === expectedHead);
-    const ready = (pr: ObjectValue) =>
+    const otherwiseReady = (pr: ObjectValue) =>
       pr.state === "OPEN" && pr.isDraft === false && !!pr.autoMergeRequest &&
-      pr.mergeable === "MERGEABLE" && pr.mergeStateStatus === "BEHIND" &&
       (pr.reviewDecision === "APPROVED" || pr.reviewDecision === "" ||
         pr.reviewDecision === null) &&
       typeof pr.baseRefName === "string" &&
       typeof pr.headRefOid === "string";
-    const current = await readLivePr();
-    if (!hasCurrentTarget(current)) {
+    const ready = (pr: ObjectValue) =>
+      otherwiseReady(pr) && pr.mergeStateStatus === "BEHIND" &&
+      pr.mergeable === "MERGEABLE";
+    const transientMergeability = (pr: ObjectValue) =>
+      otherwiseReady(pr) &&
+      (pr.mergeStateStatus === "BEHIND" || pr.mergeStateStatus === "UNKNOWN") &&
+      (pr.mergeable === "UNKNOWN" || pr.mergeable === null);
+    const initial = await readLivePr();
+    if (!hasCurrentTarget(initial)) {
       return {
         ok: false,
         error: new Error("PR base or head changed before branch update"),
       };
     }
-    const baseRefName = current.baseRefName as string;
-    const headRefOid = current.headRefOid as string;
+    const baseRefName = initial.baseRefName as string;
+    const headRefOid = initial.headRefOid as string;
     const policy = await readStrictBasePolicy(
       repo,
       baseRefName,
@@ -507,6 +523,40 @@ export async function requestReadyBranchUpdate(
         gh,
         headRefOid,
       );
+    }
+    let current = initial;
+    if (
+      transientMergeability(initial)
+    ) {
+      let firstRead = true;
+      current = await retryWithBackoff(async () => {
+        const live = firstRead ? initial : await readLivePr();
+        firstRead = false;
+        if (
+          !hasCurrentTarget(live) || live.baseRefName !== baseRefName ||
+          live.headRefOid !== headRefOid
+        ) return live;
+        if (
+          transientMergeability(live)
+        ) {
+          throw new Error("PR mergeability is still UNKNOWN");
+        }
+        return live;
+      }, {
+        maxAttempts: 4,
+        ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
+        shouldRetry: (error) =>
+          error.message === "PR mergeability is still UNKNOWN",
+      });
+    }
+    if (
+      !hasCurrentTarget(current) || current.baseRefName !== baseRefName ||
+      current.headRefOid !== headRefOid
+    ) {
+      return {
+        ok: false,
+        error: new Error("PR base or head changed before branch update"),
+      };
     }
     if (!ready(current)) {
       return {
@@ -587,13 +637,19 @@ export async function requestReadyBranchUpdate(
         }
       },
     );
-    const merge = await readTestMerge(
-      repo,
-      prNumber,
-      baseRefName,
-      headRefOid,
-      gh,
-    );
+    const readCurrentTestMerge = () =>
+      retryWithBackoff(
+        () => readTestMerge(repo, prNumber, baseRefName, headRefOid, gh),
+        {
+          maxAttempts: 4,
+          ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
+          shouldRetry: (error) =>
+            error.message === TEST_MERGE_PENDING ||
+            error.message ===
+              "PR test merge parents do not match its head and base",
+        },
+      );
+    const merge = await readCurrentTestMerge();
     if (
       !await readRequiredChecksPassed(
         repo,
@@ -618,16 +674,17 @@ export async function requestReadyBranchUpdate(
         error: new Error("PR changed while its required checks were read"),
       };
     }
-    const freshMerge = await readTestMerge(
+    const freshMerge = await readCurrentTestMerge();
+    const freshChecksPassed = await readRequiredChecksPassed(
       repo,
-      prNumber,
       baseRefName,
       headRefOid,
       gh,
+      freshMerge.mergeSha,
     );
     if (
       freshMerge.mergeSha !== merge.mergeSha ||
-      freshMerge.baseSha !== merge.baseSha
+      freshMerge.baseSha !== merge.baseSha || !freshChecksPassed
     ) {
       return {
         ok: false,
@@ -661,23 +718,18 @@ export async function requestReadyBranchUpdate(
       ) {
         throw new Error("PR base or head changed before branch update");
       }
-      const immediateMerge = await readTestMerge(
+      const immediateMerge = await readCurrentTestMerge();
+      const immediateChecksPassed = await readRequiredChecksPassed(
         repo,
-        prNumber,
         baseRefName,
         headRefOid,
         gh,
+        immediateMerge.mergeSha,
       );
       if (
         immediateMerge.mergeSha !== merge.mergeSha ||
         immediateMerge.baseSha !== merge.baseSha ||
-        !await readRequiredChecksPassed(
-          repo,
-          baseRefName,
-          headRefOid,
-          gh,
-          immediateMerge.mergeSha,
-        )
+        !immediateChecksPassed
       ) {
         throw new Error(
           "PR test merge or required checks changed before branch update",

@@ -116,11 +116,17 @@ non-blocking. The job is reported as
 mutation job only when its check is required, or a job that needs it, directly
 or through others, is (so a required `gate` aggregator covers it). A check name
 matches the job's `name:` or key, a matrix child (`name (1)`) or a reusable
-child (`caller / inner`). A job name with an expression cannot be matched and
-counts. When the read fails, or nothing is required, the list is treated as
+child (`caller / inner`), including each level of a nested call. A required
+sibling does not cover the mutation job; a required child that needs it does.
+A job name with an expression cannot be matched and counts within its caller.
+When the read fails, or nothing is required, the list is treated as
 unknown and any PR-triggered job counts, as before. An in-session lookup fault
 is logged, never read as "not blocking". The same lookups run in review-fix
 runs.
+
+When CI selects `--test-tool nextest`, the worker probes `cargo nextest
+--version` first. A missing nextest is reported as a missing tool with an
+installation action, rather than as a failing baseline.
 
 Not evaluated or read: other mutation tools, job `if:` and path filters, and the
 flags of a `deno task`.

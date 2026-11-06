@@ -24,6 +24,9 @@ agreement:
   so every PR-triggered job still counts then.
 - **CI flags.** `--timeout`, `--cargo-arg` and `--test-tool` of the CI
   `cargo mutants` line are carried to the worker's run, with a value check each.
+  A missing cargo-nextest is identified before the run and gets an install
+  action. Reusable child checks are matched by their full caller path, including
+  a required child that depends on the mutation job, rather than by a sibling.
 
 The flags of a `deno task` are still not read: the worker's Deno runner does not
 run the repository's task, so there is nothing to apply them to. Part of #4617.
@@ -130,6 +133,15 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
   and the two sibling tests beside it — reviewer: met
 
 ## Test Plan
+
+- Review follow-up: reusable checks match the full caller and child name;
+  a sibling is no longer treated as the mutation job. Required feeders still
+  count, as verified by
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::reusable mutation jobs match their own required checks and feeders`.
+  The runner probes nextest before passing the CI flag and reports a missing
+  tool with its install action, covered by
+  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - missing nextest is reported as a missing tool`.
+  No twinned copy of these rules was found.
 
 - `worker/deno/tests/lib_sweep_coverage_test.ts` verifies that every module is
   claimed by exactly one security-sweep slice.

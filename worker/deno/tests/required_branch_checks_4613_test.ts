@@ -1,10 +1,11 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   readRequiredChecksFailed,
   readRequiredChecksPassed,
   requestReadyBranchUpdate,
   requiredChecksPassed,
 } from "../lib/required_branch_checks_4613.ts";
+import { classifyTransientBranchRefreshRefusal } from "../lib/branch_refresh_refusal_streak.ts";
 import { requestBranchUpdate } from "../lib/merge_block_escalation.ts";
 
 const rules = [{
@@ -132,6 +133,13 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   };
   let retarget = false;
   let wrongParent = false;
+  let wrongParentReads = 0;
+  let testMergeReads = 0;
+  let mergeabilityReadings: Array<string | null> = [];
+  let unknownMergeState = false;
+  let restMergeableReadings: Array<boolean | null> = [];
+  let restReads = 0;
+  const retryWaits: number[] = [];
   let views = 0;
   const writes: string[][] = [];
   const comments: Array<
@@ -142,6 +150,9 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     const endpoint = args[1] ?? "";
     if (args[0] === "pr" && args[1] === "view") {
       if (args.at(-1)?.includes("isDraft")) views++;
+      const mergeable = mergeabilityReadings.length
+        ? mergeabilityReadings.shift()
+        : "MERGEABLE";
       return Promise.resolve(
         JSON.stringify({
           state: "OPEN",
@@ -150,8 +161,10 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
           headRefOid: head,
           autoMergeRequest: {},
           reviewDecision: decision,
-          mergeable: "MERGEABLE",
-          mergeStateStatus: "BEHIND",
+          mergeable,
+          mergeStateStatus: unknownMergeState && mergeable !== "MERGEABLE"
+            ? "UNKNOWN"
+            : "BEHIND",
         }),
       );
     }
@@ -190,10 +203,13 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       return Promise.resolve("");
     }
     if (endpoint.includes("/pulls/")) {
+      restReads++;
       return Promise.resolve(
         JSON.stringify({
           state: "open",
-          mergeable: true,
+          mergeable: restMergeableReadings.length
+            ? restMergeableReadings.shift()
+            : true,
           merge_commit_sha: mergeHead,
           head: { sha: head },
           base: { ref: "main", sha: baseHead },
@@ -201,9 +217,14 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       );
     }
     if (endpoint.includes("/git/commits/")) {
+      testMergeReads++;
       return Promise.resolve(
         JSON.stringify({
-          parents: [{ sha: wrongParent ? "d".repeat(40) : baseHead }, {
+          parents: [{
+            sha: wrongParent || wrongParentReads-- > 0
+              ? "d".repeat(40)
+              : baseHead,
+          }, {
             sha: head,
           }],
         }),
@@ -253,7 +274,9 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       gh,
       base,
       undefined,
-      async () => {},
+      async (ms) => {
+        retryWaits.push(ms);
+      },
       { fleetAuthors: ["VibeCoderST"] },
     );
   const firstRequest = await request();
@@ -309,6 +332,12 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   const nonStrict = await request();
   assertEquals(nonStrict.ok, true);
   assertEquals(writes.length, 4);
+  // A non-strict base keeps its prior behaviour: no mergeability gate or retry.
+  mergeabilityReadings = [null];
+  retryWaits.length = 0;
+  assertEquals((await request()).ok, true);
+  assertEquals(retryWaits.length, 0);
+  assertEquals(writes.length, 5);
   strictPolicy = true;
   queued = true;
   const mergeQueue = await request();
@@ -328,11 +357,62 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     false,
   );
   retarget = false;
+  wrongParentReads = 1;
+  retryWaits.length = 0;
+  const staleThenCurrent = await request("main");
+  assertEquals(staleThenCurrent.ok, true);
+  assert(retryWaits.length > 0);
+  assertEquals(writes.length, 6);
+
+  restMergeableReadings = [null, true];
+  retryWaits.length = 0;
+  const restReadsBefore = restReads;
+  const restPendingThenReady = await request("main");
+  assertEquals(restPendingThenReady.ok, true);
+  assert(retryWaits.length > 0);
+  assert(restReads - restReadsBefore >= 2);
+  assertEquals(writes.length, 7);
+
+  restMergeableReadings = [null, null, null, null];
+  retryWaits.length = 0;
+  const restPendingExhausted = await request("main");
+  assertEquals(restPendingExhausted.ok, false);
+  if (!restPendingExhausted.ok) {
+    assertEquals(
+      restPendingExhausted.error.message.includes(
+        "PR test merge is still being computed",
+      ),
+      true,
+    );
+    assertEquals(
+      classifyTransientBranchRefreshRefusal(
+        restPendingExhausted.error.message,
+      ),
+      "mergeability-unknown",
+    );
+  }
+  restMergeableReadings = [];
+  assertEquals(writes.length, 7);
+
   wrongParent = true;
-  assertEquals(
-    (await request("main")).ok,
-    false,
-  );
+  const mergeReadsBeforeStaleExhaustion = testMergeReads;
+  retryWaits.length = 0;
+  const staleExhausted = await request("main");
+  assertEquals(staleExhausted.ok, false);
+  if (!staleExhausted.ok) {
+    assertEquals(
+      staleExhausted.error.message.includes(
+        "PR test merge parents do not match its head and base",
+      ),
+      true,
+    );
+  }
+  assert(retryWaits.length >= 3);
+  assertEquals(testMergeReads - mergeReadsBeforeStaleExhaustion, 4);
+  for (const [index, base] of [2000, 4000, 8000].entries()) {
+    const wait = retryWaits.at(-3 + index)!;
+    assert(wait >= base && wait <= base * 2);
+  }
   wrongParent = false;
   assertEquals(
     (await request("other-base")).ok,
@@ -349,7 +429,51 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     (await request()).ok,
     false,
   );
-  assertEquals(writes.length, 4);
+  assertEquals(writes.length, 7);
+
+  decision = "APPROVED";
+  unknownMergeState = true;
+  mergeabilityReadings = ["UNKNOWN", "MERGEABLE"];
+  retryWaits.length = 0;
+  const unknownThenReady = await request("main");
+  assertEquals(unknownThenReady.ok, true);
+  assert(retryWaits.length > 0);
+  assertEquals(writes.length, 8);
+
+  mergeabilityReadings = [null, "MERGEABLE"];
+  retryWaits.length = 0;
+  const nullMergeabilityThenReady = await request("main");
+  assertEquals(nullMergeabilityThenReady.ok, true);
+  assert(retryWaits.length > 0);
+  assertEquals(writes.length, 9);
+
+  mergeabilityReadings = ["UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"];
+  retryWaits.length = 0;
+  const viewsBeforeUnknownExhaustion = views;
+  const unknownExhausted = await request("main");
+  assertEquals(unknownExhausted.ok, false);
+  if (!unknownExhausted.ok) {
+    assertEquals(
+      unknownExhausted.error.message.includes(
+        "PR mergeability is still UNKNOWN",
+      ),
+      true,
+    );
+    assertEquals(
+      classifyTransientBranchRefreshRefusal(unknownExhausted.error.message),
+      "mergeability-unknown",
+    );
+  }
+  assertEquals(views - viewsBeforeUnknownExhaustion, 4);
+  assertEquals(writes.length, 9);
+
+  decision = "REVIEW_REQUIRED";
+  mergeabilityReadings = ["UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"];
+  retryWaits.length = 0;
+  const unapprovedUnknown = await request("main");
+  assertEquals(unapprovedUnknown.ok, false);
+  assertEquals(retryWaits.length, 0);
+  assertEquals(writes.length, 9);
 });
 
 Deno.test("ready updater rejects an invalid PR number before invoking gh", async () => {

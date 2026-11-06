@@ -38,6 +38,7 @@
 
 import {
   CARGO_MUTANTS_MISSING,
+  CARGO_NEXTEST_MISSING,
   DEFAULT_MUTANT_CAP,
   generateDenoMutantsDetailed,
   isDenoTestFile,
@@ -886,6 +887,33 @@ async function runCargoMutants(
   outDir: string,
 ): Promise<MutationCheckResult> {
   const { repoPath, budgetSeconds } = input;
+  const ciArgs = input.cargoMutantsArgs ?? [];
+  if (
+    ciArgs.some((arg, i) =>
+      arg === "--test-tool" && ciArgs[i + 1] === "nextest" ||
+      arg === "--test-tool=nextest"
+    )
+  ) {
+    const probe = await seams.runProcess("cargo", ["nextest", "--version"], {
+      cwd: repoPath,
+      timeoutMs: budgetSeconds * 1000,
+      env: input.credentialEnv,
+    });
+    if (
+      !probe.timedOut &&
+      (probe.code === 127 || /no such command: `?nextest/i.test(probe.stderr))
+    ) {
+      return { kind: "error", reason: CARGO_NEXTEST_MISSING };
+    }
+    if (probe.timedOut || probe.code !== 0) {
+      return {
+        kind: "error",
+        reason: `cargo nextest --version ${
+          probe.timedOut ? "timed out" : `exited with code ${probe.code}`
+        }`,
+      };
+    }
+  }
   await seams.writeTextFile(diffPath, input.diff);
   const jobs = input.jobs ??
     Math.max(1, Math.min(4, globalThis.navigator?.hardwareConcurrency ?? 2));

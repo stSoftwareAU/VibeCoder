@@ -483,26 +483,46 @@ function reusableCallee(
  */
 function blockingJobHit(
   job: unknown,
+  jobs: Mapping,
+  jobName: string,
   parsed: Map<string, Mapping>,
   seen: WeakSet<object>,
   budget: { remaining: number },
   chain: readonly string[],
+  required: readonly string[],
+  prefix = "",
+  inherited = false,
 ): JobHit | null {
   // Charge even non-mappings, so repeated reusable calls cannot fan out freely.
   if (--budget.remaining < 0) throw new WorkflowScanBudgetExceeded();
   if (!isMapping(job)) return null;
+  const feeds = requiredFeeder(jobs, jobName, required, prefix);
+  const covered = inherited || feeds !== null;
   const line = blockingMutationLine(job, seen, budget);
-  if (line !== null) return { line };
+  if (line !== null) return covered ? { line } : null;
   if (chain.length > MAX_REUSABLE_DEPTH) return null;
   const callee = reusableCallee(job, parsed, chain);
   if (callee === null) return null;
   const calledJobs = callee.doc.jobs;
   if (!isMapping(calledJobs)) return null;
+  const displayName = typeof job.name === "string" ? job.name : jobName;
+  const childPrefix = `${prefix}${displayName} / `;
   for (const [calledJob, body] of Object.entries(calledJobs)) {
-    const hit = blockingJobHit(body, parsed, seen, budget, [
-      ...chain,
-      callee.file,
-    ]);
+    const hit = blockingJobHit(
+      body,
+      calledJobs,
+      calledJob,
+      parsed,
+      seen,
+      budget,
+      [
+        ...chain,
+        callee.file,
+      ],
+      required,
+      childPrefix,
+      covered,
+    );
     if (hit !== null) {
       return {
         line: hit.line,
@@ -581,7 +601,9 @@ export async function findBlockingMutationJob(
     for (const [jobName, job] of Object.entries(doc.jobs)) {
       let hit: JobHit | null;
       try {
-        hit = blockingJobHit(job, parsed, seen, budget, [name]);
+        hit = blockingJobHit(job, doc.jobs, jobName, parsed, seen, budget, [
+          name,
+        ], required);
       } catch (error) {
         if (!(error instanceof WorkflowScanBudgetExceeded)) throw error;
         unreadable.push(name);
@@ -589,7 +611,6 @@ export async function findBlockingMutationJob(
       }
       if (hit !== null) {
         const feeds = requiredFeeder(doc.jobs, jobName, required);
-        if (feeds === null) continue;
         const aggregator = feeds ?? findAggregator(doc.jobs, jobName);
         blocking = {
           workflow: name,
@@ -669,12 +690,6 @@ async function fetchRemoteWorkflows(
   }
 }
 
-/** Whether `context` is the check `name` reports, or one of its matrix or reusable children. */
-function contextMatches(context: string, name: string): boolean {
-  return context === name || context.startsWith(`${name} (`) ||
-    context.startsWith(`${name} / `);
-}
-
 /**
  * Whether the job, or a job that needs it (directly or through others),
  * reports a required check (Issue #4617). Returns `undefined` when nothing is
@@ -688,6 +703,7 @@ function requiredFeeder(
   jobs: Mapping,
   jobName: string,
   required: readonly string[],
+  prefix = "",
 ): string | null | undefined {
   if (required.length === 0) return undefined;
   const reports = (key: string): boolean => {
@@ -695,8 +711,12 @@ function requiredFeeder(
     const name = isMapping(job) && typeof job.name === "string"
       ? job.name
       : key;
-    return name.includes("${{") ||
-      required.some((context) => contextMatches(context, name));
+    return (name.includes("${{") &&
+      required.some((context) => context.startsWith(prefix))) ||
+      required.some((context) =>
+        context === `${prefix}${name}` ||
+        context.startsWith(`${prefix}${name} (`)
+      );
   };
   if (reports(jobName)) return undefined;
   const seen = new Set([jobName]);
