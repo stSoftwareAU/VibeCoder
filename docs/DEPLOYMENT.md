@@ -1077,12 +1077,12 @@ claude "Take a screenshot of http://localhost:3000"
 > `pa11y-ci`/`http-server` until Issue #1344 removed the Pages workflow — sat
 > outside the quarantine entirely; `gem install bundler-audit` sat outside the
 > `Gemfile` tree for the same reason. Every such install pins an exact
-> version in the workflow, and
-> `renovate.json` declares `customManagers` matching those pins in
-> `.github/workflows/*.yml`, so the **24h** `minimumReleaseAge` applies to them
-> like any other ecosystem. `cargo install` steps follow the same rule: they
-> pin an exact `--version` and pass `--locked`, so cargo does not re-resolve
-> the crate's dependency tree past the quarantine, and the same
-> `customManagers` entries cover them (datasource `crate`). Installs pass
+> version in the workflow. `renovate.json` declares `customManagers` matching the
+> npm pins in `.github/workflows/*.yml`, so the **24h** `minimumReleaseAge` applies
+> to them like any other ecosystem. `cargo install` steps pin an exact `--version`
+> and pass `--locked`, so cargo does not re-resolve the crate's dependency tree
+> past the quarantine. No Renovate manager covers those cargo pins yet, so they are
+> bumped by hand: the constants in `worker/deno/lib/workflow_definitions.ts` are
+> kept equal to this repo's workflows by test. Installs pass
 > `--ignore-scripts` where the package permits it, keeping install-time
 > lifecycle scripts off the runner.

@@ -96,8 +96,8 @@ const MARKDOWNLINT_CLI2_VERSION = "0.24.0";
  * `--locked` makes cargo use the crate's own `Cargo.lock` instead of
  * re-resolving its dependency tree to the newest crates.io releases on every
  * run, which would otherwise land outside the 24h supply-chain quarantine.
- * Bump in lock-step with the Renovate cargo customManager in `renovate.json`
- * and `.github/workflows/cargo-audit.yml`, so bumps stay deliberate.
+ * Bump in lock-step with `.github/workflows/cargo-audit.yml`, which tests keep
+ * equal to this constant, so bumps stay deliberate.
  */
 const CARGO_AUDIT_VERSION = "0.22.2";
 
@@ -108,8 +108,8 @@ const CARGO_AUDIT_VERSION = "0.22.2";
  * `--locked` makes cargo use the crate's own `Cargo.lock` instead of
  * re-resolving its dependency tree to the newest crates.io releases on every
  * run, which would otherwise land outside the 24h supply-chain quarantine.
- * Bump in lock-step with the Renovate cargo customManager in `renovate.json`
- * and `.github/workflows/cargo-upgrade.yml`, so bumps stay deliberate.
+ * Bump in lock-step with `.github/workflows/cargo-upgrade.yml`, which tests keep
+ * equal to this constant, so bumps stay deliberate.
  */
 const CARGO_EDIT_VERSION = "0.13.14";
 
