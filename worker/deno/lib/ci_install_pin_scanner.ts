@@ -121,14 +121,14 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /**
  * `cargo install` flags that consume the following token as their value
  * when written without `=` (Issue #4683). Their value is not the crate.
+ * `--git` and `--path` are deliberately absent: they mark an external source,
+ * which returns before any spec is examined, so their value never matters.
  */
 const CARGO_VALUE_FLAGS = new Set([
   "--version",
-  "--git",
   "--branch",
   "--tag",
   "--rev",
-  "--path",
   "--root",
   "--registry",
   "--index",

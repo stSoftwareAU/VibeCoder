@@ -567,7 +567,7 @@ Deno.test("findUnpinnedInstalls - flags cargo versions that are not exact", () =
       ["cargo install --locked cargo-audit --version 0.22", "0.22"],
       ["cargo install --locked cargo-audit@^0.22.2", "^0.22.2"],
       ["cargo install --locked cargo-audit@0.22", "0.22"],
-    ]
+    ] as const
   ) {
     const found = findUnpinnedInstalls(run);
     assertEquals(found.length, 1, run);
@@ -589,6 +589,55 @@ Deno.test("findUnpinnedInstalls - cargo evasions still flag the unpinned install
     const found = findUnpinnedInstalls(run);
     assertEquals(found.map((f) => f.packageName), ["cargo-audit"], run);
     assertEquals(found[0]?.unlocked, unlocked, run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - cargo value flags do not leak their value as a crate", () => {
+  for (
+    const flag of [
+      "--branch",
+      "--tag",
+      "--rev",
+      "--root",
+      "--registry",
+      "--index",
+      "-F",
+      "--bin",
+      "--example",
+      "--target",
+      "--target-dir",
+      "--profile",
+      "--jobs",
+      "-j",
+      "--config",
+      "--color",
+      "-Z",
+      "--message-format",
+      "--lockfile-path",
+      "--manifest-path",
+      "-C",
+    ]
+  ) {
+    const run = `cargo install --locked ${flag} some-value cargo-audit`;
+    assertEquals(
+      findUnpinnedInstalls(run).map((f) => f.packageName),
+      ["cargo-audit"],
+      run,
+    );
+  }
+});
+
+Deno.test("findUnpinnedInstalls - npm, npx and gem findings are not marked unlocked", () => {
+  for (
+    const run of [
+      "npm install -g pa11y-ci@3",
+      "npx -y pa11y-ci",
+      "gem install bundler",
+    ]
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.length, 1, run);
+    assertEquals(found[0]?.unlocked, false, run);
   }
 });
 

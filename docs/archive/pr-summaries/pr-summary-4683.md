@@ -92,10 +92,22 @@ flowchart LR
   the conformance test red (3 failed); changing the scanner's
   `if (pinned && locked) continue;` to `if (pinned) continue;` turned
   `ci_install_pin_scanner_test.ts` red (3 failed). Both restored.
+- Mutation follow-up: added a test that each cargo value flag
+  (`--branch` … `-C`) consumes its value rather than leaking it as a crate, and
+  a test that npm/npx/gem findings carry `unlocked: false` (kills the swapped
+  `unlocked = false` default in `hit`). Red-checked: renaming `--color` in the
+  set and flipping the default to `true` each turned the scanner test red
+  (2 failed). `--git` and `--path` were removed from `CARGO_VALUE_FLAGS`: they
+  set `externalSource`, which returns before any spec is read, so keeping them
+  in the set had no observable effect (equivalent mutants, now gone).
+- Type-check fix: the "flags cargo versions that are not exact" table is now
+  `as const`, so `deno check` passes under `noUncheckedIndexedAccess`.
 - No existing assertion was removed or edited.
 - Targeted run: `deno task test:unit` over the scanner, 3642, 4683, conformance,
   file-checks, audit-template, definitions, auditor and changed-gate tests: 299
   passed, 0 failed.
+- After the follow-up: `deno check` on the scanner and its test is clean, and
+  the scanner, 4683 and conformance tests pass (66 passed, 0 failed).
 - Full `./quality.sh`: killed by my 595s foreground timeout (exit 124) before
   its final stage reported, so there is no overall verdict. Every stage printed
   before the cut-off passed (including workflow hygiene, completeness checks,
