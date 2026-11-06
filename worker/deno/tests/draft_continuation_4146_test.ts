@@ -18,6 +18,7 @@ import {
   DRAFT_CONTINUATION_MARKER,
   ensureDraftContinuationPr,
 } from "../lib/draft_continuation_pr.ts";
+import { prTitleMatchesIssue } from "../lib/pr_title_issue_ref.ts";
 import { getBlockingPRForIssue, type OpenPR } from "../lib/issue_query.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
@@ -80,6 +81,33 @@ Deno.test("#4146 - a timed-out run with no PR opens a draft that says Part of, n
     "auto-merge never armed",
   );
   assertFalse(calls.some((a) => a[0] === "issue"), "no issue is filed");
+});
+
+Deno.test("#4679 - the draft title carries no issue reference from the issue title", async () => {
+  const calls: string[][] = [];
+  await ensureDraftContinuationPr({
+    repo: REPO,
+    issueNumber: 5,
+    issueTitle: "Add caching [#999] and (Issue #998) see #997",
+    branchName: "issue-5-caching",
+    baseBranch: "main",
+    gh: (args) => {
+      calls.push(args);
+      if (args[0] === "pr" && args[1] === "list") return Promise.resolve("[]");
+      return Promise.resolve(`https://github.com/${REPO}/pull/6\n`);
+    },
+  });
+  const create = calls.find((a) => a[0] === "pr" && a[1] === "create");
+  assert(create, "a PR is created");
+  const title = create[create.indexOf("--title") + 1]!;
+  assertEquals(title, "Add caching and see 997 (Issue #5)");
+  for (const injected of [999, 998, 997]) {
+    assertFalse(
+      prTitleMatchesIssue(title, injected),
+      `title must not read as a reference to #${injected}`,
+    );
+  }
+  assert(prTitleMatchesIssue(title, 5), "the run's own issue stays referenced");
 });
 
 Deno.test("#4146 - a branch that already has an open PR gets no second one", async () => {
