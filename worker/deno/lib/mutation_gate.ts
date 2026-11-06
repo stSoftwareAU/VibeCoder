@@ -71,7 +71,6 @@ export const MUTATION_TEMP_DIR_UNWRITABLE =
  * mutant runs, so no mutant can be judged (Issue #4617).
  */
 export const MUTATION_BASELINE_FAILS = "baseline tests fail before mutation";
-export const CARGO_NEXTEST_MISSING = "cargo-nextest is not installed";
 
 /**
  * Runner `error` reason when `cargo-mutants` is not installed where the worker
@@ -1501,9 +1500,6 @@ export function mutationErrorNextAction(reason: string): string {
   }
   if (reason.startsWith(CARGO_MUTANTS_MISSING)) {
     return "the mutation tool is not installed where the worker runs the check: install it there, then re-run";
-  }
-  if (reason.startsWith(CARGO_NEXTEST_MISSING)) {
-    return "cargo-nextest is not installed where the worker runs the check: install it there, then re-run";
   }
   return "read the runner error above, fix its cause, then re-run";
 }

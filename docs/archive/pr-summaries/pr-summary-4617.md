@@ -145,6 +145,14 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- Review follow-up: removed the unreachable missing-nextest error action. The
+  obsolete error is replaced by a cargo test runner fallback that still judges
+  survivors and reports the substitution, covered by
+  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - missing nextest falls back to cargo and judges survivors`.
+  Other runner errors retain their next actions, covered by
+  `worker/deno/tests/mutation_gate_test.ts::mutationErrorNextAction - names the next action for each runner error cause (Issue #4617)`.
+  No twinned copy of the removed action was found.
+
 - Review follow-up: the obsolete missing-nextest error no longer prevents a
   mutation run; cargo's test runner still judges survivors and the verdict
   names the substitution and install action. Both flag forms and the blocking
