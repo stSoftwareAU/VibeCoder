@@ -77,6 +77,8 @@ flowchart TD
   required, so no caller can fall back to dismissing without it.
   `dismissAddressedReviews` is unchanged and still re-reads current requested
   reviews before dismissing.
+- The merge with main retains both the verifier and attempt-journal dependency
+  hooks on `FixDeps`, so review verification and attempt auditing remain wired.
 - Docs updated: `docs/workflows/fleet-pr-babysitter.md` (overview, sequence
   diagram, description step 5). The agent prompt clause in `buildRepairPrompt`
   ("counts as addressed") is reworded to match. Docs sweep for stem `dismiss\w*`

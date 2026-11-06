@@ -16,6 +16,7 @@ import {
 } from "../lib/pr_discovery_events.ts";
 import { escalationHostId } from "../lib/host_escalation.ts";
 import { isAuditJournalSwitchedOff } from "../lib/audit_hook.ts";
+import { journalBabysitterAttempt } from "../lib/babysitter_attempt_audit.ts";
 import { AUDIT_JOURNAL_OFF_ENV_VAR } from "../lib/agent_env.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
@@ -1995,6 +1996,7 @@ export interface FixDeps {
   dismiss?: BabysitterRepairFinishDeps["dismiss"];
   /** Independent review verifier; defaults to the production verifier (Issue #4657). */
   verifyReviews?: BabysitterRepairFinishDeps["verifyReviews"];
+  journalAttempt?: typeof journalBabysitterAttempt;
 }
 
 const EVIDENCE_LINES = 5;
@@ -2216,6 +2218,7 @@ export async function fix(
     }
   };
   const escalate = deps.escalate ?? escalateStuckRepair;
+  const journalAttempt = deps.journalAttempt ?? journalBabysitterAttempt;
   const workerId = `babysitter-${crypto.randomUUID()}`;
   const stateDir = deps.stateDir ?? babysitterStateDir();
   const lock = await acquireBranchUpdateLock({
@@ -2564,6 +2567,11 @@ export async function fix(
       retryRecord.nextEligibleAt = new Date(Date.now() + 5 * 60_000)
         .toISOString();
       await saveBabysitterRetryState(stateDir, retryRecord);
+      await journalAttempt({
+        repo,
+        prNumber: initial.number,
+        headSha: pr.headRefOid,
+      });
       console.log(
         `${repo}#${pr.number}: deferred (${retryRecord.blockerClass}: ${retryRecord.lastOutcome}); next action: ${retryRecord.nextAction}; next eligible at ${retryRecord.nextEligibleAt}`,
       );
@@ -2758,6 +2766,14 @@ export async function fix(
       retryRecord.unpublishedAttempts = (retryRecord.unpublishedAttempts ?? 0) +
         1;
       await saveBabysitterRetryState(stateDir, retryRecord);
+      // A normal return with reviews means publication and dismissal finished.
+      if (reviews.length === 0) {
+        await journalAttempt({
+          repo,
+          prNumber: initial.number,
+          headSha: pr.headRefOid,
+        });
+      }
       await settleSubstantiveOutcome(pr.headRefOid, "no-change");
     }
   } catch (error) {
@@ -2832,6 +2848,16 @@ export async function fix(
         // The durable record comes first: a failed marker write must neither
         // lose it nor replace the repair's real error.
         await saveBabysitterRetryState(stateDir, retryRecord);
+        // A failed attempt that delivered no push is a failed repair for the
+        // collector's recovery wait. Owner holds are already needs-human
+        // waits, and a failure after a push is already a confirmed push.
+        if (blockerClass !== "owner" && !pushed) {
+          await journalAttempt({
+            repo,
+            prNumber: initial.number,
+            headSha: retryRecord.observedHead,
+          });
+        }
         if (substantiveFailure) {
           await settleSubstantiveOutcome(retryRecord.observedHead, "no-change");
         }

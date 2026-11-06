@@ -1208,8 +1208,8 @@ note, and make the directory incomplete, even beside valid journals.
 same kind on the same PR within ten minutes either side of the GitHub event. A
 review may instead match one review-log record (see below). When the event and
 the action both carry a head SHA, the two must be equal. A journalled `review`
-records no head SHA, since only a direct `pr-merge` does, so it still matches a
-GitHub review that carries a `commit_id`. A merge matches on its head and within
+without a head SHA can still match a GitHub review that carries a `commit_id`;
+reviewer posts at a reviewed head record that SHA. A merge matches on its head and within
 ten minutes either side of `mergedAt` (see **Merge window**). Each commit is
 attributed to a confirmed, verified implementation, repair or milestone push
 whose recorded `deliveredCommits` contains that commit, at or after its
@@ -1351,15 +1351,24 @@ blocker ends at that moment, and a failure completed after it is not a blocker.
 Overlapping workflow failure intervals are combined so waiting time is not
 counted twice. Concurrency cancellations do not open a blocker.
 A `repair-recovery` interval runs from a failed verified repair action to the
-next confirmed repair action, with repeated failures combined into one wait;
+next confirmed repair action or verified fleet dismissal, with repeated failures
+combined into one wait;
 `branch-refresh` runs from a verified branch update to the first completed
 workflow run or external check on its correlated commit. A running workflow's
 last update is not completion evidence. Both waits are capped by the PR's
 merge or close; otherwise they remain open and their duration is measured to
 observation time. Missing action or commit evidence remains
 unknown rather than being inferred from a login or branch name.
-Babysitter retry cooldowns from failed attempts without a repair push are not
-measured as recovery waits. Issue #4658 remains open for that follow-up.
+When a babysitter repair attempt ends without a push (an agent failure, an
+infrastructure, capability or race cooldown, or an agent that made no change
+and left the blocker in place),
+the babysitter journals a verified `babysitter-attempt` failed repair in its
+audit journal. The existing `repair-recovery` interval then covers that cooldown
+until the next confirmed repair push or verified fleet dismissal. A successful
+no-push publication and review dismissal is not a failed attempt. Owner holds
+are not journalled, because
+they are already `needs-human` waits, and a failure after a push is not
+journalled, because that push is already confirmed.
 
 **Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
@@ -4802,14 +4811,19 @@ offline run that still cannot reach the registry, is left to CI. A tree whose
 only checks are cargo and are all left to CI this way is
 `skipped` and refused outside a merge-only cycle: an automatic resolution
 requires a completed check (Issue #1559). The third (Issue #4422)
-covers a Deno task whose remote module host this host cannot reach, in the
-resolution gate's tasks and, under the condition below, in the type check in
-`checkMergedTree` (Issue #4451). When a Deno task fails because this
-host cannot fetch a remote module, deno prints `error: Import '<url>' failed.`
-followed by a connection-class cause such as `error sending request for url`,
-`unsuccessful tunnel` or `dns error`. `detectRemoteModuleGap` in
-[milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) recognises
-only that pair. A 404, a certificate, a checksum or a type error is still an
+covers a Deno task whose remote module host, or npm registry, this host cannot
+reach, in the resolution gate's tasks and, under the condition below, in the
+type check in `checkMergedTree` (Issue #4451). When a Deno task fails because
+this host cannot fetch a remote module or npm package, deno prints a failure
+header followed by a connection-class cause such as `error sending request for
+url`, `unsuccessful tunnel` or `dns error`. The header is `error: Import
+'<url>' failed.`, `error: Failed caching npm package '<spec>'` (reported as
+`npm:<spec>`), or `error: Failed loading <url> for package "<name>"`
+(Issue #4848). `detectRemoteModuleGap` in
+[milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) reads each
+line with ANSI colour stripped, so a coloured `error` prefix still matches
+(Issue #4848), and reports a gap only when a connection-class cause follows one
+of those headers. A 404, a certificate, a checksum or a type error is still an
 ordinary failure and is refused. The unreachable task is not counted as passed
 and is not repaired. Every other task still runs, so a real failure elsewhere
 still refuses the resolution, and `quality.sh` is never substituted for an

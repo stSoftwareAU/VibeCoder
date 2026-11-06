@@ -1,234 +1,122 @@
 ## Summary
 
-Completed the remaining trusted completion reporting in the existing collector.
-Check runs now cover every observed PR head, recovery and refresh waits use
-verified action evidence, reviewer branch refreshes are journalled, and rollout
-discovery includes stranded PRs outside the measurement cohort without
-changing its denominator. The provisional 90% within-24-hours target remains
-pending two-week operational evaluation; no achieved result or baseline is
-claimed. Part of #4658; that issue remains the follow-up for unmeasured
-babysitter retry cooldowns from failed attempts without a repair push.
+The last open item of the completion report was babysitter retry cooldowns from
+failed attempts that deliver no repair push. The babysitter now journals such an
+attempt (an agent failure, an infrastructure, capability or race cooldown, or an
+agent that made no change and left the blocker in place) as a verified, failed
+`repair` in its hash-chained audit journal. The `repair-recovery` interval in
+the collector measures the wait until the next confirmed repair push or
+verified fleet dismissal, or to the PR's merge or close. The provisional
+90%-within-24-hours target stays an operational
+evaluation after rollout; no baseline or achieved result is claimed.
+
+Closes #4658.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Preserve stalled and outside-cohort stranded PRs in the report and rollout check so
-  missing history cannot improve completion rates or conceal rediscovery gaps.
-- Attribute repair, review, dismissal, branch refresh and merge activity from
-  verified action records; account identity alone does not prove unattended
-  work.
+- Retry cooldowns after a failed attempt left no trusted record, so they never
+  appeared as a waiting blocker. The collector already turns a failed verified
+  repair into a wait, so the fix is to supply that evidence, not a second
+  mechanism.
 
 ### Essential Design Decisions
 
-- Cohort PRs and outside-cohort rollout candidates are collected separately.
-  Candidates affect rollout verification, not delivery denominators.
-- Repeated failed repairs share one recovery interval until the next confirmed
-  repair. Branch-refresh intervals end at a positively completed workflow or
-  external check on the correlated commit, capped by the PR terminal state.
-  Open waits remain open and are measured through observation time.
-- Rollout scans continue through older pages to exhaustion or the collection
-  bound. Bound exhaustion and candidate truncation leave rollout coverage
-  incomplete without marking a complete cohort truncated.
-- CI cost ratios retain check-only heads alongside workflow heads. Workflow
-  checks and jobs are not counted again in the primary cost totals.
-- Missing, truncated or unverified action evidence remains unknown or
-  incomplete; it is never inferred from login or branch names.
-- Reviewer `update-branch` actions use the existing hash-chained audit journal.
-  The prior head is not represented as the resulting refreshed commit.
+- The entry reuses `component: "babysitter"`, `actionKind: "repair"` and
+  `outcome: "error"` with the verb `babysitter-attempt`. No new action kind was
+  added, so existing readers of the journal and the report stay compatible; a
+  failed repair is never counted as a fix round (only confirmed repairs are).
+- Owner holds are not journalled (already `needs-human` waits). A failure after
+  a push is not journalled either, because a confirmed push already exists.
+- A no-push publication that dismisses the addressed reviews is successful,
+  and a verified fleet dismissal closes an earlier failed-repair wait.
+- Journalling is best-effort and never replaces the repair's real error, but a
+  refused append or invalid input is logged as
+  `[SECURITY]
+  [AUDIT_JOURNAL_REFUSED]`, and nothing is recorded for invalid
+  input.
 
 ### Undiscoverable Facts
 
-- No live fleet cohort or two-week post-rollout measurement was collected. The
-  target is available for operational evaluation but is not reported as met.
-- Expected host inventory and exported audit journals determine fleet coverage;
-  absent evidence degrades or leaves metrics unknown.
-- Babysitter retry cooldowns without a repair push are not measured as
-  recovery waits; #4658 tracks the remaining work.
-
-## Acceptance Criteria
-
-- **missing** — Complete blocker accounting for babysitter retry cooldowns without a repair push — reason: failed attempts without a push do not yet provide trusted recovery-wait evidence to the collector.
+- No live fleet cohort or two-week post-rollout measurement was collected.
+- A wait is attributed only once the babysitter host's audit directory is
+  supplied to the collector with `--audit-dir`; absent evidence stays unknown.
 
 ## Evidence
 
-This is a backend collector and CLI change; no visual evidence applies. The
-repeatable collection and replay path is:
-
-```sh
-cd worker/deno
-REPOS='owner/repo'
-COHORT_START='2026-10-01T00:00:00Z'
-COHORT_END='2026-10-15T00:00:00Z'
-VERIFIED_AT='2026-10-15T00:00:00Z'
-AUDIT_DIRS='/path/worker-audit,/path/reviewer-audit,/path/babysitter-audit'
-EXPECTED_INVENTORY='worker-host/worker,review-host/reviewer,babysitter-host/babysitter'
-EXPECTED_REVISION="$(git rev-parse HEAD)"
-deno task pr-completion-report --collect --repos "$REPOS" --start "$COHORT_START" --end "$COHORT_END" --rollout-verified-at "$VERIFIED_AT" --write-snapshot /tmp/pr-completion.json --audit-dir "$AUDIT_DIRS" --expected-inventory "$EXPECTED_INVENTORY" --expected-revision "$EXPECTED_REVISION"
-deno task pr-completion-report --input /tmp/pr-completion.json
-```
-
-The collector is read-only except for the explicitly requested snapshot file.
-See the **PR completion evidence report** section of `docs/INTERNALS.md` for
-evidence sources, coverage limits and deployment arguments.
+Backend change; no visual evidence applies.
 
 ```mermaid
 flowchart LR
-    A[GitHub cohort and outside-cohort rollout candidates] --> C[Read-only collector]
-    B[Verified worker, reviewer and babysitter evidence] --> C
-    C --> D[Snapshot and dated report]
-    D --> E[Cohort outcomes and blockers]
-    D --> F[Separate rollout discovery check]
+    A[Babysitter attempt] -->|push| B[Confirmed repair journalled by git hook]
+    A -->|failure or unresolved no change| C[babysitter-attempt failed repair journalled]
+    C --> D[recoveryBlockersFor]
+    B --> D
+    D --> E[repair-recovery wait in report]
 ```
+
+Docs: `docs/INTERNALS.md`, **PR completion evidence report** section (the
+`repair-recovery` paragraph) now describes the journalled attempt. The
+neighbouring passage on failed fleet attempts remaining verified history is
+still true (`pr_completion_report.ts` counts only confirmed repairs as fix
+rounds). The collector no longer reports the obsolete blanket claim that
+babysitter retry cooldowns without a push are unmeasured; missing audit
+directories remain visible in coverage notes.
+`docs/AGENT-ACCOUNTABILITY.md` describes the direct no-push attempt record,
+its head SHA, owner-hold exclusion and how it differs from a confirmed repair
+push. The field rules also identify reviewer head SHAs and direct PR targets;
+`docs/INTERNALS.md` describes matching reviews with or without a recorded head.
+
+## Acceptance Criteria
+
+The issue states no acceptance-criteria heading, and no part of what it asks is
+left undone: the earlier PRs (#4709, #4842, #4846) delivered the other items and
+this PR delivers the last one named in their summaries.
 
 ## Test Plan
 
-- `worker/deno/tests/pr_completion_snapshot_test.ts::collect - check runs are read for an observed head with no workflow runs`
-  — failed against the prior collector, then passed after collection was
-  extended. The current snapshot suite passed with 110 tests.
-- `worker/deno/tests/pr_completion_snapshot_test.ts::collect - recorded repair recovery and reviewer refresh waits are attributed`
-  covers both blocker intervals;
-  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - the rollout check counts stranded, rediscovered and processed PRs by verified time`
-  covers a stranded PR outside the cohort.
-- `worker/deno/tests/pr_completion_snapshot_test.ts::collect - automated commits retaining an allowlisted human author stay unknown`,
-  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - milestone rollup actions link the delivered GitHub commit`,
-  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - unmatched GitHub merges and approvals are unknown, never human or fleet`,
-  and
-  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a zero-PR cohort yields an empty, valid report`
-  cover the listed attribution and cohort cases.
-- `worker/deno/tests/pr_completion_report_test.ts::a verified human repair at an earlier head still counts; the head SHA does not unlink it`
-  covers human repair followed by a fleet merge.
-  `worker/deno/tests/pr_completion_report_test.ts::PR completion report deduplicates repeated observations and separates trusted outcomes`
-  covers repeated hosts, open and closed-unmerged PRs, milestone rollups, owner
-  gates and unknown outcomes.
-- `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` and
-  `worker/deno/tests/review_fleet_prs_dependabot_test.ts` — passed in the
-  focused test run; branch-refresh journal success and refusal are covered
-  through the reviewer production paths.
-- `worker/deno/tests/pr_completion_report_test.ts` and
-  `worker/deno/tests/pr_completion_report_command_test.ts` — passed, 47 tests.
-- Current validation: the five focused collector, report, CLI and reviewer
-  suites passed with 190 tests; their Deno type checks passed. Changed
-  TypeScript files passed `deno lint` and `deno fmt --check`.
-  `deno task check:manifests` passed (847 passed, one ignored). Markdownlint and
-  `git diff --check` passed.
-- The earlier `./quality.sh < /dev/null` run failed its unit-test time budget.
-  The parallel and serial Deno suites passed, but 84 tests exceeded the
-  one-second unit-test budget;
-  `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` accounts for two
-  (3.40 seconds total) and is unchanged from the base branch. Markdownlint,
-  semgrep, Mermaid, completeness checks and other available checks passed.
-  Config integration and Checkov were skipped because the local
-  configuration/tool was unavailable.
-- Regression visibility remains separate: post-merge failures do not change
-  completion success.
+- Review fix: a successful no-push review publication and dismissal no longer
+  records a failed attempt; an earlier failed attempt ends at a confirmed,
+  verified fleet dismissal. The obsolete behaviour charged the subsequent
+  review wait to repair recovery. Unsuccessful no-change repairs still open a
+  recovery wait, and unverified, human or failed dismissals cannot close it.
+  Coverage: `worker/deno/tests/babysitter_fix_orchestration_test.ts::a no-push review repair dismisses the review without journalling failure`,
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix resumes a failed publication without another agent session (PR #4779 review)`,
+  and `worker/deno/tests/pr_completion_snapshot_test.ts::recovery boundaries - trust, kind, outcomes, ordering and terminal caps`.
+  Both new boundary assertions failed before the fix. The recovery rule has
+  one implementation, `recoveryBlockersFor`; no twinned rule was found.
 
-## Completion-check fixes
-
-### Required item 1 — mutation coverage
-
-The new boundary tests call the same recovery and refresh functions used by the
-collector and assert their returned intervals. Collector regressions assert
-snapshot coverage and report results; the CLI regressions assert its returned
-report. No source-text tests or untestable exemptions were added.
-
-Original locations below refer to the gate's pre-retry head in
-`worker/deno/lib/pr_completion_snapshot.ts`:
-
-| Original location and mutation                           | Resolution and evidence in `pr_completion_snapshot_test.ts`                                                                                                                                                                                |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 416 — rollout enabled / older-than-cohort guards         | `collect boundaries - ordinary cohort collection stops before unnecessary older pages` and `collect boundaries - older candidate cap and future PRs keep rollout coverage honest` fail when either surviving guard is removed.             |
-| 417 — stranded-age prefilter                             | Removed with the incorrect cutoff scan; `strandedAt` remains the age authority. The paginated rollout regression and existing age-threshold regression cover selection.                                                                    |
-| 424 — age-based page stop                                | Removed for rollout scans. `collect regression - rollout scans beyond the first pre-cohort page and reports scan bounds` covers older PRs on later pages and incomplete bounded scans. Ordinary collection retains its tested cohort stop. |
-| 437, 438 — completeness and truncation flags             | The candidate-cap boundary test supplies complete host discovery evidence, so each flipped flag independently fails an assertion.                                                                                                          |
-| 757 — nullable repair cap ternary                        | Removed the numeric-cap precomputation in the chronological recovery loop. `recovery boundaries - trust, kind, outcomes, ordering and terminal caps` covers absent, observation, close and merge caps.                                     |
-| 759 — verified / repair-kind guards                      | The recovery boundary test rejects unverified failures and successes and non-repair actions. Each dropped guard fails.                                                                                                                     |
-| 768 — repair cap guard                                   | The recovery boundary test covers no cap, recovery before the cap, recovery after the cap and failure after the cap.                                                                                                                       |
-| 770 — confirmed recovery outcome                         | The recovery boundary test leaves an unknown outcome unresolved. Removing the confirmation requirement fails.                                                                                                                              |
-| 771 — recovery timestamp comparison                      | Removed the redundant comparison after chronological sorting. The recovery boundary test passes actions out of order and confirms that a success before a failure cannot recover it.                                                       |
-| 774 — cap / absent-recovery guards                       | Replaced the per-failure ternary with a pending interval closed by confirmation or its cap. Recovery boundary and repeated-failure regressions cover recovered and unrecovered waits.                                                      |
-| 775 — repeated numeric-cap null guard                    | Removed with the old recovery ternary; it was redundant with the enclosing non-null cap check.                                                                                                                                             |
-| 798 — nullable refresh cap ternary                       | `refresh boundaries - trusted fleet updates require correlated completion and honour end caps` covers absent and present caps; negating this ternary fails.                                                                                |
-| 801 — verified / fleet-actor guards                      | The refresh boundary test rejects unverified, human and unknown actors. Each dropped guard fails.                                                                                                                                          |
-| 802, 803 — branch-update kind / confirmed outcome guards | The refresh boundary test rejects other action kinds and failed or unknown updates. Each dropped guard fails.                                                                                                                              |
-| 806 — implementation-event correlation                   | The refresh boundary test accepts implementation and repair commit evidence separately; dropping implementation evidence fails.                                                                                                            |
-
-A local mutation pass applied 21 individual mutations to the repaired paths,
-running the eight new regression and boundary tests with Deno after each change:
-21 were killed, none survived. This includes the retained guards above, the new
-recovery outcome/cap logic, workflow completion status, positive conclusion
-requirements and external-check support. Removed defective or redundant
-expressions above are no longer mutation targets.
-
-### Required item 2 — verifier defects and callers
-
-All four new `collect regression` tests failed against the pre-retry head before
-the fixes and pass with the fixes:
-
-- **Rollout pagination and `observeRepo` caller:** 99 cohort PRs followed by two
-  older PRs now retain both older PRs across pages. A bounded scan remains
-  incomplete. The same regression exercises `runPrCompletionCollect` and proves
-  that the cohort denominator stays 99 while rollout eligibility is 101.
-- **Overlapping recovery waits:** failures at 00:00 and 00:10 followed by a
-  00:30 recovery yield one 1,800-second interval. Without recovery there is one
-  open interval measured through observation time.
-- **Refresh completion:** an in-progress workflow updated at 01:03 keeps the
-  wait open; a completed external check closes it at 01:20. Running workflow
-  snapshot rows carry no completion timestamp.
-- **Mixed-source delivery ratios and CLI caller:** a ten-minute check-only
-  delivery plus a twenty-minute workflow delivery yield one CI run and fifteen
-  minutes per change. The mixed-source regression also exercises the CLI with
-  repeated repair failures and a check-only refresh, asserting the returned cost
-  ratios and both waiting aggregates. Workflow checks/jobs are retained as
-  evidence without duplicating primary cost totals.
-
-`docs/INTERNALS.md` now describes exhaustive bounded rollout scanning, combined
-repair waits, positive workflow/external-check completion and mixed-source cost
-accounting. No second implementation of these rules was found; collector and CLI
-use the same report consumer and blocker functions.
-
-### Review corrections and test-change evidence
-
-The rollout candidate selection no longer excludes PRs created after the
-cohort end but before verification. The cohort denominator remains unchanged;
-`worker/deno/tests/pr_completion_snapshot_test.ts::collect boundaries - older candidate cap and future PRs keep rollout coverage honest`
-covers the revised selection and bounded evidence. The old exclusion is
-obsolete because it hid stranded PRs. The retained per-head cost rule is
-covered on a single delivered PR by
-`worker/deno/tests/pr_completion_snapshot_test.ts::collect regression - one PR retains check-only and workflow heads`,
-which counts the check-only head and workflow head without duplicating checks.
-The boundary test failed before the selection fix; the same-PR test failed
-when the report was mutated to deduplicate per PR instead of per head. The
-collector suite passed all 111 tests after both fixes.
-
-Merge-commit check-run reads were unused by post-merge regression detection and
-incorrectly consumed the CI budget. They are removed; observed PR-head check
-runs remain covered by `worker/deno/tests/pr_completion_snapshot_test.ts::collect - check runs are read for an observed head with no workflow runs`.
-The restored `worker/deno/tests/pr_completion_snapshot_test.ts::collect - incomplete CI is reflected in delivered metrics and coverage`
-distinguishes a fully collected PR from one cut by the budget. The CI history
-test also asserts that merge-commit check runs are not requested.
-
-Observation time no longer closes unresolved repair or refresh waits; terminal
-PR states still cap them. The `collect regression - repeated failed repairs form
-one recovery interval` and `collect regression - refresh waits require completed
-CI and accept external checks` tests in `worker/deno/tests/pr_completion_snapshot_test.ts`
-assert open counts and durations. The boundary tests retain terminal cap
-coverage. The obsolete expectation that an older rollout scan cap truncates a
-complete cohort is replaced by the rollout scan and older candidate boundary
-tests in the same file; they still assert incomplete rollout evidence. All five
-updated regression tests failed before the review fixes and pass afterwards.
-
-## Deno regression avoided
-
-- Kept collection, tests and commands Deno-native; no Node tooling or dependency
-  was added.
-
-## Merge verification
-
-The local quality gate passed formatting, lint, type checking, completeness and
-Markdown checks. Its parallel test phase encountered a Deno 2.9.0 permissions
-pledge panic on this host; the focused collector suite passed. Semgrep, Checkov
-and config integration were unavailable locally. CI, live fleet coverage and
-the two-week operational evaluation remain pending.
-
-Version bump: none; `VERSION` is unchanged.
+- New `worker/deno/tests/babysitter_attempt_audit_test.ts` (12 tests): entry
+  journalled at its head, round-trip through `prActionsFromAuditJournal` and
+  `recoveryBlockersFor` (wait to the next confirmed repair; wait to the PR end
+  cap), unverified chain measures nothing, disabled journal and no audit
+  directory write nothing, invalid input refused (including a non-string repo or
+  head that stringifies to a valid one), a successful append logs nothing, a
+  refused append is logged, and an unexpected error is logged for both an
+  `Error` and a non-`Error` thrown value. Passed (12).
+- Mutation survivors closed: dropping the `typeof` operand on the repo
+  or head, negating the `!result.ok` check and negating the
+  `instanceof Error` ternary in `babysitter_attempt_audit.ts` each
+  turn at least one of those tests red.
+- Review fix: a stale GitHub conflict deferral now journals the failed attempt
+  at the observed head. The existing cooldown prevents a duplicate entry on an
+  immediate retry. The assertion failed before the fix. Coverage:
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::stale conflict defers until GitHub recomputes mergeability`.
+- New tests in `worker/deno/tests/babysitter_fix_orchestration_test.ts`
+  (infrastructure failure, code failure, no change, owner-class failure, a
+  successful push, a failure after a confirmed push). The file passed (43).
+- Red checks, each restored afterwards: removing the no-change call site, the
+  catch call site, the `blockerClass !== "owner"` operand and the `!pushed`
+  operand each turned at least one test red.
+- `fleet_pr_babysitter_audit_test.ts` (3) and `pr_completion_snapshot_test.ts`
+  (112) passed. `deno task check:manifests` passed (847 passed, one ignored).
+  `deno fmt`, `deno lint` and `deno check` passed on the changed TypeScript.
+- Callers checked: `fix` is the only caller of `journalBabysitterAttempt`; the
+  new `journalAttempt` dependency defaults to it, so production passes nothing.
+- Review fix: the obsolete unconditional cooldown coverage note is removed;
+  missing audit evidence remains reported. Coverage:
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - coverage does not claim babysitter retry cooldowns are unmeasured`
+  and `worker/deno/tests/pr_completion_snapshot_test.ts::collect - no audit directory means the actions are not complete`.
+  The new assertion failed before the fix. The attempt audit tests now remove
+  their temporary directories in a `finally` block.

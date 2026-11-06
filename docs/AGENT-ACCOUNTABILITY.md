@@ -224,13 +224,17 @@ fields `prevHash` and `hash`.
 
 Six optional fields classify each mutation. Entries written by this build
 always carry `actionId`, `component` and `actionKind`. `prNumber` is set only
-for a PR target, and `headSha` only on a `gh pr merge` that carries
-`--match-head-commit`. `deliveredCommits` appears
+for a PR target. `headSha` appears on a `gh pr merge` that carries
+`--match-head-commit`, on the reviewer's `pr-review` post at its reviewed
+head, and on a babysitter's failed or unresolved no-push attempt.
+`deliveredCommits` appears
 only on `git-push` entries whose command line the chokepoint can parse and
 whose history it can enumerate, whether or not the push succeeds. The reviewer's
 gate and post paths also call the canonical audit writer for their
 `update-branch` request, recording the PR number and request outcome; the
-collector correlates the resulting commit from GitHub's PR commit list.
+collector correlates the resulting commit from GitHub's PR commit list. The
+babysitter also writes a `babysitter-attempt` directly when a repair attempt
+fails or leaves its blocker in place without pushing, except for an owner hold.
 Entries written before this
 change carry none of them:
 
@@ -240,26 +244,30 @@ change carry none of them:
   `reviewer`, `babysitter`, or `unknown` when the caller is not one the hook
   names.
 - `prNumber` — the PR number the mutation targets. It is present only when the
-  target is a PR: a `pr-` verb with a numeric target, or a `/pulls/N` API path.
-- `headSha` — the head SHA a `gh pr merge` is pinned to. The audit hook reads
-  it from a `--match-head-commit` argument that carries a full 40-hex SHA, and
-  no other mutation carries it. The pin applies to an `--auto` arming as well
-  as a direct merge, so an arming entry can carry `headSha` while its
-  `actionKind` is `merge-arm`. `prActionsFromAuditJournal` reads it when
-  present.
+  target is a PR: a `pr-` verb with a numeric target, a `/pulls/N` API path,
+  or a direct canonical-writer entry such as `babysitter-attempt`.
+- `headSha` — the head SHA a `gh pr merge` is pinned to, the head reviewed by
+  a reviewer's `pr-review` post, or the head at a failed or unresolved no-push
+  babysitter attempt other than an owner hold. The audit hook reads the merge pin from a
+  `--match-head-commit` argument that carries a full 40-hex SHA. The pin applies
+  to an `--auto` arming as well as a direct merge, so an arming entry can carry
+  `headSha` while its `actionKind` is `merge-arm`. `prActionsFromAuditJournal`
+  reads it when present.
 - `deliveredCommits` — full commit IDs absent from the remote branch before an
   attempted push, recorded for both successful and failed pushes. The git
   chokepoint reads the remote head and enumerates its old-to-local range.
   For a new destination, it excludes history in the remote's tracking refs.
   Unsupported push forms, unavailable history and shallow
   repositories omit this evidence; their commits remain unknown to the collector.
-- `actionKind` — one of the following, decided from the verb, the target and
-  the resolved caller:
+- `actionKind` — one of the following, decided by the hook from the verb, the
+  target and the resolved caller, or supplied by a direct canonical-writer call:
   - `implementation` — a `git push` from a module the hook names as publishing
     the run's own branch (for example `completion_phase` or `wip_checkpoint`).
   - `repair` — a `git push` from a module the hook names as updating an existing
     PR branch: the babysitter and the PR CI, feedback, merge-conflict and
-    spelling processors.
+    spelling processors. A directly written `babysitter-attempt` also uses
+    `repair` with component `babysitter` and outcome `error` for a failed or
+    unresolved no-push attempt other than an owner hold; it is never a fix round.
   - `milestone` — a `git push` from `git_pull.ts` whose target is a `milestone/`
     branch, which is the milestone sync.
   - `branch-update` — a `PUT` to `repos/<repo>/pulls/<n>/update-branch`, or a

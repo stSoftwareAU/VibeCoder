@@ -743,14 +743,16 @@ function ciBlockersFor(
   return out;
 }
 
-/** Time spent between a recorded failed repair and its next confirmed repair. */
+/** Time from a failed repair to the next confirmed repair or verified fleet dismissal. */
 export function recoveryBlockersFor(
   record: PrCompletionRecord,
   actions: readonly TrustedPrAction[],
 ): Blocker[] {
   const endCap = record.mergedAt ?? record.closedAt ?? null;
   const repairs = actions.filter((action) =>
-    action.verified && action.kind === "repair"
+    action.verified && (action.kind === "repair" ||
+      (action.kind === "dismissal" && action.actor === "fleet" &&
+        action.outcome === "confirmed"))
   ).sort((a, b) =>
     utcMillis(a.timestamp, "repair action timestamp") -
     utcMillis(b.timestamp, "repair action timestamp")
@@ -763,7 +765,9 @@ export function recoveryBlockersFor(
       utcMillis(action.timestamp, "repair timestamp") >
         utcMillis(endCap, "PR end")
     ) break;
-    if (action.outcome === "failed") pending ??= action.timestamp;
+    if (action.kind === "repair" && action.outcome === "failed") {
+      pending ??= action.timestamp;
+    }
     if (action.outcome === "confirmed" && pending !== null) {
       out.push({
         repo: record.repo,
@@ -1951,9 +1955,6 @@ export async function collectPrCompletionSnapshot(
   const humanActorIds = new Set(options.humanActorIds ?? []);
 
   const notes: string[] = [];
-  notes.push(
-    "babysitter retry cooldowns without a repair push are not measured as repair-recovery waits; follow-up: #4658",
-  );
   if (options.expected.inventory === undefined) {
     notes.push(
       "no expected host/component deployment inventory supplied; per-host rollout status is unavailable",

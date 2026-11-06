@@ -110,6 +110,9 @@ function harness(
     reviewId: 10,
     editFailures: 0,
     dismissals: 0,
+    journalled: [] as Array<
+      { repo: string; prNumber: number; headSha: string }
+    >,
   };
   let nextId = 100;
   const gh = (args: string[]): Promise<string> => {
@@ -282,6 +285,10 @@ function harness(
     verifyReviews: allVerified,
     armAutoMerge: () => Promise.resolve(),
     startAgent,
+    journalAttempt: (attempt) => {
+      state.journalled.push(attempt);
+      return Promise.resolve();
+    },
     commit: () => {
       state.committed = true;
       return Promise.resolve();
@@ -337,11 +344,13 @@ Deno.test("fix resumes a failed publication without another agent session (PR #4
       pushed: false,
     });
     assertEquals(h.state.dismissals, 0);
+    assertEquals(h.state.journalled.length, 1);
     await elapse(stateDir);
     await h.attempt();
     assertEquals(h.state.sessions, 1);
     assertEquals(h.state.pr.body, "Rewritten description.");
     assertEquals(h.state.dismissals, 1);
+    assertEquals(h.state.journalled.length, 1);
     assertEquals(await store.load(HEAD), undefined);
   });
 });
@@ -1480,5 +1489,115 @@ Deno.test("stale conflict defers until GitHub recomputes mergeability", async ()
     assert(Date.parse(record!.nextEligibleAt!) <= Date.now() + 5 * 60_000);
     await h.attempt();
     assertEquals(h.state.sessions, 0);
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
+  });
+});
+
+Deno.test("an infrastructure failure journals one failed attempt at the observed head", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.agents.push({ code: 1, signal: "SIGKILL" });
+    await assertRejects(
+      () => h.attempt(),
+      Error,
+      "agent exited unsuccessfully",
+    );
+    const [record] = await records(stateDir);
+    assertEquals(record!.observedHead, HEAD);
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
+  });
+});
+
+Deno.test("a code failure journals one failed attempt and keeps the repair's real error", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.agents.push({ code: 1, stderr: "task failed: invalid source" });
+    await assertRejects(
+      () => h.attempt(),
+      Error,
+      "agent exited unsuccessfully with code 1",
+    );
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "code");
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
+  });
+});
+
+Deno.test("a no-push review repair dismisses the review without journalling failure", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    await h.attempt();
+    assertEquals(h.state.dismissals, 1);
+    assertEquals(h.state.journalled, []);
+  });
+});
+
+Deno.test("an agent that makes no change journals one failed attempt", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    await h.attempt();
+    assertEquals(h.state.sessions, 1);
+    assertEquals(h.state.pushed, 0);
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
+  });
+});
+
+Deno.test("an owner-class failure journals nothing, as it is already a needs-human wait", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.deps.mergeBase = () =>
+      Promise.reject(new Error("needs-human label is set by the owner"));
+    await assertRejects(
+      () => h.attempt(),
+      Error,
+      "needs-human label is set by the owner",
+    );
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "owner");
+    assertEquals(h.state.journalled, []);
+  });
+});
+
+Deno.test("a successful push journals nothing", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.changes = true;
+    await h.attempt();
+    assertEquals(h.state.pushed, 1);
+    assertEquals(h.state.journalled, []);
+  });
+});
+
+Deno.test("a failure after a confirmed push journals nothing", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.changes = true;
+    h.deps.dismiss = () => Promise.reject(new Error("dismissal failed"));
+    await assertRejects(() => h.attempt(), Error, "dismissal failed");
+    assertEquals(h.state.pushed, 1);
+    const [record] = await records(stateDir);
+    assertEquals(record!.reconciliation, "waiting-for-ci-review");
+    assertEquals(h.state.journalled, []);
   });
 });
