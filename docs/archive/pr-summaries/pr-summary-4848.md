@@ -22,9 +22,9 @@ Version bump: `VERSION` is not touched by this change.
 - GRQ-AutoTrader's `web/` `deno task check` imports `playwright-core` from npm.
   On a host with no DNS it printed `error: Failed caching npm package '…'` with
   an ANSI-coloured `error` prefix. `detectRemoteModuleGap` (Issue #4422) matched
-  only a plain `error: Import '<url>' failed.` header, so the gap was missed, the
-  gate refused the tree, and the refusal repeated every cycle (the wedge in the
-  issue).
+  only a plain `error: Import '<url>' failed.` header, so the gap was missed,
+  the gate refused the tree, and the refusal repeated every cycle (the wedge in
+  the issue).
 - The fix is in the detector, not the conflict: the gate was misreading a host
   network fault as a failed tree.
 
@@ -44,19 +44,19 @@ Version bump: `VERSION` is not touched by this change.
 - The reported output is from the babysitter host. The plain form was observed
   locally with deno 2.9.8 and an unreachable `NPM_CONFIG_REGISTRY`
   (`error: Failed loading https://registry.invalid/playwright-core for package
-  "playwright-core"` then `0: error sending request for url …`). Colour did not
-  appear when output was piped here, so ANSI tolerance rests on the issue's
-  verbatim output.
+  "playwright-core"`
+  then `0: error sending request for url …`). Colour did not appear when output
+  was piped here, so ANSI tolerance rests on the issue's verbatim output.
 
 ## Evidence
 
 Backend-only change. `detectRemoteModuleGap` is used by `checkMergedTree`
 (`lib/milestone_merge_gate.ts`), `verifyResolvedTree`
 (`lib/milestone_resolution_gate.ts`) and `runMergeFastChecks`
-(`lib/merge_fast_checks.ts`); all three read only `.cause`, so all three gain the
-behaviour. Docs updated: `docs/INTERNALS.md` and `docs/workflows/milestones.md`
-(the Issue #4422 paragraphs, which said the detector "recognises only that
-pair").
+(`lib/merge_fast_checks.ts`); all three read only `.cause`, so all three gain
+the behaviour. Docs updated: `docs/INTERNALS.md` and
+`docs/workflows/milestones.md` (the Issue #4422 paragraphs, which said the
+detector "recognises only that pair").
 
 ## Reproduction
 
@@ -65,7 +65,8 @@ pair").
 - **status** — `verified` — the new tests were run against the base
   `milestone_merge_gate.ts` and failed (`deno task test in … failed` where
   `passed` was expected), and pass with the fix.
-- **regression test** — `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - a Deno check whose npm packages the host cannot fetch is left to CI, not failed (Issue #4848)`
+- **regression test** —
+  `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - a Deno check whose npm packages the host cannot fetch is left to CI, not failed (Issue #4848)`
 
 ## Test Plan
 
@@ -80,8 +81,8 @@ pair").
   `checkMergedTree` test and the resolution-gate test red; `stripAnsi` removed →
   the ANSI npm, ANSI legacy and `checkMergedTree` tests red. Both restored.
 - `deno task test:unit tests/milestone_merge_gate_test.ts
-  tests/milestone_resolution_gate_test.ts`: both passes passed (serial pass 88
-  passed, 0 failed).
+  tests/milestone_resolution_gate_test.ts`:
+  both passes passed (serial pass 88 passed, 0 failed).
 
 - Full gate `./quality.sh`: markdownlint failed once on a wrapped `#4848` line
   (fixed; `check-markdownlint` now passes, 244 files). `deno tests` still fails
