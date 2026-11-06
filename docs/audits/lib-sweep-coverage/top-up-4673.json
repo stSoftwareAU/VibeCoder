@@ -1,0 +1,12 @@
+{
+  "issue": 4673,
+  "chunk": "top-up-4673",
+  "title": "top-up: skip marker-only PR comments",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4673",
+  "definition": "worker/deno/lib/visible_comment_text.ts, the helper that finds whether a PR comment has any text outside HTML comments, so a marker-only claim is not acted on (Issue #4673)",
+  "status": "claimed",
+  "sweptAt": "cf468be37e97983e91ba204afd07369eb2be4ad0",
+  "paths": [
+    "worker/deno/lib/visible_comment_text.ts"
+  ]
+}
