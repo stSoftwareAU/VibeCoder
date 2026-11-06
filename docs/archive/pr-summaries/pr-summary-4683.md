@@ -92,14 +92,14 @@ flowchart LR
   the conformance test red (3 failed); changing the scanner's
   `if (pinned && locked) continue;` to `if (pinned) continue;` turned
   `ci_install_pin_scanner_test.ts` red (3 failed). Both restored.
-- Mutation follow-up: added a test that each cargo value flag
-  (`--branch` … `-C`) consumes its value rather than leaking it as a crate, and
-  a test that npm/npx/gem findings carry `unlocked: false` (kills the swapped
+- Mutation follow-up: added a test that each cargo value flag (`--branch` …
+  `-C`) consumes its value rather than leaking it as a crate, and a test that
+  npm/npx/gem findings carry `unlocked: false` (kills the swapped
   `unlocked = false` default in `hit`). Red-checked: renaming `--color` in the
-  set and flipping the default to `true` each turned the scanner test red
-  (2 failed). `--git` and `--path` were removed from `CARGO_VALUE_FLAGS`: they
-  set `externalSource`, which returns before any spec is read, so keeping them
-  in the set had no observable effect (equivalent mutants, now gone).
+  set and flipping the default to `true` each turned the scanner test red (2
+  failed). `--git` and `--path` were removed from `CARGO_VALUE_FLAGS`: they set
+  `externalSource`, which returns before any spec is read, so keeping them in
+  the set had no observable effect (equivalent mutants, now gone).
 - Type-check fix: the "flags cargo versions that are not exact" table is now
   `as const`, so `deno check` passes under `noUncheckedIndexedAccess`.
 - No existing assertion was removed or edited.
