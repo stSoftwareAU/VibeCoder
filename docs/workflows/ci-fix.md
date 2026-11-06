@@ -331,7 +331,8 @@ per failure signature and posts one comment per signature.
   marker, so it is never charged. The tally counts attempt markers only — a
   deferral marker (`vibe-ci-fix-deferred`, written by the base-branch deferral
   in #1880) is not an attempt, and nor is a human-gate marker
-  (`vibe-ci-human-gate`, #2727).
+  (`vibe-ci-human-gate`, #2727). An unverified-base hold is an attempt marker
+  with `outcome="base-unverified"` that charges no attempt.
 - **An unknown tally is never a fresh budget.** A comment list that cannot be
   read stands the cycle down with an error rather than spending an attempt
   nothing could count; the next scan retries. An unresolved fleet identity (no
@@ -465,20 +466,60 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   `Depends on owner/repo#N` — naming the issue that tracks it (searching that
   repository first with
   `gh issue list --search "<root cause> in:title,body" --state open`, and filing
-  one issue per root cause only when none exists). The worker does not take that
-  on trust:
-  [`ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts)
-  reads the base branch's own `check-runs` and the **latest completed run of the
-  same check** must have concluded `failure`. When it has, the agent's diagnosis
-  is posted **once** with a `vibe-ci-fix-deferred` marker, **no `needs-human`**
-  is applied and **no attempt is charged** — nothing on this branch could have
-  fixed it (Issue #1880). A base branch that is green, a check the base never
-  ran, a missing base ref, or a lookup that errored all fall through to the
-  ordinary no-changes reply with one attempt charged. A failure already carrying
-  a fleet-authored deferral marker posts nothing at all; if that marker's
-  blocker has since **closed** and the agent names it again, the deferral is
-  refused and the ordinary path runs, so the loop fails loud through the attempt
-  cap rather than parking the PR for ever.
+  one issue per root cause only when none exists). The agent makes that claim
+  only after reproducing the failing signature on a `git worktree` of
+  `origin/<base>` in a scratch directory. The worker does not take the claim on
+  trust. [`readBaseBranchCheck`](../../worker/deno/lib/ci_base_branch_check.ts)
+  reads the base head's SHA and the check runs on that head, and
+  `readCheckIdentity` resolves the check's name, producer app and, for GitHub
+  Actions, workflow file. Only a completed run of that same check is evidence; a
+  same-named check from another workflow is not. `success` counts as green and
+  `failure` as red; cancelled, skipped, neutral, timed-out and action-required
+  runs count as no evidence. When the base head itself has no run of the check
+  (a PR-only workflow), the worker lists the pull requests merged as that head
+  (`commits/{sha}/pulls`, at most five) and, for each head commit whose **tree
+  is identical** to the base head's tree, reads that commit's runs of the same
+  check from the same app and workflow file. That is commit-bound evidence from
+  the same workflow on the same code, and its newest `success` or `failure`
+  decides as above. [`_resolveBaseBranchDeferral`](../../worker/deno/lib/pr_ci_processor.ts)
+  then applies the verdict:
+  - **Red** — the latest matching run on the base head (or on a merged pull
+    request's head with an identical tree) failed. The deferral
+    stands as before: the diagnosis is posted **once** with a
+    `vibe-ci-fix-deferred` marker, **no `needs-human`** is applied, **no attempt
+    is charged**, and the PR resumes automatically when the blocking issue closes
+    (Issue #1880, Issue #1849).
+  - **Green** — the latest matching run succeeded, or there is no base ref to
+    read. There is no deferral: the ordinary no-changes reply is posted and one
+    attempt is charged.
+  - **Unverified** — no applicable run on the base head (typical for a check that
+    runs only on pull requests), a run only for an older base commit (stale), or a
+    lookup that failed or could not resolve the check's identity. The claim is
+    neither accepted nor treated as a pass. The diagnosis is posted with a note
+    that the base claim could not be verified, an attempt marker with
+    `outcome="base-unverified"` is recorded, **no fix attempt is charged**, no
+    `needs-human` is applied and nothing is deleted. There are at most two such
+    holds per failure signature; after that the ordinary charged path runs, so
+    the fleet-wide attempt cap still bounds the PR. A later scan that finds a red
+    base run grants the deferral.
+
+  A base-level defect belongs on the base branch, even when this PR could patch
+  it locally: it is not fixed inside this unrelated PR, and no workflow or check
+  is deleted or disabled to turn it green. A failure this PR's own diff
+  introduced stays this PR's to fix. The worker does not re-run the check on the
+  base tree itself: a PR-only check's base defect is verified by a run of the
+  same workflow on a commit with the base head's tree, and stays unverified
+  (held) when no such run exists, for example when the pull request merged with
+  a different tree or through a merge queue. In that case the agent says what it
+  observed, which is not permission to patch the base defect or to delete or
+  disable a workflow inside this PR. A verified base defect uses the existing
+  deferral: the `Depends on` issue and `vibe-ci-fix-deferred` marker, and the PR
+  resumes automatically when that issue closes (Issue #1881, Issue #1849).
+
+  A failure already carrying a fleet-authored deferral marker posts nothing at
+  all; if that marker's blocker has since **closed** and the agent names it
+  again, the deferral is refused and the ordinary path runs, so the loop fails
+  loud through the attempt cap rather than parking the PR for ever.
 - **Human gate (`human-gate`):** A repository's check declares that only a
   person can clear it by printing a line whose content starts `vibe-human-gate:`
   — for example
@@ -571,7 +612,8 @@ The base-branch deferral, end to end (Issue #1880):
 ```mermaid
 flowchart TD
     A["agent: no change,<br/>message ends<br/>'Depends on o/r#N'"] --> B{"base branch's latest<br/>run of the check red?"}
-    B -->|"no / lookup errored /<br/>no base ref"| D["ordinary no-changes reply<br/>+ attempt marker"]
+    B -->|"green or no base ref"| D["ordinary no-changes reply<br/>+ attempt charged"]
+    B -->|"no evidence: no run,<br/>stale run, lookup failed"| U["base-unverified note<br/>+ attempt marker, no charge"]
     B -->|yes| P{"prior deferral<br/>for this signature?"}
     P -->|none| C["post the diagnosis once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
     P -->|"same blocker, now closed"| D
@@ -588,6 +630,18 @@ exception: an audit check whose reply ends in `Depends on` on a red base still
 runs through this chart like any other check, and a PR already parked on an
 audit's `vibe-ci-fix-deferred` marker stays parked until its tracking issue
 closes.
+
+The base-branch verdicts, on the claimed `Depends on` check (Issue #4680):
+
+```mermaid
+flowchart TD
+    A["agent claims 'Depends on o/r#N'<br/>after reproducing it on the base tree"] --> E{"completed run of the same check on the base head<br/>or on a merged PR head with the same tree,<br/>same app and workflow file?"}
+    E -->|"success, or no base ref"| O["ordinary no-changes reply<br/>+ attempt charged"]
+    E -->|"failure"| R["deferred: diagnosis posted once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
+    E -->|"no run, stale run,<br/>cancelled or skipped,<br/>lookup failed"| H{"fewer than two holds<br/>for this signature?"}
+    H -->|yes| U["base-unverified note<br/>+ attempt marker, no charge"]
+    H -->|no| O
+```
 
 The human gate, end to end (Issue #2727):
 
@@ -665,7 +719,15 @@ gets the `needs-human` escalation naming the credential to rotate.
   CI check detection and retry tracking.
 - **Base-branch verification:**
   [`worker/deno/lib/ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts)
-  — `isCheckRedOnBranch()`, the read behind the base-branch deferral.
+  — `readBaseBranchCheck()` and `readCheckIdentity()`, the reads behind the
+  base-branch verdicts.
+- **Base-branch deferral resolver:**
+  [`worker/deno/lib/pr_ci_processor.ts`](../../worker/deno/lib/pr_ci_processor.ts)
+  — `_resolveBaseBranchDeferral()`, which applies the verdict.
+- **Attempt markers and unverified-base holds:**
+  [`worker/deno/lib/ci_fix_attempt_markers.ts`](../../worker/deno/lib/ci_fix_attempt_markers.ts)
+  — `countUnverifiedBaseHolds()`, the count behind the two-hold cap on
+  unverified base claims.
 - **Cross-host PR lock:**
   [`worker/deno/lib/pr_branch_lock.ts`](../../worker/deno/lib/pr_branch_lock.ts)
   — acquire, renew and release the `BRANCH_UPDATE_LOCK`.

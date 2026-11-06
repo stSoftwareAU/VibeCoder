@@ -1960,6 +1960,7 @@ export async function findFailedCiChecks(
             checkId,
             fleetMarkers: parked?.markers ?? {
               attempts: new Map(),
+              unverifiedBaseHolds: new Map(),
               deferrals: new Map(),
               humanGates: new Map(),
               infraReruns: new Map(),
