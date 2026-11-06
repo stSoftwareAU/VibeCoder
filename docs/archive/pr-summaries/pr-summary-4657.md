@@ -172,16 +172,14 @@ flowchart TD
   `deno task test:unit tests/lib_sweep_coverage_test.ts`: 39 passed.
 - The ledger's `sweptAt` points to the merge base on `origin/main`, rather than
   a temporary feature-branch checkpoint, so it survives a squash merge.
-- Full gate `./quality.sh`: the one change-related failure (completeness checks,
-  the unclaimed module) is fixed by the ledger entry above;
-  `deno task check:manifests` now passes (847 passed, 0 failed). `deno tests`
-  still fails on
+- Full gate `./quality.sh` at the head after the PR #4849 review fixes: every
+  check passed (fmt, lint, type check, markdownlint, completeness, manifests)
+  except `deno tests`: 32859 passed, 2 failed. The two failures are
   `completion - an unformatted Rust change is formatted and committed, then passes the gate`
   and
   `completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit`
   in `completion_phase_repo_formatters_test.ts`, which this change does not
-  touch (they also failed on #4786's run); the gate was not re-run end to end
-  after the ledger entry.
+  touch (they also failed on #4786's run).
 - Mutation check and the independent Spec/Standards reviewers were not run: the
   issue states no `## Acceptance Criteria` list.
 
