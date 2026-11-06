@@ -85,15 +85,15 @@ flowchart TD
   relevant base tree, using an isolated baseline reproduction or equivalent
   commit-bound evidence from the same workflow." — evidence:
   `worker/deno/tests/ci_base_branch_check_test.ts` — reason: commit-bound
-  evidence from the same workflow on the base head is read; an isolated
-  baseline reproduction for a PR-only check is not implemented, so such a base
-  defect stays unverified.
+  evidence from the same workflow on the base head is read; an isolated baseline
+  reproduction for a PR-only check is not implemented, so such a base defect
+  stays unverified.
 - **missing** — "Once a base defect is verified, use the existing deduplicated
   base-repair/dependency mechanism and automatically resume the PR when that
   repair lands" for a PR-only workflow — reason: a PR-only base defect cannot be
   verified without the baseline reproduction above; for a base that has a run,
-  the existing deferral and blocker-landed refresh are unchanged and a later
-  red read grants the deferral
+  the existing deferral and blocker-landed refresh are unchanged and a later red
+  read grants the deferral
   (`worker/deno/tests/pr_ci_processor_deferral_test.ts`).
 
 ## Test Plan
