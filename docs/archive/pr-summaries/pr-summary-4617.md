@@ -122,7 +122,7 @@ is raised ready and armed, as the code does). Consumers of the reason text
 - `./quality.sh` on this head: every stage passed except `deno tests` (32,635
   passed, 2 failed: both `formatter should commit the Rust fix` in
   `worker/deno/tests/completion_phase_repo_formatters_test.ts`, a file this
-  change does not touch; the same two fail on the base branch's other open
-  fleet PRs). The serial pass did not run because the parallel pass failed, so
-  its 39 tests are unchecked here. Config integration and Checkov were skipped
-  by the environment.
+  change does not touch; the same two fail on the base branch's other open fleet
+  PRs). The serial pass did not run because the parallel pass failed, so its 39
+  tests are unchecked here. Config integration and Checkov were skipped by the
+  environment.
