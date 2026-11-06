@@ -146,7 +146,10 @@ export function buildBabysitterValidationProfile(
     "(allow network*)",
     `(deny file-write* (subpath ${quoteProfilePath(`${dir}/.git`)}))`,
     '(deny mach-lookup (global-name "com.apple.securityd"))',
-    '(deny sysctl-read (sysctl-name "kern.procargs2"))',
+    // kern.procargs2 (a process's environment) is gated by process-info-pidinfo,
+    // not sysctl-read: deny it, then restore it for this sandbox's own processes.
+    "(deny process-info-pidinfo)",
+    "(allow process-info-pidinfo (target same-sandbox))",
   ].join("\n");
 }
 

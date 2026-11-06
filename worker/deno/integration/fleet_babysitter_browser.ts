@@ -171,20 +171,23 @@ int main(int argc, char **argv) {
           secretLink,
           keychainDir,
         ]);
-        const deny = "(deny process-info-pidinfo)";
+        const old = full.split("\n").filter((r) =>
+          !r.startsWith("(deny process-info-pidinfo") &&
+          !r.startsWith("(allow process-info-pidinfo")
+        ).join("\n");
         const variants: Record<string, string> = {
-          denyOnly: `${full}\n${deny}`,
-          allowSameSandbox:
-            `${full}\n${deny}\n(allow process-info-pidinfo (target same-sandbox))`,
-          allowPgrp:
-            `${full}\n${deny}\n(allow process-info-pidinfo (target pgrp))`,
-          allowSelf:
-            `${full}\n${deny}\n(allow process-info-pidinfo (target self))`,
-          allowChildren:
-            `${full}\n${deny}\n(allow process-info-pidinfo (target children))`,
-          allowSameSandboxAndPgrp:
-            `${full}\n${deny}\n(allow process-info-pidinfo (target same-sandbox))\n(allow process-info-pidinfo (target pgrp))`,
+          fixed: full,
+          oldProfile: old,
+          listpids: `${full}\n(allow process-info-listpids)`,
+          moreInfo:
+            `${full}\n(allow process-info-listpids)\n(allow process-info-codesignature)\n(allow process-info-pidfdinfo)\n(allow process-info-dirtycontrol)\n(allow process-info-rusage)`,
         };
+        const lsPs = await runWithTimeout("/bin/ls", ["-lO@e", "/bin/ps"], {
+          timeoutMs: 5000,
+        });
+        console.log(
+          `[DEBUG-c7e1] ps stat: ${lsPs.ok ? lsPs.value.stdout : "failed"}`,
+        );
         await Deno.writeTextFile(
           `${root}/variant-probe.sh`,
           `#!/bin/bash
@@ -192,7 +195,7 @@ int main(int argc, char **argv) {
 c=$!
 ./process-probe "$1" 2>/dev/null; echo -n "host=$? "
 ./process-probe "$c" 2>/dev/null; echo -n "child=$? "
-p=$(/bin/ps -o ppid= -p $$ | /usr/bin/tr -d ' '); echo -n "ps_ppid_ok=$([ "$p" = "$PPID" ] && echo y || echo n) "
+p=$(/bin/ps -o ppid= -p $$ 2>&1 | /usr/bin/tr -d ' '); echo -n "ps_ppid=$p/$PPID "
 /usr/bin/pgrep -P $$ | /usr/bin/grep -qx "$c"; echo -n "pgrep=$? "
 /bin/ps -o command= -p "$c" >/dev/null 2>&1; echo "ps_command=$?"
 kill "$c" 2>/dev/null
