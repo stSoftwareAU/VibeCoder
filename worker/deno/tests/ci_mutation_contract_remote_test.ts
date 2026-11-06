@@ -218,12 +218,20 @@ Deno.test("only owner/repo/.github/workflows/<file>@ref is a remote reusable cal
       "acme/ci/.github/workflows/mutants.yml",
       "acme/ci/.github/workflows/sub/mutants.yml@v1",
       "acme/ci/.github/workflows/../x.yml@v1",
+      "../../.github/workflows/x.yml@v1",
+      "./x/.github/workflows/x.yml@v1",
+      "acme/../.github/workflows/x.yml@v1",
       "acme/ci/.github/workflows/mutants.yml@${{ github.sha }}",
       "./.github/workflows/mutants.yml@v1",
       "actions/checkout@v4",
     ]
   ) assertEquals(remoteWorkflowRef(uses), null, uses);
   assertEquals(remoteWorkflowRef(undefined), null);
+  // A repository may be named `.github`.
+  assertEquals(
+    remoteWorkflowRef("acme/.github/.github/workflows/x.yml@main")?.repo,
+    "acme/.github",
+  );
 });
 
 const AGGREGATED = [

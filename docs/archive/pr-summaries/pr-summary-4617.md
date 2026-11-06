@@ -2,22 +2,42 @@
 
 Continues #4617 after #4744 (survivors block when the repository's CI runs a
 blocking mutants job), #4801 (a job calling one local reusable workflow is
-followed) and #4814 (nested local reusable workflows are followed). This change
-closes the issue's "Distinguish survivors from baseline compilation/test
-failures and an unavailable mutation tool; all need an accurate next action
-rather than a generic reviewer note" line: when the mutation check errors on a
-repository whose CI blocks on a mutation job, the note now names a different
-next action for a baseline build or test failure, for an uninstalled
-`cargo-mutants`, and for any other runner error, instead of one sentence that
-named the first two together. Remote reusable workflows, branch protection and
-the flags of a `deno task` are still not read. Part of #4617.
+followed) and #4814 (nested local reusable workflows are followed). Earlier in
+this branch, the "Distinguish survivors from baseline compilation/test failures
+and an unavailable mutation tool" line: when the mutation check errors on a
+repository whose CI blocks on a mutation job, the note names a different next
+action for a baseline build or test failure, for an uninstalled `cargo-mutants`,
+and for any other runner error. This change adds three more pieces of the
+agreement:
+
+- **Remote reusable workflows.** A job that `uses:`
+  `owner/repo/.github/workflows/x.yml@ref` is followed when the worker can read
+  the file (`gh api repos/<owner>/<repo>/contents/...`), through the same
+  nine-level bound and cycle guard as local calls, at most eight distinct remote
+  files. One that cannot be read is listed as unreadable, never read as
+  non-blocking.
+- **The real required-check contract.** The worker reads the base branch's
+  required checks (rulesets and classic protection) and counts a mutation job
+  only when its check, or the check of a job that needs it directly or through
+  others (the aggregator), is required. An unreadable or empty list is unknown,
+  so every PR-triggered job still counts then.
+- **CI flags.** `--timeout`, `--cargo-arg` and `--test-tool` of the CI
+  `cargo mutants` line are carried to the worker's run, with a value check each.
+
+The flags of a `deno task` are still not read: the worker's Deno runner does not
+run the repository's task, so there is nothing to apply them to. Part of #4617.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
 
 ```mermaid
 flowchart TD
-    R[Mutation runner result] --> K{kind}
+    L[Workflows plus remote reusable files] --> Q{Check required, or fed to a required job?}
+    Q -- "required list unknown" --> J[any PR-triggered mutation job counts]
+    Q -- yes --> J
+    Q -- no --> NB[not blocking: notes only]
+    J --> R[Mutation runner result]
+    R --> K{kind}
     K -- completed with survivors --> S[blocking: CI job names the hold - unchanged]
     K -- error --> W{reason opens with}
     W -- temp dir unwritable --> F[worker fault - unchanged]
@@ -46,6 +66,18 @@ flowchart TD
   unvalidated, not passed, because CI's job gives the full verdict. Only the
   wording of the next action changed.
 
+- The required-check list comes from `readRequiredCheckNames`
+  (`worker/deno/lib/required_branch_checks_4613.ts`), which shares its two reads
+  with `readRequiredChecksPassed`. A read failure is logged and read as unknown
+  (never as "none required"), so a lookup fault cannot silently turn the hold
+  off. `worker/deno/lib/ci_mutation_lookup.ts` builds the options for the three
+  call sites: the completion phase, the review-fix mutation check and the
+  review-fix drift check.
+- A remote `owner/repo` with a `.` or `..` segment, a path with `..` or a
+  subdirectory, and a `${{ }}` ref are not remote calls, because the text comes
+  from a pull request and builds an API path. A `./` call inside a remote file
+  names a file of the remote repository, so it is not followed.
+
 ### Undiscoverable Facts
 
 - None.
@@ -55,31 +87,42 @@ flowchart TD
 Backend-only change; no UI file is touched. Tests call the real verdict function
 (`worker/deno/tests/mutation_gate_test.ts`) and the real runner with stubbed
 processes (`worker/deno/tests/mutation_runner_test.ts`). Docs read and updated:
-`docs/mutation-check.md` (point 4 of the blocking-CI section and the Error row
-of the outcomes table, which said "a draft PR" for an error and now says the PR
-is raised ready and armed, as the code does). Consumers of the reason text
-(`completion_phase.ts`, `pr_deferral.ts`) only display it.
+`docs/mutation-check.md` (new remote-workflow and required-check paragraphs, the
+flag list and the "not evaluated" sentence; point 4 of the blocking-CI section
+and the Error row of the outcomes table, which said "a draft PR" for an error
+and now says the PR is raised ready and armed, as the code does). Consumers of
+the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Acceptance Criteria
 
-- **missing** — For a repository whose CI runs a blocking mutants job, a PR is
-  not reported ready or successfully validated while the worker's mutation check
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — For a repository whose CI runs a blocking mutants job, a PR is not
+  reported ready or successfully validated while the worker's mutation check
   reports genuine unresolved survivors, for a mutants job in a remote reusable
-  workflow (`owner/repo/.github/workflows/...@ref`) — reason: such workflows are
-  not read, so a PR can be reported ready with unresolved survivors. Local and
-  nested local chains are covered by #4744, #4801 and #4814.
-- **missing** — Use the repository's actual required CI contract (including jobs
-  feeding an aggregator) for branch-protection required-check names — reason:
-  not read; any PR-triggered job that runs the tool and can fail counts, which
-  over-approximates. Aggregators by `needs` are covered.
-- **missing** — Run the applicable changed-code mutation command with
+  workflow (`owner/repo/.github/workflows/...@ref`) — evidence:
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::a remote reusable workflow with a blocking mutants job is followed when fetched`
+  and
+  `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor a remote reusable mutants workflow blocks on holds the PR as a draft (Issue #4617)`
+  — reviewer: met
+- **met** — Use the repository's actual required CI contract (including jobs
+  feeding an aggregator) for branch-protection required-check names — evidence:
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::a mutants job counts when its own check, or an aggregator needing it, is required`,
+  `worker/deno/tests/ci_mutation_lookup_test.ts::readRequiredCheckNames merges rulesets and classic protection without duplicates`
+  and
+  `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a CI mutants job that no required check covers does not hold the PR (Issue #4617)`
+  — reviewer: met
+- **partial** — Run the applicable changed-code mutation command with
   CI-equivalent flags for `deno task` flags and cargo `--timeout`, `--cargo-arg`
-  and `--test-tool` — reason: not read; the other cargo flags are carried.
-- Met in this change: "Distinguish survivors from baseline compilation/test
-  failures and an unavailable mutation tool; all need an accurate next action" —
-  evidence:
+  and `--test-tool` — evidence:
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::extractCargoMutantsArgs carries --timeout, --cargo-arg and --test-tool`
+  — reviewer: partial — reason: the three cargo flags are carried; the flags of
+  a `deno task` are not read, because the worker's Deno runner does not run the
+  repository's task and has nothing to apply them to.
+- **met** — Distinguish survivors from baseline compilation/test failures and an
+  unavailable mutation tool; all need an accurate next action — evidence:
   `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - a baseline failure on a blocking CI job names the baseline next action (Issue #4617)`
-  and the two sibling tests beside it.
+  and the two sibling tests beside it — reviewer: met
 
 ## Test Plan
 
@@ -110,19 +153,27 @@ is raised ready and armed, as the code does). Consumers of the reason text
     `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - baseline failure and usage errors are errors`.
   - Red check: the classifier returning only the generic action turned the
     baseline, cargo-mutants and direct tests red (3 failed); restored.
-- Ran:
-  `deno task test:unit tests/mutation_gate_test.ts tests/mutation_runner_test.ts tests/completion_phase_mutation_gate_test.ts`
-  — passed (121 parallel, 84 serial); `deno fmt`, `deno lint`, `deno check` on
-  the four TypeScript files — passed.
+- Ran, with stdin from `/dev/null`:
+  `deno task test:unit tests/ci_mutation_contract_test.ts tests/ci_mutation_contract_remote_test.ts tests/ci_mutation_lookup_test.ts tests/mutation_gate_test.ts tests/mutation_runner_test.ts tests/completion_phase_mutation_gate_test.ts tests/pr_feedback_drift_check_3750_test.ts tests/pr_feedback_mutation_check_3750_test.ts tests/pr_feedback_processor_drift_check_3143_test.ts tests/pr_feedback_processor_mutation_check_3750_test.ts tests/required_branch_checks_4613_test.ts`
+  — passed (212 parallel, 162 serial); `deno fmt --check`, `deno lint` and
+  `deno check` over `worker/deno/lib` and `worker/deno/tests` — passed.
 - Callers of the reason text checked: `completion_phase.ts` and `pr_deferral.ts`
   display it only; their tests in
   `worker/deno/tests/completion_phase_mutation_gate_test.ts` pass.
-- Not done: remote reusable workflows, branch-protection required-check names,
-  `deno task` flags (the three `missing` entries above).
-- `./quality.sh` on this head: every stage passed except `deno tests` (32,635
-  passed, 2 failed: both `formatter should commit the Rust fix` in
+- Added for the remote workflow, required-check and flag work:
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts` (fetched, unreadable,
+  nested, self-calling and capped remote workflows; the remote-call shape
+  including `..` owner or repository segments; required checks by own name,
+  aggregator, chain of `needs`, matrix and reusable child, and a templated name;
+  the flag values), `worker/deno/tests/ci_mutation_lookup_test.ts` (the stubbed
+  `gh` reads) and one test each in `completion_phase_mutation_gate_test.ts`,
+  `pr_feedback_drift_check_3750_test.ts` and
+  `pr_feedback_mutation_check_3750_test.ts` for the call sites. Red check:
+  leaving `requiredChecks` out of `ciMutationLookupOptions` turned the
+  completion test red; restored.
+- Not done: the flags of a `deno task` (the `partial` entry above).
+- `./quality.sh`: the earlier head's run failed only two
+  `formatter should commit the Rust fix` tests in
   `worker/deno/tests/completion_phase_repo_formatters_test.ts`, a file this
-  change does not touch; the same two fail on the base branch's other open fleet
-  PRs). The serial pass did not run because the parallel pass failed, so its 39
-  tests are unchecked here. Config integration and Checkov were skipped by the
-  environment.
+  change does not touch. This head's gate is re-run by the worker after this
+  commit; it was not re-run in this session.

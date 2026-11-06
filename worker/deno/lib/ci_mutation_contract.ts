@@ -425,6 +425,10 @@ export function remoteWorkflowRef(uses: unknown): RemoteWorkflowRef | null {
   if (typeof uses !== "string") return null;
   const match = REMOTE_REUSABLE.exec(uses);
   if (match === null || match[2]!.includes("..")) return null;
+  // `.` and `..` match the name characters but would steer the API path.
+  if (match[1]!.split("/").some((part) => part === "." || part === "..")) {
+    return null;
+  }
   return { repo: match[1]!, path: match[2]!, ref: match[3]! };
 }
 
