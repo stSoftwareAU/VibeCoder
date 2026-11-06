@@ -1472,6 +1472,11 @@ Deno.test("stale conflict defers until GitHub recomputes mergeability", async ()
     assert(Date.parse(record!.nextEligibleAt!) <= Date.now() + 5 * 60_000);
     await h.attempt();
     assertEquals(h.state.sessions, 0);
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
   });
 });
 

@@ -95,10 +95,14 @@ this PR delivers the last one named in their summaries.
   head that stringifies to a valid one), a successful append logs nothing, a
   refused append is logged, and an unexpected error is logged for both an
   `Error` and a non-`Error` thrown value. Passed (12).
-- Mutation survivors closed: dropping the `typeof` operand on the repo (line 61)
-  or head (line 73), negating the `!result.ok` check (line 92) and negating the
-  `instanceof Error` ternary (line 101) in `babysitter_attempt_audit.ts` each
+- Mutation survivors closed: dropping the `typeof` operand on the repo
+  or head, negating the `!result.ok` check and negating the
+  `instanceof Error` ternary in `babysitter_attempt_audit.ts` each
   turn at least one of those tests red.
+- Review fix: a stale GitHub conflict deferral now journals the failed attempt
+  at the observed head. The existing cooldown prevents a duplicate entry on an
+  immediate retry. The assertion failed before the fix. Coverage:
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::stale conflict defers until GitHub recomputes mergeability`.
 - New tests in `worker/deno/tests/babysitter_fix_orchestration_test.ts`
   (infrastructure failure, code failure, no change, owner-class failure, a
   successful push, a failure after a confirmed push). The file passed (43).

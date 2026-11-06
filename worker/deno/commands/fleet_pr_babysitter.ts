@@ -2428,6 +2428,11 @@ export async function fix(
       retryRecord.nextEligibleAt = new Date(Date.now() + 5 * 60_000)
         .toISOString();
       await saveBabysitterRetryState(stateDir, retryRecord);
+      await journalAttempt({
+        repo,
+        prNumber: initial.number,
+        headSha: pr.headRefOid,
+      });
       console.log(
         `${repo}#${pr.number}: deferred (${retryRecord.blockerClass}: ${retryRecord.lastOutcome}); next action: ${retryRecord.nextAction}; next eligible at ${retryRecord.nextEligibleAt}`,
       );
