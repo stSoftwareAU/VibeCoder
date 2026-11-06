@@ -19,11 +19,15 @@ pushes only if the PR still matches the original head. A base merge on its own
 is also pushed when the agent made no change, so the branch is never left
 behind. After a push, the babysitter synchronises the PR description from the
 summary committed at the pushed head, then publishes any description the agent
-proposed (see below), and dismisses an addressed review only if it is still the
-current review and the PR head has not changed. A retry with no working-tree
-changes also synchronises the body before dismissal, so a prior failed
-publication can be repaired. A failed body publication or a stale repair
-checkout leaves the review open. Harmless skips, such as an unrelated
+proposed (see below), and dismisses a review only after an independent verifier
+judges every finding in it fixed at the published PR head and description
+(Issue #4657). The review must also still be the current review, and the PR head
+must not have changed. A retry with no working-tree changes also synchronises
+the body before dismissal, so a prior failed publication can be repaired. A
+failed body publication or a stale repair checkout leaves the review open. A
+verifier outage, a partial or missing verdict, or a head or description that
+moves while the fixes are verified also leaves the review open, without blocking
+the push. Harmless skips, such as an unrelated
 marker-less PR or an already-current description, do not block dismissal. GitHub
 CI then runs the repository's quality and regression checks on the updated
 branch.
@@ -36,7 +40,8 @@ sequenceDiagram
     B->>G: Push updated branch
     B->>G: Rebuild and publish PR description
     B->>G: Confirm current head and review
-    B->>G: Dismiss addressed review
+    B->>B: Verify each review's findings at the published head
+    B->>G: Dismiss reviews the verifier judged fixed
 ```
 
 The babysitter also arms auto-merge on every repair candidate that does not have
@@ -245,8 +250,13 @@ unchanged head, the description steps run in order:
    check runs only in that case. The body reads must include
    `closingIssuesReferences` as an array: a missing key is rejected, not read as
    "no references". Dismissal then waits up to ten reads, one second apart, for
-   the PR head to show the pushed head, and dismisses only the reviews that are
-   still requested.
+   the PR head to show the pushed head. Only the reviews that are still requested
+   are dismissed, and only those the independent verifier judged fixed (Issue
+   #4657). Every finding of a review must be judged fixed, by exactly one verdict
+   for that review, at the head and description read after the publication. The
+   verifier reads that published description and the agent's reply. An outage, a
+   partial or missing verdict, or a head or description that moved during
+   verification keeps the review open. The push still stands.
 
 A proposal over GitHub's 65,536-character limit is rejected at intake, once
 surrounding whitespace is trimmed, and the review stays open. The composed

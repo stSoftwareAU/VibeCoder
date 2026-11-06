@@ -31,6 +31,11 @@ import { hasLivePrClaim } from "../lib/claim_pr_comment.ts";
 import { markCommentProcessed } from "../lib/pr_comments.ts";
 import { createLogger } from "../lib/logger.ts";
 import {
+  type ReviewVerificationInput,
+  type ReviewVerificationOutcome,
+  verifyBabysitterReviews,
+} from "../lib/babysitter_review_verifier.ts";
+import {
   type SyncPrBodyDeps,
   syncPrBodyFromSummary,
   type SyncPrBodyInput,
@@ -474,6 +479,7 @@ interface Review {
   id: number;
   state: string;
   user: { login: string };
+  body?: string | null;
 }
 
 /** Legacy create-only attempt filename, read only while migrating to v2 state. */
@@ -1111,7 +1117,19 @@ export interface BabysitterRepairFinishDeps {
   gh?: GhRunner;
   syncBodyDeps?: SyncPrBodyDeps;
   syncBodyFn?: typeof syncPrBodyFromSummary;
+  /**
+   * Dismisses the reviews a repair addressed. Called only with the reviews the
+   * independent verifier judged fixed (Issue #4657).
+   */
   dismiss?: (reviews: Review[], expectedHead: string) => Promise<void>;
+  /**
+   * Independently judges whether the pushed fixes and the published description
+   * address each review's findings (Issue #4657). A throw, a missing verdict,
+   * or a moved head keeps the reviews open without blocking the push.
+   */
+  verifyReviews: (
+    input: ReviewVerificationInput,
+  ) => Promise<ReviewVerificationOutcome[]>;
   /** The git runner the committed summary is read through. */
   runGit?: typeof runGitCommand;
   /** Pause between reads while GitHub's PR view catches up; 1 second by default. */
@@ -1134,6 +1152,8 @@ export interface BabysitterRepairChange {
   checkBaseline?: string;
   /** The agent's proposed PR description, already taken out of the clone. */
   proposal?: string;
+  /** The agent's reply, which the review verifier reads alongside the fixes (Issue #4657). */
+  agentReply?: string;
   /** Runner-owned exchange directory for the description edit. */
   exchange: string;
   /**
@@ -1327,15 +1347,111 @@ async function publishBabysitterPrBody(options: {
   }
 }
 
+/** How long the independent verifier may run over a repair's fixes (Issue #4657). */
+const REVIEW_VERIFICATION_TIMEOUT_SECONDS = 15 * 60;
+/** The longest verifier reason a stays-open log line carries (Issue #4657). */
+const VERIFIER_REASON_LOG_CHARS = 300;
+
+/**
+ * The reviews the independent verifier judged fixed at the published head and
+ * description (Issue #4657). A review is verified only when exactly one verdict
+ * for its id says verified. A verifier throw is an outage, and a head or
+ * description that moved while the verifier ran makes the evidence stale; both
+ * keep every review open. A head that moved before the verifier ran throws, as
+ * the publish step does. Keeping reviews open never blocks the push.
+ */
+async function reviewsVerifiedAtPublishedHead(options: {
+  repo: string;
+  pr: Pr;
+  repoPath: string;
+  expectedHead: string;
+  reviews: Review[];
+  agentReply?: string;
+  gh: GhRunner;
+  verifyReviews: BabysitterRepairFinishDeps["verifyReviews"];
+}): Promise<Review[]> {
+  const {
+    repo,
+    pr,
+    repoPath,
+    expectedHead,
+    reviews,
+    agentReply,
+    gh,
+    verifyReviews,
+  } = options;
+  const before = await readPrBodyState(repo, pr.number, gh);
+  if (before.headRefOid !== expectedHead) {
+    throw new Error(
+      `PR #${pr.number} head moved to ${before.headRefOid}, expected ${expectedHead}; reviews left open; the next scan retries on the pushed head`,
+    );
+  }
+  let verdicts: ReviewVerificationOutcome[] = [];
+  let unavailable: string | undefined;
+  try {
+    verdicts = await verifyReviews({
+      repo,
+      prNumber: pr.number,
+      repoPath,
+      title: pr.title,
+      body: before.body,
+      baseRef: `origin/${pr.baseRefName}`,
+      reviews,
+      agentReply,
+      timeoutSeconds: REVIEW_VERIFICATION_TIMEOUT_SECONDS,
+      logger: createLogger(),
+    });
+  } catch (error) {
+    unavailable = `the verifier failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+  const after = await readPrBodyState(repo, pr.number, gh);
+  if (
+    after.headRefOid !== expectedHead ||
+    !sameDescription(after.body, before.body)
+  ) {
+    unavailable ??=
+      "the PR head or description changed while the fixes were being verified";
+  }
+  const verified: Review[] = [];
+  for (const review of reviews) {
+    const matches = verdicts.filter((verdict) => verdict.id === review.id);
+    const verdict = matches.length === 1 ? matches[0] : undefined;
+    if (unavailable === undefined && verdict?.verified === true) {
+      verified.push(review);
+      continue;
+    }
+    const reason = unavailable ??
+      (verdict === undefined
+        ? matches.length === 0
+          ? "the verifier gave no verdict for it"
+          : "the verifier gave more than one verdict for it"
+        : String(verdict.reason ?? ""));
+    const clipped = reason.replace(/\s+/g, " ").trim().slice(
+      0,
+      VERIFIER_REASON_LOG_CHARS,
+    );
+    console.log(
+      `${repo}#${pr.number}: review ${review.id} stays open: ${clipped}; next action: the next scan retries, or the reviewer's review of the pushed head decides`,
+    );
+  }
+  return verified;
+}
+
 /**
  * Validate, commit and push a repair, then sync the PR body and dismiss the
  * reviews it addressed (Issue #4637). On a push, GitHub's PR view must first
  * report the pushed head, since it lags behind the push. The body sync runs
  * on the committed summary at that head. Inside the sync, the guarded
- * description is published and checked, and only then are reviews dismissed.
- * Every failure throws, so reviews stay open. The next scan retries, except
- * when the proposal is refused over a governing summary: that record is
- * cleared, since a retry would refuse it again.
+ * description is published and checked. Reviews are then dismissed only for
+ * those whose every finding the independent verifier judged fixed at the
+ * published head and description (Issue #4657). An outage, a partial or
+ * missing verdict, or a moved head or description keeps them open without
+ * blocking the push. A CI or conflict repair addresses no review, so it has
+ * nothing to verify. Every other failure throws, so reviews stay open. The
+ * next scan retries, except when the proposal is refused over a governing
+ * summary: that record is cleared, since a retry would refuse it again.
  */
 export async function finishBabysitterRepair(
   repo: string,
@@ -1453,9 +1569,29 @@ export async function finishBabysitterRepair(
           runGit: deps.runGit ?? runGitCommand,
           gh,
         });
-        await (deps.dismiss
-          ? deps.dismiss(reviews, expectedHead)
-          : dismissAddressedReviews(repo, pr.number, reviews, expectedHead));
+        // A CI or conflict repair addresses no review, so nothing is verified.
+        const toDismiss = reviews.length === 0
+          ? reviews
+          : await reviewsVerifiedAtPublishedHead({
+            repo,
+            pr,
+            repoPath,
+            expectedHead,
+            reviews,
+            agentReply: change.agentReply,
+            gh,
+            verifyReviews: deps.verifyReviews,
+          });
+        if (reviews.length === 0 || toDismiss.length > 0) {
+          await (deps.dismiss
+            ? deps.dismiss(toDismiss, expectedHead)
+            : dismissAddressedReviews(
+              repo,
+              pr.number,
+              toDismiss,
+              expectedHead,
+            ));
+        }
       },
     );
   } catch (error) {
@@ -1857,6 +1993,8 @@ export interface FixDeps {
   escalate?: (request: EscalationRequest) => Promise<string>;
   stateDir?: string;
   dismiss?: BabysitterRepairFinishDeps["dismiss"];
+  /** Independent review verifier; defaults to the production verifier (Issue #4657). */
+  verifyReviews?: BabysitterRepairFinishDeps["verifyReviews"];
 }
 
 const EVIDENCE_LINES = 5;
@@ -2398,6 +2536,7 @@ export async function fix(
           runCommand: exec,
           publication,
           dismiss: deps.dismiss,
+          verifyReviews: deps.verifyReviews ?? verifyBabysitterReviews,
         },
       })
     ) return;
@@ -2577,6 +2716,7 @@ export async function fix(
       renewalFailed: () => renewalFailed,
       publication,
       dismiss: deps.dismiss,
+      verifyReviews: deps.verifyReviews ?? verifyBabysitterReviews,
       onPushed: async (pushedHead) => {
         pushed = true;
         retryRecord = {
@@ -2602,6 +2742,7 @@ export async function fix(
       checkBaseline,
       mergedBase,
       proposal: await takePrBodyProposal(dir),
+      agentReply: response,
       exchange,
     });
     if (!pushed) {

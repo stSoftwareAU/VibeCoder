@@ -29,6 +29,22 @@ import {
   saveBabysitterRetryState,
 } from "../lib/babysitter_retry_state.ts";
 import { acquireBranchUpdateLock } from "../lib/pr_branch_lock.ts";
+import type {
+  ReviewVerificationInput,
+  ReviewVerificationOutcome,
+} from "../lib/babysitter_review_verifier.ts";
+
+/** A verifier that judges every requested review fixed (Issue #4657). */
+const allVerified = (
+  input: ReviewVerificationInput,
+): Promise<ReviewVerificationOutcome[]> =>
+  Promise.resolve(
+    input.reviews.map((review) => ({
+      id: review.id,
+      verified: true,
+      reason: "fixed",
+    })),
+  );
 
 const HEAD = "a".repeat(40);
 const PUSHED = "b".repeat(40);
@@ -263,6 +279,7 @@ function harness(
       state.dismissals++;
       return Promise.resolve();
     },
+    verifyReviews: allVerified,
     armAutoMerge: () => Promise.resolve(),
     startAgent,
     commit: () => {
