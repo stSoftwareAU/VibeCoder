@@ -140,3 +140,15 @@ and `docs/CONTAINER.md` (the merge-only cargo passage). Code comments updated in
 - Callers of the changed gates (`checkMergedTree` through `verifyResolvedTree`
   and the merge-only gate) use the returned outcome only; the tests above run
   through both entry points.
+- `./quality.sh`: every stage passed except `deno tests`, where 32,690 passed
+  and 2 failed:
+  `completion - an unformatted Rust change is formatted and committed,
+  then passes the gate`
+  and
+  `completion - cargo fmt stages only the branch's .rs
+  files, not an unrelated uncommitted edit`,
+  both in `worker/deno/tests/completion_phase_repo_formatters_test.ts`, a file
+  this change does not touch (the same two fail on earlier runs of other
+  issues). Because the parallel pass failed, the serial pass of 39 tests did not
+  run in the gate; the serial tests of the touched files were run separately (72
+  passed). Config integration and Checkov were skipped by the environment.
