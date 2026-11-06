@@ -8,8 +8,11 @@ import {
   classifyBabysitterBlocker,
   classifyBabysitterFailure,
   clearBabysitterRetryStates,
+  clearBabysitterRepairCheckpoint,
   listBabysitterRetryStates,
+  loadBabysitterRepairCheckpoint,
   loadBabysitterRetryState,
+  saveBabysitterRepairCheckpoint,
   saveBabysitterRetryState,
   sharedBabysitterAttemptCount,
 } from "../lib/babysitter_retry_state.ts";
@@ -159,6 +162,51 @@ Deno.test("babysitter retry classification separates host, race, code and owner 
     }, Date.parse("2026-11-03T00:05:00Z")),
     true,
   );
+});
+
+Deno.test("repair checkpoint survives capability retry and is cleared after revalidation", async () => {
+  const dir = await Deno.makeTempDir();
+  const key = {
+    stateDir: dir,
+    repo: "owner/repo",
+    prNumber: 7,
+    failureIdentity: "failed CI",
+    head: "a".repeat(40),
+  };
+  const patch = "diff --git a/fix.ts b/fix.ts\n+export const repaired = true;\n";
+  try {
+    await saveBabysitterRepairCheckpoint({ ...key, patch });
+    assertEquals(await loadBabysitterRepairCheckpoint(key), patch);
+    assertEquals(
+      await loadBabysitterRepairCheckpoint({ ...key, head: "b".repeat(40) }),
+      undefined,
+    );
+    await clearBabysitterRepairCheckpoint(key);
+    assertEquals(await loadBabysitterRepairCheckpoint(key), undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("repair checkpoint refuses a detectable secret", async () => {
+  const dir = await Deno.makeTempDir();
+  const token = "ghp_" + "A".repeat(36);
+  try {
+    await assertRejects(
+      () => saveBabysitterRepairCheckpoint({
+        stateDir: dir,
+        repo: "owner/repo",
+        prNumber: 7,
+        failureIdentity: "failed CI",
+        head: "a".repeat(40),
+        patch: `diff --git a/.env b/.env\n+GITHUB_TOKEN=${token}\n`,
+      }),
+      Error,
+      "detectable secret",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("babysitter attempt tally is stable and trusts only fleet authors", () => {

@@ -11,6 +11,7 @@ import {
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
 } from "./ci_fix_attempt_markers.ts";
+import { containsSecret } from "./secret_redaction.ts";
 
 /** Distinguishes a stall handoff from a label the fleet applied. */
 export const BABYSITTER_HANDOFF_MARKER = "<!-- vibe-babysitter-handoff -->";
@@ -78,6 +79,7 @@ export interface LoadBabysitterRetryStateOptions {
 }
 
 const LEGACY_COOLDOWN_MS = 5 * 60_000;
+const REPAIR_CHECKPOINT_LIMIT = 2 * 1024 * 1024;
 
 function statePath(
   stateDir: string,
@@ -267,6 +269,139 @@ export async function clearBabysitterRetryStates(
     await Deno.remove(
       statePath(stateDir, repo, prNumber, record.failureIdentity),
     );
+  }
+  try {
+    for await (const entry of Deno.readDir(stateDir)) {
+      if (!entry.isFile || !entry.name.startsWith("repair-checkpoint-v1-")) {
+        continue;
+      }
+      const path = `${stateDir}/${entry.name}`;
+      const value = JSON.parse(await Deno.readTextFile(path));
+      if (
+        typeof value === "object" && value !== null &&
+        value.repo === repo && value.prNumber === prNumber
+      ) {
+        await Deno.remove(path);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+}
+
+function repairCheckpointPath(
+  stateDir: string,
+  repo: string,
+  prNumber: number,
+  failureIdentity: string,
+  head: string,
+): string {
+  const signature = computeFailureSignature({
+    repo,
+    locus: { kind: "pr", number: prNumber },
+    checkName: `${failureIdentity}:${head}`,
+  });
+  return `${stateDir}/repair-checkpoint-v1-${signature}.json`;
+}
+
+/** Persist only a bounded, secret-scanned repair patch for this exact head. */
+export async function saveBabysitterRepairCheckpoint(options: {
+  stateDir: string;
+  repo: string;
+  prNumber: number;
+  failureIdentity: string;
+  head: string;
+  patch: string;
+}): Promise<void> {
+  if (!options.patch.trim()) return;
+  if (new TextEncoder().encode(options.patch).byteLength > REPAIR_CHECKPOINT_LIMIT) {
+    throw new Error("Babysitter repair checkpoint exceeds the 2 MiB limit");
+  }
+  if (containsSecret(options.patch)) {
+    throw new Error("Babysitter repair checkpoint contains a detectable secret");
+  }
+  await Deno.mkdir(options.stateDir, { recursive: true });
+  const path = repairCheckpointPath(
+    options.stateDir,
+    options.repo,
+    options.prNumber,
+    options.failureIdentity,
+    options.head,
+  );
+  const record = {
+    version: 1,
+    repo: options.repo,
+    prNumber: options.prNumber,
+    failureIdentity: options.failureIdentity,
+    head: options.head,
+    patch: options.patch,
+  };
+  const result = await atomicWrite({
+    targetFile: path,
+    content: `${JSON.stringify(record)}\n`,
+  });
+  if (!result.ok) {
+    throw new Error(`Could not save babysitter repair checkpoint: ${result.error.message}`);
+  }
+}
+
+/** Read a checkpoint only for the same PR failure and unchanged remote head. */
+export async function loadBabysitterRepairCheckpoint(options: {
+  stateDir: string;
+  repo: string;
+  prNumber: number;
+  failureIdentity: string;
+  head: string;
+}): Promise<string | undefined> {
+  const path = repairCheckpointPath(
+    options.stateDir,
+    options.repo,
+    options.prNumber,
+    options.failureIdentity,
+    options.head,
+  );
+  let value: unknown;
+  try {
+    value = JSON.parse(await Deno.readTextFile(path));
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Invalid babysitter repair checkpoint in ${path}`);
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 || record.repo !== options.repo ||
+    record.prNumber !== options.prNumber ||
+    record.failureIdentity !== options.failureIdentity ||
+    record.head !== options.head || typeof record.patch !== "string" ||
+    new TextEncoder().encode(record.patch).byteLength > REPAIR_CHECKPOINT_LIMIT ||
+    containsSecret(record.patch)
+  ) {
+    throw new Error(`Invalid babysitter repair checkpoint in ${path}`);
+  }
+  return record.patch;
+}
+
+/** Remove the checkpoint after successful revalidation or terminal cleanup. */
+export async function clearBabysitterRepairCheckpoint(options: {
+  stateDir: string;
+  repo: string;
+  prNumber: number;
+  failureIdentity: string;
+  head: string;
+}): Promise<void> {
+  try {
+    await Deno.remove(repairCheckpointPath(
+      options.stateDir,
+      options.repo,
+      options.prNumber,
+      options.failureIdentity,
+      options.head,
+    ));
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
 }
 

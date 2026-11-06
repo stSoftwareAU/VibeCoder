@@ -89,7 +89,7 @@ import {
 } from "../lib/shift_left_failures.ts";
 import { RUN_FAILURE_TARGET_REPO } from "../lib/run_failure_issue.ts";
 import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
-import { redactSecrets } from "../lib/secret_redaction.ts";
+import { containsSecret, redactSecrets } from "../lib/secret_redaction.ts";
 import { getRepoConfig } from "../lib/repo_config.ts";
 import {
   hasReachedAutoFixCap,
@@ -103,9 +103,12 @@ import {
   type BabysitterRetryRecord,
   buildBabysitterAttemptMarker,
   classifyBabysitterFailure,
+  clearBabysitterRepairCheckpoint,
   clearBabysitterRetryStates,
+  loadBabysitterRepairCheckpoint,
   listBabysitterRetryStates,
   loadBabysitterRetryState,
+  saveBabysitterRepairCheckpoint,
   saveBabysitterRetryState,
   sharedBabysitterAttemptCount,
 } from "../lib/babysitter_retry_state.ts";
@@ -1947,6 +1950,44 @@ export interface FixDeps {
 const EVIDENCE_LINES = 5;
 const EVIDENCE_LINE_CHARS = 300;
 
+/** Capture useful unstaged repair work without accepting agent-staged files. */
+async function repairCheckpointPatch(
+  dir: string,
+  exec: typeof run,
+): Promise<string> {
+  const staged = await exec("git", ["diff", "--cached", "--name-only"], dir);
+  if (staged) {
+    throw new Error("Refusing a repair checkpoint with agent-staged files");
+  }
+  await exec("git", ["add", "-N", "--", "."], dir);
+  try {
+    const patch = await exec("git", ["diff", "--binary", "HEAD"], dir);
+    if (containsSecret(patch)) {
+      throw new Error("Refusing a repair checkpoint containing a detectable secret");
+    }
+    return patch;
+  } finally {
+    await exec("git", ["reset", "--quiet", "--", "."], dir);
+  }
+}
+
+/** Apply a prior capability checkpoint in the fresh clone before agent work. */
+async function applyRepairCheckpoint(
+  checkpoint: string,
+  dir: string,
+  exchange: string,
+  exec: typeof run,
+): Promise<void> {
+  const patchPath = `${exchange}/repair-checkpoint.patch`;
+  await Deno.writeTextFile(patchPath, checkpoint, { mode: 0o600 });
+  try {
+    await exec("git", ["apply", "--binary", "--check", patchPath], dir);
+    await exec("git", ["apply", "--binary", patchPath], dir);
+  } finally {
+    await Deno.remove(patchPath);
+  }
+}
+
 /** Keep the newest bounded, redacted diagnostics for a stuck repair. */
 export function appendEvidence(
   previous: readonly string[] | undefined,
@@ -2206,6 +2247,7 @@ export async function fix(
   let failureIdentity: string | undefined;
   let sharedSubstantiveAttempts = 0;
   let attemptMarkerRecorded = false;
+  let agentReportedReady = false;
   /** Best effort: the host-local record is already saved, the marker is the cross-host tally. */
   const markSharedAttempt = async (
     head: string,
@@ -2524,6 +2566,19 @@ export async function fix(
     await checkBabysitterValidationCapability(dir, scratch, configPath, home, {
       privateKeyPath: app.privateKeyPath,
     });
+    const priorCheckpoint = await loadBabysitterRepairCheckpoint({
+      stateDir,
+      repo,
+      prNumber: pr.number,
+      failureIdentity,
+      head: pr.headRefOid,
+    });
+    if (priorCheckpoint) {
+      await applyRepairCheckpoint(priorCheckpoint, dir, exchange, exec);
+      console.log(
+        `${repo}#${pr.number}: resumed the unvalidated repair checkpoint for ${pr.headRefOid.slice(0, 12)}`,
+      );
+    }
     const rtkInstruction = await babysitterRtkInstruction();
     const prompt = buildRepairPrompt(
       reason(pr)!,
@@ -2656,6 +2711,7 @@ export async function fix(
         "agent did not report that its fix was ready; refusing to push",
       );
     }
+    agentReportedReady = true;
     if ((await exec("git", ["rev-parse", "HEAD"], dir)) !== pr.headRefOid) {
       throw new Error("agent changed HEAD; refusing to push");
     }
@@ -2747,6 +2803,7 @@ export async function fix(
               "repair agent did not report runner findings fixed",
             );
           }
+          agentReportedReady = true;
           change.proposal = await takeRepairPrBodyProposal(
             repairDir,
             change.proposal,
@@ -2767,6 +2824,13 @@ export async function fix(
       publication,
       dismiss: deps.dismiss,
       onPushed: async (pushedHead) => {
+        await clearBabysitterRepairCheckpoint({
+          stateDir,
+          repo,
+          prNumber: pr.number,
+          failureIdentity,
+          head: pr.headRefOid,
+        });
         pushed = true;
         retryRecord = {
           ...retryRecord!,
@@ -2804,15 +2868,39 @@ export async function fix(
       await settleSubstantiveOutcome(pr.headRefOid, "no-change");
     }
   } catch (error) {
+    if (
+      error instanceof BabysitterValidationError && error.kind === "unavailable" &&
+      dir && failureIdentity && agentReportedReady
+    ) {
+      const currentHead = await exec("git", ["rev-parse", "HEAD"], dir);
+      if (currentHead !== pr.headRefOid) {
+        throw new Error(
+          "PR head changed; refusing to checkpoint unvalidated repair work",
+        );
+      }
+      const patch = await repairCheckpointPatch(dir, exec);
+      await saveBabysitterRepairCheckpoint({
+        stateDir,
+        repo,
+        prNumber: pr.number,
+        failureIdentity,
+        head: pr.headRefOid,
+        patch,
+      });
+      if (patch) {
+        console.warn(
+          `${repo}#${pr.number}: saved unvalidated repair work for retry when runner capability is available`,
+        );
+      }
+    }
     if (retryRecord && failureIdentity) {
       try {
         const message = redactSecrets(
           error instanceof Error ? error.message : String(error),
         );
         // A gate the host cannot run is host infrastructure, not a repair failure.
-        const blockerClass = error instanceof BabysitterValidationError &&
-            error.kind === "unavailable"
-          ? "capability"
+        const blockerClass = error instanceof BabysitterValidationError
+          ? error.kind === "unavailable" ? "capability" : "code"
           : classifyBabysitterFailure(error);
         const substantiveFailure = blockerClass === "code" &&
           !attemptMarkerRecorded;
