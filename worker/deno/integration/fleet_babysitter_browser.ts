@@ -190,6 +190,11 @@ int main(int argc, char **argv) {
         "Keychain probe must succeed outside the runner sandbox",
       );
 
+      // The host's `security` command is a usable positive control: it can
+      // list user Keychains here and must fail under the runner profile. A
+      // direct bootstrap lookup of securityd is unavailable on this GitHub
+      // runner, so test that protected service through its credential client.
+
       // cfprefsd acts on files for its caller and is deliberately outside the
       // browser service allowlist. Prove it exists before testing its denial.
       await Deno.writeTextFile(
@@ -210,12 +215,7 @@ int main(int argc, char **argv) {
         `${root}/mach-probe`,
       ], { timeoutMs: 30_000, quiet: true });
       assert(compile.ok && compile.value.success, "Mach probe requires clang");
-      for (
-        const machService of [
-          "com.apple.cfprefsd.agent",
-          "com.apple.securityd",
-        ]
-      ) {
+      for (const machService of ["com.apple.cfprefsd.agent"]) {
         const lookupBaseline = await runWithTimeout(
           `${root}/mach-probe`,
           [machService],
@@ -306,7 +306,6 @@ if /usr/bin/security list-keychains -d user >/dev/null 2>&1; then exit 35; fi
 if cat ${posixSingleQuote(customAppKey)} >/dev/null 2>&1; then exit 36; fi
 if cat ${posixSingleQuote(selectedAppKey)} >/dev/null 2>&1; then exit 37; fi
 if ./mach-probe com.apple.cfprefsd.agent; then exit 38; fi
-if ./mach-probe com.apple.securityd; then exit 47; fi
 touch gate-ran
 `,
       );

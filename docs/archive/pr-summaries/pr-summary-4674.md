@@ -42,6 +42,11 @@ validation. Part of #4674 while the native macOS run is pending. Version bump:
 - This worker host is Linux. The browser integration's only local attempt
   stopped at its explicit `Deno.build.os === "darwin"` guard; it did not
   exercise macOS sandbox behaviour.
+- The first native runner attempt passed the external Keychain CLI probe but
+  failed when directly looking up `com.apple.securityd` through bootstrap; that
+  direct positive control is unavailable on this GitHub runner. The test now
+  uses the successful external `security list-keychains` command as its positive
+  control and checks the same command is denied inside the profile.
 - The repository's existing browser integration now supplies unsandboxed
   positive controls for the credential files, symlink targets, Keychains,
   `securityd`, unrelated Mach lookup, process environment, and `.git` write
@@ -145,8 +150,9 @@ sequenceDiagram
   validation integration and tests.
 - `deno task test:browser` — attempted locally; failed at the platform guard
   with actual `linux`, expected `darwin`, before any macOS containment
-  assertions ran. The native macOS workflow result is pending and is not claimed
-  as passed.
+  assertions ran. Native run 42149859357 then failed at the direct `securityd`
+  bootstrap positive control after its Keychain CLI control passed; the updated
+  native workflow is pending and is not claimed as passed.
 - No `deno.lock` change. Updated `SECURITY.md`, threat-model control C37 and the
   fleet babysitter manual to describe checkpoint recovery and the macOS CI
   evidence path.
