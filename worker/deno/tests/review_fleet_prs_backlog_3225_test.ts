@@ -457,6 +457,23 @@ Deno.test("pass: approved behind PRs reach the shared readiness policy, while an
     assertEquals(updates.length, 1);
     assertEquals(updates[0]?.[3], "repos/acme/app/pulls/30/update-branch");
     assertEquals(result.upkeep, ["acme/app#30 branch update requested"]);
+    const auditPath = auditFilePath({
+      baseDir: `${dir}/audit`,
+      workerId: "fleet-reviewer",
+      date: new Date().toISOString().slice(0, 10),
+    });
+    const auditRows = await loadEntries(auditPath);
+    assertEquals(auditRows.ok, true);
+    if (!auditRows.ok) throw auditRows.error;
+    assertEquals(
+      auditRows.value.map((entry) => [
+        entry.actionKind,
+        entry.repo,
+        entry.prNumber,
+        entry.outcome,
+      ]),
+      [["branch-update", "acme/app", 30, "success"]],
+    );
     for (const number of [31, 34]) {
       assertEquals(
         calls.some((c) =>
