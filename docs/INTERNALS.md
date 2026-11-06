@@ -4811,14 +4811,19 @@ offline run that still cannot reach the registry, is left to CI. A tree whose
 only checks are cargo and are all left to CI this way is
 `skipped` and refused outside a merge-only cycle: an automatic resolution
 requires a completed check (Issue #1559). The third (Issue #4422)
-covers a Deno task whose remote module host this host cannot reach, in the
-resolution gate's tasks and, under the condition below, in the type check in
-`checkMergedTree` (Issue #4451). When a Deno task fails because this
-host cannot fetch a remote module, deno prints `error: Import '<url>' failed.`
-followed by a connection-class cause such as `error sending request for url`,
-`unsuccessful tunnel` or `dns error`. `detectRemoteModuleGap` in
-[milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) recognises
-only that pair. A 404, a certificate, a checksum or a type error is still an
+covers a Deno task whose remote module host, or npm registry, this host cannot
+reach, in the resolution gate's tasks and, under the condition below, in the
+type check in `checkMergedTree` (Issue #4451). When a Deno task fails because
+this host cannot fetch a remote module or npm package, deno prints a failure
+header followed by a connection-class cause such as `error sending request for
+url`, `unsuccessful tunnel` or `dns error`. The header is `error: Import
+'<url>' failed.`, `error: Failed caching npm package '<spec>'` (reported as
+`npm:<spec>`), or `error: Failed loading <url> for package "<name>"`
+(Issue #4848). `detectRemoteModuleGap` in
+[milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) reads each
+line with ANSI colour stripped, so a coloured `error` prefix still matches
+(Issue #4848), and reports a gap only when a connection-class cause follows one
+of those headers. A 404, a certificate, a checksum or a type error is still an
 ordinary failure and is refused. The unreachable task is not counted as passed
 and is not repaired. Every other task still runs, so a real failure elsewhere
 still refuses the resolution, and `quality.sh` is never substituted for an
