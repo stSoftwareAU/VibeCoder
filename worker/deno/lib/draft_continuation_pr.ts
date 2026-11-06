@@ -75,7 +75,7 @@ export async function ensureDraftContinuationPr(args: {
       branchName,
       "--title",
       // Issue #4679: scrubbed, so an issue-title `[#999]` is no reference.
-      `WIP: ${buildPrTitle(issueTitle, issueNumber)}`,
+      buildPrTitle(issueTitle, issueNumber),
       "--body",
       buildDraftContinuationBody(issueNumber),
     ]);

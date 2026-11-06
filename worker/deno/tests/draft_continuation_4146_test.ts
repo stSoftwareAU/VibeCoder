@@ -100,7 +100,7 @@ Deno.test("#4679 - the draft title carries no issue reference from the issue tit
   const create = calls.find((a) => a[0] === "pr" && a[1] === "create");
   assert(create, "a PR is created");
   const title = create[create.indexOf("--title") + 1]!;
-  assertEquals(title, "WIP: Add caching and see 997 (Issue #5)");
+  assertEquals(title, "Add caching and see 997 (Issue #5)");
   for (const injected of [999, 998, 997]) {
     assertFalse(
       prTitleMatchesIssue(title, injected),
