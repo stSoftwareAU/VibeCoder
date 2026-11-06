@@ -1285,6 +1285,16 @@ async function runClaudeWithTimeoutBody(
     options.agentProvider,
     options.env ? { env: options.env } : {},
   );
+  // Isolation flags and tool denials are Claude-specific; refuse fallback
+  // providers before spawning them rather than silently losing the boundary.
+  if (options.isolateClaudeConfig && provider.id !== CLAUDE_PROVIDER_ID) {
+    return {
+      ok: false,
+      error: new Error(
+        "Claude configuration isolation requires the Claude provider",
+      ),
+    };
+  }
   // The Playwright MCP server for this run (Issue #4355): written per clone
   // to the worker cache and passed as --mcp-config. Wired only when the
   // caller declares the browser needed (Issue #192) — a cwd alone no longer

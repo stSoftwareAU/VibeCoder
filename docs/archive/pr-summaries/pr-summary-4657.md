@@ -133,6 +133,15 @@ flowchart TD
 
 ## Test Plan
 
+- PR #4849 review: read-only verification pins the Claude provider and refuses
+  any non-Claude fallback before spawning, preserving its tool and configuration
+  boundary. `worker/deno/tests/pre_pr_verifier_3395_test.ts::runPrePrVerifier readOnly: no shell or edit tools, isolated config, the evidence as files, and a prompt that names no denied tool (PR #4849 review)`
+  checks the provider and actual base-file content;
+  `worker/deno/tests/claude_runner_provider_fallback_4034_test.ts::isolated Claude configuration refuses a non-Claude provider before spawn`
+  checks the fallback boundary. The old file-existence assertion could not
+  distinguish head from base; the content assertion retains the evidence check
+  and proves the base revision is used. No twinned rule was found.
+
 - Added `worker/deno/tests/babysitter_review_verifier_4657_test.ts` (18 tests at
   head): complete fix, partial fix, false-positive rebuttal, no-op completion,
   outage, throw, missing and duplicate verdict, blank body, extra new findings,

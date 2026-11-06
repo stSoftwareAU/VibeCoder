@@ -251,7 +251,8 @@ Deno.test("runPrePrVerifier readOnly: no shell or edit tools, isolated config, t
         isolate: boolean | undefined;
         prompt: string;
         diff: string;
-        baseHasFile: boolean;
+        baseContent: string;
+        provider: unknown;
       }
     > = [];
     const deps = makeDeps(async (o) => {
@@ -261,7 +262,10 @@ Deno.test("runPrePrVerifier readOnly: no shell or edit tools, isolated config, t
         isolate: o.isolateClaudeConfig,
         prompt: o.prompt,
         diff: await Deno.readTextFile(`${tmp}/change.diff`).catch(() => ""),
-        baseHasFile: await exists(`${tmp}/base/a.ts`),
+        baseContent: o.isolateClaudeConfig
+          ? await Deno.readTextFile(`${tmp}/base/a.ts`)
+          : "",
+        provider: o.agentProvider,
       });
       return okRun({ output: `Review:\n${REPLY_CLEAN}` });
     }, tmps);
@@ -278,7 +282,9 @@ Deno.test("runPrePrVerifier readOnly: no shell or edit tools, isolated config, t
     assertEquals(off!.isolate, undefined);
     // The diff and the base tree are there to Read, so no git command is needed.
     assertStringIncludes(on!.diff, "a.ts");
-    assert(on!.baseHasFile);
+    assertEquals(on!.baseContent, "export const a = 1;\n");
+    assertEquals(on!.provider, "claude");
+    assertEquals(off!.provider, undefined);
     assertStringIncludes(on!.prompt, "change.diff");
     assertStringIncludes(on!.prompt, "You have no shell");
     // The prompt directs the model to no tool it was denied.

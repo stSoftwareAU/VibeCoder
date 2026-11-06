@@ -19,7 +19,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { runClaudeWithRetry } from "../lib/claude_runner.ts";
+import {
+  runClaudeWithRetry,
+  runClaudeWithTimeout,
+} from "../lib/claude_runner.ts";
 import {
   resolveProviderFallbackPolicy,
   setConfiguredProviderFallbackPolicy,
@@ -157,5 +160,27 @@ Deno.test({
     assert(exitCode !== 0, "a pinned provider must not be substituted");
     assertEquals(calls, ["exec"], "no other provider was invoked");
     assertStringIncludes(log.join("\n"), "no cheaper fallback available");
+  },
+});
+
+Deno.test({
+  name:
+    "isolated Claude configuration refuses a non-Claude provider before spawn",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withAgentStub(buildRefusingCodexStubBody(), async (stub) => {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        agentProvider: "codex",
+        isolateClaudeConfig: true,
+        agentBinaryPath: stub.path,
+        env: emptyEnv,
+        timeoutSeconds: 30,
+        killAfterSeconds: 2,
+      });
+      assert(!result.ok);
+      assertStringIncludes(result.error.message, "Claude");
+      assertEquals(await readCalls(`${stub.dir}/${CALL_LOG}`), []);
+    });
   },
 });

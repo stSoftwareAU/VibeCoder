@@ -38,6 +38,7 @@
  * @module
  */
 
+import { CLAUDE_PROVIDER_ID } from "./agent_provider.ts";
 import type { Logger, Result } from "../types.ts";
 import type { TestChangeKind, TestChangeNote } from "./fleet_review_log.ts";
 import {
@@ -1155,7 +1156,9 @@ async function verifyInCheckout(
       ...(input.readOnly ? PRE_PR_VERIFIER_READ_ONLY_DENIED_TOOLS : []),
       ...(input.extraDisallowedTools ?? []),
     ],
-    ...(input.readOnly ? { isolateClaudeConfig: true } : {}),
+    ...(input.readOnly
+      ? { isolateClaudeConfig: true, agentProvider: CLAUDE_PROVIDER_ID }
+      : {}),
     ...(input.parentEnv === undefined ? {} : { parentEnv: input.parentEnv }),
   }, input.maxRetries === undefined ? {} : { maxRetries: input.maxRetries });
   if (!asked.ok) {

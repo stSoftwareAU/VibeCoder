@@ -148,7 +148,9 @@ can use this to publish a separate babysitter heartbeat and failure record. Dry
 runs and runs limited to a repository or PR do not report service health.
 
 The host needs `gh`, `git` and `deno`, and the Claude CLI with a working Claude
-credential for the review verifier (Issue #4657). Without them the verifier
+credential for the review verifier (Issue #4657). The read-only verifier uses
+Claude only, regardless of the configured agent provider or fallback; it refuses
+a fallback that cannot enforce its isolation. Without them the verifier
 reports an outage and every review stays open. A pass that pushed nothing is
 retried under infrastructure backoff; after a push the kept publication record
 is retried on the next scan, with no backoff. Codex CLI must be 0.164.0 or newer,
