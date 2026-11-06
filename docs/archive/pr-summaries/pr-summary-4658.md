@@ -70,12 +70,24 @@ flowchart LR
 
 ## Test Plan
 
-- `worker/deno/tests/pr_completion_snapshot_test.ts` — the all-head check-run
-  case first failed against the prior collector, then passed after collection
-  was extended; the suite passed with 102 tests. It also covers recovery and
-  branch-refresh intervals, pre-cohort stranded PRs, deduplication, manual
-  repair followed by bot merge, human-account automation, unknown history,
-  milestone rollups, owner gates and zero denominator.
+- `worker/deno/tests/pr_completion_snapshot_test.ts::collect - check runs are read for an observed head with no workflow runs`
+  — failed against the prior collector, then passed after collection was
+  extended. The snapshot suite passed with 102 tests.
+- `worker/deno/tests/pr_completion_snapshot_test.ts::collect - recorded repair recovery and reviewer refresh waits are attributed`
+  covers both blocker intervals;
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - the rollout check counts stranded, rediscovered and processed PRs by verified time`
+  covers a stranded PR outside the cohort.
+- `worker/deno/tests/pr_completion_snapshot_test.ts::collect - automated commits retaining an allowlisted human author stay unknown`,
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - milestone rollup actions link the delivered GitHub commit`,
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - unmatched GitHub merges and approvals are unknown, never human or fleet`,
+  and
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a zero-PR cohort yields an empty, valid report`
+  cover the listed attribution and cohort cases.
+- `worker/deno/tests/pr_completion_report_test.ts::a verified human repair at an earlier head still counts; the head SHA does not unlink it`
+  covers human repair followed by a fleet merge.
+  `worker/deno/tests/pr_completion_report_test.ts::PR completion report deduplicates repeated observations and separates trusted outcomes`
+  covers repeated hosts, open and closed-unmerged PRs, milestone rollups, owner
+  gates and unknown outcomes.
 - `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` and
   `worker/deno/tests/review_fleet_prs_dependabot_test.ts` — passed in the full
   test run; branch-refresh journal success and refusal are covered through the
