@@ -91,6 +91,15 @@ detector "recognises only that pair").
   only the branch's .rs files…"), which this change does not touch; every other
   stage passed (semgrep, lint, type check, fmt, manifests).
 
+- Mutation check: its report said the baseline tests failed before any mutation
+  (a list of 21 test files), so it judged no mutants. They pass at the head here:
+  `deno task test:unit` with stdin from `/dev/null` over the 21 named files
+  (382 passed, 0 failed in the parallel pass; 88 passed, 0 failed in the serial
+  pass). The failure did not reproduce, so it is an environment fault of the
+  mutation runner's baseline, not a surviving mutant. The changed lines are
+  pinned by the red checks above (npm header matching disabled, `stripAnsi`
+  removed).
+
 Not done / risk: ANSI tolerance is tested from the issue's output, not from a
 live coloured run; `merge_fast_checks.ts` gets the new detection but has no
 npm-specific test of its own.
