@@ -10,6 +10,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { finishBabysitterRepair } from "../commands/fleet_pr_babysitter.ts";
+import { createExchangeDir } from "../lib/fleet_babysitter_exchange.ts";
 import type {
   ReviewVerificationInput,
   ReviewVerificationOutcome,
@@ -168,9 +169,7 @@ async function runFinish(options: FinishOptions): Promise<FinishRecord> {
   const events: string[] = [];
   const dismissed: number[][] = [];
   const inputs: ReviewVerificationInput[] = [];
-  const exchange = await Deno.makeTempDir({
-    prefix: "babysitter-review-4657-",
-  });
+  const exchange = await createExchangeDir("babysitter-review-4657-");
   try {
     await finishBabysitterRepair(
       REPO,

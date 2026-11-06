@@ -106,6 +106,11 @@ flowchart TD
   reviews before dismissing.
 - The merge with main retains both the verifier and attempt-journal dependency
   hooks on `FixDeps`, so review verification and attempt auditing remain wired.
+- The dismissal fixture uses `createExchangeDir`, matching the hardened
+  canonical-directory contract on hosts whose temporary path contains a symlink.
+  `worker/deno/tests/babysitter_review_dismissal_4657_test.ts::the verifier judges the published description, not the stale one (Issue #4657)`
+  continues to cover publishing the description before verification; accepting a
+  noncanonical exchange path is not supported.
 - Docs updated: `docs/workflows/fleet-pr-babysitter.md` (overview, sequence
   diagram, host requirements, credential boundary, description step 5),
   `docs/THREAT-MODEL.md` (C36) and the `babysitter_attempt_audit.ts` header. The

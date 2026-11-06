@@ -1270,9 +1270,58 @@ async function _processFeedbackWithHeartbeat(
   // Issue #3404: every agent invocation of this run goes through here, so the
   // run's stats are collected in one place whichever helper retries it.
   const turnLimit: { failure?: Error } = {};
+  const syncBody = async (committedHeadSha?: string) => {
+    await runPrBodySync(
+      {
+        repo,
+        prNumber,
+        repoPath: processorDeps.workDir,
+        beforeSha,
+        workerName: processorDeps.workerName ?? "",
+        githubUser: processorDeps.githubUser ??
+          Deno.env.get("GITHUB_USER") ?? "",
+        runId: getRunId(),
+        branchName: input.branchName,
+        ...(committedHeadSha !== undefined
+          ? { committedHeadSha, allowLocalHeadAhead: true }
+          : {}),
+      },
+      {
+        runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
+        runGitCommand: deps.git.runGitCommand,
+        logger,
+      },
+      processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary,
+    );
+  };
+  const syncBodyFromVerifiedHead = async () => {
+    if (fixBranch !== undefined) return;
+    try {
+      const verification = await (processorDeps.verifyPushFn ??
+        verifyPushLanded)(pushBranch, {
+          cwd: processorDeps.workDir,
+        });
+      // A failed invocation may leave a newer local commit after an earlier
+      // push landed. The confirmed remote SHA still identifies publishable
+      // content; sync checks its ancestry and rechecks the remote before edit.
+      if (verification.remoteSha !== undefined) {
+        await syncBody(verification.remoteSha);
+      }
+    } catch (error) {
+      // A best-effort body refresh must not replace the agent outcome.
+      logger.warn("Post-agent PR body sync failed", {
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   const failTurnLimit = async (
     error: Error,
   ): Promise<Result<PrFeedbackResult>> => {
+    // Claude may have pushed a rewritten summary before hitting its cap.
+    // Pin the refresh to the verified remote commit, then keep
+    // the original failure outcome and accounting.
+    await syncBodyFromVerifiedHead();
     await chargeReviewFailure(error.message);
     return { ok: false, error };
   };
@@ -1348,6 +1397,8 @@ async function _processFeedbackWithHeartbeat(
   await rtk.record();
 
   if (!claudeResult.ok) {
+    if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
+    await syncBodyFromVerifiedHead();
     // Issue #4511: a host-disk park (Issue #4360) is the host running out of
     // disk, not the PR's fault, so it is released rather than charged. The
     // processed mark is taken back so the comment is rediscovered once the
@@ -1408,6 +1459,7 @@ async function _processFeedbackWithHeartbeat(
   // The finish deadline is a scheduled release (Issue #4245): logged, and
   // not charged, so no failure label is applied.
   if (claudeResult.value.finishDeadline) {
+    await syncBodyFromVerifiedHead();
     const summary =
       `PR feedback for ${repo}#${prNumber} released on schedule: the finish deadline was reached`;
     logger.info(summary);
@@ -1419,6 +1471,7 @@ async function _processFeedbackWithHeartbeat(
 
   // Check for timeout (Issue #1825: distinguish silence watchdog from hard timeout)
   if (claudeResult.value.timedOut) {
+    await syncBodyFromVerifiedHead();
     const failureMessage = claudeResult.value.timeoutReason === "no-output"
       ? `Claude produced no output for ${claudeNoOutputTimeout} seconds (silence watchdog fired)`
       : `Claude timed out after ${claudeTimeout} seconds`;
@@ -1792,56 +1845,11 @@ async function _processFeedbackWithHeartbeat(
       if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
     }
   }
-  const syncBody = async () => {
-    await runPrBodySync(
-      {
-        repo,
-        prNumber,
-        repoPath: processorDeps.workDir,
-        beforeSha,
-        workerName: processorDeps.workerName ?? "",
-        githubUser: processorDeps.githubUser ??
-          Deno.env.get("GITHUB_USER") ?? "",
-        runId: getRunId(),
-        branchName: input.branchName,
-      },
-      {
-        runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
-        runGitCommand: deps.git.runGitCommand,
-        logger,
-      },
-      processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary,
-    );
-  };
   const holdUnverifiedReview = async (failure: Error) => {
     // An agent may already have pushed the corrected summary. Refresh that
     // visible head even when another finding still blocks this review (#3982).
     // Never publish a description of commits that remain local or unmeasured.
-    if (fixBranch === undefined) {
-      try {
-        const unpushed =
-          await (processorDeps.describeUnpushedFn ?? describeUnpushedCommits)(
-            pushBranch,
-            { cwd: processorDeps.workDir },
-          );
-        if (unpushed.ok && unpushed.value.count === 0) {
-          await syncBody();
-        } else {
-          logger.warn("Held review body sync skipped", {
-            prNumber,
-            reason: unpushed.ok
-              ? `${unpushed.value.count} commits remain unpushed`
-              : unpushed.error.message,
-          });
-        }
-      } catch (error) {
-        // A failed measurement or sync must not suppress the review failure.
-        logger.warn("Held review body sync failed", {
-          prNumber,
-          error: String(error),
-        });
-      }
-    }
+    await syncBodyFromVerifiedHead();
     const message =
       `Review-fix verification did not clear. The review remains outstanding.\n\n${failure.message}`;
     await chargeReviewFailure(message);
@@ -2060,10 +2068,7 @@ async function _processFeedbackWithHeartbeat(
   // earlier push may have rewritten the summary without the body ever being
   // refreshed — the sync itself decides staleness by comparing the summary
   // digest recorded in the body, so calling it when nothing moved is safe.
-  // A run that still has commits left unpushed, or one whose unpushed count
-  // was never measured, must not sync: the local summary may not be on the
-  // remote yet, so the body could be rewritten to describe content the
-  // reviewer cannot see.
+  // When local work remains, pin the refresh to the verified remote head.
   //
   // PR #3353 review: "nothing left unpushed" only proves this checkout is not
   // AHEAD of the remote branch — it can still be BEHIND a concurrent
@@ -2078,6 +2083,8 @@ async function _processFeedbackWithHeartbeat(
     ((pushSucceeded && hasChanges) || nothingLeftToPush)
   ) {
     await syncBody();
+  } else if (fixBranch === undefined && hasChanges && !pushSucceeded) {
+    await syncBodyFromVerifiedHead();
   }
 
   // Read .pr_response_message if Claude created one (Issue #1458).

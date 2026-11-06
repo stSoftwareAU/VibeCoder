@@ -345,6 +345,13 @@ export interface SyncPrBodyInput {
    * merge-conflict, reconcile) rely on.
    */
   committedHeadSha?: string;
+  /**
+   * Feedback failure exits may leave local commits after an earlier push.
+   * With a pinned committedHeadSha, allow HEAD to be its descendant; only
+   * the pinned summary is published, after rechecking the remote. Adoption
+   * and other callers keep the default requirement that HEAD equals it.
+   */
+  allowLocalHeadAhead?: boolean;
 }
 
 /** Collaborators {@link syncPrBodyFromSummary} needs — all injectable for testing. */
@@ -507,7 +514,7 @@ export async function buildSyncedPrBodyCandidate(
         "diff",
         "--name-only",
         input.beforeSha,
-        "HEAD",
+        input.committedHeadSha ?? "HEAD",
         "--",
         summaryRelPath,
       ],
@@ -613,8 +620,9 @@ export async function buildSyncedPrBodyCandidate(
  * Issue #4712: the last check before a committed-head body is published.
  *
  * Returns the reason to skip, or undefined to proceed. The checkout must still
- * be at `input.committedHeadSha`, and `origin/<branchName>` must still point at
- * it. A failed or unreadable `ls-remote` is not treated as proof, so it skips.
+ * be at `input.committedHeadSha` (or its descendant when explicitly allowed),
+ * and `origin/<branchName>` must still point at it. A failed or unreadable
+ * `ls-remote` is not treated as proof, so it skips.
  * Only called when `input.committedHeadSha` is set.
  */
 async function committedHeadSkipReason(
@@ -624,7 +632,16 @@ async function committedHeadSkipReason(
 ): Promise<string | undefined> {
   const committedHeadSha = input.committedHeadSha ?? "";
   if (localHeadSha !== committedHeadSha) {
-    return "checkout moved off the committed head";
+    if (!input.allowLocalHeadAhead) {
+      return "checkout moved off the committed head";
+    }
+    const ancestor = await deps.runGitCommand(
+      ["merge-base", "--is-ancestor", committedHeadSha, localHeadSha],
+      { cwd: input.repoPath },
+    );
+    if (!ancestor.ok || ancestor.value.code !== 0) {
+      return "checkout does not extend the committed head";
+    }
   }
   const remote = await deps.runGitCommand(
     ["ls-remote", "origin", `refs/heads/${input.branchName}`],
@@ -691,8 +708,9 @@ async function committedHeadSkipReason(
  *   proceeds; and
  * - the freshly assembled body actually differs from what is live; and
  * - when `input.committedHeadSha` is set (Issue #4712), the checkout is still at
- *   that sha and `git ls-remote` still reports `origin/<branchName>` at it,
- *   checked just before `gh pr edit`. Otherwise the call is skipped and the
+ *   that sha (or extends it when `allowLocalHeadAhead` is set), and
+ *   `git ls-remote` still reports `origin/<branchName>` at it, checked just
+ *   before `gh pr edit`. Otherwise the call is skipped and the
  *   live body is left untouched.
  *
  * When the live body carries no leading section and the rebuilt summary newly
