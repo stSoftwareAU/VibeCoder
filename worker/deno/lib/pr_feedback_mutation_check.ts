@@ -23,7 +23,10 @@
 
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import { invokeMutationCheck } from "./mutation_check_invocation.ts";
-import { findBlockingMutationJob } from "./ci_mutation_contract.ts";
+import {
+  findBlockingMutationJob,
+  type FindBlockingMutationJobOptions,
+} from "./ci_mutation_contract.ts";
 import type { MutationCheckResult } from "./mutation_gate.ts";
 import type { MutationRunInput } from "./mutation_runner.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
@@ -235,6 +238,11 @@ export interface ReviewFixMutationDeps {
     | ((input: MutationRunInput) => Promise<MutationCheckResult>)
     | undefined;
   logger: Pick<Logger, "info" | "warn">;
+  /**
+   * The base branch's required checks and a remote-workflow reader for the CI
+   * contract lookup (Issue #4617); absent means the local files alone.
+   */
+  ciLookupOptions?: () => Promise<FindBlockingMutationJobOptions>;
 }
 
 /**
@@ -247,8 +255,10 @@ export async function runReviewFixMutationCheck(
 ): Promise<MutationCheckResult> {
   let cargoMutantsArgs: string[] = [];
   try {
-    cargoMutantsArgs = (await findBlockingMutationJob(input.repoPath)).blocking
-      ?.cargoArgs ?? [];
+    cargoMutantsArgs = (await findBlockingMutationJob(
+      input.repoPath,
+      await deps.ciLookupOptions?.(),
+    )).blocking?.cargoArgs ?? [];
   } catch (error) {
     deps.logger.warn("Could not read CI mutation arguments for review-fix", {
       error: error instanceof Error ? error.message : String(error),

@@ -161,7 +161,7 @@ function makeDriftGit(): GitDeps["runGitCommand"] {
     }
     if (
       args[0] === "diff" && args[1] === "--name-only" &&
-      args[2] === "origin/main...HEAD"
+      (args[2] === "origin/main...HEAD" || args[2] === "origin/release...HEAD")
     ) {
       return {
         ok: true,
@@ -420,6 +420,91 @@ Deno.test("processPrFeedback - mutation check (Issue #3750): a survivor on the r
 
     // The commit happens after the agent calls.
     assertEquals(events, ["agent:0", "agent:1", "agent:2", "commit"]);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("processPrFeedback uses the PR base required checks for both mutation paths", async () => {
+  const workDir = await makeWorkDir();
+  try {
+    await Deno.mkdir(`${workDir}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${workDir}/.github/workflows/ci.yml`,
+      "on: pull_request\njobs:\n  mutants:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo mutants --timeout 60\n",
+    );
+    await Deno.writeTextFile(
+      `${workDir}/${SUMMARY_PATH}`,
+      SUMMARY_V1 + "\n- `lib/rule.ts:1` — exempt (untestable): fixture\n",
+    );
+    for (const required of ["mutants", "other"]) {
+      const events: string[] = [];
+      const logs: string[] = [];
+      const inputs: MutationRunInput[] = [];
+      const endpoints: string[] = [];
+      const gh = openPrGh((args: string[]) => {
+        if (
+          args[0] === "pr" && args[1] === "view" && args.includes("baseRefName")
+        ) return Promise.resolve("release");
+        if (args[0] === "api") {
+          endpoints.push(args[1]!);
+          if (args[1]!.includes("rules/branches/")) {
+            return Promise.resolve(
+              JSON.stringify([[{
+                type: "required_status_checks",
+                parameters: { required_status_checks: [{ context: required }] },
+              }]]),
+            );
+          }
+          if (args[1]!.includes("/branches/")) {
+            return Promise.resolve(JSON.stringify({ protection: null }));
+          }
+        }
+        return Promise.resolve("");
+      });
+      const deps = createMockDeps({
+        claude: {
+          runClaudeWithRetry: makeClaudeMock(events, [
+            "Fixed",
+            verdictBlock([]),
+            "fixed it",
+          ], []),
+        },
+        github: { runGhCommand: gh },
+        quality: {
+          runMutationCheck: makeMutationStub(
+            inputs,
+            { ...SURVIVING_RESULT, language: "rust" } as MutationCheckResult,
+          ),
+        },
+        git: {
+          runGitCommand: makeGit(),
+          commitAndPushPending: makeCommitMock(events),
+        },
+      });
+      const processor = baseProcessorDeps(workDir, deps);
+      processor.logger.info = (message) => {
+        logs.push(message);
+      };
+      processor.logger.warn = (message) => {
+        logs.push(message);
+      };
+      const result = await processPrFeedback(makeInput(), processor);
+      assert(result.ok);
+      assert(
+        endpoints.some((endpoint) =>
+          endpoint.includes("rules/branches/release")
+        ),
+      );
+      assertEquals(
+        inputs[0]?.cargoMutantsArgs,
+        required === "mutants" ? ["--timeout", "60"] : undefined,
+      );
+      assertEquals(
+        logs.some((line) => line.includes("running one recovery turn")),
+        required === "mutants",
+      );
+    }
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
