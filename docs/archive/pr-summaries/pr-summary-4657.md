@@ -9,8 +9,8 @@ keeps the review open and never blocks the push. A verifier outage (including a
 head or description that moves during verification) also keeps the review open
 and keeps the pending publication, so the next scan re-verifies without running
 the agent; a pass that pushed nothing also backs off as an infrastructure
-failure. The verifier runs with its own read-only
-token and no Bash, never the runner's write token. Closes #4657.
+failure. The verifier runs with its own read-only token and no Bash, never the
+runner's write token. Closes #4657.
 
 ```mermaid
 flowchart TD
@@ -132,17 +132,18 @@ flowchart TD
   called), outside-id verdict, duplicate verdict, a review arriving during
   repair, and a CI repair with no reviews. Result: 16 passed, 0 failed.
 - PR #4849 review, added to
-  `worker/deno/tests/babysitter_fix_orchestration_test.ts` (47 tests at head), all through the real `fix()`: a no-change repair with a
-  verifier outage (infrastructure class, no substantive attempt, no escalation,
-  one journalled attempt, publication kept, next scan re-verifies and dismisses
-  with no second agent session); a resumed publication whose verifier is still
-  down (record kept, second infrastructure attempt, still one agent session); a
-  no-change repair judged not fixed (journalled once, record cleared, class
-  `code`); the production `readOnlyReviewVerifier` failing closed when its token
-  cannot be minted. `worker/deno/tests/fleet_babysitter_app_test.ts` gained two
-  tests for `babysitterVerifierCredentials` (read-only token replaces the
-  runner's `GH_TOKEN`, no runner token anywhere in the result, Bash and the
-  protected paths and `/proc` denied; a write-granting token is refused), and
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts` (47 tests at head),
+  all through the real `fix()`: a no-change repair with a verifier outage
+  (infrastructure class, no substantive attempt, no escalation, one journalled
+  attempt, publication kept, next scan re-verifies and dismisses with no second
+  agent session); a resumed publication whose verifier is still down (record
+  kept, second infrastructure attempt, still one agent session); a no-change
+  repair judged not fixed (journalled once, record cleared, class `code`); the
+  production `readOnlyReviewVerifier` failing closed when its token cannot be
+  minted. `worker/deno/tests/fleet_babysitter_app_test.ts` gained two tests for
+  `babysitterVerifierCredentials` (read-only token replaces the runner's
+  `GH_TOKEN`, no runner token anywhere in the result, Bash and the protected
+  paths and `/proc` denied; a write-granting token is refused), and
   `worker/deno/tests/pre_pr_verifier_3395_test.ts` one test for `parentEnv` and
   `extraDisallowedTools` reaching the model run. Those files plus
   `worker/deno/tests/fleet_pr_babysitter_test.ts` (116 tests at head),
@@ -170,7 +171,8 @@ flowchart TD
   description-changed test red (1 failed); letting a verifier throw escape →
   verifier-throws test red.
 - `docs/audits/lib-sweep-coverage/top-up-4657.json` claims the new module;
-  `worker/deno/tests/lib_sweep_coverage_test.ts` (39 tests at head, not changed by this PR).
+  `worker/deno/tests/lib_sweep_coverage_test.ts` (39 tests at head, not changed
+  by this PR).
 - The ledger's `sweptAt` points to the merge base on `origin/main`, rather than
   a temporary feature-branch checkpoint, so it survives a squash merge.
 - Full gate `./quality.sh` at the head after the PR #4849 review fixes: every
@@ -183,9 +185,9 @@ flowchart TD
   touch (they also failed on #4786's run).
 - Mutation survivors (PR #4849): `fleet_pr_babysitter.ts` `verdict?.unavailable`
   guard carried a redundant `unavailable === undefined` operand (the result is
-  `unavailable ?? outage` either way), so the operand was removed; the
-  `finish` initial value was never read (the publication callback always runs
-  or the sync throws), so it is now a definite-assignment declaration.
+  `unavailable ?? outage` either way), so the operand was removed; the `finish`
+  initial value was never read (the publication callback always runs or the sync
+  throws), so it is now a definite-assignment declaration.
 - Mutation check and the independent Spec/Standards reviewers were not run: the
   issue states no `## Acceptance Criteria` list.
 
