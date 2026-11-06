@@ -870,6 +870,37 @@ Deno.test("verifyResolvedTree - a test task that cannot fetch its remote modules
   }
 });
 
+const ESC = String.fromCharCode(0x1b);
+
+/** `deno task test` on a host with no DNS, with ANSI colour (Issue #4848). */
+const NPM_UNREACHABLE_ANSI_OUTPUT = [
+  `${ESC}[0m${ESC}[32mDownload${ESC}[0m https://registry.npmjs.org/playwright-core/-/playwright-core-1.60.0.tgz`,
+  `${ESC}[0m${ESC}[1m${ESC}[31merror${ESC}[0m: Failed caching npm package 'playwright-core@1.60.0'`,
+  "",
+  "Caused by:",
+  "    0: error sending request for url (https://registry.npmjs.org/playwright-core/-/playwright-core-1.60.0.tgz): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution",
+  "    1: client error (Connect)",
+  "    2: dns error",
+  "    3: failed to lookup address information: Temporary failure in name resolution",
+].join("\n");
+
+Deno.test("verifyResolvedTree - a test task whose npm packages the host cannot fetch is left to CI, as an Import failure is (Issue #4848)", async () => {
+  const { outcome } = await gate(
+    { check: "deno check", test: "deno test" },
+    (task) =>
+      Promise.resolve(
+        task.task === "test"
+          ? { code: 1, output: NPM_UNREACHABLE_ANSI_OUTPUT }
+          : { code: 0, output: "" },
+      ),
+  );
+
+  assertEquals(outcome.status, "passed", outcome.detail);
+  assertStringIncludes(outcome.suiteLeftToCi ?? "", "deno task test");
+  assertStringIncludes(outcome.suiteLeftToCi ?? "", "dns error");
+  assertStringIncludes(outcome.detail, "left to the milestone PR");
+});
+
 Deno.test("verifyResolvedTree - a manifest check the host could not fetch is left to CI while the unit suite still runs (Issue #4422)", async () => {
   const seen: string[] = [];
   const { outcome } = await gate(

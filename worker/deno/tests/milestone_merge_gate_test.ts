@@ -743,6 +743,154 @@ Deno.test("detectRemoteModuleGap - a 50000-line output is read in linear time to
   assertEquals(detectRemoteModuleGap(noImport.join("\n")), undefined);
 });
 
+// ---------------------------------------------------------------------------
+// Issue #4848 — an npm package or registry the host cannot reach is the same
+// host fault, and the output may carry ANSI colour
+// ---------------------------------------------------------------------------
+
+const ESC = String.fromCharCode(0x1b);
+
+const NPM_TARBALL_URL =
+  "https://registry.npmjs.org/playwright-core/-/playwright-core-1.60.0.tgz";
+
+/** The verbatim output of `deno task check` on a host with no DNS (Issue #4848). */
+const NPM_UNREACHABLE_ANSI_OUTPUT = [
+  `${ESC}[0m${ESC}[32mDownload${ESC}[0m ${NPM_TARBALL_URL}`,
+  `${ESC}[0m${ESC}[1m${ESC}[31merror${ESC}[0m: Failed caching npm package 'playwright-core@1.60.0'`,
+  "",
+  "Caused by:",
+  `    0: error sending request for url (${NPM_TARBALL_URL}): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution`,
+  "    1: client error (Connect)",
+  "    2: dns error",
+  "    3: failed to lookup address information: Temporary failure in name resolution",
+].join("\n");
+
+/** The same output with the colour stripped. */
+const NPM_UNREACHABLE_OUTPUT = [
+  `Download ${NPM_TARBALL_URL}`,
+  "error: Failed caching npm package 'playwright-core@1.60.0'",
+  "",
+  "Caused by:",
+  `    0: error sending request for url (${NPM_TARBALL_URL}): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution`,
+  "    1: client error (Connect)",
+  "    2: dns error",
+  "    3: failed to lookup address information: Temporary failure in name resolution",
+].join("\n");
+
+Deno.test("detectRemoteModuleGap - ANSI-coloured npm output the host could not fetch names the npm package and the cause (Issue #4848)", () => {
+  const gap = detectRemoteModuleGap(NPM_UNREACHABLE_ANSI_OUTPUT);
+  assertEquals(gap?.url, "npm:playwright-core@1.60.0");
+  assertStringIncludes(gap!.cause, "dns error");
+});
+
+Deno.test("detectRemoteModuleGap - the same npm output without colour is the same gap (Issue #4848)", () => {
+  const gap = detectRemoteModuleGap(NPM_UNREACHABLE_OUTPUT);
+  assertEquals(gap?.url, "npm:playwright-core@1.60.0");
+  assertStringIncludes(gap!.cause, "dns error");
+});
+
+Deno.test("detectRemoteModuleGap - a metadata fetch that failed to connect names its registry URL (Issue #4848)", () => {
+  const gap = detectRemoteModuleGap(
+    'error: Failed loading https://registry.invalid/playwright-core for package "playwright-core"\n' +
+      "    0: error sending request for url (https://registry.invalid/playwright-core): client error (Connect): unsuccessful tunnel\n",
+  );
+  assertEquals(gap?.url, "https://registry.invalid/playwright-core");
+  assertStringIncludes(gap!.cause, "unsuccessful tunnel");
+});
+
+Deno.test("detectRemoteModuleGap - an ANSI-coloured legacy import failure with a tunnel cause is still a gap, and the cause is plain (Issue #4848)", () => {
+  const gap = detectRemoteModuleGap(
+    `${ESC}[1m${ESC}[31merror${ESC}[0m: Import 'https://esm.sh/x' failed.\n` +
+      `${ESC}[31m    0: error sending request for url (https://esm.sh/x): client error (Connect): unsuccessful tunnel${ESC}[0m\n`,
+  );
+  assertEquals(gap?.url, "https://esm.sh/x");
+  assertEquals(
+    gap?.cause,
+    "0: error sending request for url (https://esm.sh/x): client error (Connect): unsuccessful tunnel",
+  );
+});
+
+Deno.test("detectRemoteModuleGap - an npm package whose tarball failed its integrity check is an ordinary failure, not a gap (Issue #4848)", () => {
+  assertEquals(
+    detectRemoteModuleGap(
+      "error: Failed caching npm package 'x@1'\n\n" +
+        "Caused by:\n" +
+        "    0: integrity check failed for tarball: x@1\n" +
+        "    1: expected sha512-AAAA, got sha512-BBBB\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectRemoteModuleGap - an npm metadata URL that answered 404 is an ordinary failure, not a gap (Issue #4848)", () => {
+  assertEquals(
+    detectRemoteModuleGap(
+      'error: Failed loading https://registry.npmjs.org/x for package "x"\n' +
+        "Caused by:\n" +
+        "    0: HTTP status client error (404 Not Found) for url (https://registry.npmjs.org/x)\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectRemoteModuleGap - connection words with no npm failure header are not a gap (Issue #4848)", () => {
+  assertEquals(
+    detectRemoteModuleGap(
+      "Caused by:\n    0: dns error\n    1: client error (Connect)\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectRemoteModuleGap - a cause line before the npm failure header is not a gap (Issue #4848)", () => {
+  assertEquals(
+    detectRemoteModuleGap(
+      "    0: dns error\n" +
+        "error: Failed caching npm package 'playwright-core@1.60.0'\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectRemoteModuleGap - a 200000-character quote run is capped and is no gap (Issue #4848)", () => {
+  const hostile = "' ".repeat(100_000);
+  assertEquals(hostile.length, 200_000);
+  assertEquals(detectRemoteModuleGap(hostile), undefined);
+  assertEquals(
+    detectRemoteModuleGap(`${hostile}\n${NPM_UNREACHABLE_OUTPUT}`)?.url,
+    "npm:playwright-core@1.60.0",
+  );
+});
+
+Deno.test("detectRemoteModuleGap - an npm spec with no closing quote over 100000 characters is no gap (Issue #4848)", () => {
+  const unclosed = `error: Failed caching npm package '${"a".repeat(100_000)}`;
+  assertEquals(detectRemoteModuleGap(unclosed), undefined);
+});
+
+Deno.test("checkMergedTree - a Deno check whose npm packages the host cannot fetch is left to CI, not failed (Issue #4848)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/web/deno.json`, JSON.stringify({}));
+    await writeFile(`${dir}/lib/deno.json`, JSON.stringify({}));
+    const seen: string[] = [];
+    const outcome = await checkMergedTree(dir, (project) => {
+      seen.push(project.dir);
+      return Promise.resolve(
+        project.dir.endsWith("/web")
+          ? { code: 1, output: NPM_UNREACHABLE_ANSI_OUTPUT }
+          : { code: 0, output: "Check file:///x.ts" },
+      );
+    });
+    assertEquals(seen.length, 2, "both Deno projects are checked");
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertStringIncludes(
+      outcome.checkLeftToCi ?? "",
+      "could not fetch its remote modules",
+    );
+    assertStringIncludes(outcome.checkLeftToCi ?? "", "dns error");
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4422)");
+  });
+});
+
 Deno.test("checkMergedTree - the repository's own check is refused when its manifest is a symbolic link (Issue #4659)", async () => {
   await withTempDir(async (dir) => {
     // The default runner probes the manifests it is handed; a link in their
