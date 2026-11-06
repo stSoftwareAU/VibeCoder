@@ -70,14 +70,14 @@ this PR delivers the last one named in their summaries.
   journalled at its head, round-trip through `prActionsFromAuditJournal` and
   `recoveryBlockersFor` (wait to the next confirmed repair; wait to the PR end
   cap), unverified chain measures nothing, disabled journal and no audit
-  directory write nothing, invalid input refused (including a non-string repo
-  or head that stringifies to a valid one), a successful append logs nothing,
-  a refused append is logged, and an unexpected error is logged for both an
+  directory write nothing, invalid input refused (including a non-string repo or
+  head that stringifies to a valid one), a successful append logs nothing, a
+  refused append is logged, and an unexpected error is logged for both an
   `Error` and a non-`Error` thrown value. Passed (12).
-- Mutation survivors closed: dropping the `typeof` operand on the repo (line
-  61) or head (line 73), negating the `!result.ok` check (line 92) and negating
-  the `instanceof Error` ternary (line 101) in `babysitter_attempt_audit.ts`
-  each turn at least one of those tests red.
+- Mutation survivors closed: dropping the `typeof` operand on the repo (line 61)
+  or head (line 73), negating the `!result.ok` check (line 92) and negating the
+  `instanceof Error` ternary (line 101) in `babysitter_attempt_audit.ts` each
+  turn at least one of those tests red.
 - New tests in `worker/deno/tests/babysitter_fix_orchestration_test.ts`
   (infrastructure failure, code failure, no change, owner-class failure, a
   successful push, a failure after a confirmed push). The file passed (42).
