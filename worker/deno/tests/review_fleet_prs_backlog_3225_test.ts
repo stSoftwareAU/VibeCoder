@@ -580,25 +580,25 @@ for (const refusal of ["", "gh api: HTTP 422: expected head sha\nmore"]) {
         undefined,
         { auditDir: `${dir}/audit`, runId: "reviewer:test" },
       );
-    assertEquals(
-      result,
-      refusal
-        ? {
-          updated: false,
-          error: `Failed to update branch for PR #20 in acme/app: ${
-            refusal.split("\n")[0]
-          }`,
-        }
-        : { updated: true },
-    );
-    assertEquals(f.calls.filter((args) => args.includes("PUT")), [[
-      "api",
-      "--method",
-      "PUT",
-      "repos/acme/app/pulls/20/update-branch",
-      "-f",
-      `expected_head_sha=${f.head}`,
-    ]]);
+      assertEquals(
+        result,
+        refusal
+          ? {
+            updated: false,
+            error: `Failed to update branch for PR #20 in acme/app: ${
+              refusal.split("\n")[0]
+            }`,
+          }
+          : { updated: true },
+      );
+      assertEquals(f.calls.filter((args) => args.includes("PUT")), [[
+        "api",
+        "--method",
+        "PUT",
+        "repos/acme/app/pulls/20/update-branch",
+        "-f",
+        `expected_head_sha=${f.head}`,
+      ]]);
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
@@ -653,9 +653,16 @@ Deno.test("moving test merge leaves the reviewed head retryable", async () => {
       headSha: f.head,
       baseRefName: "main",
     };
-    const result = await updateBranchOnce(pr, dir, f.gh, {
-      fleetAuthors: [...FLEET],
-    }, undefined, { auditDir: `${dir}/audit`, runId: "reviewer:test" });
+    const result = await updateBranchOnce(
+      pr,
+      dir,
+      f.gh,
+      {
+        fleetAuthors: [...FLEET],
+      },
+      undefined,
+      { auditDir: `${dir}/audit`, runId: "reviewer:test" },
+    );
     assertEquals(result, undefined);
     assertEquals(await readMemory(dir, FAILED_FILE), {});
     assertEquals(f.calls.some((args) => args.includes("PUT")), false);
@@ -697,14 +704,16 @@ Deno.test("updateBranchOnce journals the reviewer branch refresh with PR and hea
     }));
     assertEquals(rows.ok, true);
     if (!rows.ok) throw rows.error;
-    assertEquals(rows.value.map((entry) => [
-      entry.component,
-      entry.actionKind,
-      entry.repo,
-      entry.prNumber,
-      entry.headSha,
-      entry.outcome,
-    ]), [["reviewer", "branch-update", "acme/app", 20, f.head, "success"]]);
+    assertEquals(
+      rows.value.map((entry) => [
+        entry.component,
+        entry.actionKind,
+        entry.repo,
+        entry.prNumber,
+        entry.outcome,
+      ]),
+      [["reviewer", "branch-update", "acme/app", 20, "success"]],
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

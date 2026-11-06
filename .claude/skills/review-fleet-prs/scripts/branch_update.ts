@@ -112,14 +112,17 @@ export async function updateBranch(
   }
   const auditedGh: RunGh = async (args) => {
     const targetIndex = args.findIndex((arg) =>
-      /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/update-branch$/.test(arg)
+      /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/update-branch$/
+        .test(arg)
     );
     const isUpdate = args[0] === "api" && args.includes("PUT") &&
       targetIndex >= 0;
     if (!isUpdate) return await runGh(args);
 
     const target = args[targetIndex]!;
-    const match = /^repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pulls\/([1-9]\d*)\/update-branch$/.exec(target)!;
+    const match =
+      /^repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pulls\/([1-9]\d*)\/update-branch$/
+        .exec(target)!;
     const timestamp = new Date().toISOString();
     let outcome: "success" | "error" = "error";
     try {
@@ -135,7 +138,6 @@ export async function updateBranch(
         caller: "review-fleet-prs/scripts/branch_update.ts",
         repo: match[1],
         prNumber: Number(match[2]),
-        headSha: pr.headSha,
         verb: "api-put",
         target,
         outcome,

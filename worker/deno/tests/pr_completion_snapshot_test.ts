@@ -1134,7 +1134,7 @@ function emptyFixture(extra: Partial<Fixture> = {}): Fixture {
   return { calls: [], ...extra };
 }
 
-Deno.test("collect - many commits require one CI listing and budget exhaustion is reported", async () => {
+Deno.test("collect - every observed commit head gets CI checks and budget exhaustion is reported", async () => {
   const fixture = emptyFixture({
     pulls: {
       [REPO]: [pull(1, { merged_at: null, closed_at: null, state: "open" })],
@@ -1158,7 +1158,7 @@ Deno.test("collect - many commits require one CI listing and budget exhaustion i
     complete.calls.filter((path) =>
       path.includes("/actions/runs") || path.includes("/check-runs")
     ).length,
-    1,
+    92,
   );
   const snapshot = await collectPrCompletionSnapshot(
     options(fakeGh(fixture), { ciCallBudget: 1 }),
@@ -1221,7 +1221,10 @@ Deno.test("collect - incomplete CI is reflected in delivered metrics and coverag
   const snapshot = await collectPrCompletionSnapshot(
     options(fakeGh(fixture), { ciCallBudget: 5 }),
   );
-  assertEquals(snapshot.input.ciIncompletePrs, [{ repo: REPO, prNumber: 2 }]);
+  assertEquals(snapshot.input.ciIncompletePrs, [
+    { repo: REPO, prNumber: 1 },
+    { repo: REPO, prNumber: 2 },
+  ]);
   const runs = snapshot.input.ciRuns.filter((run) =>
     run.kind === "workflow_run"
   );
@@ -2315,7 +2318,7 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
     ),
   );
   assert(
-    !fixture.calls.some((path) =>
+    fixture.calls.some((path) =>
       path.startsWith("repos/org/repo/commits/sha2/check-runs?")
     ),
   );
@@ -2604,6 +2607,107 @@ Deno.test("collect - blocker intervals are closed or open as the events dictate"
   ]);
   const report = buildPrCompletionReport(snapshot.input);
   assertEquals(report.waiting.openIntervals, 2);
+});
+
+Deno.test("collect - recorded repair recovery and reviewer refresh waits are attributed", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "repair",
+        actionId: "repair-failed",
+        repo: REPO,
+        prNumber: 1,
+        outcome: "error",
+        timestamp: "2026-10-20T00:00:00Z",
+      },
+      {
+        verb: "git-push",
+        actionKind: "repair",
+        actionId: "repair-retried",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "api-put",
+        target: `repos/${REPO}/pulls/1/update-branch`,
+        actionKind: "branch-update",
+        component: "reviewer",
+        actionId: "reviewer-refresh",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:00:00Z",
+      },
+    ]);
+    const fixture = emptyFixture({
+      pulls: {
+        [REPO]: [pull(1, {
+          state: "open",
+          merged_at: null,
+          closed_at: null,
+        })],
+      },
+      commits: {
+        [pk(1)]: [
+          commit("sha1", "2026-10-20T00:00:00Z"),
+          commit(
+            "sha2",
+            "2026-10-20T01:01:00Z",
+          ),
+        ],
+      },
+      workflowRuns: {
+        sha2: {
+          total_count: 1,
+          workflow_runs: [{ id: 77, run_attempt: 1, workflow_id: 9 }],
+        },
+      },
+      workflowAttempts: {
+        "77:1": {
+          id: 77,
+          workflow_id: 9,
+          run_attempt: 1,
+          status: "completed",
+          conclusion: "success",
+          run_started_at: "2026-10-20T01:02:00Z",
+          updated_at: "2026-10-20T01:20:00Z",
+        },
+      },
+    });
+
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), { auditDirs: [dir] }),
+    );
+
+    assertEquals(
+      snapshot.input.blockers.filter((row) =>
+        row.blocker === "repair-recovery" || row.blocker === "branch-refresh"
+      ),
+      [
+        {
+          repo: REPO,
+          prNumber: 1,
+          blocker: "repair-recovery",
+          startedAt: "2026-10-20T00:00:00Z",
+          endedAt: "2026-10-20T00:30:00Z",
+        },
+        {
+          repo: REPO,
+          prNumber: 1,
+          blocker: "branch-refresh",
+          startedAt: "2026-10-20T01:00:00Z",
+          endedAt: "2026-10-20T01:20:00Z",
+        },
+      ],
+    );
+    assertEquals(
+      snapshot.input.actions.find((action) =>
+        action.actionId === "reviewer-refresh"
+      )?.githubEvents,
+      [{ kind: "repair", id: "sha2" }],
+    );
+  });
 });
 
 Deno.test("collect - a CI failure fixed by a later run of the same workflow on a new head closes when that run completes", async () => {
@@ -2994,6 +3098,16 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
       headSha: "sha2",
       recordedAt: "2026-10-24T00:00:00Z",
     });
+    for (const event of ["discovered", "eligible", "processed"] as const) {
+      await appendPrDiscoveryEvent(`${dir}/pr-discovery-events.jsonl`, {
+        event,
+        hostId: "host-a",
+        repo: REPO,
+        prNumber: 6,
+        headSha: "sha6",
+        recordedAt: "2026-10-26T00:00:00Z",
+      });
+    }
     for (
       const [number, event] of [
         [2, "discovered"],
@@ -3058,6 +3172,7 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
             created_at: "2026-10-20T00:00:00Z",
             labels: [{ name: "needs-human" }],
           }),
+          pull(6, { ...open, created_at: "2026-09-01T00:00:00Z" }),
         ],
       },
     });
@@ -3109,15 +3224,22 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
         eligibilityConfirmed: false,
         processed: false,
       },
+      {
+        prNumber: 6,
+        discovered: true,
+        eligibilityConfirmed: true,
+        processed: true,
+      },
     ]);
     assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, true);
     assertEquals(snapshot.input.rollout!.verifiedAt, "2026-10-25T12:00:00Z");
     const report = buildPrCompletionReport(snapshot.input);
-    assertEquals(report.rollout.eligibleStrandedPrs, 4);
-    assertEquals(report.rollout.discoveredPrs, 2);
-    assertEquals(report.rollout.eligibleEventPrs, 2);
-    assertEquals(report.rollout.rediscoveredPrs, 2);
-    assertEquals(report.rollout.processedPrs, 1);
+    assertEquals(report.cohort.prCount, 5);
+    assertEquals(report.rollout.eligibleStrandedPrs, 5);
+    assertEquals(report.rollout.discoveredPrs, 3);
+    assertEquals(report.rollout.eligibleEventPrs, 3);
+    assertEquals(report.rollout.rediscoveredPrs, 3);
+    assertEquals(report.rollout.processedPrs, 2);
     assertEquals(report.rollout.notRediscoveredPrs, 2);
     assertEquals(report.rollout.unknownDiscoveryPrs, 0);
   });
