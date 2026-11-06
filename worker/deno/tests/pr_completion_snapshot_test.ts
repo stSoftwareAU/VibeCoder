@@ -2116,6 +2116,22 @@ Deno.test("collect - no audit directory means the actions are not complete", asy
   );
 });
 
+Deno.test("collect - coverage does not claim babysitter retry cooldowns are unmeasured", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(emptyFixture()), { auditDirs: [dir] }),
+    );
+    assertEquals(
+      snapshot.coverageNotes.some((note) =>
+        note.includes(
+          "babysitter retry cooldowns without a repair push are not measured",
+        )
+      ),
+      false,
+    );
+  });
+});
+
 Deno.test("collect - an action repeated across two audit directories is counted once", async () => {
   await withDir(async (hostA) => {
     await withDir(async (hostB) => {

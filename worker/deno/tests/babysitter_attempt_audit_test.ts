@@ -61,7 +61,11 @@ async function withJournal(
   });
   _resetAuditCaches();
   const negative = spec.disabled || spec.noAuditDir;
-  await fn(dir, negative ? { env, baseDir: dir } : { env });
+  try {
+    await fn(dir, negative ? { env, baseDir: dir } : { env });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 }
 
 /** Read the journal back through the production path. */

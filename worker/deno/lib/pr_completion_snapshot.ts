@@ -1951,9 +1951,6 @@ export async function collectPrCompletionSnapshot(
   const humanActorIds = new Set(options.humanActorIds ?? []);
 
   const notes: string[] = [];
-  notes.push(
-    "babysitter retry cooldowns without a repair push are not measured as repair-recovery waits; follow-up: #4658",
-  );
   if (options.expected.inventory === undefined) {
     notes.push(
       "no expected host/component deployment inventory supplied; per-host rollout status is unavailable",

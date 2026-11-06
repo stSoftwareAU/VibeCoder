@@ -56,7 +56,9 @@ Docs: `docs/INTERNALS.md`, **PR completion evidence report** section (the
 `repair-recovery` paragraph) now describes the journalled attempt. The
 neighbouring passage on failed fleet attempts remaining verified history is
 still true (`pr_completion_report.ts` counts only confirmed repairs as fix
-rounds).
+rounds). The collector no longer reports the obsolete blanket claim that
+babysitter retry cooldowns without a push are unmeasured; missing audit
+directories remain visible in coverage notes.
 
 ## Acceptance Criteria
 
@@ -89,3 +91,9 @@ this PR delivers the last one named in their summaries.
   `deno fmt`, `deno lint` and `deno check` passed on the changed TypeScript.
 - Callers checked: `fix` is the only caller of `journalBabysitterAttempt`; the
   new `journalAttempt` dependency defaults to it, so production passes nothing.
+- Review fix: the obsolete unconditional cooldown coverage note is removed;
+  missing audit evidence remains reported. Coverage:
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - coverage does not claim babysitter retry cooldowns are unmeasured`
+  and `worker/deno/tests/pr_completion_snapshot_test.ts::collect - no audit directory means the actions are not complete`.
+  The new assertion failed before the fix. The attempt audit tests now remove
+  their temporary directories in a `finally` block.
