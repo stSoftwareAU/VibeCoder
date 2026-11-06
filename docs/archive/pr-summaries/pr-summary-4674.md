@@ -41,18 +41,20 @@ flowchart LR
   the trusted runner's credentials (token-free environment, scratch HOME, denied
   config, Keychains, `securityd`, App key and read-only `.git`).
 - Merge with main: the incoming runner validation wraps main's
-  `finishBabysitterRepair` through `validateWithSingleRepair`; `validateAndCommit`
-  runs the runner gate first, then the hooks-disabled add/check/commit with
-  main's `checkBaseline` and `mergedBase`. `buildRepairPrompt` now takes
+  `finishBabysitterRepair` through `validateWithSingleRepair`;
+  `validateAndCommit` runs the runner gate first, then the hooks-disabled
+  add/check/commit with main's `checkBaseline` and `mergedBase`.
+  `buildRepairPrompt` now takes
   `(…, rtkInstruction, mergedBase?, runnerFailure?, platform)`.
 - Unavailable sandbox: the earlier "release the attempt" behaviour became a
   `capability` retry record, because main's retry state now owns that decision.
 
 ### Undiscoverable Facts
 
-- The nested `sandbox-exec` is refused on the agent hosts (`sandbox_apply:
-  Operation not permitted`), so `deno task test:browser` has to run on a Mac that
-  permits it.
+- The nested `sandbox-exec` is refused on the agent hosts
+  (`sandbox_apply:
+  Operation not permitted`), so `deno task test:browser` has
+  to run on a Mac that permits it.
 - Main's `takePrBodyProposal` no longer carries a closing reference over; the
   closing-reference guard lives in `guardPrBodyProposal`.
 
@@ -65,8 +67,16 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **partial** — "Browser checks named by the target repository's gate run during a babysitter repair without weakening the credential boundary from #4593." — evidence: `worker/deno/tests/fleet_babysitter_validation_test.ts`, `worker/deno/tests/fleet_babysitter_repair_test.ts` — reason: unit and CLI coverage pass; the live macOS run (`worker/deno/integration/fleet_babysitter_browser.ts`) has not executed on a Mac.
-- **missing** — "automated evidence that the credential boundary remains intact" on macOS — reason: needs a macOS host that permits `sandbox-exec`; this Linux worker cannot run it.
+- **partial** — "Browser checks named by the target repository's gate run during
+  a babysitter repair without weakening the credential boundary from #4593." —
+  evidence: `worker/deno/tests/fleet_babysitter_validation_test.ts`,
+  `worker/deno/tests/fleet_babysitter_repair_test.ts` — reason: unit and CLI
+  coverage pass; the live macOS run
+  (`worker/deno/integration/fleet_babysitter_browser.ts`) has not executed on a
+  Mac.
+- **missing** — "automated evidence that the credential boundary remains intact"
+  on macOS — reason: needs a macOS host that permits `sandbox-exec`; this Linux
+  worker cannot run it.
 
 ## Test Plan
 
@@ -84,7 +94,8 @@ flowchart LR
   `worker/deno/tests/babysitter_fix_orchestration_test.ts` (36): passed.
 - Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`: the
   closing-reference carry-over assertion on `takeRepairPrBodyProposal`.
-  - Obsolete: main moved closing-reference preservation to `guardPrBodyProposal`.
-    Still covered by: `worker/deno/tests/babysitter_pr_body_guard_test.ts`.
+  - Obsolete: main moved closing-reference preservation to
+    `guardPrBodyProposal`. Still covered by:
+    `worker/deno/tests/babysitter_pr_body_guard_test.ts`.
 - Twinned rules checked: no second production validation implementation; the
   platform prompt tests run for both platforms.
