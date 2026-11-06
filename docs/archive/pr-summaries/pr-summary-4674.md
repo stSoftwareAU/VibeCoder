@@ -54,8 +54,13 @@ validation. Part of #4674 while the native macOS run is pending. Version bump:
   exercised browser and containment paths and has been removed. Process queries
   remain covered with native probes.
 - The third native attempt showed the profile's process-information allowance
-  also exposed `kern.procargs2` for a host process. The profile now explicitly
-  denies that environment query while retaining same-sandbox process queries.
+  also exposed `kern.procargs2` for a host process, and a `sysctl-read` deny did
+  not stop it: on macOS that query is gated by `process-info-pidinfo`. The
+  profile now denies `process-info-pidinfo` and then allows it only for
+  `(target same-sandbox)`, retaining same-sandbox process queries. The
+  integration test still carries temporary `[DEBUG-c7e1]` profile-variant
+  probes (`fixed`, `oldProfile`, `listpids`, `moreInfo`) to confirm this on the
+  next native run; they are removed once that run is read.
 - The repository's existing browser integration now supplies unsandboxed
   positive controls for the credential files, symlink targets, Keychains,
   `securityd`, unrelated Mach lookup, process environment, and `.git` write
@@ -129,8 +134,14 @@ sequenceDiagram
   runtime probe aborted under the native `sandbox-exec` profile; native
   process-query probes and actual Chromium rendering remain covered by the
   integration test.
-- `worker/deno/tests/fleet_babysitter_validation_test.ts` asserts the explicit
-  `kern.procargs2` deny; removing the rule makes this policy assertion fail.
+- `worker/deno/tests/fleet_babysitter_validation_test.ts` — 37 passed at the
+  head. The profile test asserts `(deny process-info-pidinfo)` is immediately
+  followed by `(allow process-info-pidinfo (target same-sandbox))`, and the
+  `(allow process…` rule list includes that scoped allow. Obsolete: the earlier
+  `(deny sysctl-read (sysctl-name "kern.procargs2"))` assertion, because the
+  profile no longer emits that rule; replaced by the pidinfo deny/allow-order
+  assertion above. Removing the deny from `buildBabysitterValidationProfile`
+  makes the assertion fail (the deny index is -1).
 - `worker/deno/tests/fleet_pr_babysitter_test.ts` — 120 passed on the final
   prompt code. CI, review and conflict prompts are checked for Darwin and Linux;
   Linux names unavailable checks for CI and does not direct checks to a runner
@@ -172,8 +183,15 @@ sequenceDiagram
   `failed to allocate a guard page: Invalid
   argument`, and access to a host
   process environment through `kern.procargs2`. The first two test issues were
-  corrected; the last now has an explicit deny and needs confirmation on the
-  next native run, so no Mac pass is claimed.
+  corrected; the last now has a `process-info-pidinfo` deny (head commit
+  1013662b9) and needs confirmation on the next native run, so no Mac pass is
+  claimed.
+- Push for PR #4837 head (CI fix for `validate-scripts / validate`, summary
+  freshness gate #3768): the summary is rewritten for the head, which changed
+  `worker/deno/integration/fleet_babysitter_browser.ts` and
+  `worker/deno/lib/fleet_babysitter_validation.ts`, and the stale profile unit
+  assertions are updated as above. Only the Linux unit run was possible here;
+  the native macOS result for the pidinfo deny is not yet read.
 - No `deno.lock` change. Updated `SECURITY.md`, threat-model control C37 and the
   fleet babysitter manual to describe checkpoint recovery and the macOS CI
   evidence path.

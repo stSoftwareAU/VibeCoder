@@ -1121,6 +1121,7 @@ Deno.test("validation scopes process inspection and sysctls and permits gate res
     "(allow process-exec)",
     "(allow process-fork)",
     "(allow process-info* (target same-sandbox))",
+    "(allow process-info-pidinfo (target same-sandbox))",
   ]);
   const sysctls = rules.filter((rule) => rule.startsWith("(allow sysctl-read"));
   for (
@@ -1148,10 +1149,13 @@ Deno.test("validation scopes process inspection and sysctls and permits gate res
     '(allow sysctl-read (sysctl-name-prefix "kern.proc.pid."))',
     '(allow sysctl-read (sysctl-name-prefix "kern.proc.pgrp."))',
   ]);
-  assert(
-    rules.includes(
-      '(deny sysctl-read (sysctl-name "kern.procargs2"))',
-    ),
+  // kern.procargs2 is gated by process-info-pidinfo, so the deny precedes the
+  // same-sandbox allow that restores this sandbox's own process queries.
+  const denyPidinfo = rules.indexOf("(deny process-info-pidinfo)");
+  assert(denyPidinfo >= 0);
+  assertEquals(
+    rules.indexOf("(allow process-info-pidinfo (target same-sandbox))"),
+    denyPidinfo + 1,
   );
   for (const rule of sysctls.filter((rule) => !prefixes.includes(rule))) {
     assertMatch(
