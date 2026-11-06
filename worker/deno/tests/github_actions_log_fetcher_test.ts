@@ -570,3 +570,44 @@ Deno.test("summariseActionsLog - anchors on a TAP 'not ok' line (Issue #1579)", 
 
   assertStringIncludes(excerpt, "not ok 263 research_docs_removed_modules");
 });
+
+Deno.test("resolveActionsJobId - a check run whose details URL names only the workflow run picks the failing job from it", async () => {
+  const result = await resolveActionsJobId({
+    repo: "o/r",
+    checkRunId: "555",
+    checkName: "quality",
+    ghFn: fakeGh({
+      "repos/o/r/check-runs/555": JSON.stringify({
+        app: { slug: "github-actions" },
+        details_url: "https://github.com/o/r/actions/runs/123",
+      }),
+      "repos/o/r/actions/runs/123/jobs?per_page=100": JSON.stringify({
+        jobs: [
+          { id: 1, name: "lint", conclusion: "success" },
+          { id: 2, name: "quality", conclusion: "failure" },
+        ],
+      }),
+    }),
+  });
+
+  assertEquals(result, { kind: "job", jobId: 2 });
+});
+
+Deno.test("resolveActionsJobId - a check run whose details URL names no Actions job or run is not applicable", async () => {
+  const result = await resolveActionsJobId({
+    repo: "o/r",
+    checkRunId: "555",
+    checkName: "quality",
+    ghFn: fakeGh({
+      "repos/o/r/check-runs/555": JSON.stringify({
+        app: { slug: "github-actions" },
+        details_url: "https://github.com/o/r/pull/9",
+      }),
+    }),
+  });
+
+  assertEquals(result, {
+    kind: "not-applicable",
+    reason: "check run has no GitHub Actions job URL",
+  });
+});

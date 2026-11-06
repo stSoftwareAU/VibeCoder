@@ -107,6 +107,12 @@ interface StubOptions {
   identity?: "error";
   /** Workflow path per run id, overriding {@link DEFAULT_RUN_PATHS}. */
   runPaths?: Record<string, string>;
+  /**
+   * A pull request merged as the base head (Issue #4680): its head commit, the
+   * tree that commit and the base head carry, and the conclusion of the same
+   * workflow's run on that commit.
+   */
+  mergedPr?: { treeMatches: boolean; conclusion: string; runPath?: string };
   /** State the blocking issue reports. */
   blockerState?: "OPEN" | "CLOSED";
   /** Comments already on the pull request. */
@@ -192,6 +198,36 @@ function makeGhRunner(
         options.baseCheckRuns ??
           baseCheckRunsPayload("failure", options.checkName ?? "semgrep"),
       );
+    }
+
+    // Tree-equivalent evidence from the PR merged as the base head (#4680).
+    if (options.mergedPr !== undefined) {
+      const merged = options.mergedPr;
+      if (endpoint === `repos/org/repo/commits/${BASE_SHA}/pulls?per_page=5`) {
+        return Promise.resolve(JSON.stringify([{ head_sha: PR_HEAD_SHA }]));
+      }
+      if (endpoint === `repos/org/repo/commits/${BASE_SHA}`) {
+        return Promise.resolve(`${"1".repeat(40)}\n`);
+      }
+      if (endpoint === `repos/org/repo/commits/${PR_HEAD_SHA}`) {
+        const tree = merged.treeMatches ? "1" : "2";
+        return Promise.resolve(`${tree.repeat(40)}\n`);
+      }
+      if (
+        endpoint ===
+          `repos/org/repo/commits/${PR_HEAD_SHA}/check-runs?per_page=100`
+      ) {
+        return Promise.resolve(
+          baseCheckRunsPayload(
+            merged.conclusion,
+            options.checkName ?? "semgrep",
+            {
+              headSha: PR_HEAD_SHA,
+              runId: 703,
+            },
+          ),
+        );
+      }
     }
 
     // The failing check run's identity: its name, app and run (Issue #4680).
@@ -847,4 +883,42 @@ Deno.test("processCiFailure - after a hold, a later scan that finds the base run
   assertStringIncludes(body, `depends-on="${BLOCKER}"`);
   assertEquals(attemptOutcomes(body), []);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure - a PR-only workflow red on the merged PR's identical tree defers, charging no attempt and paging no human (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseCheckRuns: NO_BASE_RUNS,
+    mergedPr: { treeMatches: true, conclusion: "failure" },
+  });
+
+  assertEquals(captured.comments.length, 1);
+  const body = captured.comments[0] ?? "";
+  // The existing dependency mechanism: the deferral marker the scanner reads
+  // back, and so resumes from once the blocker closes (Issue #1881).
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertStringIncludes(body, `depends-on="${BLOCKER}"`);
+  assertEquals(attemptOutcomes(body), []);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure - a PR-only workflow green on the merged PR's identical tree refutes the claim and takes the ordinary charged path (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseCheckRuns: NO_BASE_RUNS,
+    mergedPr: { treeMatches: true, conclusion: "success" },
+  });
+
+  const body = captured.comments[0] ?? "";
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+});
+
+Deno.test("processCiFailure - a merged PR whose tree differs from the base head is not evidence, so the PR-only claim is held (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseCheckRuns: NO_BASE_RUNS,
+    mergedPr: { treeMatches: false, conclusion: "failure" },
+  });
+
+  const body = captured.comments[0] ?? "";
+  assertEquals(attemptOutcomes(body), ["base-unverified"]);
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
 });

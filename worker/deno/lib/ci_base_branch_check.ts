@@ -21,6 +21,11 @@
  *   current answer, so the highest-id completed run of the check on the branch
  *   head decides. An earlier red left in the list does not outvote a green
  *   re-run.
+ * - **Tree-equivalent evidence.** A PR-only workflow never runs on the branch
+ *   head. When the head has no applicable run, the runs of the same workflow on
+ *   the head of a pull request merged as the head count, but only for a commit
+ *   whose tree is identical to the head's. Any failed lookup there leaves the
+ *   reading unverified.
  * - **Identity, not name.** A run counts only when its app matches the failing
  *   check's app and, for GitHub Actions, its workflow path matches the failing
  *   check's path. A same-named check from elsewhere is not evidence. When the
@@ -45,10 +50,20 @@ export interface CheckIdentity {
 
 /** What the base branch's runs of the failing check show. */
 export type BaseBranchCheckEvidence =
-  /** The latest completed run on the branch head concluded `failure`. */
-  | { state: "red"; sha: string; runId: number }
+  /**
+   * The latest completed run on the branch head concluded `failure`. `sha` is
+   * the commit the run is for; `treeEquivalentTo` is set only when that is not
+   * the branch head but a commit with the identical tree (Issue #4680).
+   */
+  | { state: "red"; sha: string; runId: number; treeEquivalentTo?: string }
   /** The latest completed run on the branch head concluded `success`. */
-  | { state: "green"; sha: string; runId: number; conclusion: string }
+  | {
+    state: "green";
+    sha: string;
+    runId: number;
+    conclusion: string;
+    treeEquivalentTo?: string;
+  }
   /** No completed run of an applicable check (e.g. a PR-only workflow). */
   | { state: "no-run" }
   /** An applicable run exists only for a commit other than the branch head. */
@@ -84,6 +99,10 @@ const NO_VERDICT_CONCLUSIONS: ReadonlySet<string> = new Set([
   "action_required",
   "stale",
 ]);
+
+/** The jq filter that shapes a check-runs payload into {@link BranchCheckRun} rows. */
+const CHECK_RUNS_JQ =
+  "{check_runs: [.check_runs[] | {id, name, status, conclusion, head_sha, app_slug: .app.slug, details_url}]}";
 
 /** A full 40-character commit SHA, as the commits endpoint returns it. */
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
@@ -164,7 +183,7 @@ export async function readBaseBranchCheck(
       // could never fix.
       `repos/${repo}/commits/${branch}/check-runs?per_page=100`,
       "--jq",
-      "{check_runs: [.check_runs[] | {id, name, status, conclusion, head_sha, app_slug: .app.slug, details_url}]}",
+      CHECK_RUNS_JQ,
     ]);
   } catch (error: unknown) {
     return unavailable(
@@ -197,7 +216,28 @@ export async function readBaseBranchCheck(
   const latestOnHead = newest(
     candidates.filter((candidate) => candidate.headSha === headSha),
   );
-  if (latestOnHead !== undefined) return verdictOf(latestOnHead);
+  const headVerdict = latestOnHead === undefined
+    ? undefined
+    : verdictOf(latestOnHead);
+  if (headVerdict !== undefined && headVerdict.state !== "no-run") {
+    return headVerdict;
+  }
+
+  // Issue #4680: a PR-only workflow never runs on the branch head itself, but
+  // it ran on the head of the pull request that was merged into it. When that
+  // commit has the identical tree, its run of the same workflow is the same
+  // code under the same workflow: commit-bound evidence, not a name match.
+  const equivalent = await readTreeEquivalentVerdict({
+    repo,
+    headSha,
+    failing,
+    ghCommandFn,
+  });
+  if (equivalent !== undefined) return equivalent;
+
+  // A cancelled or skipped head run says nothing about the code, and the
+  // identical-tree evidence above did not answer either.
+  if (headVerdict !== undefined) return headVerdict;
 
   const latestElsewhere = newest(candidates);
   if (latestElsewhere === undefined) return { state: "no-run" };
@@ -206,6 +246,126 @@ export async function readBaseBranchCheck(
     evidenceSha: latestElsewhere.headSha,
     baseSha: headSha,
   };
+}
+
+/** Most pull-request heads consulted for tree-equivalent evidence. */
+const MAX_EQUIVALENT_HEADS = 5;
+
+/**
+ * A verdict from a run of the failing check on a commit whose tree is the
+ * branch head's tree (Issue #4680).
+ *
+ * The pull requests merged as the branch head (`commits/{sha}/pulls`) are
+ * listed; for each head commit other than the branch head, the commit's tree
+ * is compared with the branch head's tree. Only an identical tree counts, and
+ * only a completed run of the same check, app and workflow on that commit.
+ * The newest such run decides, exactly as on the branch head. A conclusion
+ * that says nothing about the code (`no-run`, `unavailable`) is skipped.
+ *
+ * A failure of any lookup here is not a verdict: the caller keeps the
+ * unverified reading it already had.
+ *
+ * @returns `red` or `green` with `treeEquivalentTo` set, or undefined when no
+ *   such run exists or a lookup failed.
+ */
+async function readTreeEquivalentVerdict(options: {
+  repo: string;
+  headSha: string;
+  failing: CheckIdentity;
+  ghCommandFn: (args: string[]) => Promise<string>;
+}): Promise<BaseBranchCheckEvidence | undefined> {
+  const { repo, headSha, failing, ghCommandFn } = options;
+  try {
+    const headTree = await readTreeSha(repo, headSha, ghCommandFn);
+    const pulls = parseRecordList(
+      await ghCommandFn([
+        "api",
+        `repos/${repo}/commits/${headSha}/pulls?per_page=${MAX_EQUIVALENT_HEADS}`,
+        "--jq",
+        "[.[] | {head_sha: .head.sha}]",
+      ]),
+    );
+    const heads = new Set<string>();
+    for (const pull of pulls) {
+      const sha = stringOrNull(pull.head_sha);
+      if (sha !== null && SHA_PATTERN.test(sha) && sha !== headSha) {
+        heads.add(sha);
+      }
+    }
+
+    let best: Candidate | undefined;
+    for (const sha of heads) {
+      if (await readTreeSha(repo, sha, ghCommandFn) !== headTree) continue;
+      const runs = parseCheckRuns(
+        await ghCommandFn([
+          "api",
+          `repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+          "--jq",
+          CHECK_RUNS_JQ,
+        ]),
+      );
+      const found = (await applicableCandidates(
+        runs,
+        failing,
+        repo,
+        ghCommandFn,
+      )).filter((candidate) =>
+        candidate.headSha === sha && isVerdict(candidate.run)
+      );
+      const latest = newest(found);
+      if (
+        latest !== undefined &&
+        (best === undefined || latest.run.id > best.run.id)
+      ) {
+        best = latest;
+      }
+    }
+    if (best === undefined) return undefined;
+    const verdict = verdictOf(best);
+    if (verdict.state !== "red" && verdict.state !== "green") return undefined;
+    return { ...verdict, treeEquivalentTo: headSha };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a run's conclusion is `success` or `failure`. */
+function isVerdict(run: BranchCheckRun): boolean {
+  return run.conclusion === SUCCESS_CONCLUSION ||
+    run.conclusion === FAILURE_CONCLUSION;
+}
+
+/**
+ * Read a commit's tree SHA.
+ *
+ * @throws When the call fails or the answer is not a SHA.
+ */
+async function readTreeSha(
+  repo: string,
+  sha: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<string> {
+  const tree = (await ghCommandFn([
+    "api",
+    `repos/${repo}/commits/${sha}`,
+    "--jq",
+    ".commit.tree.sha",
+  ])).trim();
+  if (!SHA_PATTERN.test(tree)) throw new Error("commit tree is not a SHA");
+  return tree;
+}
+
+/**
+ * Parse a body that must be a JSON array of objects.
+ *
+ * @throws When the body is not JSON or not an array.
+ */
+function parseRecordList(raw: string): Record<string, unknown>[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("response is not an array");
+  return parsed.filter((row): row is Record<string, unknown> =>
+    row !== null && typeof row === "object"
+  );
 }
 
 /**

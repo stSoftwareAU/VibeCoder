@@ -475,9 +475,16 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   Actions, workflow file. Only a completed run of that same check is evidence; a
   same-named check from another workflow is not. `success` counts as green and
   `failure` as red; cancelled, skipped, neutral, timed-out and action-required
-  runs count as no evidence. [`_resolveBaseBranchDeferral`](../../worker/deno/lib/pr_ci_processor.ts)
+  runs count as no evidence. When the base head itself has no run of the check
+  (a PR-only workflow), the worker lists the pull requests merged as that head
+  (`commits/{sha}/pulls`, at most five) and, for each head commit whose **tree
+  is identical** to the base head's tree, reads that commit's runs of the same
+  check from the same app and workflow file. That is commit-bound evidence from
+  the same workflow on the same code, and its newest `success` or `failure`
+  decides as above. [`_resolveBaseBranchDeferral`](../../worker/deno/lib/pr_ci_processor.ts)
   then applies the verdict:
-  - **Red** — the latest matching run on the base head failed. The deferral
+  - **Red** — the latest matching run on the base head (or on a merged pull
+    request's head with an identical tree) failed. The deferral
     stands as before: the diagnosis is posted **once** with a
     `vibe-ci-fix-deferred` marker, **no `needs-human`** is applied, **no attempt
     is charged**, and the PR resumes automatically when the blocking issue closes
@@ -499,11 +506,15 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   A base-level defect belongs on the base branch, even when this PR could patch
   it locally: it is not fixed inside this unrelated PR, and no workflow or check
   is deleted or disabled to turn it green. A failure this PR's own diff
-  introduced stays this PR's to fix. The worker has no isolated baseline
-  reproduction, so a PR-only check's base defect stays unverified until the base
-  branch itself has a run of that check; the agent says what it observed, which
-  is not permission to patch the base defect or to delete or disable a workflow
-  inside this PR.
+  introduced stays this PR's to fix. The worker does not re-run the check on the
+  base tree itself: a PR-only check's base defect is verified by a run of the
+  same workflow on a commit with the base head's tree, and stays unverified
+  (held) when no such run exists, for example when the pull request merged with
+  a different tree or through a merge queue. In that case the agent says what it
+  observed, which is not permission to patch the base defect or to delete or
+  disable a workflow inside this PR. A verified base defect uses the existing
+  deferral: the `Depends on` issue and `vibe-ci-fix-deferred` marker, and the PR
+  resumes automatically when that issue closes (Issue #1881, Issue #1849).
 
   A failure already carrying a fleet-authored deferral marker posts nothing at
   all; if that marker's blocker has since **closed** and the agent names it
@@ -624,7 +635,7 @@ The base-branch verdicts, on the claimed `Depends on` check (Issue #4680):
 
 ```mermaid
 flowchart TD
-    A["agent claims 'Depends on o/r#N'<br/>after reproducing it on the base tree"] --> E{"completed run of the same check<br/>on the base head, same app and workflow file?"}
+    A["agent claims 'Depends on o/r#N'<br/>after reproducing it on the base tree"] --> E{"completed run of the same check on the base head<br/>or on a merged PR head with the same tree,<br/>same app and workflow file?"}
     E -->|"success, or no base ref"| O["ordinary no-changes reply<br/>+ attempt charged"]
     E -->|"failure"| R["deferred: diagnosis posted once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
     E -->|"no run, stale run,<br/>cancelled or skipped,<br/>lookup failed"| H{"fewer than two holds<br/>for this signature?"}

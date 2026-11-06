@@ -46,6 +46,12 @@ interface GhFixture {
   paths?: Record<string, Answer>;
   /** Body of `repos/{repo}/check-runs/{id}`. */
   checkRun?: Answer;
+  /** Body of `repos/{repo}/commits/{head}/pulls` (merged PR head SHAs). */
+  pulls?: Answer;
+  /** Tree SHA per commit SHA, from `repos/{repo}/commits/{sha}`. */
+  trees?: Record<string, Answer>;
+  /** Check-runs body per commit SHA, from `commits/{sha}/check-runs`. */
+  commitRuns?: Record<string, Answer>;
 }
 
 /**
@@ -73,6 +79,19 @@ function route(endpoint: string, fixture: GhFixture): Answer | undefined {
   }
   if (endpoint === `repos/${REPO}/commits/${BRANCH}/check-runs?per_page=100`) {
     return fixture.runs ?? payload([]);
+  }
+  if (endpoint === `repos/${REPO}/commits/${HEAD_SHA}/pulls?per_page=5`) {
+    return fixture.pulls;
+  }
+  const treeMatch = /^repos\/org\/repo\/commits\/([0-9a-f]{40})$/.exec(
+    endpoint,
+  );
+  if (treeMatch !== null) return fixture.trees?.[treeMatch[1] ?? ""];
+  const commitRunsMatch =
+    /^repos\/org\/repo\/commits\/([0-9a-f]{40})\/check-runs\?per_page=100$/
+      .exec(endpoint);
+  if (commitRunsMatch !== null) {
+    return fixture.commitRuns?.[commitRunsMatch[1] ?? ""];
   }
   const runMatch = /^repos\/org\/repo\/actions\/runs\/(\d+)$/.exec(endpoint);
   if (runMatch !== null) {
@@ -484,4 +503,264 @@ Deno.test("readCheckIdentity - a check run with no app slug is an error, never a
     !result.ok ? result.error.message : "",
     "has no app slug",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Pinning the request shapes and edge cases (Issue #4680)
+// ---------------------------------------------------------------------------
+
+Deno.test("readBaseBranchCheck - the check-runs call shapes app slug and details URL through --jq", async () => {
+  const calls: string[][] = [];
+  await read({ runs: payload([{ id: 1, conclusion: "success" }]) }, calls);
+
+  const call = calls.find((args) =>
+    args[1] === `repos/${REPO}/commits/${BRANCH}/check-runs?per_page=100`
+  );
+  assertEquals(call?.[2], "--jq");
+  assertStringIncludes(call?.[3] ?? "", "app_slug: .app.slug");
+  assertStringIncludes(call?.[3] ?? "", "details_url");
+  assertStringIncludes(call?.[3] ?? "", "head_sha");
+});
+
+Deno.test("readBaseBranchCheck - a non-Actions check with no workflow path is read by app, not refused", async () => {
+  const calls: string[][] = [];
+  const evidence = await readBaseBranchCheck({
+    repo: REPO,
+    branch: BRANCH,
+    failing: { name: CHECK, appSlug: "some-other-ci", workflowPath: null },
+    ghCommandFn: ghStub({
+      runs: payload([{ id: 9, conclusion: "failure", app: "some-other-ci" }]),
+    }, calls),
+  });
+
+  assertEquals(evidence, { state: "red", sha: HEAD_SHA, runId: 9 });
+});
+
+Deno.test("readBaseBranchCheck - a check-runs body that is JSON but not an object is unavailable", async () => {
+  assertUnavailable(await read({ runs: "null" }), "not an object");
+  assertUnavailable(await read({ runs: "42" }), "not an object");
+});
+
+Deno.test("readCheckIdentity - the check-run call shapes name, app slug and details URL through --jq", async () => {
+  const calls: string[][] = [];
+  await readCheckIdentity({
+    repo: REPO,
+    checkRunId: "23",
+    checkName: CHECK,
+    ghCommandFn: ghStub({
+      checkRun: JSON.stringify({
+        name: CHECK,
+        app_slug: "some-other-ci",
+        details_url: null,
+      }),
+    }, calls),
+  });
+
+  assertEquals(calls[0]?.[1], `repos/${REPO}/check-runs/23`);
+  assertEquals(calls[0]?.[2], "--jq");
+  assertEquals(calls[0]?.[3], "{name, app_slug: .app.slug, details_url}");
+});
+
+// ---------------------------------------------------------------------------
+// Tree-equivalent evidence for a PR-only workflow (Issue #4680)
+// ---------------------------------------------------------------------------
+
+const PR_HEAD = "c".repeat(40);
+const OTHER_PR_HEAD = "d".repeat(40);
+const TREE = "e".repeat(40);
+const OTHER_TREE = "f".repeat(40);
+
+/** A fixture where the merged PR's head has the same tree as the base head. */
+function prOnlyFixture(
+  prRuns: RunSpec[],
+  overrides: GhFixture = {},
+): GhFixture {
+  return {
+    runs: payload([]),
+    pulls: JSON.stringify([{ head_sha: PR_HEAD }]),
+    trees: { [HEAD_SHA]: `${TREE}\n`, [PR_HEAD]: `${TREE}\n` },
+    commitRuns: {
+      [PR_HEAD]: payload(prRuns.map((run) => ({ headSha: PR_HEAD, ...run }))),
+    },
+    ...overrides,
+  };
+}
+
+Deno.test("readBaseBranchCheck - a PR-only check red on the merged PR's identical tree is red, bound to that commit", async () => {
+  const evidence = await read(
+    prOnlyFixture([{ id: 70, conclusion: "failure" }]),
+  );
+
+  assertEquals(evidence, {
+    state: "red",
+    sha: PR_HEAD,
+    runId: 70,
+    treeEquivalentTo: HEAD_SHA,
+  });
+});
+
+Deno.test("readBaseBranchCheck - a PR-only check green on the merged PR's identical tree is green", async () => {
+  const evidence = await read(
+    prOnlyFixture([{ id: 70, conclusion: "success" }]),
+  );
+
+  assertEquals(evidence, {
+    state: "green",
+    sha: PR_HEAD,
+    runId: 70,
+    conclusion: "success",
+    treeEquivalentTo: HEAD_SHA,
+  });
+});
+
+Deno.test("readBaseBranchCheck - the newest run on the identical tree wins", async () => {
+  const evidence = await read(
+    prOnlyFixture([
+      { id: 70, conclusion: "failure" },
+      { id: 75, conclusion: "success" },
+    ]),
+  );
+
+  assertEquals(evidence.state, "green");
+});
+
+Deno.test("readBaseBranchCheck - a merged PR whose tree differs is not evidence", async () => {
+  const evidence = await read(
+    prOnlyFixture([{ id: 70, conclusion: "failure" }], {
+      trees: { [HEAD_SHA]: TREE, [PR_HEAD]: OTHER_TREE },
+    }),
+  );
+
+  assertEquals(evidence, { state: "no-run" });
+});
+
+Deno.test("readBaseBranchCheck - a same-named check from another workflow on the identical tree is not evidence", async () => {
+  const evidence = await read(
+    prOnlyFixture([{ id: 70, conclusion: "failure", workflowRunId: 555 }], {
+      paths: { "555": ".github/workflows/codeql.yml" },
+    }),
+  );
+
+  assertEquals(evidence, { state: "no-run" });
+});
+
+Deno.test("readBaseBranchCheck - a run on the identical tree that is cancelled gives no verdict", async () => {
+  const evidence = await read(
+    prOnlyFixture([{ id: 70, conclusion: "cancelled" }]),
+  );
+
+  assertEquals(evidence, { state: "no-run" });
+});
+
+Deno.test("readBaseBranchCheck - a run recorded for another commit than the merged PR head is ignored", async () => {
+  const evidence = await read(
+    prOnlyFixture([{ id: 70, conclusion: "failure", headSha: OLD_SHA }]),
+  );
+
+  assertEquals(evidence, { state: "no-run" });
+});
+
+Deno.test("readBaseBranchCheck - the newest run across several identical-tree PR heads wins", async () => {
+  const evidence = await read(
+    prOnlyFixture([{ id: 70, conclusion: "failure" }], {
+      pulls: JSON.stringify([
+        { head_sha: PR_HEAD },
+        { head_sha: OTHER_PR_HEAD },
+        { head_sha: HEAD_SHA },
+        { head_sha: "not-a-sha" },
+      ]),
+      trees: {
+        [HEAD_SHA]: TREE,
+        [PR_HEAD]: TREE,
+        [OTHER_PR_HEAD]: TREE,
+      },
+      commitRuns: {
+        [PR_HEAD]: payload([{
+          id: 70,
+          conclusion: "failure",
+          headSha: PR_HEAD,
+        }]),
+        [OTHER_PR_HEAD]: payload([
+          { id: 80, conclusion: "success", headSha: OTHER_PR_HEAD },
+        ]),
+      },
+    }),
+  );
+
+  assertEquals(evidence.state, "green");
+  assertEquals(evidence.state === "green" && evidence.runId, 80);
+});
+
+Deno.test("readBaseBranchCheck - a head-run verdict is never replaced by tree-equivalent evidence", async () => {
+  const calls: string[][] = [];
+  const evidence = await read(
+    prOnlyFixture([{ id: 70, conclusion: "success" }], {
+      runs: payload([{ id: 5, conclusion: "failure" }]),
+    }),
+    calls,
+  );
+
+  assertEquals(evidence, { state: "red", sha: HEAD_SHA, runId: 5 });
+  assertEquals(calls.some((args) => args[1]?.includes("/pulls")), false);
+});
+
+Deno.test("readBaseBranchCheck - an unreadable tree lookup keeps the reading unverified", async () => {
+  const noRun = await read(
+    prOnlyFixture([{ id: 70, conclusion: "failure" }], {
+      trees: { [HEAD_SHA]: new Error("boom") },
+    }),
+  );
+  assertEquals(noRun, { state: "no-run" });
+
+  const stale = await read(
+    prOnlyFixture([{ id: 70, conclusion: "failure" }], {
+      runs: payload([{ id: 3, conclusion: "failure", headSha: OLD_SHA }]),
+      pulls: new Error("no pulls"),
+    }),
+  );
+  assertEquals(stale, {
+    state: "stale",
+    evidenceSha: OLD_SHA,
+    baseSha: HEAD_SHA,
+  });
+});
+
+Deno.test("readBaseBranchCheck - malformed pulls, tree and run bodies keep the reading unverified", async () => {
+  const bad: GhFixture[] = [
+    { pulls: "{}" },
+    { pulls: "not json" },
+    { trees: { [HEAD_SHA]: "nonsense", [PR_HEAD]: TREE } },
+    { trees: { [HEAD_SHA]: TREE, [PR_HEAD]: "nonsense" } },
+    { commitRuns: { [PR_HEAD]: "not json" } },
+  ];
+  for (const overrides of bad) {
+    const evidence = await read(
+      prOnlyFixture([{ id: 70, conclusion: "failure" }], overrides),
+    );
+    assertEquals(evidence, { state: "no-run" });
+  }
+});
+
+Deno.test("readBaseBranchCheck - at most five merged PR heads are requested", async () => {
+  const calls: string[][] = [];
+  await read(prOnlyFixture([{ id: 70, conclusion: "failure" }]), calls);
+
+  const call = calls.find((args) => args[1]?.includes("/pulls"));
+  assertEquals(call?.[1], `repos/${REPO}/commits/${HEAD_SHA}/pulls?per_page=5`);
+  assertEquals(call?.[3], "[.[] | {head_sha: .head.sha}]");
+});
+
+Deno.test("readBaseBranchCheck - a cancelled head run leaves the identical-tree evidence to decide", async () => {
+  const evidence = await read(
+    prOnlyFixture([{ id: 70, conclusion: "failure" }], {
+      runs: payload([{ id: 5, conclusion: "cancelled" }]),
+    }),
+  );
+
+  assertEquals(evidence, {
+    state: "red",
+    sha: PR_HEAD,
+    runId: 70,
+    treeEquivalentTo: HEAD_SHA,
+  });
 });
