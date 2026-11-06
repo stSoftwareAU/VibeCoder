@@ -40,6 +40,7 @@ import {
   runRepositoryCommand,
 } from "./untrusted_gate_spawn.ts";
 import { stripJsonc } from "./jsonc.ts";
+import { stripAnsi } from "./github_actions_log_fetcher.ts";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
   shouldSkipEphemeralCargoBuild,
@@ -163,10 +164,15 @@ export interface MergeGateOutcome {
 
 /**
  * A Deno task that could not fetch a remote module because the host cannot
- * reach the module host (Issue #4422).
+ * reach the module host (Issue #4422), or an npm package or registry it could
+ * not reach (Issue #4848).
  */
 export interface RemoteModuleGap {
-  /** The `http(s)` URL the failed import named. */
+  /**
+   * The `http(s)` URL the failed import named; `npm:<spec>` for a failed npm
+   * package cache (e.g. `npm:playwright-core@1.60.0`); or the registry URL of a
+   * failed npm metadata load (Issue #4848).
+   */
   url: string;
   /** The trimmed output line that names the connection-class cause. */
   cause: string;
@@ -445,6 +451,24 @@ export function describeRustToolchainGap(
 const REMOTE_IMPORT_FAILED_RE = /^error: Import '(https?:\/\/[^'\s]+)' failed/;
 
 /**
+ * npm package-cache failure line, e.g.
+ * `error: Failed caching npm package 'playwright-core@1.60.0'` (Issue #4848).
+ * Anchored on the literal prefix; `[^'\s]+` is disjoint from the closing quote,
+ * so the match is linear.
+ */
+const REMOTE_NPM_CACHE_FAILED_RE =
+  /^error: Failed caching npm package '([^'\s]+)'/;
+
+/**
+ * npm metadata-load failure line, e.g.
+ * `error: Failed loading https://registry.npmjs.org/x for package "x"` (Issue
+ * #4848). Anchored on the literal prefix; `[^\s]+` is disjoint from the space
+ * that opens the literal ` for package "`, so the match is linear.
+ */
+const REMOTE_NPM_METADATA_FAILED_RE =
+  /^error: Failed loading (https?:\/\/[^\s]+) for package "/;
+
+/**
  * A connection-class cause: the host could not open a route to the module
  * host. Literal alternatives only, so the match is linear in the line length.
  */
@@ -552,32 +576,48 @@ export function withCargoOffline(args: string[]): string[] {
 
 /**
  * Detect a Deno task that could not fetch a remote module because the host
- * cannot reach the module host (Issue #4422).
+ * cannot reach the module host (Issue #4422), or an npm package or registry
+ * (Issue #4848).
  *
  * An unreachable host is an environment fault, like the Rust toolchain gap of
  * Issue #3255, not a bad resolution: a repair round cannot fix it. A gap is
- * reported only when an import-failure line names an `http(s)` URL and a
- * connection-class cause line follows it. An import that failed for any other
- * reason (a 404, a bad certificate, a checksum mismatch, a missing module, a
- * type error) is an ordinary failure and returns undefined.
+ * reported only when a failure header names the remote and a connection-class
+ * cause line follows it. The headers are the legacy `error: Import '<url>'
+ * failed`, the npm package-cache `error: Failed caching npm package '<spec>'`
+ * (reported as `npm:<spec>`), and the npm metadata `error: Failed loading <url>
+ * for package "<name>"`. Each line is read with ANSI colour stripped, so a
+ * coloured `error` prefix matches as a plain one (Issue #4848). An import or
+ * package that failed for any other reason (a 404, a bad certificate, a
+ * checksum mismatch, a missing module, a type error) is an ordinary failure and
+ * returns undefined.
  *
- * @param output - The raw task output (untrimmed)
- * @returns The gap, or undefined when no connection-class cause follows an
- *   import failure
+ * @param output - The raw task output (untrimmed, possibly ANSI-coloured)
+ * @returns The gap, or undefined when no connection-class cause follows a
+ *   failure header
  */
 export function detectRemoteModuleGap(
   output: string,
 ): RemoteModuleGap | undefined {
-  let importUrl: string | undefined;
+  let failedUrl: string | undefined;
   for (const rawLine of output.split("\n")) {
-    const line = rawLine.trim().slice(0, MAX_GAP_LINE_CHARS);
+    const line = stripAnsi(rawLine.slice(0, MAX_GAP_LINE_CHARS)).trim();
     const imported = REMOTE_IMPORT_FAILED_RE.exec(line);
     if (imported) {
-      importUrl = imported[1];
+      failedUrl = imported[1];
       continue;
     }
-    if (importUrl !== undefined && REMOTE_FETCH_CAUSE_RE.test(line)) {
-      return { url: importUrl, cause: line };
+    const cached = REMOTE_NPM_CACHE_FAILED_RE.exec(line);
+    if (cached) {
+      failedUrl = `npm:${cached[1]}`;
+      continue;
+    }
+    const loaded = REMOTE_NPM_METADATA_FAILED_RE.exec(line);
+    if (loaded) {
+      failedUrl = loaded[1];
+      continue;
+    }
+    if (failedUrl !== undefined && REMOTE_FETCH_CAUSE_RE.test(line)) {
+      return { url: failedUrl, cause: line };
     }
   }
   return undefined;
