@@ -14,8 +14,10 @@
  * its internal network and proxy from `startEgressSidecar`. A plan with a
  * proxy and no enforcement (Apple container) gets its run arguments from the
  * Apple helper, `apple_egress_launch_main.ts`. Both start after the preflight
- * and are stopped in a `finally`, so a repair never runs on an open network
- * and a failed teardown never hides the repair's own result.
+ * and are stopped in a `finally`. A failed start fails the repair instead of
+ * falling back to the runtime's open network, and a failed teardown never
+ * hides the repair's own result. The Apple helper may run in its advisory
+ * mode, where host/LAN isolation is not promised (see `apple_egress_launch.ts`).
  *
  * Not working end to end yet: the in-container `babysitter-repair` command is
  * not in the worker image. #4768 will add it, so a real run today fails
@@ -117,7 +119,7 @@ export interface BabysitterContainerDeps {
    */
   startAppleEgress?: (
     plan: ContainerLaunchPlan,
-    options: { baseDir: string; timeoutMs: number },
+    options: AppleEgressOptions,
   ) => Promise<BabysitterAppleEgress>;
   /** Starts the docker or podman egress sidecar (default: startEgressSidecar). */
   startSidecar?: (plan: ContainerLaunchPlan) => Promise<unknown>;
@@ -163,7 +165,10 @@ const BASE_ENV_ALLOWLIST = [
 
 const STDERR_CAP = 500;
 const INSPECT_TIMEOUT_MS = 30_000;
-/** The Apple helper, as run.sh's round_egress runs it (Issue #4769). */
+/**
+ * The Apple helper, as the review-fleet-prs run.sh's `round_egress` runs it
+ * (Issue #4769).
+ */
 const APPLE_HELPER_SCRIPT = "worker/deno/apple_egress_launch_main.ts";
 /** How long the helper may wait for its ready file. */
 const APPLE_READY_TIMEOUT_MS = 300_000;
@@ -184,6 +189,9 @@ const UNKNOWN_EXIT: Deno.CommandStatus = {
   code: -1,
   signal: null,
 };
+
+/** What the Apple helper needs: the checkout and the repair timeout. */
+type AppleEgressOptions = { baseDir: string; timeoutMs: number };
 
 /** A running Apple helper process and the state its stop needs. */
 interface AppleHelper {
@@ -511,7 +519,7 @@ function appleHelperEnv(env: BabysitterEnvReader): Record<string, string> {
  */
 async function spawnAppleHelper(
   dir: string,
-  options: { baseDir: string; timeoutMs: number },
+  options: AppleEgressOptions,
   env: BabysitterEnvReader,
 ): Promise<AppleHelper> {
   const logFile = await Deno.open(`${dir}/egress.log`, {
@@ -665,14 +673,27 @@ async function finishAppleHelper(
 }
 
 /**
+ * The setup error with the cleanup problems appended as `; cleanup: ...`, so a
+ * failed teardown is never dropped. The error itself when there are none.
+ */
+function withCleanup(error: unknown, problems: string[]): unknown {
+  if (problems.length === 0) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`${message}; cleanup: ${problems.join("; ")}`, {
+    cause: error,
+  });
+}
+
+/**
  * Writes the plan, starts the helper and waits for its ready file. On any
  * failure the helper is stopped first, so the log can be read and no helper
- * outlives the call.
+ * outlives the call. The stop is memoised, so the catch gets the same problems
+ * the `!ready` branch already awaited.
  */
 async function startAppleHelper(
   dir: string,
   plan: ContainerLaunchPlan,
-  options: { baseDir: string; timeoutMs: number },
+  options: AppleEgressOptions,
   tuning: {
     env?: BabysitterEnvReader;
     readyTimeoutMs?: number;
@@ -703,22 +724,22 @@ async function startAppleHelper(
     const runArgs = parseRunArgs(await Deno.readTextFile(readyFile));
     return appleHandle(helper, dir, runArgs);
   } catch (error) {
-    await stopAppleHelper(helper);
-    throw error;
+    throw withCleanup(error, await stopAppleHelper(helper));
   }
 }
 
 /**
  * Starts the Apple egress helper for a plan with a proxy and no enforcement
- * (Issue #4769), mirroring `round_egress` in run.sh. Writes the plan to a temp
- * directory, runs the helper, and waits for the run it writes. Throws
- * `egress setup failed: <cause>` when no ready file appears; the directory is
- * removed on every failure. `tuning` is for tests; the defaults are the real
- * ready timeout and poll interval.
+ * (Issue #4769), mirroring `round_egress` in the review-fleet-prs run.sh.
+ * Writes the plan to a temp directory, runs the helper, and waits for the run
+ * it writes. Throws `egress setup failed: <cause>` when no ready file appears;
+ * the directory is removed on every failure. Cleanup problems are appended as
+ * `; cleanup: ...`. `tuning` is for tests; the defaults are the real ready
+ * timeout and poll interval.
  */
 export async function babysitterStartAppleEgress(
   plan: ContainerLaunchPlan,
-  options: { baseDir: string; timeoutMs: number },
+  options: AppleEgressOptions,
   tuning: {
     env?: BabysitterEnvReader;
     readyTimeoutMs?: number;
@@ -729,8 +750,11 @@ export async function babysitterStartAppleEgress(
   try {
     return await startAppleHelper(dir, plan, options, tuning);
   } catch (error) {
-    await removeDir(dir);
-    throw error;
+    const failure = await removeDir(dir);
+    const problems = failure === undefined
+      ? []
+      : [redactSecrets(`could not remove ${dir}: ${failure}`)];
+    throw withCleanup(error, problems);
   }
 }
 
@@ -863,10 +887,8 @@ export async function runBabysitterRepairContainer(
   const imageExists = deps.imageExists ?? babysitterImageExists;
   const spawn = deps.spawn ?? babysitterSpawn;
   const startAppleEgress = deps.startAppleEgress ??
-    ((
-      plan: ContainerLaunchPlan,
-      options: { baseDir: string; timeoutMs: number },
-    ) => babysitterStartAppleEgress(plan, options, { env }));
+    ((plan: ContainerLaunchPlan, options: AppleEgressOptions) =>
+      babysitterStartAppleEgress(plan, options, { env }));
   const startSidecar = deps.startSidecar ??
     ((plan: ContainerLaunchPlan) => startEgressSidecar(plan));
   const stopSidecar = deps.stopSidecar ??

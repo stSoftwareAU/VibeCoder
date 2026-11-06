@@ -3,10 +3,12 @@
  * The Apple helper and the enforced sidecar start before the repair spawn and
  * stop after it, whatever the outcome. These tests cover the order of those
  * steps, the set-up and teardown failures, the preflight that runs before any
- * egress step, the key guard on the helper's arguments, and the default Apple
- * helper, which fails fast against an empty directory. Fake deps stand in for
- * the runtime and the egress steps, and record every call in one ordered event
- * list. No test sets a process environment variable: env readers are injected.
+ * egress step, the key guard on the helper's arguments, and the default egress
+ * wiring. Fake deps stand in for the runtime and the egress steps, and record
+ * every call in one ordered event list. The default Apple helper runs for real
+ * against a stub script in a temp checkout, and the default sidecar wiring runs
+ * for real where it refuses or returns before any runtime call. Every env reader
+ * is injected, so no test reads the host environment and none sets a variable.
  */
 
 import {
@@ -610,25 +612,302 @@ Deno.test("apple egress: helper args that mount the App key are refused, spawn n
   }
 });
 
-Deno.test("the default Apple helper fails fast with an egress set-up cause when its script is absent", async () => {
-  const empty = await Deno.makeTempDir();
+/**
+ * The stub helper, run in place of apple_egress_launch_main.ts. It mirrors the
+ * helper's contract: argv `<plan> <ready> <log-dir> <owner-pid>`, a ready file
+ * written atomically as NUL-terminated run arguments, and an exit on SIGTERM.
+ * The plan's `run=` tokens are its run arguments. Markers among them choose the
+ * stub's behaviour: `STUB_FAIL=attempt` or `STUB_FAIL=silent` fail before the
+ * ready file, and `STUB_EXIT=<n>` sets the exit code on SIGTERM. On SIGTERM it
+ * writes its pid to `stopped` in its working directory, the checkout.
+ */
+const STUB_HELPER_SOURCE = `
+const [planPath, readyPath, logDir] = Deno.args;
+const plan = await Deno.readTextFile(planPath);
+const runArgs = plan.split("\\u0000")
+  .filter((token) => token.startsWith("run="))
+  .map((token) => token.slice("run=".length));
+const marker = (key: string) =>
+  runArgs.find((token) => token.startsWith(key + "="))?.slice(key.length + 1);
+const say = (line: string) =>
+  Deno.stderr.writeSync(new TextEncoder().encode(line + "\\n"));
+if (marker("STUB_FAIL") === "attempt") {
+  say("[egress] attempt 1/3 failed: old");
+  say("[egress] attempt 3/3 failed: real cause");
+  say("at stack trace");
+  Deno.exit(1);
+}
+if (marker("STUB_FAIL") === "silent") Deno.exit(2);
+const exitCode = Number(marker("STUB_EXIT") ?? "0");
+const image = runArgs[runArgs.length - 1] ?? "";
+const ready = [
+  ...runArgs.slice(0, -1),
+  "--env",
+  "STUB_MODE=" + (Deno.env.get("VIBE_APPLE_EGRESS_MODE") ?? "unset"),
+  "--env",
+  "STUB_DIR=" + logDir,
+  "--env",
+  "STUB_PID=" + String(Deno.pid),
+  image,
+];
+Deno.addSignalListener("SIGTERM", () => {
+  Deno.writeTextFileSync(Deno.cwd() + "/stopped", String(Deno.pid));
+  Deno.exit(exitCode);
+});
+await Deno.writeTextFile(
+  readyPath + ".tmp",
+  ready.map((arg) => arg + "\\u0000").join(""),
+);
+await Deno.rename(readyPath + ".tmp", readyPath);
+await new Promise(() => {});
+`;
+
+/** A temp checkout holding the stub helper and the lock file its run names. */
+async function makeStubCheckout(): Promise<string> {
+  const base = await Deno.makeTempDir();
+  await Deno.mkdir(`${base}/worker/deno`, { recursive: true });
+  await Deno.writeTextFile(`${base}/worker/deno/deno.lock`, '{"version":"5"}');
+  await Deno.writeTextFile(
+    `${base}/worker/deno/apple_egress_launch_main.ts`,
+    STUB_HELPER_SOURCE,
+  );
+  return base;
+}
+
+/** The host environment for the default helper: PATH and HOME, and the mode if given. */
+function hostEnv(home: string, mode?: string): BabysitterEnvReader {
+  const values = new Map<string, string>([
+    ["PATH", "/usr/bin"],
+    ["HOME", home],
+  ]);
+  if (mode !== undefined) values.set("VIBE_APPLE_EGRESS_MODE", mode);
+  return (name) => values.get(name);
+}
+
+/** An Apple-kind plan whose run arguments carry the stub's markers as `--env` pairs. */
+function stubPlan(
+  root: string,
+  name: string,
+  markers: string[],
+): ContainerLaunchPlan {
+  const env = markers.flatMap((marker) => ["--env", marker]);
+  return {
+    ...fakePlan(root, name, "apple"),
+    runArgs: ["run", "--rm", "--name", name, ...env, IMAGE],
+  };
+}
+
+/** The value of the first argument with the given prefix. */
+function tokenWith(args: readonly string[], prefix: string): string {
+  const found = args.find((arg) => arg.startsWith(prefix));
+  if (found === undefined) throw new Error(`no argument ${prefix}...`);
+  return found.slice(prefix.length);
+}
+
+interface Wiring {
+  /** Deps with the plan, preflight and spawn faked; the egress steps are not. */
+  deps: Partial<BabysitterContainerDeps>;
+  built: string[];
+  spawns: Spawned[];
+  logged: string[];
+}
+
+/**
+ * Deps that leave the egress steps to the real defaults. The plan, the
+ * preflight and the spawn are faked. The log is not set, so the default log
+ * is used unless a test sets one.
+ */
+function defaultWiring(
+  env: BabysitterEnvReader,
+  plan: (containerName: string) => ContainerLaunchPlan,
+): Wiring {
+  const w: Wiring = { deps: {}, built: [], spawns: [], logged: [] };
+  w.deps = {
+    env,
+    onPath: () => Promise.resolve(true),
+    imageExists: () => Promise.resolve(true),
+    buildPlan: (_baseDir, containerName) => {
+      w.built.push(containerName);
+      return Promise.resolve(plan(containerName));
+    },
+    spawn: (runtime, args, opts) => {
+      w.spawns.push({
+        runtime,
+        args: [...args],
+        env: { ...opts.env },
+        timeoutMs: opts.timeoutMs,
+      });
+      return Promise.resolve(OK);
+    },
+  };
+  return w;
+}
+
+Deno.test("default Apple helper: the stub's ready args reach the spawn, and the helper is stopped and its temp dir removed", async () => {
+  const base = await makeStubCheckout();
+  const f = await makeFixture();
   try {
-    const plan = fakePlan("/unused", "vibe-babysitter-default", "apple");
-    const prefix = "egress setup failed: ";
-    const error = await assertRejects(
+    const w = defaultWiring(
+      hostEnv(`${f.root}/home`, "advisory"),
+      (name) => stubPlan(f.root, name, []),
+    );
+    const result = await runBabysitterRepairContainer(
+      { ...inputFor(f), baseDir: base },
+      {
+        ...w.deps,
+        log: (message) => {
+          w.logged.push(message);
+        },
+      },
+    );
+    assertEquals(result, { containerName: at(w.built, 0, "build") });
+    assertEquals(w.spawns.length, 1, "one repair spawn");
+    const args = at(w.spawns, 0, "spawn").args;
+    assert(
+      args.includes("STUB_MODE=advisory"),
+      `the helper's mode reaches the spawn, got ${JSON.stringify(args)}`,
+    );
+    const dir = tokenWith(args, "STUB_DIR=");
+    const pid = tokenWith(args, "STUB_PID=");
+    assertStringIncludes(dir, "vibe-babysitter-egress-");
+    assertEquals(
+      await Deno.readTextFile(`${base}/stopped`),
+      pid,
+      "the helper that was spawned is the one stopped by SIGTERM",
+    );
+    assertEquals(w.logged, [], "a clean teardown logs nothing");
+    await assertRejects(() => Deno.stat(dir), Deno.errors.NotFound);
+  } finally {
+    await Deno.remove(base, { recursive: true });
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("default Apple helper: a non-zero exit on stop is logged by the default log, and the repair still returns", async () => {
+  const base = await makeStubCheckout();
+  const f = await makeFixture();
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...data: unknown[]) => {
+    lines.push(data.map(String).join(" "));
+  };
+  try {
+    const w = defaultWiring(
+      hostEnv(`${f.root}/home`, "advisory"),
+      (name) => stubPlan(f.root, name, ["STUB_EXIT=3"]),
+    );
+    const result = await runBabysitterRepairContainer(
+      { ...inputFor(f), baseDir: base },
+      w.deps,
+    );
+    assertEquals(result, { containerName: at(w.built, 0, "build") });
+  } finally {
+    console.error = original;
+    await Deno.remove(base, { recursive: true });
+    await Deno.remove(f.root, { recursive: true });
+  }
+  assert(
+    lines.some((line) =>
+      line.includes(
+        "[babysitter] egress teardown: egress helper exited with code 3",
+      )
+    ),
+    `the teardown problem reaches the default log, got ${
+      JSON.stringify(lines)
+    }`,
+  );
+});
+
+Deno.test("default Apple helper: a failed start rejects with the last attempt's cause, not an earlier line or a trace", async () => {
+  const base = await makeStubCheckout();
+  const f = await makeFixture();
+  try {
+    const tuning = {
+      env: hostEnv(`${f.root}/home`, "advisory"),
+      readyTimeoutMs: 30_000,
+      pollMs: 20,
+    };
+    const options = { baseDir: base, timeoutMs: 60_000 };
+
+    const attempt = await assertRejects(
       () =>
         babysitterStartAppleEgress(
-          plan,
-          { baseDir: empty, timeoutMs: 60_000 },
-          { readyTimeoutMs: 30_000, pollMs: 20 },
+          stubPlan(f.root, "vibe-babysitter-attempt", ["STUB_FAIL=attempt"]),
+          options,
+          tuning,
         ),
       Error,
-      prefix,
+      "egress setup failed: ",
     );
-    assert(error.message.startsWith(prefix), `got ${error.message}`);
-    const cause = error.message.slice(prefix.length).trim();
-    assert(cause !== "", "the cause after the prefix is not empty");
+    assertStringIncludes(attempt.message, "real cause");
+    assert(
+      !attempt.message.includes("old"),
+      `an earlier attempt line leaked: ${attempt.message}`,
+    );
+    assert(
+      !attempt.message.includes("at stack trace"),
+      `a trace line leaked: ${attempt.message}`,
+    );
+
+    const silent = await assertRejects(
+      () =>
+        babysitterStartAppleEgress(
+          stubPlan(f.root, "vibe-babysitter-silent", ["STUB_FAIL=silent"]),
+          options,
+          tuning,
+        ),
+      Error,
+      "egress setup failed: ",
+    );
+    assertStringIncludes(
+      silent.message,
+      "no output; helper exited with code 2",
+    );
   } finally {
-    await Deno.remove(empty, { recursive: true });
+    await Deno.remove(base, { recursive: true });
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("default sidecar wiring: the real start refuses an enforced plan with empty keys before any spawn, and a control stops without a runtime", async () => {
+  const f = await makeFixture();
+  try {
+    const env = hostEnv(`${f.root}/home`);
+    // With no proxy name the default stop has nothing to run, so no runtime
+    // process is started on the host.
+    const keyless = (name: string): ContainerLaunchPlan => ({
+      ...fakePlan(f.root, name, "enforced"),
+      proxyName: "",
+    });
+
+    const refused = defaultWiring(env, keyless);
+    const error = await assertRejects(
+      () =>
+        runBabysitterRepairContainer(inputFor(f), {
+          ...refused.deps,
+          log: (message) => {
+            refused.logged.push(message);
+          },
+        }),
+      Error,
+      "missing a network or proxy key",
+    );
+    assertStringIncludes(error.message, "refusing to launch");
+    assertEquals(refused.spawns.length, 0, "nothing spawns");
+    assertEquals(refused.logged, [], "the default stop reports no problem");
+
+    const control = defaultWiring(env, keyless);
+    const result = await runBabysitterRepairContainer(inputFor(f), {
+      ...control.deps,
+      startSidecar: () => Promise.resolve(),
+      log: (message) => {
+        control.logged.push(message);
+      },
+    });
+    assertEquals(result, { containerName: at(control.built, 0, "build") });
+    assertEquals(control.spawns.length, 1, "the control spawns once");
+    assertEquals(control.logged, [], "the default stop reports no problem");
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
   }
 });
