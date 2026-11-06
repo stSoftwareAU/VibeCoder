@@ -61,6 +61,8 @@ flowchart TD
 - Operator documentation updated in `docs/MERGE.md` and
   `docs/workflows/pr-feedback.md` to describe same-pass retries and the
   diagnostic exception to conflict-only no-comment wording.
+- Registered the new refusal-streak module in the lib-sweep coverage ledger at
+  `docs/audits/lib-sweep-coverage/top-up-4831.json`.
 - No `deno.lock` dependency changes; Deno-native tooling was used.
 
 ## Reproduction
@@ -88,6 +90,8 @@ flowchart TD
 - `deno lint` on the eight changed TypeScript files — passed.
 - `deno check --frozen --lock=deno.lock` on the changed production modules — passed.
 - `deno fmt --check` on the eight changed TypeScript files — passed.
+- `deno task check:manifests` — passed, 847 tests, 0 failed, 1 ignored.
+- `./quality.sh` — failed the unit-test time-budget check: `tests/launcher_harness_reclaim_stub_test.ts`, `tests/parallel_safety_cap_test.ts` and `tests/standalone_turn_limit_3701_test.ts` exceeded 1 second; parallel and serial suites, lint, type check, formatting and remaining completed checks passed. Config integration and Checkov were skipped by the environment.
 
 ## Deno regression avoided
 
