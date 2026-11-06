@@ -164,63 +164,6 @@ int main(int argc, char **argv) {
           processBaseline.ok ? processBaseline.value.stderr : "probe failed"
         }`,
       );
-      // [DEBUG-c7e1] which profile variant denies kern.procargs2 for a host pid
-      {
-        const full = buildBabysitterValidationProfile(root, scratch, [
-          secret,
-          secretLink,
-          keychainDir,
-        ]);
-        const old = full.split("\n").filter((r) =>
-          !r.startsWith("(deny process-info-pidinfo") &&
-          !r.startsWith("(allow process-info-pidinfo")
-        ).join("\n");
-        const variants: Record<string, string> = {
-          fixed: full,
-          oldProfile: old,
-          listpids: `${full}\n(allow process-info-listpids)`,
-          moreInfo:
-            `${full}\n(allow process-info-listpids)\n(allow process-info-codesignature)\n(allow process-info-pidfdinfo)\n(allow process-info-dirtycontrol)\n(allow process-info-rusage)`,
-        };
-        const lsPs = await runWithTimeout("/bin/ls", ["-lO@e", "/bin/ps"], {
-          timeoutMs: 5000,
-        });
-        console.log(
-          `[DEBUG-c7e1] ps stat: ${lsPs.ok ? lsPs.value.stdout : "failed"}`,
-        );
-        await Deno.writeTextFile(
-          `${root}/variant-probe.sh`,
-          `#!/bin/bash
-/bin/sleep 20 &
-c=$!
-./process-probe "$1" 2>/dev/null; echo -n "host=$? "
-./process-probe "$c" 2>/dev/null; echo -n "child=$? "
-p=$(/bin/ps -o ppid= -p $$ 2>&1 | /usr/bin/tr -d ' '); echo -n "ps_ppid=$p/$PPID "
-/usr/bin/pgrep -P $$ | /usr/bin/grep -qx "$c"; echo -n "pgrep=$? "
-/bin/ps -o command= -p "$c" >/dev/null 2>&1; echo "ps_command=$?"
-kill "$c" 2>/dev/null
-`,
-          { mode: 0o700 },
-        );
-        for (const [label, body] of Object.entries(variants)) {
-          const path = `${scratch}/variant-${label}.sb`;
-          await Deno.writeTextFile(path, body, { mode: 0o600 });
-          const r = await runWithTimeout(
-            "/usr/bin/sandbox-exec",
-            ["-f", path, `${root}/variant-probe.sh`, String(markerProcess.pid)],
-            { timeoutMs: 15_000, quiet: false, cwd: root },
-          );
-          console.log(
-            `[DEBUG-c7e1] ${label}: ${
-              r.ok
-                ? `code=${r.value.code} out=${
-                  JSON.stringify(r.value.stdout)
-                } stderr=${JSON.stringify(r.value.stderr.slice(0, 300))}`
-                : "runner error"
-            }`,
-          );
-        }
-      }
       const restrictedLaunch = await runWithTimeout(
         "/usr/bin/sandbox-exec",
         ["-f", restrictedPath, chromium, ...browserArgs],
@@ -336,10 +279,10 @@ printf x | /usr/bin/xargs /bin/echo | /usr/bin/grep -q x
 if ./process-probe ${markerProcess.pid}; then exit 46; else test "$?" -eq 1; fi
 sleep 60 &
 child=$!
-test "$(/bin/ps -o ppid= -p $$ | /usr/bin/tr -d ' ')" = "$PPID"
 /usr/bin/pgrep -P $$ | /usr/bin/grep -qx "$child"
-# Records what command-line reads return; kern.procargs2 is denied on purpose.
-/bin/ps -o command= -p "$child" > command-line-probe.txt || true
+# /bin/ps is a setuid, restricted binary that cannot be executed under this
+# profile (exec fails with EPERM), so it is probed, not relied on.
+/bin/ps -o command= -p "$child" > command-line-probe.txt 2>&1 || echo "ps exit $?" >> command-line-probe.txt
 kill -TERM "$child"
 if wait "$child"; then exit 39; else test "$?" -eq 143; fi
 ./resource-probe
@@ -419,8 +362,8 @@ touch gate-ran
       );
       assert((await Deno.stat(`${root}/browser-check.png`)).size > 0);
       assert((await Deno.stat(`${root}/gate-ran`)).isFile);
-      // Observed result, not an assertion: gates reading command lines are
-      // documented as unable to pass, and this line records what ps printed.
+      // Observed result, not an assertion: gates running ps are documented as
+      // unable to pass, and this line records what ps printed.
       console.log(
         `ps -o command= under the runner profile: ${
           JSON.stringify(

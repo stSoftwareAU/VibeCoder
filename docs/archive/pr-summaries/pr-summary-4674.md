@@ -58,9 +58,11 @@ validation. Part of #4674 while the native macOS run is pending. Version bump:
   not stop it: on macOS that query is gated by `process-info-pidinfo`. The
   profile now denies `process-info-pidinfo` and then allows it only for
   `(target same-sandbox)`, retaining same-sandbox process queries. The
-  integration test still carries temporary `[DEBUG-c7e1]` profile-variant
-  probes (`fixed`, `oldProfile`, `listpids`, `moreInfo`) to confirm this on the
-  next native run; they are removed once that run is read.
+  fourth native run confirmed it: the host marker process was denied (probe
+  exit 1) while a same-sandbox child stayed queryable. The same run showed that
+  `/bin/ps` (setuid, restricted) cannot be executed under any profile variant
+  (`Operation not permitted`, exit 126) while `pgrep -P` works, so the
+  synthetic gate no longer requires `ps` and only records its outcome.
 - The repository's existing browser integration now supplies unsandboxed
   positive controls for the credential files, symlink targets, Keychains,
   `securityd`, unrelated Mach lookup, process environment, and `.git` write
@@ -195,3 +197,9 @@ sequenceDiagram
 - No `deno.lock` change. Updated `SECURITY.md`, threat-model control C37 and the
   fleet babysitter manual to describe checkpoint recovery and the macOS CI
   evidence path.
+- Push for PR #4837 head (CI fix for `validate-scripts / babysitter-browser`):
+  removed the temporary profile-variant probes and the synthetic gate's
+  `ps -o ppid=` assertion from `worker/deno/integration/fleet_babysitter_browser.ts`
+  (`ps` cannot execute in the sandbox); documented that in `SECURITY.md`,
+  THREAT-MODEL C37 and the fleet babysitter manual. Native macOS result for the
+  remaining gate steps is not yet read; this host is Linux.
