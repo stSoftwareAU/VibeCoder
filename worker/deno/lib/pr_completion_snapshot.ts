@@ -784,7 +784,9 @@ function gitHubEvents(
  * numeric GitHub actor id is explicitly configured as human evidence.
  *
  * A review or dismissal matches a verified fleet action of its kind within
- * {@link MATCH_WINDOW_MS} either side of it. A review's head is compared only
+ * {@link MATCH_WINDOW_MS} either side of it. Reviews, dismissals and merges are
+ * paired one-to-one by nearest gap (trusted actions first), not event order, so
+ * an earlier nearby review cannot take the action a later one recorded. A review's head is compared only
  * when both sides carry one, so a journalled review without a head still
  * matches a GitHub review that has a `commit_id`. A merge matches only a
  * confirmed merge action on the PR's head, within MATCH_WINDOW_MS either side
@@ -800,56 +802,91 @@ function unmatchedActions(
 ): TrustedPrAction[] {
   const { record } = observed;
   const out: TrustedPrAction[] = [];
-  for (const event of events) {
-    let best: TrustedPrAction | undefined;
-    let bestGap = Number.POSITIVE_INFINITY;
-    let bestTrust = -1;
+  /** The in-window pairing of one event with one action, or null. */
+  const pairing = (
+    event: GitHubEvent,
+    action: TrustedPrAction,
+  ): { gap: number; trust: number } | null => {
+    const isCommit = event.kind === "implementation" ||
+      event.kind === "repair";
+    if (action.outcome !== "confirmed") return null;
+    if (
+      event.headSha !== undefined && action.headSha !== undefined &&
+      event.headSha !== action.headSha
+    ) return null;
+    if (
+      isCommit && action.kind !== "branch-update" &&
+      !action.deliveredCommits?.includes(event.id)
+    ) return null;
+    const isPush = action.kind === "implementation" ||
+      action.kind === "repair" || action.kind === "milestone" ||
+      action.kind === "branch-update";
+    if (event.kind === "merge" && action.headSha !== record.headSha) {
+      return null;
+    }
+    if (
+      isCommit
+        ? !isPush || (action.kind === "branch-update" && used.has(action))
+        : used.has(action) || action.kind !== event.kind
+    ) {
+      return null;
+    }
+    const actionMs = utcMillis(action.timestamp, "action timestamp");
+    const gap = Math.abs(actionMs - event.ms);
+    const inWindow = event.kind === "merge"
+      ? gap <= MATCH_WINDOW_MS
+      : isCommit && action.kind === "branch-update"
+      ? gap <= MATCH_WINDOW_MS
+      : isCommit
+      ? actionMs >= event.ms &&
+        actionMs <=
+          Date.parse(
+              record.mergedAt ?? record.closedAt ?? record.observedAt!,
+            ) + LIFETIME_SLACK_MS
+      : gap <= MATCH_WINDOW_MS;
+    if (!inWindow) return null;
+    return { gap, trust: action.verified && action.actor === "fleet" ? 1 : 0 };
+  };
+  const assigned = new Map<GitHubEvent, TrustedPrAction>();
+  // Reviews, dismissals and merges pair one-to-one by nearest gap (trusted
+  // actions first), not event order, so an earlier nearby review cannot take
+  // the action another review actually recorded.
+  const pairs: {
+    event: GitHubEvent;
+    action: TrustedPrAction;
+    gap: number;
+    trust: number;
+    order: number;
+  }[] = [];
+  events.forEach((event, order) => {
+    if (event.kind === "implementation" || event.kind === "repair") return;
     for (const action of verifiedFleet) {
-      const isCommit = event.kind === "implementation" ||
-        event.kind === "repair";
-      if (action.outcome !== "confirmed") continue;
-      if (
-        event.headSha !== undefined && action.headSha !== undefined &&
-        event.headSha !== action.headSha
-      ) continue;
-      if (
-        isCommit && action.kind !== "branch-update" &&
-        !action.deliveredCommits?.includes(event.id)
-      ) continue;
-      const isPush = action.kind === "implementation" ||
-        action.kind === "repair" || action.kind === "milestone" ||
-        action.kind === "branch-update";
-      if (event.kind === "merge" && action.headSha !== record.headSha) {
-        continue;
-      }
-      if (
-        isCommit
-          ? !isPush || (action.kind === "branch-update" && used.has(action))
-          : used.has(action) || action.kind !== event.kind
-      ) {
-        continue;
-      }
-      const actionMs = utcMillis(action.timestamp, "action timestamp");
-      const gap = Math.abs(actionMs - event.ms);
-      const inWindow = event.kind === "merge"
-        ? gap <= MATCH_WINDOW_MS
-        : isCommit && action.kind === "branch-update"
-        ? gap <= MATCH_WINDOW_MS
-        : isCommit
-        ? actionMs >= event.ms &&
-          actionMs <=
-            Date.parse(
-                record.mergedAt ?? record.closedAt ?? record.observedAt!,
-              ) + LIFETIME_SLACK_MS
-        : gap <= MATCH_WINDOW_MS;
-      const trust = action.verified && action.actor === "fleet" ? 1 : 0;
-      if (
-        inWindow &&
-        (trust > bestTrust || (trust === bestTrust && gap < bestGap))
-      ) {
-        best = action;
-        bestGap = gap;
-        bestTrust = trust;
+      const found = pairing(event, action);
+      if (found) pairs.push({ event, action, order, ...found });
+    }
+  });
+  pairs.sort((a, b) => b.trust - a.trust || a.gap - b.gap || a.order - b.order);
+  for (const pair of pairs) {
+    if (assigned.has(pair.event) || used.has(pair.action)) continue;
+    assigned.set(pair.event, pair.action);
+    used.add(pair.action);
+  }
+  for (const event of events) {
+    let best: TrustedPrAction | undefined = assigned.get(event);
+    if (!best && (event.kind === "implementation" || event.kind === "repair")) {
+      let bestGap = Number.POSITIVE_INFINITY;
+      let bestTrust = -1;
+      for (const action of verifiedFleet) {
+        const found = pairing(event, action);
+        if (
+          found &&
+          (found.trust > bestTrust ||
+            (found.trust === bestTrust && found.gap < bestGap))
+        ) {
+          best = action;
+          bestGap = found.gap;
+          bestTrust = found.trust;
+        }
       }
     }
     if (best) {

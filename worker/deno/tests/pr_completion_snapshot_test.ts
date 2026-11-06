@@ -4474,6 +4474,108 @@ Deno.test("collect - reports genuine owner-only exceptions with provenance along
   });
 });
 
+Deno.test("collect - a nearer review takes the fleet action; an earlier allowlisted review stays a human action", async () => {
+  await withDir(async (dir) => {
+    const body = reviewBody(
+      "held",
+      {
+        summary: "Owner decision required",
+        findings: [],
+        testChanges: "meaningful",
+        testChangeNotes: [],
+        unrelatedIssues: [],
+        checklist: [],
+      },
+      [],
+      [],
+      {
+        hold: {
+          reasons: ["Should this product retain archived records?"],
+          override: false,
+        },
+      },
+    );
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "reviewer",
+      actionId: "owner-hold",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const reviews = [
+      {
+        id: 600,
+        state: "COMMENTED",
+        body: "Owner note",
+        submitted_at: "2026-10-20T00:55:00Z",
+        commit_id: "sha1",
+        user: { id: 9002 },
+      },
+      {
+        id: 601,
+        state: "COMMENTED",
+        body,
+        submitted_at: "2026-10-20T01:00:00Z",
+        commit_id: "sha1",
+        user: { id: 9001 },
+      },
+    ];
+    for (const merged of [false, true]) {
+      const snapshot = await collectPrCompletionSnapshot(
+        options(
+          fakeGh(emptyFixture({
+            pulls: {
+              [REPO]: [
+                pull(
+                  1,
+                  merged ? {} : {
+                    state: "open",
+                    merged_at: null,
+                    closed_at: null,
+                    labels: [{ name: "needs-human" }],
+                  },
+                ),
+              ],
+            },
+            reviews: { [pk(1)]: reviews },
+          })),
+          { auditDirs: [dir], humanActorIds: ["9002"] },
+        ),
+      );
+      const hold = snapshot.input.actions.find((a) =>
+        a.actionId === "owner-hold"
+      );
+      assertEquals(
+        hold?.githubEvents?.map((e) => e.id),
+        ["601"],
+        `merged=${merged}`,
+      );
+      assertEquals(hold?.actor, "fleet");
+      const earlier = snapshot.input.actions.find((a) =>
+        a.actionId === `gh:${REPO}#1:review:600`
+      );
+      assertEquals(earlier?.actor, "human", `merged=${merged}`);
+      assertEquals(earlier?.verified, true);
+      if (!merged) {
+        assertEquals(snapshot.input.prs[0]?.ownerGateVerified, true);
+        assertEquals(
+          buildPrCompletionReport(snapshot.input).ownerOnlyExceptions.length,
+          1,
+        );
+      } else {
+        assertEquals(
+          buildPrCompletionReport(snapshot.input).completion
+            .humanAssistedMerged,
+          1,
+        );
+      }
+    }
+  });
+});
+
 Deno.test("collect - fleet review outranks a closer unchained log", async () => {
   await withDir(async (dir) => {
     await journal(dir, [{

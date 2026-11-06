@@ -130,8 +130,15 @@ and `::collect - the rollout check strands only PRs open at verification and at 
   `::collect - a non-reviewer audit action cannot supersede a review log` covers
   the component boundary. No parallel matching rule was found.
 
+- Reviews, dismissals and merges pair with verified actions one-to-one by
+  nearest gap (trusted first), not event order.
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a nearer review takes the fleet action; an earlier allowlisted review stays a human action`
+  puts an allowlisted COMMENTED review five minutes before the fleet hold on
+  the same head (open and merged variants): the gate verifies, the earlier
+  review is a verified human action and `humanAssistedMerged` is 1. It failed
+  (`merged=false`) against the previous event-order pairing and passes now.
 - `deno task test:unit tests/pr_completion_snapshot_test.ts tests/pr_completion_report_command_test.ts tests/pr_completion_report_test.ts < /dev/null`
-  — passed, 140 tests after the review fix. Covers genuine and generic gates, owner exceptions with
+  — passed, 141 tests after the review fix. Covers genuine and generic gates, owner exceptions with
   regressions, real posting provenance, failed posts, stale and superseded
   holds, legacy snapshots, truncated evidence and historical rollout timing.
 - Reviewer posting, test-policy and Dependabot suites — passed, 82 tests; after
