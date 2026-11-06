@@ -750,7 +750,9 @@ export function recoveryBlockersFor(
 ): Blocker[] {
   const endCap = record.mergedAt ?? record.closedAt ?? null;
   const repairs = actions.filter((action) =>
-    action.verified && action.kind === "repair"
+    action.verified && (action.kind === "repair" ||
+      (action.kind === "dismissal" && action.actor === "fleet" &&
+        action.outcome === "confirmed"))
   ).sort((a, b) =>
     utcMillis(a.timestamp, "repair action timestamp") -
     utcMillis(b.timestamp, "repair action timestamp")
@@ -763,7 +765,9 @@ export function recoveryBlockersFor(
       utcMillis(action.timestamp, "repair timestamp") >
         utcMillis(endCap, "PR end")
     ) break;
-    if (action.outcome === "failed") pending ??= action.timestamp;
+    if (action.kind === "repair" && action.outcome === "failed") {
+      pending ??= action.timestamp;
+    }
     if (action.outcome === "confirmed" && pending !== null) {
       out.push({
         repo: record.repo,

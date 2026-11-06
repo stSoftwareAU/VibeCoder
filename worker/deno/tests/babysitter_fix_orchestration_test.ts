@@ -327,11 +327,13 @@ Deno.test("fix resumes a failed publication without another agent session (PR #4
       pushed: false,
     });
     assertEquals(h.state.dismissals, 0);
+    assertEquals(h.state.journalled.length, 1);
     await elapse(stateDir);
     await h.attempt();
     assertEquals(h.state.sessions, 1);
     assertEquals(h.state.pr.body, "Rewritten description.");
     assertEquals(h.state.dismissals, 1);
+    assertEquals(h.state.journalled.length, 1);
     assertEquals(await store.load(HEAD), undefined);
   });
 });
@@ -1508,6 +1510,20 @@ Deno.test("a code failure journals one failed attempt and keeps the repair's rea
       prNumber: 1,
       headSha: HEAD,
     }]);
+  });
+});
+
+Deno.test("a no-push review repair dismisses the review without journalling failure", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    await h.attempt();
+    assertEquals(h.state.dismissals, 1);
+    assertEquals(h.state.journalled, []);
   });
 });
 

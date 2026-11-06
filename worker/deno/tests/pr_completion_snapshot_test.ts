@@ -5759,6 +5759,26 @@ Deno.test("recovery boundaries - trust, kind, outcomes, ordering and terminal ca
     expected(at(30)),
   );
   assertEquals(recoveryBlockersFor(blockerRecord(), [fail]), expected(null));
+  const dismissal = blockerAction({
+    kind: "dismissal",
+    timestamp: at(20),
+    outcome: "confirmed",
+  });
+  assertEquals(
+    recoveryBlockersFor(blockerRecord(), [fail, dismissal]),
+    expected(at(20)),
+  );
+  for (
+    const invalid of [{ ...dismissal, verified: false }, {
+      ...dismissal,
+      actor: "human" as const,
+    }, { ...dismissal, outcome: "failed" as const }]
+  ) {
+    assertEquals(
+      recoveryBlockersFor(blockerRecord(), [fail, invalid]),
+      expected(null),
+    );
+  }
   assertEquals(
     recoveryBlockersFor(blockerRecord(), [{ ...fail, verified: false }]),
     [],

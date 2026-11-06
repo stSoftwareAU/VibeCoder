@@ -2620,11 +2620,14 @@ export async function fix(
       retryRecord.unpublishedAttempts = (retryRecord.unpublishedAttempts ?? 0) +
         1;
       await saveBabysitterRetryState(stateDir, retryRecord);
-      await journalAttempt({
-        repo,
-        prNumber: initial.number,
-        headSha: pr.headRefOid,
-      });
+      // A normal return with reviews means publication and dismissal finished.
+      if (reviews.length === 0) {
+        await journalAttempt({
+          repo,
+          prNumber: initial.number,
+          headSha: pr.headRefOid,
+        });
+      }
       await settleSubstantiveOutcome(pr.headRefOid, "no-change");
     }
   } catch (error) {

@@ -4,7 +4,7 @@
  * A repair attempt that ends without a push (agent failure, an infrastructure,
  * capability or race cooldown, or an agent that made no change) is recorded as
  * a verified, failed `repair` in the audit journal. The collector then measures
- * the wait until the next confirmed repair as a `repair-recovery` interval,
+ * the wait until the next confirmed repair or verified fleet dismissal as a `repair-recovery` interval,
  * rather than leaving the cooldown unmeasured. Owner holds and failures after a
  * push are not journalled by the caller.
  *

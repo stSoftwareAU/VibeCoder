@@ -1351,7 +1351,8 @@ blocker ends at that moment, and a failure completed after it is not a blocker.
 Overlapping workflow failure intervals are combined so waiting time is not
 counted twice. Concurrency cancellations do not open a blocker.
 A `repair-recovery` interval runs from a failed verified repair action to the
-next confirmed repair action, with repeated failures combined into one wait;
+next confirmed repair action or verified fleet dismissal, with repeated failures
+combined into one wait;
 `branch-refresh` runs from a verified branch update to the first completed
 workflow run or external check on its correlated commit. A running workflow's
 last update is not completion evidence. Both waits are capped by the PR's
@@ -1359,10 +1360,13 @@ merge or close; otherwise they remain open and their duration is measured to
 observation time. Missing action or commit evidence remains
 unknown rather than being inferred from a login or branch name.
 When a babysitter repair attempt ends without a push (an agent failure, an
-infrastructure, capability or race cooldown, or an agent that made no change),
+infrastructure, capability or race cooldown, or an agent that made no change
+and left the blocker in place),
 the babysitter journals a verified `babysitter-attempt` failed repair in its
 audit journal. The existing `repair-recovery` interval then covers that cooldown
-until the next confirmed repair push. Owner holds are not journalled, because
+until the next confirmed repair push or verified fleet dismissal. A successful
+no-push publication and review dismissal is not a failed attempt. Owner holds
+are not journalled, because
 they are already `needs-human` waits, and a failure after a push is not
 journalled, because that push is already confirmed.
 

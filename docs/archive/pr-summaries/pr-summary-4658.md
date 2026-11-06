@@ -3,10 +3,11 @@
 The last open item of the completion report was babysitter retry cooldowns from
 failed attempts that deliver no repair push. The babysitter now journals such an
 attempt (an agent failure, an infrastructure, capability or race cooldown, or an
-agent that made no change) as a verified, failed `repair` in its hash-chained
-audit journal. The existing `repair-recovery` interval in the collector then
-measures the wait until the next confirmed repair push, or to the PR's merge or
-close. The provisional 90%-within-24-hours target stays an operational
+agent that made no change and left the blocker in place) as a verified, failed
+`repair` in its hash-chained audit journal. The `repair-recovery` interval in
+the collector measures the wait until the next confirmed repair push or
+verified fleet dismissal, or to the PR's merge or close. The provisional
+90%-within-24-hours target stays an operational
 evaluation after rollout; no baseline or achieved result is claimed. Closes
 #4658.
 
@@ -27,6 +28,8 @@ evaluation after rollout; no baseline or achieved result is claimed. Closes
   failed repair is never counted as a fix round (only confirmed repairs are).
 - Owner holds are not journalled (already `needs-human` waits). A failure after
   a push is not journalled either, because a confirmed push already exists.
+- A no-push publication that dismisses the addressed reviews is successful,
+  and a verified fleet dismissal closes an earlier failed-repair wait.
 - Journalling is best-effort and never replaces the repair's real error, but a
   refused append or invalid input is logged as
   `[SECURITY]
@@ -46,7 +49,7 @@ Backend change; no visual evidence applies.
 ```mermaid
 flowchart LR
     A[Babysitter attempt] -->|push| B[Confirmed repair journalled by git hook]
-    A -->|failure or no change| C[babysitter-attempt failed repair journalled]
+    A -->|failure or unresolved no change| C[babysitter-attempt failed repair journalled]
     C --> D[recoveryBlockersFor]
     B --> D
     D --> E[repair-recovery wait in report]
@@ -67,6 +70,17 @@ left undone: the earlier PRs (#4709, #4842, #4846) delivered the other items and
 this PR delivers the last one named in their summaries.
 
 ## Test Plan
+
+- Review fix: a successful no-push review publication and dismissal no longer
+  records a failed attempt; an earlier failed attempt ends at a confirmed,
+  verified fleet dismissal. The obsolete behaviour charged the subsequent
+  review wait to repair recovery. Unsuccessful no-change repairs still open a
+  recovery wait, and unverified, human or failed dismissals cannot close it.
+  Coverage: `worker/deno/tests/babysitter_fix_orchestration_test.ts::a no-push review repair dismisses the review without journalling failure`,
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix resumes a failed publication without another agent session (PR #4779 review)`,
+  and `worker/deno/tests/pr_completion_snapshot_test.ts::recovery boundaries - trust, kind, outcomes, ordering and terminal caps`.
+  Both new boundary assertions failed before the fix. The recovery rule has
+  one implementation, `recoveryBlockersFor`; no twinned rule was found.
 
 - New `worker/deno/tests/babysitter_attempt_audit_test.ts` (12 tests): entry
   journalled at its head, round-trip through `prActionsFromAuditJournal` and
