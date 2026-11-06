@@ -139,6 +139,14 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- Review follow-up: an uncovered caller no longer consumes shared callee
+  steps before a later required caller is checked, directly or via an
+  aggregator. Expression-named reusable callers conservatively cover their
+  children. Both local and remote cases are covered by
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::later reusable callers retain their required mutation jobs`
+  and
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::templated reusable caller names conservatively cover mutation children`.
+  Both tests failed before the fix. No twinned detector was found.
 - CI repair: the Checkov registration test no longer relies on a live container
   runtime responding to an image probe. A prohibited Checkov config makes the
   registered stage fail deterministically; registration when the workflow is

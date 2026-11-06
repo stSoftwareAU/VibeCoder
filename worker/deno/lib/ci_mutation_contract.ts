@@ -26,8 +26,9 @@
  *   followed only when the caller passes `fetchRemoteWorkflow` (see
  *   `ci_mutation_lookup.ts`): at most `MAX_REMOTE_WORKFLOWS` distinct ones, to
  *   the same depth bound. One that cannot be read is reported in `unreadable`.
- *   A local `uses:` inside a remote workflow names a file of the remote
- *   repository, so it is not followed.
+ *   A `./` call inside a remote workflow resolves in that repository at the
+ *   calling ref, subject to the same filename check, fetch cap and depth bound;
+ *   a file that cannot be fetched is listed in `unreadable`.
  * - Only cargo-mutants (`cargo mutants` or `cargo-mutants`, optionally with a
  *   `+toolchain` word such as `cargo +nightly mutants`) and `deno task` with a
  *   task name containing `mutat` are recognised. Other tools are not.
@@ -509,6 +510,7 @@ function blockingJobHit(
     callee !== null,
   );
   const covered = inherited || feeds !== null;
+  if (!covered && callee === null) return null;
   const line = blockingMutationLine(job, seen, budget);
   if (line !== null) return covered ? { line } : null;
   if (chain.length > MAX_REUSABLE_DEPTH) return null;
@@ -516,6 +518,8 @@ function blockingJobHit(
   const calledJobs = callee.doc.jobs;
   if (!isMapping(calledJobs)) return null;
   const displayName = typeof job.name === "string" ? job.name : jobName;
+  const childrenCovered = covered || (displayName.includes("${{") &&
+    required.some((context) => context.startsWith(prefix)));
   const caller = `${prefix}${displayName}`;
   const prefixes = new Set([`${caller} / `]);
   for (const context of required) {
@@ -538,7 +542,7 @@ function blockingJobHit(
         ],
         required,
         childPrefix,
-        covered,
+        childrenCovered,
       );
       if (hit !== null) {
         return {

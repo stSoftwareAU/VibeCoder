@@ -72,6 +72,63 @@ Deno.test("matrix reusable callers match the required child, not its sibling", a
   }
 });
 
+Deno.test("later reusable callers retain their required mutation jobs", async () => {
+  const pipeline =
+    "on: workflow_call\njobs:\n  mutants:\n    steps:\n      - run: cargo mutants\n";
+  for (const remote of [false, true]) {
+    const uses = remote ? REMOTE : "./.github/workflows/pipeline.yml";
+    await withRepo({
+      "ci.yml":
+        `on: pull_request\njobs:\n  advisory:\n    uses: ${uses}\n  release:\n    uses: ${uses}\n  gate:\n    needs: [release]\n    steps:\n      - run: echo ok\n`,
+      ...(remote ? {} : { "pipeline.yml": pipeline }),
+    }, async (repo) => {
+      const { fetchRemoteWorkflow } = reader({ [REMOTE]: pipeline });
+      for (const check of ["release / mutants", "gate"]) {
+        const result = await findBlockingMutationJob(repo, {
+          fetchRemoteWorkflow,
+          requiredChecks: [check],
+        });
+        assertEquals(
+          result.blocking?.job.includes("release"),
+          true,
+          `${uses}: ${check}`,
+        );
+      }
+    });
+  }
+});
+
+Deno.test("templated reusable caller names conservatively cover mutation children", async () => {
+  const pipeline =
+    "on: workflow_call\njobs:\n  mutants:\n    steps:\n      - run: cargo mutants\n";
+  for (const remote of [false, true]) {
+    const uses = remote ? REMOTE : "./.github/workflows/pipeline.yml";
+    for (
+      const [name, matrix, check] of [
+        [
+          "Build ${{ matrix.os }}",
+          "    strategy:\n      matrix:\n        os: [linux]\n",
+          "Build linux / mutants",
+        ],
+        ["Build ${{ github.event_name }}", "", "Build core / mutants"],
+      ]
+    ) {
+      await withRepo({
+        "ci.yml":
+          `on: pull_request\njobs:\n  build:\n    name: ${name}\n${matrix}    uses: ${uses}\n`,
+        ...(remote ? {} : { "pipeline.yml": pipeline }),
+      }, async (repo) => {
+        const { fetchRemoteWorkflow } = reader({ [REMOTE]: pipeline });
+        const result = await findBlockingMutationJob(repo, {
+          fetchRemoteWorkflow,
+          requiredChecks: [check!],
+        });
+        assertEquals(result.blocking !== null, true, `${uses}: ${check}`);
+      });
+    }
+  }
+});
+
 Deno.test("nested reusable checks match the complete child path", async () => {
   await withRepo({
     "ci.yml":
