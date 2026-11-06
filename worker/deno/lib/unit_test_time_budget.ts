@@ -44,22 +44,34 @@ import { SUBPROCESS_TIMING_TEST_FILES } from "./parallel_unsafe_test_manifest.ts
 import { GIT_GUARD_SHIM_MARKER } from "./git_guard_shim.ts";
 import { resolveExecutable } from "./gh_guard_shim.ts";
 
+/** Required unit suites whose measured cost is the real behaviour they exercise. */
+export const MEASURED_SLOW_UNIT_TEST_FILES: ReadonlyMap<string, string> =
+  new Map([
+    [
+      "tests/launcher_harness_reclaim_stub_test.ts",
+      "runs the shared Bash launcher twice through its real stub harness to " +
+      "prove the reclaim command is intercepted on both sides of the host " +
+      "disk floor; the parallel gate measured 3.19s for its two cases and an " +
+      "isolated serial run measured 3.02s, so keep both assertions in the " +
+      "required unit gate without treating subprocess startup as unit work",
+    ],
+  ]);
+
 /** The per-test budget: a unit test over this is reported. */
 export const UNIT_TEST_BUDGET_MS = 1000;
 
 /**
  * Files kept in the unit gate although every test in them is slow, and why.
  *
- * A named exception with a reason, exactly like `IN_GATE_SCRIPT_SUITES` and
- * `SUBPROCESS_TIMING_TEST_FILES` — whose entries are included here by
- * reference, because a script suite the gate runs on purpose, and a suite
- * that races a real subprocess on purpose, are slow on purpose. Adding a file
- * here is a decision that its cost is the point of the test; say what that
- * cost buys.
+ * A named exception with a reason. The in-gate script and subprocess timing
+ * lists are included by reference; measured slow unit suites name the
+ * behaviour their real-process cost buys. Adding a file here is a decision
+ * that its cost is the point of the test.
  */
 export const SLOW_UNIT_TEST_KEEP_FILES: ReadonlyMap<string, string> = new Map([
   ...IN_GATE_SCRIPT_SUITES,
   ...SUBPROCESS_TIMING_TEST_FILES,
+  ...MEASURED_SLOW_UNIT_TEST_FILES,
 ]);
 
 /** One test's measured time. */

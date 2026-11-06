@@ -14,6 +14,7 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   budgetProvedPass,
   gitGuardShimOnPath,
+  MEASURED_SLOW_UNIT_TEST_FILES,
   normaliseTestPath,
   parseJunitTestTimes,
   passesTimeBudget,
@@ -116,6 +117,7 @@ Deno.test("time budget - every keep-list entry is a reasoned decision, not a bas
   const keptFiles = new Set([
     ...IN_GATE_SCRIPT_SUITES.keys(),
     ...SUBPROCESS_TIMING_TEST_FILES.keys(),
+    ...MEASURED_SLOW_UNIT_TEST_FILES.keys(),
   ]);
   for (const [file, reason] of SLOW_UNIT_TEST_KEEP_FILES) {
     assert(reason.trim().length > 0, `${file} is kept with no reason`);
