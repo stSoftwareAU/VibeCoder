@@ -33,6 +33,15 @@ export interface PrCompletionRecord {
   rollupRoot?: string;
   ownerGated?: boolean;
   ownerGateVerified?: boolean;
+  /** Current reviewer hold verified against a fleet audit action. */
+  ownerGateEvidence?: {
+    reviewId: string;
+    actionId: string;
+    headSha: string;
+    timestamp: string;
+    reason: "product-contract" | "repository-policy";
+    detail: string;
+  };
   eligible?: boolean;
   actionsComplete: boolean;
 }
@@ -169,6 +178,13 @@ export interface PrCompletionReport {
     openIntervals: number;
     ciFailureComplete: boolean;
   };
+  ownerOnlyExceptions: Array<{
+    repo: string;
+    prNumber: number;
+    state: PrState;
+    /** Absent on legacy snapshots that only recorded the verified boolean. */
+    evidence?: PrCompletionRecord["ownerGateEvidence"];
+  }>;
   regressions: {
     postMergeCiComplete: boolean;
     observed: number;
@@ -223,6 +239,9 @@ export interface PrCompletionReport {
 
 /** The repository pattern every PR observation must satisfy. */
 export const PR_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/** Numeric GitHub user ids configured as affirmative human-action evidence. */
+export const ACTOR_ID_PATTERN = /^\d{1,20}$/;
 
 const keyOf = (repo: string, number: number) => `${repo}#${number}`;
 
@@ -924,6 +943,16 @@ export function buildPrCompletionReport(
           : null,
     },
     waiting,
+    ownerOnlyExceptions: prs.filter((pr) =>
+      pr.ownerGated === true && pr.ownerGateVerified === true
+    ).map((pr) => ({
+      repo: pr.repo,
+      prNumber: pr.number,
+      state: pr.state,
+      ...(pr.ownerGateEvidence !== undefined
+        ? { evidence: pr.ownerGateEvidence }
+        : {}),
+    })),
     regressions: {
       postMergeCiComplete: !incompleteMerged,
       observed: regressionRows.length,

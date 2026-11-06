@@ -349,8 +349,9 @@ Deno.test("pr-completion-report --collect notes a --review-log it cannot read, a
         return [{
           id: 601,
           state: "APPROVED",
+          body: "",
           submitted_at: "2026-10-20T01:00:00Z",
-          user: { login: "review-bot[bot]" },
+          user: { id: 7001, login: "review-bot[bot]" },
         }];
       }
       if (path.startsWith("repos/org/repo/pulls/")) return [];
@@ -388,12 +389,42 @@ Deno.test("pr-completion-report --collect notes a --review-log it cannot read, a
 
     const withoutLog = await runPrCompletionCollect(args, config, gh);
     assertEquals(withoutLog.success, true);
+    assertEquals(withoutLog.data?.report.delivery.reviewRounds, 0);
     assertStringIncludes(
       withoutLog.message,
       "coverage: 1 review event on 1 PR had no review-log source",
     );
+
+    const attributed = await runPrCompletionCollect(
+      { ...args, "human-actor-id": "7001" },
+      config,
+      gh,
+    );
+    assertEquals(attributed.success, true);
+    assertEquals(
+      attributed.data?.report.delivery.reviewRounds,
+      1,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("pr-completion-report --collect rejects a non-numeric --human-actor-id before any read", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (const value of ["alice", "1,bot", "0x2", true]) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "human-actor-id": value,
+      },
+      {} as WorkerConfig,
+      gh,
+    );
+    assertEquals(result.success, false, `value ${String(value)}`);
+    assertStringIncludes(result.message, "--human-actor-id must be");
   }
 });
 

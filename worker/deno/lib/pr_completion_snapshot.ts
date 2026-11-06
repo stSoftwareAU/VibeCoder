@@ -9,16 +9,18 @@
  * never reach the network. Nothing here writes to GitHub or to host
  * configuration.
  *
- * A GitHub event is never attributed to a human or to the fleet from a login:
- * it becomes a `TrustedPrAction` with actor `unknown` unless a verified fleet
- * action of the same kind sits within {@link MATCH_WINDOW_MS} of it. Those
- * actions are audit actions, plus, as a lower-trust source, the review-fleet-prs
- * skill's own review log (`reviewLogs`), which is not hash-chained.
+ * A GitHub event is never attributed from its login. A matching verified fleet
+ * action takes precedence; otherwise reviews, dismissals and merges require a
+ * numeric actor id in the explicit human allowlist. Commit authorship alone
+ * stays unknown. Review-fleet-prs logs
+ * can support a review match but are not hash-chained or sufficient to verify
+ * completion.
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */
 
 import type { AuditEntry } from "./audit_entry.ts";
+import { ownerHoldFromBody } from "./fleet_review_hold.ts";
 import { readPrDiscoveryEvents } from "./pr_discovery_events.ts";
 import {
   isAuditJournalName,
@@ -32,6 +34,7 @@ import {
 import { runGhCommand } from "./github.ts";
 import { REVIEW_RUN_FILE } from "./review_run_record.ts";
 import {
+  ACTOR_ID_PATTERN,
   PR_REPO_PATTERN,
   type PrActionKind,
   prActionsFromAuditJournal,
@@ -74,6 +77,8 @@ export interface CollectOptions {
   expected: PrCompletionInput["expectedDeployment"];
   /** When set, the rollout check runs against this verification instant. */
   rolloutVerifiedAt?: string;
+  /** Numeric GitHub ids whose unmatched reviews, dismissals or merges affirm human intervention. */
+  humanActorIds?: readonly string[];
   /** Cap on PRs kept per repository in the cohort (default 500). */
   maxPrsPerRepo?: number;
   /** Maximum GitHub calls devoted to CI per collection (default 5000). */
@@ -154,8 +159,10 @@ interface Stamped {
 }
 
 interface Review extends Stamped {
+  body: string;
   id: string;
   state: string;
+  actorId: string | null;
   headSha?: string;
 }
 
@@ -163,6 +170,7 @@ interface IssueEvent extends Stamped {
   id: string;
   event: string;
   label: string | null;
+  actorId: string | null;
 }
 
 interface Commit extends Stamped {
@@ -171,6 +179,7 @@ interface Commit extends Stamped {
 
 interface PrEvidence {
   reviews: Review[];
+  reviewsComplete: boolean;
   issueEvents: IssueEvent[];
   commits: Commit[];
 }
@@ -180,6 +189,7 @@ interface GitHubEvent extends Stamped {
   kind: PrActionKind;
   id: string;
   headSha?: string;
+  actorId: string | null;
 }
 
 function keyOf(repo: string, number: number): string {
@@ -223,6 +233,19 @@ function stamped(value: unknown, what: string): Stamped {
   const at = asText(value);
   if (at === null) throw new Error(`${what} is missing`);
   return { at, ms: utcMillis(at, what) };
+}
+
+/** A numeric GitHub actor id, or null when the API names no account. */
+function actorIdOf(raw: Json, key: string, what: string): string | null {
+  const rawActor = requiredKey(raw, key, what);
+  if (rawActor === null) return null;
+  const actor = asObject(rawActor, `${what}.${key}`);
+  const id = asId(requiredKey(actor, "id", `${what}.${key}`), `${what}.${key}`);
+  const value = String(id);
+  if (!ACTOR_ID_PATTERN.test(value)) {
+    throw new Error(`${what}.${key}.id must be a numeric GitHub user id`);
+  }
+  return value;
 }
 
 function byTime<T extends Stamped>(a: T, b: T): number {
@@ -456,6 +479,8 @@ function parseReview(raw: unknown, what: string): Review | null {
   return {
     id: asId(o.id, what),
     state,
+    body: asText(requiredKey(o, "body", what))?.slice(0, TEXT_BOUND) ?? "",
+    actorId: actorIdOf(o, "user", what),
     ...(asText(o.commit_id) ? { headSha: asText(o.commit_id)! } : {}),
     at: submitted,
     ms: utcMillis(submitted, `${what} submitted_at`),
@@ -471,6 +496,7 @@ function parseIssueEvent(raw: unknown, what: string): IssueEvent {
     id: asId(o.id, what),
     event: asText(o.event) ?? "",
     label,
+    actorId: actorIdOf(o, "actor", what),
     ...stamped(o.created_at, `${what} created_at`),
   };
 }
@@ -521,6 +547,7 @@ async function fetchEvidence(
     }
   }
   return {
+    reviewsComplete: !reviews.truncated,
     reviews: reviews.items.flatMap((item) => {
       const parsed = parseReview(item, `${label} review`);
       return parsed ? [parsed] : [];
@@ -703,6 +730,7 @@ function gitHubEvents(
       id: review.id,
       at: review.at,
       ms: review.ms,
+      actorId: review.actorId,
       ...(review.headSha ? { headSha: review.headSha } : {}),
     });
   }
@@ -713,16 +741,23 @@ function gitHubEvents(
         id: event.id,
         at: event.at,
         ms: event.ms,
+        actorId: event.actorId,
       });
     }
   }
   const { record } = observed;
   if (record.mergedAt !== null) {
+    const mergeEvents = evidence.issueEvents.filter((event) =>
+      event.event === "merged"
+    );
     out.push({
       kind: "merge",
-      id: observed.mergeCommitSha ?? "none",
+      id: mergeEvents.length === 1
+        ? mergeEvents[0]!.id
+        : observed.mergeCommitSha ?? "none",
       at: record.mergedAt,
       ms: utcMillis(record.mergedAt, "PR mergedAt"),
+      actorId: mergeEvents.length === 1 ? mergeEvents[0]!.actorId : null,
       headSha: record.headSha,
     });
   }
@@ -732,10 +767,18 @@ function gitHubEvents(
       id: commit.sha,
       at: commit.at,
       ms: commit.ms,
+      // Git authorship is self-set metadata, not the authenticated push actor.
+      actorId: null,
     });
   });
   return out;
 }
+
+/** The GitHub event kinds that are commits, matched to a push by its delivered range. */
+const COMMIT_EVENT_KINDS: ReadonlySet<PrActionKind> = new Set<PrActionKind>([
+  "implementation",
+  "repair",
+]);
 
 /**
  * Match reviews, dismissals and merges one-to-one. A commit matches a confirmed
@@ -743,11 +786,13 @@ function gitHubEvents(
  * stamped at or after the commit and within the PR's lifetime; several commits
  * may share one such push. A branch update accounts for one commit within
  * MATCH_WINDOW_MS either side of its call. Matched event identifiers are
- * attached to the audit action. Unmatched events become `unknown` actions, never
- * attributed to a human or the fleet.
+ * attached to the audit action. Unmatched events remain unknown unless their
+ * numeric GitHub actor id is explicitly configured as human evidence.
  *
  * A review or dismissal matches a verified fleet action of its kind within
- * {@link MATCH_WINDOW_MS} either side of it. A review's head is compared only
+ * {@link MATCH_WINDOW_MS} either side of it. Reviews, dismissals and merges are
+ * paired one-to-one by nearest gap, not event order, so an earlier nearby review
+ * cannot take the action a later one recorded. A review's head is compared only
  * when both sides carry one, so a journalled review without a head still
  * matches a GitHub review that has a `commit_id`. A merge matches only a
  * confirmed merge action on the PR's head, within MATCH_WINDOW_MS either side
@@ -759,57 +804,99 @@ function unmatchedActions(
   events: GitHubEvent[],
   verifiedFleet: TrustedPrAction[],
   used: Set<TrustedPrAction>,
+  humanActorIds: ReadonlySet<string | null>,
 ): TrustedPrAction[] {
   const { record } = observed;
   const out: TrustedPrAction[] = [];
-  for (const event of events) {
-    let best: TrustedPrAction | undefined;
-    let bestGap = Number.POSITIVE_INFINITY;
+  /** The gap of an in-window pairing of one event with one action, or null. */
+  const pairing = (
+    event: GitHubEvent,
+    action: TrustedPrAction,
+  ): number | null => {
+    const isCommit = COMMIT_EVENT_KINDS.has(event.kind);
+    if (action.outcome !== "confirmed") return null;
+    if (
+      event.headSha !== undefined && action.headSha !== undefined &&
+      event.headSha !== action.headSha
+    ) return null;
+    if (
+      isCommit && action.kind !== "branch-update" &&
+      !action.deliveredCommits?.includes(event.id)
+    ) return null;
+    const isPush = action.kind === "implementation" ||
+      action.kind === "repair" || action.kind === "milestone" ||
+      action.kind === "branch-update";
+    if (event.kind === "merge" && action.headSha !== record.headSha) {
+      return null;
+    }
+    if (
+      isCommit
+        ? !isPush || (action.kind === "branch-update" && used.has(action))
+        : action.kind !== event.kind
+    ) {
+      return null;
+    }
+    const actionMs = utcMillis(action.timestamp, "action timestamp");
+    const gap = Math.abs(actionMs - event.ms);
+    const inWindow = event.kind === "merge"
+      ? gap <= MATCH_WINDOW_MS
+      : action.kind === "branch-update"
+      ? gap <= MATCH_WINDOW_MS
+      : isCommit
+      ? actionMs >= event.ms &&
+        actionMs <=
+          Date.parse(
+              record.mergedAt ?? record.closedAt ?? record.observedAt!,
+            ) + LIFETIME_SLACK_MS
+      : gap <= MATCH_WINDOW_MS;
+    if (!inWindow) return null;
+    return gap;
+  };
+  const assigned = new Map<GitHubEvent, TrustedPrAction>();
+  // Reviews, dismissals and merges pair one-to-one by nearest gap, not event
+  // order, so an earlier nearby review cannot take the action another review
+  // actually recorded.
+  const pairs: {
+    event: GitHubEvent;
+    action: TrustedPrAction;
+    gap: number;
+    order: number;
+  }[] = [];
+  events.forEach((event, order) => {
+    if (COMMIT_EVENT_KINDS.has(event.kind)) return;
     for (const action of verifiedFleet) {
-      const isCommit = event.kind === "implementation" ||
-        event.kind === "repair";
-      if (action.outcome !== "confirmed") continue;
-      if (
-        event.headSha !== undefined && action.headSha !== undefined &&
-        event.headSha !== action.headSha
-      ) continue;
-      if (
-        isCommit && action.kind !== "branch-update" &&
-        !action.deliveredCommits?.includes(event.id)
-      ) continue;
-      const isPush = action.kind === "implementation" ||
-        action.kind === "repair" || action.kind === "milestone" ||
-        action.kind === "branch-update";
-      if (event.kind === "merge" && action.headSha !== record.headSha) {
-        continue;
-      }
-      if (
-        isCommit
-          ? !isPush || (action.kind === "branch-update" && used.has(action))
-          : used.has(action) || action.kind !== event.kind
-      ) {
-        continue;
-      }
-      const actionMs = utcMillis(action.timestamp, "action timestamp");
-      const gap = Math.abs(actionMs - event.ms);
-      const inWindow = event.kind === "merge"
-        ? gap <= MATCH_WINDOW_MS
-        : isCommit && action.kind === "branch-update"
-        ? gap <= MATCH_WINDOW_MS
-        : isCommit
-        ? actionMs >= event.ms &&
-          actionMs <=
-            Date.parse(
-                record.mergedAt ?? record.closedAt ?? record.observedAt!,
-              ) + LIFETIME_SLACK_MS
-        : gap <= MATCH_WINDOW_MS;
-      if (inWindow && gap < bestGap) {
-        best = action;
-        bestGap = gap;
+      const found = pairing(event, action);
+      if (found !== null) pairs.push({ event, action, order, gap: found });
+    }
+  });
+  pairs.sort((a, b) => a.gap - b.gap || a.order - b.order);
+  for (const pair of pairs) {
+    if (assigned.has(pair.event) || used.has(pair.action)) continue;
+    assigned.set(pair.event, pair.action);
+    used.add(pair.action);
+  }
+  for (const event of events) {
+    let best: TrustedPrAction | undefined = assigned.get(event);
+    // Commit events pick their nearest action here; none is in `assigned`.
+    if (COMMIT_EVENT_KINDS.has(event.kind)) {
+      let bestGap = Number.POSITIVE_INFINITY;
+      for (const action of verifiedFleet) {
+        const found = pairing(event, action);
+        if (found !== null && found < bestGap) {
+          best = action;
+          bestGap = found;
+        }
       }
     }
     if (best) {
       used.add(best);
+      if (
+        best.runId === REVIEW_LOG_RUN && !best.verified &&
+        humanActorIds.has(event.actorId)
+      ) {
+        best.actor = "human";
+        best.verified = true;
+      }
       best.githubEvents ??= [];
       best.githubEvents.push({
         kind: event.kind,
@@ -818,6 +905,7 @@ function unmatchedActions(
       });
       continue;
     }
+    const human = humanActorIds.has(event.actorId);
     out.push({
       actionId: `gh:${record.repo}#${record.number}:${event.kind}:${event.id}`,
       runId: GITHUB_OBSERVATION_RUN,
@@ -826,12 +914,46 @@ function unmatchedActions(
       prNumber: record.number,
       kind: event.kind,
       timestamp: event.at,
-      outcome: "unknown",
-      actor: "unknown",
-      verified: false,
+      outcome: human ? "confirmed" : "unknown",
+      actor: human ? "human" : "unknown",
+      verified: human,
     });
   }
   return out;
+}
+
+/** A current hold requires both the reviewer contract and verified action evidence. */
+function verifyOwnerGate(
+  record: PrCompletionRecord,
+  evidence: PrEvidence,
+  actions: TrustedPrAction[],
+): void {
+  if (
+    record.state !== "open" || record.ownerGated !== true ||
+    !evidence.reviewsComplete
+  ) return;
+  const latest = evidence.reviews.filter((review) =>
+    review.headSha === record.headSha
+  ).sort(byTime).at(-1);
+  if (latest?.state !== "COMMENTED") return;
+  const hold = ownerHoldFromBody(latest.body);
+  if (hold === null) return;
+  const action = actions.find((action) =>
+    action.kind === "review" && action.component === "reviewer" &&
+    action.verified && action.actor === "fleet" &&
+    action.outcome === "confirmed" && action.githubEvents?.some((event) =>
+      event.kind === "review" && event.id === latest.id
+    )
+  );
+  if (action === undefined) return;
+  record.ownerGateVerified = true;
+  record.ownerGateEvidence = {
+    ...hold,
+    reviewId: latest.id,
+    actionId: action.actionId,
+    headSha: record.headSha,
+    timestamp: latest.at,
+  };
 }
 
 /** CI duration per check run; `null` when the run is not completed or lacks a time. */
@@ -1663,7 +1785,10 @@ function strandedAt(pr: PrCompletionRecord, verifiedMs: number): boolean {
   return createdMs < verifiedMs &&
     verifiedMs - createdMs >= STRANDED_AGE_MS &&
     openAtVerification &&
-    pr.ownerGated !== true;
+    !(pr.ownerGated === true && pr.ownerGateVerified === true &&
+      pr.ownerGateEvidence !== undefined &&
+      utcMillis(pr.ownerGateEvidence.timestamp, "owner gate timestamp") <=
+        verifiedMs);
 }
 
 /**
@@ -1698,6 +1823,14 @@ export async function collectPrCompletionSnapshot(
   if (!Number.isSafeInteger(maxPrs) || maxPrs < 1) {
     throw new Error("maxPrsPerRepo must be a positive integer");
   }
+  for (const id of options.humanActorIds ?? []) {
+    if (!ACTOR_ID_PATTERN.test(id)) {
+      throw new Error(
+        `humanActorIds entry ${id} is not a numeric GitHub user id`,
+      );
+    }
+  }
+  const humanActorIds = new Set(options.humanActorIds ?? []);
 
   const notes: string[] = [];
   if (options.expected.inventory === undefined) {
@@ -1781,17 +1914,8 @@ export async function collectPrCompletionSnapshot(
     list.push(action);
     fleetByPr.set(key, list);
   }
-  const matchingByPr = new Map(
-    [...fleetByPr].map(([key, actions]) => [key, [...actions]]),
-  );
-  for (const action of logActions) {
-    const key = keyOf(action.repo, action.prNumber);
-    const list = matchingByPr.get(key) ?? [];
-    list.push(action);
-    matchingByPr.set(key, list);
-  }
-
   const used = new Set<TrustedPrAction>();
+  const supersededLogs = new Set<TrustedPrAction>();
   const githubActions: TrustedPrAction[] = [];
   const blockers: Blocker[] = [];
   const ciRuns: CiRun[] = [];
@@ -1847,13 +1971,49 @@ export async function collectPrCompletionSnapshot(
       prsWithReviewEvents++;
     }
     blockers.push(...blockersFor(record, evidence));
-    githubActions.push(
-      ...unmatchedActions(
-        o,
-        gitHubEvents(o, evidence),
-        matchingByPr.get(keyOf(record.repo, record.number)) ?? [],
-        used,
+    const events = gitHubEvents(o, evidence);
+    const fleet = fleetByPr.get(keyOf(record.repo, record.number)) ?? [];
+    const unmatched = unmatchedActions(o, events, fleet, used, humanActorIds);
+    // Reserve the log row for a matched reviewer post before another GitHub
+    // review can claim it. Unmatched journal actions cannot supersede logs.
+    for (
+      const action of fleet.filter((item) =>
+        item.component === "reviewer" && item.kind === "review" &&
+        item.githubEvents?.some((event) => event.kind === "review")
+      )
+    ) {
+      const candidates = logActions.filter((log) =>
+        !supersededLogs.has(log) && log.repo === action.repo &&
+        log.prNumber === action.prNumber &&
+        (!log.headSha || !action.headSha || log.headSha === action.headSha) &&
+        Math.abs(Date.parse(log.timestamp) - Date.parse(action.timestamp)) <=
+          MATCH_WINDOW_MS
+      );
+      candidates.sort((a, b) =>
+        Math.abs(Date.parse(a.timestamp) - Date.parse(action.timestamp)) -
+        Math.abs(Date.parse(b.timestamp) - Date.parse(action.timestamp))
+      );
+      if (candidates[0]) supersededLogs.add(candidates[0]);
+    }
+    const unmatchedIds = new Set(unmatched.map((action) => action.actionId));
+    githubActions.push(...unmatchedActions(
+      o,
+      events.filter((event) =>
+        unmatchedIds.has(
+          `gh:${record.repo}#${record.number}:${event.kind}:${event.id}`,
+        )
       ),
+      logActions.filter((action) =>
+        action.repo === record.repo && action.prNumber === record.number &&
+        !supersededLogs.has(action)
+      ),
+      used,
+      humanActorIds,
+    ));
+    verifyOwnerGate(
+      record,
+      evidence,
+      fleetByPr.get(keyOf(record.repo, record.number)) ?? [],
     );
     const prCiRuns = await boundedCi(
       record,
@@ -1889,7 +2049,7 @@ export async function collectPrCompletionSnapshot(
     const prs = prsWithReviewEvents === 1 ? "PR" : "PRs";
     notes.push(
       `${reviewEvents} ${events} on ${prsWithReviewEvents} ${prs} had no review-log source; ` +
-        "the review-fleet-prs skill journals no audit records, so those reviews stay unknown unless an audit action matches them",
+        "reviews without a matching verified audit action or an explicitly allowlisted human actor stay unknown",
     );
   }
 
@@ -1956,7 +2116,7 @@ export async function collectPrCompletionSnapshot(
     actions: [
       ...verifiedActions,
       ...unverifiedActions,
-      ...logActions,
+      ...logActions.filter((action) => !supersededLogs.has(action)),
       ...githubActions,
     ],
     blockers,

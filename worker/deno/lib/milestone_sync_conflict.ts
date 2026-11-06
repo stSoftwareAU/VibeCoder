@@ -123,8 +123,8 @@ export interface MilestoneSyncConflict {
   unverified?: boolean;
   /**
    * True when cargo did not complete (Issue #4326): it
-   * was skipped for the host's budget, or its check or test timed out (Issue #4786),
-   * and was left to CI. The report names that half instead of claiming the
+   * was skipped for the host's budget, or its check or test timed out or could
+   * not reach the crate registry (Issue #4786), and was left to CI. The report names that half instead of claiming the
    * whole tree was verified.
    */
   cargoSkipped?: boolean;
@@ -324,12 +324,13 @@ export function describeSyncLanding(landing: SyncLanding): string {
 /**
  * The sentence that says the cargo half did not complete, appended to a
  * Deno-side caveat. Cargo is skipped for the host's budget (Issue #4326) or its
- * check or test times out on a cold target (Issue #4786); either way it is left to CI,
+ * check or test times out on a cold target or cannot reach its crate registry
+ * (Issue #4786); either way it is left to CI,
  * so the report must not say it was simply "not run".
  */
 const CARGO_NOT_COMPLETE_PROSE =
   "Cargo did not complete either (Issues #4326, #4786): it was skipped for " +
-  "the host's budget or a cargo check or cargo test timed out, so the milestone PR's CI builds " +
+  "the host's budget or a cargo check or cargo test timed out or could not reach the crate registry, so the milestone PR's CI builds " +
   "it.";
 
 /**
@@ -385,7 +386,7 @@ export function buildConflictEscalationComment(
       : e.conflict.cargoSkipped
       ? `The checks that ran passed before the merge landed. Cargo did not complete, ` +
         `so this report does not claim the cargo half passed: it was skipped ` +
-        `for the host's budget or a cargo check or cargo test timed out (Issues #4326, #4786), ` +
+        `for the host's budget or a cargo check or cargo test timed out or could not reach the crate registry (Issues #4326, #4786), ` +
         `and the milestone PR's CI builds it. A red cargo build there is a ` +
         `resolution to revisit.`
       : `The merged tree passed the repository's own check, its manifest ` +

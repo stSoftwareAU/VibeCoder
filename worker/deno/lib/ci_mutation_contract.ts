@@ -342,11 +342,12 @@ const BOOLEAN_FLAGS = new Set([
 /**
  * The `cargo mutants` flags in one command line that decide which mutants are
  * tried or how the tree builds: package, workspace, feature and the
- * exclude/examine patterns. Output, diff, jobs, timeout and shuffle flags are
- * left to the worker. Values are passed as separate argv words (never through
- * a shell); a value that is empty, starts with `-`, holds a shell
- * metacharacter outside a quoted pair, or exceeds the length cap drops that
- * flag.
+ * exclude/examine patterns, `--timeout` (seconds), `--test-tool` (cargo or
+ * nextest) and `--cargo-arg`. Output, diff, jobs and shuffle flags are left to
+ * the worker. Values are passed as separate argv words (never through a shell);
+ * empty values, shell metacharacters or values exceeding the length cap drop
+ * the flag. Only `--cargo-arg` may have a value starting with `-`; timeout and
+ * test-tool values also have their own shape checks.
  */
 export function extractCargoMutantsArgs(line: string): string[] {
   const match = CARGO_MUTANTS.exec(line);

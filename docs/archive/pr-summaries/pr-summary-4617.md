@@ -113,14 +113,16 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — For a repository whose CI runs a blocking mutants job, a PR is not
+- **partial** — For a repository whose CI runs a blocking mutants job, a PR is not
   reported ready or successfully validated while the worker's mutation check
   reports genuine unresolved survivors, for a mutants job in a remote reusable
   workflow (`owner/repo/.github/workflows/...@ref`) — evidence:
   `worker/deno/tests/ci_mutation_contract_remote_test.ts::a remote reusable workflow with a blocking mutants job is followed when fetched`
   and
   `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor a remote reusable mutants workflow blocks on holds the PR as a draft (Issue #4617)`
-  — reviewer: met
+  — reviewer: partial — reason: an unreadable or over-cap remote workflow
+  remains unknown; if no other blocking job is found, survivors are reviewer
+  notes and the PR is raised ready.
 - **met** — Use the repository's actual required CI contract (including jobs
   feeding an aggregator) for branch-protection required-check names — evidence:
   `worker/deno/tests/ci_mutation_contract_remote_test.ts::a mutants job counts when its own check, or an aggregator needing it, is required`,
@@ -141,6 +143,14 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
   and the two sibling tests beside it — reviewer: met
 
 ## Test Plan
+
+- Review follow-up: corrected the unreadable remote-workflow acceptance claim
+  and lookup and cargo flag comments. The nextest probe's success and other
+  failure paths are covered by
+  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - installed nextest runs mutants and parses outcomes`
+  and
+  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - nextest probe failure reports its exit code`.
+  No twinned copy of these comments was found.
 
 - Review follow-up: corrected the manual, detector comments and this summary to
   describe unreadable workflows and required-check filtering as implemented.

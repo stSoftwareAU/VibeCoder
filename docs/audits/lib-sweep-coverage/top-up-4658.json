@@ -5,10 +5,12 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4658",
   "definition": "Read-only PR completion accounting over an explicit cohort and supplied evidence: PR deduplication, action provenance, milestone rollups, delivery and CI counts, blockers, regressions, deployment policy fingerprints, and rollout target evaluation.",
   "status": "claimed",
-  "sweptAt": "323f3e65d60c86cee0c5a03f4e994cde5e7f5ce4",
+  "sweptAt": "31746f7f933492ccde7192e590c6b97cd0296097",
   "paths": [
     "worker/deno/commands/pr_completion_report.ts",
+    "worker/deno/lib/fleet_review_hold.ts",
     "worker/deno/lib/fleet_review_log.ts",
+    "worker/deno/lib/fleet_review_post.ts",
     "worker/deno/lib/pr_completion_report.ts",
     "worker/deno/lib/pr_completion_snapshot.ts",
     "worker/deno/lib/pr_discovery_events.ts"

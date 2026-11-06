@@ -4,9 +4,11 @@
  * workflow, so `findBlockingMutationJob` can use the real required-check
  * contract and follow `owner/repo/.github/workflows/x.yml@ref` calls.
  *
- * Every failure is logged and read as "unknown", never as "not blocking": a
- * missing required-check list leaves any PR-triggered job counting, and an
- * unreadable remote workflow is reported in `unreadable`.
+ * A required-check read failure is logged and treated as unknown, so every
+ * PR-triggered mutation job counts. An unreadable remote workflow is logged
+ * and listed in `unreadable`; its contract is unknown. As with an unreadable
+ * local file, survivors remain reviewer notes unless another blocking job is
+ * found.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */

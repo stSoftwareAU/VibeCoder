@@ -23,6 +23,7 @@ import {
 } from "../lib/audit_journal.ts";
 import { rosterPath } from "../lib/audit_anchor.ts";
 import type { AuditMutation, AuditOutcome } from "../lib/audit_entry.ts";
+import { runPrCompletionCollect } from "../commands/pr_completion_report.ts";
 import {
   actionKindFor,
   auditGhMutation,
@@ -39,6 +40,7 @@ import {
 } from "../lib/lifecycle_ledger.ts";
 import {
   buildPrCompletionReport,
+  formatPrCompletionReport,
   type TrustedPrAction,
 } from "../lib/pr_completion_report.ts";
 import {
@@ -47,6 +49,16 @@ import {
   collectPrCompletionSnapshot,
   type GhJson,
 } from "../lib/pr_completion_snapshot.ts";
+
+import {
+  HOLD_POLICY_VERSION,
+  holdPolicyMarker,
+  REVIEW_MARKER,
+  reviewBody,
+} from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
+import { postReviewAtHead } from "../lib/fleet_review_post.ts";
+
+import type { WorkerConfig } from "../types.ts";
 
 type Json = Record<string, unknown>;
 
@@ -1032,7 +1044,7 @@ function pull(number: number, extra: Json = {}): Json {
 }
 
 function commit(sha: string, date: string): Json {
-  return { sha, commit: { committer: { date } } };
+  return { sha, author: null, commit: { committer: { date } } };
 }
 
 /**
@@ -1773,14 +1785,16 @@ Deno.test("collect - unmatched GitHub merges and approvals are unknown, never hu
         {
           id: 501,
           state: "APPROVED",
+          body: "",
           submitted_at: "2026-10-20T01:00:00Z",
-          user: { login: "release-bot[bot]" },
+          user: { id: 7001, login: "release-bot[bot]" },
         },
         {
           id: 502,
           state: "COMMENTED",
+          body: "",
           submitted_at: "2026-10-20T01:10:00Z",
-          user: { login: "alice" },
+          user: { id: 7002, login: "alice" },
         },
       ],
     },
@@ -1810,6 +1824,205 @@ Deno.test("collect - unmatched GitHub merges and approvals are unknown, never hu
   assertEquals(report.completion.humanAssistedMerged, 0);
   assertEquals(report.completion.unattendedMerged, 0);
   assertEquals(report.completion.unknownMerged, 1);
+});
+
+Deno.test("collect - configured numeric GitHub actors identify unmatched reviews, dismissals and merges", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(2)] },
+    reviews: {
+      [pk(2)]: [{
+        id: 501,
+        state: "APPROVED",
+        body: "",
+        submitted_at: "2026-10-20T01:00:00Z",
+        user: { id: 8003, login: "reviewer" },
+      }],
+    },
+    events: {
+      [pk(2)]: [{
+        id: 504,
+        event: "merged",
+        created_at: "2026-10-20T02:00:00Z",
+        actor: { id: 8002, login: "merger" },
+      }, {
+        id: 505,
+        event: "review_dismissed",
+        created_at: "2026-10-20T01:10:00Z",
+        actor: { id: 8004, login: "dismisser" },
+      }],
+    },
+    commits: {
+      [pk(2)]: [{
+        ...commit("sha2", "2026-10-20T00:10:00Z"),
+        author: { id: 8001, login: "author" },
+      }],
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(fixture), {
+      humanActorIds: ["8001", "8002", "8003", "8004"],
+    }),
+  );
+  assertEquals(snapshot.input.actions.length, 4);
+  for (const action of snapshot.input.actions) {
+    const human = action.kind !== "implementation";
+    assertEquals(action.actor, human ? "human" : "unknown", action.actionId);
+    assertEquals(action.verified, human, action.actionId);
+    assertEquals(
+      action.outcome,
+      human ? "confirmed" : "unknown",
+      action.actionId,
+    );
+  }
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.completion.humanAssistedMerged, 1);
+  assertEquals(report.completion.unattendedMerged, 0);
+});
+
+Deno.test("collect - automated commits retaining an allowlisted human author stay unknown", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(2)] },
+    events: {
+      [pk(2)]: [{
+        id: 504,
+        event: "merged",
+        created_at: "2026-10-20T02:00:00Z",
+        actor: { id: 7001, login: "merge-bot[bot]" },
+      }],
+    },
+    commits: {
+      [pk(2)]: [
+        {
+          ...commit("initial", "2026-10-20T00:10:00Z"),
+          author: { id: 7001, login: "merge-bot[bot]" },
+        },
+        {
+          ...commit("human-fix", "2026-10-20T01:10:00Z"),
+          author: { id: 8001, login: "maintainer" },
+          committer: { id: 7001, login: "merge-bot[bot]" },
+          commit: {
+            author: { name: "Maintainer", email: "maintainer@example.invalid" },
+            committer: { date: "2026-10-20T01:10:00Z" },
+            verification: { verified: false, reason: "unsigned" },
+          },
+        },
+      ],
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(fixture), { humanActorIds: ["8001"] }),
+  );
+  const repair = snapshot.input.actions.find((action) =>
+    action.kind === "repair"
+  );
+  const merge = snapshot.input.actions.find((action) =>
+    action.kind === "merge"
+  );
+  assertEquals(repair?.actor, "unknown");
+  assertEquals(repair?.verified, false);
+  assertEquals(merge?.actor, "unknown");
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.completion.humanAssistedMerged, 0);
+  assertEquals(report.completion.unattendedMerged, 0);
+  assertEquals(report.completion.unknownMerged, 1);
+});
+
+Deno.test("collect - malformed GitHub actor identities fail loudly", async () => {
+  for (const actor of [{ login: "missing-id" }, { id: "not-numeric" }]) {
+    const fixture = emptyFixture({
+      pulls: { [REPO]: [pull(2)] },
+      reviews: {
+        [pk(2)]: [{
+          id: 501,
+          state: "APPROVED",
+          body: "",
+          submitted_at: "2026-10-20T01:00:00Z",
+          user: actor,
+        }],
+      },
+    });
+    const expected = "id" in actor
+      ? ".user.id must be a numeric GitHub user id"
+      : ".user is missing id";
+    await assertRejects(
+      () => collectPrCompletionSnapshot(options(fakeGh(fixture))),
+      Error,
+      expected,
+    );
+  }
+});
+
+Deno.test("collect - a review log needs an allowlisted GitHub actor to verify its human attribution", async () => {
+  await withDir(async (dir) => {
+    const path = `${dir}/review.jsonl`;
+    await Deno.writeTextFile(path, logLine(2, "2026-10-20T01:00:00Z"));
+    const fixture = emptyFixture({
+      pulls: { [REPO]: [pull(2)] },
+      reviews: {
+        [pk(2)]: [
+          {
+            id: 501,
+            state: "APPROVED",
+            body: "",
+            submitted_at: "2026-10-20T01:00:00Z",
+            user: { id: 8003, login: "reviewer" },
+          },
+        ],
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), {
+        reviewLogs: [path],
+        humanActorIds: ["8003"],
+      }),
+    );
+    const review = snapshot.input.actions.find((action) =>
+      action.actionId.startsWith("review-log:")
+    );
+    assertEquals(review?.actor, "human");
+    assertEquals(review?.verified, true);
+    assertEquals(review?.githubEvents?.map((event) => event.id), ["501"]);
+  });
+});
+
+Deno.test("collect - a verified fleet merge takes precedence over a configured human actor", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-merge",
+      actionKind: "merge",
+      actionId: "fleet-merge",
+      runId: "review-log",
+      repo: REPO,
+      prNumber: 2,
+      timestamp: "2026-10-20T02:00:00Z",
+    }]);
+    const fixture = emptyFixture({
+      pulls: { [REPO]: [pull(2)] },
+      events: {
+        [pk(2)]: [{
+          id: 504,
+          event: "merged",
+          created_at: "2026-10-20T02:00:00Z",
+          actor: { id: 8002, login: "automation-user" },
+        }],
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), {
+        auditDirs: [dir],
+        humanActorIds: ["8002"],
+      }),
+    );
+    const merge = snapshot.input.actions.find((action) =>
+      action.actionId === "fleet-merge"
+    );
+    assertEquals(merge?.actor, "fleet");
+    assertEquals(merge?.verified, true);
+    assertEquals(merge?.githubEvents?.map((event) => event.id), ["504"]);
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.humanAssistedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
 });
 
 Deno.test("collect - a broken audit chain leaves its actions unverified and the history incomplete", async () => {
@@ -2290,18 +2503,21 @@ Deno.test("collect - blocker intervals are closed or open as the events dictate"
         {
           id: 1,
           event: "labeled",
+          actor: { id: 7001, login: "bot" },
           label: { name: "needs-human" },
           created_at: "2026-10-20T10:00:00Z",
         },
         {
           id: 2,
           event: "unlabeled",
+          actor: { id: 7001, login: "bot" },
           label: { name: "needs-human" },
           created_at: "2026-10-20T12:00:00Z",
         },
         {
           id: 3,
           event: "labeled",
+          actor: { id: 7001, login: "bot" },
           label: { name: "needs-human" },
           created_at: "2026-10-20T14:00:00Z",
         },
@@ -2312,12 +2528,16 @@ Deno.test("collect - blocker intervals are closed or open as the events dictate"
         {
           id: 9,
           state: "CHANGES_REQUESTED",
+          body: "",
           submitted_at: "2026-10-20T15:00:00Z",
+          user: { id: 7002, login: "reviewer" },
         },
         {
           id: 10,
           state: "CHANGES_REQUESTED",
+          body: "",
           submitted_at: "2026-10-20T17:00:00Z",
+          user: { id: 7002, login: "reviewer" },
         },
       ],
     },
@@ -2855,16 +3075,22 @@ Deno.test("collect - the rollout check counts stranded, rediscovered and process
         eligibilityConfirmed: true,
         processed: false,
       },
+      {
+        prNumber: 5,
+        discovered: false,
+        eligibilityConfirmed: false,
+        processed: false,
+      },
     ]);
     assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, true);
     assertEquals(snapshot.input.rollout!.verifiedAt, "2026-10-25T12:00:00Z");
     const report = buildPrCompletionReport(snapshot.input);
-    assertEquals(report.rollout.eligibleStrandedPrs, 3);
+    assertEquals(report.rollout.eligibleStrandedPrs, 4);
     assertEquals(report.rollout.discoveredPrs, 2);
     assertEquals(report.rollout.eligibleEventPrs, 2);
     assertEquals(report.rollout.rediscoveredPrs, 2);
     assertEquals(report.rollout.processedPrs, 1);
-    assertEquals(report.rollout.notRediscoveredPrs, 1);
+    assertEquals(report.rollout.notRediscoveredPrs, 2);
     assertEquals(report.rollout.unknownDiscoveryPrs, 0);
   });
 });
@@ -3266,7 +3492,7 @@ Deno.test("collect - the rollout check strands only PRs open at verification and
               created_at: "2026-10-20T00:00:00Z",
               closed_at: verified,
             }),
-            // Owner-gated: excluded.
+            // A generic needs-human label does not establish an owner gate.
             pull(35, {
               ...open,
               created_at: "2026-10-20T00:00:00Z",
@@ -3298,14 +3524,20 @@ Deno.test("collect - the rollout check strands only PRs open at verification and
         eligibilityConfirmed: false,
         processed: false,
       },
+      {
+        prNumber: 35,
+        discovered: false,
+        eligibilityConfirmed: false,
+        processed: false,
+      },
     ]);
     assertEquals(snapshot.input.rollout!.discoveryEvidenceComplete, false);
     const report = buildPrCompletionReport(snapshot.input);
-    assertEquals(report.rollout.eligibleStrandedPrs, 2);
+    assertEquals(report.rollout.eligibleStrandedPrs, 3);
     assertEquals(report.rollout.rediscoveredPrs, 0);
     assertEquals(report.rollout.processedPrs, 0);
     assertEquals(report.rollout.notRediscoveredPrs, 0);
-    assertEquals(report.rollout.unknownDiscoveryPrs, 2);
+    assertEquals(report.rollout.unknownDiscoveryPrs, 3);
   });
 });
 
@@ -3365,9 +3597,10 @@ function review(id: number, submittedAt: string): Json {
   return {
     id,
     state: "APPROVED",
+    body: "",
     submitted_at: submittedAt,
     commit_id: "sha1",
-    user: { login: "review-bot[bot]" },
+    user: { id: 7001, login: "review-bot[bot]" },
   };
 }
 
@@ -3405,6 +3638,7 @@ async function writeLines(path: string, lines: string[]): Promise<string> {
 async function reviewedPr(
   dir: string,
   extra: Partial<CollectOptions> = {},
+  reviews: Json[] = [review(601, REVIEW_AT)],
 ): Promise<CollectedSnapshot> {
   await journal(dir, [
     {
@@ -3426,13 +3660,137 @@ async function reviewedPr(
   ]);
   const fixture = emptyFixture({
     pulls: { [REPO]: [pull(1)] },
-    reviews: { [pk(1)]: [review(601, REVIEW_AT)] },
+    reviews: { [pk(1)]: reviews },
     commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
   });
   return await collectPrCompletionSnapshot(
     options(fakeGh(fixture), { auditDirs: [dir], ...extra }),
   );
 }
+
+Deno.test("collect - a second review remains attributed when a fleet log is duplicated", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "reviewer",
+      actionId: "fleet-review-with-second-review",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, "2026-10-20T01:00:30Z"),
+    ]);
+    const reviews = [review(601, REVIEW_AT), {
+      ...review(602, "2026-10-20T01:03:00Z"),
+      user: { id: 9001, login: "human" },
+    }];
+    for (const humanActorIds of [[], ["9001"]]) {
+      const snapshot = await reviewedPr(dir, {
+        reviewLogs: [log],
+        humanActorIds,
+      }, reviews);
+      const completion = buildPrCompletionReport(snapshot.input).completion;
+      assertEquals(completion.unattendedMerged, 0);
+      assertEquals(completion.unknownMerged, humanActorIds.length ? 0 : 1);
+      assertEquals(
+        completion.humanAssistedMerged,
+        humanActorIds.length ? 1 : 0,
+      );
+      assert(
+        snapshot.input.actions.some((action) =>
+          action.actionId === "gh:org/repo#1:review:602"
+        ),
+      );
+    }
+  });
+});
+
+Deno.test("collect - a matched fleet review supersedes its review log without double counting", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "reviewer",
+      actionId: "fleet-review-dedup",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, "2026-10-20T01:00:30Z"),
+    ]);
+    const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.delivery.reviewRounds, 1);
+    assertEquals(
+      snapshot.input.actions.filter((action) => action.runId === "review-log")
+        .length,
+      0,
+    );
+  });
+});
+
+Deno.test("collect - a non-reviewer audit action cannot supersede a review log", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "worker",
+      actionId: "worker-review",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, "2026-10-20T01:00:30Z"),
+    ]);
+    const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
+    assertEquals(
+      snapshot.input.actions.filter((action) => action.runId === "review-log")
+        .length,
+      1,
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unknownMerged,
+      1,
+    );
+  });
+});
+
+Deno.test("collect - a matched fleet review leaves unrelated log rows in the history", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "reviewer",
+      actionId: "fleet-review-unrelated-log",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, "2026-10-20T01:00:30Z", "other-head"),
+      logLine(1, "2026-10-20T01:30:00Z"),
+    ]);
+    const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
+    assertEquals(
+      snapshot.input.actions.filter((action) => action.runId === "review-log")
+        .length,
+      2,
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unknownMerged,
+      1,
+    );
+  });
+});
 
 Deno.test("collect - an unchained review log cannot verify a PR's history", async () => {
   await withDir(async (dir) => {
@@ -3577,10 +3935,11 @@ Deno.test("collect - an omitted key GitHub always sends is malformed, never an e
     );
   }
   // A review without its state or its submitted_at key is refused the same way.
-  for (const key of ["state", "submitted_at"]) {
+  for (const key of ["state", "submitted_at", "body"]) {
     const review: Json = {
       id: 601,
       state: "APPROVED",
+      body: "",
       submitted_at: "2026-10-20T01:00:00Z",
     };
     delete review[key];
@@ -3607,8 +3966,9 @@ Deno.test("collect - explicit null and empty values are accepted as the empty st
   const pending = {
     id: 602,
     state: "PENDING",
+    body: "",
     submitted_at: null,
-    user: { login: "alice" },
+    user: { id: 7002, login: "alice" },
   };
   const fixture = emptyFixture({
     pulls: { [REPO]: [open] },
@@ -3632,7 +3992,9 @@ Deno.test("collect - a page-truncated event list and a partial check-run list ar
   const reviews = Array.from({ length: 1_000 }, (_, i) => ({
     id: i + 1,
     state: "COMMENTED",
+    body: "",
     submitted_at: "2026-10-20T01:00:00Z",
+    user: { id: 7002, login: "reviewer" },
   }));
   const fixture = emptyFixture({
     pulls: { [REPO]: [pull(50)] },
@@ -3781,14 +4143,14 @@ Deno.test("collect - human-looking logins on a matched PR never downgrade it fro
     const fixture = emptyFixture({
       pulls: {
         [REPO]: [pull(31, {
-          user: { login: "alice", type: "User" },
+          user: { id: 7002, login: "alice", type: "User" },
           merged_by: { login: "alice", type: "User" },
         })],
       },
       commits: {
         [pk(31)]: [{
           ...commit("sha31", "2026-10-20T00:25:00Z"),
-          author: { login: "alice", type: "User" },
+          author: { id: 7002, login: "alice", type: "User" },
           committer: { login: "alice", type: "User" },
         }],
       },
@@ -3863,4 +4225,972 @@ Deno.test("collect - open PRs from before the cohort are counted, whether on the
   );
   assertEquals(capped.input.openPrsBeforeCohort, 100);
   assertEquals(capped.truncatedRepos, [REPO]);
+});
+
+Deno.test("collect - genuine owner gates need a current verified reviewer hold, never a generic label", async () => {
+  await withDir(async (dir) => {
+    const body = reviewBody(
+      "held",
+      {
+        summary: "Owner decision required",
+        findings: [],
+        testChanges: "meaningful",
+        testChangeNotes: [],
+        unrelatedIssues: [],
+        checklist: [],
+      },
+      [],
+      [],
+      {
+        hold: {
+          reasons: ["Should this product retain archived records?"],
+          override: false,
+        },
+      },
+    );
+    const overrideBody = reviewBody(
+      "held",
+      {
+        summary: "Repository policy requires owner review",
+        findings: [],
+        testChanges: "meaningful",
+        testChangeNotes: [],
+        unrelatedIssues: [],
+        checklist: [],
+      },
+      [],
+      [],
+      { hold: { reasons: [], override: true } },
+    );
+    const at = "2026-10-20T01:00:00Z";
+    const cases = [
+      { number: 61, body, verified: true, expected: true },
+      { number: 62, body: overrideBody, verified: true, expected: true },
+      {
+        number: 63,
+        body: "A generic needs-human label",
+        verified: true,
+        expected: false,
+      },
+      { number: 64, body, verified: false, expected: false },
+      { number: 65, body, verified: true, head: "old-head", expected: false },
+      {
+        number: 66,
+        body: body.replace(
+          holdPolicyMarker(),
+          holdPolicyMarker(HOLD_POLICY_VERSION - 1),
+        ),
+        verified: true,
+        expected: false,
+      },
+      { number: 67, body, verified: true, labelled: false, expected: false },
+      { number: 68, body, verified: true, state: "DISMISSED", expected: false },
+      {
+        number: 69,
+        body,
+        verified: true,
+        laterApproval: true,
+        expected: false,
+      },
+      { number: 70, body, verified: true, failed: true, expected: false },
+      { number: 71, body, verified: true, terminal: "merged", expected: false },
+      { number: 72, body, verified: true, terminal: "closed", expected: false },
+      { number: 73, body, verified: true, laterChanges: true, expected: false },
+      {
+        number: 74,
+        body: body.replace(
+          "- Should this product retain archived records?",
+          "",
+        ),
+        verified: true,
+        expected: false,
+      },
+      { number: 75, body, verified: true, worker: true, expected: false },
+      {
+        number: 76,
+        body: body.replace(`_${REVIEW_MARKER}._`, ""),
+        verified: true,
+        expected: false,
+      },
+    ];
+    await journal(
+      dir,
+      cases.filter((row) => row.verified).map((row) => ({
+        verb: "pr-review",
+        actionKind: "review",
+        component: row.worker ? "worker" : "reviewer",
+        actionId: `owner-review-${row.number}`,
+        repo: REPO,
+        prNumber: row.number,
+        headSha: row.head ?? `sha${row.number}`,
+        timestamp: at,
+        ...(row.failed ? { outcome: "error" as const } : {}),
+      })),
+    );
+    const fixture = emptyFixture({
+      pulls: {
+        [REPO]: cases.map((row) =>
+          pull(row.number, {
+            state: row.terminal ? "closed" : "open",
+            merged_at: row.terminal === "merged"
+              ? "2026-10-20T02:00:00Z"
+              : null,
+            closed_at: row.terminal ? "2026-10-20T02:00:00Z" : null,
+            labels: row.labelled === false ? [] : [{ name: "needs-human" }],
+          })
+        ),
+      },
+      reviews: Object.fromEntries(cases.map((row) => [pk(row.number), [
+        {
+          id: row.number,
+          user: { id: 9001 },
+          body: row.body,
+          state: row.state ?? "COMMENTED",
+          commit_id: row.head ?? `sha${row.number}`,
+          submitted_at: at,
+        },
+        ...(row.laterApproval || row.laterChanges
+          ? [{
+            id: 900,
+            user: { id: 9002 },
+            body: "Approved",
+            state: row.laterChanges ? "CHANGES_REQUESTED" : "APPROVED",
+            commit_id: `sha${row.number}`,
+            submitted_at: "2026-10-20T01:01:00Z",
+          }]
+          : []),
+      ]])),
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), {
+        auditDirs: [dir],
+        rolloutVerifiedAt: "2026-10-25T00:00:00Z",
+      }),
+    );
+    for (const row of cases) {
+      const record = snapshot.input.prs.find((pr) => pr.number === row.number);
+      assertEquals(
+        record?.ownerGateVerified,
+        row.expected,
+        `owner gate ${row.number}`,
+      );
+    }
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.cohort.ownerGatedPrs, 2);
+    assertEquals(report.cohort.unverifiedOwnerGateLabels, 13);
+    assertEquals(report.completion.eligiblePrs, 14);
+    assertEquals(
+      snapshot.input.rollout?.strandedPrs.map((pr) => pr.prNumber).sort(),
+      cases.filter((row) => !row.expected && !row.terminal).map((row) =>
+        row.number
+      ).sort(),
+    );
+  });
+});
+
+Deno.test("collect - reports genuine owner-only exceptions with provenance alongside regressions", async () => {
+  await withDir(async (dir) => {
+    const body = reviewBody(
+      "held",
+      {
+        summary: "Owner decision required",
+        findings: [],
+        testChanges: "meaningful",
+        testChangeNotes: [],
+        unrelatedIssues: [],
+        checklist: [],
+      },
+      [],
+      [],
+      {
+        hold: {
+          reasons: ["Should this product retain archived records?"],
+          override: false,
+        },
+      },
+    );
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "reviewer",
+      actionId: "owner-hold",
+      repo: REPO,
+      prNumber: 61,
+      headSha: "sha61",
+      timestamp: "2026-10-20T01:04:00Z",
+    }]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: {
+            [REPO]: [
+              pull(61, {
+                state: "open",
+                merged_at: null,
+                closed_at: null,
+                labels: [{ name: "needs-human" }],
+              }),
+              pull(62),
+              pull(63, {
+                title: 'Revert "Change (#62)"',
+                body: "Reverts #62",
+                merged_at: "2026-10-21T02:00:00Z",
+              }),
+            ],
+          },
+          reviews: {
+            [pk(61)]: [{
+              id: 761,
+              user: { id: 9001 },
+              state: "COMMENTED",
+              body,
+              commit_id: "sha61",
+              submitted_at: "2026-10-20T01:00:00Z",
+            }],
+          },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    const report = JSON.parse(
+      JSON.stringify(buildPrCompletionReport(snapshot.input)),
+    );
+    assertEquals(report.ownerOnlyExceptions, [{
+      repo: REPO,
+      prNumber: 61,
+      state: "open",
+      evidence: {
+        reviewId: "761",
+        actionId: "owner-hold",
+        headSha: "sha61",
+        timestamp: "2026-10-20T01:00:00Z",
+        reason: "product-contract",
+        detail: "Should this product retain archived records?",
+      },
+    }]);
+    assertEquals(report.regressions.observed, 1);
+    assertEquals(report.regressions.unresolved, 0);
+    assertEquals(report.completion.eligiblePrs, 2);
+  });
+});
+
+Deno.test("collect - a nearer review takes the fleet action; an earlier allowlisted review stays a human action", async () => {
+  await withDir(async (dir) => {
+    const body = reviewBody(
+      "held",
+      {
+        summary: "Owner decision required",
+        findings: [],
+        testChanges: "meaningful",
+        testChangeNotes: [],
+        unrelatedIssues: [],
+        checklist: [],
+      },
+      [],
+      [],
+      {
+        hold: {
+          reasons: ["Should this product retain archived records?"],
+          override: false,
+        },
+      },
+    );
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "reviewer",
+      actionId: "owner-hold",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const reviews = [
+      {
+        id: 600,
+        state: "COMMENTED",
+        body: "Owner note",
+        submitted_at: "2026-10-20T00:55:00Z",
+        commit_id: "sha1",
+        user: { id: 9002 },
+      },
+      {
+        id: 601,
+        state: "COMMENTED",
+        body,
+        submitted_at: "2026-10-20T01:00:00Z",
+        commit_id: "sha1",
+        user: { id: 9001 },
+      },
+    ];
+    for (const merged of [false, true]) {
+      const snapshot = await collectPrCompletionSnapshot(
+        options(
+          fakeGh(emptyFixture({
+            pulls: {
+              [REPO]: [
+                pull(
+                  1,
+                  merged ? {} : {
+                    state: "open",
+                    merged_at: null,
+                    closed_at: null,
+                    labels: [{ name: "needs-human" }],
+                  },
+                ),
+              ],
+            },
+            reviews: { [pk(1)]: reviews },
+          })),
+          { auditDirs: [dir], humanActorIds: ["9002"] },
+        ),
+      );
+      const hold = snapshot.input.actions.find((a) =>
+        a.actionId === "owner-hold"
+      );
+      assertEquals(
+        hold?.githubEvents?.map((e) => e.id),
+        ["601"],
+        `merged=${merged}`,
+      );
+      assertEquals(hold?.actor, "fleet");
+      const earlier = snapshot.input.actions.find((a) =>
+        a.actionId === `gh:${REPO}#1:review:600`
+      );
+      assertEquals(earlier?.actor, "human", `merged=${merged}`);
+      assertEquals(earlier?.verified, true);
+      if (!merged) {
+        assertEquals(snapshot.input.prs[0]?.ownerGateVerified, true);
+        assertEquals(
+          buildPrCompletionReport(snapshot.input).ownerOnlyExceptions.length,
+          1,
+        );
+      } else {
+        assertEquals(
+          buildPrCompletionReport(snapshot.input).completion
+            .humanAssistedMerged,
+          1,
+        );
+      }
+    }
+  });
+});
+
+Deno.test("collect - fleet review outranks a closer unchained log", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      actionId: "fleet-review",
+      repo: REPO,
+      prNumber: 1,
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, REVIEW_AT),
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          reviews: { [pk(1)]: [review(601, REVIEW_AT)] },
+        })),
+        { auditDirs: [dir], reviewLogs: [log], humanActorIds: ["7001"] },
+      ),
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.humanAssistedMerged,
+      0,
+    );
+    assertEquals(
+      snapshot.input.actions.find((a) => a.actionId === "fleet-review")
+        ?.githubEvents?.map((e) => e.id),
+      ["601"],
+    );
+  });
+});
+const cliArgs = {
+  collect: true,
+  repos: REPO,
+  "expected-revision": "rev1",
+  start: COHORT.start,
+  end: COHORT.end,
+};
+Deno.test("collect - null GitHub actors stay unknown with and without a review-log match", async () => {
+  await withDir(async (dir) => {
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, REVIEW_AT),
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture({
+        pulls: { [REPO]: [pull(1)] },
+        reviews: {
+          [pk(1)]: [
+            { ...review(601, REVIEW_AT), user: null },
+            { ...review(602, "2026-10-20T01:20:00Z"), user: null },
+          ],
+        },
+        events: {
+          [pk(1)]: [
+            {
+              id: 603,
+              event: "review_dismissed",
+              actor: null,
+              created_at: "2026-10-20T01:30:00Z",
+            },
+            {
+              id: 604,
+              event: "merged",
+              actor: null,
+              created_at: "2026-10-20T02:00:00Z",
+            },
+          ],
+        },
+      })),
+      { reviewLogs: [log], humanActorIds: ["8003"] },
+    ));
+    assertEquals(snapshot.input.actions.length, 4);
+    for (const action of snapshot.input.actions) {
+      assertEquals(action.actor, "unknown", action.actionId);
+      assertEquals(action.verified, false, action.actionId);
+    }
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.humanAssistedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
+});
+Deno.test("collect CLI - fleet review outranks a closer unchained log", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      actionId: "fleet-review",
+      repo: REPO,
+      prNumber: 1,
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, REVIEW_AT),
+    ]);
+    const result = await runPrCompletionCollect(
+      {
+        ...cliArgs,
+        "audit-dir": dir,
+        "review-log": log,
+        "human-actor-id": "7001",
+      },
+      { repos: [REPO] } as unknown as WorkerConfig,
+      fakeGh(emptyFixture({
+        pulls: { [REPO]: [pull(1)] },
+        reviews: { [pk(1)]: [review(601, REVIEW_AT)] },
+      })),
+      () => undefined,
+    );
+    assertEquals(result.success, true, result.message);
+    assertEquals(result.data?.report.completion.humanAssistedMerged, 0);
+  });
+});
+Deno.test("collect CLI - automated commits retaining human authorship stay unknown", async () => {
+  await withDir(async (dir) => {
+    const result = await runPrCompletionCollect(
+      { ...cliArgs, "audit-dir": dir, "human-actor-id": "8001" },
+      { repos: [REPO] } as unknown as WorkerConfig,
+      fakeGh(emptyFixture({
+        pulls: { [REPO]: [pull(2)] },
+        commits: {
+          [pk(2)]: [
+            commit("initial", "2026-10-20T00:10:00Z"),
+            {
+              ...commit("repair", "2026-10-20T01:10:00Z"),
+              author: { id: 8001, login: "maintainer" },
+              committer: { id: 7001, login: "automation" },
+              commit: {
+                author: {
+                  name: "Maintainer",
+                  email: "maintainer@example.invalid",
+                },
+                committer: { date: "2026-10-20T01:10:00Z" },
+                verification: { verified: false, reason: "unsigned" },
+              },
+            },
+          ],
+        },
+      })),
+      () => undefined,
+    );
+    assertEquals(result.success, true, result.message);
+    assertEquals(result.data?.report.completion.humanAssistedMerged, 0);
+  });
+});
+
+Deno.test("collect - actual reviewer posting journals genuine owner holds and preserves failed posts", async () => {
+  await withDir(async (dir) => {
+    const body = reviewBody(
+      "held",
+      {
+        summary: "Owner decision required",
+        findings: [],
+        testChanges: "meaningful",
+        testChangeNotes: [],
+        unrelatedIssues: [],
+        checklist: [],
+      },
+      [],
+      [],
+      {
+        hold: {
+          reasons: ["Should this product retain archived records?"],
+          override: false,
+        },
+      },
+    );
+    const bodyFile = `${dir}/hold.md`;
+    await Deno.writeTextFile(bodyFile, body);
+    const at = "2026-10-20T01:00:00Z";
+    const posted: Record<string, Json[]> = {};
+    await postReviewAtHead(
+      { repo: REPO, number: 81, headSha: "sha81" },
+      "held",
+      bodyFile,
+      {
+        auditDir: `${dir}/audit`,
+        runId: "owner-review-round",
+        now: () => new Date(at),
+        runGh: async (args) => {
+          assertEquals(args.slice(0, 6), [
+            "pr",
+            "review",
+            "81",
+            "-R",
+            REPO,
+            "--comment",
+          ]);
+          const postedBody = await Deno.readTextFile(
+            args[args.indexOf("--body-file") + 1]!,
+          );
+          posted[pk(81)] = [{
+            id: 881,
+            user: { id: 9001 },
+            state: "COMMENTED",
+            body: postedBody,
+            commit_id: "sha81",
+            submitted_at: at,
+          }];
+          return "";
+        },
+      },
+    );
+    await assertRejects(
+      () =>
+        postReviewAtHead(
+          { repo: REPO, number: 82, headSha: "sha82" },
+          "held",
+          bodyFile,
+          {
+            auditDir: `${dir}/audit`,
+            runId: "failed-owner-review-round",
+            now: () => new Date(at),
+            runGh: () => Promise.reject(new Error("GitHub refused review")),
+          },
+        ),
+      Error,
+      "GitHub refused review",
+    );
+    const loaded = await loadEntries(auditFilePath({
+      baseDir: `${dir}/audit`,
+      workerId: "fleet-reviewer",
+      date: at.slice(0, 10),
+    }));
+    assert(loaded.ok);
+    const records = loaded.value;
+    const success = records.find((entry) => entry.prNumber === 81);
+    assertEquals(success?.component, "reviewer");
+    assertEquals(success?.headSha, "sha81");
+    assertEquals(success?.outcome, "success");
+    assertEquals(
+      records.find((entry) => entry.prNumber === 82)?.outcome,
+      "error",
+    );
+    const fixture = emptyFixture({
+      pulls: {
+        [REPO]: [81, 82].map((number) =>
+          pull(number, {
+            state: "open",
+            merged_at: null,
+            closed_at: null,
+            labels: [{ name: "needs-human" }],
+          })
+        ),
+      },
+      reviews: posted,
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), { auditDirs: [`${dir}/audit`] }),
+    );
+    assertEquals(
+      snapshot.input.prs.find((pr) => pr.number === 81)?.ownerGateVerified,
+      true,
+    );
+    assertEquals(
+      snapshot.input.prs.find((pr) => pr.number === 82)?.ownerGateVerified,
+      false,
+    );
+    const report = JSON.parse(
+      formatPrCompletionReport(buildPrCompletionReport(snapshot.input)),
+    );
+    assertEquals(
+      report.ownerOnlyExceptions[0].evidence.actionId,
+      success?.actionId,
+    );
+    assertEquals(
+      report.ownerOnlyExceptions[0].evidence.reason,
+      "product-contract",
+    );
+    assertEquals(report.cohort.ownerGatedPrs, 1);
+    assertEquals(report.completion.eligiblePrs, 1);
+  });
+});
+
+Deno.test("collect - owner gates preserve incomplete provenance and historical rollout eligibility", async () => {
+  await withDir(async (dir) => {
+    const body = reviewBody(
+      "held",
+      {
+        summary: "Owner decision required",
+        findings: [],
+        testChanges: "meaningful",
+        testChangeNotes: [],
+        unrelatedIssues: [],
+        checklist: [],
+      },
+      [],
+      [],
+      {
+        hold: {
+          reasons: ["Should this product retain archived records?"],
+          override: false,
+        },
+      },
+    );
+    const at = "2026-10-20T01:00:00Z";
+    const later = "2026-10-24T23:58:00Z";
+    await journal(
+      dir,
+      [81, 82, 83, 84, 86].map((number) => ({
+        verb: "pr-review",
+        actionKind: "review",
+        component: "reviewer",
+        actionId: `owner-review-${number}`,
+        repo: REPO,
+        prNumber: number,
+        headSha: `sha${number}`,
+        timestamp: number === 82
+          ? "2026-10-25T00:02:00Z"
+          : number === 86
+          ? "2026-10-26T01:00:00Z"
+          : at,
+      })),
+    );
+    const held = (number: number, submitted = at): Json => ({
+      id: number,
+      user: { id: 9001 },
+      state: "COMMENTED",
+      body,
+      commit_id: `sha${number}`,
+      submitted_at: submitted,
+    });
+    const log = JSON.parse(logLine(85, at, "sha85"));
+    log.outcome = "held";
+    const reviewLog = await writeLines(`${dir}/logs/reviews.jsonl`, [
+      JSON.stringify(log),
+    ]);
+    const fixture = emptyFixture({
+      pulls: {
+        [REPO]: [81, 82, 83, 84, 85, 86].map((number) =>
+          pull(number, {
+            state: "open",
+            merged_at: null,
+            closed_at: null,
+            labels: [{ name: "needs-human" }],
+          })
+        ),
+      },
+      reviews: {
+        [pk(81)]: [
+          ...Array.from(
+            { length: 999 },
+            (_, index) => ({ ...held(index + 1000), commit_id: "old-head" }),
+          ),
+          held(81),
+        ],
+        [pk(82)]: [held(82, later)],
+        [pk(83)]: [held(83)],
+        [pk(84)]: [{ ...held(84), body: null }],
+        [pk(85)]: [held(85)],
+        [pk(86)]: [held(86, "2026-10-26T01:00:00Z")],
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), {
+        auditDirs: [dir],
+        reviewLogs: [reviewLog],
+        humanActorIds: ["9001"],
+        rolloutVerifiedAt: "2026-10-25T00:00:00Z",
+      }),
+    );
+    assertEquals(
+      snapshot.input.prs.filter((pr) => pr.ownerGateVerified).map((pr) =>
+        pr.number
+      ),
+      [82, 83, 86],
+    );
+    assertEquals(snapshot.input.rollout?.strandedPrs.map((pr) => pr.prNumber), [
+      81,
+      84,
+      85,
+      86,
+    ]);
+    assertEquals(
+      snapshot.input.prs.find((pr) => pr.number === 82)?.ownerGateEvidence
+        ?.timestamp,
+      later,
+    );
+    assertEquals(
+      snapshot.input.actions.find((action) => action.runId === "review-log")
+        ?.actor,
+      "human",
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.cohort.ownerGatedPrs, 3);
+    assertEquals(report.cohort.unverifiedOwnerGateLabels, 3);
+    assertEquals(report.completion.eligiblePrs, 3);
+  });
+});
+
+/** The audit entry for one fleet review of PR 1 at the given time. */
+function reviewAction(
+  actionId: string,
+  timestamp: string,
+): Partial<AuditMutation> & { verb: string } {
+  return {
+    verb: "pr-review",
+    actionKind: "review",
+    component: "reviewer",
+    actionId,
+    repo: REPO,
+    prNumber: 1,
+    headSha: "sha1",
+    timestamp,
+  };
+}
+
+/** Collect PR 1 (merged at 02:00 on `sha1`) with the given journal and commits. */
+async function collectPr1(
+  dir: string,
+  entries: Array<Partial<AuditMutation> & { verb: string }>,
+  commits: Json[],
+  reviews: Json[] = [],
+): Promise<CollectedSnapshot> {
+  await journal(dir, entries);
+  return await collectPrCompletionSnapshot(
+    options(
+      fakeGh(emptyFixture({
+        pulls: { [REPO]: [pull(1)] },
+        reviews: { [pk(1)]: reviews },
+        commits: { [pk(1)]: commits },
+      })),
+      { auditDirs: [dir] },
+    ),
+  );
+}
+
+const find = (snapshot: CollectedSnapshot, actionId: string) =>
+  snapshot.input.actions.find((a) => a.actionId === actionId);
+
+Deno.test("collect - a review action cannot account for the GitHub merge it is near", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPr1(
+      dir,
+      [
+        {
+          verb: "git-push",
+          actionKind: "implementation",
+          actionId: "push",
+          deliveredCommits: ["sha1"],
+          target: "issue-1",
+          timestamp: "2026-10-20T00:30:00Z",
+        },
+        reviewAction("near-merge", "2026-10-20T02:00:30Z"),
+      ],
+      [commit("sha1", "2026-10-20T00:25:00Z")],
+    );
+    assertEquals(find(snapshot, "near-merge")?.githubEvents, undefined);
+    assertEquals(
+      find(snapshot, "gh:org/repo#1:merge:merge1")?.actor,
+      "unknown",
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unknownMerged,
+      1,
+    );
+  });
+});
+
+Deno.test("collect - a merge action that lists the commit cannot also deliver it", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPr1(
+      dir,
+      [{
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge-with-range",
+        repo: REPO,
+        prNumber: 1,
+        deliveredCommits: ["sha1"],
+        timestamp: "2026-10-20T02:00:00Z",
+      }],
+      [commit("sha1", "2026-10-20T00:25:00Z")],
+    );
+    assertEquals(
+      find(snapshot, "merge-with-range")?.githubEvents?.map((e) => e.kind),
+      ["merge"],
+    );
+    assertEquals(
+      find(snapshot, "gh:org/repo#1:implementation:sha1")?.actor,
+      "unknown",
+    );
+  });
+});
+
+Deno.test("collect - a push stamped before the commit cannot have delivered it, even when it lists it", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPr1(
+      dir,
+      [{
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "early-push",
+        deliveredCommits: ["sha1"],
+        target: "issue-1",
+        timestamp: "2026-10-20T00:15:00Z",
+      }],
+      [commit("sha1", "2026-10-20T00:30:00Z")],
+    );
+    assertEquals(find(snapshot, "early-push")?.githubEvents, undefined);
+    assertEquals(
+      find(snapshot, "gh:org/repo#1:implementation:sha1")?.actor,
+      "unknown",
+    );
+    // Control: the same push stamped after the commit does deliver it.
+    await withDir(async (control) => {
+      const delivered = await collectPr1(
+        control,
+        [{
+          verb: "git-push",
+          actionKind: "implementation",
+          actionId: "late-push",
+          deliveredCommits: ["sha1"],
+          target: "issue-1",
+          timestamp: "2026-10-20T00:45:00Z",
+        }],
+        [commit("sha1", "2026-10-20T00:30:00Z")],
+      );
+      assertEquals(
+        find(delivered, "late-push")?.githubEvents?.map((e) => e.id),
+        ["sha1"],
+      );
+    });
+  });
+});
+
+Deno.test("collect - a branch update accounts for the first commit in event order, not the nearest", async () => {
+  await withDir(async (dir) => {
+    const args = [
+      "api",
+      "--method",
+      "PUT",
+      `repos/${REPO}/pulls/1/update-branch`,
+    ];
+    const info = classifyGhMutation(args);
+    assert(info);
+    const snapshot = await collectPr1(
+      dir,
+      [
+        {
+          verb: "git-push",
+          actionKind: "implementation",
+          actionId: "push",
+          deliveredCommits: ["sha1"],
+          target: "issue-1",
+          timestamp: "2026-10-20T00:30:00Z",
+        },
+        {
+          verb: info.verb,
+          actionKind: actionKindFor(info, undefined, args),
+          actionId: "update",
+          repo: REPO,
+          prNumber: 1,
+          timestamp: "2026-10-20T01:30:00Z",
+        },
+      ],
+      [
+        commit("sha1", "2026-10-20T00:25:00Z"),
+        commit("first", "2026-10-20T01:29:50Z"),
+        commit("nearer", "2026-10-20T01:30:01Z"),
+      ],
+    );
+    assertEquals(
+      find(snapshot, "update")?.githubEvents?.map((e) => e.id),
+      ["first"],
+    );
+    assertEquals(find(snapshot, "gh:org/repo#1:repair:first"), undefined);
+    assertEquals(
+      find(snapshot, "gh:org/repo#1:repair:nearer")?.actor,
+      "unknown",
+    );
+  });
+});
+
+Deno.test("collect - a commit delivered by two confirmed pushes is accounted for by the nearer push, in either journal order", async () => {
+  const push = (actionId: string, timestamp: string) => ({
+    verb: "git-push",
+    actionKind: "implementation" as const,
+    actionId,
+    deliveredCommits: ["sha1"],
+    target: "issue-1",
+    timestamp,
+  });
+  const nearer = push("nearer-push", "2026-10-20T00:30:00Z");
+  const farther = push("farther-push", "2026-10-20T00:50:00Z");
+  for (const order of [[nearer, farther], [farther, nearer]]) {
+    await withDir(async (dir) => {
+      const snapshot = await collectPr1(dir, order, [
+        commit("sha1", "2026-10-20T00:25:00Z"),
+      ]);
+      assertEquals(
+        find(snapshot, "nearer-push")?.githubEvents?.map((e) => e.id),
+        ["sha1"],
+      );
+      assertEquals(find(snapshot, "farther-push")?.githubEvents, undefined);
+    });
+  }
+});
+
+Deno.test("collect - one review pairs with its nearest action, leaving the farther action unmatched", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPr1(
+      dir,
+      [
+        reviewAction("nearer", "2026-10-20T01:00:05Z"),
+        reviewAction("farther", "2026-10-20T01:00:30Z"),
+      ],
+      [commit("sha1", "2026-10-20T00:25:00Z")],
+      [review(601, REVIEW_AT)],
+    );
+    assertEquals(
+      find(snapshot, "nearer")?.githubEvents?.map((e) => e.id),
+      ["601"],
+    );
+    assertEquals(find(snapshot, "farther")?.githubEvents, undefined);
+  });
 });

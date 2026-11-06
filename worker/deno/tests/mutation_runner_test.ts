@@ -772,6 +772,40 @@ function rustFake(outcomes: string | null, proc: ProcessResult) {
 
 const rsInput = { repoPath: REPO, diff: RS_DIFF, budgetSeconds: 60, jobs: 2 };
 
+Deno.test("runMutationCheck rust - installed nextest runs mutants and parses outcomes", async () => {
+  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+    if (args[0] === "nextest") return ok();
+    writeOutcomes(fs, args, outcomesJson([["MissedMutant", 2]]));
+    return ok(2);
+  });
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--test-tool", "nextest"],
+  }, f.seams);
+  assertEquals(f.calls.length, 2);
+  assertEquals(f.calls[0]?.args, ["nextest", "--version"]);
+  assertEquals(f.calls[1]?.cmd, "cargo");
+  assertEquals(f.calls[1]?.args[0], "mutants");
+  const args = f.calls[1]!.args;
+  const toolIndex = args.indexOf("--test-tool");
+  assert(toolIndex >= 0);
+  assertEquals(args[toolIndex + 1], "nextest");
+  assert(r.kind === "completed");
+  assertEquals(r.survivors.length, 1);
+  assertEquals(r.survivors[0]?.line, 2);
+});
+
+Deno.test("runMutationCheck rust - nextest probe failure reports its exit code", async () => {
+  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, () => ok(1));
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--test-tool", "nextest"],
+  }, f.seams);
+  assert(r.kind === "error");
+  assertEquals(r.reason, "cargo nextest --version exited with code 1");
+  assertEquals(f.calls.length, 1);
+});
+
 Deno.test("runMutationCheck rust - missing nextest is reported as a missing tool", async () => {
   const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args) => {
     assertEquals(args, ["nextest", "--version"]);
