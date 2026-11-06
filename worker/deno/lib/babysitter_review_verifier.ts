@@ -144,6 +144,8 @@ async function runPass(
         changedFiles: null,
         previousFindings,
         timeoutSeconds: input.timeoutSeconds,
+        // Read-only: no shell, no edit, no project settings (Issue #4657).
+        readOnly: true,
         ...(credentials === undefined ? {} : {
           parentEnv: credentials.parentEnv,
           extraDisallowedTools: credentials.disallowedTools,

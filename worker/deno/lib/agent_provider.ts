@@ -377,6 +377,14 @@ export interface AgentInvocationRequest {
   /** Tools the agent must not use. */
   disallowedTools?: readonly string[];
   /**
+   * Start the Claude CLI without project or user settings (hooks) and without
+   * MCP servers other than an explicit `mcpConfigPath` (Issue #4657). A model
+   * working in a checkout of untrusted code must not load a `.claude/settings.json`
+   * from it: a hook there runs a shell command outside every tool rule.
+   * Absent emits nothing. Only the Claude CLI takes these flags.
+   */
+  isolateClaudeConfig?: boolean;
+  /**
    * Sub-agent definitions handed to the CLI as `--agents` (Issue #2342),
    * keyed by sub-agent name.
    *
@@ -636,6 +644,10 @@ function buildClaudeCliArgs(
   const disallowed = request.disallowedTools ?? [];
   if (disallowed.length > 0) {
     args.push("--disallowed-tools", disallowed.join(","));
+  }
+  // No project or user settings and no ambient MCP servers (Issue #4657).
+  if (request.isolateClaudeConfig) {
+    args.push("--setting-sources", "", "--strict-mcp-config");
   }
   // Sub-agent definitions (Issue #2342), beside the tool policy they extend.
   // Absent — no sub-agent definitions were built (see `buildIssueRunAgents` in

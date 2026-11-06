@@ -399,6 +399,14 @@ Deno.test("babysitter review verifier - the pass runs with the credentials it is
   assertEquals(fake.calls[0]!.input.extraDisallowedTools, ["Bash"]);
 });
 
+Deno.test("babysitter review verifier - the pass is read-only: no shell, edit or project settings (PR #4849 review)", async () => {
+  const fake = fakeVerifier(() =>
+    checked([{ index: 1, verdict: "fixed", note: "ok" }])
+  );
+  await verifyBabysitterReviews(baseInput(), { verify: fake.verify });
+  assertEquals(fake.calls[0]!.input.readOnly, true);
+});
+
 Deno.test("babysitter review verifier - no credential and no stand-in never starts the model (PR #4849 review)", async () => {
   let asked = 0;
   const verifierDeps = {

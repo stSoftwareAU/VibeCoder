@@ -9,8 +9,8 @@ keeps the review open and never blocks the push. A verifier outage (including a
 head or description that moves during verification) also keeps the review open
 and keeps the pending publication, so the next scan re-verifies without running
 the agent; a pass that pushed nothing also backs off as an infrastructure
-failure. The verifier runs with its own read-only token and no Bash, never the
-runner's write token. Closes #4657.
+failure. The verifier runs read-only: its own read-only token, no Bash, Edit or
+Write, and no project settings, never the runner's write token. Closes #4657.
 
 ```mermaid
 flowchart TD
@@ -58,11 +58,23 @@ flowchart TD
 - The verifier is a Claude model that reads untrusted review text and runs in
   the runner's process, so it gets the Codex agent's boundary (#4572): a
   per-verification read-only token for the target repository passed as the
-  child's `GH_TOKEN` (`babysitterVerifierCredentials`), `Bash` denied, and
-  `Read`/`Edit` denied on `babysitterProtectedPaths` and `/proc`. Without a
-  credential and without a test stand-in, the pass is an outage and the model is
-  never started. The trade-off: the verifier reads and judges but does not run
-  repository code.
+  child's `GH_TOKEN` (`babysitterVerifierCredentials`), `Read` denied on
+  `babysitterProtectedPaths` and `/proc`, and (PR #4849 review) the pre-PR
+  verifier's new `readOnly` mode: `Bash`, `Edit`, `Write` and `NotebookEdit`
+  denied, and the Claude CLI started with `--setting-sources ""` and
+  `--strict-mcp-config` (`isolateClaudeConfig` on the run options, emitted by
+  `buildClaudeCliArgs`), so a hook committed to the PR's `.claude/settings.json`
+  cannot run a command and the verifier cannot write a file the runner later
+  executes. Without a credential and without a test stand-in, the pass is an
+  outage and the model is never started. With no shell the verifier cannot run
+  `git diff`, so in `readOnly` mode `verifyInCheckout` writes the
+  `git diff base...head` to `change.diff` and a read-only base tree to `base/`
+  outside the checkout, and the prompt (`buildPrePrVerifierPrompt`) says the
+  tools are unavailable, points at those files, and replaces the `git diff`,
+  `git show` and "rerun a test" directions. A check that needs a command run is
+  reported as not run, not judged fixed. The trade-off: the verifier reads and
+  judges but does not run repository code, so a requested red run is judged from
+  the code and the reply's evidence.
 - Evidence is not stored across scans. A moved head or changed description
   during verification discards it, and the next scan re-verifies.
 - A review with an empty body has no findings to verify, so it stays open rather
@@ -121,13 +133,13 @@ flowchart TD
 
 ## Test Plan
 
-- Added `worker/deno/tests/babysitter_review_verifier_4657_test.ts` (17 tests at
+- Added `worker/deno/tests/babysitter_review_verifier_4657_test.ts` (18 tests at
   head): complete fix, partial fix, false-positive rebuttal, no-op completion,
   outage, throw, missing and duplicate verdict, blank body, extra new findings,
   input shape, the PR #4611 stale-body then published-body fixture, and (PR
   #4849 review) credentials passed to the pass, no credential never starts the
   model, a credential mint failure is an outage, a not-fixed verdict is not an
-  outage. Result: 17 passed, 0 failed.
+  outage, and the pass runs `readOnly`. Result: 18 passed, 0 failed.
 - Added `worker/deno/tests/babysitter_review_dismissal_4657_test.ts` (16 tests)
   driving the real `finishBabysitterRepair`: complete fix, partial fix (only the
   verified review dismissed), false-positive rebuttal on a no-change run, no-op
@@ -161,6 +173,28 @@ flowchart TD
   the credentials test red; clearing the publication record on an outage → both
   outage tests red; `resumePendingPublication` not throwing → the resumed-outage
   test red.
+- PR #4849 review (read-only verifier, no shell): added
+  `worker/deno/tests/pre_pr_verifier_3395_test.ts` (76 tests at head) `readOnly`
+  test, which runs the real prompt builder and `verifyInCheckout`: `Bash`,
+  `Edit`, `Write` and `NotebookEdit` denied (and allowed in the control run),
+  `isolateClaudeConfig` set, `change.diff` holding the diff and `base/` holding
+  the base tree, and a prompt that has none of "Read the change with", "rerun a
+  test" or "git show" (the control prompt has the first two).
+  `worker/deno/tests/agent_provider_test.ts` pins the `--setting-sources ""` and
+  `--strict-mcp-config` argv;
+  `worker/deno/tests/agent_containment_limits_3701_test.ts` runs
+  `runClaudeWithTimeout` against a stub claude and reads its argv, so the run
+  option reaches the CLI. `babysitter_review_verifier_4657_test.ts` asserts the
+  babysitter pass sets `readOnly: true`. Those files plus
+  `fleet_babysitter_app_test.ts`, `babysitter_fix_orchestration_test.ts`,
+  `babysitter_review_dismissal_4657_test.ts`, `fleet_pr_babysitter_test.ts`,
+  `agent_provider_deepseek_test.ts` and `agent_provider_routing_seam_test.ts`:
+  376 passed, 0 failed. Red checks (each restored): drop `isolateClaudeConfig`
+  from the verifier's ask, replace `Edit` in the read-only denial list, build
+  the prompt without the read-only branch, write an empty diff file, and drop
+  the runner's forwarding of `isolateClaudeConfig` → the corresponding test red
+  each time. The babysitter's `readOnly: true` call site: not red-checked
+  separately beyond its own assertion.
 - Existing tests edited only to supply the new required `verifyReviews` dep
   (`worker/deno/tests/fleet_pr_babysitter_test.ts`,
   `worker/deno/tests/babysitter_fix_orchestration_test.ts`); the one assertion

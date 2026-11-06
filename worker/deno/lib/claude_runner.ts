@@ -791,6 +791,11 @@ export interface RunClaudeOptions {
    * the process environment exactly as before.
    */
   parentEnv?: Record<string, string>;
+  /**
+   * Run the Claude CLI without project or user settings or ambient MCP
+   * servers (Issue #4657); see `AgentInvocationRequest.isolateClaudeConfig`.
+   */
+  isolateClaudeConfig?: boolean;
 }
 
 /** Options for retry behaviour. */
@@ -1317,6 +1322,7 @@ async function runClaudeWithTimeoutBody(
     ...(options.env ? { env: options.env } : {}),
     effort: options.effort,
     disallowedTools,
+    ...(options.isolateClaudeConfig ? { isolateClaudeConfig: true } : {}),
     // Issue #2342: absent unless the caller resolved the split on, and an
     // absent value emits no `--agents` argument.
     ...(options.agents ? { agents: options.agents } : {}),

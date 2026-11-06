@@ -241,6 +241,59 @@ Deno.test("runPrePrVerifier hands the model the caller's environment and extra d
   }
 });
 
+Deno.test("runPrePrVerifier readOnly: no shell or edit tools, isolated config, the evidence as files, and a prompt that names no denied tool (PR #4849 review)", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    const seen: Array<
+      {
+        tools: readonly string[];
+        isolate: boolean | undefined;
+        prompt: string;
+        diff: string;
+        baseHasFile: boolean;
+      }
+    > = [];
+    const deps = makeDeps(async (o) => {
+      const tmp = o.cwd!.slice(0, o.cwd!.lastIndexOf("/checkout"));
+      seen.push({
+        tools: o.disallowedTools!,
+        isolate: o.isolateClaudeConfig,
+        prompt: o.prompt,
+        diff: await Deno.readTextFile(`${tmp}/change.diff`).catch(() => ""),
+        baseHasFile: await exists(`${tmp}/base/a.ts`),
+      });
+      return okRun({ output: `Review:\n${REPLY_CLEAN}` });
+    }, tmps);
+    const ro = await runPrePrVerifier(inputFor(f, { readOnly: true }), deps);
+    assertEquals(ro.status, "checked");
+    // Control: the same run without readOnly keeps the shell and the old brief.
+    await runPrePrVerifier(inputFor(f), deps);
+    const [on, off] = seen;
+    for (const tool of ["Bash", "Edit", "Write", "NotebookEdit"]) {
+      assert(on!.tools.includes(tool), `${tool} is denied when read-only`);
+      assert(!off!.tools.includes(tool), `${tool} stays allowed otherwise`);
+    }
+    assertEquals(on!.isolate, true);
+    assertEquals(off!.isolate, undefined);
+    // The diff and the base tree are there to Read, so no git command is needed.
+    assertStringIncludes(on!.diff, "a.ts");
+    assert(on!.baseHasFile);
+    assertStringIncludes(on!.prompt, "change.diff");
+    assertStringIncludes(on!.prompt, "You have no shell");
+    // The prompt directs the model to no tool it was denied.
+    for (const phrase of ["Read the change with", "rerun a test", "git show"]) {
+      assert(!on!.prompt.includes(phrase), `read-only prompt has "${phrase}"`);
+      if (phrase !== "git show") {
+        assertStringIncludes(off!.prompt, phrase);
+      }
+    }
+    assert(!/`git diff [0-9a-f]+\.\.\.HEAD/.test(on!.prompt));
+  } finally {
+    await f.cleanup();
+  }
+});
+
 Deno.test("runPrePrVerifier runs the brief in a disposable, remote-less checkout and reports findings", async () => {
   const f = await makeRepo();
   const tmps: string[] = [];
