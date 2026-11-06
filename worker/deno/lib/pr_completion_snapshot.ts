@@ -1987,6 +1987,27 @@ export async function collectPrCompletionSnapshot(
       }
     }
   }
+  // A posted review may appear in both the verified journal and the legacy
+  // log. Only a journal action matched to GitHub can supersede one log row.
+  const matchedReviews = verifiedFleet.filter((action) =>
+    action.kind === "review" &&
+    action.githubEvents?.some((event) => event.kind === "review")
+  );
+  const supersededLogs = new Set<TrustedPrAction>();
+  for (const action of matchedReviews) {
+    const candidates = logActions.filter((log) =>
+      !supersededLogs.has(log) && log.repo === action.repo &&
+      log.prNumber === action.prNumber &&
+      (!log.headSha || !action.headSha || log.headSha === action.headSha) &&
+      Math.abs(Date.parse(log.timestamp) - Date.parse(action.timestamp)) <=
+        MATCH_WINDOW_MS
+    );
+    candidates.sort((a, b) =>
+      Math.abs(Date.parse(a.timestamp) - Date.parse(action.timestamp)) -
+      Math.abs(Date.parse(b.timestamp) - Date.parse(action.timestamp))
+    );
+    if (candidates[0]) supersededLogs.add(candidates[0]);
+  }
   if ((options.reviewLogs ?? []).length === 0 && reviewEvents > 0) {
     const events = reviewEvents === 1 ? "review event" : "review events";
     const prs = prsWithReviewEvents === 1 ? "PR" : "PRs";
@@ -2059,7 +2080,7 @@ export async function collectPrCompletionSnapshot(
     actions: [
       ...verifiedActions,
       ...unverifiedActions,
-      ...logActions,
+      ...logActions.filter((action) => !supersededLogs.has(action)),
       ...githubActions,
     ],
     blockers,

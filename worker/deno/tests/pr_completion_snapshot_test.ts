@@ -3667,6 +3667,62 @@ async function reviewedPr(
   );
 }
 
+Deno.test("collect - a matched fleet review supersedes its review log without double counting", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "reviewer",
+      actionId: "fleet-review-dedup",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, "2026-10-20T01:00:30Z"),
+    ]);
+    const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.delivery.reviewRounds, 1);
+    assertEquals(
+      snapshot.input.actions.filter((action) => action.runId === "review-log")
+        .length,
+      0,
+    );
+  });
+});
+
+Deno.test("collect - a matched fleet review leaves unrelated log rows in the history", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "reviewer",
+      actionId: "fleet-review-unrelated-log",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, "2026-10-20T01:00:30Z", "other-head"),
+      logLine(1, "2026-10-20T01:30:00Z"),
+    ]);
+    const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
+    assertEquals(
+      snapshot.input.actions.filter((action) => action.runId === "review-log")
+        .length,
+      2,
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unknownMerged,
+      1,
+    );
+  });
+});
+
 Deno.test("collect - an unchained review log cannot verify a PR's history", async () => {
   await withDir(async (dir) => {
     const log = await writeLines(`${dir}/logs/log.jsonl`, [
@@ -4292,7 +4348,7 @@ Deno.test("collect - reports genuine owner-only exceptions with provenance along
       repo: REPO,
       prNumber: 61,
       headSha: "sha61",
-      timestamp: "2026-10-20T01:00:00Z",
+      timestamp: "2026-10-20T01:04:00Z",
     }]);
     const snapshot = await collectPrCompletionSnapshot(
       options(
@@ -4646,10 +4702,10 @@ Deno.test("collect - owner gates preserve incomplete provenance and historical r
       },
     );
     const at = "2026-10-20T01:00:00Z";
-    const later = "2026-10-26T01:00:00Z";
+    const later = "2026-10-24T23:58:00Z";
     await journal(
       dir,
-      [81, 82, 83, 84].map((number) => ({
+      [81, 82, 83, 84, 86].map((number) => ({
         verb: "pr-review",
         actionKind: "review",
         component: "reviewer",
@@ -4657,7 +4713,11 @@ Deno.test("collect - owner gates preserve incomplete provenance and historical r
         repo: REPO,
         prNumber: number,
         headSha: `sha${number}`,
-        timestamp: number === 82 ? later : at,
+        timestamp: number === 82
+          ? "2026-10-25T00:02:00Z"
+          : number === 86
+          ? "2026-10-26T01:00:00Z"
+          : at,
       })),
     );
     const held = (number: number, submitted = at): Json => ({
@@ -4675,7 +4735,7 @@ Deno.test("collect - owner gates preserve incomplete provenance and historical r
     ]);
     const fixture = emptyFixture({
       pulls: {
-        [REPO]: [81, 82, 83, 84, 85].map((number) =>
+        [REPO]: [81, 82, 83, 84, 85, 86].map((number) =>
           pull(number, {
             state: "open",
             merged_at: null,
@@ -4696,6 +4756,7 @@ Deno.test("collect - owner gates preserve incomplete provenance and historical r
         [pk(83)]: [held(83)],
         [pk(84)]: [{ ...held(84), body: null }],
         [pk(85)]: [held(85)],
+        [pk(86)]: [held(86, "2026-10-26T01:00:00Z")],
       },
     });
     const snapshot = await collectPrCompletionSnapshot(
@@ -4710,21 +4771,26 @@ Deno.test("collect - owner gates preserve incomplete provenance and historical r
       snapshot.input.prs.filter((pr) => pr.ownerGateVerified).map((pr) =>
         pr.number
       ),
-      [82, 83],
+      [82, 83, 86],
     );
     assertEquals(snapshot.input.rollout?.strandedPrs.map((pr) => pr.prNumber), [
       81,
-      82,
       84,
       85,
+      86,
     ]);
+    assertEquals(
+      snapshot.input.prs.find((pr) => pr.number === 82)?.ownerGateEvidence
+        ?.timestamp,
+      later,
+    );
     assertEquals(
       snapshot.input.actions.find((action) => action.runId === "review-log")
         ?.actor,
       "human",
     );
     const report = buildPrCompletionReport(snapshot.input);
-    assertEquals(report.cohort.ownerGatedPrs, 2);
+    assertEquals(report.cohort.ownerGatedPrs, 3);
     assertEquals(report.cohort.unverifiedOwnerGateLabels, 3);
     assertEquals(report.completion.eligiblePrs, 3);
   });

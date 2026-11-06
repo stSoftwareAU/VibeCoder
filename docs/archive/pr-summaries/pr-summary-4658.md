@@ -10,7 +10,7 @@ dismissal and merge actors. Eligible verified fleet actions take precedence over
 closer unchained review logs. Commit author metadata remains unknown; it cannot
 establish who performed implementation or repair.
 
-Closes #4658.
+Part of #4658.
 
 ## Spec
 
@@ -83,6 +83,12 @@ result consumed by command dispatch and its existing callers.
   evidence:
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - reports genuine owner-only exceptions with provenance alongside regressions`;
   actual posting test checks formatted output — reviewer: met
+- **missing** — Complete blocker accounting for recovery and refresh waits
+  using the records from #4656 and #4613; these are not yet represented as
+  blocker intervals.
+- **missing** — Journal the reviewer's branch refresh through the canonical
+  audit writer as a branch-update, so its resulting merge commit has trusted
+  provenance.
 
 The independent Spec reviewer reviewed the changed diff and issue body,
 confirmed both criteria met, and independently ran the 136 focused tests.
@@ -103,7 +109,19 @@ collector and CLI tests fail with the old promotion. Recorded human repair
 followed by a fleet merge remains covered by
 `worker/deno/tests/pr_completion_report_test.ts::PR completion report deduplicates repeated observations and separates trusted outcomes`.
 
+Generic needs-human labels no longer exclude PRs from rollout eligibility;
+verified owner holds at verification remain excluded. The updated coverage is
+`worker/deno/tests/pr_completion_snapshot_test.ts::collect - the rollout check counts stranded, rediscovered and processed PRs by verified time`
+and `::collect - the rollout check strands only PRs open at verification and at least a day old`.
+
 ## Test Plan
+
+- A verified review matched to GitHub supersedes one matching legacy log row;
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a matched fleet review supersedes its review log without double counting`
+  covers both unattended completion and review rounds. Unmatched logs remain
+  covered by `::collect - an unchained review log cannot verify a PR's history`.
+  Owner exception and historical rollout tests use distinct review and audit
+  timestamps, including a pair straddling the verification instant.
 
 - `deno task test:unit tests/pr_completion_snapshot_test.ts tests/pr_completion_report_command_test.ts tests/pr_completion_report_test.ts < /dev/null`
   — passed, 136 tests. Covers genuine and generic gates, owner exceptions with

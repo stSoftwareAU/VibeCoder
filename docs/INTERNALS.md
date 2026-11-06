@@ -1404,8 +1404,10 @@ timed by its `recordedAt`.
 
 **Rollout check** (`--rollout-verified-at`). A stranded PR was created before
 the verification instant, was still open at it (no merge or close at or before
-it), was at least 24 hours old at it, and is not labelled `needs-human`. A PR
-that merged after the instant is therefore still stranded. Its discovered,
+it), and was at least 24 hours old at it. Generic `needs-human` labels remain
+in the stranded set; only a verified current owner hold whose review predates
+the verification instant is excluded. A PR that merged after the instant is
+therefore still stranded. Its discovered,
 eligible and processed transitions come from the babysitter's ordinary scan
 event ledger, not later audit actions. An unchanged head under an unchanged
 review policy is recorded again on the first scan of a later UTC day; same-day
