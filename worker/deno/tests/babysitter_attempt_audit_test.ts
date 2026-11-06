@@ -267,3 +267,61 @@ Deno.test("babysitter attempt - a valid attempt after a refused one still journa
     assertEquals(entries.map((entry) => entry.prNumber), [PR]);
   });
 });
+
+Deno.test("babysitter attempt - a non-string repo or head that stringifies to a valid one is refused", async () => {
+  // `RegExp.test` coerces its argument, so a one-element array of a valid
+  // value would pass the pattern alone; only the `typeof` guard refuses it.
+  const refused = [
+    { repo: [REPO], prNumber: PR, headSha: HEAD },
+    { repo: REPO, prNumber: PR, headSha: [HEAD] },
+  ] as unknown as BabysitterAttempt[];
+  await withJournal(async (dir, opts) => {
+    const logged = await captureErrors(async () => {
+      for (const attempt of refused) {
+        await journalBabysitterAttempt(attempt, opts);
+      }
+    });
+    assertEquals(logged.length, refused.length);
+    assert(logged.every((line) => line.startsWith(REFUSED)));
+    assertEquals(await fileNames(dir), []);
+  });
+});
+
+Deno.test("babysitter attempt - a successful append logs nothing", async () => {
+  await withJournal(async (_dir, opts) => {
+    const logged = await captureErrors(() =>
+      journalBabysitterAttempt(ATTEMPT, opts)
+    );
+    assertEquals(logged, []);
+  });
+});
+
+Deno.test("babysitter attempt - a refused append is logged loud and never throws", async () => {
+  await withJournal(async (dir, opts) => {
+    // A journal directory beneath a regular file can never be created.
+    const blocker = `${dir}/not-a-directory`;
+    await Deno.writeTextFile(blocker, "x");
+    const logged = await captureErrors(() =>
+      journalBabysitterAttempt(ATTEMPT, { ...opts, baseDir: `${blocker}/sub` })
+    );
+    assertEquals(logged.length, 1);
+    assert(logged[0]!.startsWith(REFUSED));
+    assertEquals(await fileNames(dir), ["not-a-directory"]);
+  });
+});
+
+Deno.test("babysitter attempt - an unexpected error is logged with its message, and a non-Error thrown value as text", async () => {
+  await withJournal(async (_dir, opts) => {
+    const throwing = (thrown: unknown): AuditHookOptions => ({
+      ...opts,
+      get runId(): string {
+        throw thrown;
+      },
+    });
+    const logged = await captureErrors(async () => {
+      await journalBabysitterAttempt(ATTEMPT, throwing(new Error("boom")));
+      await journalBabysitterAttempt(ATTEMPT, throwing("plain text"));
+    });
+    assertEquals(logged, [`${REFUSED}boom`, `${REFUSED}plain text`]);
+  });
+});
