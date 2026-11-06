@@ -13,7 +13,7 @@
 
 import type { Result } from "../types.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
-import { CLAIM_MARKER_PREFIX } from "./claim_issue.ts";
+import { CLAIM_MARKER_PREFIX, findLiveHeartbeatMarker } from "./claim_issue.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import {
   CLEARED_MARKER_GRACE_SECONDS,
@@ -955,7 +955,8 @@ Multi-worker stale assignment recovery (Issue #604)`;
 /**
  * Detect assigned issues with closed PRs (Issue #787).
  *
- * For each assigned open issue without a heartbeat:
+ * For each assigned open issue without a heartbeat (neither this host's
+ * file nor a live fleet marker on the issue from any host, Issue #4839):
  *   1. If a merged PR exists → close the issue and unassign
  *   2. If only closed-not-merged PRs exist → unassign so issue can be retried
  *   3. If an open PR exists → skip (work is in progress)
@@ -1040,6 +1041,30 @@ export async function detectAssignedWithClosedPr(
         continue;
       } catch {
         // No heartbeat — continue checking
+      }
+
+      // Issue #4839: the local file only covers this host. A run on another
+      // host that has not opened its PR yet is still beating on GitHub, and
+      // an earlier merged PR (one that left the issue unfinished, #3177) must
+      // not get that live claim dropped. Unreadable markers: retry next pass.
+      try {
+        const markers = await scanHeartbeatMarkers(
+          repo,
+          issue.number,
+          ghFn,
+          config.fleetAuthors,
+        );
+        if (
+          findLiveHeartbeatMarker(markers, Math.floor(Date.now() / 1000))
+        ) {
+          continue;
+        }
+      } catch (err) {
+        recordFaultEvent(
+          "catch_block_warning",
+          `heartbeat markers unreadable for ${repo}#${issue.number} in detectAssignedWithClosedPR — skipping it this pass (Issue #4839): ${err}`,
+        );
+        continue;
       }
 
       // Check for open PRs — shared helper (Issue #1452)
