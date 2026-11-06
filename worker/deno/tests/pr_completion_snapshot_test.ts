@@ -4966,3 +4966,206 @@ Deno.test("collect - owner gates preserve incomplete provenance and historical r
     assertEquals(report.completion.eligiblePrs, 3);
   });
 });
+
+/** The audit entry for one fleet review of PR 1 at the given time. */
+function reviewAction(
+  actionId: string,
+  timestamp: string,
+): Partial<AuditMutation> & { verb: string } {
+  return {
+    verb: "pr-review",
+    actionKind: "review",
+    component: "reviewer",
+    actionId,
+    repo: REPO,
+    prNumber: 1,
+    headSha: "sha1",
+    timestamp,
+  };
+}
+
+/** Collect PR 1 (merged at 02:00 on `sha1`) with the given journal and commits. */
+async function collectPr1(
+  dir: string,
+  entries: Array<Partial<AuditMutation> & { verb: string }>,
+  commits: Json[],
+  reviews: Json[] = [],
+): Promise<CollectedSnapshot> {
+  await journal(dir, entries);
+  return await collectPrCompletionSnapshot(
+    options(
+      fakeGh(emptyFixture({
+        pulls: { [REPO]: [pull(1)] },
+        reviews: { [pk(1)]: reviews },
+        commits: { [pk(1)]: commits },
+      })),
+      { auditDirs: [dir] },
+    ),
+  );
+}
+
+const find = (snapshot: CollectedSnapshot, actionId: string) =>
+  snapshot.input.actions.find((a) => a.actionId === actionId);
+
+Deno.test("collect - a review action cannot account for the GitHub merge it is near", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPr1(
+      dir,
+      [
+        {
+          verb: "git-push",
+          actionKind: "implementation",
+          actionId: "push",
+          deliveredCommits: ["sha1"],
+          target: "issue-1",
+          timestamp: "2026-10-20T00:30:00Z",
+        },
+        reviewAction("near-merge", "2026-10-20T02:00:30Z"),
+      ],
+      [commit("sha1", "2026-10-20T00:25:00Z")],
+    );
+    assertEquals(find(snapshot, "near-merge")?.githubEvents, undefined);
+    assertEquals(
+      find(snapshot, "gh:org/repo#1:merge:merge1")?.actor,
+      "unknown",
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unknownMerged,
+      1,
+    );
+  });
+});
+
+Deno.test("collect - a merge action that lists the commit cannot also deliver it", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPr1(
+      dir,
+      [{
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge-with-range",
+        repo: REPO,
+        prNumber: 1,
+        deliveredCommits: ["sha1"],
+        timestamp: "2026-10-20T02:00:00Z",
+      }],
+      [commit("sha1", "2026-10-20T00:25:00Z")],
+    );
+    assertEquals(
+      find(snapshot, "merge-with-range")?.githubEvents?.map((e) => e.kind),
+      ["merge"],
+    );
+    assertEquals(
+      find(snapshot, "gh:org/repo#1:implementation:sha1")?.actor,
+      "unknown",
+    );
+  });
+});
+
+Deno.test("collect - a push stamped before the commit cannot have delivered it, even when it lists it", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPr1(
+      dir,
+      [{
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "early-push",
+        deliveredCommits: ["sha1"],
+        target: "issue-1",
+        timestamp: "2026-10-20T00:15:00Z",
+      }],
+      [commit("sha1", "2026-10-20T00:30:00Z")],
+    );
+    assertEquals(find(snapshot, "early-push")?.githubEvents, undefined);
+    assertEquals(
+      find(snapshot, "gh:org/repo#1:implementation:sha1")?.actor,
+      "unknown",
+    );
+    // Control: the same push stamped after the commit does deliver it.
+    await withDir(async (control) => {
+      const delivered = await collectPr1(
+        control,
+        [{
+          verb: "git-push",
+          actionKind: "implementation",
+          actionId: "late-push",
+          deliveredCommits: ["sha1"],
+          target: "issue-1",
+          timestamp: "2026-10-20T00:45:00Z",
+        }],
+        [commit("sha1", "2026-10-20T00:30:00Z")],
+      );
+      assertEquals(
+        find(delivered, "late-push")?.githubEvents?.map((e) => e.id),
+        ["sha1"],
+      );
+    });
+  });
+});
+
+Deno.test("collect - a branch update accounts for the first commit in event order, not the nearest", async () => {
+  await withDir(async (dir) => {
+    const args = [
+      "api",
+      "--method",
+      "PUT",
+      `repos/${REPO}/pulls/1/update-branch`,
+    ];
+    const info = classifyGhMutation(args);
+    assert(info);
+    const snapshot = await collectPr1(
+      dir,
+      [
+        {
+          verb: "git-push",
+          actionKind: "implementation",
+          actionId: "push",
+          deliveredCommits: ["sha1"],
+          target: "issue-1",
+          timestamp: "2026-10-20T00:30:00Z",
+        },
+        {
+          verb: info.verb,
+          actionKind: actionKindFor(info, undefined, args),
+          actionId: "update",
+          repo: REPO,
+          prNumber: 1,
+          timestamp: "2026-10-20T01:30:00Z",
+        },
+      ],
+      [
+        commit("sha1", "2026-10-20T00:25:00Z"),
+        commit("first", "2026-10-20T01:29:50Z"),
+        commit("nearer", "2026-10-20T01:30:01Z"),
+      ],
+    );
+    assertEquals(
+      find(snapshot, "update")?.githubEvents?.map((e) => e.id),
+      ["first"],
+    );
+    assertEquals(find(snapshot, "gh:org/repo#1:repair:first"), undefined);
+    assertEquals(
+      find(snapshot, "gh:org/repo#1:repair:nearer")?.actor,
+      "unknown",
+    );
+  });
+});
+
+Deno.test("collect - one review pairs with its nearest action, leaving the farther action unmatched", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await collectPr1(
+      dir,
+      [
+        reviewAction("nearer", "2026-10-20T01:00:05Z"),
+        reviewAction("farther", "2026-10-20T01:00:30Z"),
+      ],
+      [commit("sha1", "2026-10-20T00:25:00Z")],
+      [review(601, REVIEW_AT)],
+    );
+    assertEquals(
+      find(snapshot, "nearer")?.githubEvents?.map((e) => e.id),
+      ["601"],
+    );
+    assertEquals(find(snapshot, "farther")?.githubEvents, undefined);
+  });
+});

@@ -131,14 +131,14 @@ and `::collect - the rollout check strands only PRs open at verification and at 
   the component boundary. No parallel matching rule was found.
 
 - Reviews, dismissals and merges pair with verified actions one-to-one by
-  nearest gap (trusted first), not event order.
+  nearest gap, not event order.
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a nearer review takes the fleet action; an earlier allowlisted review stays a human action`
   puts an allowlisted COMMENTED review five minutes before the fleet hold on
   the same head (open and merged variants): the gate verifies, the earlier
   review is a verified human action and `humanAssistedMerged` is 1. It failed
   (`merged=false`) against the previous event-order pairing and passes now.
 - `deno task test:unit tests/pr_completion_snapshot_test.ts tests/pr_completion_report_command_test.ts tests/pr_completion_report_test.ts < /dev/null`
-  — passed, 141 tests after the review fix. Covers genuine and generic gates, owner exceptions with
+  — passed, 146 tests after the review fix. Covers genuine and generic gates, owner exceptions with
   regressions, real posting provenance, failed posts, stale and superseded
   holds, legacy snapshots, truncated evidence and historical rollout timing.
 - Reviewer posting, test-policy and Dependabot suites — passed, 82 tests; after
@@ -155,19 +155,33 @@ and `::collect - the rollout check strands only PRs open at verification and at 
   exemption.
   `::collect - null GitHub actors stay unknown with and without a review-log match`
   verifies null identities on both matching paths, dismissals and merges.
-- Removing verified-fleet priority made both closer-log tests fail. Removing the
-  verified-action promotion guard made the `review-log` run-ID collision test
+- The in-pairing `trust` rank was dead: the verified-fleet candidates and the
+  unchained review-log candidates are matched in two separate calls, so each
+  call ranked a uniform set. Removed it; fleet-over-log priority stays pinned by
+  the two closer-log tests. Removing the verified-action promotion guard made the `review-log` run-ID collision test
   fail. Restored code passes.
 - Removing the reviewer-footer guard made the isolated missing-footer owner
   matrix case fail. Restored code passes.
 - Changed TypeScript formatting, lint and type checks — passed. Library sweep
   coverage — passed, 39 tests after registering the new helper modules.
-- `./quality.sh < /dev/null` — failed its unit-test time budget on unchanged
-  `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` (2 tests, 3.44s;
-  limit 1s). Both parallel and serial repository-wide test passes succeeded.
+- `./quality.sh < /dev/null` — failed its unit-test time budget on a test file
+  this PR does not change, `worker/deno/tests/launcher_harness_reclaim_stub_test.ts`
+  (2 tests at head, passing). Both parallel and serial repository-wide test passes succeeded.
   Completeness, security scans, Markdown checks, lint, type checking and
   formatting passed. Configuration integration and Checkov were skipped because
   their required local configuration/tooling was unavailable.
+- Mutation survivors (review-fix round): five tests added to
+  `worker/deno/tests/pr_completion_snapshot_test.ts` — review action vs merge
+  event, merge action listing a commit, push stamped before its commit, branch
+  update contested by two commits, one review with two nearby actions. Each
+  mutant (dropped `!isPush`, dropped kind check, dropped `actionMs >= event.ms`,
+  dropped commit-event skip, dropped `assigned.has`, `return undefined` for the
+  merge-head and window refusals) was applied by hand and turned at least one
+  test red. Dead lines removed instead of tested: the pairing `trust` rank, the
+  `used.has(action)` operand for review-type events (the pairing loop rechecks
+  it), the `isCommit &&` operand before `branch-update` (only commit events can
+  meet a branch-update action), and the `implementation`/`repair` operand pair
+  (now one `COMMIT_EVENT_KINDS` set). No line is exempt.
 - `pr-summary-check` with the issue body and labels supplied — zero blocked
   gates and zero unchecked gates; independent review provenance passed.
 - Rule copies checked: hold policy markers/parser and fixed hold-body headers

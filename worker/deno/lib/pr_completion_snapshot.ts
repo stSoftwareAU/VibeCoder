@@ -774,6 +774,12 @@ function gitHubEvents(
   return out;
 }
 
+/** The GitHub event kinds that are commits, matched to a push by its delivered range. */
+const COMMIT_EVENT_KINDS: ReadonlySet<PrActionKind> = new Set<PrActionKind>([
+  "implementation",
+  "repair",
+]);
+
 /**
  * Match reviews, dismissals and merges one-to-one. A commit matches a confirmed
  * implementation, repair or milestone push whose `deliveredCommits` contains it,
@@ -785,8 +791,8 @@ function gitHubEvents(
  *
  * A review or dismissal matches a verified fleet action of its kind within
  * {@link MATCH_WINDOW_MS} either side of it. Reviews, dismissals and merges are
- * paired one-to-one by nearest gap (trusted actions first), not event order, so
- * an earlier nearby review cannot take the action a later one recorded. A review's head is compared only
+ * paired one-to-one by nearest gap, not event order, so an earlier nearby review
+ * cannot take the action a later one recorded. A review's head is compared only
  * when both sides carry one, so a journalled review without a head still
  * matches a GitHub review that has a `commit_id`. A merge matches only a
  * confirmed merge action on the PR's head, within MATCH_WINDOW_MS either side
@@ -802,13 +808,12 @@ function unmatchedActions(
 ): TrustedPrAction[] {
   const { record } = observed;
   const out: TrustedPrAction[] = [];
-  /** The in-window pairing of one event with one action, or null. */
+  /** The gap of an in-window pairing of one event with one action, or null. */
   const pairing = (
     event: GitHubEvent,
     action: TrustedPrAction,
-  ): { gap: number; trust: number } | null => {
-    const isCommit = event.kind === "implementation" ||
-      event.kind === "repair";
+  ): number | null => {
+    const isCommit = COMMIT_EVENT_KINDS.has(event.kind);
     if (action.outcome !== "confirmed") return null;
     if (
       event.headSha !== undefined && action.headSha !== undefined &&
@@ -827,7 +832,7 @@ function unmatchedActions(
     if (
       isCommit
         ? !isPush || (action.kind === "branch-update" && used.has(action))
-        : used.has(action) || action.kind !== event.kind
+        : action.kind !== event.kind
     ) {
       return null;
     }
@@ -835,7 +840,7 @@ function unmatchedActions(
     const gap = Math.abs(actionMs - event.ms);
     const inWindow = event.kind === "merge"
       ? gap <= MATCH_WINDOW_MS
-      : isCommit && action.kind === "branch-update"
+      : action.kind === "branch-update"
       ? gap <= MATCH_WINDOW_MS
       : isCommit
       ? actionMs >= event.ms &&
@@ -845,27 +850,26 @@ function unmatchedActions(
             ) + LIFETIME_SLACK_MS
       : gap <= MATCH_WINDOW_MS;
     if (!inWindow) return null;
-    return { gap, trust: action.verified && action.actor === "fleet" ? 1 : 0 };
+    return gap;
   };
   const assigned = new Map<GitHubEvent, TrustedPrAction>();
-  // Reviews, dismissals and merges pair one-to-one by nearest gap (trusted
-  // actions first), not event order, so an earlier nearby review cannot take
-  // the action another review actually recorded.
+  // Reviews, dismissals and merges pair one-to-one by nearest gap, not event
+  // order, so an earlier nearby review cannot take the action another review
+  // actually recorded.
   const pairs: {
     event: GitHubEvent;
     action: TrustedPrAction;
     gap: number;
-    trust: number;
     order: number;
   }[] = [];
   events.forEach((event, order) => {
-    if (event.kind === "implementation" || event.kind === "repair") return;
+    if (COMMIT_EVENT_KINDS.has(event.kind)) return;
     for (const action of verifiedFleet) {
       const found = pairing(event, action);
-      if (found) pairs.push({ event, action, order, ...found });
+      if (found !== null) pairs.push({ event, action, order, gap: found });
     }
   });
-  pairs.sort((a, b) => b.trust - a.trust || a.gap - b.gap || a.order - b.order);
+  pairs.sort((a, b) => a.gap - b.gap || a.order - b.order);
   for (const pair of pairs) {
     if (assigned.has(pair.event) || used.has(pair.action)) continue;
     assigned.set(pair.event, pair.action);
@@ -873,19 +877,13 @@ function unmatchedActions(
   }
   for (const event of events) {
     let best: TrustedPrAction | undefined = assigned.get(event);
-    if (!best && (event.kind === "implementation" || event.kind === "repair")) {
+    if (!best && COMMIT_EVENT_KINDS.has(event.kind)) {
       let bestGap = Number.POSITIVE_INFINITY;
-      let bestTrust = -1;
       for (const action of verifiedFleet) {
         const found = pairing(event, action);
-        if (
-          found &&
-          (found.trust > bestTrust ||
-            (found.trust === bestTrust && found.gap < bestGap))
-        ) {
+        if (found !== null && found < bestGap) {
           best = action;
-          bestGap = found.gap;
-          bestTrust = found.trust;
+          bestGap = found;
         }
       }
     }
