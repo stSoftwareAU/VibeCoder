@@ -1878,17 +1878,8 @@ export async function collectPrCompletionSnapshot(
     list.push(action);
     fleetByPr.set(key, list);
   }
-  const matchingByPr = new Map(
-    [...fleetByPr].map(([key, actions]) => [key, [...actions]]),
-  );
-  for (const action of logActions) {
-    const key = keyOf(action.repo, action.prNumber);
-    const list = matchingByPr.get(key) ?? [];
-    list.push(action);
-    matchingByPr.set(key, list);
-  }
-
   const used = new Set<TrustedPrAction>();
+  const supersededLogs = new Set<TrustedPrAction>();
   const githubActions: TrustedPrAction[] = [];
   const blockers: Blocker[] = [];
   const ciRuns: CiRun[] = [];
@@ -1944,15 +1935,45 @@ export async function collectPrCompletionSnapshot(
       prsWithReviewEvents++;
     }
     blockers.push(...blockersFor(record, evidence));
-    githubActions.push(
-      ...unmatchedActions(
-        o,
-        gitHubEvents(o, evidence),
-        matchingByPr.get(keyOf(record.repo, record.number)) ?? [],
-        used,
-        humanActorIds,
+    const events = gitHubEvents(o, evidence);
+    const fleet = fleetByPr.get(keyOf(record.repo, record.number)) ?? [];
+    const unmatched = unmatchedActions(o, events, fleet, used, humanActorIds);
+    // Reserve the log row for a matched reviewer post before another GitHub
+    // review can claim it. Unmatched journal actions cannot supersede logs.
+    for (
+      const action of fleet.filter((item) =>
+        item.component === "reviewer" && item.kind === "review" &&
+        item.githubEvents?.some((event) => event.kind === "review")
+      )
+    ) {
+      const candidates = logActions.filter((log) =>
+        !supersededLogs.has(log) && log.repo === action.repo &&
+        log.prNumber === action.prNumber &&
+        (!log.headSha || !action.headSha || log.headSha === action.headSha) &&
+        Math.abs(Date.parse(log.timestamp) - Date.parse(action.timestamp)) <=
+          MATCH_WINDOW_MS
+      );
+      candidates.sort((a, b) =>
+        Math.abs(Date.parse(a.timestamp) - Date.parse(action.timestamp)) -
+        Math.abs(Date.parse(b.timestamp) - Date.parse(action.timestamp))
+      );
+      if (candidates[0]) supersededLogs.add(candidates[0]);
+    }
+    const unmatchedIds = new Set(unmatched.map((action) => action.actionId));
+    githubActions.push(...unmatchedActions(
+      o,
+      events.filter((event) =>
+        unmatchedIds.has(
+          `gh:${record.repo}#${record.number}:${event.kind}:${event.id}`,
+        )
       ),
-    );
+      logActions.filter((action) =>
+        action.repo === record.repo && action.prNumber === record.number &&
+        !supersededLogs.has(action)
+      ),
+      used,
+      humanActorIds,
+    ));
     verifyOwnerGate(
       record,
       evidence,
@@ -1986,27 +2007,6 @@ export async function collectPrCompletionSnapshot(
         );
       }
     }
-  }
-  // A posted review may appear in both the verified journal and the legacy
-  // log. Only a journal action matched to GitHub can supersede one log row.
-  const matchedReviews = verifiedFleet.filter((action) =>
-    action.kind === "review" &&
-    action.githubEvents?.some((event) => event.kind === "review")
-  );
-  const supersededLogs = new Set<TrustedPrAction>();
-  for (const action of matchedReviews) {
-    const candidates = logActions.filter((log) =>
-      !supersededLogs.has(log) && log.repo === action.repo &&
-      log.prNumber === action.prNumber &&
-      (!log.headSha || !action.headSha || log.headSha === action.headSha) &&
-      Math.abs(Date.parse(log.timestamp) - Date.parse(action.timestamp)) <=
-        MATCH_WINDOW_MS
-    );
-    candidates.sort((a, b) =>
-      Math.abs(Date.parse(a.timestamp) - Date.parse(action.timestamp)) -
-      Math.abs(Date.parse(b.timestamp) - Date.parse(action.timestamp))
-    );
-    if (candidates[0]) supersededLogs.add(candidates[0]);
   }
   if ((options.reviewLogs ?? []).length === 0 && reviewEvents > 0) {
     const events = reviewEvents === 1 ? "review event" : "review events";

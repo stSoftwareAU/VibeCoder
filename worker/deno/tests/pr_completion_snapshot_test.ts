@@ -3638,6 +3638,7 @@ async function writeLines(path: string, lines: string[]): Promise<string> {
 async function reviewedPr(
   dir: string,
   extra: Partial<CollectOptions> = {},
+  reviews: Json[] = [review(601, REVIEW_AT)],
 ): Promise<CollectedSnapshot> {
   await journal(dir, [
     {
@@ -3659,13 +3660,53 @@ async function reviewedPr(
   ]);
   const fixture = emptyFixture({
     pulls: { [REPO]: [pull(1)] },
-    reviews: { [pk(1)]: [review(601, REVIEW_AT)] },
+    reviews: { [pk(1)]: reviews },
     commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
   });
   return await collectPrCompletionSnapshot(
     options(fakeGh(fixture), { auditDirs: [dir], ...extra }),
   );
 }
+
+Deno.test("collect - a second review remains attributed when a fleet log is duplicated", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "reviewer",
+      actionId: "fleet-review-with-second-review",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, "2026-10-20T01:00:30Z"),
+    ]);
+    const reviews = [review(601, REVIEW_AT), {
+      ...review(602, "2026-10-20T01:03:00Z"),
+      user: { id: 9001, login: "human" },
+    }];
+    for (const humanActorIds of [[], ["9001"]]) {
+      const snapshot = await reviewedPr(dir, {
+        reviewLogs: [log],
+        humanActorIds,
+      }, reviews);
+      const completion = buildPrCompletionReport(snapshot.input).completion;
+      assertEquals(completion.unattendedMerged, 0);
+      assertEquals(completion.unknownMerged, humanActorIds.length ? 0 : 1);
+      assertEquals(
+        completion.humanAssistedMerged,
+        humanActorIds.length ? 1 : 0,
+      );
+      assert(
+        snapshot.input.actions.some((action) =>
+          action.actionId === "gh:org/repo#1:review:602"
+        ),
+      );
+    }
+  });
+});
 
 Deno.test("collect - a matched fleet review supersedes its review log without double counting", async () => {
   await withDir(async (dir) => {
@@ -3690,6 +3731,34 @@ Deno.test("collect - a matched fleet review supersedes its review log without do
       snapshot.input.actions.filter((action) => action.runId === "review-log")
         .length,
       0,
+    );
+  });
+});
+
+Deno.test("collect - a non-reviewer audit action cannot supersede a review log", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      component: "worker",
+      actionId: "worker-review",
+      repo: REPO,
+      prNumber: 1,
+      headSha: "sha1",
+      timestamp: "2026-10-20T01:00:05Z",
+    }]);
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, "2026-10-20T01:00:30Z"),
+    ]);
+    const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
+    assertEquals(
+      snapshot.input.actions.filter((action) => action.runId === "review-log")
+        .length,
+      1,
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unknownMerged,
+      1,
     );
   });
 });

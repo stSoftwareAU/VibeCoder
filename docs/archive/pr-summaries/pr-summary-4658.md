@@ -122,9 +122,16 @@ and `::collect - the rollout check strands only PRs open at verification and at 
   covered by `::collect - an unchained review log cannot verify a PR's history`.
   Owner exception and historical rollout tests use distinct review and audit
   timestamps, including a pair straddling the verification instant.
+- Review matching reserves a matched reviewer post's duplicate log before
+  matching other GitHub events. The previous late removal could erase another
+  review's attribution; unmatched reviews remain unknown or explicitly human.
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a second review remains attributed when a fleet log is duplicated`
+  covers both outcomes, and
+  `::collect - a non-reviewer audit action cannot supersede a review log` covers
+  the component boundary. No parallel matching rule was found.
 
 - `deno task test:unit tests/pr_completion_snapshot_test.ts tests/pr_completion_report_command_test.ts tests/pr_completion_report_test.ts < /dev/null`
-  — passed, 136 tests. Covers genuine and generic gates, owner exceptions with
+  — passed, 140 tests after the review fix. Covers genuine and generic gates, owner exceptions with
   regressions, real posting provenance, failed posts, stale and superseded
   holds, legacy snapshots, truncated evidence and historical rollout timing.
 - Reviewer posting, test-policy and Dependabot suites — passed, 82 tests; after
