@@ -371,6 +371,7 @@ Deno.test("runMutationCheck deno - failing baseline is an error and nothing is m
   const r = await runMutationCheck(input(), f.seams);
   assert(r.kind === "error");
   assert(r.reason.startsWith(MUTATION_BASELINE_FAILS), r.reason);
+  assertStringIncludes(r.reason, "baseline tests fail");
   assertEquals(f.calls.length, 1);
 });
 
@@ -837,6 +838,7 @@ Deno.test("runMutationCheck rust - missing cargo-mutants is an error", async () 
     const r = await runMutationCheck(rsInput, rustFake(null, proc).seams);
     assert(r.kind === "error");
     assertEquals(r.reason, CARGO_MUTANTS_MISSING);
+    assertStringIncludes(r.reason, "cargo-mutants is not installed");
   }
 });
 

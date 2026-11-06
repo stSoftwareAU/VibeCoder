@@ -570,7 +570,9 @@ export async function findBlockingMutationJob(
   // Pass 2: detect in sorted file order.
   let blocking: BlockingMutationJob | null = null;
 
-  for (const [name, doc] of parsed) {
+  for (const name of files) {
+    const doc = parsed.get(name);
+    if (doc === undefined) continue;
     if (blocking !== null || !triggersOn(doc, "pull_request")) continue;
     if (!isMapping(doc.jobs)) continue;
 

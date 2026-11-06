@@ -15,7 +15,8 @@ agreement:
   the file (`gh api repos/<owner>/<repo>/contents/...`), through the same
   nine-level bound and cycle guard as local calls, at most eight distinct remote
   files. One that cannot be read is listed as unreadable, never read as
-  non-blocking.
+  non-blocking. Remote files are inspected only through a caller, never as
+  this repository's top-level PR workflows.
 - **The real required-check contract.** The worker reads the base branch's
   required checks (rulesets and classic protection) and counts a mutation job
   only when its check, or the check of a job that needs it directly or through
@@ -137,24 +138,9 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
   control that the other two actions are absent and that "unvalidated, not
   passed" is present), the no-CI-block case (none of the three actions appear),
   and a direct `mutationErrorNextAction` test.
-- Edited `worker/deno/tests/mutation_runner_test.ts`: the baseline assertion is
-  now `startsWith(MUTATION_BASELINE_FAILS)` (was a substring check for "baseline
-  tests fail") and the cargo-mutants-missing assertion is
-  `assertEquals(r.reason, CARGO_MUTANTS_MISSING)`.
-  - Removed from `worker/deno/tests/mutation_runner_test.ts`: the substring
-    assertion `assertStringIncludes(r.reason, "baseline tests fail")`.
-    - Obsolete: the literal is now the exported constant, asserted as the
-      prefix.
-    - Still covered by:
-      `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - failing baseline is an error and nothing is mutated`,
-      now asserting `startsWith(MUTATION_BASELINE_FAILS)`.
-  - Removed from `worker/deno/tests/mutation_runner_test.ts`: the substring
-    assertion
-    `assertStringIncludes(r.reason, "cargo-mutants is not installed")`.
-    - Obsolete: the literal is now the exported constant, asserted whole.
-    - Still covered by:
-      `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - missing cargo-mutants is an error`,
-      now asserting `assertEquals(r.reason, CARGO_MUTANTS_MISSING)`.
+- Edited `worker/deno/tests/mutation_runner_test.ts`: the baseline and missing
+  tool tests assert the exported constants as well as the original literal
+  wording, retaining coverage of both the classifier contract and the message.
   - Added: exit code 4 gives the baseline prefix and code 1 does not, in
     `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - baseline failure and usage errors are errors`.
   - Red check: the classifier returning only the generic action turned the
@@ -177,6 +163,12 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
   `pr_feedback_mutation_check_3750_test.ts` for the call sites. Red check:
   leaving `requiredChecks` out of `ciMutationLookupOptions` turned the
   completion test red; restored.
+- Review regression coverage:
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::a remote PR workflow reached only from a non-PR path is not a local PR workflow`
+  and
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::a remote PR workflow with a templated job name does not bypass the caller's required check`.
+  Both failed before restricting the top-level scan to local files and passed
+  afterwards. No twinned copy of this detector was found.
 - Not done: the flags of a `deno task` (the `partial` entry above).
 - `./quality.sh`: the earlier head's run failed only two
   `formatter should commit the Rust fix` tests in

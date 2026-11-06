@@ -72,6 +72,49 @@ function reader(files: Record<string, string>) {
   return { calls, fetchRemoteWorkflow };
 }
 
+Deno.test("a remote PR workflow reached only from a non-PR path is not a local PR workflow", async () => {
+  await withRepo({
+    "push.yml":
+      "on: push\njobs:\n  call:\n    uses: ./.github/workflows/local.yml\n",
+    "local.yml": `on: workflow_call\njobs:\n  call:\n    uses: ${REMOTE}\n`,
+  }, async (repo) => {
+    const { calls, fetchRemoteWorkflow } = reader({
+      [REMOTE]: remoteBody().replace(
+        "on: workflow_call",
+        "on: [workflow_call, pull_request]",
+      ),
+    });
+    assertEquals(await findBlockingMutationJob(repo, { fetchRemoteWorkflow }), {
+      blocking: null,
+      unreadable: [],
+    });
+    assertEquals(calls, [REMOTE]);
+  });
+});
+
+Deno.test("a remote PR workflow with a templated job name does not bypass the caller's required check", async () => {
+  await withRepo({
+    "ci.yml":
+      `on: pull_request\njobs:\n  mutants:\n    uses: ${REMOTE}\n  tests:\n    steps:\n      - run: cargo test\n`,
+  }, async (repo) => {
+    const { calls, fetchRemoteWorkflow } = reader({
+      [REMOTE]: remoteBody().replace(
+        "on: workflow_call",
+        "on: [workflow_call, pull_request]",
+      )
+        .replace("  run:", "  run:\n    name: Mutants ${{ inputs.crate }}"),
+    });
+    assertEquals(
+      await findBlockingMutationJob(repo, {
+        fetchRemoteWorkflow,
+        requiredChecks: ["tests"],
+      }),
+      { blocking: null, unreadable: [] },
+    );
+    assertEquals(calls, [REMOTE]);
+  });
+});
+
 Deno.test("a remote reusable workflow with a blocking mutants job is followed when fetched", async () => {
   await withRepo({ "ci.yml": callerOf(REMOTE) }, async (repo) => {
     const { calls, fetchRemoteWorkflow } = reader({ [REMOTE]: remoteBody() });
