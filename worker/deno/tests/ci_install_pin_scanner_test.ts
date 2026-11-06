@@ -505,3 +505,164 @@ Deno.test("scanCiInstallPins - detects sudo and global-flag spellings", () => {
     "BP-CI-INSTALL-PIN-npm-pa11y-ci",
   ]);
 });
+
+// ---------------------------------------------------------------------------
+// cargo install (Issue #4683) — an exact version AND --locked
+// ---------------------------------------------------------------------------
+
+Deno.test("findUnpinnedInstalls - cargo install needs an exact version and --locked", () => {
+  const bare = findUnpinnedInstalls("cargo install cargo-audit");
+  assertEquals(bare.length, 1);
+  assertEquals(bare[0]?.tool, "cargo");
+  assertEquals(bare[0]?.packageName, "cargo-audit");
+  assertEquals(bare[0]?.version, null);
+  assertEquals(bare[0]?.unlocked, true);
+
+  const locked = findUnpinnedInstalls("cargo install --locked cargo-audit");
+  assertEquals(locked.length, 1);
+  assertEquals(locked[0]?.version, null);
+  assertEquals(locked[0]?.unlocked, false);
+
+  const pinnedUnlocked = findUnpinnedInstalls(
+    "cargo install cargo-audit --version 0.22.2",
+  );
+  assertEquals(pinnedUnlocked.length, 1);
+  assertEquals(pinnedUnlocked[0]?.version, "0.22.2");
+  assertEquals(pinnedUnlocked[0]?.unlocked, true);
+});
+
+Deno.test("findUnpinnedInstalls - accepts a cargo install that is exact and locked", () => {
+  for (
+    const run of [
+      "cargo install --locked cargo-audit@0.22.2",
+      "cargo install --locked cargo-audit --version 0.22.2",
+      "cargo install --locked --version=0.22.2 cargo-audit",
+      "cargo install cargo-audit@0.22.2 --locked",
+      "cargo --locked install cargo-audit --version 0.22.2",
+      "cargo install --frozen cargo-audit --version =0.22.2",
+    ]
+  ) {
+    assertEquals(findUnpinnedInstalls(run), [], run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - ignores non-install, local, git, and variable cargo runs", () => {
+  for (
+    const run of [
+      "cargo install --path .",
+      "cargo install --git https://example.com/x cargo-x",
+      "cargo build --locked",
+      "cargo install",
+      'cargo install --locked cargo-audit --version "$V"',
+      "# cargo install cargo-audit",
+    ]
+  ) {
+    assertEquals(findUnpinnedInstalls(run), [], run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - flags cargo versions that are not exact", () => {
+  for (
+    const [run, version] of [
+      ["cargo install --locked cargo-audit --version 0.22", "0.22"],
+      ["cargo install --locked cargo-audit@^0.22.2", "^0.22.2"],
+      ["cargo install --locked cargo-audit@0.22", "0.22"],
+    ]
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.length, 1, run);
+    assertEquals(found[0]?.version, version, run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - cargo evasions still flag the unpinned install", () => {
+  for (
+    const [run, unlocked] of [
+      ["sudo cargo install cargo-audit", true],
+      ["env CARGO_TERM_COLOR=always cargo install --locked cargo-audit", false],
+      ["cargo +stable install --locked cargo-audit", false],
+      ["rustup update && cargo install cargo-audit --version 0.22.2", true],
+      ["cargo install --locked --features foo cargo-audit", false],
+      ["cargo install --root /usr/local cargo-audit", true],
+    ] as const
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.map((f) => f.packageName), ["cargo-audit"], run);
+    assertEquals(found[0]?.unlocked, unlocked, run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - joins cargo backslash continuations onto the first line", () => {
+  const found = findUnpinnedInstalls(
+    ["cargo install \\", "  --locked \\", "  cargo-audit"].join("\n"),
+  );
+  assertEquals(found.map((f) => f.packageName), ["cargo-audit"]);
+  assertEquals(found[0]?.anchor, "cargo install \\");
+  assertEquals(found[0]?.unlocked, false);
+});
+
+Deno.test("findUnpinnedInstalls - hostile cargo input completes deterministically", () => {
+  const repeatedFlags = `cargo install ${"--locked ".repeat(5000)}cargo-audit`;
+  const first = findUnpinnedInstalls(repeatedFlags);
+  assertEquals(first.map((f) => f.packageName), ["cargo-audit"]);
+  assertEquals(first, findUnpinnedInstalls(repeatedFlags));
+
+  const padded = `cargo install ${" ".repeat(5000)}${
+    "- ".repeat(5000)
+  }cargo-audit`;
+  assertEquals(findUnpinnedInstalls(padded).map((f) => f.packageName), [
+    "cargo-audit",
+  ]);
+});
+
+Deno.test("scanCiInstallPins - cargo install gets the pin-and-lock finding", () => {
+  const findings = scanCiInstallPins([
+    workflow(".github/workflows/a.yml", "lint", ["cargo install cargo-audit"]),
+  ]);
+  assertEquals(findings.map((f) => f.findingId), [
+    "BP-CI-INSTALL-PIN-cargo-cargo-audit",
+  ]);
+  const finding = findings[0] as CiInstallPinFinding;
+  assertEquals(finding.tool, "cargo");
+  assertStringIncludes(finding.title, "Pin and lock");
+  assertEquals(finding.callSites[0]?.line, 8);
+  assertEquals(finding.callSites[0]?.unlocked, true);
+  assertStringIncludes(finding.evidence, "no `--locked`");
+  assertStringIncludes(finding.whyItMatters, "re-resolves");
+  assertStringIncludes(
+    finding.suggestedFix,
+    "cargo install --locked cargo-audit --version 1.2.3",
+  );
+});
+
+Deno.test("scanCiInstallPins - a pinned and locked cargo install yields no finding", () => {
+  assertEquals(
+    scanCiInstallPins([
+      workflow(".github/workflows/a.yml", "lint", [
+        "cargo install --locked cargo-audit --version 0.22.2",
+      ]),
+    ]),
+    [],
+  );
+});
+
+Deno.test("scanCiInstallPins - cargo evidence marks only the unlocked call-sites", () => {
+  const findings = scanCiInstallPins([
+    workflow(".github/workflows/a.yml", "lint", [
+      "cargo install --locked cargo-audit",
+    ]),
+    workflow(".github/workflows/b.yml", "docs", [
+      "cargo install cargo-audit --version 0.22.2",
+    ]),
+  ]);
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]?.callSites.map((s) => s.unlocked), [false, true]);
+  const [, lockedLine, unlockedLine] = (findings[0]?.evidence ?? "").split(
+    "\n",
+  );
+  assertEquals(
+    lockedLine?.endsWith("`cargo install --locked cargo-audit`"),
+    true,
+  );
+  assertEquals(unlockedLine?.endsWith("(no `--locked`)"), true);
+});

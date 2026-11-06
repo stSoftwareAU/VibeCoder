@@ -101,7 +101,7 @@ specific file/line-range in the current source tree.
 | **CI quality workflow skips milestone PRs** (#33 in v12,; native pre-filer) | A test/lint/scan workflow whose `pull_request` branch filter matches none of the milestone feature branches (`milestone/<slug>`,) — e.g. `branches: [Develop, main]`, or a `branches-ignore:` list excluding `milestone/*`. A `pull_request` trigger with no branch filter is not flagged. `severity:medium`. The decidable single-filter core is filed deterministically by the native `milestone_branch_filter_scanner.ts` pre-filer (`BP-MILESTONE-FILTER-…`); the judgement tail (matrix/reusable-workflow reroutes) stays with the LLM. | Milestone sub-issue PRs target a shared `milestone/<name>` branch, so with this filter the gate never runs on them — they merge unchecked, caught only by the final rollup PR into the default branch. Per isolation the fix rides a normal per-repo worker PR: add `milestone/*` to the `pull_request.branches` filter. |
 | **Stale per-repo gitleaks copy** (Issue #598, part of #566; native pre-filer only) | A committed `gitleaks.yml` that has drifted from the canonical template: a `pull_request.branches` filter matching no `milestone/<slug>` branch, a tag-pinned or out-of-date `gitleaks/gitleaks-action` SHA, no licence-less gitleaks CLI fallback, or no `pull_request` trigger at all. `severity:medium` each. Filed deterministically by the native `gitleaks_drift_scanner.ts` pre-filer (`BP-GITLEAKS-…`) — see the Pre-filers section; there is no LLM check for it. | The workflow audit detects gitleaks by pattern, so presence alone scores as covered — a months-old copy with `branches: ["*"]` and `gitleaks-action@v2` passes while scanning almost nothing. Each repo keeps its own copy per isolation, so drift detection is the only thing keeping them current. Fix: refresh the copy to the canonical shape; the YAML edit rides a normal per-repo worker PR. |
 | **Gitleaks never reported on a recent PR** (Issue #601, part of #566; native pre-filer only) | A repo that commits a gitleaks workflow but where no gitleaks check run reported on any of the most recent closed pull requests sampled — a `skipped` conclusion counts as not-reported. One `severity:medium` `BP-GITLEAKS-NOT-OBSERVED` finding per repo, filed deterministically by the native `gitleaks_pr_coverage_scanner.ts` pre-filer — see the Pre-filers section; there is no LLM check for it. | The row above asks whether the committed copy is current; this asks whether it ever ran. Actions disabled for the repo, the workflow disabled in the Actions UI, a branch filter missing the PRs' base, an `if:` that never fires, or a YAML error that stops registration all read as "present" to the file-content audit. The finding names the sampled PRs and the usual causes so the gap is diagnosable. Fix: correct the cause and confirm the check appears on the next PR. |
-| **Unpinned `run:`-level package install** (split out of; native pre-filer only) | A `run:` step installing a third-party package with no exact version — `npm install -g <pkg>`, `npx --yes <pkg>`, `gem install <pkg>` without an exact `-v`. Wrapper prefixes (`sudo`, `env`, `VAR=value`), flags before the subcommand (`npm --global install <pkg>`), and backslash line continuations are normalised away first. `severity:medium`. Filed deterministically by the native `ci_install_pin_scanner.ts` pre-filer (`BP-CI-INSTALL-PIN-…`) — see the Pre-filers section; there is no LLM check for it. | `action_pin_scanner.ts` only inspects `uses:`, so these installs sat outside every native pre-filer — and outside the dependency quarantine, which covers manifests only. The build resolves whatever the registry serves at run time, so a hijacked release executes on the runner with zero embargo (was found by the LLM `security-scan` template, never deterministically). Fix: pin the exact version and add a Renovate `customManagers` entry — not a blanket `--ignore-scripts`. |
+| **Unpinned `run:`-level package install** (split out of; native pre-filer only) | A `run:` step installing a third-party package with no exact version — `npm install -g <pkg>`, `npx --yes <pkg>`, `gem install <pkg>` without an exact `-v`, or `cargo install <crate>` without an exact `--version` / `crate@x.y.z` or without `--locked` / `--frozen`. Wrapper prefixes (`sudo`, `env`, `VAR=value`), cargo toolchain selectors (`cargo +stable install`), flags before the subcommand (`npm --global install <pkg>`, `cargo --locked install <crate>`), and backslash line continuations are normalised away first. `severity:medium`. Filed deterministically by the native `ci_install_pin_scanner.ts` pre-filer (`BP-CI-INSTALL-PIN-…`) — see the Pre-filers section; there is no LLM check for it. | `action_pin_scanner.ts` only inspects `uses:`, so these installs sat outside every native pre-filer — and outside the dependency quarantine, which covers manifests only. The build resolves whatever the registry serves at run time, so a hijacked release executes on the runner with zero embargo (was found by the LLM `security-scan` template, never deterministically). Fix: pin the exact version (and pass `--locked` to `cargo install`) and add a Renovate `customManagers` entry — not a blanket `--ignore-scripts`. |
 | **Stale action majors** (#16, ) | An action pinned to a tag/major behind the catalogue's latest known major. **v13 extends this to SHA pins** — the pin is mapped to its major via the trailing version comment or the catalogue, and flagged when behind (the candidate is dropped when the major cannot be resolved). One finding per action per repo. | "Newer major exists" — distinct from #1. |
 | **SHA-pinned action on a deprecated Actions runtime** (#34 in v13,) | A `uses: <owner>/<action>@<sha>` whose resolved `runs.using` runner is a deprecated Actions runtime — `node12`, `node16`, `node20` (list maintained in the prompt). The runtime is resolved from the pin's version comment / catalogue runner notes / an in-tree `action.yml`; unresolvable candidates are dropped. Distinct from #16 (behind the latest major) and #17 (declared runtime *input*). `severity:medium`. Deduped against the CI-annotation pre-filer's `BP-RUNNER-<action>-<runtime>` so the two never double-file. | A latest-major SHA-pinned action can still run on a deprecated runtime (motivating case: SHA-pinned `actions/checkout` v4.2.2 / `actions/setup-node` on node20, private-repo-5 /). Emits CI deprecation warnings today, hard-breaks at runtime removal. Fix preserves supply-chain policy: bump to a major on a supported runner, **keep the SHA pin**, honour the 24h quarantine (chose setup-node v6.4.0). Deno repos lead with a `denoland/setup-deno` migration. This check is the **static** half of the deprecated-runtime problem; its **runtime** complement is the `workflow-annotation-scan` idle task, which reports the same deprecations when they surface as live workflow-run annotations the static resolve misses. Both are **version-agnostic** — the deprecated-runtime list is data, never a hardcoded "node20 check". |
 | **EOL / soon-EOL runtimes** (#17,) | A `node-version` / `python-version` / `java-version` / `go-version` the EOL runtimes table marks as EOL or EOL-soon. | e.g. Node 20 force-upgraded to 24 on 2026-06-02. |
@@ -507,8 +507,9 @@ not by Claude:
   the repo's observed pull-request coverage, not about a particular file.
 - `BP-CI-INSTALL-PIN-<tool>-<package-slug>` — the native
   unpinned-CI-install pre-filer (e.g. `BP-CI-INSTALL-PIN-gem-bundler-audit`,
-  `BP-CI-INSTALL-PIN-npm-markdownlint-cli2`). `<tool>` is `npm`, `npx`, or
-  `gem`; `<package-slug>` is the package name lower-cased with
+  `BP-CI-INSTALL-PIN-npm-markdownlint-cli2`, `BP-CI-INSTALL-PIN-cargo-<crate>`).
+  `<tool>` is `npm`, `npx`, `gem`, or `cargo`; `<package-slug>` is the package
+  name lower-cased with
   non-alphanumeric runs collapsed to a single hyphen. That collapse is lossy
   — `@foo/bar`, `foo.bar` and `foo_bar` all slug to `foo-bar` — so a name
   that does not round-trip through the slug carries a 12-hex-character
@@ -1000,7 +1001,8 @@ per-repo change; the pre-filer only detects and files.
 
 The CI-install pin scanner
 ([`ci_install_pin_scanner.ts`](../worker/deno/lib/ci_install_pin_scanner.ts))
-flags every **`run:`-level package install with no exact version pin**
+flags every **`run:`-level package install with no exact version pin**, and
+every `cargo install` that does not also pass `--locked` or `--frozen`
 (split out of). `action_pin_scanner.ts` only inspects
 `uses:`, so an install inside a `run:` block was invisible to every native
 pre-filer: the build resolved whatever the registry served at that moment,
@@ -1016,10 +1018,12 @@ published. Workflows (`jobs.*.steps[].run`) and composite actions
 | `npm` | `npm install` / `npm i` / `npm add <spec>` where `<spec>` carries no exact `name@1.2.3` version (`pkg`, `pkg@3`, `pkg@^14.1.1`) | `npm ci`, `npm config set …`, and any other non-install subcommand |
 | `npx` | `npx --yes <spec>` / `npx -y <spec>` / `npx -p <spec>` — the **explicit-fetch** forms — with no exact version | A bare `npx <spec>`, which prefers the binary already in `node_modules` and is governed by the lockfile |
 | `gem` | `gem install <spec>` with no exact `-v` / `--version` | `gem install <spec> -v 1.2.3` |
+| `cargo` | `cargo install <crate>` with no exact `--version` / `crate@x.y.z`, or with no `--locked` / `--frozen` (`--locked` is accepted anywhere in the command, including before `install`) | `cargo install --locked <crate> --version 1.2.3` |
 
 Local paths, `file:`, `git+`, `http(s):` specs, shell variables (`$TOOL`,
-`"$TOOL"`), and comment lines are exempt for every tool — their resolution
-is either immutable or not statically decidable.
+`"$TOOL"`, `$VERSION`), `cargo install --git` / `--path` installs, and comment
+lines are exempt for every tool — their resolution is either immutable or not
+statically decidable.
 
 **Commands are normalised before matching**. The tool used to
 have to be token 0 and the subcommand token 1, so two everyday spellings —
@@ -1028,8 +1032,11 @@ clean, and a backslash-continued install produced a garbage finding id.
 Normalisation now: joins backslash line continuations into one command
 (anchoring the call-site to the line the command starts on), strips wrapper
 prefixes (`sudo`, `env`, `command`, `exec`, their flags and flag values,
-and leading `VAR=value` assignments), and locates the subcommand as the
-first non-flag argument rather than at a fixed index.
+and leading `VAR=value` assignments), strips cargo toolchain selectors
+(`cargo +stable install` is read as `cargo install`), recognises a global
+`--locked` wherever it appears in the command (including before `install`),
+and locates the subcommand as the first non-flag argument rather than at a
+fixed index.
 
 Findings **consolidate one per package coordinate** (`<tool>` + package
 name), listing every call-site `file:line`, so a package installed by three

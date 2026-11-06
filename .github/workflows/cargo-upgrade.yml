@@ -41,7 +41,7 @@ jobs:
       # them, is skipped until one is committed; they then run with no
       # further change.
       - if: hashFiles('Cargo.toml') != ''
-        run: cargo install cargo-edit
+        run: cargo install --locked cargo-edit --version 0.13.14
       - if: hashFiles('Cargo.toml') != ''
         run: cargo upgrade
       - if: hashFiles('Cargo.toml') != ''

@@ -1080,5 +1080,9 @@ claude "Take a screenshot of http://localhost:3000"
 > version in the workflow, and
 > `renovate.json` declares `customManagers` matching those pins in
 > `.github/workflows/*.yml`, so the **24h** `minimumReleaseAge` applies to them
-> like any other ecosystem. Installs pass `--ignore-scripts` where the package
-> permits it, keeping install-time lifecycle scripts off the runner.
+> like any other ecosystem. `cargo install` steps follow the same rule: they
+> pin an exact `--version` and pass `--locked`, so cargo does not re-resolve
+> the crate's dependency tree past the quarantine, and the same
+> `customManagers` entries cover them (datasource `crate`). Installs pass
+> `--ignore-scripts` where the package permits it, keeping install-time
+> lifecycle scripts off the runner.

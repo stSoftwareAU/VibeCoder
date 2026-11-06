@@ -24,6 +24,12 @@
  *     A bare `npx <pkg>` prefers a binary already in `node_modules`, which
  *     the lockfile (and Renovate) already govern, so it is not flagged.
  *   - `gem install <pkg>` with no exact `-v` / `--version`.
+ *   - `cargo install <crate>` must carry BOTH an exact version (`--version
+ *     x.y.z` or `crate@x.y.z`, where cargo treats a bare version as `=x.y.z`)
+ *     AND `--locked` (or `--frozen`). A version-pinned install without
+ *     `--locked` still re-resolves the tool's whole dependency tree to the
+ *     newest crates.io releases, so it is flagged as unlocked. `--git` and
+ *     `--path` installs are local or git sources and are never flagged.
  *
  * Local, file, git, and URL specs, shell variables (`$PKG`), comment lines,
  * flags, and non-install subcommands (`npm ci`, `npm config set …`) are
@@ -113,11 +119,50 @@ const PREFIX_VALUE_FLAGS = new Set([
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
+ * `cargo install` flags that consume the following token as their value
+ * when written without `=` (Issue #4683). Their value is not the crate.
+ */
+const CARGO_VALUE_FLAGS = new Set([
+  "--version",
+  "--git",
+  "--branch",
+  "--tag",
+  "--rev",
+  "--path",
+  "--root",
+  "--registry",
+  "--index",
+  "--features",
+  "-F",
+  "--bin",
+  "--example",
+  "--target",
+  "--target-dir",
+  "--profile",
+  "--jobs",
+  "-j",
+  "--config",
+  "--color",
+  "-Z",
+  "--message-format",
+  "--lockfile-path",
+  "--manifest-path",
+  "-C",
+]);
+
+/** Note appended to the cargo `whyItMatters` rationale (Issue #4683). */
+const CARGO_WHY_NOTE =
+  " For `cargo install`, an exact `--version` is not enough on its own: without `--locked`, cargo re-resolves the tool's whole dependency tree to the newest crates.io releases on every run, so even a version-pinned tool pulls unquarantined, unlocked dependencies.";
+
+/** Evidence suffix for a `cargo install` call-site without `--locked`. */
+const UNLOCKED_NOTE = " (no `--locked`)";
+
+/**
  * One unpinned install found in a `run:` block: the offending command and
  * the package it would have resolved at run time.
  */
 export interface UnpinnedInstall {
-  /** `npm`, `npx`, or `gem`. */
+  /** `npm`, `npx`, `gem`, or `cargo`. */
   tool: string;
   /** The package argument as written, e.g. `pa11y-ci@3`. */
   spec: string;
@@ -133,6 +178,11 @@ export interface UnpinnedInstall {
    * several lines (Issue #3953). Equals `command` when it does not.
    */
   anchor: string;
+  /**
+   * `cargo` only: `true` when the install passes neither `--locked` nor
+   * `--frozen`. Always `false` for the other tools.
+   */
+  unlocked: boolean;
 }
 
 /** A single call-site a consolidated finding covers. */
@@ -147,13 +197,15 @@ export interface CiInstallCallSite {
   spec: string;
   /** The command line the spec came from. */
   command: string;
+  /** `true` when a `cargo install` call-site passes no `--locked`/`--frozen`. */
+  unlocked: boolean;
 }
 
 /** A consolidated unpinned-install finding for one package coordinate. */
 export interface CiInstallPinFinding {
   /** Stable id `BP-CI-INSTALL-PIN-<tool>-<package-slug>`. */
   findingId: string;
-  /** `npm`, `npx`, or `gem`. */
+  /** `npm`, `npx`, `gem`, or `cargo`. */
   tool: string;
   /** The package name the finding is raised against. */
   packageName: string;
@@ -269,6 +321,7 @@ function hit(
   spec: string,
   line: LogicalLine,
   version: string | null = versionOf(spec),
+  unlocked = false,
 ): UnpinnedInstall {
   return {
     tool,
@@ -277,6 +330,7 @@ function hit(
     version,
     command: line.command,
     anchor: line.anchor,
+    unlocked,
   };
 }
 
@@ -369,7 +423,9 @@ function subcommandIndex(args: readonly string[]): number {
  *   - `npx --yes <pkg>` / `npx -p <pkg>` (the explicit-fetch forms) without
  *     an exact version — a bare `npx <pkg>` prefers the lockfile-governed
  *     binary in `node_modules` and is not flagged;
- *   - `gem install <pkg>` without an exact `-v`/`--version`.
+ *   - `gem install <pkg>` without an exact `-v`/`--version`;
+ *   - `cargo install <crate>` without BOTH an exact version and `--locked`/
+ *     `--frozen` (`--git`/`--path` installs are never flagged).
  *
  * Comment lines, flags, local/URL/variable specs, and non-install npm
  * subcommands (`npm ci`, `npm config set …`) are ignored.
@@ -403,6 +459,8 @@ export function findUnpinnedInstalls(run: string): UnpinnedInstall[] {
         collectNpxFetches(tokens, line, found);
       } else if (tool === "gem") {
         collectGemInstalls(tokens, line, found);
+      } else if (tool === "cargo") {
+        collectCargoInstalls(tokens, line, found);
       }
     }
   }
@@ -479,6 +537,74 @@ function collectGemInstalls(
     if (flagIndex >= 0 && i === flagIndex + 1) continue; // the version
     if (SPEC_EXEMPT.test(spec)) continue;
     found.push(hit("gem", spec, line, version ?? null));
+  }
+}
+
+/**
+ * `cargo install <crate>…` (Issue #4683). Each crate must carry an exact
+ * version — `--version x.y.z` or `crate@x.y.z`, where cargo treats a bare
+ * version as `=x.y.z` — AND the install must pass `--locked` or `--frozen`,
+ * or cargo re-resolves the whole dependency tree on every run.
+ *
+ * `--locked`/`--frozen` are global cargo flags, so they count wherever they
+ * sit, including before `install`. `--git`/`--path` installs are local or
+ * git sources and are never flagged.
+ */
+function collectCargoInstalls(
+  tokens: readonly string[],
+  line: LogicalLine,
+  found: UnpinnedInstall[],
+): void {
+  const args = tokens.slice(1);
+  let subcommand: string | null = null;
+  let locked = false;
+  let externalSource = false;
+  let flagVersion: string | null = null;
+  const specs: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    // A rustup toolchain selector, e.g. `cargo +stable install`.
+    if (token.startsWith("+")) continue;
+
+    if (token.startsWith("-")) {
+      const eq = token.indexOf("=");
+      const name = eq >= 0 ? token.slice(0, eq) : token;
+      if (name === "--locked" || name === "--frozen") {
+        locked = true;
+        continue;
+      }
+      let value: string | undefined;
+      if (eq >= 0) {
+        value = token.slice(eq + 1);
+      } else if (CARGO_VALUE_FLAGS.has(name)) {
+        value = args[i + 1];
+        i++;
+      }
+      if (name === "--git" || name === "--path") externalSource = true;
+      if (name === "--version" && value !== undefined) flagVersion = value;
+      continue;
+    }
+
+    if (subcommand === null) {
+      subcommand = token;
+      continue;
+    }
+    specs.push(token);
+  }
+
+  if (subcommand !== "install") return;
+  if (externalSource) return;
+
+  for (const spec of specs) {
+    if (SPEC_EXEMPT.test(spec)) continue;
+    const version = versionOf(spec) ?? flagVersion;
+    // A shell-variable version is not statically decidable: treat as pinned.
+    const pinned = version !== null &&
+      (version.startsWith("$") ||
+        EXACT_VERSION.test(version.replace(/^=/, "")));
+    if (pinned && locked) continue;
+    found.push(hit("cargo", spec, line, version, !locked));
   }
 }
 
@@ -610,6 +736,7 @@ export function scanCiInstallPins(
           job: step.job,
           spec: install.spec,
           command: install.command,
+          unlocked: install.unlocked,
         });
       }
     }
@@ -635,6 +762,9 @@ function pinExample(tool: string, packageName: string): string {
   if (tool === "npx") {
     return `npx --yes ${packageName}@1.2.3`;
   }
+  if (tool === "cargo") {
+    return `cargo install --locked ${packageName} --version 1.2.3`;
+  }
   return `npm install -g ${packageName}@1.2.3`;
 }
 
@@ -653,9 +783,12 @@ function buildFinding(
   const first = sites[0] as CiInstallCallSite;
   const count = sites.length;
   const pkg = entry.packageName;
+  const isCargo = entry.tool === "cargo";
 
   const evidenceLines = sites.map((s) =>
-    `- \`${s.file}\`:${s.line} — job \`${s.job}\`: \`${s.command}\``
+    `- \`${s.file}\`:${s.line} — job \`${s.job}\`: \`${s.command}\`${
+      s.unlocked ? UNLOCKED_NOTE : ""
+    }`
   );
 
   return {
@@ -663,8 +796,11 @@ function buildFinding(
     tool: entry.tool,
     packageName: pkg,
     severity: "medium",
-    title: `${MEDIUM_EMOJI} Pin the CI install of \`${pkg}\` to an exact ` +
-      "version",
+    title: isCargo
+      ? `${MEDIUM_EMOJI} Pin and lock the CI install of \`${pkg}\` to an exact ` +
+        "version"
+      : `${MEDIUM_EMOJI} Pin the CI install of \`${pkg}\` to an exact ` +
+        "version",
     file: first.file,
     lines: first.line,
     whyItMatters:
@@ -677,19 +813,31 @@ function buildFinding(
       "manifests the tool can manage, and a `run:` block is not a " +
       "manifest, so the repository's dependency quarantine does not apply " +
       "here. `uses:` SHA-pinning does not cover this either — " +
-      "`action_pin_scanner.ts` never inspects `run:`.",
-    suggestedFix:
-      `Pin the install to an exact version, e.g. \`${
+      "`action_pin_scanner.ts` never inspects `run:`." +
+      (isCargo ? CARGO_WHY_NOTE : ""),
+    suggestedFix: isCargo
+      ? `Pin the install to an exact \`--version\` and pass \`--locked\`, e.g. ` +
+        `\`${
+          pinExample(entry.tool, pkg)
+        }\`: \`--locked\` makes cargo use the Cargo.lock the crate publishes ` +
+        "instead of re-resolving its dependencies. Add a Renovate " +
+        "`customManagers` regex entry matching `cargo install --locked " +
+        "<crate> --version x.y.z` in .github/workflows so the pin is kept " +
+        "current inside the quarantine window. If this install is " +
+        "intentionally floating, suppress it with an in-source " +
+        `\`# best-practice-ignore: ${findingId} — <reason>\` comment on or ` +
+        "above the offending line."
+      : `Pin the install to an exact version, e.g. \`${
         pinExample(entry.tool, pkg)
       }\`, and add a Renovate \`customManagers\` regex entry covering ` +
-      ".github/workflows so the pin is kept current inside the quarantine " +
-      "window. Do not add `--ignore-scripts` blindly: some packages need " +
-      "their postinstall step (for example `pa11y-ci` fetching a browser), " +
-      "and dropping it breaks the job — pinning is the fix here, " +
-      "`--ignore-scripts` is a separate judgement per package. If this " +
-      "install is intentionally floating, suppress it with an in-source " +
-      `\`# best-practice-ignore: ${findingId} — <reason>\` comment on or ` +
-      "above the offending line.",
+        ".github/workflows so the pin is kept current inside the quarantine " +
+        "window. Do not add `--ignore-scripts` blindly: some packages need " +
+        "their postinstall step (for example `pa11y-ci` fetching a browser), " +
+        "and dropping it breaks the job — pinning is the fix here, " +
+        "`--ignore-scripts` is a separate judgement per package. If this " +
+        "install is intentionally floating, suppress it with an in-source " +
+        `\`# best-practice-ignore: ${findingId} — <reason>\` comment on or ` +
+        "above the offending line.",
     evidence: count === 1
       ? evidenceLines.join("\n")
       : `${count} call-sites:\n${evidenceLines.join("\n")}`,

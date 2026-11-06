@@ -744,7 +744,8 @@ The committed file must yield no finding from the file-scoped Actions checks in
   `persist-credentials: false` unless the job pushes.
 - `milestone-branch-filters` — every `pull_request` branch filter also matches
   `milestone/<slug>` branches, so a milestone PR is not silently unchecked.
-- `ci-install-pins` — every `run:` package install pins an exact version.
+- `ci-install-pins` — every `run:` package install pins an exact version (and
+  every `cargo install` passes `--locked`).
 - `run-injection` — no `run:` step interpolates an attacker-controllable
   `${{ github.* }}` field; pass it through `env:` and quote the variable.
 - `artifact-uploads` — no `actions/upload-artifact` step uploads the whole
