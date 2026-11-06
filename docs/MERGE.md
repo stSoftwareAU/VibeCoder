@@ -835,8 +835,12 @@ worker keeps working it until it does.
 | Merge refused (protection rule, conflict, unmergeable) | `retry`         | Guarded refresh is requested when eligible; conflict resolution stays on the merge-conflict ladder |
 
 A failed branch update is retried the same way. A PR that conflicts with its
-base is the merge-conflict ladder's, which finds it by its mergeable state; no
-comment and no `needs-human` label is ever posted by this path.
+base is the merge-conflict ladder's, which finds it by its mergeable state;
+that conflict path posts no comment and applies no `needs-human` label. The
+auto-merge sweep is the exception for strict-base refreshes: after the same
+transient mergeability or test-merge-parent refusal on two consecutive passes,
+it posts or updates one diagnostic PR comment and emits a fleet-health error
+log while continuing automatic recovery. It never applies `needs-human`.
 
 Review requests are **informational**: a requested reviewer never blocks a fix
 PR. Only branch protection can require an approval, and that is a per-repo
@@ -1301,7 +1305,7 @@ default tip never refills the attempt count.
 | Default branch has a **merge queue**                | Direct-merge fallback returns `blocked: merge_queue`; a PR that is only behind is not updated | The queue tests the PR against its future head and lands it once green |
 | Head **moves** between the check read and the merge | SHA-pinned merge refused by GitHub; deferred, PR left open | The new head's checks run; next cycle re-evaluates the gate                    |
 | Green PR **refused by the merge**                   | Branch update requested; warning logged                    | Retried every cycle (Issue #4304) — never handed to a human                    |
-| **Branch update fails** on a behind PR              | Warning logged — never left silently open                  | Retried next cycle; a conflict is resolved by the merge-conflict ladder        |
+| **Branch update fails** on a behind PR              | Warning logged; repeated strict-base transient mergeability or test-merge-parent refusals get one diagnostic PR comment and a fleet-health error log | Strict-base refresh re-reads those transient states three times in the same pass, then retries on the next cycle; a conflict is resolved by the merge-conflict ladder |
 | Push **targets default branch**                     | Push rejected with explicit error                          | Change is redirected through a feature-branch PR                               |
 | Default branch **cannot be resolved**               | Push allowed (fail-open)                                   | Feature-branch pushes are never blocked by a transient lookup failure          |
 | Ruleset write **fails for one repo**                | Logged as a non-fatal warning                              | Setup continues; the next setup run retries idempotently                       |
