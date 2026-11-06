@@ -5151,6 +5151,31 @@ Deno.test("collect - a branch update accounts for the first commit in event orde
   });
 });
 
+Deno.test("collect - a commit delivered by two confirmed pushes is accounted for by the nearer push, in either journal order", async () => {
+  const push = (actionId: string, timestamp: string) => ({
+    verb: "git-push",
+    actionKind: "implementation" as const,
+    actionId,
+    deliveredCommits: ["sha1"],
+    target: "issue-1",
+    timestamp,
+  });
+  const nearer = push("nearer-push", "2026-10-20T00:30:00Z");
+  const farther = push("farther-push", "2026-10-20T00:50:00Z");
+  for (const order of [[nearer, farther], [farther, nearer]]) {
+    await withDir(async (dir) => {
+      const snapshot = await collectPr1(dir, order, [
+        commit("sha1", "2026-10-20T00:25:00Z"),
+      ]);
+      assertEquals(
+        find(snapshot, "nearer-push")?.githubEvents?.map((e) => e.id),
+        ["sha1"],
+      );
+      assertEquals(find(snapshot, "farther-push")?.githubEvents, undefined);
+    });
+  }
+});
+
 Deno.test("collect - one review pairs with its nearest action, leaving the farther action unmatched", async () => {
   await withDir(async (dir) => {
     const snapshot = await collectPr1(

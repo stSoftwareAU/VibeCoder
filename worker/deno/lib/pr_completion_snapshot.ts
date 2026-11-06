@@ -877,7 +877,8 @@ function unmatchedActions(
   }
   for (const event of events) {
     let best: TrustedPrAction | undefined = assigned.get(event);
-    if (!best && COMMIT_EVENT_KINDS.has(event.kind)) {
+    // Commit events pick their nearest action here; none is in `assigned`.
+    if (COMMIT_EVENT_KINDS.has(event.kind)) {
       let bestGap = Number.POSITIVE_INFINITY;
       for (const action of verifiedFleet) {
         const found = pairing(event, action);

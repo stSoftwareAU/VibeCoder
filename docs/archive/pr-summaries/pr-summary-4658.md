@@ -138,8 +138,13 @@ and
   same head (open and merged variants): the gate verifies, the earlier review is
   a verified human action and `humanAssistedMerged` is 1. It failed
   (`merged=false`) against the previous event-order pairing and passes now.
+  `::collect - a commit delivered by two confirmed pushes is accounted for by the nearer push, in either journal order`
+  covers the per-commit nearest-action choice: two pushes list one commit at
+  different gaps and the nearer takes it in both journal orders. It fails when
+  the choice becomes "last match wins" (`found !== null`) or "first match wins"
+  (`!best`). The dead `!best &&` operand was removed.
 - `deno task test:unit tests/pr_completion_snapshot_test.ts tests/pr_completion_report_command_test.ts tests/pr_completion_report_test.ts < /dev/null`
-  — passed, 146 tests after the review fix. Covers genuine and generic gates,
+  — passed, 147 tests after the review fix. Covers genuine and generic gates,
   owner exceptions with regressions, real posting provenance, failed posts,
   stale and superseded holds, legacy snapshots, truncated evidence and
   historical rollout timing.
