@@ -110,8 +110,8 @@ flowchart TD
   removing the head/description-moved check → head-movement test red; removing
   the head check before the verifier runs → the moved-before-verification test
   red (1 failed); removing the `sameDescription` check after it → the
-  description-changed test red (1 failed); letting a
-  verifier throw escape → verifier-throws test red.
+  description-changed test red (1 failed); letting a verifier throw escape →
+  verifier-throws test red.
 - `docs/audits/lib-sweep-coverage/top-up-4657.json` claims the new module;
   `deno task test:unit tests/lib_sweep_coverage_test.ts`: 39 passed.
 - Full gate `./quality.sh`: the one change-related failure (completeness checks,
