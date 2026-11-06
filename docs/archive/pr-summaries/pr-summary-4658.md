@@ -8,8 +8,9 @@ agent that made no change and left the blocker in place) as a verified, failed
 the collector measures the wait until the next confirmed repair push or
 verified fleet dismissal, or to the PR's merge or close. The provisional
 90%-within-24-hours target stays an operational
-evaluation after rollout; no baseline or achieved result is claimed. Closes
-#4658.
+evaluation after rollout; no baseline or achieved result is claimed.
+
+Closes #4658.
 
 ## Spec
 
@@ -62,6 +63,8 @@ still true (`pr_completion_report.ts` counts only confirmed repairs as fix
 rounds). The collector no longer reports the obsolete blanket claim that
 babysitter retry cooldowns without a push are unmeasured; missing audit
 directories remain visible in coverage notes.
+`docs/AGENT-ACCOUNTABILITY.md` describes the direct no-push attempt record,
+its head SHA and how it differs from a confirmed repair push.
 
 ## Acceptance Criteria
 
@@ -96,12 +99,12 @@ this PR delivers the last one named in their summaries.
   turn at least one of those tests red.
 - New tests in `worker/deno/tests/babysitter_fix_orchestration_test.ts`
   (infrastructure failure, code failure, no change, owner-class failure, a
-  successful push, a failure after a confirmed push). The file passed (42).
+  successful push, a failure after a confirmed push). The file passed (43).
 - Red checks, each restored afterwards: removing the no-change call site, the
   catch call site, the `blockerClass !== "owner"` operand and the `!pushed`
   operand each turned at least one test red.
 - `fleet_pr_babysitter_audit_test.ts` (3) and `pr_completion_snapshot_test.ts`
-  (111) passed. `deno task check:manifests` passed (847 passed, one ignored).
+  (112) passed. `deno task check:manifests` passed (847 passed, one ignored).
   `deno fmt`, `deno lint` and `deno check` passed on the changed TypeScript.
 - Callers checked: `fix` is the only caller of `journalBabysitterAttempt`; the
   new `journalAttempt` dependency defaults to it, so production passes nothing.

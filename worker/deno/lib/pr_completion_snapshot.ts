@@ -743,7 +743,7 @@ function ciBlockersFor(
   return out;
 }
 
-/** Time spent between a recorded failed repair and its next confirmed repair. */
+/** Time from a failed repair to the next confirmed repair or verified fleet dismissal. */
 export function recoveryBlockersFor(
   record: PrCompletionRecord,
   actions: readonly TrustedPrAction[],
