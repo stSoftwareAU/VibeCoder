@@ -522,6 +522,20 @@ export function detectCargoRegistryGap(
   return refused && picked !== undefined ? { cause: picked } : undefined;
 }
 
+/** Classify an offline retry only after the initial registry gap is established. */
+export function isCargoOfflineRegistryGap(output: string): boolean {
+  if (detectCargoRegistryGap(output)) return true;
+  const lines = output.split("\n").map((line) =>
+    line.trim().slice(0, MAX_GAP_LINE_CHARS)
+  );
+  return lines.some((line) =>
+    /^(?:error: )?(?:no matching package named|failed to select a version for the requirement)\b/
+      .test(line)
+  ) && lines.some((line) =>
+    /(?:you're using offline mode|offline mode \(via `--offline`\))/i.test(line)
+  );
+}
+
 /**
  * The same cargo argv with `--offline` straight after the subcommand (Issue
  * #4786), so the local cargo cache can satisfy a registry the host cannot
@@ -816,7 +830,7 @@ export async function checkMergedTree(
     // (Issue #4786). The note keeps the first attempt's cause.
     if (
       registryCause !== undefined && result.code !== 0 &&
-      detectCargoRegistryGap(result.output)
+      isCargoOfflineRegistryGap(result.output)
     ) {
       skippedCargo = true;
       cargoRegistryGaps.push(

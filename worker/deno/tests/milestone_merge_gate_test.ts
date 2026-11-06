@@ -19,6 +19,7 @@ import {
   detectRemoteModuleGap,
   detectRustToolchainGap,
   findTypeCheckProjects,
+  isCargoOfflineRegistryGap,
   isMergeGateFailure,
   MERGE_GATE_TIMEOUT_MS,
   mergeGateFailureError,
@@ -923,13 +924,39 @@ const REGISTRY_GAP_OUTPUT = [
   `  ${REGISTRY_CAUSE}`,
 ].join("\n");
 
-/** What the offline retry prints when the local cargo cache lacks a crate. */
+/** Cargo check --offline --locked with an empty Cargo home on this host. */
 const OFFLINE_MISSING_CRATE_OUTPUT = [
-  "error: failed to get `jiff` as a dependency of package `grq-policy v0.1.0`",
-  "",
-  "Caused by:",
-  "  attempting to make an HTTP request, but --offline was specified",
+  "error: no matching package named `jiff` found",
+  "location searched: crates.io index",
+  "required by package `offline-probe v0.1.0 (/tmp/offline-probe)`",
+  "note: offline mode (via `--offline`) can sometimes cause surprising resolution failures",
+  "help: if this error is too confusing you may wish to retry without `--offline`",
 ].join("\n");
+
+Deno.test("offline cargo resolver errors require both the error and reminder", () => {
+  assertEquals(detectCargoRegistryGap(OFFLINE_MISSING_CRATE_OUTPUT), undefined);
+  assert(isCargoOfflineRegistryGap(OFFLINE_MISSING_CRATE_OUTPUT));
+  assert(isCargoOfflineRegistryGap(
+    "error: failed to select a version for the requirement `jiff`\nAs a reminder, you're using offline mode (--offline)",
+  ));
+  assert(isCargoOfflineRegistryGap(
+    "error: failed to get `jiff`\n  attempting to make an HTTP request, but --offline was specified",
+  ));
+  assertEquals(
+    isCargoOfflineRegistryGap("error: no matching package named `jiff` found"),
+    false,
+  );
+  assertEquals(
+    isCargoOfflineRegistryGap("note: offline mode (via `--offline`)"),
+    false,
+  );
+  assertEquals(
+    isCargoOfflineRegistryGap(
+      "error[E0425]: cannot find value `x`\nnote: offline mode (via `--offline`)",
+    ),
+    false,
+  );
+});
 
 Deno.test("detectCargoRegistryGap - the verbatim Issue #4786 refusal names the connection-class cause, not a retry warning (Issue #4786)", () => {
   assertEquals(detectCargoRegistryGap(REGISTRY_GAP_OUTPUT), {

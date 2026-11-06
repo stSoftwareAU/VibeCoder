@@ -531,7 +531,7 @@ Deno.test("verifyResolvedTree - a cargo test that cannot reach its registry twic
           seen.length === 1 ? { code: 101, output: CARGO_REGISTRY_REFUSAL } : {
             code: 101,
             output:
-              "error: failed to get `jiff` as a dependency of package `grq-policy v0.1.0`\n\nCaused by:\n  attempting to make an HTTP request, but --offline was specified\n",
+              "error: no matching package named `jiff` found\nlocation searched: crates.io index\nrequired by package `offline-probe v0.1.0 (/tmp/offline-probe)`\nnote: offline mode (via `--offline`) can sometimes cause surprising resolution failures\nhelp: if this error is too confusing you may wish to retry without `--offline`\n",
           },
         );
       },
@@ -573,6 +573,31 @@ Deno.test("verifyResolvedTree - a cargo test failure without a registry gap is f
     );
     assertEquals(seen.length, 1);
     assertEquals(outcome.status, "failed", outcome.detail);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - an offline retry compile error remains a failure (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-registry-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    let runs = 0;
+    const outcome = await verifyResolvedTree(
+      dir,
+      () =>
+        Promise.resolve(
+          ++runs === 1
+            ? { code: 101, output: CARGO_REGISTRY_REFUSAL }
+            : { code: 101, output: "error[E0425]: cannot find value `x`" },
+        ),
+      passingTypeCheck,
+      () => 0,
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 2);
+    assertEquals(outcome.status, "failed");
+    assertStringIncludes(outcome.output ?? "", "cannot find value");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

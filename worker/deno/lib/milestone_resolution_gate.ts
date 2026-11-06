@@ -52,6 +52,7 @@ import {
   detectRemoteModuleGap,
   detectRustToolchainGap,
   findProjectManifests,
+  isCargoOfflineRegistryGap,
   type MergeGateFn,
   type MergeGateOutcome,
   type ProjectKind,
@@ -455,7 +456,7 @@ export async function verifyResolvedTree(
         // with the first attempt's cause (Issue #4786).
         if (
           result.code !== 0 && !result.accountUnavailable &&
-          detectCargoRegistryGap(result.output)
+          isCargoOfflineRegistryGap(result.output)
         ) {
           skippedCargoSuite = true;
           cargoLeftNotes.push(

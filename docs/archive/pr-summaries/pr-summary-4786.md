@@ -111,6 +111,15 @@ and `docs/CONTAINER.md` (the merge-only cargo passage). Code comments updated in
 
 ## Test Plan
 
+- Review correction: the assumed offline fetch-refusal fixture is replaced by
+  the resolver output captured from `cargo check --offline --locked` with an
+  empty Cargo home and a locked `jiff` dependency. Both gates leave this cold
+  cache to CI only after an initial registry gap; compile errors still fail.
+  Coverage: `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - a cargo check that cannot reach its registry twice is left to CI, naming the first cause (Issue #4786)`,
+  `worker/deno/tests/milestone_resolution_gate_test.ts::verifyResolvedTree - a cargo test that cannot reach its registry twice is left to CI, naming the first cause (Issue #4786)`,
+  and `worker/deno/tests/milestone_resolution_gate_test.ts::verifyResolvedTree - an offline retry compile error remains a failure (Issue #4786)`.
+  The shared offline classifier is used by both gates; the first-attempt
+  detector remains strict.
 - Added in `worker/deno/tests/milestone_merge_gate_test.ts`: the detector on the
   verbatim fixture (cause asserted), its negatives (compile error, `--locked`
   refusal, manifest parse error, non-network `failed to get`, rustc-version gap,
