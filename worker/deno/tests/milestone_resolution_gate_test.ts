@@ -1114,7 +1114,7 @@ Deno.test("spawnTask - a task that hits its limit comes back with timedOut set, 
   }
 });
 
-Deno.test("verifyResolvedTree - a type check skipped by a host fault on a cargo-only tree keeps its landUnverified marker (Issue #4786)", async () => {
+Deno.test("verifyResolvedTree - a skipped type check cannot authorise an unverified resolution (Issue #4786)", async () => {
   const { outcome } = await gate(
     { "test:unit": "deno test" },
     () => Promise.resolve({ code: 0, output: "" }),
@@ -1131,7 +1131,7 @@ Deno.test("verifyResolvedTree - a type check skipped by a host fault on a cargo-
   );
 
   assertEquals(outcome.status, "skipped");
-  assertEquals(outcome.landUnverified, true);
+  assertEquals(outcome.landUnverified, undefined);
   assertEquals(outcome.cargoSkipped, true);
 });
 

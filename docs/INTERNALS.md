@@ -4734,12 +4734,9 @@ as a timeout is. A Deno timeout is still a failure.
 left compiled crates in the target, so the retry resumes from them and can
 finish and verify a tree whose only check is cargo. Only a second timeout, or an
 offline run that still cannot reach the registry, is left to CI. A tree whose
-only checks are cargo and are all left to CI this way is `skipped` with
-`landUnverified` set, because the host stopped the check and no resolution
-change can answer that: it lands with the `UNGATED:` note and the milestone PR's
-CI builds it, as a merge-only cargo-only tree does (`judgeResolutionVerdict`).
-Any Deno project, a compile error, or a budget skip outside a merge-only cycle
-keeps the refusal. The third (Issue #4422)
+only checks are cargo and are all left to CI this way is
+`skipped` and refused outside a merge-only cycle: an automatic resolution
+requires a completed check (Issue #1559). The third (Issue #4422)
 covers a Deno task whose remote module host this host cannot reach, in the
 resolution gate's tasks and, under the condition below, in the type check in
 `checkMergedTree` (Issue #4451). When a Deno task fails because this

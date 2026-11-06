@@ -821,7 +821,7 @@ Deno.test("checkMergedTree - a cargo check that times out twice is retried once,
     assertEquals(runs, 2);
     assertEquals(outcome.status, "skipped", outcome.detail);
     assertEquals(outcome.cargoSkipped, true);
-    assertEquals(outcome.landUnverified, true);
+    assertEquals(outcome.landUnverified, undefined);
   });
 });
 
@@ -1086,7 +1086,7 @@ Deno.test("checkMergedTree - a cargo check that cannot reach its registry twice 
     );
     assertEquals(outcome.detail.includes("--offline was specified"), false);
     assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
-    assertEquals(outcome.landUnverified, true);
+    assertEquals(outcome.landUnverified, undefined);
   });
 });
 

@@ -192,7 +192,7 @@ Deno.test("buildConflictEscalationComment - a type check left to CI says it did 
   );
 });
 
-Deno.test("judgeResolutionVerdict - a cargo-only tree stopped by an unreachable registry lands unverified end to end (Issue #4786)", async () => {
+Deno.test("judgeResolutionVerdict - a cargo-only tree stopped by an unreachable registry is refused end to end (Issue #4786)", async () => {
   const dir = await Deno.makeTempDir();
   try {
     await Deno.writeTextFile(
@@ -224,8 +224,12 @@ Deno.test("judgeResolutionVerdict - a cargo-only tree stopped by an unreachable 
       () => Promise.resolve(false),
     );
     const judged = judgeResolutionVerdict(verdict);
-    assertEquals(judged.status, "skipped", judged.detail);
-    assertEquals(judged.landUnverified, true);
+    assertEquals(judged.status, "failed", judged.detail);
+    assertEquals(judged.landUnverified, undefined);
+    assertStringIncludes(
+      judged.detail,
+      "cannot be verified is not a resolution",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
