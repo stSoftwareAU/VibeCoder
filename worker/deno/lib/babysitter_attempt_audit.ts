@@ -44,7 +44,9 @@ function refuse(message: string): void {
  *
  * Recorded as `component: "babysitter"`, `actionKind: "repair"`,
  * `outcome: "error"`, so the collector reads it as a failed, verified repair
- * and measures the wait until the next confirmed repair.
+ * and measures the wait until the next confirmed repair or verified fleet
+ * dismissal, otherwise until the PR merges or closes. It stays open while
+ * none of those events has happened.
  *
  * @param attempt - The repository, PR number and head the attempt started from.
  * @param opts - Injected gating, identity and storage location (Issue #963).

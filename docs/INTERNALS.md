@@ -1208,8 +1208,8 @@ note, and make the directory incomplete, even beside valid journals.
 same kind on the same PR within ten minutes either side of the GitHub event. A
 review may instead match one review-log record (see below). When the event and
 the action both carry a head SHA, the two must be equal. A journalled `review`
-records no head SHA, since only a direct `pr-merge` does, so it still matches a
-GitHub review that carries a `commit_id`. A merge matches on its head and within
+without a head SHA can still match a GitHub review that carries a `commit_id`;
+reviewer posts at a reviewed head record that SHA. A merge matches on its head and within
 ten minutes either side of `mergedAt` (see **Merge window**). Each commit is
 attributed to a confirmed, verified implementation, repair or milestone push
 whose recorded `deliveredCommits` contains that commit, at or after its

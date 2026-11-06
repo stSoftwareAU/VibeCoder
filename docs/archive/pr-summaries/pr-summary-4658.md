@@ -64,7 +64,9 @@ rounds). The collector no longer reports the obsolete blanket claim that
 babysitter retry cooldowns without a push are unmeasured; missing audit
 directories remain visible in coverage notes.
 `docs/AGENT-ACCOUNTABILITY.md` describes the direct no-push attempt record,
-its head SHA and how it differs from a confirmed repair push.
+its head SHA, owner-hold exclusion and how it differs from a confirmed repair
+push. The field rules also identify reviewer head SHAs and direct PR targets;
+`docs/INTERNALS.md` describes matching reviews with or without a recorded head.
 
 ## Acceptance Criteria
 
