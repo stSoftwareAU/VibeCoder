@@ -1086,6 +1086,12 @@ reads that signal at both ends
   also skips such merged PRs, including when a cached title lookup finds
   them, so the original issue can resume and raise its completion PR. The
   cached path reads the merged PR body live; no persisted cache shape changes.
+  The claim scan's `merged-pr-permanent` gate agrees: a merged PR whose
+  closure block marks a criterion `partial` or `missing`, or whose body names
+  the issue only as `Part of #N`, does not block it, even though its title
+  says `(Issue #N)` or its body says `Closes #N`. The next run picks the issue
+  up again, and so do the issues that depend on it. Otherwise a closing
+  keyword still blocks.
   This lookup searches the issue repository; a PR in another repository needs
   separately established governing-issue and PR identities and is not
   discovered by this lookup. A cross-repository body must not claim the local
