@@ -148,6 +148,11 @@ Deno.test("PR completion report deduplicates repeated observations and separates
   assertEquals(report.cohort.closedUnmergedPrs, 1);
   assertEquals(report.cohort.ownerGatedPrs, 1);
   assertEquals(report.cohort.unverifiedOwnerGateLabels, 1);
+  assertEquals(report.ownerOnlyExceptions, [{
+    repo: "org/repo",
+    prNumber: 7,
+    state: "open",
+  }]);
   assertEquals(report.completion.eligiblePrs, 7);
   assertEquals(report.completion.unattendedMerged, 1);
   assertEquals(report.completion.humanAssistedMerged, 1);
