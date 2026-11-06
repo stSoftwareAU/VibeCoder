@@ -455,13 +455,17 @@ export async function requestReadyBranchUpdate(
       (expectedHead === undefined || pr.headRefOid === expectedHead);
     const otherwiseReady = (pr: ObjectValue) =>
       pr.state === "OPEN" && pr.isDraft === false && !!pr.autoMergeRequest &&
-      pr.mergeStateStatus === "BEHIND" &&
       (pr.reviewDecision === "APPROVED" || pr.reviewDecision === "" ||
         pr.reviewDecision === null) &&
       typeof pr.baseRefName === "string" &&
       typeof pr.headRefOid === "string";
     const ready = (pr: ObjectValue) =>
-      otherwiseReady(pr) && pr.mergeable === "MERGEABLE";
+      otherwiseReady(pr) && pr.mergeStateStatus === "BEHIND" &&
+      pr.mergeable === "MERGEABLE";
+    const transientMergeability = (pr: ObjectValue) =>
+      otherwiseReady(pr) &&
+      (pr.mergeStateStatus === "BEHIND" || pr.mergeStateStatus === "UNKNOWN") &&
+      (pr.mergeable === "UNKNOWN" || pr.mergeable === null);
     const initial = await readLivePr();
     if (!hasCurrentTarget(initial)) {
       return {
@@ -492,8 +496,7 @@ export async function requestReadyBranchUpdate(
     }
     let current = initial;
     if (
-      otherwiseReady(initial) &&
-      (initial.mergeable === "UNKNOWN" || initial.mergeable === null)
+      transientMergeability(initial)
     ) {
       let firstRead = true;
       current = await retryWithBackoff(async () => {
@@ -504,8 +507,7 @@ export async function requestReadyBranchUpdate(
           live.headRefOid !== headRefOid
         ) return live;
         if (
-          otherwiseReady(live) &&
-          (live.mergeable === "UNKNOWN" || live.mergeable === null)
+          transientMergeability(live)
         ) {
           throw new Error("PR mergeability is still UNKNOWN");
         }

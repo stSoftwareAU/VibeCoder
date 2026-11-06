@@ -641,6 +641,25 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
             Promise.resolve({ unknown: true as const, error: "read failed" }),
         },
         { checkBaseIntegrity: () => Promise.reject(new Error("read failed")) },
+        {
+          prLiveState: () =>
+            Promise.resolve({
+              open: true as const,
+              armed: true,
+              behind: false,
+              mergeable: "UNKNOWN" as const,
+            }),
+        },
+        {
+          updateBranchFn: () =>
+            Promise.resolve({
+              ok: false as const,
+              error: new Error(
+                "required-check read failed: API rate limit exceeded",
+              ),
+            }),
+        },
+        { updateBranchFn: () => Promise.reject(new Error("HTTP 503")) },
       ]
     ) {
       const skipped = await sweepAutoMerge({
@@ -1006,6 +1025,42 @@ Deno.test("an armed, behind PR with changes requested gets no branch update (Iss
     ),
     JSON.stringify(infos),
   );
+});
+
+Deno.test("a requested review clears an escalated refusal even while mergeability is unknown", async () => {
+  const entry = {
+    reason: "mergeability-unknown" as const,
+    streak: 2,
+    lastSeenAtMs: Date.now(),
+    notified: true,
+  };
+  const refusals: BranchRefreshRefusalState = new Map([[`${VC}#42`, entry]]);
+  const notifications: boolean[] = [];
+  const { state, options } = harness({ [VC]: [{ number: 42 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        armed: true,
+        behind: false,
+        mergeable: "UNKNOWN",
+        changesRequested: true,
+      }),
+  });
+  const result = await sweepAutoMerge({
+    ...options,
+    branchRefreshRefusals: {
+      load: () => Promise.resolve(refusals),
+      save: () => Promise.resolve(),
+      notify: ({ active }) => {
+        notifications.push(active);
+        return Promise.resolve();
+      },
+    },
+  });
+  assert(result.ok);
+  assertEquals(refusals.size, 0);
+  assertEquals(notifications, [false]);
+  assertEquals(state.attempted, []);
 });
 
 Deno.test("an armed, behind PR labelled needs-human gets no branch update (owner rule 2026-11-01)", async () => {

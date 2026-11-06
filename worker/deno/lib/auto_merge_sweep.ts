@@ -35,6 +35,7 @@
  */
 
 import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
+import { isRetryableError } from "./retry.ts";
 import { sanitiseLogField } from "./issue_finder_logger.ts";
 import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
@@ -415,12 +416,11 @@ export async function sweepAutoMerge(
         // head; the queue lands the PR once it is green. The merge attempt is
         // skipped too: auto-merge is already armed.
         if (
-          armedNow && reading.behind === true &&
-          reading.changesRequested === true
+          armedNow && reading.changesRequested === true
         ) {
           await clearRefusal(repo, pr.number);
           logger.info(
-            "Auto-merge sweep: armed PR is behind its base, but a reviewer " +
+            "Auto-merge sweep: armed PR has a reviewer who " +
               "requested changes (CHANGES_REQUESTED) — no branch update " +
               "until the review is answered (Issue #2702)",
             { repo, prNumber: pr.number },
@@ -470,7 +470,12 @@ export async function sweepAutoMerge(
               const reason = classifyTransientBranchRefreshRefusal(
                 update.error.message,
               );
-              if (!reason || !branchRefreshRefusals) {
+              if (
+                !reason && (isRetryableError(update.error.message) ||
+                  /rate limit/i.test(update.error.message))
+              ) {
+                // An inconclusive read does not establish recovery.
+              } else if (!reason || !branchRefreshRefusals) {
                 await clearRefusal(repo, pr.number);
               } else {
                 const prior = refusalState.get(`${repo}#${pr.number}`);
@@ -514,7 +519,6 @@ export async function sweepAutoMerge(
               }
             }
           } catch (err) {
-            await clearRefusal(repo, pr.number);
             recordOutcome(repo, pr.number, {
               result: AutoMergeResult.Failed,
               message: `branch update failed: ${errorMessage(err)}`,
@@ -523,7 +527,9 @@ export async function sweepAutoMerge(
           continue;
         }
 
-        await clearRefusal(repo, pr.number);
+        if (!armedNow || reading.mergeable !== "UNKNOWN") {
+          await clearRefusal(repo, pr.number);
+        }
 
         try {
           const outcome = await attemptMerge(repo, pr);

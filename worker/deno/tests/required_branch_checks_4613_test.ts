@@ -136,6 +136,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   let wrongParentReads = 0;
   let testMergeReads = 0;
   let mergeabilityReadings: Array<string | null> = [];
+  let unknownMergeState = false;
   let restMergeableReadings: Array<boolean | null> = [];
   let restReads = 0;
   const retryWaits: number[] = [];
@@ -149,6 +150,9 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     const endpoint = args[1] ?? "";
     if (args[0] === "pr" && args[1] === "view") {
       if (args.at(-1)?.includes("isDraft")) views++;
+      const mergeable = mergeabilityReadings.length
+        ? mergeabilityReadings.shift()
+        : "MERGEABLE";
       return Promise.resolve(
         JSON.stringify({
           state: "OPEN",
@@ -157,10 +161,10 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
           headRefOid: head,
           autoMergeRequest: {},
           reviewDecision: decision,
-          mergeable: mergeabilityReadings.length
-            ? mergeabilityReadings.shift()
-            : "MERGEABLE",
-          mergeStateStatus: "BEHIND",
+          mergeable,
+          mergeStateStatus: unknownMergeState && mergeable !== "MERGEABLE"
+            ? "UNKNOWN"
+            : "BEHIND",
         }),
       );
     }
@@ -428,6 +432,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   assertEquals(writes.length, 7);
 
   decision = "APPROVED";
+  unknownMergeState = true;
   mergeabilityReadings = ["UNKNOWN", "MERGEABLE"];
   retryWaits.length = 0;
   const unknownThenReady = await request("main");
@@ -453,6 +458,10 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
         "PR mergeability is still UNKNOWN",
       ),
       true,
+    );
+    assertEquals(
+      classifyTransientBranchRefreshRefusal(unknownExhausted.error.message),
+      "mergeability-unknown",
     );
   }
   assertEquals(views - viewsBeforeUnknownExhaustion, 4);
