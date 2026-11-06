@@ -162,11 +162,10 @@ flowchart TD
   `GH_TOKEN`, no runner token anywhere in the result, Bash and the protected
   paths and `/proc` denied; a write-granting token is refused), and
   `worker/deno/tests/pre_pr_verifier_3395_test.ts` one test for `parentEnv` and
-  `extraDisallowedTools` reaching the model run. Those files plus
-  `worker/deno/tests/fleet_pr_babysitter_test.ts` (116 tests at head),
-  `fleet_pr_babysitter_single_push_test.ts`,
-  `fleet_pr_babysitter_pass_4658_test.ts` and
-  `babysitter_attempt_audit_test.ts`: 240 passed, 0 failed.
+  `extraDisallowedTools` reaching the model run. Re-run at the head, 0 failed
+  in each: `worker/deno/tests/babysitter_fix_orchestration_test.ts` (47 tests at
+  head), `worker/deno/tests/pre_pr_verifier_3395_test.ts` (76 tests at head) and
+  `worker/deno/tests/fleet_pr_babysitter_test.ts` (116 tests at head).
 - PR #4849 review red checks (each restored): `fix()` not throwing on an outage
   → both outage tests red; journalling only when `reviews.length === 0` → the
   not-fixed journal test red; `GH_TOKEN ??= minted.token` (keeps the runner's) →
@@ -185,11 +184,11 @@ flowchart TD
   `worker/deno/tests/agent_containment_limits_3701_test.ts` runs
   `runClaudeWithTimeout` against a stub claude and reads its argv, so the run
   option reaches the CLI. `babysitter_review_verifier_4657_test.ts` asserts the
-  babysitter pass sets `readOnly: true`. Those files plus
-  `fleet_babysitter_app_test.ts`, `babysitter_fix_orchestration_test.ts`,
-  `babysitter_review_dismissal_4657_test.ts`, `fleet_pr_babysitter_test.ts`,
-  `agent_provider_deepseek_test.ts` and `agent_provider_routing_seam_test.ts`:
-  376 passed, 0 failed. Red checks (each restored): drop `isolateClaudeConfig`
+  babysitter pass sets `readOnly: true`. Re-run at the head, 0 failed in each:
+  `worker/deno/tests/pre_pr_verifier_3395_test.ts` (76 tests at head),
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts` (47 tests at head)
+  and `worker/deno/tests/fleet_pr_babysitter_test.ts` (116 tests at head).
+  Red checks (each restored): drop `isolateClaudeConfig`
   from the verifier's ask, replace `Edit` in the read-only denial list, build
   the prompt without the read-only branch, write an empty diff file, and drop
   the runner's forwarding of `isolateClaudeConfig` → the corresponding test red
@@ -210,8 +209,8 @@ flowchart TD
   description-changed test red (1 failed); letting a verifier throw escape →
   verifier-throws test red.
 - `docs/audits/lib-sweep-coverage/top-up-4657.json` claims the new module;
-  `worker/deno/tests/lib_sweep_coverage_test.ts` (39 tests at head, not changed
-  by this PR).
+  `worker/deno/tests/lib_sweep_coverage_test.ts` (39 tests at head, 0 failed)
+  reads that ledger.
 - The ledger's `sweptAt` points to the merge base on `origin/main`, rather than
   a temporary feature-branch checkpoint, so it survives a squash merge.
 - Full gate `./quality.sh` at the head after the PR #4849 review fixes: every
@@ -233,7 +232,8 @@ flowchart TD
 Not done / risk: no live babysitter run against a real PR; the default verifier
 needs the Claude CLI on the babysitter host and fails closed (reviews stay open)
 where it is absent; a review with only inline comments and an empty body is
-never auto-dismissed. The verifier no longer runs repository code (Bash is
-denied), so it cannot flip a line and re-run a test; Claude's `Read`/`Edit` path
-rules are best-effort rather than an OS sandbox, which is why Bash is removed
-and the token is read-only.
+never auto-dismissed. The verifier no longer runs repository code (`Bash`,
+`Edit`, `Write` and `NotebookEdit` are denied, and the CLI starts with no
+project settings), so it cannot flip a line and re-run a test; Claude's `Read`
+path rules are best-effort rather than an OS sandbox, which is why the shell and
+the write tools are removed and the token is read-only.
