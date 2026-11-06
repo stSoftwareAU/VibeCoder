@@ -20,10 +20,13 @@ async function repairScenario(
     events: string[];
     attempts: string[];
     attemptRecords: RetryRecord[];
+    checkpoints: string[];
     appliedBody: string | undefined;
     proposedBody: string | undefined;
   }) => void,
   passes = 1,
+  passScenarios: string[] = [],
+  advanceCapabilityCooldown = false,
 ): Promise<void> {
   const root = await Deno.realPath(await Deno.makeTempDir());
   try {
@@ -73,7 +76,7 @@ async function repairScenario(
     assert(info.ok);
     assert(info.value.success, info.value.stderr);
     const { denoDir } = JSON.parse(info.value.stdout);
-    const runPass = () =>
+    const runPass = (pass: number) =>
       runWithTimeout(Deno.execPath(), [
         "run",
         "--allow-all",
@@ -103,13 +106,25 @@ async function repairScenario(
               : configPath,
           }),
           BABYSITTER_REPAIR_FIXTURE: root,
-          BABYSITTER_REPAIR_SCENARIO: scenario,
+          BABYSITTER_REPAIR_SCENARIO: passScenarios[pass] ?? scenario,
           DENO_DIR: denoDir,
         },
       });
     // Each pass is a fresh process over the same state directory and head.
-    let output = await runPass();
-    for (let pass = 1; pass < passes; pass++) output = await runPass();
+    let output = await runPass(0);
+    for (let pass = 1; pass < passes; pass++) {
+      if (advanceCapabilityCooldown && pass === 1) {
+        const stateDir = `${root}/state/vibe-coder/fleet-pr-babysitter`;
+        for await (const entry of Deno.readDir(stateDir)) {
+          if (!entry.name.startsWith("attempt-v2-")) continue;
+          const path = `${stateDir}/${entry.name}`;
+          const record = JSON.parse(await Deno.readTextFile(path));
+          record.nextEligibleAt = new Date(0).toISOString();
+          await Deno.writeTextFile(path, JSON.stringify(record));
+        }
+      }
+      output = await runPass(pass);
+    }
     assert(output.ok);
     // A pass that starts no agent records no event and no attempt.
     let events: string[] = [];
@@ -120,6 +135,7 @@ async function repairScenario(
     }
     const attempts: string[] = [];
     const attemptRecords: RetryRecord[] = [];
+    const checkpoints: string[] = [];
     const stateDir = `${root}/state/vibe-coder/fleet-pr-babysitter`;
     try {
       for await (const entry of Deno.readDir(stateDir)) {
@@ -130,6 +146,9 @@ async function repairScenario(
           attemptRecords.push(
             JSON.parse(await Deno.readTextFile(`${stateDir}/${entry.name}`)),
           );
+        }
+        if (entry.isFile && entry.name.startsWith("repair-checkpoint-v1-")) {
+          checkpoints.push(entry.name);
         }
       }
     } catch (error) {
@@ -152,6 +171,7 @@ async function repairScenario(
       events,
       attempts,
       attemptRecords,
+      checkpoints,
       appliedBody,
       proposedBody,
     });
@@ -220,6 +240,17 @@ Deno.test("babysitter CLI retains attempt after a second failed gate", async () 
     assertEquals(result.events, ["agent-1", "gate-1", "agent-2", "gate-2"]);
     assertEquals(result.attempts.length, 1);
     assertEquals(result.appliedBody, undefined);
+  });
+});
+
+Deno.test("ordinary gate output mentioning a Chromium sandbox stays a repair failure", async () => {
+  await repairScenario("gate-output-capability-words", (result) => {
+    assertEquals(result.success, false);
+    assertStringIncludes(result.stderr, "Chromium sandbox denied");
+    assertEquals(result.attemptRecords[0]!.blockerClass, "code");
+    assertEquals(result.checkpoints, []);
+    assert(!result.events.includes("committed"));
+    assert(!result.events.includes("pushed"));
   });
 });
 
@@ -324,6 +355,27 @@ Deno.test("babysitter CLI reports an unavailable sandbox probe and starts no age
     assertEquals(result.attemptRecords[0]!.attempts.infrastructure, 1);
     assertEquals(result.appliedBody, undefined);
   });
+});
+
+Deno.test("babysitter CLI preserves edits after capability loss and revalidates them on a capable retry", async () => {
+  await repairScenario(
+    "capability-after-edits",
+    (result) => {
+      assertEquals(result.success, true, result.stderr);
+      assert(result.events.includes("checkpoint-applied"));
+      assertEquals(result.events.filter((event) => event.startsWith("gate-")), [
+        "gate-1",
+        "gate-1",
+      ]);
+      assertEquals(result.checkpoints, []);
+      assert(result.events.includes("committed"));
+      assert(result.events.includes("pushed"));
+      assertEquals(result.attemptRecords[0]!.attempts.substantive, 0);
+    },
+    2,
+    ["capability-after-edits", "capable-resume"],
+    true,
+  );
 });
 
 // Two passes over the same head: the probe fails before any agent session, and

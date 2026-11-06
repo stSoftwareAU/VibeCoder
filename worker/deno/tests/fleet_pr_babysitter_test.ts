@@ -3749,8 +3749,20 @@ for (const why of ["failed CI", "requested review changes", "merge conflict"]) {
       prompt,
       "does not by itself withhold BABYSITTER_READY",
     );
+    assertStringIncludes(
+      prompt,
+      "A required check this host cannot run is named but does not by itself withhold BABYSITTER_READY",
+    );
+    assertStringIncludes(
+      prompt,
+      "CI runs unavailable checks on the pushed head",
+    );
     assertEquals(prompt.includes("the runner executes it"), false);
     assertEquals(prompt.includes("the runner owns the final"), false);
+    assertEquals(
+      prompt.includes("leave the browser check to runner validation"),
+      false,
+    );
   });
 }
 // Issue #4728: the agent ran `printenv GH_TOKEN`, putting its own token in a

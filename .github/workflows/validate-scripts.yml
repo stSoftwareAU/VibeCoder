@@ -276,7 +276,6 @@ jobs:
           echo "=== Running actionlint ==="
           actionlint -color
 
-
       # Issue #4399 (GHA-MONITOR-002): zizmor is the workflow-YAML SECURITY
       # analyser (template injection, dangerous triggers, credential
       # persistence, cache poisoning, …) — actionlint is correctness only,
@@ -842,3 +841,51 @@ jobs:
             mod.ts check-resurrected-files \
             --repo-dir ../.. --branch HEAD \
             --default-branch "origin/$DEFAULT_BRANCH"
+
+  babysitter-browser:
+    name: babysitter-browser
+    runs-on: macos-14
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      CHROMIUM_PATH: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.5
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          deno-version-file: .deno-version
+
+      - name: Run native macOS browser and containment integration
+        run: |
+          set -euo pipefail
+          test -x "$CHROMIUM_PATH"
+          cd worker/deno
+          deno task test:browser < /dev/null
+
+  babysitter-browser-gate:
+    name: babysitter-browser-gate
+    needs: [validate, babysitter-browser]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Require both validation jobs to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: .github/scripts/gate.sh

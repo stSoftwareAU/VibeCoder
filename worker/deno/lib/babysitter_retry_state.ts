@@ -314,11 +314,15 @@ export async function saveBabysitterRepairCheckpoint(options: {
   patch: string;
 }): Promise<void> {
   if (!options.patch.trim()) return;
-  if (new TextEncoder().encode(options.patch).byteLength > REPAIR_CHECKPOINT_LIMIT) {
+  if (
+    new TextEncoder().encode(options.patch).byteLength > REPAIR_CHECKPOINT_LIMIT
+  ) {
     throw new Error("Babysitter repair checkpoint exceeds the 2 MiB limit");
   }
   if (containsSecret(options.patch)) {
-    throw new Error("Babysitter repair checkpoint contains a detectable secret");
+    throw new Error(
+      "Babysitter repair checkpoint contains a detectable secret",
+    );
   }
   await Deno.mkdir(options.stateDir, { recursive: true });
   const path = repairCheckpointPath(
@@ -341,7 +345,9 @@ export async function saveBabysitterRepairCheckpoint(options: {
     content: `${JSON.stringify(record)}\n`,
   });
   if (!result.ok) {
-    throw new Error(`Could not save babysitter repair checkpoint: ${result.error.message}`);
+    throw new Error(
+      `Could not save babysitter repair checkpoint: ${result.error.message}`,
+    );
   }
 }
 
@@ -376,7 +382,8 @@ export async function loadBabysitterRepairCheckpoint(options: {
     record.prNumber !== options.prNumber ||
     record.failureIdentity !== options.failureIdentity ||
     record.head !== options.head || typeof record.patch !== "string" ||
-    new TextEncoder().encode(record.patch).byteLength > REPAIR_CHECKPOINT_LIMIT ||
+    new TextEncoder().encode(record.patch).byteLength >
+      REPAIR_CHECKPOINT_LIMIT ||
     containsSecret(record.patch)
   ) {
     throw new Error(`Invalid babysitter repair checkpoint in ${path}`);

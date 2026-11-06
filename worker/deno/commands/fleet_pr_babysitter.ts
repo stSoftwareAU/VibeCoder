@@ -105,8 +105,8 @@ import {
   classifyBabysitterFailure,
   clearBabysitterRepairCheckpoint,
   clearBabysitterRetryStates,
-  loadBabysitterRepairCheckpoint,
   listBabysitterRetryStates,
+  loadBabysitterRepairCheckpoint,
   loadBabysitterRetryState,
   saveBabysitterRepairCheckpoint,
   saveBabysitterRetryState,
@@ -1963,7 +1963,9 @@ async function repairCheckpointPatch(
   try {
     const patch = await exec("git", ["diff", "--binary", "HEAD"], dir);
     if (containsSecret(patch)) {
-      throw new Error("Refusing a repair checkpoint containing a detectable secret");
+      throw new Error(
+        "Refusing a repair checkpoint containing a detectable secret",
+      );
     }
     return patch;
   } finally {
@@ -2576,7 +2578,9 @@ export async function fix(
     if (priorCheckpoint) {
       await applyRepairCheckpoint(priorCheckpoint, dir, exchange, exec);
       console.log(
-        `${repo}#${pr.number}: resumed the unvalidated repair checkpoint for ${pr.headRefOid.slice(0, 12)}`,
+        `${repo}#${pr.number}: resumed the unvalidated repair checkpoint for ${
+          pr.headRefOid.slice(0, 12)
+        }`,
       );
     }
     const rtkInstruction = await babysitterRtkInstruction();
@@ -2824,14 +2828,14 @@ export async function fix(
       publication,
       dismiss: deps.dismiss,
       onPushed: async (pushedHead) => {
+        pushed = true;
         await clearBabysitterRepairCheckpoint({
           stateDir,
           repo,
           prNumber: pr.number,
-          failureIdentity,
+          failureIdentity: failureIdentity!,
           head: pr.headRefOid,
         });
-        pushed = true;
         retryRecord = {
           ...retryRecord!,
           observedHead: pushedHead,
@@ -2869,11 +2873,12 @@ export async function fix(
     }
   } catch (error) {
     if (
-      error instanceof BabysitterValidationError && error.kind === "unavailable" &&
+      error instanceof BabysitterValidationError &&
+      error.kind === "unavailable" &&
       dir && failureIdentity && agentReportedReady
     ) {
       const currentHead = await exec("git", ["rev-parse", "HEAD"], dir);
-      if (currentHead !== pr.headRefOid) {
+      if (currentHead !== initial.headRefOid) {
         throw new Error(
           "PR head changed; refusing to checkpoint unvalidated repair work",
         );
@@ -2882,14 +2887,14 @@ export async function fix(
       await saveBabysitterRepairCheckpoint({
         stateDir,
         repo,
-        prNumber: pr.number,
+        prNumber: initial.number,
         failureIdentity,
-        head: pr.headRefOid,
+        head: initial.headRefOid,
         patch,
       });
       if (patch) {
         console.warn(
-          `${repo}#${pr.number}: saved unvalidated repair work for retry when runner capability is available`,
+          `${repo}#${initial.number}: saved unvalidated repair work for retry when runner capability is available`,
         );
       }
     }

@@ -70,6 +70,12 @@ a fixed `/usr/bin/true` probe. An unavailable sandbox (for example
 recorded as a host-capability blocker with a bounded cooldown that consumes no
 repair attempt, so a watch pass does not spend a session each cycle; the same
 classification after the agent finishes remains as a backstop.
+If capability is lost after the agent reports ready, the runner checkpoints
+the unstaged patch only when it is under 2 MiB and contains no detectable
+secret. The checkpoint is bound to the unchanged PR head. A later eligible pass
+on a capable host applies it to a fresh clone and reruns the required gate;
+this checkpoint is not validated completion and does not spend a substantive
+repair attempt.
 Browser cache variables (`PLAYWRIGHT_BROWSERS_PATH`, `CYPRESS_CACHE_FOLDER`,
 `PUPPETEER_CACHE_DIR`) that the operator has not set default to fresh
 directories under repair scratch that hold links to the host's installed
@@ -130,7 +136,11 @@ sequenceDiagram
         A-->>R: Updated fix
         R->>Q: Re-run quality.sh
     else Runner sandbox unavailable
-        R-->>G: No push, report capability failure
+        R->>R: Save scanned patch for unchanged head
+        R-->>G: No push; schedule capability retry
+        G-->>R: Next eligible pass on capable host
+        R->>R: Reapply checkpoint in fresh clone
+        R->>Q: Re-run required gate
     end
 ```
 
@@ -570,12 +580,16 @@ To prepare a separate GitHub identity and API quota, follow the
 
 ### Browser integration check
 
-Run `cd worker/deno && deno task test:browser < /dev/null` on macOS with
-`CHROMIUM_PATH` pointing to a Chromium executable. This dedicated integration
-suite requires sandbox-exec and the macOS Keychain services. It fails loudly
-when prerequisites are absent. The ordinary unit suite uses self-contained
-command doubles and requires no browser. Linux repairs keep their existing
-agent validation and the credential boundary from #4593.
+CI runs `cd worker/deno && deno task test:browser < /dev/null` on a native
+`macos-14` runner with `CHROMIUM_PATH` set to the installed Google Chrome
+binary. This dedicated integration suite requires sandbox-exec and macOS
+Keychain services. It exercises rendered DOM and screenshot output alongside
+credential, Mach service, process, IPC, terminal, signalling and `.git` write
+denials. Its aggregate job fails when either the Linux validation job or the
+browser job is skipped or unsuccessful. The task remains excluded from unit
+test discovery so Linux does not report a false pass using command doubles.
+Linux repairs keep their existing agent validation and the credential boundary
+from #4593.
 
 ### Installed browser caches
 

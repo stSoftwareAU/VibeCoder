@@ -232,8 +232,26 @@ function commandOutput(
     if (args.includes("status") && args.includes("--porcelain")) {
       return repair ? " M file.txt" : "";
     }
+    if (repair && args[0] === "diff" && args.includes("--cached")) return "";
+    if (repair && args[0] === "diff" && args.includes("--binary")) {
+      return scenario === "capability-after-edits"
+        ? "diff --git a/repair.txt b/repair.txt\nnew file mode 100644\n+repair preserved\n"
+        : "";
+    }
+    if (repair && args[0] === "add" && args.includes("-N")) return "";
+    if (repair && args[0] === "reset") return "";
+    if (repair && args[0] === "apply") {
+      if (!args.includes("--check")) {
+        Deno.writeTextFileSync(
+          `${options.cwd}/repair.txt`,
+          "repair preserved\n",
+        );
+        record("checkpoint-applied");
+      }
+      return "";
+    }
     if (repair && args.includes("diff")) return "";
-    if (repair && args.includes("add")) {
+    if (repair && args.includes("add") && args.includes("-A")) {
       try {
         Deno.statSync(`${options.cwd}/.babysitter-response`);
       } catch (error) {
@@ -266,11 +284,21 @@ function commandOutput(
           "Reviewed PR description\n",
         );
       }
+      if (repair && scenario === "capability-after-edits") {
+        Deno.writeTextFileSync(
+          `${args[args.indexOf("--cd") + 1]}/repair.txt`,
+          "repair preserved\n",
+        );
+      }
       Deno.writeTextFileSync(`${root}/agent-spawn.json`, JSON.stringify(args));
       const response = args[args.indexOf("--output-last-message") + 1]!;
       if (
         repair && agentCalls === 2 &&
-        !args.at(-1)?.includes("browser assertion failed")
+        !args.at(-1)?.includes(
+          scenario === "gate-output-capability-words"
+            ? "Chromium sandbox denied"
+            : "browser assertion failed",
+        )
       ) {
         throw new Error("Repair prompt omitted the gate's cause");
       }
@@ -330,7 +358,18 @@ function commandOutput(
     if (scenario === "unavailable") {
       throw new Error("sandbox unavailable in fixture");
     }
-    if (gateCalls === 1 || scenario === "still-failing") {
+    if (scenario === "capability-after-edits") {
+      throw new Error("sandbox unavailable after Chromium capability changed");
+    }
+    if (scenario === "gate-output-capability-words") {
+      throw new GateFailure(
+        "Chromium sandbox denied by an ordinary test assertion",
+      );
+    }
+    if (
+      scenario !== "capable-resume" &&
+      (gateCalls === 1 || scenario === "still-failing")
+    ) {
       throw new GateFailure();
     }
     return "browser assertion passed";
@@ -495,6 +534,8 @@ childProcess.spawn =
         code = 1;
         stderr = error instanceof ProbeFailure
           ? "sandbox-exec: sandbox_apply: Operation not permitted"
+          : error instanceof GateFailure && error.message
+          ? error.message
           : "browser assertion failed";
       } else failure = error;
     }

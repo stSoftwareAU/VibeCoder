@@ -112,7 +112,7 @@ gate starts, terminates and reaps a background child to exercise this grant.
 
 Process inspection is restricted to the same sandbox; process execution and
 forking are separate grants. Sysctl reads allow named hardware and OS values
-and per-PID and process-group record prefixes, but not `kern.procargs2`. `kern.procargs2`, which also returns a process's environment, stays denied, so `ps -o command=` and `ps -o args=` print no arguments. A gate that needs full command lines from `ps` (VibeCoder's own `loop_supervisor_test.ts` is one) cannot pass in the runner: the check is returned to Codex once, the retry fails the same way, and the repair is discarded without a commit or push. The integration gate records what `ps -o command=` prints for a gate child; that has not yet run on macOS. The
+and per-PID and process-group record prefixes, but not `kern.procargs2`. `kern.procargs2`, which also returns a process's environment, stays denied, so `ps -o command=` and `ps -o args=` print no arguments. A gate that needs full command lines from `ps` (VibeCoder's own `loop_supervisor_test.ts` is one) cannot pass in the runner: the check is returned to Codex once, and a second failure prevents commit or push. If the sandbox becomes unavailable after the agent reports ready, the babysitter stores a bounded, detectable-secret-scanned patch tied to the unchanged PR head. A later eligible pass reapplies the patch in a fresh clone, then the gate must pass before commit. The integration gate records what `ps -o command=` prints for a gate child; the native macOS CI job runs this evidence. The
 `com.apple.sysmond` lookup supports `pgrep` and can expose other processes'
 arguments: operators must not put credentials in command-line arguments. The
 live integration probe for environment access uses a
@@ -149,8 +149,10 @@ names are visible in the login session's bootstrap namespace. The profile is
 not a general host-data or network boundary: repository code can read other
 host files and use outbound
 network access. A failed check is returned to the repair agent once; if the
-sandbox cannot start, the babysitter reports the capability failure and does
-not commit or push. `BABYSITTER_READY` marks agent readiness for this runner
+sandbox cannot start, the babysitter records a capability retry without
+charging a substantive repair attempt. A ready repair is checkpointed only
+when its patch is under 2 MiB and passes detectable-secret scanning; a later
+capable pass must revalidate before commit or push. `BABYSITTER_READY` marks agent readiness for this runner
 check, not a successful gate; a failed gate gets one repair pass and must pass
 again before commit. See [the babysitter workflow](docs/workflows/fleet-pr-babysitter.md).
 

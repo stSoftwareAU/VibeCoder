@@ -7,8 +7,8 @@ import {
   buildBabysitterAttemptMarker,
   classifyBabysitterBlocker,
   classifyBabysitterFailure,
-  clearBabysitterRetryStates,
   clearBabysitterRepairCheckpoint,
+  clearBabysitterRetryStates,
   listBabysitterRetryStates,
   loadBabysitterRepairCheckpoint,
   loadBabysitterRetryState,
@@ -173,7 +173,8 @@ Deno.test("repair checkpoint survives capability retry and is cleared after reva
     failureIdentity: "failed CI",
     head: "a".repeat(40),
   };
-  const patch = "diff --git a/fix.ts b/fix.ts\n+export const repaired = true;\n";
+  const patch =
+    "diff --git a/fix.ts b/fix.ts\n+export const repaired = true;\n";
   try {
     await saveBabysitterRepairCheckpoint({ ...key, patch });
     assertEquals(await loadBabysitterRepairCheckpoint(key), patch);
@@ -193,14 +194,15 @@ Deno.test("repair checkpoint refuses a detectable secret", async () => {
   const token = "ghp_" + "A".repeat(36);
   try {
     await assertRejects(
-      () => saveBabysitterRepairCheckpoint({
-        stateDir: dir,
-        repo: "owner/repo",
-        prNumber: 7,
-        failureIdentity: "failed CI",
-        head: "a".repeat(40),
-        patch: `diff --git a/.env b/.env\n+GITHUB_TOKEN=${token}\n`,
-      }),
+      () =>
+        saveBabysitterRepairCheckpoint({
+          stateDir: dir,
+          repo: "owner/repo",
+          prNumber: 7,
+          failureIdentity: "failed CI",
+          head: "a".repeat(40),
+          patch: `diff --git a/.env b/.env\n+GITHUB_TOKEN=${token}\n`,
+        }),
       Error,
       "detectable secret",
     );
