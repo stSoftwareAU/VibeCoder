@@ -37,10 +37,12 @@
  */
 
 import {
+  CARGO_MUTANTS_MISSING,
   DEFAULT_MUTANT_CAP,
   generateDenoMutantsDetailed,
   isDenoTestFile,
   type Mutant,
+  MUTATION_BASELINE_FAILS,
   MUTATION_TEMP_DIR_UNWRITABLE,
   type MutationCheckResult,
   type MutationLanguage,
@@ -129,8 +131,6 @@ const SOURCE_FILE = /\.(?:ts|tsx|js|mjs)$/;
 const RELATIVE_SPECIFIER = /["'](\.{1,2}\/[^"']*)["']/g;
 /** Any quoted specifier; a bare one may be an `imports` alias (Issue #4533). */
 const QUOTED_SPECIFIER = /["']([^"'\s]+)["']/g;
-const CARGO_MUTANTS_MISSING =
-  "cargo-mutants is not installed; install it or set skip_mutation_check";
 
 /**
  * Repo-relative directory of the nearest ancestor of `file` (itself included)
@@ -590,7 +590,7 @@ async function runDeno(
       if (base.code !== 0) {
         return {
           kind: "error",
-          reason: `baseline tests fail before mutation (${
+          reason: `${MUTATION_BASELINE_FAILS} (${
             tests.join(", ")
           }); cannot judge mutants`,
         };
@@ -921,7 +921,7 @@ async function runCargoMutants(
   }
   if (!proc.timedOut && ![0, 2, 3].includes(proc.code)) {
     const why = proc.code === 4
-      ? "baseline tests fail before mutation"
+      ? MUTATION_BASELINE_FAILS
       : `cargo mutants exited with code ${proc.code}`;
     return { kind: "error", reason: `${why}; cannot judge mutants` };
   }

@@ -67,6 +67,19 @@ export const MUTATION_TEMP_DIR_UNWRITABLE =
   "the mutation check's temporary directory is not writable";
 
 /**
+ * Opening of a runner `error` reason when the baseline tests fail before any
+ * mutant runs, so no mutant can be judged (Issue #4617).
+ */
+export const MUTATION_BASELINE_FAILS = "baseline tests fail before mutation";
+
+/**
+ * Runner `error` reason when `cargo-mutants` is not installed where the worker
+ * runs the check (Issue #4617).
+ */
+export const CARGO_MUTANTS_MISSING =
+  "cargo-mutants is not installed; install it or set skip_mutation_check";
+
+/**
  * A repository CI job that runs the mutation tool on pull requests and blocks
  * on its survivors. Names come from repository files, so they are sanitised
  * before use in the reason or comment.
@@ -1476,9 +1489,20 @@ export function parseMutationExemptions(
 // Verdict and comment
 // ---------------------------------------------------------------------------
 
-/** What to do when the mutation check errors before it can judge anything. */
-const ERROR_NEXT_ACTION =
-  "fix the baseline build or test failure or install the missing tool, then re-run";
+/**
+ * The next action to name when the mutation check errors before it can judge
+ * anything, chosen by the cause in the runner `reason` (Issue #4617): a baseline
+ * test failure, an uninstalled `cargo-mutants`, or any other runner error.
+ */
+export function mutationErrorNextAction(reason: string): string {
+  if (reason.startsWith(MUTATION_BASELINE_FAILS)) {
+    return "the baseline build or tests fail before any mutation, so no mutant can be judged: make them pass on this branch, then re-run";
+  }
+  if (reason.startsWith(CARGO_MUTANTS_MISSING)) {
+    return "the mutation tool is not installed where the worker runs the check: install it there, then re-run";
+  }
+  return "read the runner error above, fix its cause, then re-run";
+}
 
 /**
  * Verdict for a mutation-check result, honouring PR-summary exemptions unless
@@ -1520,7 +1544,9 @@ export function evaluateMutationGate(
       };
     }
     const ciNote = ci
-      ? ` — the repository's CI job '${ci.job}' will run the same check, so this change is unvalidated, not passed; ${ERROR_NEXT_ACTION}`
+      ? ` — the repository's CI job '${ci.job}' will run the same check, so this change is unvalidated, not passed; ${
+        mutationErrorNextAction(result.reason)
+      }`
       : "";
     return {
       blocked: true,

@@ -141,11 +141,16 @@ blocking, because CI fails on them whatever the PR summary says:
 4. **Validation that cannot finish holds nothing.** A runner error, an
    unavailable tool, a baseline build or test failure, a worker fault (the
    temporary directory) or a budget or mutant cap that leaves mutants untested
-   is reported as unvalidated, never as a pass. The pull request is still raised
-   ready and armed, because CI's job gives the complete verdict. Holding it
-   could not converge: a Rust clean build and baseline can use the whole 300 s
-   budget on every re-run, and a draft skips the CI job that would decide
-   (Issue #4820). A draft whose next run reports no survivor is marked ready.
+   is reported as unvalidated, never as a pass. On a blocking-CI repository the
+   mutation-check note names the next action for the cause: make the baseline
+   tests pass on this branch for a baseline build or test failure, install the
+   tool where the worker runs the check for an uninstalled tool, and fix the
+   cause named in the runner error for any other runner error (Issue #4617). The
+   pull request is still raised ready and armed, because CI's job gives the
+   complete verdict. Holding it could not converge: a Rust clean build and
+   baseline can use the whole 300 s budget on every re-run, and a draft skips
+   the CI job that would decide (Issue #4820). A draft whose next run reports no
+   survivor is marked ready.
 
 A repository without such a job is unchanged: survivors are notes, auto-merge
 stays armed and summary exemptions still work.
@@ -420,7 +425,7 @@ Both keys are per-repo options, set operator-side under
 | Completed, no survivor     | Every mutant was killed, or the survivor is exempted (an exemption does not count on a blocking-CI repository)                                                                                                                                                                       | No                                                                                                                                      |
 | Completed, survivors       | At least one unexempted survivor                                                                                                                                                                                                                                                     | Yes; on a blocking-CI repository a draft PR, not auto-merged, if one remains after the recovery turn (a draft on the deferral path too) |
 | Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass                                                                                                                                                                                                          | Only if a survivor found; on a blocking-CI repository a draft PR, validation incomplete                                                 |
-| Error                      | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable                                                                                                                                                                                        | Yes, with a remedy; on a blocking-CI repository a draft PR that says the change is unvalidated (not passed) and names the next action   |
+| Error                      | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable                                                                                                                                                                                        | Yes, with a remedy; on a blocking-CI repository the PR is raised ready and armed, and its note names a next action per cause            |
 | Error (worker fault)       | The temporary directory could not be created, in the system temp directory or on the work volume (Issue #4127). Reported as `mutation check could not run` (a worker fault on this host, not a verdict on the code); at PR raise recorded as `internal_error`, never `quality_check` | Yes, no repository remedy (no `skip_mutation_check`)                                                                                    |
 
 In a review-fix run nothing blocks the push. Survivors, budget exhaustion, the

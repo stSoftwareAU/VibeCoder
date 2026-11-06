@@ -14,7 +14,9 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { assertLinearGrowth } from "./support/growth.ts";
 import {
+  CARGO_MUTANTS_MISSING,
   evaluateMutationGate,
+  MUTATION_BASELINE_FAILS,
   MUTATION_TEMP_DIR_UNWRITABLE,
 } from "../lib/mutation_gate.ts";
 import {
@@ -368,7 +370,7 @@ Deno.test("runMutationCheck deno - failing baseline is an error and nothing is m
   const f = fake(denoFiles(), () => ok(1));
   const r = await runMutationCheck(input(), f.seams);
   assert(r.kind === "error");
-  assertStringIncludes(r.reason, "baseline tests fail");
+  assert(r.reason.startsWith(MUTATION_BASELINE_FAILS), r.reason);
   assertEquals(f.calls.length, 1);
 });
 
@@ -834,7 +836,7 @@ Deno.test("runMutationCheck rust - missing cargo-mutants is an error", async () 
   ) {
     const r = await runMutationCheck(rsInput, rustFake(null, proc).seams);
     assert(r.kind === "error");
-    assertStringIncludes(r.reason, "cargo-mutants is not installed");
+    assertEquals(r.reason, CARGO_MUTANTS_MISSING);
   }
 });
 
@@ -845,6 +847,11 @@ Deno.test("runMutationCheck rust - baseline failure and usage errors are errors"
       rustFake(outcomesJson([]), ok(code)).seams,
     );
     assert(r.kind === "error", `exit ${code}`);
+    assertEquals(
+      r.reason.startsWith(MUTATION_BASELINE_FAILS),
+      code === 4,
+      r.reason,
+    );
   }
 });
 
