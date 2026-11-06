@@ -1280,6 +1280,10 @@ export async function pass(
           callGh,
           { fleetAuthors: [...fleet] },
           reviewer,
+          {
+            auditDir: `${dir}/audit`,
+            runId: `reviewer:gate:${new Date(now()).toISOString()}`,
+          },
         );
       if (result?.updated) {
         if (!DRY_RUN) updateAsked[key] = pr.headRefOid;

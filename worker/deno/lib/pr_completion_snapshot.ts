@@ -1036,11 +1036,7 @@ async function ciRunsFor(
     if (headSha === null || !heads.includes(headSha)) continue;
     workflowRuns.set(asId(run.id, `${label} workflow run`), { run, headSha });
   }
-  for (
-    const headSha of new Set(
-      [...workflowRuns.values()].map((entry) => entry.headSha),
-    )
-  ) {
+  for (const headSha of heads) {
     // filter=all: otherwise GitHub lists only the latest run per check name.
     const checks = await fetchPages(
       `repos/${record.repo}/commits/${headSha}/check-runs?filter=all`,

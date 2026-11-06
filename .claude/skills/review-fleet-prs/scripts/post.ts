@@ -670,6 +670,7 @@ export async function main() {
         (args) => run("gh", args),
         undefined,
         reviewer,
+        { auditDir: `${dir}/audit`, runId: `reviewer:${roundDir}` },
       );
     }
     if (branchUpdate?.updated === false) {

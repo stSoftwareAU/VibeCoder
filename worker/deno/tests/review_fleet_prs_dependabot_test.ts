@@ -618,6 +618,9 @@ Deno.test("upkeep memory surfaces an atomic replacement failure (Issue #3663)", 
             }
             return Promise.resolve("{}");
           },
+          undefined,
+          undefined,
+          { auditDir: `${dir}/audit`, runId: "reviewer:test" },
         ),
       Error,
       "atomicWrite",
@@ -671,6 +674,9 @@ Deno.test("a persistence lock timeout after the API request stays a loud write f
             calls++;
             return Promise.resolve("{}");
           },
+          undefined,
+          undefined,
+          { auditDir: `${dir}/audit`, runId: "reviewer:test" },
         ),
       Error,
       "could not take the lock",

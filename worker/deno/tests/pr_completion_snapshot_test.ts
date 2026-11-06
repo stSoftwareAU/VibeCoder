@@ -1176,6 +1176,34 @@ Deno.test("collect - many commits require one CI listing and budget exhaustion i
   );
 });
 
+Deno.test("collect - check runs are read for an observed head with no workflow runs", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1)] },
+    checks: {
+      sha1: {
+        total_count: 1,
+        check_runs: [{
+          id: 91,
+          status: "completed",
+          conclusion: "success",
+          started_at: "2026-10-20T00:00:00Z",
+          completed_at: "2026-10-20T00:04:00Z",
+        }],
+      },
+    },
+  });
+
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+
+  assertEquals(snapshot.input.ciRuns.map((run) => [run.kind, run.runId]), [[
+    "check_run",
+    "91",
+  ]]);
+  assert(fixture.calls.includes(
+    "repos/org/repo/commits/sha1/check-runs?filter=all&per_page=100&page=1",
+  ));
+});
+
 Deno.test("collect - incomplete CI is reflected in delivered metrics and coverage", async () => {
   const fixture = emptyFixture({
     pulls: { [REPO]: [pull(1), pull(2)] },
