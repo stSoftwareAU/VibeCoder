@@ -95,7 +95,10 @@ export function branchRefreshRefusalKey(
 export function classifyTransientBranchRefreshRefusal(
   message: string,
 ): BranchRefreshTransientReason | undefined {
-  if (message.includes("PR mergeability is still UNKNOWN")) {
+  if (
+    message.includes("PR mergeability is still UNKNOWN") ||
+    message.includes("PR test merge is still being computed")
+  ) {
     return "mergeability-unknown";
   }
   if (

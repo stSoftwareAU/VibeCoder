@@ -574,15 +574,22 @@ Deno.test("an armed, behind PR gets exactly one branch update and no merge attem
 
 Deno.test("repeated transient branch refresh refusals persist, notify once, and clear on recovery (Issue #4831)", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "branch-refresh-streak-" });
-  const notifications: Array<{ active: boolean; streak: number }> = [];
+  const notifications: Array<
+    { repo: string; prNumber: number; active: boolean; streak: number }
+  > = [];
   const tracking = {
     load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
     save: (state: Awaited<ReturnType<typeof readBranchRefreshRefusals>>) =>
       writeBranchRefreshRefusals(workDir, state, undefined, () => {}),
     notify: (
-      { active, entry }: { active: boolean; entry: { streak: number } },
+      { repo, prNumber, active, entry }: {
+        repo: string;
+        prNumber: number;
+        active: boolean;
+        entry: { streak: number };
+      },
     ) => {
-      notifications.push({ active, streak: entry.streak });
+      notifications.push({ repo, prNumber, active, streak: entry.streak });
       return Promise.resolve();
     },
   };
@@ -618,7 +625,12 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
       branchRefreshRefusals: tracking,
     });
     assert(second.ok);
-    assertEquals(notifications, [{ active: true, streak: 2 }]);
+    assertEquals(notifications, [{
+      repo: VC,
+      prNumber: 4831,
+      active: true,
+      streak: 2,
+    }]);
     assertEquals(errors.length, 1);
 
     const afterRestart = {
@@ -631,7 +643,12 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
       branchRefreshRefusals: afterRestart,
     });
     assert(third.ok);
-    assertEquals(notifications, [{ active: true, streak: 2 }]);
+    assertEquals(notifications, [{
+      repo: VC,
+      prNumber: 4831,
+      active: true,
+      streak: 2,
+    }]);
 
     const recovered = await sweepAutoMerge({
       ...options,
@@ -644,8 +661,8 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
     });
     assert(recovered.ok);
     assertEquals(notifications, [
-      { active: true, streak: 2 },
-      { active: false, streak: 3 },
+      { repo: VC, prNumber: 4831, active: true, streak: 2 },
+      { repo: VC, prNumber: 4831, active: false, streak: 3 },
     ]);
     assertEquals((await readBranchRefreshRefusals(workDir)).size, 0);
   } finally {

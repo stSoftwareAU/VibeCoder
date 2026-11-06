@@ -20,7 +20,11 @@ Version bump: No version change was made for this fix.
 ### Essential Design Decisions
 
 - Only strict-base, non-queue refreshes retry an otherwise-ready PR with
-  `UNKNOWN`/`null` mergeability or stale test-merge parents. Each retry path
+  `UNKNOWN`/`null` mergeability, a REST test merge still being computed
+  (`mergeable: null` or no `merge_commit_sha`) or stale test-merge parents. The
+  non-strict path is unchanged from the base: it sends the update at once with
+  no mergeability check, so every other `requestReadyBranchUpdate` caller keeps
+  its previous result there. Each retry path
   uses `retryWithBackoff` with four total reads and its normal 2/4/8-second
   delays plus jitter.
 - Refusal streaks are keyed by repository, PR and stable transient reason in the
@@ -82,7 +86,9 @@ flowchart TD
 
 - `worker/deno/tests/required_branch_checks_4613_test.ts::ready updater checks the live head and sends its SHA`
   — covers `UNKNOWN` and `null` to ready, stale parents to matching parents,
-  four-read exhaustion, non-strict `null`, changed targets, failed checks,
+  REST `mergeable: null` to ready and its four-read exhaustion (classified as a
+  transient `mergeability-unknown` streak reason), four-read exhaustion,
+  non-strict `null` still sending the update, changed targets, failed checks,
   review holds, merge queues and base ownership. It failed against `origin/main`
   at the stale-then-current success assertion; removing the `null` retry
   condition also made it fail.
@@ -101,12 +107,19 @@ flowchart TD
 - `worker/deno/tests/auto_merge_sweep_keeps_armed_test.ts::production ensureAutoMerge persists and escalates a repeated transient refresh refusal (Issue #4831)`
   — verifies the production `ensureAutoMerge` wiring; removing its
   `branchRefreshRefusals` injection made the held-PR diagnostic assertion fail.
+- Mutation check (`auto_merge_sweep.ts` `clearRefusal`): the recovery
+  notification test now asserts `repo` and `prNumber` on the event, which kills
+  the deleted-`repo` (line 230) and deleted-`prNumber` (line 231) mutants.
+  `worker/deno/lib/auto_merge_sweep.ts:227` exempt (untestable): the
+  `&& branchRefreshRefusals` operand only narrows the optional tracker for
+  TypeScript; with no tracker the refusal state is an empty map, so
+  `previous?.notified` is never true and the operand cannot change behaviour.
 - The added or changed tests remove no existing assertions. Retry option
   siblings searched: `maxAttempts`, `initialDelayMs`, `sleepFn` and `onRetry`;
   the manuals do not enumerate that option set.
 - Final targeted run:
   `deno task test:unit tests/required_branch_checks_4613_test.ts tests/auto_merge_sweep_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/auto_merge_sweep_merge_queue_test.ts tests/retry_test.ts`
-  — passed, 120 tests, 0 failed.
+  — passed, 120 tests, 0 failed (re-run after the verifier fixes).
 - `deno lint` on the eight changed TypeScript files — passed.
 - `deno check --frozen --lock=deno.lock` on the changed production modules —
   passed.

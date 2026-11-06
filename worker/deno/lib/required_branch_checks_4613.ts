@@ -363,6 +363,9 @@ export async function readRequiredChecksFailed(
   });
 }
 
+/** GitHub is still recomputing the test merge; a later read may succeed. */
+const TEST_MERGE_PENDING = "PR test merge is still being computed";
+
 /** Confirm GitHub's test merge belongs to the same PR head and current base. */
 async function readTestMerge(
   repo: string,
@@ -377,6 +380,12 @@ async function readTestMerge(
   );
   const prHead = object(pr.head, "PR head");
   const prBase = object(pr.base, "PR base");
+  if (
+    pr.state === "open" && prHead.sha === head && prBase.ref === base &&
+    (pr.mergeable === null || pr.merge_commit_sha == null)
+  ) {
+    throw new Error(TEST_MERGE_PENDING);
+  }
   if (
     pr.state !== "open" || pr.mergeable !== true || prHead.sha !== head ||
     prBase.ref !== base ||
@@ -474,12 +483,6 @@ export async function requestReadyBranchUpdate(
       };
     }
     if (!policy.strict) {
-      if (initial.mergeable === "UNKNOWN" || initial.mergeable === null) {
-        return {
-          ok: false,
-          error: new Error("PR no longer ready for a branch update"),
-        };
-      }
       return await requestBranchUpdate(
         repo,
         prNumber,
@@ -609,6 +612,7 @@ export async function requestReadyBranchUpdate(
           maxAttempts: 4,
           ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
           shouldRetry: (error) =>
+            error.message === TEST_MERGE_PENDING ||
             error.message ===
               "PR test merge parents do not match its head and base",
         },
