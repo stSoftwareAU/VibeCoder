@@ -517,6 +517,25 @@ Deno.test("required checks scan long needs chains and aliased lists within budge
   });
 });
 
+Deno.test("unrelated required checks scan a long needs chain within budget", async () => {
+  const lines = [
+    "on: pull_request",
+    "jobs:",
+    "  mutants:",
+    "    steps:",
+    "      - run: cargo mutants",
+  ];
+  for (let i = 1; i <= 1600; i++) {
+    lines.push(`  j${i}:`, `    needs: ${i === 1 ? "mutants" : `j${i - 1}`}`);
+  }
+  await withRepo({ "ci.yml": lines.join("\n") }, async (repo) => {
+    assertEquals(
+      await findBlockingMutationJob(repo, { requiredChecks: ["unrelated"] }),
+      { blocking: null, unreadable: [] },
+    );
+  });
+});
+
 Deno.test("required checks charge aliased needs edges to the scan budget", async () => {
   const names = Array.from({ length: 1100 }, (_, i) => `a${i}`);
   const lines = [

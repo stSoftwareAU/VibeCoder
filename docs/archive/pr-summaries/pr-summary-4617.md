@@ -145,6 +145,12 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- Review follow-up: an unrelated required check over a 1,600-job needs chain
+  remains within budget, covered by
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::unrelated required checks scan a long needs chain within budget`.
+  Removing the coverage memoisation made this test report the workflow as
+  unreadable; restoring it passes. No twinned implementation was found.
+
 - Review follow-up: required-check dependency coverage is computed once per
   workflow and caller prefix, with aliased needs lists shared and traversed
   edges charged to the scan budget. The previous repeated dependency walk is
