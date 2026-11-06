@@ -1,12 +1,13 @@
 ## Summary
 
-The PR comment scan (`findActionableComment`, `worker/deno/lib/pr_maintenance.ts`)
-no longer acts on a top-level PR comment that has no visible text once HTML
-comments are removed. A review-fleet-prs round's `<!-- vibe-review-claim … -->`
-claim, posted as an authorised App, was being claimed as feedback, given a full
-`pr_feedback` model run and answered with "nothing to act on". The scan now skips
-it before any reaction or authorisation lookup and logs the skip at INFO, the way
-the CHANGES_REQUESTED path logs "it has no body to act on". Closes #4673.
+The PR comment scan (`findActionableComment`,
+`worker/deno/lib/pr_maintenance.ts`) no longer acts on a top-level PR comment
+that has no visible text once HTML comments are removed. A review-fleet-prs
+round's `<!-- vibe-review-claim … -->` claim, posted as an authorised App, was
+being claimed as feedback, given a full `pr_feedback` model run and answered
+with "nothing to act on". The scan now skips it before any reaction or
+authorisation lookup and logs the skip at INFO, the way the CHANGES_REQUESTED
+path logs "it has no body to act on". Closes #4673.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -76,12 +77,13 @@ The issue states no criteria heading; nothing it asks is left undone.
 
 ## Test Plan
 
-Run from `worker/deno`: `deno task test:unit tests/visible_comment_text_test.ts
+Run from `worker/deno`:
+`deno task test:unit tests/visible_comment_text_test.ts
 tests/pr_feedback_marker_only_comment_4673_test.ts
 tests/pr_feedback_trusted_bot_e2e_test.ts tests/pr_maintenance_test.ts
 tests/pr_maintenance_bot_prs_test.ts tests/pr_feedback_superseded_comment_test.ts
-tests/pr_feedback_staleness_test.ts` passed (137 tests), and
-`deno task check:manifests` passed (847).
+tests/pr_feedback_staleness_test.ts`
+passed (137 tests), and `deno task check:manifests` passed (847).
 
 Gate: `./quality.sh < /dev/null` on the head passed every stage except
 `deno tests`. Its only failures were two tests in
