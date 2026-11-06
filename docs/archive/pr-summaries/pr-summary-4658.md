@@ -83,9 +83,9 @@ result consumed by command dispatch and its existing callers.
   evidence:
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - reports genuine owner-only exceptions with provenance alongside regressions`;
   actual posting test checks formatted output — reviewer: met
-- **missing** — Complete blocker accounting for recovery and refresh waits
-  using the records from #4656 and #4613; these are not yet represented as
-  blocker intervals.
+- **missing** — Complete blocker accounting for recovery and refresh waits using
+  the records from #4656 and #4613; these are not yet represented as blocker
+  intervals.
 - **missing** — Journal the reviewer's branch refresh through the canonical
   audit writer as a branch-update, so its resulting merge commit has trusted
   provenance.
@@ -112,7 +112,8 @@ followed by a fleet merge remains covered by
 Generic needs-human labels no longer exclude PRs from rollout eligibility;
 verified owner holds at verification remain excluded. The updated coverage is
 `worker/deno/tests/pr_completion_snapshot_test.ts::collect - the rollout check counts stranded, rediscovered and processed PRs by verified time`
-and `::collect - the rollout check strands only PRs open at verification and at least a day old`.
+and
+`::collect - the rollout check strands only PRs open at verification and at least a day old`.
 
 ## Test Plan
 
@@ -133,14 +134,15 @@ and `::collect - the rollout check strands only PRs open at verification and at 
 - Reviews, dismissals and merges pair with verified actions one-to-one by
   nearest gap, not event order.
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - a nearer review takes the fleet action; an earlier allowlisted review stays a human action`
-  puts an allowlisted COMMENTED review five minutes before the fleet hold on
-  the same head (open and merged variants): the gate verifies, the earlier
-  review is a verified human action and `humanAssistedMerged` is 1. It failed
+  puts an allowlisted COMMENTED review five minutes before the fleet hold on the
+  same head (open and merged variants): the gate verifies, the earlier review is
+  a verified human action and `humanAssistedMerged` is 1. It failed
   (`merged=false`) against the previous event-order pairing and passes now.
 - `deno task test:unit tests/pr_completion_snapshot_test.ts tests/pr_completion_report_command_test.ts tests/pr_completion_report_test.ts < /dev/null`
-  — passed, 146 tests after the review fix. Covers genuine and generic gates, owner exceptions with
-  regressions, real posting provenance, failed posts, stale and superseded
-  holds, legacy snapshots, truncated evidence and historical rollout timing.
+  — passed, 146 tests after the review fix. Covers genuine and generic gates,
+  owner exceptions with regressions, real posting provenance, failed posts,
+  stale and superseded holds, legacy snapshots, truncated evidence and
+  historical rollout timing.
 - Reviewer posting, test-policy and Dependabot suites — passed, 82 tests; after
   moving the producer into the worker library, posting and hold-policy suites
   passed again, 66 tests, including granular-permission posting.
@@ -158,15 +160,16 @@ and `::collect - the rollout check strands only PRs open at verification and at 
 - The in-pairing `trust` rank was dead: the verified-fleet candidates and the
   unchained review-log candidates are matched in two separate calls, so each
   call ranked a uniform set. Removed it; fleet-over-log priority stays pinned by
-  the two closer-log tests. Removing the verified-action promotion guard made the `review-log` run-ID collision test
-  fail. Restored code passes.
+  the two closer-log tests. Removing the verified-action promotion guard made
+  the `review-log` run-ID collision test fail. Restored code passes.
 - Removing the reviewer-footer guard made the isolated missing-footer owner
   matrix case fail. Restored code passes.
 - Changed TypeScript formatting, lint and type checks — passed. Library sweep
   coverage — passed, 39 tests after registering the new helper modules.
 - `./quality.sh < /dev/null` — failed its unit-test time budget on a test file
-  this PR does not change, `worker/deno/tests/launcher_harness_reclaim_stub_test.ts`
-  (2 tests at head, passing). Both parallel and serial repository-wide test passes succeeded.
+  this PR does not change,
+  `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` (2 tests at head,
+  passing). Both parallel and serial repository-wide test passes succeeded.
   Completeness, security scans, Markdown checks, lint, type checking and
   formatting passed. Configuration integration and Checkov were skipped because
   their required local configuration/tooling was unavailable.
