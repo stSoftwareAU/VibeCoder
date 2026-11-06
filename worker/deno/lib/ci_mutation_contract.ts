@@ -561,9 +561,10 @@ function blockingJobHit(
 }
 
 /**
- * Finds the first PR-triggered job that runs the mutation tool in a way that
- * can fail the workflow, directly or through local reusable workflows it calls,
- * nested up to `MAX_REUSABLE_DEPTH` (nine) callee levels. Every workflow file
+ * Finds the first PR-triggered mutation job that can fail the workflow and,
+ * when required checks are known, is covered by one. Local and fetched remote
+ * reusable workflows are followed up to `MAX_REUSABLE_DEPTH` (nine) levels.
+ * Every local workflow file
  * is read and parsed first, so `unreadable` is complete even when a blocking
  * job is found
  * earlier in the sort order.
@@ -672,7 +673,7 @@ function remoteCalls(doc: Mapping, caller?: string): string[] {
  * `MAX_REMOTE_WORKFLOWS` distinct workflows are fetched and at most
  * `MAX_REUSABLE_DEPTH` levels followed. One that cannot be fetched, parsed, or
  * does not declare `workflow_call` is reported in `unreadable` by its `uses:`
- * string, so its contract is unknown rather than treated as non-blocking.
+ * string, so the caller can log its unknown contract.
  */
 async function fetchRemoteWorkflows(
   parsed: Map<string, Mapping>,

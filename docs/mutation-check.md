@@ -80,8 +80,7 @@ workflow declares `workflow_call` and one of its jobs runs the tool in the same
 way. A job of that workflow that calls another local reusable workflow the same
 way is followed too, up to nine callee levels (`MAX_REUSABLE_DEPTH`, a plain
 bound so a deeper chain is bounded rather than unlimited). A workflow already on
-the call path is not followed again, so a cycle ends. A `uses:` with an `@ref`
-is not followed, even on a local path. The job is reported as
+the call path is not followed again, so a cycle ends. A local `uses:` with an `@ref` is not followed. The job is reported as
 `caller job (reusable called.yml: inner job)`, with the caller's workflow file;
 a nested call repeats the form, as
 `caller job (reusable a.yml: mid (reusable b.yml: inner job))`. The
@@ -107,8 +106,9 @@ workflows are fetched per repository, to the same nine-level bound, and a remote
 workflow may call further remote workflows. A `./` call inside a remote workflow
 is resolved in that repository at the same ref. One that
 cannot be fetched or parsed, or has no `workflow_call` trigger, is logged and
-listed as unreadable, so the contract is unknown rather than read as
-non-blocking. The job is reported as
+listed as unreadable, so its contract is unknown. As with an unreadable local
+file, if no blocking job is found, survivors are reviewer notes subject to
+summary exemptions, and the PR is raised ready. A detected job is reported as
 `caller job (reusable owner/repo/.github/workflows/x.yml@ref: inner job)`.
 
 **Required checks.** The worker reads the base branch's required status checks

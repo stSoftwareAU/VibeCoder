@@ -15,7 +15,10 @@ agreement:
   the file (`gh api repos/<owner>/<repo>/contents/...`), through the same
   nine-level bound and cycle guard as local calls, at most eight distinct remote
   files. Relative calls inside a remote workflow use its repository and ref. One
-  that cannot be read is listed as unreadable, never read as non-blocking.
+  that cannot be read is logged and listed as unreadable; its contract is
+  unknown. As with an unreadable local file, if no blocking job is found,
+  survivors are reviewer notes subject to summary exemptions, and the PR is
+  raised ready.
   Remote files are inspected only through a caller, never as this repository's
   top-level PR workflows.
 - **The real required-check contract.** The worker reads the base branch's
@@ -138,6 +141,11 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
   and the two sibling tests beside it — reviewer: met
 
 ## Test Plan
+
+- Review follow-up: corrected the manual, detector comments and this summary to
+  describe unreadable workflows and required-check filtering as implemented.
+  `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor a remote reusable mutants workflow blocks on holds the PR as a draft (Issue #4617)`
+  covers the unreadable remote control. No twinned detector was changed.
 
 - Review follow-up: an uncovered caller no longer consumes shared callee
   steps before a later required caller is checked, directly or via an
