@@ -111,6 +111,19 @@ Deno.test("time budget - the subprocess-timing suites are on the keep-list", () 
   }
 });
 
+Deno.test("time budget - measured Bash harness cost keeps reclaim assertions in the required suite", () => {
+  const file = "tests/launcher_harness_reclaim_stub_test.ts";
+  const report = unitTestTimeBudget([
+    { file, name: "below the host disk floor", ms: 1645 },
+    { file, name: "above the host disk floor", ms: 1373 },
+  ]);
+  assertEquals(report.failedFiles, []);
+  assertEquals(report.warnings, []);
+  assertEquals(report.exemptNotes, [
+    `slow by decision: ${file} — 2 test(s) over 1.00s`,
+  ]);
+});
+
 Deno.test("time budget - every keep-list entry is a reasoned decision, not a baseline (Issue #2669)", () => {
   // The #2642 baseline kept 38 files on one generic reason; #2669 burnt it
   // down. Only an entry that says what its cost buys may remain.
