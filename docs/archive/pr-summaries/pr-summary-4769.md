@@ -99,12 +99,10 @@ sequenceDiagram
   evidence:
   `worker/deno/tests/fleet_babysitter_container_egress_4738_test.ts::a plan that needs neither egress starts and stops nothing, and spawns once`
   — reviewer: met
-- **partial** — `./quality.sh` passes. — evidence: targeted checks only
-  (`deno fmt --check`, `deno lint`, `deno check`, the two babysitter test files)
-  — reviewer: missing — reason: quality gate not yet run — remaining:
-  merge-verification-only (the full gate exceeds the 600s foreground tool limit
-  here; CI runs it on the PR). The Spec reviewer could not run it, so it rated
-  it unverified.
+- **met** — `./quality.sh` passes. — evidence: full `./quality.sh` run at the
+  branch head, "Result: PASSED (with skipped checks)", exit 0; the skipped
+  checks are config integration and checkov (environment-skipped) — reviewer:
+  met
 - **unrequested** — the key guard is re-run on the Apple helper's returned
   arguments — reviewer: unrequested — reason: the helper's arguments replace the
   plan's, so the existing #4767 mount guard must cover them too (test
@@ -189,5 +187,3 @@ sequenceDiagram
 - Results:
   `deno task test:unit tests/fleet_babysitter_container_4738_test.ts tests/fleet_babysitter_container_egress_4738_test.ts`
   passed (50 passed, 0 failed) on the final code head.
-
-<!-- vibe-quality-gate-skipped reason="the full ./quality.sh takes about 15 minutes, longer than the 600s foreground command limit in this run; targeted fmt, lint, check and the two babysitter test files were run instead, CI runs the full gate on the PR" -->
