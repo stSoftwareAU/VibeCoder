@@ -105,7 +105,7 @@ can read that file with `gh api repos/<owner>/<repo>/contents/...`
 (`worker/deno/lib/ci_mutation_lookup.ts`). At most eight distinct remote
 workflows are fetched per repository, to the same nine-level bound, and a remote
 workflow may call further remote workflows. A `./` call inside a remote workflow
-is not followed, because it names a file of the remote repository. One that
+is resolved in that repository at the same ref. One that
 cannot be fetched or parsed, or has no `workflow_call` trigger, is logged and
 listed as unreadable, so the contract is unknown rather than read as
 non-blocking. The job is reported as
@@ -116,7 +116,7 @@ non-blocking. The job is reported as
 mutation job only when its check is required, or a job that needs it, directly
 or through others, is (so a required `gate` aggregator covers it). A check name
 matches the job's `name:` or key, a matrix child (`name (1)`) or a reusable
-child (`caller / inner`), including each level of a nested call. A required
+child (`caller / inner`), including matrix callers and each level of a nested call. A required
 sibling does not cover the mutation job; a required child that needs it does.
 A job name with an expression cannot be matched and counts within its caller.
 When the read fails, or nothing is required, the list is treated as

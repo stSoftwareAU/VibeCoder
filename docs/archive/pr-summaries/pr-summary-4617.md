@@ -14,7 +14,8 @@ agreement:
   `owner/repo/.github/workflows/x.yml@ref` is followed when the worker can read
   the file (`gh api repos/<owner>/<repo>/contents/...`), through the same
   nine-level bound and cycle guard as local calls, at most eight distinct remote
-  files. One that cannot be read is listed as unreadable, never read as
+  files. Relative calls inside a remote workflow use its repository and ref.
+  One that cannot be read is listed as unreadable, never read as
   non-blocking. Remote files are inspected only through a caller, never as
   this repository's top-level PR workflows.
 - **The real required-check contract.** The worker reads the base branch's
@@ -26,7 +27,8 @@ agreement:
   `cargo mutants` line are carried to the worker's run, with a value check each.
   A missing cargo-nextest is identified before the run and gets an install
   action. Reusable child checks are matched by their full caller path, including
-  a required child that depends on the mutation job, rather than by a sibling.
+  a required child that depends on the mutation job, including matrix callers,
+  rather than by a sibling.
 - **Bounded process spawn.** The mutation runner passes an abort signal to its
   child process and aborts it alongside the existing SIGKILL fallback after a
   timeout or low-disk stop, satisfying the spawn-timeout gate.
@@ -83,7 +85,7 @@ flowchart TD
 - A remote `owner/repo` with a `.` or `..` segment, a path with `..` or a
   subdirectory, and a `${{ }}` ref are not remote calls, because the text comes
   from a pull request and builds an API path. A `./` call inside a remote file
-  names a file of the remote repository, so it is not followed.
+  resolves to that repository and ref under the same filename and fetch bounds.
 
 ### Undiscoverable Facts
 
@@ -137,6 +139,14 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- Review follow-up: the obsolete expectation that a relative call in a remote
+  workflow is ignored is replaced by following the remote file at the caller's
+  ref, while failed reads remain unreadable. Coverage:
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::remote workflows follow explicit and relative calls at the calling ref`.
+  Matrix caller sibling and mutation checks are distinguished for local and
+  remote workflows by
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::matrix reusable callers match the required child, not its sibling`.
+  Both tests failed before the fix. No twinned detector was found.
 - CI repair: checked the mutation runner's explicit abort signal and its two
   hard-stop paths; `deno task test:unit tests/spawn_timeout_check_test.ts
   tests/mutation_runner_test.ts` passed (97 tests). The PR-summary freshness

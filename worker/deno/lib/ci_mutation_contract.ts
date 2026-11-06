@@ -439,8 +439,7 @@ export function remoteWorkflowRef(uses: unknown): RemoteWorkflowRef | null {
  * under `.github/workflows/`, is parsed and declares `workflow_call`. A remote
  * one (`owner/repo/.github/workflows/x.yml@ref`) is followed when the caller
  * fetched it. A workflow already on the call path `chain` is not followed
- * again. A local `uses:` inside a remote workflow is not followed, because it
- * would name a file of the remote repository. Otherwise `null`.
+ * again. A relative call inside a remote workflow uses that repository and ref.
  */
 function reusableCallee(
   job: Mapping,
@@ -457,11 +456,16 @@ function reusableCallee(
   }
   if (uses.includes("@")) return null;
   if (!/^(\.|\$)\//.test(uses)) return null;
-  if (chain.at(-1)?.includes("@")) return null;
   const path = calledWorkflowPath(job);
   if (path === null) return null;
   const match = REUSABLE_CALL.exec(path);
   if (match === null) return null;
+  const remote = remoteWorkflowRef(chain.at(-1));
+  if (remote !== null) {
+    const file = `${remote.repo}/${path}@${remote.ref}`;
+    const doc = parsed.get(file);
+    return doc === undefined || chain.includes(file) ? null : { file, doc };
+  }
   const file = match[1]!;
   if (chain.includes(file)) return null;
   const doc = parsed.get(file);
@@ -477,9 +481,9 @@ function reusableCallee(
  * when it was fetched; a local `uses:` with an `@ref` is not followed. `chain` lists the workflow files on the current call
  * path, the top-level caller first, so `chain.length - 1` callee levels have
  * been entered and no callee is followed past `MAX_REUSABLE_DEPTH` (nine).
- * Every job visited charges `budget`, and called jobs share the caller's `seen`
- * and
- * `budget`, so aliasing and fan-out stay bounded across the whole call tree.
+ * Every job visited charges `budget`. Alternative matrix paths use separate
+ * seen sets, while sharing the budget, so each path is scanned and fan-out stays
+ * bounded across the whole call tree.
  */
 function blockingJobHit(
   job: unknown,
@@ -496,43 +500,57 @@ function blockingJobHit(
   // Charge even non-mappings, so repeated reusable calls cannot fan out freely.
   if (--budget.remaining < 0) throw new WorkflowScanBudgetExceeded();
   if (!isMapping(job)) return null;
-  const feeds = requiredFeeder(jobs, jobName, required, prefix);
+  const callee = reusableCallee(job, parsed, chain);
+  const feeds = requiredFeeder(
+    jobs,
+    jobName,
+    required,
+    prefix,
+    callee !== null,
+  );
   const covered = inherited || feeds !== null;
   const line = blockingMutationLine(job, seen, budget);
   if (line !== null) return covered ? { line } : null;
   if (chain.length > MAX_REUSABLE_DEPTH) return null;
-  const callee = reusableCallee(job, parsed, chain);
   if (callee === null) return null;
   const calledJobs = callee.doc.jobs;
   if (!isMapping(calledJobs)) return null;
   const displayName = typeof job.name === "string" ? job.name : jobName;
-  const childPrefix = `${prefix}${displayName} / `;
-  for (const [calledJob, body] of Object.entries(calledJobs)) {
-    const hit = blockingJobHit(
-      body,
-      calledJobs,
-      calledJob,
-      parsed,
-      seen,
-      budget,
-      [
-        ...chain,
-        callee.file,
-      ],
-      required,
-      childPrefix,
-      covered,
-    );
-    if (hit !== null) {
-      return {
-        line: hit.line,
-        called: {
-          file: callee.file,
-          job: hit.called === undefined
-            ? calledJob
-            : `${calledJob} (reusable ${hit.called.file}: ${hit.called.job})`,
-        },
-      };
+  const caller = `${prefix}${displayName}`;
+  const prefixes = new Set([`${caller} / `]);
+  for (const context of required) {
+    if (!context.startsWith(`${caller} (`)) continue;
+    const end = context.indexOf(") / ", caller.length + 2);
+    if (end !== -1) prefixes.add(context.slice(0, end + 4));
+  }
+  for (const childPrefix of prefixes) {
+    for (const [calledJob, body] of Object.entries(calledJobs)) {
+      const hit = blockingJobHit(
+        body,
+        calledJobs,
+        calledJob,
+        parsed,
+        prefixes.size > 1 ? new WeakSet<object>() : seen,
+        budget,
+        [
+          ...chain,
+          callee.file,
+        ],
+        required,
+        childPrefix,
+        covered,
+      );
+      if (hit !== null) {
+        return {
+          line: hit.line,
+          called: {
+            file: callee.file,
+            job: hit.called === undefined
+              ? calledJob
+              : `${calledJob} (reusable ${hit.called.file}: ${hit.called.job})`,
+          },
+        };
+      }
     }
   }
   return null;
@@ -630,13 +648,18 @@ export async function findBlockingMutationJob(
 }
 
 /** The remote reusable calls in the jobs of one parsed workflow. */
-function remoteCalls(doc: Mapping): string[] {
+function remoteCalls(doc: Mapping, caller?: string): string[] {
   if (!isMapping(doc.jobs)) return [];
-  return Object.values(doc.jobs).flatMap((job) =>
-    isMapping(job) && remoteWorkflowRef(job.uses) !== null
-      ? [job.uses as string]
-      : []
-  );
+  return Object.values(doc.jobs).flatMap((job) => {
+    if (!isMapping(job)) return [];
+    if (remoteWorkflowRef(job.uses) !== null) return [job.uses as string];
+    const remote = remoteWorkflowRef(caller);
+    const path = calledWorkflowPath(job);
+    if (remote === null || path === null || REUSABLE_CALL.exec(path) === null) {
+      return [];
+    }
+    return [`${remote.repo}/${path}@${remote.ref}`];
+  });
 }
 
 /**
@@ -655,7 +678,7 @@ async function fetchRemoteWorkflows(
   const tried = new Set<string>();
   let level = [...parsed.values()].filter((d) =>
     triggersOn(d, "pull_request") || triggersOn(d, "workflow_call")
-  ).flatMap(remoteCalls);
+  ).flatMap((doc) => remoteCalls(doc));
   for (let depth = 0; depth <= MAX_REUSABLE_DEPTH; depth++) {
     const next: string[] = [];
     for (const uses of level) {
@@ -683,7 +706,7 @@ async function fetchRemoteWorkflows(
         continue;
       }
       parsed.set(uses, doc);
-      next.push(...remoteCalls(doc));
+      next.push(...remoteCalls(doc, uses));
     }
     if (next.length === 0) return;
     level = next;
@@ -704,6 +727,7 @@ function requiredFeeder(
   jobName: string,
   required: readonly string[],
   prefix = "",
+  skipOwn = false,
 ): string | null | undefined {
   if (required.length === 0) return undefined;
   const reports = (key: string): boolean => {
@@ -715,10 +739,11 @@ function requiredFeeder(
       required.some((context) => context.startsWith(prefix))) ||
       required.some((context) =>
         context === `${prefix}${name}` ||
-        context.startsWith(`${prefix}${name} (`)
+        (context.startsWith(`${prefix}${name} (`) &&
+          !context.slice((`${prefix}${name} (`).length).includes(" / "))
       );
   };
-  if (reports(jobName)) return undefined;
+  if (!skipOwn && reports(jobName)) return undefined;
   const seen = new Set([jobName]);
   const queue = [jobName];
   while (queue.length > 0) {

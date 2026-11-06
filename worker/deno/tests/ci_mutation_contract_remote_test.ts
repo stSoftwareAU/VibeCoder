@@ -45,6 +45,33 @@ Deno.test("reusable mutation jobs match their own required checks and feeders", 
   }
 });
 
+Deno.test("matrix reusable callers match the required child, not its sibling", async () => {
+  const pipeline =
+    "on: workflow_call\njobs:\n  tests:\n    steps:\n      - run: cargo test\n  mutants:\n    steps:\n      - run: cargo mutants\n";
+  for (const remote of [false, true]) {
+    const uses = remote ? REMOTE : "./.github/workflows/pipeline.yml";
+    await withRepo({
+      "ci.yml":
+        `on: pull_request\njobs:\n  build:\n    strategy:\n      matrix:\n        os: [linux, mac]\n    uses: ${uses}\n`,
+      ...(remote ? {} : { "pipeline.yml": pipeline }),
+    }, async (repo) => {
+      const { fetchRemoteWorkflow } = reader({ [REMOTE]: pipeline });
+      for (
+        const [check, expected] of [["build (linux) / tests", false], [
+          "build (linux) / mutants",
+          true,
+        ]] as const
+      ) {
+        const result = await findBlockingMutationJob(repo, {
+          fetchRemoteWorkflow,
+          requiredChecks: [check],
+        });
+        assertEquals(result.blocking !== null, expected, check);
+      }
+    });
+  }
+});
+
 Deno.test("nested reusable checks match the complete child path", async () => {
   await withRepo({
     "ci.yml":
@@ -229,7 +256,7 @@ Deno.test("a remote workflow that cannot be fetched or parsed is reported unread
   });
 });
 
-Deno.test("a remote workflow calling another remote workflow is followed; a local call inside it is not", async () => {
+Deno.test("remote workflows follow explicit and relative calls at the calling ref", async () => {
   const inner = "acme/ci/.github/workflows/inner.yml@v2";
   const mid = [
     "on: workflow_call",
@@ -249,23 +276,33 @@ Deno.test("a remote workflow calling another remote workflow is followed; a loca
       `mutants (reusable ${REMOTE}: mid (reusable ${inner}: run))`,
     );
   });
-  // The local path would name a file of the remote repository, not this one.
+  // The local path names the remote repository at the calling ref.
   const localInside = [
     "on: workflow_call",
     "jobs:",
     "  mid:",
-    "    uses: ./.github/workflows/mutants.yml",
+    "    uses: ./.github/workflows/inner.yml",
     "",
   ].join("\n");
   await withRepo({
     "ci.yml": callerOf(REMOTE),
     "mutants.yml": remoteBody(),
   }, async (repo) => {
-    const { fetchRemoteWorkflow } = reader({ [REMOTE]: localInside });
+    const nested = "acme/ci/.github/workflows/inner.yml@v1";
+    const { fetchRemoteWorkflow } = reader({
+      [REMOTE]: localInside,
+      [nested]: remoteBody(),
+    });
+    const result = await findBlockingMutationJob(repo, { fetchRemoteWorkflow });
     assertEquals(
-      (await findBlockingMutationJob(repo, { fetchRemoteWorkflow })).blocking,
-      null,
+      result.blocking?.job,
+      `mutants (reusable ${REMOTE}: mid (reusable ${nested}: run))`,
     );
+    assertEquals(result.unreadable, []);
+    const missing = reader({ [REMOTE]: localInside });
+    assertEquals((await findBlockingMutationJob(repo, missing)).unreadable, [
+      nested,
+    ]);
   });
 });
 
