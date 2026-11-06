@@ -141,7 +141,11 @@ flowchart TD
   forms are not closed again; another repository's `Refs` does not settle the
   close; a `Refs` in a code span or fence does not; a partly met issue with
   `Refs` adds no closing keyword; three hostile inputs; a proposal that starts
-  with `Refs #4637`.
+  with `Refs #4637`. Also a `Refs`/`Related to`/`Part of` naming a different
+  issue in this repository does not settle the governing issue's close (kills
+  the mutant that dropped `Number(match[3]) === issueNumber` at
+  `babysitter_pr_body_guard.ts:417`; the test goes red with that operand
+  replaced by `true`).
 - Added in `worker/deno/tests/fleet_pr_babysitter_test.ts`:
   `a proposal that
   names a fully met issue as Refs is not given Closes #N (Issue #4637)`.

@@ -256,6 +256,19 @@ Deno.test("a Refs to a fully met issue in another repository does not settle its
   assertStringIncludes(output, "\n\nCloses #4637\n\n");
 });
 
+Deno.test("a Refs to a different issue in this repository does not settle a fully met issue's close (Issue #4637)", () => {
+  for (const ref of ["Refs #4674", "Related to #4674", "Part of #4674"]) {
+    const output = guardPrBodyProposal({
+      proposal: `Rewritten.\n\n${ref}`,
+      liveBody: liveBodyFor(4637, "Closes #4637"),
+      summary: FULLY_MET_SUMMARY,
+      repo: REPO,
+      headRefName: "feature",
+    });
+    assertStringIncludes(output, "\n\nCloses #4637\n\n", ref);
+  }
+});
+
 Deno.test("a Refs inside a code span or fence does not settle a fully met issue's close (Issue #4637)", () => {
   const output = guardPrBodyProposal({
     proposal: "Rewritten.\n\n`Refs #4637`\n\n```\nRefs #4637\n```",
