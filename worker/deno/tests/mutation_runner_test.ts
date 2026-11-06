@@ -806,32 +806,44 @@ Deno.test("runMutationCheck rust - nextest probe failure reports its exit code",
   assertEquals(f.calls.length, 1);
 });
 
-Deno.test("runMutationCheck rust - missing nextest is reported as a missing tool", async () => {
-  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args) => {
-    assertEquals(args, ["nextest", "--version"]);
-    return {
-      code: 101,
-      stdout: "",
-      stderr: "error: no such command: `nextest`",
-      timedOut: false,
-    };
-  });
-  const r = await runMutationCheck({
-    ...rsInput,
-    cargoMutantsArgs: ["--test-tool", "nextest"],
-  }, f.seams);
-  assert(r.kind === "error");
-  assertStringIncludes(r.reason, "cargo-nextest is not installed");
-  assert(!r.reason.startsWith(MUTATION_BASELINE_FAILS));
-  assertStringIncludes(
-    evaluateMutationGate(r, "", {
+Deno.test("runMutationCheck rust - missing nextest falls back to cargo and judges survivors", async () => {
+  for (
+    const toolArgs of [["--test-tool", "nextest"], ["--test-tool=nextest"]]
+  ) {
+    const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+      if (args[0] === "nextest") {
+        return {
+          code: 101,
+          stdout: "",
+          stderr: "error: no such command: `nextest`",
+          timedOut: false,
+        };
+      }
+      writeOutcomes(fs, args, outcomesJson([["MissedMutant", 2]]));
+      return ok(2);
+    });
+    const r = await runMutationCheck({
+      ...rsInput,
+      cargoMutantsArgs: [...toolArgs, "--timeout", "30"],
+    }, f.seams);
+    assertEquals(f.calls.length, 2);
+    assertEquals(f.calls[1]!.args[0], "mutants");
+    assert(
+      !f.calls[1]!.args.some((arg) =>
+        arg.includes("nextest") || arg === "--test-tool"
+      ),
+    );
+    assert(f.calls[1]!.args.includes("--timeout"));
+    assert(r.kind === "completed");
+    assertEquals(r.survivors.length, 1);
+    const verdict = evaluateMutationGate(r, "", {
       workflow: "ci.yml",
       job: "mutants",
       tool: "cargo",
-    }).reason,
-    "install it",
-  );
-  assertEquals(f.calls.length, 1);
+    });
+    assert(verdict.blocked);
+    assertStringIncludes(verdict.note, "install cargo-nextest");
+  }
 });
 
 Deno.test("runMutationCheck rust - an uncreatable temp dir is a worker-fault error and no cargo runs", async () => {

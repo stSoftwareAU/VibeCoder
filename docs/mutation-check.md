@@ -125,8 +125,9 @@ is logged, never read as "not blocking". The same lookups run in review-fix
 runs.
 
 When CI selects `--test-tool nextest`, the worker probes `cargo nextest
---version` first. A missing nextest is reported as a missing tool with an
-installation action, rather than as a failing baseline.
+--version` first. If nextest is missing, it runs cargo-mutants with cargo's
+test runner instead, reports the substitution and recommends installing
+cargo-nextest to match CI. Survivors are still judged against the CI contract.
 
 Not evaluated or read: other mutation tools, job `if:` and path filters, and the
 flags of a `deno task`.

@@ -56,7 +56,7 @@ export type MutationCheckResult =
     }
     | { kind: "error"; reason: string }
   )
-  & { ciOutsideScope?: true };
+  & { ciOutsideScope?: true; substitutedNextest?: true };
 
 /**
  * Worker-written opening of a runner `error` reason when the run's own
@@ -1582,6 +1582,10 @@ export function evaluateMutationGate(
       } untested (past the mutant cap or on lines over ${MAX_MUTATED_LINE_LENGTH} characters), not passed`
       : `mutation budget exhausted after ${result.tested} of ${result.total} mutants (${result.budgetSeconds} s) — remaining mutants untested, not passed`)
     : `${result.killed} of ${result.total} mutants killed`;
+  if (result.substitutedNextest) {
+    note +=
+      " — cargo-nextest is unavailable; used cargo's test runner instead; install cargo-nextest to match CI";
+  }
   if (survivors.length > 0) {
     const count = `${survivors.length} mutant${
       survivors.length === 1 ? "" : "s"
@@ -1664,7 +1668,7 @@ export function buildMutationGateComment(verdict: MutationGateVerdict): string {
       );
     }
   }
-  if (verdict.budgetExhausted && verdict.note) {
+  if (verdict.note) {
     out.push("", mdSafe(verdict.note));
   }
   return out.join("\n").trimEnd() + "\n";

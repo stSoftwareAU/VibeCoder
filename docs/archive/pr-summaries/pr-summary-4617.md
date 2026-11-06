@@ -28,8 +28,9 @@ agreement:
   so every PR-triggered job still counts then.
 - **CI flags.** `--timeout`, `--cargo-arg` and `--test-tool` of the CI
   `cargo mutants` line are carried to the worker's run, with a value check each.
-  A missing cargo-nextest is identified before the run and gets an install
-  action. Reusable child checks are matched by their full caller path, including
+  If cargo-nextest is missing, the worker uses cargo's test runner and reports
+  the substitution and installation action. Reusable child checks are matched
+  by their full caller path, including
   a required child that depends on the mutation job, including matrix callers,
   rather than by a sibling.
 - **Bounded process spawn.** The mutation runner passes an abort signal to its
@@ -144,6 +145,16 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- Review follow-up: the obsolete missing-nextest error no longer prevents a
+  mutation run; cargo's test runner still judges survivors and the verdict
+  names the substitution and install action. Both flag forms and the blocking
+  survivor path are covered by
+  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - missing nextest falls back to cargo and judges survivors`.
+  `worker/deno/tests/pr_feedback_processor_mutation_check_3750_test.ts::processPrFeedback uses the PR base required checks for both mutation paths`
+  exercises the real processor against covered and uncovered checks on a
+  non-default base. Removing either lookup-option argument independently made
+  that test fail; both were restored. No twinned copy of the fallback was found.
+
 - Review follow-up: corrected the unreadable remote-workflow acceptance claim
   and lookup and cargo flag comments. The nextest probe's success and other
   failure paths are covered by
@@ -190,9 +201,8 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
   sibling is no longer treated as the mutation job. Required feeders still
   count, as verified by
   `worker/deno/tests/ci_mutation_contract_remote_test.ts::reusable mutation jobs match their own required checks and feeders`.
-  The runner probes nextest before passing the CI flag and reports a missing
-  tool with its install action, covered by
-  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - missing nextest is reported as a missing tool`.
+  The runner probes nextest before passing the CI flag; the fallback and its
+  install action are covered by the missing-nextest test named above.
   No twinned copy of these rules was found.
 
 - `worker/deno/tests/lib_sweep_coverage_test.ts` verifies that every module is

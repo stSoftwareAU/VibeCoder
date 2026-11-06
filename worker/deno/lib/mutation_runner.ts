@@ -38,7 +38,6 @@
 
 import {
   CARGO_MUTANTS_MISSING,
-  CARGO_NEXTEST_MISSING,
   DEFAULT_MUTANT_CAP,
   generateDenoMutantsDetailed,
   isDenoTestFile,
@@ -887,7 +886,8 @@ async function runCargoMutants(
   outDir: string,
 ): Promise<MutationCheckResult> {
   const { repoPath, budgetSeconds } = input;
-  const ciArgs = input.cargoMutantsArgs ?? [];
+  let ciArgs = input.cargoMutantsArgs ?? [];
+  let substitutedNextest = false;
   if (
     ciArgs.some((arg, i) =>
       arg === "--test-tool" && ciArgs[i + 1] === "nextest" ||
@@ -903,9 +903,14 @@ async function runCargoMutants(
       !probe.timedOut &&
       (probe.code === 127 || /no such command: `?nextest/i.test(probe.stderr))
     ) {
-      return { kind: "error", reason: CARGO_NEXTEST_MISSING };
+      ciArgs = ciArgs.filter((arg, i) =>
+        arg !== "--test-tool=nextest" &&
+        !(arg === "--test-tool" && ciArgs[i + 1] === "nextest") &&
+        !(arg === "nextest" && ciArgs[i - 1] === "--test-tool")
+      );
+      substitutedNextest = true;
     }
-    if (probe.timedOut || probe.code !== 0) {
+    if (!substitutedNextest && (probe.timedOut || probe.code !== 0)) {
       return {
         kind: "error",
         reason: `cargo nextest --version ${
@@ -922,7 +927,7 @@ async function runCargoMutants(
     [
       "mutants",
       ...packages.flatMap((p) => ["--package", p]),
-      ...(input.cargoMutantsArgs ?? []),
+      ...ciArgs,
       "--in-diff",
       diffPath,
       "--output",
@@ -941,17 +946,24 @@ async function runCargoMutants(
     },
   );
 
+  const substitution = substitutedNextest
+    ? "; cargo-nextest is unavailable; used cargo's test runner instead; install cargo-nextest to match CI"
+    : "";
+
   if (
     !proc.timedOut &&
     (proc.code === 127 || /no such command: `?mutants/i.test(proc.stderr))
   ) {
-    return { kind: "error", reason: CARGO_MUTANTS_MISSING };
+    return { kind: "error", reason: CARGO_MUTANTS_MISSING + substitution };
   }
   if (!proc.timedOut && ![0, 2, 3].includes(proc.code)) {
     const why = proc.code === 4
       ? MUTATION_BASELINE_FAILS
       : `cargo mutants exited with code ${proc.code}`;
-    return { kind: "error", reason: `${why}; cannot judge mutants` };
+    return {
+      kind: "error",
+      reason: `${why}; cannot judge mutants${substitution}`,
+    };
   }
 
   const outcomesPath = `${outDir}/mutants.out/outcomes.json`;
@@ -975,12 +987,13 @@ async function runCargoMutants(
           tested: 0,
           total: 0,
           budgetSeconds,
+          ...(substitutedNextest ? { substitutedNextest: true as const } : {}),
         };
       }
       return {
         kind: "error",
         reason: "cargo mutants exited with timeouts and wrote no parseable " +
-          "mutants.out/outcomes.json; cannot judge mutants",
+          `mutants.out/outcomes.json; cannot judge mutants${substitution}`,
       };
     }
     return {
@@ -991,6 +1004,7 @@ async function runCargoMutants(
       tested: parsed.tested,
       total: parsed.total,
       budgetSeconds,
+      ...(substitutedNextest ? { substitutedNextest: true as const } : {}),
     };
   }
   if (parsed === null) {
@@ -1002,14 +1016,15 @@ async function runCargoMutants(
     ) {
       return {
         kind: "not_applicable",
-        reason: "cargo-mutants found no mutants on the changed lines",
+        reason: "cargo-mutants found no mutants on the changed lines" +
+          substitution,
       };
     }
     return {
       kind: "error",
-      reason: text === null
+      reason: (text === null
         ? "cargo mutants wrote no outcomes.json"
-        : "could not parse mutants.out/outcomes.json",
+        : "could not parse mutants.out/outcomes.json") + substitution,
     };
   }
   return {
@@ -1018,6 +1033,7 @@ async function runCargoMutants(
     survivors: parsed.survivors,
     killed: parsed.killed,
     total: parsed.total,
+    ...(substitutedNextest ? { substitutedNextest: true as const } : {}),
   };
 }
 
