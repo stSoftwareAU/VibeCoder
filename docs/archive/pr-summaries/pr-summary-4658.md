@@ -46,6 +46,10 @@ babysitter retry cooldowns from failed attempts without a repair push.
 - Babysitter retry cooldowns without a repair push are not measured as
   recovery waits; #4658 tracks the remaining work.
 
+## Acceptance Criteria
+
+- **missing** — Complete blocker accounting for babysitter retry cooldowns without a repair push — reason: failed attempts without a push do not yet provide trusted recovery-wait evidence to the collector.
+
 ## Evidence
 
 This is a backend collector and CLI change; no visual evidence applies. The
