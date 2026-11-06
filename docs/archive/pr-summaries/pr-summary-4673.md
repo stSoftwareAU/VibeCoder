@@ -62,7 +62,8 @@ Tests (all under `worker/deno/tests/`):
   marker followed by visible text is still returned with its full body; a
   marker-only comment followed by a real one returns the real one; the skip is
   logged with "no visible text"; a fleet verifier-hold comment with visible text
-  is still returned.
+  is still returned. A marker-only line-level review comment is still returned,
+  which pins the skip to issue comments only.
 
 Docs: `docs/INTERNALS.md` "Feedback detection" table, row "Issue/discussion
 comments" (the table's other rows were re-padded to keep its columns aligned).

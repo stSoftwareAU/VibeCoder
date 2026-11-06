@@ -65,6 +65,7 @@ function makeCapturingLogger(): CapturedLogger {
  */
 function makeMockGh(
   issueCommentsJson: string,
+  reviewCommentsJson = "[]",
 ): (args: string[]) => Promise<string> {
   return (args: string[]): Promise<string> => {
     if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
@@ -80,7 +81,7 @@ function makeMockGh(
       return Promise.resolve(issueCommentsJson);
     }
     if (key.includes(`pulls/${PR_NUMBER}/comments`)) {
-      return Promise.resolve("[]");
+      return Promise.resolve(reviewCommentsJson);
     }
     return Promise.resolve("[]");
   };
@@ -90,6 +91,7 @@ function scanOptions(
   issueCommentsJson: string,
   logger: Logger,
   overrides: Partial<PrScanOptions> = {},
+  reviewCommentsJson = "[]",
 ): PrScanOptions {
   return {
     githubUser: GITHUB_USER,
@@ -99,7 +101,7 @@ function scanOptions(
     // The claim is posted by an authorised App, so authorisation alone
     // would make it actionable without the #4673 skip.
     isAuthorisedCommenter: (author) => author === CLAIM_AUTHOR,
-    ghCommandFn: makeMockGh(issueCommentsJson),
+    ghCommandFn: makeMockGh(issueCommentsJson, reviewCommentsJson),
     ...overrides,
   };
 }
@@ -214,5 +216,31 @@ Deno.test(
       "expected the verifier hold to be actionable",
     );
     assertEquals(result.value.commentId, "105");
+  },
+);
+
+Deno.test(
+  "marker-only line-level review comment is still actioned: the skip is for issue comments only (Issue #4673 case vi)",
+  async () => {
+    const { logger, infoMessages } = makeCapturingLogger();
+    const reviewCommentsJson = JSON.stringify([
+      issueComment(CLAIM_AUTHOR, 106, CLAIM_MARKER),
+    ]);
+
+    const result = await findPrCommentsToFix(
+      scanOptions("[]", logger, {}, reviewCommentsJson),
+    );
+    assert(result.ok, "scan should succeed");
+    assert(
+      result.value !== null,
+      "expected the review comment to be actionable",
+    );
+    assertEquals(result.value.commentType, "review");
+    assertEquals(result.value.commentId, "106");
+    assertEquals(
+      infoMessages.filter((message) => message.includes("no visible text"))
+        .length,
+      0,
+    );
   },
 );
