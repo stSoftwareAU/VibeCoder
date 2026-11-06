@@ -44,7 +44,9 @@ flowchart LR
 - Red checks: reverting the `cargo-audit` template line to `cargo install cargo-audit` turned `issue_4683_cargo_install_pins_test.ts` and the conformance test red (3 failed); changing the scanner's `if (pinned && locked) continue;` to `if (pinned) continue;` turned `ci_install_pin_scanner_test.ts` red (3 failed). Both restored.
 - No existing assertion was removed or edited.
 - Targeted run: `deno task test:unit` over the scanner, 3642, 4683, conformance, file-checks, audit-template, definitions, auditor and changed-gate tests: 299 passed, 0 failed.
-- Full `./quality.sh`: see the note at the end of this summary.
+- Full `./quality.sh`: killed by my 595s foreground timeout (exit 124) before its final stage reported, so there is no overall verdict. Every stage printed before the cut-off passed (including workflow hygiene, completeness checks, markdownlint, mermaid and semgrep); config integration and checkov were skipped. CI runs the same checks.
+
+<!-- vibe-quality-gate-skipped reason="foreground gate exceeded the 595s tool timeout twice before completing; stages that reported all passed; CI runs the same checks" -->
 
 ## Not done
 
