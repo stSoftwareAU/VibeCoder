@@ -164,6 +164,7 @@ import {
 } from "../mutation_gate.ts";
 import { invokeMutationCheck } from "../mutation_check_invocation.ts";
 import { findBlockingMutationJob } from "../ci_mutation_contract.ts";
+import { ciMutationLookupOptions } from "../ci_mutation_lookup.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import {
   preserveRunWip,
@@ -2787,7 +2788,15 @@ async function completionBody(
       | undefined;
     let ciCargoArgs: string[] = [];
     try {
-      const contract = await findBlockingMutationJob(state.repoPath);
+      const contract = await findBlockingMutationJob(
+        state.repoPath,
+        await ciMutationLookupOptions({
+          repo,
+          base: baseBranch,
+          runGh: deps.github.runGhCommand,
+          logger,
+        }),
+      );
       for (const workflow of contract.unreadable) {
         logger.warn(
           `Workflow file ${workflow} could not be read or parsed, so CI's mutation contract is unknown (Issue #4617)`,

@@ -123,6 +123,8 @@ interface Scenario {
   workflow?: string;
   /** Makes `.github/workflows` a regular file, so reading it throws (Issue #4617). */
   workflowsDirIsFile?: boolean;
+  /** The base branch's required checks the stub `gh api` reports (Issue #4617). */
+  requiredChecks?: string[];
   /** The branch already has an open PR, so the existing-PR path runs. */
   existingPrForBranch?: boolean;
   existingPrIsDraft?: boolean;
@@ -250,6 +252,23 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
               "HTTP 403: You have exceeded a secondary rate limit and have " +
                 "been temporarily blocked from content creation.",
             ),
+          );
+        }
+        if (
+          scenario.requiredChecks !== undefined && args[0] === "api" &&
+          /^repos\/[^/]+\/[^/]+\/(rules\/)?branches\//.test(args[1] ?? "")
+        ) {
+          return Promise.resolve(
+            (args[1] ?? "").includes("/rules/")
+              ? JSON.stringify([[{
+                type: "required_status_checks",
+                parameters: {
+                  required_status_checks: scenario.requiredChecks.map((
+                    context,
+                  ) => ({ context })),
+                },
+              }]])
+              : JSON.stringify({ protection: null }),
           );
         }
         if (args[0] === "pr" && args[1] === "view") {
@@ -1129,4 +1148,26 @@ Deno.test("completion - cargo CI leaves a Deno survivor advisory and armed", asy
   assertEquals(createCall(outcome).includes("--draft"), false);
   assertEquals(outcome.finalisePrCalls, 1);
   assertStringIncludes(outcome.comments.join("\n"), "auto-merge stays armed");
+});
+
+Deno.test("completion - a CI mutants job that no required check covers does not hold the PR (Issue #4617)", async () => {
+  const held = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow: CI_BLOCKING_WORKFLOW,
+    requiredChecks: ["mutants"],
+  });
+  assertEquals(createCall(held).includes("--draft"), true, "required: held");
+
+  const ready = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    summary: SUMMARY_WITH_EXEMPTION,
+    workflow: CI_BLOCKING_WORKFLOW,
+    requiredChecks: ["tests"],
+  });
+  assertEquals(
+    createCall(ready).includes("--draft"),
+    false,
+    "not required: the exemption clears the survivor, as with no CI job",
+  );
+  assertEquals(ready.finalisePrCalls, 1);
 });

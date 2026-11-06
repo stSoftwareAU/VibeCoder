@@ -84,22 +84,46 @@ the call path is not followed again, so a cycle ends. A `uses:` with an `@ref`
 is not followed, even on a local path. The job is reported as
 `caller job (reusable called.yml: inner job)`, with the caller's workflow file;
 a nested call repeats the form, as
-`caller job (reusable a.yml: mid (reusable b.yml: inner job))`.
-The `cargo mutants` flags that choose the mutants or the build (`--package`,
+`caller job (reusable a.yml: mid (reusable b.yml: inner job))`. The
+`cargo mutants` flags that choose the mutants or the build (`--package`,
 `--workspace`, `--features`, `--all-features`, `--no-default-features`,
-`--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`,
-`--regex`, `--examine-re`, `--examine-regex`, `-F`, `-f`, `--file`) are
-read from the job's command line and passed to the worker's own run; diff,
-output, jobs and shuffle flags stay the worker's. Explicit CI package or
-workspace selection replaces the worker's touched-package selection. When all
-changed crates are known to be outside an explicit CI package list, the worker
-checks them separately as advisory and honours summary exemptions.
-Local reusable workflows are followed up to nine callee levels, as described
-above. Remote reusable workflows (`owner/repo/...@ref`) and local ones with an
-`@ref` are not evaluated.
-Also not evaluated or read: other mutation tools, job `if:` and path filters,
-flags of a `deno task`, and the repository's branch protection (required-check
-names).
+`--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`, `--regex`,
+`--examine-re`, `--examine-regex`, `-F`, `-f`, `--file`) and how the tests run
+(`--timeout` as a number of seconds, `--test-tool` as `cargo` or `nextest`, and
+`--cargo-arg` with a plain cargo argument such as `--release`; a value that does
+not fit is dropped) are read from the job's command line and passed to the
+worker's own run; diff, output, jobs and shuffle flags stay the worker's.
+Explicit CI package or workspace selection replaces the worker's touched-package
+selection. When all changed crates are known to be outside an explicit CI
+package list, the worker checks them separately as advisory and honours summary
+exemptions. Local reusable workflows are followed up to nine callee levels, as
+described above. A local one with an `@ref` is not evaluated.
+
+**Remote reusable workflows.** A job that `uses:`
+`owner/repo/.github/workflows/<name>.yml@ref` is followed too, when the worker
+can read that file with `gh api repos/<owner>/<repo>/contents/...`
+(`worker/deno/lib/ci_mutation_lookup.ts`). At most eight distinct remote
+workflows are fetched per repository, to the same nine-level bound, and a remote
+workflow may call further remote workflows. A `./` call inside a remote workflow
+is not followed, because it names a file of the remote repository. One that
+cannot be fetched or parsed, or has no `workflow_call` trigger, is logged and
+listed as unreadable, so the contract is unknown rather than read as
+non-blocking. The job is reported as
+`caller job (reusable owner/repo/.github/workflows/x.yml@ref: inner job)`.
+
+**Required checks.** The worker reads the base branch's required status checks
+(rulesets and classic branch protection, as the merge readers do) and counts a
+mutation job only when its check is required, or a job that needs it, directly
+or through others, is (so a required `gate` aggregator covers it). A check name
+matches the job's `name:` or key, a matrix child (`name (1)`) or a reusable
+child (`caller / inner`). A job name with an expression cannot be matched and
+counts. When the read fails, or nothing is required, the list is treated as
+unknown and any PR-triggered job counts, as before. An in-session lookup fault
+is logged, never read as "not blocking". The same lookups run in review-fix
+runs.
+
+Not evaluated or read: other mutation tools, job `if:` and path filters, and the
+flags of a `deno task`.
 
 Only regular workflow files up to 1 MiB are read. Symlinked workflow directory
 components, symlinked files and oversized files are reported as unreadable,

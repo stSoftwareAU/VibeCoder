@@ -101,7 +101,10 @@ import {
 } from "./doc_prose_scope.ts";
 
 import { collectRunOwnBaseline } from "./pr_feedback_mutation_check.ts";
-import { findBlockingMutationJob } from "./ci_mutation_contract.ts";
+import {
+  findBlockingMutationJob,
+  type FindBlockingMutationJobOptions,
+} from "./ci_mutation_contract.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "./closure_verdict_recovery.ts";
 import {
@@ -916,6 +919,11 @@ export interface DriftCheckDeps {
    * itself added since `beforeSha`, base merges excluded (Issue #3750).
    */
   runMutationCheck: (beforeSha: string) => Promise<MutationCheckResult>;
+  /**
+   * The base branch's required checks and a remote-workflow reader for the CI
+   * mutation contract (Issue #4617); absent means the local files alone.
+   */
+  ciLookupOptions?: () => Promise<FindBlockingMutationJobOptions>;
   logger: Pick<Logger, "info" | "warn" | "error">;
 }
 
@@ -1227,7 +1235,10 @@ async function runMutationGateOnce(
   // non-blocking, as the completion phase does.
   let ciBlock: (CiMutationBlock & { tool: "cargo" | "deno_task" }) | undefined;
   try {
-    const contract = await findBlockingMutationJob(repoPath);
+    const contract = await findBlockingMutationJob(
+      repoPath,
+      await deps.ciLookupOptions?.(),
+    );
     ciBlock = contract.blocking ?? undefined;
   } catch (err) {
     deps.logger.warn(
