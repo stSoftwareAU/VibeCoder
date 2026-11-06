@@ -114,6 +114,8 @@ flowchart TD
   verifier-throws test red.
 - `docs/audits/lib-sweep-coverage/top-up-4657.json` claims the new module;
   `deno task test:unit tests/lib_sweep_coverage_test.ts`: 39 passed.
+- The ledger's `sweptAt` points to the merge base on `origin/main`, rather than
+  a temporary feature-branch checkpoint, so it survives a squash merge.
 - Full gate `./quality.sh`: the one change-related failure (completeness checks,
   the unclaimed module) is fixed by the ledger entry above;
   `deno task check:manifests` now passes (847 passed, 0 failed). `deno tests`
