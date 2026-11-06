@@ -24,9 +24,10 @@ with `--offline`, because the local cargo cache may hold every locked crate:
 A failure that is not a registry gap is not retried, and a Deno project is never
 retried or classified. The report prose now says cargo "timed out or could not
 reach the crate registry". A cargo-only tree whose every cargo check is left to
-CI that way (cold cache, unreachable registry, or a double timeout) is marked
+CI that way (a recognised registry gap or a double timeout) is marked
 `landUnverified`, so it lands with the `UNGATED:` note instead of being refused
-every cycle. Part of #4786.
+every cycle. A cold cache can instead produce an offline resolution error that
+the detector does not yet recognise, so that case still fails. Part of #4786.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -58,7 +59,7 @@ flowchart TD
   compile error, a `--locked` lockfile refusal or a manifest error is never
   retried or hidden.
 - Left-to-CI reuses `cargoSkipped`. A cargo-only tree whose every cargo check
-  was left to CI by a timeout or an unreachable registry (cold cache) is
+  was left to CI by a timeout or a recognised registry gap is
   `skipped` with `landUnverified` set by `checkMergedTree` and carried through
   `verifyResolvedTree`, so `judgeResolutionVerdict` lets it land with the
   `UNGATED:` note and the milestone PR's CI builds it, as a merge-only
@@ -103,12 +104,13 @@ and `docs/CONTAINER.md` (the merge-only cargo passage). Code comments updated in
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — "Fix the **gate**, not the conflict: work out why
+- **partial** — "Fix the **gate**, not the conflict: work out why
   `milestone_resolution_gate.ts` cannot verify this repository's merged tree,
   and teach it to" for a cargo-only tree whose registry is unreachable and whose
   local cargo cache is cold — evidence:
   `worker/deno/tests/milestone_gate_repair_land_unverified_4326_test.ts::judgeResolutionVerdict - a cargo-only tree stopped by an unreachable registry lands unverified end to end (Issue #4786)`
-  — reviewer: met
+  — reason: Cargo's cold-cache offline resolution error is not recognised by
+  the detector, so the real cold-cache case remains to be fixed.
 
 ## Standards Review
 
