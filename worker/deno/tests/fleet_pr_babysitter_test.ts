@@ -1356,6 +1356,36 @@ Deno.test("a proposal that omits a fully met issue gets Closes #N", async () => 
   }
 });
 
+Deno.test("a proposal that names a fully met issue as Refs is not given Closes #N (Issue #4637)", async () => {
+  const fixture = await makeCommittedSummaryRepo(4637, closingSummary(4637));
+  try {
+    const events: string[] = [];
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      body: `Closes #4637\n\n${buildIdempotencyMarker(4637)}`,
+      onEdit: () => events.push("publish"),
+    });
+    const pushed = pushedRepair(fixture, github, events);
+    await finishBabysitterRepair(
+      "owner/repo",
+      pushed.repairPr,
+      fixture.path,
+      "babysitter[bot]",
+      changesRequestedBy(),
+      pushed.deps,
+      {
+        exchange: fixture.scratch,
+        proposal: "Rewritten description.\n\nRefs #4637",
+      },
+    );
+    assertEquals(events, ["push", "publish", "dismiss"]);
+    assertStringIncludes(github.body(), "Refs #4637");
+    assertEquals(closingKeywordLine(github.body(), 4637), null);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
 Deno.test("a fully met summary with no closing keyword keeps the close after a repair, with or without a proposal (Issue #4637)", async () => {
   const summary = closingSummary(4637).replace("Closes #4637.", "All done.");
   for (const proposal of [undefined, "Rewritten description."]) {
