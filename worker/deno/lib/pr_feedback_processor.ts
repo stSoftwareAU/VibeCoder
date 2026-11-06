@@ -1300,8 +1300,8 @@ async function _processFeedbackWithHeartbeat(
     try {
       const verification = await (processorDeps.verifyPushFn ??
         verifyPushLanded)(pushBranch, {
-        cwd: processorDeps.workDir,
-      });
+          cwd: processorDeps.workDir,
+        });
       if (verification.landed && verification.remoteSha !== undefined) {
         await syncBody(verification.remoteSha);
       }

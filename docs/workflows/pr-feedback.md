@@ -219,6 +219,9 @@ of the summary alone, Issue #4234) — whichever push
 changed it, this run's or an earlier one. A pr_feedback run also re-syncs
 when it pushed nothing and has no commits left unpushed, so a run that
 answers a finding without a push still refreshes a stale body (Issue #3315).
+A turn-limit exit also checks the PR branch against the remote and syncs the
+summary committed at that verified head before recording the failed attempt;
+an unconfirmed push is left unpublished.
 A body raised before the digest marker existed keeps the older rule:
 rebuilt only when this run's own push changed the summary file. Fix branches
 for a gated milestone head are skipped, and only a worker-authored PR is

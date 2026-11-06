@@ -22,7 +22,6 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   buildSummaryDigestMarker,
-  PR_SUMMARY_DIGEST_PREFIX,
   prSummaryDigest,
   syncPrBodyFromSummary,
 } from "../lib/pr_body_sync.ts";
@@ -520,7 +519,9 @@ Deno.test("processPrFeedback - syncs a landed self-push before a turn-limit fail
     }).output();
     if (result.code !== 0) {
       throw new Error(
-        `git ${args.join(" ")} failed: ${new TextDecoder().decode(result.stderr)}`,
+        `git ${args.join(" ")} failed: ${
+          new TextDecoder().decode(result.stderr)
+        }`,
       );
     }
     return new TextDecoder().decode(result.stdout).trim();
@@ -541,8 +542,7 @@ Deno.test("processPrFeedback - syncs a landed self-push before a turn-limit fail
     await git(repoPath, ["remote", "add", "origin", remote]);
     await git(repoPath, ["push", "-u", "origin", branchName]);
     const oldSha = await git(repoPath, ["rev-parse", "HEAD"]);
-    currentBody =
-      `${oldSummary}\n---\n\n🤖 Processed by: old-worker\n` +
+    currentBody = `${oldSummary}\n---\n\n🤖 Processed by: old-worker\n` +
       `${WORKER_PR_MARKER_PREFIX}42 -->\n` +
       buildSummaryDigestMarker(await prSummaryDigest(oldSummary));
 
@@ -560,6 +560,7 @@ Deno.test("processPrFeedback - syncs a landed self-push before a turn-limit fail
       }
       if (args[0] === "pr" && args[1] === "edit") {
         const bodyPath = args[args.indexOf("--body-file") + 1];
+        if (bodyPath === undefined) throw new Error("missing --body-file path");
         currentBody = await Deno.readTextFile(bodyPath);
         events.push("body-edit");
         return "";
@@ -574,13 +575,20 @@ Deno.test("processPrFeedback - syncs a landed self-push before a turn-limit fail
         runClaudeWithRetry: async () => {
           if (headSha === "") {
             await Deno.writeTextFile(summaryPath, newSummary);
-            await git(repoPath, ["add", "docs/archive/pr-summaries/pr-summary-42.md"]);
+            await git(repoPath, [
+              "add",
+              "docs/archive/pr-summaries/pr-summary-42.md",
+            ]);
             await git(repoPath, ["commit", "-m", "Rewrite PR summary"]);
             await git(repoPath, ["push", "origin", branchName]);
             headSha = await git(repoPath, ["rev-parse", "HEAD"]);
             return {
               ok: true,
-              value: { output: "Pushed the summary rewrite", exitCode: 0, timedOut: false },
+              value: {
+                output: "Pushed the summary rewrite",
+                exitCode: 0,
+                timedOut: false,
+              },
             };
           }
           return {
@@ -592,7 +600,6 @@ Deno.test("processPrFeedback - syncs a landed self-push before a turn-limit fail
       pr: {
         handlePrCommentFailure: async () => {
           events.push("failure-accounted");
-          return { ok: true, value: undefined };
         },
       },
     });
@@ -617,12 +624,19 @@ Deno.test("processPrFeedback - syncs a landed self-push before a turn-limit fail
     });
 
     assertEquals(result.ok, false);
-    if (!result.ok) assertStringIncludes(result.error.message, "error_max_turns");
-    const edits = ghCalls.filter((args) => args[0] === "pr" && args[1] === "edit");
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, "error_max_turns");
+    }
+    const edits = ghCalls.filter((args) =>
+      args[0] === "pr" && args[1] === "edit"
+    );
     assertEquals(edits.length, 1);
     assertStringIncludes(currentBody, "Rewritten summary.");
     assertEquals(events, ["body-edit", "failure-accounted"]);
-    assertStringIncludes(currentBody, PR_SUMMARY_DIGEST_PREFIX);
+    assertStringIncludes(
+      currentBody,
+      buildSummaryDigestMarker(await prSummaryDigest(newSummary)),
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }
