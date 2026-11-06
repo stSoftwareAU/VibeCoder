@@ -190,6 +190,16 @@ const UNKNOWN_EXIT: Deno.CommandStatus = {
   signal: null,
 };
 
+/**
+ * The helper's exit status, or {@link UNKNOWN_EXIT} when it cannot be read.
+ * Exported so a test can pass a status that rejects.
+ */
+export function readExitStatus(
+  status: Promise<Deno.CommandStatus>,
+): Promise<Deno.CommandStatus> {
+  return status.catch(() => UNKNOWN_EXIT);
+}
+
 /** What the Apple helper needs: the checkout and the repair timeout. */
 type AppleEgressOptions = { baseDir: string; timeoutMs: number };
 
@@ -456,8 +466,8 @@ function describeStderr(stderr: string, token: string): string {
     : redacted;
 }
 
-/** Resolves after `ms`. */
-function pause(ms: number): Promise<void> {
+/** Resolves after `ms`. Exported so a test can time it. */
+export function pause(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -562,7 +572,7 @@ async function spawnAppleHelper(
     () => {},
   );
   const helper: AppleHelper = { child, logged, exited: Promise.resolve() };
-  helper.exited = child.status.catch(() => UNKNOWN_EXIT).then((status) => {
+  helper.exited = readExitStatus(child.status).then((status) => {
     helper.status = status;
   });
   return helper;

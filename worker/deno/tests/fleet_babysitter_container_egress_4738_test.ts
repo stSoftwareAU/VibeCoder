@@ -25,6 +25,8 @@ import {
   type BabysitterSpawnResult,
   babysitterStartAppleEgress,
   buildBabysitterRunArgs,
+  pause,
+  readExitStatus,
   runBabysitterRepairContainer,
 } from "../lib/fleet_babysitter_container.ts";
 
@@ -910,4 +912,22 @@ Deno.test("default sidecar wiring: the real start refuses an enforced plan with 
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }
+});
+
+Deno.test("a helper whose exit status cannot be read counts as a failed exit with code -1 and no signal", async () => {
+  assertEquals(
+    await readExitStatus(Promise.reject(new Error("status lost"))),
+    { success: false, code: -1, signal: null },
+  );
+  const read: Deno.CommandStatus = { success: true, code: 0, signal: null };
+  assertEquals(await readExitStatus(Promise.resolve(read)), read);
+});
+
+Deno.test("pause waits for the time given before it resolves", async () => {
+  const start = Date.now();
+  await pause(60);
+  assert(
+    Date.now() - start >= 50,
+    `pause(60) resolved after ${Date.now() - start} ms`,
+  );
 });
