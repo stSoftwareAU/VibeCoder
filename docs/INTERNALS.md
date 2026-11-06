@@ -4809,8 +4809,8 @@ this host cannot fetch a remote module or npm package, deno prints a failure
 header followed by a connection-class cause such as `error sending request for
 url`, `unsuccessful tunnel` or `dns error`. The header is `error: Import
 '<url>' failed.`, `error: Failed caching npm package '<spec>'` (reported as
-`npm:<spec>`), or `error: Failed loading <url> for package "<name>"` (Issue
-#4848). `detectRemoteModuleGap` in
+`npm:<spec>`), or `error: Failed loading <url> for package "<name>"`
+(Issue #4848). `detectRemoteModuleGap` in
 [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) reads each
 line with ANSI colour stripped, so a coloured `error` prefix still matches
 (Issue #4848), and reports a gap only when a connection-class cause follows one

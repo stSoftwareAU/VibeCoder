@@ -83,6 +83,13 @@ pair").
   tests/milestone_resolution_gate_test.ts`: both passes passed (serial pass 88
   passed, 0 failed).
 
+- Full gate `./quality.sh`: markdownlint failed once on a wrapped `#4848` line
+  (fixed; `check-markdownlint` now passes, 244 files). `deno tests` still fails
+  two tests in `completion_phase_repo_formatters_test.ts` ("an unformatted Rust
+  change is formatted and committed, then passes the gate" and "cargo fmt stages
+  only the branch's .rs files…"), which this change does not touch; every other
+  stage passed (semgrep, lint, type check, fmt, manifests).
+
 Not done / risk: ANSI tolerance is tested from the issue's output, not from a
 live coloured run; `merge_fast_checks.ts` gets the new detection but has no
 npm-specific test of its own.
