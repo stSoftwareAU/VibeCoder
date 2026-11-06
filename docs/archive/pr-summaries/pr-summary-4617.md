@@ -145,6 +145,18 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- Review follow-up: cargo test-tool arguments bypass the nextest probe, and
+  fallback preserves a package named nextest, covered by
+  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - cargo test tool passes through without a nextest probe`
+  and
+  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - nextest fallback preserves a package named nextest`.
+  Explicit and relative remote cycles retain the direct mutation job, and
+  oversized remote bodies are unreadable, covered by
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::remote workflow cycle guards retain the direct mutation job`
+  and
+  `worker/deno/tests/ci_mutation_contract_remote_test.ts::oversized remote workflows are unreadable before parsing`.
+  No twinned implementation was changed.
+
 - Review follow-up: the nextest probe's exit 127 and timeout, both
   budget-exhaustion paths, and the fallback's error and no-mutants messages
   are covered by `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - missing cargo on probe falls through to missing mutants`,

@@ -313,6 +313,34 @@ Deno.test("a remote workflow that cannot be fetched or parsed is reported unread
   });
 });
 
+Deno.test("oversized remote workflows are unreadable before parsing", async () => {
+  await withRepo({ "ci.yml": callerOf(REMOTE) }, async (repo) => {
+    const { fetchRemoteWorkflow } = reader({
+      [REMOTE]: `${remoteBody()}#${"x".repeat(1024 * 1024)}`,
+    });
+    assertEquals(await findBlockingMutationJob(repo, { fetchRemoteWorkflow }), {
+      blocking: null,
+      unreadable: [REMOTE],
+    });
+  });
+});
+
+Deno.test("remote workflow cycle guards retain the direct mutation job", async () => {
+  for (const uses of [REMOTE, "./.github/workflows/mutants.yml"]) {
+    const self =
+      `on: workflow_call\njobs:\n  again:\n    uses: ${uses}\n  run:\n    steps:\n      - run: cargo mutants\n`;
+    await withRepo({ "ci.yml": callerOf(REMOTE) }, async (repo) => {
+      const { calls, fetchRemoteWorkflow } = reader({ [REMOTE]: self });
+      const result = await findBlockingMutationJob(repo, {
+        fetchRemoteWorkflow,
+      });
+      assertEquals(result.blocking?.job, `mutants (reusable ${REMOTE}: run)`);
+      assertEquals(result.unreadable, []);
+      assertEquals(calls, [REMOTE]);
+    });
+  }
+});
+
 Deno.test("remote workflows follow explicit and relative calls at the calling ref", async () => {
   const inner = "acme/ci/.github/workflows/inner.yml@v2";
   const mid = [

@@ -795,6 +795,40 @@ Deno.test("runMutationCheck rust - installed nextest runs mutants and parses out
   assertEquals(r.survivors[0]?.line, 2);
 });
 
+Deno.test("runMutationCheck rust - cargo test tool passes through without a nextest probe", async () => {
+  for (const toolArgs of [["--test-tool", "cargo"], ["--test-tool=cargo"]]) {
+    const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+      writeOutcomes(fs, args, outcomesJson([]));
+      return ok();
+    });
+    const r = await runMutationCheck(
+      { ...rsInput, cargoMutantsArgs: toolArgs },
+      f.seams,
+    );
+    assertEquals(f.calls.length, 1);
+    assertEquals(f.calls[0]?.args[0], "mutants");
+    for (const arg of toolArgs) assert(f.calls[0]!.args.includes(arg));
+    assert(r.kind === "completed");
+    assertEquals(r.substitutedNextest, undefined);
+  }
+});
+
+Deno.test("runMutationCheck rust - nextest fallback preserves a package named nextest", async () => {
+  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+    if (args[0] === "nextest") return ok(127);
+    writeOutcomes(fs, args, outcomesJson([]));
+    return ok();
+  });
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["-p", "nextest", "--test-tool", "nextest"],
+  }, f.seams);
+  assert(r.kind === "completed");
+  const args = f.calls[1]!.args;
+  assertEquals(args[args.indexOf("-p") + 1], "nextest");
+  assertEquals(args.includes("--test-tool"), false);
+});
+
 Deno.test("runMutationCheck rust - nextest probe failure reports its exit code", async () => {
   const f = fake({ [`${REPO}/Cargo.toml`]: "" }, () => ok(1));
   const r = await runMutationCheck({
