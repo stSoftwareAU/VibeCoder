@@ -59,7 +59,7 @@
  * - **Every attribute value is validated, never passed through.** The parsed
  *   values are folded into later comments and log lines, so a marker is
  *   accepted only when its signature is hex, its head a 40-character SHA, its
- *   attempt a positive integer, its outcome one of the two known words and
+ *   attempt a positive integer, its outcome one of the three known words and
  *   its dependency a real `owner/repo#N`. A malformed or partial marker is
  *   ignored rather than half-read.
  *
@@ -109,11 +109,22 @@ const SIGNATURE_PATTERN = /^[0-9a-f]{8,64}$/;
 /** A head is a full 40-character commit SHA. */
 const HEAD_SHA_PATTERN = /^[0-9a-f]{40}$/;
 
-/** What an attempt did. */
-export type CiFixAttemptOutcome = "pushed" | "no-change";
+/**
+ * What an attempt did.
+ *
+ * `base-unverified` (Issue #4680) is not a substantive attempt: it records a
+ * hold, where the agent's base-branch claim could not be checked and no fix
+ * was tried. It is kept apart from the attempt tally, so it never counts
+ * against the cap — see {@link countUnverifiedBaseHolds}.
+ */
+export type CiFixAttemptOutcome = "pushed" | "no-change" | "base-unverified";
 
-/** The two words {@link CiFixAttemptOutcome} may take, for validation. */
-const OUTCOMES: readonly string[] = ["pushed", "no-change"];
+/** The three words {@link CiFixAttemptOutcome} may take, for validation. */
+const OUTCOMES: readonly string[] = [
+  "pushed",
+  "no-change",
+  "base-unverified",
+];
 
 /** One recorded CI-fix attempt. */
 export interface CiFixAttemptMarker {
@@ -125,7 +136,10 @@ export interface CiFixAttemptMarker {
   head: string;
   /** 1-based attempt number. */
   attempt: number;
-  /** Whether the attempt pushed a fix or reported no change required. */
+  /**
+   * Whether the attempt pushed a fix, reported no change required, or was a
+   * base-branch hold that charges no attempt (Issue #4680).
+   */
   outcome: CiFixAttemptOutcome;
 }
 
@@ -224,6 +238,13 @@ export type CiRerunFallbackRecord = CiRerunFallbackMarker & CiFixMarkerContext;
 export interface FleetCiFixMarkers {
   /** Attempt records, keyed by failure signature, in comment order. */
   attempts: Map<string, CiFixAttemptRecord[]>;
+  /**
+   * Unverified-base holds, keyed by failure signature, in comment order
+   * (Issue #4680). Kept apart from `attempts`: a hold is not a substantive
+   * attempt, so the cap, the babysitter's failure streak and the rebuild
+   * guard never read it as one. An empty map means no holds.
+   */
+  unverifiedBaseHolds: Map<string, CiFixAttemptRecord[]>;
   /** Deferral records, keyed by failure signature, in comment order. */
   deferrals: Map<string, CiFixDeferralRecord[]>;
   /**
@@ -729,6 +750,7 @@ export function collectFleetCiFixMarkers(
   log: (message: string) => void = console.warn,
 ): FleetCiFixMarkers {
   const attempts = new Map<string, CiFixAttemptRecord[]>();
+  const unverifiedBaseHolds = new Map<string, CiFixAttemptRecord[]>();
   const deferrals = new Map<string, CiFixDeferralRecord[]>();
   const humanGates = new Map<string, CiHumanGateRecord[]>();
   const infraReruns = new Map<string, CiInfraRerunRecord[]>();
@@ -748,6 +770,7 @@ export function collectFleetCiFixMarkers(
     }
     return {
       attempts,
+      unverifiedBaseHolds,
       deferrals,
       humanGates,
       infraReruns,
@@ -774,7 +797,13 @@ export function collectFleetCiFixMarkers(
     };
 
     for (const marker of parseCiFixAttemptMarkers(body)) {
-      append(attempts, marker.signature, { ...marker, ...context });
+      // Issue #4680: a base-branch hold is not an attempt. It goes to its own
+      // tally so `attempts` (and every reader of it) counts substantive
+      // attempts only.
+      const target = marker.outcome === "base-unverified"
+        ? unverifiedBaseHolds
+        : attempts;
+      append(target, marker.signature, { ...marker, ...context });
     }
     for (const marker of parseCiFixDeferralMarkers(body)) {
       append(deferrals, marker.signature, { ...marker, ...context });
@@ -811,6 +840,7 @@ export function collectFleetCiFixMarkers(
 
   return {
     attempts,
+    unverifiedBaseHolds,
     deferrals,
     humanGates,
     infraReruns,
@@ -848,7 +878,8 @@ export function isCiRerunFallbackRecordedAt(
  * This is the fleet-wide tally the attempt cap binds on: every host reads it
  * off the same pull request, so three attempts are three across the fleet
  * rather than three per host. A zero means "none yet" only when
- * `markers.fleetResolved` is true.
+ * `markers.fleetResolved` is true. Base-branch holds (Issue #4680) are not
+ * attempts and are never in this tally — see {@link countUnverifiedBaseHolds}.
  *
  * @param markers - Collected markers.
  * @param signature - Failure signature.
@@ -859,6 +890,25 @@ export function countAttempts(
   signature: string,
 ): number {
   return markers.attempts.get(signature)?.length ?? 0;
+}
+
+/**
+ * How many times the fleet has held one signature as an unverified base-branch
+ * claim (Issue #4680).
+ *
+ * A hold charges no attempt, so the cap cannot bound it; this count is what
+ * bounds it. Only `base-unverified` markers are counted, and they are kept out
+ * of {@link countAttempts}.
+ *
+ * @param markers - Collected markers.
+ * @param signature - Failure signature.
+ * @returns The number of recorded holds, zero when there are none.
+ */
+export function countUnverifiedBaseHolds(
+  markers: FleetCiFixMarkers,
+  signature: string,
+): number {
+  return markers.unverifiedBaseHolds.get(signature)?.length ?? 0;
 }
 
 /**
