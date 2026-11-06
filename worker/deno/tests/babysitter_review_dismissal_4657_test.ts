@@ -78,11 +78,18 @@ function fakeGitHub(options: {
   headRefOid: string;
   body: string;
   failEdit?: boolean;
+  /** The head GitHub reports from the nth `pr view` on, counting from 1. */
+  moveHeadAtView?: { view: number; head: string };
 }) {
   let body = options.body;
   let headRefOid = options.headRefOid;
+  let views = 0;
   const gh = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "view") {
+      views++;
+      if (views === options.moveHeadAtView?.view) {
+        headRefOid = options.moveHeadAtView.head;
+      }
       return JSON.stringify({
         headRefOid,
         body,
@@ -103,6 +110,9 @@ function fakeGitHub(options: {
   return {
     gh,
     body: () => body,
+    setBody: (next: string) => {
+      body = next;
+    },
     setHead: (head: string) => {
       headRefOid = head;
     },
@@ -455,4 +465,55 @@ Deno.test("a CI or conflict repair with no reviews skips verification (Issue #46
   });
   assertEquals(record.inputs.length, 0);
   assertEquals(record.dismissed, [[]]);
+});
+
+Deno.test("a description that changes during verification keeps reviews open (Issue #4657)", async () => {
+  const github = fakeGitHub({ headRefOid: PUSHED_HEAD, body: PART_OF_BODY });
+  const { value: record, logs } = await captureLogs(() =>
+    runFinish({
+      changed: true,
+      reviews: [review(1)],
+      github,
+      verifyReviews: (input) => {
+        github.setBody(`${PART_OF_BODY}\nEdited by someone else.\n`);
+        return verifiedAll(input);
+      },
+    })
+  );
+  assertEquals(record.inputs.length, 1);
+  assertEquals(record.dismissed, []);
+  assert(
+    logs.some((line) =>
+      line.includes(
+        "review 1 stays open: the PR head or description changed while the fixes were being verified",
+      )
+    ),
+    `expected a stays-open line, got ${JSON.stringify(logs)}`,
+  );
+});
+
+Deno.test("a head that moved before verification rejects without calling the verifier (Issue #4657)", async () => {
+  // Views: the publish step reads the PR once, then verification reads it again.
+  const github = fakeGitHub({
+    headRefOid: OLD_HEAD,
+    body: PART_OF_BODY,
+    moveHeadAtView: { view: 2, head: OTHER_HEAD },
+  });
+  let verifierCalls = 0;
+  const error = await assertRejects(() =>
+    runFinish({
+      changed: false,
+      reviews: [review(1)],
+      github,
+      verifyReviews: (input) => {
+        verifierCalls++;
+        return verifiedAll(input);
+      },
+    })
+  );
+  assertStringIncludes(
+    String(error),
+    `head moved to ${OTHER_HEAD}, expected ${OLD_HEAD}`,
+  );
+  assertEquals(verifierCalls, 0);
 });

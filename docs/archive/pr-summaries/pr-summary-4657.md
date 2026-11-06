@@ -91,13 +91,14 @@ flowchart TD
   throw, missing and duplicate verdict, blank body, extra new findings, input
   shape, and the PR #4611 stale-body then published-body fixture. Result: 13
   passed, 0 failed.
-- Added `worker/deno/tests/babysitter_review_dismissal_4657_test.ts` (14 tests)
+- Added `worker/deno/tests/babysitter_review_dismissal_4657_test.ts` (16 tests)
   driving the real `finishBabysitterRepair`: complete fix, partial fix (only the
   verified review dismissed), false-positive rebuttal on a no-change run, no-op
   completion, stale body, PR #4611 fixture, failed publication, verifier outage,
-  verifier throw, head movement, outside-id verdict, duplicate verdict, a review
-  arriving during repair, and a CI repair with no reviews. Result: 14 passed, 0
-  failed.
+  verifier throw, head movement during verification, a description edited during
+  verification, a head that moved before verification (rejects, verifier never
+  called), outside-id verdict, duplicate verdict, a review arriving during
+  repair, and a CI repair with no reviews. Result: 16 passed, 0 failed.
 - Existing tests edited only to supply the new required `verifyReviews` dep
   (`worker/deno/tests/fleet_pr_babysitter_test.ts`,
   `worker/deno/tests/babysitter_fix_orchestration_test.ts`); no assertion
@@ -106,7 +107,10 @@ flowchart TD
 - Red checks (each restored afterwards): verifier treats `partly` as fixed →
   partial-fix tests red (2 failed); dismissing all `reviews` regardless of
   verdict → 8 failed including partial fix, no-op, outage and head movement;
-  removing the head/description-moved check → head-movement test red; letting a
+  removing the head/description-moved check → head-movement test red; removing
+  the head check before the verifier runs → the moved-before-verification test
+  red (1 failed); removing the `sameDescription` check after it → the
+  description-changed test red (1 failed); letting a
   verifier throw escape → verifier-throws test red.
 - `docs/audits/lib-sweep-coverage/top-up-4657.json` claims the new module;
   `deno task test:unit tests/lib_sweep_coverage_test.ts`: 39 passed.
