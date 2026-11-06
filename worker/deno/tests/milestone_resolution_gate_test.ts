@@ -1113,3 +1113,41 @@ Deno.test("spawnTask - a task that hits its limit comes back with timedOut set, 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("verifyResolvedTree - a type check skipped by a host fault on a cargo-only tree keeps its landUnverified marker (Issue #4786)", async () => {
+  const { outcome } = await gate(
+    { "test:unit": "deno test" },
+    () => Promise.resolve({ code: 0, output: "" }),
+    {
+      typeCheck: () =>
+        Promise.resolve({
+          status: "skipped" as const,
+          detail: "cargo check could not reach its crate registry",
+          output: "",
+          cargoSkipped: true,
+          landUnverified: true,
+        }),
+    },
+  );
+
+  assertEquals(outcome.status, "skipped");
+  assertEquals(outcome.landUnverified, true);
+  assertEquals(outcome.cargoSkipped, true);
+});
+
+Deno.test("verifyResolvedTree - an ordinary skipped type check carries no landUnverified marker (Issue #4786)", async () => {
+  const { outcome } = await gate(
+    { "test:unit": "deno test" },
+    () => Promise.resolve({ code: 0, output: "" }),
+    {
+      typeCheck: () =>
+        Promise.resolve({
+          status: "skipped" as const,
+          detail: "no deno.json(c) — the merged tree was not type-checked",
+          output: "",
+        }),
+    },
+  );
+
+  assertEquals(outcome.landUnverified, undefined);
+});

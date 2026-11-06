@@ -134,7 +134,10 @@ export interface MergeGateOutcome {
    * Set only by a merge-only gate (Issue #4326) on a `skipped` verdict: the
    * host cannot afford the build, so a conflict the deterministic rules
    * settled is pushed unverified with the `UNGATED:` note rather than refused
-   * as a resolution nothing verified (Issue #1559).
+   * as a resolution nothing verified (Issue #1559). The type check sets it too
+   * on a cargo-only tree whose every cargo check timed out or could not reach
+   * the crate registry (Issue #4786): the host stopped the check, not the
+   * resolution.
    */
   landUnverified?: boolean;
   /**
@@ -882,10 +885,20 @@ export async function checkMergedTree(
   ];
   const checkLeftToCi = leftToCi.length > 0 ? leftToCi.join("; ") : undefined;
   if (checked.length === 0 && notes.length > 0) {
+    // A cargo-only tree whose every check hit its time limit or could not reach
+    // the crate registry was stopped by the host, not by the resolution: no
+    // resolution change can answer that, and refusing it repeats every cycle
+    // (Issue #4786). It lands unverified with the `UNGATED:` note and the
+    // milestone PR's CI builds it, as a merge-only cargo-only tree does
+    // (Issue #4326). Any Deno project keeps the refusal.
+    const hostFaultCargoOnly = projects.every((p) => p.kind === "cargo") &&
+      leftToCi.length === 0 &&
+      cargoTimedOut.length + cargoRegistryGaps.length > 0;
     return {
       status: "skipped",
       detail: notes.join("; "),
       output: "",
+      ...(hostFaultCargoOnly ? { landUnverified: true } : {}),
       ...(skippedCargo ? { cargoSkipped: true } : {}),
       ...(checkLeftToCi ? { checkLeftToCi } : {}),
     };

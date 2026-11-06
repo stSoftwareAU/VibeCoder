@@ -821,6 +821,7 @@ Deno.test("checkMergedTree - a cargo check that times out twice is retried once,
     assertEquals(runs, 2);
     assertEquals(outcome.status, "skipped", outcome.detail);
     assertEquals(outcome.cargoSkipped, true);
+    assertEquals(outcome.landUnverified, true);
   });
 });
 
@@ -1085,6 +1086,7 @@ Deno.test("checkMergedTree - a cargo check that cannot reach its registry twice 
     );
     assertEquals(outcome.detail.includes("--offline was specified"), false);
     assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+    assertEquals(outcome.landUnverified, true);
   });
 });
 
@@ -1402,5 +1404,77 @@ Deno.test("spawnTypeCheck - a read-only lockfile write refusal is left to CI", a
       );
       assertEquals(failure.accountUnavailable, undefined);
     }
+  });
+});
+
+Deno.test("checkMergedTree - a cargo-only tree skipped for the host's budget is not marked landUnverified (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    const outcome = await checkMergedTree(
+      dir,
+      () => Promise.resolve({ code: 0, output: "" }),
+      () => Promise.resolve(true),
+    );
+    assertEquals(outcome.status, "skipped", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertEquals(outcome.landUnverified, undefined);
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check that fails to compile is failed, never landUnverified (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    const outcome = await checkMergedTree(
+      dir,
+      () =>
+        Promise.resolve({
+          code: 101,
+          output: "error[E0425]: cannot find value `x`",
+        }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertEquals(outcome.landUnverified, undefined);
+  });
+});
+
+Deno.test("checkMergedTree - a Deno project left to CI is skipped without landUnverified (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    const outcome = await checkMergedTree(
+      dir,
+      () =>
+        Promise.resolve({
+          code: 1,
+          output: "",
+          accountUnavailable: "deno cache is read-only",
+        }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "skipped", outcome.detail);
+    assertEquals(outcome.landUnverified, undefined);
+  });
+});
+
+Deno.test("checkMergedTree - a mixed tree whose Deno half is left to CI and whose cargo half timed out is not landUnverified (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    const outcome = await checkMergedTree(
+      dir,
+      (project) =>
+        Promise.resolve(
+          project.kind === "cargo"
+            ? { code: 124, timedOut: true, output: "" }
+            : {
+              code: 1,
+              output: "",
+              accountUnavailable: "deno cache is read-only",
+            },
+        ),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "skipped", outcome.detail);
+    assertEquals(outcome.landUnverified, undefined);
   });
 });

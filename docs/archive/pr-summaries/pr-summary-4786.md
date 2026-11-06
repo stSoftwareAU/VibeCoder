@@ -23,7 +23,10 @@ with `--offline`, because the local cargo cache may hold every locked crate:
 
 A failure that is not a registry gap is not retried, and a Deno project is never
 retried or classified. The report prose now says cargo "timed out or could not
-reach the crate registry". Part of #4786.
+reach the crate registry". A cargo-only tree whose every cargo check is left to
+CI that way (cold cache, unreachable registry, or a double timeout) is marked
+`landUnverified`, so it lands with the `UNGATED:` note instead of being refused
+every cycle. Part of #4786.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -54,10 +57,15 @@ flowchart TD
 - A gap needs both a registry-refusal line and a connection-class line, so a
   compile error, a `--locked` lockfile refusal or a manifest error is never
   retried or hidden.
-- Left-to-CI reuses `cargoSkipped`. A cargo-only tree whose only check is left
-  to CI is still `skipped`, which `judgeResolutionVerdict` refuses outside a
-  merge-only cycle (fail closed, as for a double cargo timeout). I did not
-  change that: landing unverified on a network blip is a separate decision.
+- Left-to-CI reuses `cargoSkipped`. A cargo-only tree whose every cargo check
+  was left to CI by a timeout or an unreachable registry (cold cache) is
+  `skipped` with `landUnverified` set by `checkMergedTree` and carried through
+  `verifyResolvedTree`, so `judgeResolutionVerdict` lets it land with the
+  `UNGATED:` note and the milestone PR's CI builds it, as a merge-only
+  cargo-only tree already does (Issue #4326). The host stopped the check, not
+  the resolution, so refusing it only repeated every cycle. A Deno project, a
+  compile error, a budget skip outside a merge-only cycle and a repaired tree
+  keep the refusal.
 - The offline retry is bounded by the existing limits: the merge gate runs it
   under its own cargo limit, the resolution gate inside the remaining budget.
 
@@ -93,14 +101,21 @@ and `docs/CONTAINER.md` (the merge-only cargo passage). Code comments updated in
 
 ## Acceptance Criteria
 
-- **missing** — "Fix the **gate**, not the conflict: work out why
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — "Fix the **gate**, not the conflict: work out why
   `milestone_resolution_gate.ts` cannot verify this repository's merged tree,
   and teach it to" for a cargo-only tree whose registry is unreachable and whose
-  local cargo cache is cold — reason: such a tree is still `skipped` and refused
-  outside a merge-only cycle (fail closed, as for a double cargo timeout);
-  landing it unverified is a policy change this PR does not make. Trees whose
-  cache is warm now verify offline, and a mixed tree passes with cargo left to
-  CI.
+  local cargo cache is cold — evidence:
+  `worker/deno/tests/milestone_gate_repair_land_unverified_4326_test.ts::judgeResolutionVerdict - a cargo-only tree stopped by an unreachable registry lands unverified end to end (Issue #4786)`
+  — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Australian English, comments explain why, tests added with the
+  change, docs updated in `docs/INTERNALS.md`.
 
 ## Test Plan
 
@@ -115,6 +130,16 @@ and `docs/CONTAINER.md` (the merge-only cargo passage). Code comments updated in
 - Added in `worker/deno/tests/milestone_resolution_gate_test.ts`: `cargo test`
   offline pass, gap twice (passed with `cargoSkipped` and the cause), a non-gap
   failure is not retried, and an exhausted budget is not retried.
+- Added for the unmet criterion: `checkMergedTree` marks `landUnverified` on a
+  cargo-only double timeout and double registry gap, and not on a budget skip, a
+  compile error, a Deno project left to CI, or a mixed tree;
+  `verifyResolvedTree` carries the marker (and does not invent it);
+  `judgeResolutionVerdict` lets the end-to-end registry-gap verdict through. Ran
+  with stdin from `/dev/null`:
+  `deno task test:unit tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/milestone_gate_repair_land_unverified_4326_test.ts tests/milestone_merge_only_4326_test.ts`
+  — 76 passed. The mutation check's baseline failed to run in its sandbox for 20
+  listed files, all of which pass here (`deno test --no-check -A` and the unit
+  task); that is the harness environment, not a failing test.
 - Edited `worker/deno/tests/milestone_gate_repair_land_unverified_4326_test.ts`:
   the report-prose assertion now pins "a cargo check or cargo test timed out or
   could not reach the crate registry".

@@ -329,6 +329,9 @@ export async function verifyResolvedTree(
       status: "skipped",
       detail: `${typed.detail} — the Issue #974 type check did not run`,
       output: typed.output,
+      // A cargo-only tree stopped by a timeout or an unreachable registry
+      // lands unverified (Issue #4786); the marker is the type check's.
+      ...(typed.landUnverified ? { landUnverified: true } : {}),
       ...(typed.cargoSkipped ? { cargoSkipped: true } : {}),
     };
   }

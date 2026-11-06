@@ -10,6 +10,8 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { judgeResolutionVerdict } from "../lib/milestone_gate_repair.ts";
+import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
+import { verifyResolvedTree } from "../lib/milestone_resolution_gate.ts";
 import { buildConflictEscalationComment } from "../lib/milestone_sync_conflict.ts";
 
 Deno.test("judgeResolutionVerdict - a skipped verdict is a refusal (Issue #1559)", () => {
@@ -188,4 +190,43 @@ Deno.test("buildConflictEscalationComment - a type check left to CI says it did 
     withCargo,
     "Cargo did not complete either (Issues #4326, #4786)",
   );
+});
+
+Deno.test("judgeResolutionVerdict - a cargo-only tree stopped by an unreachable registry lands unverified end to end (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const gap = [
+      "error: failed to get `serde` as a dependency of package `demo v0.1.0`",
+      "Caused by:",
+      "  failed to query replaced source registry `crates-io`",
+      "  Updating crates.io index",
+      "warning: spurious network error (3 tries remaining): " +
+      "[6] Could not resolve host: index.crates.io",
+      "error: unable to update registry `crates-io`",
+      "Caused by:",
+      "  failed to fetch `https://index.crates.io/config.json`",
+      "  [6] Could not resolve host: index.crates.io",
+    ].join("\n");
+    const verdict = await verifyResolvedTree(
+      dir,
+      () => Promise.resolve({ code: 0, output: "" }),
+      (d) =>
+        checkMergedTree(
+          d,
+          () => Promise.resolve({ code: 101, output: gap }),
+          () => Promise.resolve(false),
+        ),
+      () => 0,
+      () => Promise.resolve(false),
+    );
+    const judged = judgeResolutionVerdict(verdict);
+    assertEquals(judged.status, "skipped", judged.detail);
+    assertEquals(judged.landUnverified, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
