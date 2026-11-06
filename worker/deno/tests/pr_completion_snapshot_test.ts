@@ -5659,6 +5659,37 @@ Deno.test("collect regression - mixed workflow and check-only heads retain deliv
   });
 });
 
+Deno.test("collect regression - one PR retains check-only and workflow heads", async () => {
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1)] },
+    commits: { [pk(1)]: [commit("sha2", "2026-10-20T01:01:00Z")] },
+    workflowRuns: { sha2: { workflow_runs: [{ id: 77, run_attempt: 1 }] } },
+    workflowAttempts: {
+      "77:1": {
+        status: "completed",
+        conclusion: "success",
+        run_started_at: "2026-10-20T01:00:00Z",
+        updated_at: "2026-10-20T01:20:00Z",
+      },
+    },
+    checks: Object.fromEntries([1, 2].map((n) => [`sha${n}`, {
+      total_count: 1,
+      check_runs: [{
+        id: 80 + n,
+        status: "completed",
+        conclusion: "success",
+        started_at: "2026-10-20T01:00:00Z",
+        completed_at: `2026-10-20T01:${n === 1 ? "10" : "20"}:00Z`,
+      }],
+    }])),
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  const delivery = buildPrCompletionReport(snapshot.input).delivery;
+  assertEquals(delivery.ciRuns, 2);
+  assertEquals(delivery.ciMinutes, 30);
+  assertEquals(delivery.ciChecks, 2);
+});
+
 function blockerRecord(
   extra: Partial<PrCompletionRecord> = {},
 ): PrCompletionRecord {
@@ -5907,12 +5938,13 @@ Deno.test("collect boundaries - older candidate cap and future PRs keep rollout 
       recordedAt: "2027-01-01T00:00:00Z",
     });
     const open = { state: "open", merged_at: null, closed_at: null };
-    for (const maxPrsPerRepo of [1, 2]) {
+    for (const maxPrsPerRepo of [1, 2, 3]) {
       const snapshot = await collectPrCompletionSnapshot(
         options(
           fakeGh(emptyFixture({
             pulls: {
               [REPO]: [
+                pull(4, { ...open, created_at: "2027-02-01T00:00:00Z" }),
                 pull(3, { ...open, created_at: "2026-12-01T00:00:00Z" }),
                 pull(1, { ...open, created_at: "2026-09-20T00:00:00Z" }),
                 pull(2, { ...open, created_at: "2026-09-19T00:00:00Z" }),
@@ -5937,11 +5969,11 @@ Deno.test("collect boundaries - older candidate cap and future PRs keep rollout 
       assertEquals(snapshot.input.prs, []);
       assertEquals(
         snapshot.input.rollout!.strandedPrs.map((p) => p.prNumber),
-        maxPrsPerRepo === 1 ? [1] : [1, 2],
+        [3, 1, 2].slice(0, maxPrsPerRepo),
       );
       assertEquals(
         snapshot.input.rollout!.discoveryEvidenceComplete,
-        maxPrsPerRepo === 2,
+        maxPrsPerRepo === 3,
       );
       assertEquals(snapshot.truncatedRepos, []);
       assertEquals(buildPrCompletionReport(snapshot.input).cohort.prCount, 0);

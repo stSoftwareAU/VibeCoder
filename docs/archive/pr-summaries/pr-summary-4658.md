@@ -3,16 +3,17 @@
 Completed the remaining trusted completion reporting in the existing collector.
 Check runs now cover every observed PR head, recovery and refresh waits use
 verified action evidence, reviewer branch refreshes are journalled, and rollout
-discovery includes stranded PRs older than the measurement cohort without
+discovery includes stranded PRs outside the measurement cohort without
 changing its denominator. The provisional 90% within-24-hours target remains
 pending two-week operational evaluation; no achieved result or baseline is
-claimed. Closes #4658.
+claimed. Part of #4658; that issue remains the follow-up for unmeasured
+babysitter retry cooldowns from failed attempts without a repair push.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Preserve stalled and older stranded PRs in the report and rollout check so
+- Preserve stalled and outside-cohort stranded PRs in the report and rollout check so
   missing history cannot improve completion rates or conceal rediscovery gaps.
 - Attribute repair, review, dismissal, branch refresh and merge activity from
   verified action records; account identity alone does not prove unattended
@@ -20,8 +21,8 @@ claimed. Closes #4658.
 
 ### Essential Design Decisions
 
-- Cohort PRs and older rollout candidates are collected separately. Older
-  candidates affect rollout verification, not delivery denominators.
+- Cohort PRs and outside-cohort rollout candidates are collected separately.
+  Candidates affect rollout verification, not delivery denominators.
 - Repeated failed repairs share one recovery interval until the next confirmed
   repair. Branch-refresh intervals end at a positively completed workflow or
   external check on the correlated commit, capped by the PR terminal state.
@@ -42,6 +43,8 @@ claimed. Closes #4658.
   target is available for operational evaluation but is not reported as met.
 - Expected host inventory and exported audit journals determine fleet coverage;
   absent evidence degrades or leaves metrics unknown.
+- Babysitter retry cooldowns without a repair push are not measured as
+  recovery waits; #4658 tracks the remaining work.
 
 ## Evidence
 
@@ -67,7 +70,7 @@ evidence sources, coverage limits and deployment arguments.
 
 ```mermaid
 flowchart LR
-    A[GitHub cohort and older rollout candidates] --> C[Read-only collector]
+    A[GitHub cohort and outside-cohort rollout candidates] --> C[Read-only collector]
     B[Verified worker, reviewer and babysitter evidence] --> C
     C --> D[Snapshot and dated report]
     D --> E[Cohort outcomes and blockers]
@@ -182,6 +185,18 @@ use the same report consumer and blocker functions.
 
 ### Review corrections and test-change evidence
 
+The rollout candidate selection no longer excludes PRs created after the
+cohort end but before verification. The cohort denominator remains unchanged;
+`worker/deno/tests/pr_completion_snapshot_test.ts::collect boundaries - older candidate cap and future PRs keep rollout coverage honest`
+covers the revised selection and bounded evidence. The old exclusion is
+obsolete because it hid stranded PRs. The retained per-head cost rule is
+covered on a single delivered PR by
+`worker/deno/tests/pr_completion_snapshot_test.ts::collect regression - one PR retains check-only and workflow heads`,
+which counts the check-only head and workflow head without duplicating checks.
+The boundary test failed before the selection fix; the same-PR test failed
+when the report was mutated to deduplicate per PR instead of per head. The
+collector suite passed all 111 tests after both fixes.
+
 Merge-commit check-run reads were unused by post-merge regression detection and
 incorrectly consumed the CI budget. They are removed; observed PR-head check
 runs remain covered by `worker/deno/tests/pr_completion_snapshot_test.ts::collect - check runs are read for an observed head with no workflow runs`.
@@ -206,10 +221,10 @@ updated regression tests failed before the review fixes and pass afterwards.
 
 ## Merge verification
 
-The full quality gate has not been rerun during this completion-check retry; its
-earlier timing-budget failure is recorded above. Current focused tests, type
-checks, lint, formatting, manifests and Markdown checks passed. The worker will
-rerun the full gate and verifier. CI, live fleet coverage and the two-week
-operational evaluation remain pending.
+The local quality gate passed formatting, lint, type checking, completeness and
+Markdown checks. Its parallel test phase encountered a Deno 2.9.0 permissions
+pledge panic on this host; the focused collector suite passed. Semgrep, Checkov
+and config integration were unavailable locally. CI, live fleet coverage and
+the two-week operational evaluation remain pending.
 
 Version bump: none; `VERSION` is unchanged.

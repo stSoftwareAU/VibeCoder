@@ -12,11 +12,14 @@ import {
 } from "@std/assert";
 import {
   buildMutationGateComment,
+  CARGO_MUTANTS_MISSING,
   evaluateMutationGate,
   generateDenoMutants,
   generateDenoMutantsDetailed,
+  MUTATION_BASELINE_FAILS,
   MUTATION_TEMP_DIR_UNWRITABLE,
   type MutationCheckResult,
+  mutationErrorNextAction,
   parseAddedLines,
   parseMutationExemptions,
 } from "../lib/mutation_gate.ts";
@@ -845,6 +848,85 @@ Deno.test("evaluateMutationGate - a blocking CI job leaves a runner error for CI
   assertEquals(plain.ciBlock, undefined);
 });
 
+const BASELINE_NEXT = "make them pass on this branch";
+const TOOL_NEXT = "install it there";
+const GENERIC_NEXT = "read the runner error above";
+
+Deno.test("evaluateMutationGate - a baseline failure on a blocking CI job names the baseline next action (Issue #4617)", () => {
+  const v = evaluateMutationGate(
+    {
+      kind: "error",
+      reason:
+        `${MUTATION_BASELINE_FAILS} (tests/a_test.ts); cannot judge mutants`,
+    },
+    "",
+    { workflow: "Mutants", job: "mutation-check", tool: "deno_task" },
+  );
+  assert(v.blocked);
+  assertStringIncludes(v.reason, BASELINE_NEXT);
+  assertFalse(v.reason.includes(TOOL_NEXT));
+  assertFalse(v.reason.includes(GENERIC_NEXT));
+  assertStringIncludes(v.reason, "unvalidated, not passed");
+});
+
+Deno.test("evaluateMutationGate - a missing cargo-mutants on a blocking CI job names the tool next action (Issue #4617)", () => {
+  const v = evaluateMutationGate(
+    { kind: "error", reason: CARGO_MUTANTS_MISSING },
+    "",
+    { workflow: "Mutants", job: "mutation-check", tool: "cargo" },
+  );
+  assert(v.blocked);
+  assertStringIncludes(v.reason, TOOL_NEXT);
+  assertFalse(v.reason.includes(BASELINE_NEXT));
+  assertFalse(v.reason.includes(GENERIC_NEXT));
+  assertStringIncludes(v.reason, "unvalidated, not passed");
+});
+
+Deno.test("evaluateMutationGate - any other runner error on a blocking CI job names the generic next action (Issue #4617)", () => {
+  const v = evaluateMutationGate(
+    { kind: "error", reason: "npm ci failed" },
+    "",
+    { workflow: "Mutants", job: "mutation-check", tool: "deno_task" },
+  );
+  assert(v.blocked);
+  assertStringIncludes(v.reason, GENERIC_NEXT);
+  assertFalse(v.reason.includes(BASELINE_NEXT));
+  assertFalse(v.reason.includes(TOOL_NEXT));
+  assertStringIncludes(v.reason, "unvalidated, not passed");
+});
+
+Deno.test("evaluateMutationGate - no next action is named without a blocking CI job (Issue #4617)", () => {
+  for (
+    const reason of [
+      `${MUTATION_BASELINE_FAILS} (tests/a_test.ts); cannot judge mutants`,
+      CARGO_MUTANTS_MISSING,
+      "npm ci failed",
+    ]
+  ) {
+    const v = evaluateMutationGate({ kind: "error", reason }, "");
+    assertFalse(v.reason.includes(BASELINE_NEXT), v.reason);
+    assertFalse(v.reason.includes(TOOL_NEXT), v.reason);
+    assertFalse(v.reason.includes(GENERIC_NEXT), v.reason);
+  }
+});
+
+Deno.test("mutationErrorNextAction - names the next action for each runner error cause (Issue #4617)", () => {
+  assertEquals(
+    mutationErrorNextAction(
+      `${MUTATION_BASELINE_FAILS} (tests/a_test.ts); cannot judge mutants`,
+    ),
+    "the baseline build or tests fail before any mutation, so no mutant can be judged: make them pass on this branch, then re-run",
+  );
+  assertEquals(
+    mutationErrorNextAction(CARGO_MUTANTS_MISSING),
+    "the mutation tool is not installed where the worker runs the check: install it there, then re-run",
+  );
+  assertEquals(
+    mutationErrorNextAction("npm ci failed"),
+    "read the runner error above, fix its cause, then re-run",
+  );
+});
+
 Deno.test("evaluateMutationGate - a worker-fault error on a blocking CI repository is named and not held (Issue #4820)", () => {
   const v = evaluateMutationGate(
     { kind: "error", reason: `${MUTATION_TEMP_DIR_UNWRITABLE}: /tmp full` },
@@ -894,6 +976,19 @@ Deno.test("buildMutationGateComment - sanitises backticks and newlines", () => {
   );
   const comment = buildMutationGateComment(v);
   assertStringIncludes(comment, "`ab .ts:1` — xy z");
+});
+
+Deno.test("buildMutationGateComment - includes nextest substitution for a completed survivor", () => {
+  const v = evaluateMutationGate(
+    { ...completed(), substitutedNextest: true },
+    "",
+  );
+  assert(v.blocked);
+  assertFalse(v.budgetExhausted);
+  assertStringIncludes(
+    buildMutationGateComment(v),
+    "install cargo-nextest to match CI",
+  );
 });
 
 Deno.test("buildMutationGateComment - includes the budget note when exhausted", () => {

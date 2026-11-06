@@ -86,6 +86,8 @@ import {
   runPrFeedbackDriftCheck,
 } from "./pr_feedback_drift_check.ts";
 import { runReviewFixMutationCheck } from "./pr_feedback_mutation_check.ts";
+import type { FindBlockingMutationJobOptions } from "./ci_mutation_contract.ts";
+import { ciMutationLookupOptions } from "./ci_mutation_lookup.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import { findCommitsAheadOnRemote } from "./pr_feedback_fix_branch_remote.ts";
 import {
@@ -1583,6 +1585,30 @@ async function _processFeedbackWithHeartbeat(
       });
       return r.ok ? r.value : null;
     };
+    // Issue #4617: the PR's base branch gives the required checks that decide
+    // which mutation job in CI blocks. A failure leaves the local files alone.
+    let ciLookup: Promise<FindBlockingMutationJobOptions> | undefined;
+    const ciLookupOptions = (): Promise<FindBlockingMutationJobOptions> =>
+      ciLookup ??= (async () => {
+        try {
+          return await ciMutationLookupOptions({
+            repo,
+            base: await resolvePrBaseBranch({ repo, prNumber }, deps),
+            runGh: (args: string[]) => deps.github.runGhCommand(args),
+            logger,
+          });
+        } catch (error) {
+          logger.warn(
+            "Could not resolve the PR base branch for the CI mutation contract (Issue #4617)",
+            {
+              repo,
+              prNumber,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          return {};
+        }
+      })();
     const driftOutcome = await driftCheck(
       {
         repo,
@@ -1602,8 +1628,14 @@ async function _processFeedbackWithHeartbeat(
               beforeSha: sha,
               repoConfigs: processorDeps.repoConfigs,
             },
-            { runGit, runner: deps.quality.runMutationCheck, logger },
+            {
+              runGit,
+              runner: deps.quality.runMutationCheck,
+              logger,
+              ciLookupOptions,
+            },
           ),
+        ciLookupOptions,
         runAgent: async (req: { prompt: string; readOnly: boolean }) => {
           const r = await runAgentTracked(
             {
@@ -2584,7 +2616,7 @@ async function releaseForRetry(
  * Throws when it cannot be read: the comments name it as fact.
  */
 async function resolvePrBaseBranch(
-  input: PrFeedbackInput,
+  input: Pick<PrFeedbackInput, "repo" | "prNumber">,
   deps: WorkerDeps,
 ): Promise<string> {
   const base = (await deps.github.runGhCommand([

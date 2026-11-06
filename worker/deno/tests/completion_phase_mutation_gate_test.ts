@@ -123,6 +123,10 @@ interface Scenario {
   workflow?: string;
   /** Makes `.github/workflows` a regular file, so reading it throws (Issue #4617). */
   workflowsDirIsFile?: boolean;
+  /** Text the stub `gh api` serves for the remote workflow `acme/ci/.github/workflows/m.yml` (Issue #4617). */
+  remoteWorkflow?: string;
+  /** The base branch's required checks the stub `gh api` reports (Issue #4617). */
+  requiredChecks?: string[];
   /** The branch already has an open PR, so the existing-PR path runs. */
   existingPrForBranch?: boolean;
   existingPrIsDraft?: boolean;
@@ -251,6 +255,31 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
                 "been temporarily blocked from content creation.",
             ),
           );
+        }
+        if (
+          scenario.requiredChecks !== undefined && args[0] === "api" &&
+          /^repos\/[^/]+\/[^/]+\/(rules\/)?branches\//.test(args[1] ?? "")
+        ) {
+          return Promise.resolve(
+            (args[1] ?? "").includes("/rules/")
+              ? JSON.stringify([[{
+                type: "required_status_checks",
+                parameters: {
+                  required_status_checks: scenario.requiredChecks.map((
+                    context,
+                  ) => ({ context })),
+                },
+              }]])
+              : JSON.stringify({ protection: null }),
+          );
+        }
+        if (
+          scenario.remoteWorkflow !== undefined && args[0] === "api" &&
+          (args[1] ?? "").startsWith(
+            "repos/acme/ci/contents/.github/workflows/m.yml?ref=",
+          )
+        ) {
+          return Promise.resolve(scenario.remoteWorkflow);
         }
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(
@@ -1129,4 +1158,62 @@ Deno.test("completion - cargo CI leaves a Deno survivor advisory and armed", asy
   assertEquals(createCall(outcome).includes("--draft"), false);
   assertEquals(outcome.finalisePrCalls, 1);
   assertStringIncludes(outcome.comments.join("\n"), "auto-merge stays armed");
+});
+
+Deno.test("completion - a CI mutants job that no required check covers does not hold the PR (Issue #4617)", async () => {
+  const held = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow: CI_BLOCKING_WORKFLOW,
+    requiredChecks: ["mutants"],
+  });
+  assertEquals(createCall(held).includes("--draft"), true, "required: held");
+
+  const ready = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    summary: SUMMARY_WITH_EXEMPTION,
+    workflow: CI_BLOCKING_WORKFLOW,
+    requiredChecks: ["tests"],
+  });
+  assertEquals(
+    createCall(ready).includes("--draft"),
+    false,
+    "not required: the exemption clears the survivor, as with no CI job",
+  );
+  assertEquals(ready.finalisePrCalls, 1);
+});
+
+Deno.test("completion - a survivor a remote reusable mutants workflow blocks on holds the PR as a draft (Issue #4617)", async () => {
+  const workflow = `name: ci
+on: pull_request
+jobs:
+  mutants:
+    uses: acme/ci/.github/workflows/m.yml@v1
+`;
+  const remoteWorkflow = `on: workflow_call
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo mutants --timeout 60
+`;
+  const held = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow,
+    remoteWorkflow,
+  });
+  assertEquals(createCall(held).includes("--draft"), true);
+  assertEquals(held.finalisePrCalls, 0);
+  assertStringIncludes(
+    held.prompts[0]!,
+    "reusable acme/ci/.github/workflows/m.yml@v1",
+  );
+
+  // Control: when the remote file cannot be read, the contract is unknown and
+  // the survivor is a note, as before.
+  const unread = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    summary: SUMMARY_WITH_EXEMPTION,
+    workflow,
+  });
+  assertEquals(createCall(unread).includes("--draft"), false);
 });

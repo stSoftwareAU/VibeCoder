@@ -363,7 +363,7 @@ function observedPr(
 }
 
 /**
- * Observe cohort PRs and, during rollout verification, older candidates.
+ * Observe cohort PRs and, during rollout verification, outside-cohort candidates.
  * Rollout discovery scans to exhaustion or the page bound: an age cutoff
  * cannot rule out stranded PRs on later pages. Bound exhaustion is incomplete.
  */
@@ -387,6 +387,9 @@ async function observeRepo(
   }
   const startMs = utcMillis(cohort.start, "cohort.start");
   const endMs = utcMillis(cohort.end, "cohort.end");
+  const verifiedMs = rolloutVerifiedAt === undefined
+    ? undefined
+    : utcMillis(rolloutVerifiedAt, "rolloutVerifiedAt");
   const pageBound = Math.ceil(maxPrs / PER_PAGE);
   const kept: Json[] = [];
   const rolloutKept: Json[] = [];
@@ -407,7 +410,7 @@ async function observeRepo(
       );
       if (createdMs >= startMs && createdMs < endMs) kept.push(pr);
       else if (
-        rolloutVerifiedAt !== undefined && createdMs < startMs
+        verifiedMs !== undefined && createdMs < verifiedMs
       ) rolloutKept.push(pr);
     }
     const oldest = utcMillis(
@@ -1948,6 +1951,9 @@ export async function collectPrCompletionSnapshot(
   const humanActorIds = new Set(options.humanActorIds ?? []);
 
   const notes: string[] = [];
+  notes.push(
+    "babysitter retry cooldowns without a repair push are not measured as repair-recovery waits; follow-up: #4658",
+  );
   if (options.expected.inventory === undefined) {
     notes.push(
       "no expected host/component deployment inventory supplied; per-host rollout status is unavailable",

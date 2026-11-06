@@ -80,26 +80,57 @@ workflow declares `workflow_call` and one of its jobs runs the tool in the same
 way. A job of that workflow that calls another local reusable workflow the same
 way is followed too, up to nine callee levels (`MAX_REUSABLE_DEPTH`, a plain
 bound so a deeper chain is bounded rather than unlimited). A workflow already on
-the call path is not followed again, so a cycle ends. A `uses:` with an `@ref`
-is not followed, even on a local path. The job is reported as
+the call path is not followed again, so a cycle ends. A local `uses:` with an `@ref` is not followed. The job is reported as
 `caller job (reusable called.yml: inner job)`, with the caller's workflow file;
 a nested call repeats the form, as
-`caller job (reusable a.yml: mid (reusable b.yml: inner job))`.
-The `cargo mutants` flags that choose the mutants or the build (`--package`,
+`caller job (reusable a.yml: mid (reusable b.yml: inner job))`. The
+`cargo mutants` flags that choose the mutants or the build (`--package`,
 `--workspace`, `--features`, `--all-features`, `--no-default-features`,
-`--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`,
-`--regex`, `--examine-re`, `--examine-regex`, `-F`, `-f`, `--file`) are
-read from the job's command line and passed to the worker's own run; diff,
-output, jobs and shuffle flags stay the worker's. Explicit CI package or
-workspace selection replaces the worker's touched-package selection. When all
-changed crates are known to be outside an explicit CI package list, the worker
-checks them separately as advisory and honours summary exemptions.
-Local reusable workflows are followed up to nine callee levels, as described
-above. Remote reusable workflows (`owner/repo/...@ref`) and local ones with an
-`@ref` are not evaluated.
-Also not evaluated or read: other mutation tools, job `if:` and path filters,
-flags of a `deno task`, and the repository's branch protection (required-check
-names).
+`--exclude`, `-e`, `--exclude-re`, `--exclude-regex`, `-E`, `--re`, `--regex`,
+`--examine-re`, `--examine-regex`, `-F`, `-f`, `--file`) and how the tests run
+(`--timeout` as a number of seconds, `--test-tool` as `cargo` or `nextest`, and
+`--cargo-arg` with a plain cargo argument such as `--release`; a value that does
+not fit is dropped) are read from the job's command line and passed to the
+worker's own run; diff, output, jobs and shuffle flags stay the worker's.
+Explicit CI package or workspace selection replaces the worker's touched-package
+selection. When all changed crates are known to be outside an explicit CI
+package list, the worker checks them separately as advisory and honours summary
+exemptions. Local reusable workflows are followed up to nine callee levels, as
+described above. A local one with an `@ref` is not evaluated.
+
+**Remote reusable workflows.** A job that `uses:`
+`owner/repo/.github/workflows/<name>.yml@ref` is followed too, when the worker
+can read that file with `gh api repos/<owner>/<repo>/contents/...`
+(`worker/deno/lib/ci_mutation_lookup.ts`). At most eight distinct remote
+workflows are fetched per repository, to the same nine-level bound, and a remote
+workflow may call further remote workflows. A `./` call inside a remote workflow
+is resolved in that repository at the same ref. One that
+cannot be fetched or parsed, or has no `workflow_call` trigger, is logged and
+listed as unreadable, so its contract is unknown. As with an unreadable local
+file, if no blocking job is found, survivors are reviewer notes subject to
+summary exemptions, and the PR is raised ready. A detected job is reported as
+`caller job (reusable owner/repo/.github/workflows/x.yml@ref: inner job)`.
+
+**Required checks.** The worker reads the base branch's required status checks
+(rulesets and classic branch protection, as the merge readers do) and counts a
+mutation job only when its check is required, or a job that needs it, directly
+or through others, is (so a required `gate` aggregator covers it). A check name
+matches the job's `name:` or key, a matrix child (`name (1)`) or a reusable
+child (`caller / inner`), including matrix callers and each level of a nested call. A required
+sibling does not cover the mutation job; a required child that needs it does.
+A job name with an expression cannot be matched and counts within its caller.
+When the read fails, or nothing is required, the list is treated as
+unknown and any PR-triggered job counts, as before. An in-session lookup fault
+is logged, never read as "not blocking". The same lookups run in review-fix
+runs.
+
+When CI selects `--test-tool nextest`, the worker probes `cargo nextest
+--version` first. If nextest is missing, it runs cargo-mutants with cargo's
+test runner instead, reports the substitution and recommends installing
+cargo-nextest to match CI. Survivors are still judged against the CI contract.
+
+Not evaluated or read: other mutation tools, job `if:` and path filters, and the
+flags of a `deno task`.
 
 Only regular workflow files up to 1 MiB are read. Symlinked workflow directory
 components, symlinked files and oversized files are reported as unreadable,
@@ -141,11 +172,16 @@ blocking, because CI fails on them whatever the PR summary says:
 4. **Validation that cannot finish holds nothing.** A runner error, an
    unavailable tool, a baseline build or test failure, a worker fault (the
    temporary directory) or a budget or mutant cap that leaves mutants untested
-   is reported as unvalidated, never as a pass. The pull request is still raised
-   ready and armed, because CI's job gives the complete verdict. Holding it
-   could not converge: a Rust clean build and baseline can use the whole 300 s
-   budget on every re-run, and a draft skips the CI job that would decide
-   (Issue #4820). A draft whose next run reports no survivor is marked ready.
+   is reported as unvalidated, never as a pass. On a blocking-CI repository the
+   mutation-check note names the next action for the cause: make the baseline
+   tests pass on this branch for a baseline build or test failure, install the
+   tool where the worker runs the check for an uninstalled tool, and fix the
+   cause named in the runner error for any other runner error (Issue #4617). The
+   pull request is still raised ready and armed, because CI's job gives the
+   complete verdict. Holding it could not converge: a Rust clean build and
+   baseline can use the whole 300 s budget on every re-run, and a draft skips
+   the CI job that would decide (Issue #4820). A draft whose next run reports no
+   survivor is marked ready.
 
 A repository without such a job is unchanged: survivors are notes, auto-merge
 stays armed and summary exemptions still work.
@@ -420,7 +456,7 @@ Both keys are per-repo options, set operator-side under
 | Completed, no survivor     | Every mutant was killed, or the survivor is exempted (an exemption does not count on a blocking-CI repository)                                                                                                                                                                       | No                                                                                                                                      |
 | Completed, survivors       | At least one unexempted survivor                                                                                                                                                                                                                                                     | Yes; on a blocking-CI repository a draft PR, not auto-merged, if one remains after the recovery turn (a draft on the deferral path too) |
 | Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass                                                                                                                                                                                                          | Only if a survivor found; on a blocking-CI repository a draft PR, validation incomplete                                                 |
-| Error                      | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable                                                                                                                                                                                        | Yes, with a remedy; on a blocking-CI repository a draft PR that says the change is unvalidated (not passed) and names the next action   |
+| Error                      | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable                                                                                                                                                                                        | Yes, with a remedy; on a blocking-CI repository the PR is raised ready and armed, and its note names a next action per cause            |
 | Error (worker fault)       | The temporary directory could not be created, in the system temp directory or on the work volume (Issue #4127). Reported as `mutation check could not run` (a worker fault on this host, not a verdict on the code); at PR raise recorded as `internal_error`, never `quality_check` | Yes, no repository remedy (no `skip_mutation_check`)                                                                                    |
 
 In a review-fix run nothing blocks the push. Survivors, budget exhaustion, the

@@ -247,21 +247,12 @@ async function readCommitChecks(
   return { checkRuns, statuses, hasAny: rawRuns.length + statuses.length > 0 };
 }
 
-/** Read both effective rules and classic branch protection for a particular head. */
-export async function readRequiredChecksPassed(
+/** The effective rules and classic protection summary of a branch. */
+async function readBranchContract(
   repo: string,
   base: string,
-  head: string,
   gh: (args: string[]) => Promise<string>,
-  mergeHead?: string,
-): Promise<boolean> {
-  if (
-    !/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[a-f0-9]{40}$/i.test(head) ||
-    !base ||
-    (mergeHead !== undefined && !/^[a-f0-9]{40}$/i.test(mergeHead))
-  ) {
-    throw new Error("Invalid repository, base or head for required-check read");
-  }
+): Promise<{ flatRules: unknown[]; protection: ObjectValue | null }> {
   const branch = encodeURIComponent(base);
   const rules = JSON.parse(
     await gh([
@@ -286,8 +277,47 @@ export async function readRequiredChecksPassed(
     ),
     "branch",
   );
-  const protection = classicChecksFromBranch(branchInfo);
-  const flatRules = rules.flat();
+  return {
+    flatRules: rules.flat(),
+    protection: classicChecksFromBranch(branchInfo),
+  };
+}
+
+/**
+ * The check contexts the base branch requires, from its effective rules and
+ * classic branch protection (Issue #4617). Throws on a read or parse failure,
+ * so a caller can tell "unknown" from "none required" (an empty list).
+ */
+export async function readRequiredCheckNames(
+  repo: string,
+  base: string,
+  gh: (args: string[]) => Promise<string>,
+): Promise<string[]> {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !base) {
+    throw new Error("Invalid repository or base for required-check read");
+  }
+  const { flatRules, protection } = await readBranchContract(repo, base, gh);
+  return [
+    ...new Set(requiredChecks(flatRules, protection).map((c) => c.context)),
+  ];
+}
+
+/** Read both effective rules and classic branch protection for a particular head. */
+export async function readRequiredChecksPassed(
+  repo: string,
+  base: string,
+  head: string,
+  gh: (args: string[]) => Promise<string>,
+  mergeHead?: string,
+): Promise<boolean> {
+  if (
+    !/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[a-f0-9]{40}$/i.test(head) ||
+    !base ||
+    (mergeHead !== undefined && !/^[a-f0-9]{40}$/i.test(mergeHead))
+  ) {
+    throw new Error("Invalid repository, base or head for required-check read");
+  }
+  const { flatRules, protection } = await readBranchContract(repo, base, gh);
   const names = new Set(
     requiredChecks(flatRules, protection).map((c) => c.context),
   );

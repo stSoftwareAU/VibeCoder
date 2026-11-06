@@ -544,6 +544,11 @@ Deno.test("runQualityGate - registers checkov only where checkov.yml exists", as
       `${withWorkflow}/.github/workflows/checkov.yml`,
       "name: checkov\n",
     );
+    // Exercise the registered stage without probing the host's container runtime.
+    await Deno.writeTextFile(
+      `${withWorkflow}/.checkov.yml`,
+      "skip-check: []\n",
+    );
 
     const options = { strict: false, sequential: true, validatePrompts: false };
 
@@ -556,6 +561,10 @@ Deno.test("runQualityGate - registers checkov only where checkov.yml exists", as
         presentNames.join(", ")
       }`,
     );
+    const checkov = present.value.checks.find((check) =>
+      check.name === "checkov"
+    );
+    assertEquals(checkov?.status, "FAILED");
 
     const absent = await runQualityGate({
       scriptDir: withoutWorkflow,

@@ -481,6 +481,40 @@ Deno.test("runPrFeedbackDriftCheck - a blocking CI mutants job stops a summary e
   }
 });
 
+Deno.test("runPrFeedbackDriftCheck - a mutants job no required check covers still honours a summary exemption (Issue #4617)", async () => {
+  const exemptSurvivor: Mutant = {
+    file: "lib/rule.ts",
+    line: 3,
+    description: "deleted call statement",
+  };
+  const { dir, beforeSha } = await setupBaseline();
+  try {
+    await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    await writeFile(dir, SUMMARY_PATH, `${SUMMARY_V1}\n${EXEMPT_LINE}\n`);
+    await writeFile(dir, ".github/workflows/mutants.yml", MUTANTS_WORKFLOW);
+    const calls: AgentCall[] = [];
+    const runAgent = makeRunAgent(
+      [{ ok: true, output: verdictBlock([]) }],
+      calls,
+    );
+    const runMutationCheck = makeMutationSeam(
+      [completed([exemptSurvivor], 0, 1)],
+      [],
+    );
+    const outcome = await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        ...depsFor(dir, runAgent, runMutationCheck),
+        ciLookupOptions: () => Promise.resolve({ requiredChecks: ["tests"] }),
+      },
+    );
+    assertEquals(calls.length, 1, "only the model pass ran");
+    assertEquals(outcome.status, "clean");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("runPrFeedbackDriftCheck - a budget-exhausted check with no survivors gets no recovery turn and reports the budget note", async () => {
   const { dir, beforeSha } = await setupBaseline();
   try {

@@ -1358,6 +1358,8 @@ last update is not completion evidence. Both waits are capped by the PR's
 merge or close; otherwise they remain open and their duration is measured to
 observation time. Missing action or commit evidence remains
 unknown rather than being inferred from a login or branch name.
+Babysitter retry cooldowns from failed attempts without a repair push are not
+measured as recovery waits. Issue #4658 remains open for that follow-up.
 
 **Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
