@@ -280,8 +280,30 @@ Deno.test("a Refs to a partly met issue is not a closing reference and adds no c
   assertEquals(output, proposal + "\n\n" + buildIdempotencyMarker(4674));
 });
 
-Deno.test("a 50,000-character run of spaces and refs fragments returns with the close added (Issue #4637)", () => {
-  const proposal = " ".repeat(50_000) + "refs ".repeat(2_000) + "!";
+Deno.test("hostile refs and related fragments return with the close added (Issue #4637)", () => {
+  const proposals = [
+    "Rewritten.\n\nrefs" + " ".repeat(40_000) + "!",
+    "Rewritten.\n\nrelated" + " ".repeat(40_000) + "x",
+    "Rewritten.\n\nrefs " + "a".repeat(40_000) + "!",
+  ];
+  for (const proposal of proposals) {
+    const output = guardPrBodyProposal({
+      proposal,
+      liveBody: liveBodyFor(4637, "Closes #4637"),
+      summary: FULLY_MET_SUMMARY,
+      repo: REPO,
+      headRefName: "feature",
+    });
+    assertSameText(
+      output,
+      `${proposal}\n\nCloses #4637\n\n${buildIdempotencyMarker(4637)}`,
+      `hostile fragment ${JSON.stringify(proposal.slice(0, 20))}`,
+    );
+  }
+});
+
+Deno.test("a proposal that starts with Refs to a fully met issue gets no Closes #N (Issue #4637)", () => {
+  const proposal = "Refs #4637";
   const output = guardPrBodyProposal({
     proposal,
     liveBody: liveBodyFor(4637, "Closes #4637"),
@@ -289,11 +311,7 @@ Deno.test("a 50,000-character run of spaces and refs fragments returns with the 
     repo: REPO,
     headRefName: "feature",
   });
-  assertSameText(
-    output,
-    `${proposal}\n\nCloses #4637\n\n${buildIdempotencyMarker(4637)}`,
-    "hostile refs fragments",
-  );
+  assertEquals(output, proposal + "\n\n" + buildIdempotencyMarker(4637));
 });
 
 Deno.test("an unrelated closing reference to another issue is restored beside a withheld issue", () => {
