@@ -16,6 +16,7 @@ import {
   processPrFeedback,
   summariseLargeComment,
 } from "../lib/pr_feedback_processor.ts";
+import { getRunId } from "../lib/run_id.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -497,148 +498,278 @@ Deno.test("processPrFeedback - syncs the PR body once after a verified push", as
   assertEquals(calls[0]?.beforeSha, DEFAULT_MOCK_HEAD_SHA);
 });
 
-Deno.test("processPrFeedback - syncs a landed self-push before a turn-limit failure", async () => {
-  const root = await Deno.makeTempDir();
-  const remote = `${root}/remote.git`;
-  const repoPath = `${root}/repo`;
-  const branchName = "issue-42-feedback";
-  const summaryPath = `${repoPath}/docs/archive/pr-summaries/pr-summary-42.md`;
-  const oldSummary = "## Summary\n\nPrevious summary. Closes #42.\n";
-  const newSummary = "## Summary\n\nRewritten summary. Closes #42.\n";
-  const ghCalls: string[][] = [];
-  const events: string[] = [];
-  let currentBody = "";
-  let headSha = "";
+for (
+  const exit of [
+    "later turn limit",
+    "initial turn limit",
+    "local commit then turn limit",
+    "initial error",
+    "finish deadline",
+    "timeout",
+  ] as const
+) {
+  Deno.test(`processPrFeedback - syncs a landed self-push before ${exit}`, async () => {
+    const root = await Deno.makeTempDir();
+    const remote = `${root}/remote.git`;
+    const repoPath = `${root}/repo`;
+    const branchName = "issue-42-feedback";
+    const summaryPath =
+      `${repoPath}/docs/archive/pr-summaries/pr-summary-42.md`;
+    const oldSummary = "## Summary\n\nPrevious summary. Closes #42.\n";
+    const newSummary = "## Summary\n\nRewritten summary. Closes #42.\n";
+    const localSummary = "## Summary\n\nLocal-only follow-up. Closes #42.\n";
+    const dirtySummary = "## Summary\n\nUncommitted draft. Closes #42.\n";
+    const ghCalls: string[][] = [];
+    const events: string[] = [];
+    let currentBody = "";
+    let headSha = "";
 
-  const git = async (cwd: string, args: string[]) => {
-    const result = await new Deno.Command("git", {
-      args,
-      cwd,
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    if (result.code !== 0) {
-      throw new Error(
-        `git ${args.join(" ")} failed: ${
-          new TextDecoder().decode(result.stderr)
-        }`,
-      );
-    }
-    return new TextDecoder().decode(result.stdout).trim();
-  };
-
-  try {
-    await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
-      recursive: true,
-    });
-    await git(root, ["init", "--bare", "-q", remote]);
-    await git(repoPath, ["init", "-q"]);
-    await git(repoPath, ["config", "user.name", "Test worker"]);
-    await git(repoPath, ["config", "user.email", "worker@example.test"]);
-    await git(repoPath, ["checkout", "-b", branchName]);
-    await Deno.writeTextFile(summaryPath, oldSummary);
-    await git(repoPath, ["add", "docs/archive/pr-summaries/pr-summary-42.md"]);
-    await git(repoPath, ["commit", "-m", "Initial PR summary"]);
-    await git(repoPath, ["remote", "add", "origin", remote]);
-    await git(repoPath, ["push", "-u", "origin", branchName]);
-    const oldSha = await git(repoPath, ["rev-parse", "HEAD"]);
-    currentBody = `${oldSummary}\n---\n\n🤖 Processed by: old-worker\n` +
-      `${WORKER_PR_MARKER_PREFIX}42 -->\n` +
-      buildSummaryDigestMarker(await prSummaryDigest(oldSummary));
-
-    const gh = openPrGh(async (args) => {
-      ghCalls.push(args);
-      if (args[0] === "pr" && args[1] === "view") {
-        return JSON.stringify({
-          state: "OPEN",
-          mergeable: "CONFLICTING",
-          body: currentBody,
-          files: [],
-          headRefOid: headSha || oldSha,
-          headRefName: branchName,
-        });
+    const git = async (cwd: string, args: string[]) => {
+      const result = await new Deno.Command("git", {
+        args,
+        cwd,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      if (result.code !== 0) {
+        throw new Error(
+          `git ${args.join(" ")} failed: ${
+            new TextDecoder().decode(result.stderr)
+          }`,
+        );
       }
-      if (args[0] === "pr" && args[1] === "edit") {
-        const bodyPath = args[args.indexOf("--body-file") + 1];
-        if (bodyPath === undefined) throw new Error("missing --body-file path");
-        currentBody = await Deno.readTextFile(bodyPath);
-        events.push("body-edit");
-        return "";
-      }
-      return "";
-    });
-    const deps = createMockDeps({
-      github: {
-        runGhCommand: gh,
-      },
-      claude: {
-        runClaudeWithRetry: async () => {
-          if (headSha === "") {
-            await Deno.writeTextFile(summaryPath, newSummary);
-            await git(repoPath, [
-              "add",
-              "docs/archive/pr-summaries/pr-summary-42.md",
-            ]);
-            await git(repoPath, ["commit", "-m", "Rewrite PR summary"]);
-            await git(repoPath, ["push", "origin", branchName]);
-            headSha = await git(repoPath, ["rev-parse", "HEAD"]);
-            return {
-              ok: true,
-              value: {
-                output: "Pushed the summary rewrite",
-                exitCode: 0,
-                timedOut: false,
-              },
-            };
+      return new TextDecoder().decode(result.stdout).trim();
+    };
+
+    try {
+      await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
+        recursive: true,
+      });
+      await git(root, ["init", "--bare", "-q", remote]);
+      await git(repoPath, ["init", "-q"]);
+      await git(repoPath, ["config", "user.name", "Test worker"]);
+      await git(repoPath, ["config", "user.email", "worker@example.test"]);
+      await git(repoPath, ["checkout", "-b", branchName]);
+      await Deno.writeTextFile(summaryPath, oldSummary);
+      await git(repoPath, [
+        "add",
+        "docs/archive/pr-summaries/pr-summary-42.md",
+      ]);
+      await git(repoPath, ["commit", "-m", "Initial PR summary"]);
+      await git(repoPath, ["remote", "add", "origin", remote]);
+      await git(repoPath, ["push", "-u", "origin", branchName]);
+      const oldSha = await git(repoPath, ["rev-parse", "HEAD"]);
+      currentBody = `${oldSummary}\n---\n\n🤖 Processed by: old-worker\n` +
+        `${WORKER_PR_MARKER_PREFIX}42 -->\n` +
+        buildSummaryDigestMarker(await prSummaryDigest(oldSummary));
+
+      const gh = openPrGh(async (args) => {
+        ghCalls.push(args);
+        if (args[0] === "pr" && args[1] === "view") {
+          return JSON.stringify({
+            state: "OPEN",
+            mergeable: "CONFLICTING",
+            body: currentBody,
+            files: [],
+            headRefOid: headSha || oldSha,
+            headRefName: branchName,
+          });
+        }
+        if (args[0] === "pr" && args[1] === "edit") {
+          const bodyPath = args[args.indexOf("--body-file") + 1];
+          if (bodyPath === undefined) {
+            throw new Error("missing --body-file path");
           }
-          return {
-            ok: false,
-            error: new AgentTurnLimitError("error_max_turns"),
-          };
+          currentBody = await Deno.readTextFile(bodyPath);
+          events.push("body-edit");
+          return "";
+        }
+        return "";
+      });
+      const turnLimitError = new AgentTurnLimitError("error_max_turns");
+      const deps = createMockDeps({
+        github: {
+          runGhCommand: gh,
         },
-      },
-      pr: {
-        handlePrCommentFailure: async () => {
-          events.push("failure-accounted");
+        claude: {
+          runClaudeWithRetry: async () => {
+            if (headSha === "") {
+              await Deno.writeTextFile(summaryPath, newSummary);
+              await git(repoPath, [
+                "add",
+                "docs/archive/pr-summaries/pr-summary-42.md",
+              ]);
+              await git(repoPath, ["commit", "-m", "Rewrite PR summary"]);
+              await git(repoPath, ["push", "origin", branchName]);
+              headSha = await git(repoPath, ["rev-parse", "HEAD"]);
+              // The body must describe the pushed commit, never these edits.
+              await Deno.writeTextFile(summaryPath, dirtySummary);
+              if (exit === "initial turn limit") {
+                return { ok: false, error: turnLimitError };
+              }
+              if (exit === "initial error") {
+                return {
+                  ok: false,
+                  error: new Error("agent failed after push"),
+                };
+              }
+              return {
+                ok: true,
+                value: {
+                  output: "Pushed the summary rewrite",
+                  exitCode: 0,
+                  timedOut: exit === "timeout",
+                  finishDeadline: exit === "finish deadline",
+                },
+              };
+            }
+            if (exit === "local commit then turn limit") {
+              await Deno.writeTextFile(summaryPath, localSummary);
+              await git(repoPath, [
+                "add",
+                "docs/archive/pr-summaries/pr-summary-42.md",
+              ]);
+              await git(repoPath, ["commit", "-m", "Local-only follow-up"]);
+              await Deno.writeTextFile(summaryPath, dirtySummary);
+            }
+            return { ok: false, error: turnLimitError };
+          },
         },
-      },
-    });
+        pr: {
+          handlePrCommentFailure: async () => {
+            events.push("failure-accounted");
+          },
+        },
+      });
 
-    const result = await processPrFeedback(makeInput({ branchName }), {
-      promptsDir: PROMPTS_DIR,
-      logger: makeSilentLogger(),
-      deps,
-      workDir: repoPath,
-      workRoot: root,
-      qualityInstructions: "",
-      verifyPushFn: (branch, options) => verifyPushLanded(branch, options),
-      syncPrBodyFn: (input, syncDeps) =>
-        syncPrBodyFromSummary(input, {
-          ...syncDeps,
-          runGitCommand,
-        }),
-      driftCheckFn: async (_input, driftDeps) => {
-        await driftDeps.runAgent({ prompt: "drift check", readOnly: true });
-        return { status: "clean", checked: [] };
-      },
-    });
+      const result = await processPrFeedback(makeInput({ branchName }), {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        workDir: repoPath,
+        workRoot: root,
+        qualityInstructions: "",
+        verifyPushFn: (branch, options) => verifyPushLanded(branch, options),
+        syncPrBodyFn: (input, syncDeps) =>
+          syncPrBodyFromSummary(input, {
+            ...syncDeps,
+            runGitCommand,
+          }),
+        driftCheckFn: async (_input, driftDeps) => {
+          await driftDeps.runAgent({ prompt: "drift check", readOnly: true });
+          return { status: "clean", checked: [] };
+        },
+      });
 
-    assertEquals(result.ok, false);
-    if (!result.ok) {
-      assertStringIncludes(result.error.message, "error_max_turns");
+      const edits = ghCalls.filter((args) =>
+        args[0] === "pr" && args[1] === "edit"
+      );
+      assertEquals(edits.length, 1);
+      assertStringIncludes(currentBody, "Rewritten summary.");
+      assertEquals(currentBody.includes("Local-only follow-up."), false);
+      assertEquals(currentBody.includes("Uncommitted draft."), false);
+      assertStringIncludes(currentBody, `🏷️ Run id: \`${getRunId()}\``);
+      assertEquals(
+        events,
+        exit === "finish deadline"
+          ? ["body-edit"]
+          : ["body-edit", "failure-accounted"],
+      );
+      assertStringIncludes(
+        currentBody,
+        buildSummaryDigestMarker(await prSummaryDigest(newSummary)),
+      );
+      assertEquals(result.ok, exit === "finish deadline");
+      if (exit.includes("turn limit")) {
+        assertEquals(result.ok ? undefined : result.error, turnLimitError);
+      } else if (!result.ok) {
+        assertStringIncludes(
+          result.error.message,
+          exit === "timeout" ? "timed out" : "agent failed after push",
+        );
+      } else {
+        assertEquals(result.value.processed, false);
+      }
+    } finally {
+      await Deno.remove(root, { recursive: true });
     }
-    const edits = ghCalls.filter((args) =>
-      args[0] === "pr" && args[1] === "edit"
-    );
-    assertEquals(edits.length, 1);
-    assertStringIncludes(currentBody, "Rewritten summary.");
-    assertEquals(events, ["body-edit", "failure-accounted"]);
-    assertStringIncludes(
-      currentBody,
-      buildSummaryDigestMarker(await prSummaryDigest(newSummary)),
-    );
-  } finally {
-    await Deno.remove(root, { recursive: true });
+  });
+}
+
+Deno.test("processPrFeedback - turn-limit sync skips gated heads and unverified remotes and preserves sync failures", async () => {
+  for (
+    const scenario of [
+      "gated",
+      "unreachable",
+      "verification throws",
+      "sync fails",
+      "sync throws",
+    ]
+  ) {
+    const dir = await Deno.makeTempDir();
+    try {
+      const error = new AgentTurnLimitError("error_max_turns");
+      let syncs = 0;
+      let charges = 0;
+      const warnings: string[] = [];
+      const logger = makeSilentLogger();
+      logger.warn = (message) => {
+        warnings.push(message);
+      };
+      const result = await processPrFeedback(
+        makeInput({ branchName: "milestone/gated" }),
+        {
+          promptsDir: PROMPTS_DIR,
+          workDir: dir,
+          workRoot: dir,
+          qualityInstructions: "",
+          logger,
+          deps: createMockDeps({
+            github: {
+              runGhCommand: openPrGh((args) =>
+                Promise.resolve(
+                  scenario === "gated" && args[0] === "api" &&
+                    String(args[1]).includes("/rules/branches/")
+                    ? JSON.stringify([{ type: "pull_request" }])
+                    : "",
+                )
+              ),
+            },
+            claude: { runClaudeWithRetry: async () => ({ ok: false, error }) },
+            pr: {
+              handlePrCommentFailure: async () => {
+                charges++;
+              },
+            },
+          }),
+          verifyPushFn: async () => {
+            if (scenario === "verification throws") {
+              throw new Error("remote lookup failed");
+            }
+            return scenario === "unreachable"
+              ? { landed: false, reason: "remote unreachable" }
+              : await REMOTE_CONFIRMS_PUSH();
+          },
+          syncPrBodyFn: async () => {
+            syncs++;
+            if (scenario === "sync throws") throw new Error("body edit threw");
+            return { ok: false, error: new Error("body edit failed") };
+          },
+        },
+      );
+      assertEquals(result.ok ? undefined : result.error, error, scenario);
+      assertEquals(charges, 1, scenario);
+      assertEquals(syncs, scenario.startsWith("sync") ? 1 : 0, scenario);
+      if (scenario.includes("throws") || scenario === "sync fails") {
+        assertEquals(
+          warnings.some((message) => message.includes("body sync failed")),
+          true,
+          scenario,
+        );
+      }
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });
 

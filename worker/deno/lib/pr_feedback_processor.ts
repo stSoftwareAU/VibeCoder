@@ -1270,10 +1270,7 @@ async function _processFeedbackWithHeartbeat(
   // Issue #3404: every agent invocation of this run goes through here, so the
   // run's stats are collected in one place whichever helper retries it.
   const turnLimit: { failure?: Error } = {};
-  let bodySyncAttempted = false;
   const syncBody = async (committedHeadSha?: string) => {
-    if (bodySyncAttempted || fixBranch !== undefined) return;
-    bodySyncAttempted = true;
     await runPrBodySync(
       {
         repo,
@@ -1285,7 +1282,9 @@ async function _processFeedbackWithHeartbeat(
           Deno.env.get("GITHUB_USER") ?? "",
         runId: getRunId(),
         branchName: input.branchName,
-        ...(committedHeadSha !== undefined ? { committedHeadSha } : {}),
+        ...(committedHeadSha !== undefined
+          ? { committedHeadSha, allowLocalHeadAhead: true }
+          : {}),
       },
       {
         runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
@@ -1296,18 +1295,21 @@ async function _processFeedbackWithHeartbeat(
     );
   };
   const syncBodyFromVerifiedHead = async () => {
-    if (bodySyncAttempted || fixBranch !== undefined) return;
+    if (fixBranch !== undefined) return;
     try {
       const verification = await (processorDeps.verifyPushFn ??
         verifyPushLanded)(pushBranch, {
           cwd: processorDeps.workDir,
         });
-      if (verification.landed && verification.remoteSha !== undefined) {
+      // A failed invocation may leave a newer local commit after an earlier
+      // push landed. The confirmed remote SHA still identifies publishable
+      // content; sync checks its ancestry and rechecks the remote before edit.
+      if (verification.remoteSha !== undefined) {
         await syncBody(verification.remoteSha);
       }
     } catch (error) {
-      // A best-effort body refresh must not replace the turn-limit failure.
-      logger.warn("Turn-limit PR body sync failed", {
+      // A best-effort body refresh must not replace the agent outcome.
+      logger.warn("Post-agent PR body sync failed", {
         prNumber,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1316,8 +1318,8 @@ async function _processFeedbackWithHeartbeat(
   const failTurnLimit = async (
     error: Error,
   ): Promise<Result<PrFeedbackResult>> => {
-    // Claude may have pushed a rewritten summary before a later invocation
-    // hit its cap. Pin the refresh to the verified remote commit, then keep
+    // Claude may have pushed a rewritten summary before hitting its cap.
+    // Pin the refresh to the verified remote commit, then keep
     // the original failure outcome and accounting.
     await syncBodyFromVerifiedHead();
     await chargeReviewFailure(error.message);
@@ -1395,6 +1397,8 @@ async function _processFeedbackWithHeartbeat(
   await rtk.record();
 
   if (!claudeResult.ok) {
+    if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
+    await syncBodyFromVerifiedHead();
     // Issue #4511: a host-disk park (Issue #4360) is the host running out of
     // disk, not the PR's fault, so it is released rather than charged. The
     // processed mark is taken back so the comment is rediscovered once the
@@ -1455,6 +1459,7 @@ async function _processFeedbackWithHeartbeat(
   // The finish deadline is a scheduled release (Issue #4245): logged, and
   // not charged, so no failure label is applied.
   if (claudeResult.value.finishDeadline) {
+    await syncBodyFromVerifiedHead();
     const summary =
       `PR feedback for ${repo}#${prNumber} released on schedule: the finish deadline was reached`;
     logger.info(summary);
@@ -1466,6 +1471,7 @@ async function _processFeedbackWithHeartbeat(
 
   // Check for timeout (Issue #1825: distinguish silence watchdog from hard timeout)
   if (claudeResult.value.timedOut) {
+    await syncBodyFromVerifiedHead();
     const failureMessage = claudeResult.value.timeoutReason === "no-output"
       ? `Claude produced no output for ${claudeNoOutputTimeout} seconds (silence watchdog fired)`
       : `Claude timed out after ${claudeTimeout} seconds`;
