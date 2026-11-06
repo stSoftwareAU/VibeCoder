@@ -8,8 +8,8 @@
  * babysitter heartbeats are read from local or exported directories. The
  * review-fleet-prs skill's own `log.jsonl` files are read from
  * `--review-log <log.jsonl,...>` as a lower-trust source (docs/INTERNALS.md).
- * `--human-actor-id <id,...>` explicitly identifies GitHub numeric account ids
- * as human evidence when their event is not matched to a verified fleet action.
+ * `--human-actor-id <id,...>` identifies numeric GitHub account ids as human
+ * evidence for reviews, dismissals and merges unmatched to verified fleet actions.
  * Nothing is written to GitHub or host configuration. `--collect` writes only
  * the optional `--write-snapshot <path>`, which holds the collected input so a
  * later `--input` run can reproduce the report. Audit verification does not

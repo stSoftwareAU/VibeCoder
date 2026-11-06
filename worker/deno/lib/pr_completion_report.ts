@@ -33,6 +33,15 @@ export interface PrCompletionRecord {
   rollupRoot?: string;
   ownerGated?: boolean;
   ownerGateVerified?: boolean;
+  /** Current reviewer hold verified against a fleet audit action. */
+  ownerGateEvidence?: {
+    reviewId: string;
+    actionId: string;
+    headSha: string;
+    timestamp: string;
+    reason: "product-contract" | "repository-policy";
+    detail: string;
+  };
   eligible?: boolean;
   actionsComplete: boolean;
 }
@@ -169,6 +178,13 @@ export interface PrCompletionReport {
     openIntervals: number;
     ciFailureComplete: boolean;
   };
+  ownerOnlyExceptions: Array<{
+    repo: string;
+    prNumber: number;
+    state: PrState;
+    /** Absent on legacy snapshots that only recorded the verified boolean. */
+    evidence?: PrCompletionRecord["ownerGateEvidence"];
+  }>;
   regressions: {
     postMergeCiComplete: boolean;
     observed: number;
@@ -927,6 +943,16 @@ export function buildPrCompletionReport(
           : null,
     },
     waiting,
+    ownerOnlyExceptions: prs.filter((pr) =>
+      pr.ownerGated === true && pr.ownerGateVerified === true
+    ).map((pr) => ({
+      repo: pr.repo,
+      prNumber: pr.number,
+      state: pr.state,
+      ...(pr.ownerGateEvidence !== undefined
+        ? { evidence: pr.ownerGateEvidence }
+        : {}),
+    })),
     regressions: {
       postMergeCiComplete: !incompleteMerged,
       observed: regressionRows.length,

@@ -407,6 +407,13 @@ The script does the rest, so do not post anything yourself:
   the result to `<logs>/review-fleet-prs/log.jsonl`, refreshes
   `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
+- Each actual review-posting attempt also writes a hash-chained audit entry
+  under `<logs>/review-fleet-prs/audit` (or `<state-dir>/audit` with an explicit
+  state directory), carrying the reviewer component, reviewed head and success
+  or failure. Export this directory with the other host journals and supply it
+  to `pr-completion-report --collect --audit-dir` so owner holds can be verified.
+  The unchained `log.jsonl` remains supporting evidence only; an audit-append
+  refusal is printed on stderr and leaves that action unverified.
 - After posting, it deletes the claim comments at the head it reviewed (see
   [Several hosts](references/running-unattended.md#several-hosts)).
 

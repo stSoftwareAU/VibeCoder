@@ -10,8 +10,9 @@
  * configuration.
  *
  * A GitHub event is never attributed from its login. A matching verified fleet
- * action takes precedence; otherwise, a numeric actor id must appear in the
- * explicit human allowlist or the event remains unknown. Review-fleet-prs logs
+ * action takes precedence; otherwise reviews, dismissals and merges require a
+ * numeric actor id in the explicit human allowlist. Commit authorship alone
+ * stays unknown. Review-fleet-prs logs
  * can support a review match but are not hash-chained or sufficient to verify
  * completion.
  *
@@ -19,6 +20,7 @@
  */
 
 import type { AuditEntry } from "./audit_entry.ts";
+import { ownerHoldFromBody } from "./fleet_review_hold.ts";
 import { readPrDiscoveryEvents } from "./pr_discovery_events.ts";
 import {
   isAuditJournalName,
@@ -75,7 +77,7 @@ export interface CollectOptions {
   expected: PrCompletionInput["expectedDeployment"];
   /** When set, the rollout check runs against this verification instant. */
   rolloutVerifiedAt?: string;
-  /** Numeric GitHub user ids whose unmatched actions affirm human intervention. */
+  /** Numeric GitHub ids whose unmatched reviews, dismissals or merges affirm human intervention. */
   humanActorIds?: readonly string[];
   /** Cap on PRs kept per repository in the cohort (default 500). */
   maxPrsPerRepo?: number;
@@ -157,6 +159,7 @@ interface Stamped {
 }
 
 interface Review extends Stamped {
+  body: string;
   id: string;
   state: string;
   actorId: string | null;
@@ -172,11 +175,11 @@ interface IssueEvent extends Stamped {
 
 interface Commit extends Stamped {
   sha: string;
-  actorId: string | null;
 }
 
 interface PrEvidence {
   reviews: Review[];
+  reviewsComplete: boolean;
   issueEvents: IssueEvent[];
   commits: Commit[];
 }
@@ -476,6 +479,7 @@ function parseReview(raw: unknown, what: string): Review | null {
   return {
     id: asId(o.id, what),
     state,
+    body: asText(requiredKey(o, "body", what))?.slice(0, TEXT_BOUND) ?? "",
     actorId: actorIdOf(o, "user", what),
     ...(asText(o.commit_id) ? { headSha: asText(o.commit_id)! } : {}),
     at: submitted,
@@ -503,11 +507,7 @@ function parseCommit(raw: unknown, what: string): Commit {
   const committer = asObject(commit.committer, `${what}.committer`);
   const sha = asText(o.sha);
   if (sha === null) throw new Error(`${what} has no sha`);
-  return {
-    sha,
-    actorId: actorIdOf(o, "author", what),
-    ...stamped(committer.date, `${what} committer date`),
-  };
+  return { sha, ...stamped(committer.date, `${what} committer date`) };
 }
 
 /** The GitHub evidence for one PR; truncated lists are noted, never silent. */
@@ -547,6 +547,7 @@ async function fetchEvidence(
     }
   }
   return {
+    reviewsComplete: !reviews.truncated,
     reviews: reviews.items.flatMap((item) => {
       const parsed = parseReview(item, `${label} review`);
       return parsed ? [parsed] : [];
@@ -766,7 +767,8 @@ function gitHubEvents(
       id: commit.sha,
       at: commit.at,
       ms: commit.ms,
-      actorId: commit.actorId,
+      // Git authorship is self-set metadata, not the authenticated push actor.
+      actorId: null,
     });
   });
   return out;
@@ -794,13 +796,14 @@ function unmatchedActions(
   events: GitHubEvent[],
   verifiedFleet: TrustedPrAction[],
   used: Set<TrustedPrAction>,
-  humanActorIds: ReadonlySet<string>,
+  humanActorIds: ReadonlySet<string | null>,
 ): TrustedPrAction[] {
   const { record } = observed;
   const out: TrustedPrAction[] = [];
   for (const event of events) {
     let best: TrustedPrAction | undefined;
     let bestGap = Number.POSITIVE_INFINITY;
+    let bestTrust = -1;
     for (const action of verifiedFleet) {
       const isCommit = event.kind === "implementation" ||
         event.kind === "repair";
@@ -839,15 +842,20 @@ function unmatchedActions(
                 record.mergedAt ?? record.closedAt ?? record.observedAt!,
               ) + LIFETIME_SLACK_MS
         : gap <= MATCH_WINDOW_MS;
-      if (inWindow && gap < bestGap) {
+      const trust = action.verified && action.actor === "fleet" ? 1 : 0;
+      if (
+        inWindow &&
+        (trust > bestTrust || (trust === bestTrust && gap < bestGap))
+      ) {
         best = action;
         bestGap = gap;
+        bestTrust = trust;
       }
     }
     if (best) {
       used.add(best);
       if (
-        best.runId === REVIEW_LOG_RUN && event.actorId !== null &&
+        best.runId === REVIEW_LOG_RUN && !best.verified &&
         humanActorIds.has(event.actorId)
       ) {
         best.actor = "human";
@@ -861,7 +869,7 @@ function unmatchedActions(
       });
       continue;
     }
-    const human = event.actorId !== null && humanActorIds.has(event.actorId);
+    const human = humanActorIds.has(event.actorId);
     out.push({
       actionId: `gh:${record.repo}#${record.number}:${event.kind}:${event.id}`,
       runId: GITHUB_OBSERVATION_RUN,
@@ -876,6 +884,40 @@ function unmatchedActions(
     });
   }
   return out;
+}
+
+/** A current hold requires both the reviewer contract and verified action evidence. */
+function verifyOwnerGate(
+  record: PrCompletionRecord,
+  evidence: PrEvidence,
+  actions: TrustedPrAction[],
+): void {
+  if (
+    record.state !== "open" || record.ownerGated !== true ||
+    !evidence.reviewsComplete
+  ) return;
+  const latest = evidence.reviews.filter((review) =>
+    review.headSha === record.headSha
+  ).sort(byTime).at(-1);
+  if (latest?.state !== "COMMENTED") return;
+  const hold = ownerHoldFromBody(latest.body);
+  if (hold === null) return;
+  const action = actions.find((action) =>
+    action.kind === "review" && action.component === "reviewer" &&
+    action.verified && action.actor === "fleet" &&
+    action.outcome === "confirmed" && action.githubEvents?.some((event) =>
+      event.kind === "review" && event.id === latest.id
+    )
+  );
+  if (action === undefined) return;
+  record.ownerGateVerified = true;
+  record.ownerGateEvidence = {
+    ...hold,
+    reviewId: latest.id,
+    actionId: action.actionId,
+    headSha: record.headSha,
+    timestamp: latest.at,
+  };
 }
 
 /** CI duration per check run; `null` when the run is not completed or lacks a time. */
@@ -1707,7 +1749,10 @@ function strandedAt(pr: PrCompletionRecord, verifiedMs: number): boolean {
   return createdMs < verifiedMs &&
     verifiedMs - createdMs >= STRANDED_AGE_MS &&
     openAtVerification &&
-    pr.ownerGated !== true;
+    !(pr.ownerGated === true && pr.ownerGateVerified === true &&
+      pr.ownerGateEvidence !== undefined &&
+      utcMillis(pr.ownerGateEvidence.timestamp, "owner gate timestamp") <=
+        verifiedMs);
 }
 
 /**
@@ -1908,6 +1953,11 @@ export async function collectPrCompletionSnapshot(
         humanActorIds,
       ),
     );
+    verifyOwnerGate(
+      record,
+      evidence,
+      fleetByPr.get(keyOf(record.repo, record.number)) ?? [],
+    );
     const prCiRuns = await boundedCi(
       record,
       evidence.commits.map((commit) => commit.sha),
@@ -1942,7 +1992,7 @@ export async function collectPrCompletionSnapshot(
     const prs = prsWithReviewEvents === 1 ? "PR" : "PRs";
     notes.push(
       `${reviewEvents} ${events} on ${prsWithReviewEvents} ${prs} had no review-log source; ` +
-        "the review-fleet-prs skill journals no audit records, so those reviews stay unknown unless an audit action matches them",
+        "reviews without a matching verified audit action or an explicitly allowlisted human actor stay unknown",
     );
   }
 

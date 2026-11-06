@@ -349,6 +349,7 @@ Deno.test("pr-completion-report --collect notes a --review-log it cannot read, a
         return [{
           id: 601,
           state: "APPROVED",
+          body: "",
           submitted_at: "2026-10-20T01:00:00Z",
           user: { id: 7001, login: "review-bot[bot]" },
         }];

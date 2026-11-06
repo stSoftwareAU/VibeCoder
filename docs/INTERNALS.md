@@ -1151,14 +1151,16 @@ out under **Review-fleet-prs log** below:
 - **Review-fleet-prs log**: each `log.jsonl` named by `--review-log`
   (comma-separated, one per host). Lower trust; see below.
 
-Unmatched GitHub reviews, dismissals, merges and commit authors remain unknown
+Unmatched GitHub reviews, dismissals and merges remain unknown
 unless `--human-actor-id <id,...>` explicitly lists their numeric GitHub user
 ids. This operator-supplied allowlist is affirmative evidence of human
 intervention; login names and bot suffixes do not classify actors. A matching
 verified fleet journal action takes precedence, including when automation used
 an account also listed as human. Keep automation account ids out of this list.
-Missing actor ids, unmatched review logs and unmatched fleet history remain
-unknown.
+Explicit null actor identities, unmatched review logs and unmatched fleet
+history remain unknown; omitted or malformed actor IDs fail collection.
+Commit authorship is self-set metadata, so author-only commits stay
+unknown even when that author's account is allowlisted.
 
 The expected deployment comes from `--expected-components` (default
 `worker,reviewer,babysitter`), optional `--expected-inventory`
@@ -1253,9 +1255,14 @@ record the branch `HEAD` names. Empty or `-`-prefixed targets cannot be linked
 either, and nor can a branch name shared by PRs in two repositories. An unlinked
 push leaves its commits as `unknown` actions.
 
-**Review-fleet-prs log (supporting evidence only).** The review-fleet-prs skill
-posts its reviews through its own `gh` calls, which do not pass the audit hook,
-so no audit action records them. After each post, the skill appends one line to its
+**Review-fleet-prs audit and log.** The review-fleet-prs skill's
+`postReviewAtHead` records each actual review-posting attempt through the
+shared hash-chained audit writer in `<reviewer-state>/audit`. Successful
+attempts carry the reviewer component, PR number, reviewed head and action ID;
+failed attempts remain failed evidence. Supply this local or exported directory
+with `--audit-dir` alongside the worker and babysitter audit directories.
+An audit-append refusal is reported on stderr and leaves no verified action.
+After each successful post, the skill also appends one line to its
 `log.jsonl` (`LOG_FILE` in `.claude/skills/review-fleet-prs/scripts/review_log.ts`,
 in the skill's state directory, `stateDir()`). `--review-log <log.jsonl,...>`
 reads those files, one per host, with `parseLog`. The review-log contract and
@@ -1294,19 +1301,38 @@ the PR number. A PUT to `…/reviews/<id>` with `state=DISMISSED` is also kind
 `dismissal`. The review-fleet-prs skill makes no dismissal call, so it has none
 to journal.
 
-**Unknown and human evidence.** A GitHub event with no matching verified fleet
-action becomes an `unknown` action unless its numeric actor id appears in the
-explicit `--human-actor-id` allowlist. The unknown action is unverified, outcome
+**Unknown and human evidence.** A GitHub review, dismissal or merge with no
+matching verified fleet action becomes an `unknown` action unless its numeric
+actor id appears in the explicit `--human-actor-id` allowlist. Commit authorship
+does not identify the authenticated push actor and cannot verify human repair
+or implementation. The unknown action is unverified, outcome
 unknown, with the ID `gh:<repo>#<number>:<kind>:<id>`. Matched audit actions
-take precedence and retain the kind and identifier of each GitHub event they
+take precedence over review logs regardless of timestamp proximity and retain
+the kind and identifier of each GitHub event they
 account for, even if the event's account is also in the human allowlist. A
 review-log match is supporting evidence only; when the matched GitHub review
 has an allowlisted numeric actor id, that actor id—not the log—verifies human
 attribution.
 
-**Owner gates.** `ownerGateVerified` is always false today, because no hold
-marker is recorded yet. A PR labelled `needs-human` is recorded as
-`ownerGated` but stays in the eligible denominator.
+**Owner gates.** A genuine current owner-only exception is an open PR carrying
+`needs-human` whose latest submitted review at its current head is a COMMENTED
+owner hold under the current reviewer hold policy. The body must carry the
+canonical product-contract question or repository-policy hold and whole-line
+policy marker. That exact GitHub review must match a confirmed, verified fleet
+reviewer audit action. The hold-body contract is shared with the posting script
+in `worker/deno/lib/fleet_review_hold.ts`; an unchained log alone cannot verify
+a gate. Truncated review history, a stale head, a legacy blanket test-change
+hold, a missing owner question, or a later conclusive review leaves the gate
+unverified. Merged and closed PRs cannot be current owner exceptions.
+
+The collector records the verified reason, question or policy, review ID,
+action ID, head and timestamp in `ownerGateEvidence`. The report lists these
+PRs in `ownerOnlyExceptions` beside its separate `regressions` view and counts
+them in `cohort.ownerGatedPrs`. Generic `needs-human` labels stay in the eligible
+denominator and count as `unverifiedOwnerGateLabels`. Old snapshots with only
+the verified gate boolean remain readable; their exception rows lack detailed
+evidence. The rollout check also keeps generic labels in its stranded set and
+excludes a verified owner hold only when it already existed at verification.
 
 **Blockers produced.** `needs-human` (from the label, open until it is removed),
 `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
@@ -1407,22 +1433,22 @@ durations remain coverage gaps.
   `VIBE_AUDIT_DIR`. Mutations routed through the shared `gh` and `git`
   chokepoints are journalled. The spawned repair agent has journalling disabled
   so its test or local commands cannot write into the host journal.
-- Reviewer skill actions that bypass the audit hook remain unknown unless a
-  trusted audit action records a correlatable event. Its unchained review log
-  remains supporting evidence only.
-- A GitHub event with no matching verified action stays unknown; arming
-  auto-merge cannot verify a later human merge.
+- Reviewer review posts now use the canonical audit writer. Earlier posts
+  without exported audit evidence remain unknown unless an explicitly
+  allowlisted human actor establishes human intervention; the unchained review
+  log remains supporting evidence only.
+- GitHub actions with no matching verified action or explicit human actor ID
+  stay unknown. Commit authorship alone stays unknown even when its author is
+  allowlisted. Arming auto-merge cannot verify a later human merge.
 - Deployment rows are evaluated per expected host and component. Missing host
   inventory, stale heartbeats, or legacy rows without host and policy evidence
   degrade deployment verification.
 - Builds older than this change cannot verify journal entries that carry the
   new fields, nor read ledger rows that carry `reviewPolicyFingerprint`. Upgrade
   every host before exporting journals across them.
-- `ownerGateVerified` is always false from `--collect`, so an owner-gated PR
-  stays in the completion denominator (conservative). The rollout's stranded
-  set excludes `needs-human` PRs on the label alone, so the two rules differ:
-  a `needs-human` PR is counted in the denominator and left out of the stranded
-  list.
+- Only current reviewer holds with verified audit evidence establish an owner
+  exception. Missing evidence keeps `needs-human` PRs in both the completion
+  denominator and the rollout's stranded set.
 
 GitHub responses are read strictly. A key GitHub always sends (for example
 `merged_at`, `closed_at`, `labels`, `body`, or a review's `state`) that is absent
