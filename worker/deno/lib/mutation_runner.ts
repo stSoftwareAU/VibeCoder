@@ -1302,6 +1302,9 @@ export function defaultMutationRunnerSeams(
           delete childEnv["CARGO_TARGET_DIR"];
         }
       }
+      // Aborted with the SIGKILL fallbacks below, so the spawn also carries
+      // an explicit signal (Issue #4248).
+      const hardStop = new AbortController();
       let child: Deno.ChildProcess;
       try {
         child = new Deno.Command(cmd, {
@@ -1309,6 +1312,7 @@ export function defaultMutationRunnerSeams(
           cwd: opts.cwd,
           env: childEnv,
           clearEnv: true,
+          signal: hardStop.signal,
           stdin: "null",
           stdout: "piped",
           stderr: "piped",
@@ -1338,6 +1342,7 @@ export function defaultMutationRunnerSeams(
           try {
             child.kill("SIGKILL");
           } catch { /* already exited */ }
+          hardStop.abort();
         }, killGraceMs);
       }, Math.max(1, opts.timeoutMs));
       // A cargo that started above the floor can still fill the host
@@ -1364,6 +1369,7 @@ export function defaultMutationRunnerSeams(
               try {
                 child.kill("SIGKILL");
               } catch { /* already exited */ }
+              hardStop.abort();
             }, killGraceMs);
           });
         }, options?.diskPollMs ?? HOST_DISK_POLL_MS)
