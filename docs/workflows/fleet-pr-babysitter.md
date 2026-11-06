@@ -41,7 +41,7 @@ Mach lookups, plus lookup and registration of browser rendezvous and
 Crashpad name prefixes (children look up the rendezvous server their parent
 registers). Sysmond supports `pgrep` but can expose other processes' arguments;
 operators must not put credentials in command-line arguments. Per-PID and
-process-group sysctl records are allowed; `kern.procargs2`, which also returns a process's environment, stays denied, so `ps -o command=` and `ps -o args=` print no arguments. A gate that needs full command lines from `ps` (VibeCoder's own `loop_supervisor_test.ts` is one) cannot pass in the runner: the check is returned to Codex once, the retry fails the same way, and the repair is discarded without a commit or push. The integration gate records what `ps -o command=` prints for a gate child; that has not yet run on macOS.
+process-group sysctl records are allowed; `kern.procargs2`, which also returns a process's environment, stays denied, so `ps -o command=` and `ps -o args=` print no arguments. A gate that needs full command lines from `ps` (VibeCoder's own `loop_supervisor_test.ts` is one) remains a code-check failure: the runner returns it to Codex once, then withholds commit and push unless the repair makes the check pass. This does not count as unavailable runner capability, so it does not create a checkpoint. A successful native macOS integration run is required to verify the profile's process-query behaviour.
 Services that launch processes or containers and file-service lookups remain denied; a named
 lookup alone cannot authorise Chromium's
 `bootstrap_check_in` during startup. Registration is limited to those browser
@@ -581,7 +581,7 @@ To prepare a separate GitHub identity and API quota, follow the
 ### Browser integration check
 
 CI runs `cd worker/deno && deno task test:browser < /dev/null` on a native
-`macos-14` runner with `CHROMIUM_PATH` set to the installed Google Chrome
+`macos-15` runner with `CHROMIUM_PATH` set to the installed Google Chrome
 binary. This dedicated integration suite requires sandbox-exec and macOS
 Keychain services. It exercises rendered DOM and screenshot output alongside
 credential, Mach service, process, IPC, terminal, signalling and `.git` write

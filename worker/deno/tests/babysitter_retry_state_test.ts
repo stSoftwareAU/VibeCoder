@@ -92,12 +92,24 @@ Deno.test("babysitter clears incident state after a merged PR is observed", asyn
       reconciliation: "waiting-for-ci-review",
     };
     await saveBabysitterRetryState(dir, record);
+    const checkpoint = {
+      stateDir: dir,
+      repo: "owner/repo",
+      prNumber: 7,
+      failureIdentity: "failed CI",
+      head: "a".repeat(40),
+    };
+    await saveBabysitterRepairCheckpoint({
+      ...checkpoint,
+      patch: "diff --git a/fix.ts b/fix.ts\n+fixed\n",
+    });
     assertEquals(
       (await listBabysitterRetryStates(dir, "owner/repo")).length,
       1,
     );
     await clearBabysitterRetryStates(dir, "owner/repo", 7);
     assertEquals(await listBabysitterRetryStates(dir, "owner/repo"), []);
+    assertEquals(await loadBabysitterRepairCheckpoint(checkpoint), undefined);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

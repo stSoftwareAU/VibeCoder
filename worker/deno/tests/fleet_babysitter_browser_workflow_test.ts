@@ -5,6 +5,7 @@ const WORKFLOW = new URL(
   "../../../.github/workflows/validate-scripts.yml",
   import.meta.url,
 );
+const GATE = new URL("../../../.github/scripts/gate.sh", import.meta.url);
 
 type YamlMap = Record<string, unknown>;
 
@@ -22,7 +23,7 @@ function babysitterBrowserWorkflowProblems(source: string): string[] {
     ? browser.steps.map(map)
     : [];
   const problems: string[] = [];
-  if (browser["runs-on"] !== "macos-14") {
+  if (browser["runs-on"] !== "macos-15") {
     problems.push("babysitter-browser must run on the native macOS runner");
   }
   if (
@@ -49,13 +50,20 @@ function babysitterBrowserWorkflowProblems(source: string): string[] {
   const needs = Array.isArray(aggregate.needs)
     ? aggregate.needs.map(String)
     : [];
+  const gateSteps = Array.isArray(aggregate.steps)
+    ? aggregate.steps.map(map)
+    : [];
+  const gateStep = gateSteps.find((step) =>
+    step.run === ".github/scripts/gate.sh"
+  );
+  const gateEnv = map(gateStep?.env);
   if (
     aggregate.if !== "always()" || !needs.includes("validate") ||
     !needs.includes("babysitter-browser") ||
-    !Array.isArray(aggregate.steps) ||
-    !aggregate.steps.map(map).some((step) =>
-      step.run === ".github/scripts/gate.sh"
-    )
+    aggregate["continue-on-error"] === true || !gateStep ||
+    gateStep["continue-on-error"] === true ||
+    (gateStep.if !== undefined && gateStep.if !== "always()") ||
+    gateEnv.NEEDS_JSON !== "${{ toJSON(needs) }}"
   ) {
     problems.push(
       "babysitter-browser-gate must fail closed on skipped or unsuccessful validation jobs",
@@ -104,5 +112,70 @@ Deno.test("browser workflow validator rejects a missing or skippable macOS check
       problem,
     ) => problem.includes("fail closed")),
   );
+
+  const toleratedGate = structuredClone(workflow);
+  map(map(toleratedGate.jobs)["babysitter-browser-gate"])[
+    "continue-on-error"
+  ] = true;
+  assert(
+    babysitterBrowserWorkflowProblems(JSON.stringify(toleratedGate)).some((
+      problem,
+    ) => problem.includes("fail closed")),
+  );
+
+  const skippedGateStep = structuredClone(workflow);
+  const gateStep = map(map(skippedGateStep.jobs)["babysitter-browser-gate"])
+    .steps as unknown[];
+  const command = gateStep.map(map).find((step) =>
+    step.run === ".github/scripts/gate.sh"
+  )!;
+  command.if = "false";
+  assert(
+    babysitterBrowserWorkflowProblems(JSON.stringify(skippedGateStep)).some((
+      problem,
+    ) => problem.includes("fail closed")),
+  );
+
+  const missingNeeds = structuredClone(workflow);
+  const gateJob = map(map(missingNeeds.jobs)["babysitter-browser-gate"]);
+  const gateCommand = (gateJob.steps as unknown[]).map(map).find((step) =>
+    step.run === ".github/scripts/gate.sh"
+  )!;
+  delete map(gateCommand.env).NEEDS_JSON;
+  assert(
+    babysitterBrowserWorkflowProblems(JSON.stringify(missingNeeds)).some((
+      problem,
+    ) => problem.includes("fail closed")),
+  );
   assert(typeof runStep.run === "string");
+});
+
+Deno.test("aggregate gate rejects skipped browser checks and accepts two passes", async () => {
+  const gate = async (browser: string) => {
+    const result = await new Deno.Command("bash", {
+      args: [GATE.pathname],
+      env: {
+        NEEDS_JSON: JSON.stringify({
+          validate: { result: "success" },
+          "babysitter-browser": { result: browser },
+        }),
+      },
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    return {
+      success: result.success,
+      output: new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr),
+    };
+  };
+
+  const skipped = await gate("skipped");
+  assertEquals(skipped.success, false);
+  assert(skipped.output.includes("babysitter-browser=skipped"));
+  const failed = await gate("failure");
+  assertEquals(failed.success, false);
+  assert(failed.output.includes("babysitter-browser=failure"));
+  const passed = await gate("success");
+  assertEquals(passed.success, true, passed.output);
 });

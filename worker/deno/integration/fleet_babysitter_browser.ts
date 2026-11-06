@@ -54,6 +54,23 @@ Deno.test({
           ssh_key_path: secretLink,
         }),
       );
+      assert((await Deno.readTextFile(configPath)).includes(secret));
+      assertEquals(
+        await Deno.readTextFile(customAppKey),
+        "must not be readable\n",
+      );
+      assertEquals(
+        await Deno.readTextFile(selectedAppKey),
+        "must not be readable\n",
+      );
+      assertEquals(await Deno.readTextFile(secret), "must not be readable\n");
+      assertEquals(
+        await Deno.readTextFile(secretLink),
+        "must not be readable\n",
+      );
+      assertEquals([...Deno.readDirSync(keychainDir)].length, 0);
+      await Deno.writeTextFile(`${root}/.git/runner-write-baseline`, "ok");
+      await Deno.remove(`${root}/.git/runner-write-baseline`);
       await Deno.writeTextFile(
         `${root}/index.html`,
         "<!doctype html><title>runner browser check</title><p>runner-browser-ok</p>",
@@ -180,9 +197,10 @@ int main(int argc, char **argv) {
         `
 #include <mach/mach.h>
 #include <servers/bootstrap.h>
-int main(void) {
+int main(int argc, char **argv) {
+  if (argc != 2) return 2;
   mach_port_t service = MACH_PORT_NULL;
-  return bootstrap_look_up(bootstrap_port, "com.apple.cfprefsd.agent", &service) == KERN_SUCCESS ? 0 : 1;
+  return bootstrap_look_up(bootstrap_port, argv[1], &service) == KERN_SUCCESS ? 0 : 1;
 }
 `,
       );
@@ -192,14 +210,22 @@ int main(void) {
         `${root}/mach-probe`,
       ], { timeoutMs: 30_000, quiet: true });
       assert(compile.ok && compile.value.success, "Mach probe requires clang");
-      const lookupBaseline = await runWithTimeout(`${root}/mach-probe`, [], {
-        timeoutMs: 10_000,
-        quiet: true,
-      });
-      assert(
-        lookupBaseline.ok && lookupBaseline.value.success,
-        "Out-of-list Mach service must be reachable outside the sandbox",
-      );
+      for (
+        const machService of [
+          "com.apple.cfprefsd.agent",
+          "com.apple.securityd",
+        ]
+      ) {
+        const lookupBaseline = await runWithTimeout(
+          `${root}/mach-probe`,
+          [machService],
+          { timeoutMs: 10_000, quiet: true },
+        );
+        assert(
+          lookupBaseline.ok && lookupBaseline.value.success,
+          `Mach service ${machService} must be reachable outside the sandbox`,
+        );
+      }
       // Exercise ordinary gate IPC and terminal operations without broad grants.
       await Deno.writeTextFile(
         `${root}/resource-probe.c`,
@@ -279,7 +305,8 @@ if touch .git/runner-write 2>/dev/null; then exit 34; fi
 if /usr/bin/security list-keychains -d user >/dev/null 2>&1; then exit 35; fi
 if cat ${posixSingleQuote(customAppKey)} >/dev/null 2>&1; then exit 36; fi
 if cat ${posixSingleQuote(selectedAppKey)} >/dev/null 2>&1; then exit 37; fi
-if ./mach-probe; then exit 38; fi
+if ./mach-probe com.apple.cfprefsd.agent; then exit 38; fi
+if ./mach-probe com.apple.securityd; then exit 47; fi
 touch gate-ran
 `,
       );
