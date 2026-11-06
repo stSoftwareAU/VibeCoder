@@ -83,6 +83,12 @@ tests/pr_maintenance_bot_prs_test.ts tests/pr_feedback_superseded_comment_test.t
 tests/pr_feedback_staleness_test.ts` passed (137 tests), and
 `deno task check:manifests` passed (847).
 
+Gate: `./quality.sh < /dev/null` on the head passed every stage except
+`deno tests`. Its only failures were two tests in
+`worker/deno/tests/completion_phase_repo_formatters_test.ts` (lines 480 and 567,
+"formatter should commit the Rust fix"), which this change does not touch; the
+serial pass did not run because of them.
+
 Red checks, each change broken alone and restored byte-identical:
 
 - Guard removed from `findActionableComment`: the marker-only, continue-past and
