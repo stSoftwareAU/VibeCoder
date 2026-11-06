@@ -109,13 +109,18 @@ import {
   type CiFixAttemptOutcome,
   type CiFixAttemptRecord,
   countAttempts,
+  countUnverifiedBaseHolds,
   findDeferral,
   findHumanGate,
   findNoChangeComment,
   type FleetCiFixMarkers,
   restampHumanGateMarker,
 } from "./ci_fix_attempt_markers.ts";
-import { isCheckRedOnBranch } from "./ci_base_branch_check.ts";
+import {
+  type BaseBranchCheckEvidence,
+  readBaseBranchCheck,
+  readCheckIdentity,
+} from "./ci_base_branch_check.ts";
 import {
   ADVISORY_ID_PATTERN,
   isDependencyAuditCheck,
@@ -2704,18 +2709,23 @@ async function _processCiWithHeartbeat(
       ? undefined
       : `${customMessage}${formatClassifierTrailer(classification)}`;
 
-    // Issue #1880: the agent may report the failure as pre-existing on the
-    // base branch, ending its message with a `Depends on owner/repo#N` line.
-    // Verified against the base branch's own latest run of the same check,
-    // that is a deferral rather than a failed repair: the diagnosis is posted
-    // once, no `needs-human` is applied and no attempt is charged, because
-    // nothing on this pull request could have fixed it. An unverified claim
-    // falls through to the ordinary path below and costs an attempt.
+    // Issue #1880 / Issue #4680: the agent may report the failure as
+    // pre-existing on the base branch, ending its message with a `Depends on
+    // owner/repo#N` line. The claim is checked against the base branch's own
+    // latest run of this same check (same workflow, on the branch head).
+    // A red base is a deferral: the diagnosis is posted once, no `needs-human`
+    // is applied and no attempt is charged, because nothing on this pull
+    // request could have fixed it. A green base refutes the claim and takes
+    // the ordinary charged path. A claim that cannot be verified (no matching
+    // run, a stale run, an unreadable API) is held as `unverified`: the
+    // diagnosis is posted with a `base-unverified` hold marker that charges no
+    // attempt, bounded by MAX_UNVERIFIED_BASE_HOLDS per failure.
     const deferral = await _resolveBaseBranchDeferral({
       customMessage,
       repo,
       prNumber,
       baseRef: input.baseRef,
+      checkRunId,
       checkName,
       failureText,
       signature,
@@ -2800,6 +2810,82 @@ async function _processCiWithHeartbeat(
           summary: `deferred: depends on ${deferral.ref}`,
         },
       };
+    }
+
+    if (deferral.kind === "unverified") {
+      // Issue #4680: the hold marker is the record the next scan counts, so it
+      // must exist before the comment says the claim is held. It is built from
+      // the head this run read, and it charges no attempt: the fleet-wide cap
+      // is untouched, and the hold bound lives in _resolveBaseBranchDeferral.
+      const holdMarker = _buildAttemptMarker({
+        charge: true,
+        signature,
+        checkName,
+        head: beforeSha,
+        attempt: attemptCount + 1,
+        outcome: "base-unverified",
+        repo,
+        prNumber,
+        logger,
+      });
+      // Without a marker the hold could not be recorded, so it is not posted:
+      // _buildAttemptMarker has already named why, and the ordinary path below
+      // takes the claim instead.
+      if (holdMarker !== undefined) {
+        logger.warn(
+          "CI-fix base-branch claim could not be verified — holding the " +
+            "failure without charging an attempt (Issue #4680)",
+          {
+            repo,
+            prNumber,
+            checkName,
+            signature,
+            baseRef: input.baseRef,
+            state: deferral.state,
+            reason: deferral.reason,
+            dependsOn: deferral.ref,
+          },
+        );
+        const posted = await replyToComment(
+          repo,
+          prNumber,
+          `${verbatimBody ?? response.body}\n\n` +
+            `${_unverifiedBaseParagraph(deferral)}\n\n${holdMarker}`,
+          deps,
+        );
+        if (!posted) {
+          logger.error(
+            "The base-branch hold comment could not be posted, so the hold " +
+              "was not recorded — reporting the run as unprocessed so the " +
+              "next scan retries (Issue #4680)",
+            { repo, prNumber, checkName, signature, dependsOn: deferral.ref },
+          );
+          return {
+            ok: true,
+            value: {
+              processed: false,
+              changesPushed: false,
+              annotationCount: annotations.length,
+              retryCount: newRetryCount,
+              summary:
+                `PR #${prNumber} (${checkName}) — the base-branch hold on ` +
+                `${deferral.ref} could not be posted; nothing was recorded`,
+            },
+          };
+        }
+        return {
+          ok: true,
+          value: {
+            processed: true,
+            changesPushed: false,
+            annotationCount: annotations.length,
+            retryCount: newRetryCount,
+            summary:
+              `base-branch claim unverified (${deferral.state}) — no fix ` +
+              "attempt charged",
+          },
+        };
+      }
     }
 
     // A repeat "no change required" for the same failure appends **this
@@ -3812,12 +3898,31 @@ async function _restampHumanGate(
 
 /** What {@link _resolveBaseBranchDeferral} decided. */
 type BaseBranchDeferral =
-  /** Not a verified base-branch failure — run the ordinary no-changes path. */
+  /** Not a deferral — run the ordinary no-changes path (and charge it). */
   | { kind: "none" }
-  /** Defer: post the diagnosis once with `marker`, charge no attempt. */
+  /** Verified red base: post the diagnosis once with `marker`, charge nothing. */
   | { kind: "defer"; ref: string; marker: string }
   /** The fleet already deferred this failure — post nothing. */
-  | { kind: "already-deferred"; ref: string };
+  | { kind: "already-deferred"; ref: string }
+  /**
+   * The base-branch claim could not be verified (Issue #4680): the base has no
+   * run of this check from the same workflow, its run is stale, or it could
+   * not be read. Post the diagnosis with a hold marker; charge no attempt and
+   * record no deferral. Unknown, not a pass.
+   */
+  | {
+    kind: "unverified";
+    state: "no-run" | "stale" | "unavailable";
+    ref: string;
+    reason: string;
+  };
+
+/**
+ * How many times one failure may be held as an unverified base-branch claim
+ * (Issue #4680). A hold charges no attempt, so this count is the only bound on
+ * it; once reached, the failure takes the ordinary charged path.
+ */
+const MAX_UNVERIFIED_BASE_HOLDS = 2;
 
 /** Inputs for {@link _resolveBaseBranchDeferral}. */
 interface BaseBranchDeferralOptions {
@@ -3829,6 +3934,8 @@ interface BaseBranchDeferralOptions {
   prNumber: number;
   /** The pull request's base branch, when the scan carried one. */
   baseRef: string | undefined;
+  /** The failing check run's id, from which its identity is read (Issue #4680). */
+  checkRunId: string;
   /** Name of the failing check. */
   checkName: string;
   /** The failure's annotations and log excerpt (Issue #3141). */
@@ -3844,17 +3951,30 @@ interface BaseBranchDeferralOptions {
 }
 
 /**
- * Decide whether this no-changes run is a verified base-branch deferral.
+ * Decide what a no-changes run's base-branch claim comes to (Issue #1880,
+ * re-verified under Issue #4680).
  *
- * A deferral costs the fleet nothing — no attempt, no `needs-human` — so it
- * is granted only when **both** halves hold: the agent declared a dependency
- * on a `Depends on owner/repo#N` line, and the base branch's own latest run
- * of the same check is red. Every other reading (no declaration, no base ref,
- * a green base, a lookup that errored, a marker that would not build) returns
- * `none`, and the caller then posts the ordinary reply and charges an
- * attempt — so an unverifiable claim fails loud through the cap rather than
- * parking the pull request. A dependency-audit check is never deferred at all
- * (Issue #3141): the pull request can bump the vulnerable package itself.
+ * The agent's `Depends on owner/repo#N` line is checked against the base
+ * branch's own latest run of the **same check from the same workflow**, read
+ * through {@link readBaseBranchCheck}. The evidence sorts the claim three ways:
+ *
+ * - **Verified red** — the base's run failed: a deferral, granted only with no
+ *   prior deferral on an open blocker to consult. It costs no attempt and no
+ *   `needs-human`.
+ * - **Verified green** — the base's run passed: the claim is refuted and the
+ *   ordinary charged path runs. A green base is the one reading that proves
+ *   the failure is this pull request's.
+ * - **Unverified** — no run of this check from the same workflow (a PR-only
+ *   check), a run for a commit other than the base head (stale), or an
+ *   unreadable API or identity: the claim is held, charging no attempt. A hold
+ *   is bounded by {@link MAX_UNVERIFIED_BASE_HOLDS} per failure; past the bound
+ *   the ordinary charged path runs, so the fleet-wide cap still ends the loop.
+ *
+ * Every other reading (no declaration, no base ref, a dependency-audit check,
+ * a marker that would not build) returns `none` and charges an attempt, so an
+ * unverifiable claim never parks a pull request for ever. A dependency-audit
+ * check is never deferred or held at all (Issue #3141): the pull request can
+ * bump the vulnerable package itself.
  *
  * @param options - The agent's message, the failure, and the `gh` runner.
  * @returns What the caller should do.
@@ -3867,6 +3987,7 @@ async function _resolveBaseBranchDeferral(
     repo,
     prNumber,
     baseRef,
+    checkRunId,
     checkName,
     failureText,
     signature,
@@ -3919,38 +4040,110 @@ async function _resolveBaseBranchDeferral(
     return { kind: "none" };
   }
 
-  const red = await isCheckRedOnBranch({
+  // Issue #4680: the failing check's identity is read first, so the base branch
+  // is asked about this check's own workflow, never a same-named check from
+  // another one. An identity that cannot be read is evidence it could not
+  // verify, not a verdict on the base.
+  const identity = await readCheckIdentity({
     repo,
-    branch: baseRef,
+    checkRunId,
     checkName,
     ghCommandFn,
   });
-  if (!red.ok) {
-    // Never read as "the base is green": the lookup failed, which is a fault
-    // to surface rather than a verdict to act on.
+  const evidence: BaseBranchCheckEvidence = identity.ok
+    ? await readBaseBranchCheck({
+      repo,
+      branch: baseRef,
+      failing: identity.value,
+      ghCommandFn,
+    })
+    : {
+      state: "unavailable",
+      reason: "the failing check's identity could not be read: " +
+        identity.error.message,
+    };
+
+  if (evidence.state === "unavailable") {
+    // Never read as "the base is green": the read failed, which is a fault to
+    // surface rather than a verdict to act on.
     logger.error(
       "Could not read the base branch's checks, so a declared base-branch " +
-        "failure could not be verified — running the ordinary no-changes " +
-        "path (Issue #1880)",
+        "failure could not be verified — holding the claim unverified " +
+        "(Issue #4680)",
       {
         repo,
         prNumber,
         checkName,
         baseRef,
         dependsOn: ref,
-        error: red.error.message,
+        error: evidence.reason,
+      },
+    );
+  }
+
+  if (evidence.state === "green") {
+    // A verified green base refutes the claim: the failure is this pull
+    // request's own, so it takes the ordinary charged path.
+    logger.info(
+      "CI-fix agent declared a base-branch failure but the base branch's " +
+        "latest run of this check passed — a verified green base refutes the " +
+        "claim, running the ordinary no-changes path (Issue #4680)",
+      {
+        repo,
+        prNumber,
+        checkName,
+        baseRef,
+        dependsOn: ref,
+        baseRunId: evidence.runId,
+        baseSha: evidence.sha,
       },
     );
     return { kind: "none" };
   }
-  if (!red.value) {
-    logger.info(
-      "CI-fix agent declared a base-branch failure but the base branch's " +
-        "latest run of this check is not red — running the ordinary " +
-        "no-changes path (Issue #1880)",
-      { repo, prNumber, checkName, baseRef, dependsOn: ref },
-    );
-    return { kind: "none" };
+
+  if (
+    evidence.state === "no-run" || evidence.state === "stale" ||
+    evidence.state === "unavailable"
+  ) {
+    const reason = evidence.state === "no-run"
+      ? "the base branch has no completed run of this check from the same " +
+        "workflow"
+      : evidence.state === "stale"
+      ? `the latest run of this check on the base branch is for ` +
+        `${evidence.evidenceSha}, not the base head ${evidence.baseSha}`
+      : evidence.reason;
+    // A hold charges no attempt, so only the hold count bounds it. Without a
+    // fleet-resolved tally that count is unknowable, and an unbounded hold
+    // would repeat on every scan — the ordinary path is the loud outcome.
+    if (!markers.fleetResolved) {
+      logger.warn(
+        "CI-fix base-branch claim could not be verified and the fleet is " +
+          "unresolved, so holds cannot be counted — running the ordinary " +
+          "no-changes path (Issue #4680)",
+        { repo, prNumber, checkName, signature, dependsOn: ref, reason },
+      );
+      return { kind: "none" };
+    }
+    const holds = countUnverifiedBaseHolds(markers, signature);
+    if (holds >= MAX_UNVERIFIED_BASE_HOLDS) {
+      logger.warn(
+        "CI-fix base-branch claim is still unverified after " +
+          `${holds} holds — running the ordinary charged path, so the ` +
+          "attempt cap bounds it (Issue #4680)",
+        {
+          repo,
+          prNumber,
+          checkName,
+          signature,
+          dependsOn: ref,
+          state: evidence.state,
+          reason,
+          holds,
+        },
+      );
+      return { kind: "none" };
+    }
+    return { kind: "unverified", state: evidence.state, ref, reason };
   }
 
   const prior = findDeferral(markers, signature);
@@ -4014,6 +4207,26 @@ async function _resolveBaseBranchDeferral(
   }
 
   return { kind: "defer", ref, marker };
+}
+
+/**
+ * The worker's own paragraph saying a base-branch claim was held, not decided
+ * (Issue #4680). It follows the agent's diagnosis in the hold comment.
+ *
+ * @param held - The unverified outcome the hold records.
+ * @returns The paragraph, with the reason's comment delimiters defused.
+ */
+function _unverifiedBaseParagraph(
+  held: Extract<BaseBranchDeferral, { kind: "unverified" }>,
+): string {
+  const reason = neutraliseAgentMarkers(held.reason).text;
+  return `The agent reported this failure as pre-existing on the base branch ` +
+    `(\`Depends on ${held.ref}\`), but that base-branch claim could not be ` +
+    `verified: the base branch's check state is \`${held.state}\` — ` +
+    `${reason}. No deferral is recorded, nothing has been deleted, the check ` +
+    `has not been marked as passed, and no fix attempt has been charged. A ` +
+    `later scan decides the claim again; after ${MAX_UNVERIFIED_BASE_HOLDS} ` +
+    `such holds the failure takes the ordinary path, which charges an attempt.`;
 }
 
 /**
