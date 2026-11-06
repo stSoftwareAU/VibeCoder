@@ -16,7 +16,7 @@
  *     S["Summary committed at the pushed head"] --> M{"Unmet criterion or<br/>no committed summary?"}
  *     P["Proposal's own closure block<br/>(a missing or partial entry)"] --> M
  *     M -- yes --> W["Withhold: negated phrases become complete,<br/>closing keywords become Part of"]
- *     M -- no --> C["Keep the closing keyword, or add Closes #N<br/>unless the text has one or an explicit Part of #N"]
+ *     M -- no --> C["Keep the closing keyword, or add Closes #N<br/>unless the text has a closing keyword, or an explicit Part of, Ref, Refs, References, Related to or Relates to #N"]
  * ```
  *
  * The proposal is agent text. Its complete hidden `<!-- vibe-... -->` markers
@@ -46,6 +46,16 @@ import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 
 /** GitHub's pull request body limit, in characters (Issue #4359). */
 export const PR_BODY_LIMIT = 65_536;
+
+/**
+ * `Refs #N`, `Ref #N`, `References #N`, `Related to #N` or `relates to #N` (or
+ * `owner/repo#N`): an explicit reference that does not close the issue. No two
+ * quantifiers can match the same text: `refs?` and `references?` part on the
+ * letter after `ref`, and each separator run is followed by a literal or a
+ * non-space character.
+ */
+const NON_CLOSING_REF_RE =
+  /(^|[^\w/])(?:refs?|references?|relat(?:ed|es)\s+to)(?::\s*|\s+)(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
 
 /** Opens every HTML comment, a hidden marker included. */
 const COMMENT_OPENER = "<!--";
@@ -153,8 +163,13 @@ interface ClosingRef {
  * is also withheld when the proposal carries its own unmet criterion: a
  * `missing` or `partial` entry in its closure block, even when the committed
  * summary is fully met. The summary's own wording does not decide it: a fully
- * met summary whose text names no closing keyword for the issue and no explicit
- * `Part of #N` gets `Closes #N` appended, as `assemblePrBody` does. A bare
+ * met summary gets `Closes #N` appended unless the proposal already has a
+ * closing keyword for the issue. It differs from `assemblePrBody` on purpose:
+ * that assembler appends `Closes #N` whenever the summary has no closing
+ * keyword, but the guard honours an explicit non-closing reference the agent
+ * chose (`Part of #N`, `Ref #N`, `Refs #N`, `Refs: #N`, `References #N`,
+ * `Related to #N` or `Relates to #N`). That can only leave the issue open,
+ * never close it, and a proposal is data and not authority to close. A bare
  * mention of the issue is not a closing claim.
  *
  * @param input.summary - The summary committed at the pushed head.
@@ -234,7 +249,8 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
     closeAllowed = isIssueCloseAllowed({ summary, proposal });
     if (closeAllowed) {
       // A bare mention is not a closing claim: only a closing keyword, or an
-      // explicit `Part of #N` the proposal chose, stops the close being added.
+      // explicit `Part of #N`, `Refs #N` or `Related to #N` the proposal chose,
+      // stops the close being added.
       if (!namesClosingOrPartOf(text, issueNumber, repo)) {
         appended.unshift(`Closes #${issueNumber}`);
       }
@@ -379,8 +395,11 @@ function closingRefs(masked: string, repo: string): ClosingRef[] {
 
 /**
  * Whether the text already settles the governing issue's close: a closing
- * keyword for it (plain, colon or full-URL form), or an explicit `Part of #N`.
- * A bare `#N`, or another repository's `owner/repo#N`, settles nothing.
+ * keyword for it (plain, colon or full-URL form), an explicit `Part of #N`, or
+ * another explicit non-closing reference (`Refs #N`, `Related to #N`) in the
+ * masked text. The references count only when they name this repository (or no
+ * repository). A bare `#N`, or another repository's `owner/repo#N`, settles
+ * nothing.
  */
 function namesClosingOrPartOf(
   text: string,
@@ -392,11 +411,12 @@ function namesClosingOrPartOf(
   return closingRefs(masked, repo).some((ref) =>
     ref.sameRepo && ref.issueNumber === issueNumber
   ) || governingColonAndUrlCloses(text, issueNumber, repo).length > 0 ||
-    [...masked.matchAll(PART_OF_RE)].some((match) => {
-      const qualifier = match[2]?.toLowerCase();
-      return Number(match[3]) === issueNumber &&
-        (qualifier === undefined || qualifier === repoKey);
-    });
+    [...masked.matchAll(PART_OF_RE), ...masked.matchAll(NON_CLOSING_REF_RE)]
+      .some((match) => {
+        const qualifier = match[2]?.toLowerCase();
+        return Number(match[3]) === issueNumber &&
+          (qualifier === undefined || qualifier === repoKey);
+      });
 }
 
 /** Whether a masked body mentions `#N` in any form. */
