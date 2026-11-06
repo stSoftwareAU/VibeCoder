@@ -10,7 +10,7 @@ keyword or `Part of #N`. An agent that deliberately changed `Closes #N` to
 listed the issue in `closingIssuesReferences`. `Ref`, `Refs`, `References`,
 `Related to` and `Relates to` (with `#N` or `owner/repo#N` for this repository)
 are now explicit non-closing references the guard honours. A bare mention still
-gets `Closes #N`. Closes #4637.
+gets `Closes #N`. Part of #4637.
 
 Version bump: `VERSION` is not changed by this PR.
 
@@ -72,7 +72,7 @@ flowchart TD
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a clean-tree babysitter retry repairs a marker-less stale body before dismissal`
   — reviewer: met
 - **met** — Read the canonical summary from the verified pushed commit; never
-  publish uncommitted claims — evidence:
+  publish uncommitted summary claims — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::an uncommitted working-tree summary never reaches the adopted body`
   — reviewer: met
 - **met** — Apply the `partial`/`missing` close guard consistently to assembled
@@ -90,10 +90,14 @@ flowchart TD
   the finding outstanding until publication is verified — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a failed description edit keeps reviews open, and a retry at the same head publishes and dismisses`
   — reviewer: met
-- **met** — On a no-code-change repair, publish only a supportable correction; a
+- **partial** — On a no-code-change repair, publish only a supportable correction; a
   proposal is data, not authority — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a repair with no code change withholds the close after the sync and dismisses last`
-  — reviewer: met
+  — reviewer: partial — reason: that test has an earlier push. When nothing was
+  pushed and no committed summary exists, proposal prose is still published and
+  reviews dismissed without verifying its claims, although the close is withheld.
+  The remaining path is covered by
+  `worker/deno/tests/fleet_pr_babysitter_test.ts::with nothing pushed and no committed summary, a proposal is published through the guard and never closes the issue (PR #4779 review)`.
 - **met** — Marker-less body, marker-bearing stale digest and summary-only
   repair are updated before the repair is reported complete — evidence:
   `worker/deno/tests/fleet_pr_babysitter_test.ts::a clean-tree babysitter retry repairs a marker-less stale body before dismissal`

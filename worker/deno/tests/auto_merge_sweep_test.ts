@@ -23,6 +23,12 @@ import {
 import { checkPrBaseIntegrity } from "../lib/pr_base_integrity.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
+import {
+  type BranchRefreshRefusalState,
+  notifyBranchRefreshRefusal,
+  readBranchRefreshRefusals,
+  writeBranchRefreshRefusals,
+} from "../lib/branch_refresh_refusal_streak.ts";
 
 const REPOS = [
   "stSoftwareAU/VibeCoder",
@@ -33,12 +39,16 @@ const FLEET = ["VibeCoderST", "stservice"];
 
 const warnings: { message: string }[] = [];
 const infos: { message: string; context?: Record<string, unknown> }[] = [];
-const logger: Pick<Logger, "info" | "warn"> = {
+const errors: { message: string; context?: Record<string, unknown> }[] = [];
+const logger: Pick<Logger, "info" | "warn" | "error"> = {
   info: (message: string, context?: Record<string, unknown>) => {
     infos.push({ message, context });
   },
   warn: (message: string) => {
     warnings.push({ message });
+  },
+  error: (message: string, context?: Record<string, unknown>) => {
+    errors.push({ message, context });
   },
 };
 
@@ -562,6 +572,301 @@ Deno.test("an armed, behind PR gets exactly one branch update and no merge attem
   ]);
 });
 
+Deno.test("repeated transient branch refresh refusals persist, notify once, and clear on recovery (Issue #4831)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "branch-refresh-streak-" });
+  const notifications: Array<
+    { repo: string; prNumber: number; active: boolean; streak: number }
+  > = [];
+  const tracking = {
+    load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
+    save: (state: Awaited<ReturnType<typeof readBranchRefreshRefusals>>) =>
+      writeBranchRefreshRefusals(workDir, state, undefined, () => {}),
+    notify: (
+      { repo, prNumber, active, entry }: {
+        repo: string;
+        prNumber: number;
+        active: boolean;
+        entry: { streak: number };
+      },
+    ) => {
+      notifications.push({ repo, prNumber, active, streak: entry.streak });
+      return Promise.resolve();
+    },
+  };
+  const { options } = harness({ [VC]: [{ number: 4831 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+    updateBranchFn: () =>
+      Promise.resolve({
+        ok: false as const,
+        error: new Error(
+          "required-check read failed: PR mergeability is still UNKNOWN",
+        ),
+      }),
+  });
+  try {
+    errors.length = 0;
+    const first = await sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+    });
+    assert(first.ok);
+    assertEquals(notifications, []);
+
+    const second = await sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+    });
+    assert(second.ok);
+    assertEquals(notifications, [{
+      repo: VC,
+      prNumber: 4831,
+      active: true,
+      streak: 2,
+    }]);
+    assertEquals(errors.length, 1);
+
+    const escalated = await readBranchRefreshRefusals(workDir);
+    for (
+      const interrupted of [
+        {
+          prLiveState: () =>
+            Promise.resolve({ unknown: true as const, error: "read failed" }),
+        },
+        { checkBaseIntegrity: () => Promise.reject(new Error("read failed")) },
+        {
+          prLiveState: () =>
+            Promise.resolve({
+              open: true as const,
+              armed: true,
+              behind: false,
+              mergeable: "UNKNOWN" as const,
+            }),
+        },
+        {
+          updateBranchFn: () =>
+            Promise.resolve({
+              ok: false as const,
+              error: new Error(
+                "required-check read failed: API rate limit exceeded",
+              ),
+            }),
+        },
+        { updateBranchFn: () => Promise.reject(new Error("HTTP 503")) },
+      ]
+    ) {
+      const skipped = await sweepAutoMerge({
+        ...options,
+        ...interrupted,
+        repos: [VC],
+        branchRefreshRefusals: tracking,
+      });
+      assert(skipped.ok);
+      assertEquals(await readBranchRefreshRefusals(workDir), escalated);
+      assertEquals(notifications, [{
+        repo: VC,
+        prNumber: 4831,
+        active: true,
+        streak: 2,
+      }]);
+    }
+
+    const afterRestart = {
+      ...tracking,
+      load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
+    };
+    const third = await sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: afterRestart,
+    });
+    assert(third.ok);
+    assertEquals(notifications, [{
+      repo: VC,
+      prNumber: 4831,
+      active: true,
+      streak: 2,
+    }]);
+
+    const recovered = await sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: {
+        ...tracking,
+        load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
+      },
+      updateBranchFn: () => Promise.resolve({ ok: true, value: undefined }),
+    });
+    assert(recovered.ok);
+    assertEquals(notifications, [
+      { repo: VC, prNumber: 4831, active: true, streak: 2 },
+      { repo: VC, prNumber: 4831, active: false, streak: 3 },
+    ]);
+    assertEquals((await readBranchRefreshRefusals(workDir)).size, 0);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("a different or permanent refusal does not advance a transient streak (Issue #4831)", async () => {
+  const state: BranchRefreshRefusalState = new Map();
+  const notifications: boolean[] = [];
+  let behind = true;
+  const { options } = harness({ [VC]: [{ number: 4832 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind,
+      }),
+  });
+  const tracking = {
+    load: () => Promise.resolve(state),
+    save: (_state: typeof state) => Promise.resolve(),
+    notify: ({ active }: { active: boolean }) => {
+      notifications.push(active);
+      return Promise.resolve();
+    },
+  };
+  const run = (message: string) =>
+    sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+      updateBranchFn: () =>
+        Promise.resolve({ ok: false as const, error: new Error(message) }),
+    });
+
+  assert(
+    (await run("required-check read failed: PR mergeability is still UNKNOWN"))
+      .ok,
+  );
+  assert((await run("permission denied")).ok);
+  assertEquals(notifications, []);
+  assert(
+    (await run(
+      "required-check read failed: PR test merge parents do not match its head and base",
+    )).ok,
+  );
+  assertEquals(notifications, []);
+  assert(
+    (await run(
+      "required-check read failed: PR test merge parents do not match its head and base",
+    )).ok,
+  );
+  assertEquals(notifications, [true]);
+  assert(
+    (await run("required-check read failed: PR mergeability is still UNKNOWN"))
+      .ok,
+  );
+  assertEquals(notifications, [true, false]);
+  assert(
+    (await run("required-check read failed: PR mergeability is still UNKNOWN"))
+      .ok,
+  );
+  assertEquals(notifications, [true, false, true]);
+  behind = false;
+  assert((await run("unused transient refusal")).ok);
+  assertEquals(notifications, [true, false, true, false]);
+  assertEquals(state.size, 0);
+});
+
+Deno.test("a failed diagnostic comment still raises fleet health and retries the branch refresh (Issue #4831)", async () => {
+  const state: BranchRefreshRefusalState = new Map();
+  let updates = 0;
+  errors.length = 0;
+  const { options } = harness({ [VC]: [{ number: 4834 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+    updateBranchFn: () => {
+      updates++;
+      return Promise.resolve({
+        ok: false as const,
+        error: new Error("PR mergeability is still UNKNOWN"),
+      });
+    },
+  });
+  const tracking = {
+    load: () => Promise.resolve(state),
+    save: (_state: typeof state) => Promise.resolve(),
+    notify: () => Promise.reject(new Error("comment API unavailable")),
+  };
+  const sweep = () =>
+    sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+    });
+
+  assert((await sweep()).ok);
+  assertEquals(errors.length, 0);
+  assert((await sweep()).ok);
+  assertEquals(errors.length, 1);
+  assertEquals(updates, 2);
+});
+
+Deno.test("branch-refresh escalation edits its trusted marker comment instead of duplicating it (Issue #4831)", async () => {
+  const calls: string[][] = [];
+  const comments: Array<{ id: number; body: string; author: string }> = [];
+  const gh = async (args: string[]) => {
+    calls.push(args);
+    if (args[0] === "api" && args[1]?.includes("/comments?")) {
+      return JSON.stringify(comments);
+    }
+    if (args[0] === "pr" && args[1] === "comment") {
+      comments.push({
+        id: 1,
+        body: args[args.indexOf("--body") + 1]!,
+        author: "VibeCoderST",
+      });
+      return "https://github.com/org/repo/issues/4833#issuecomment-1";
+    }
+    if (args[0] === "api" && args[1] === "-X") {
+      comments[0]!.body = args.find((arg) => arg.startsWith("body="))!.slice(5);
+      return "";
+    }
+    throw new Error(`unexpected gh args: ${args.join(" ")}`);
+  };
+  const event = {
+    repo: "org/repo",
+    prNumber: 4833,
+    entry: {
+      reason: "mergeability-unknown" as const,
+      streak: 2,
+      lastSeenAtMs: 1,
+      notified: true,
+    },
+    active: true,
+  };
+  const trusted = (login: string) => login === "VibeCoderST";
+
+  await notifyBranchRefreshRefusal(event, gh, trusted);
+  await notifyBranchRefreshRefusal(event, gh, trusted);
+  await notifyBranchRefreshRefusal({ ...event, active: false }, gh, trusted);
+
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]!.author, "VibeCoderST");
+  assert(comments[0]!.body.includes("Branch refresh recovered"));
+  assertEquals(calls.filter((args) => args[0] === "pr").length, 1);
+  assertEquals(
+    calls.filter((args) => args[0] === "api" && args[1] === "-X").length,
+    2,
+  );
+});
+
 Deno.test("an armed, current PR gets no update call and is merge-attempted as usual", async () => {
   const { state, options } = harness({
     "stSoftwareAU/VibeCoder": [{ number: 42 }],
@@ -720,6 +1025,42 @@ Deno.test("an armed, behind PR with changes requested gets no branch update (Iss
     ),
     JSON.stringify(infos),
   );
+});
+
+Deno.test("a requested review clears an escalated refusal even while mergeability is unknown", async () => {
+  const entry = {
+    reason: "mergeability-unknown" as const,
+    streak: 2,
+    lastSeenAtMs: Date.now(),
+    notified: true,
+  };
+  const refusals: BranchRefreshRefusalState = new Map([[`${VC}#42`, entry]]);
+  const notifications: boolean[] = [];
+  const { state, options } = harness({ [VC]: [{ number: 42 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        armed: true,
+        behind: false,
+        mergeable: "UNKNOWN",
+        changesRequested: true,
+      }),
+  });
+  const result = await sweepAutoMerge({
+    ...options,
+    branchRefreshRefusals: {
+      load: () => Promise.resolve(refusals),
+      save: () => Promise.resolve(),
+      notify: ({ active }) => {
+        notifications.push(active);
+        return Promise.resolve();
+      },
+    },
+  });
+  assert(result.ok);
+  assertEquals(refusals.size, 0);
+  assertEquals(notifications, [false]);
+  assertEquals(state.attempted, []);
 });
 
 Deno.test("an armed, behind PR labelled needs-human gets no branch update (owner rule 2026-11-01)", async () => {

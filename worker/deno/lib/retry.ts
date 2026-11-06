@@ -23,6 +23,8 @@ export interface RetryOptions {
   sleepFn?: (ms: number) => Promise<void>;
   /** Callback invoked before each retry attempt */
   onRetry?: (attempt: number, error: Error) => void;
+  /** Override retryability for callers retrying a domain-specific transient state. */
+  shouldRetry?: (error: Error) => boolean;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 4;
@@ -172,6 +174,8 @@ export async function retryWithBackoff<T>(
   const initialDelayMs = options?.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS;
   const sleepFn = options?.sleepFn ?? defaultSleep;
   const onRetry = options?.onRetry;
+  const shouldRetry = options?.shouldRetry ??
+    ((error: Error) => isRetryableError(error.message));
 
   let delay = initialDelayMs;
 
@@ -190,7 +194,7 @@ export async function retryWithBackoff<T>(
       }
 
       // Check if the error is retryable
-      if (!isRetryableError(error.message)) {
+      if (!shouldRetry(error)) {
         throw error;
       }
 
