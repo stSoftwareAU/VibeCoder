@@ -978,6 +978,19 @@ Deno.test("buildMutationGateComment - sanitises backticks and newlines", () => {
   assertStringIncludes(comment, "`ab .ts:1` — xy z");
 });
 
+Deno.test("buildMutationGateComment - includes nextest substitution for a completed survivor", () => {
+  const v = evaluateMutationGate(
+    { ...completed(), substitutedNextest: true },
+    "",
+  );
+  assert(v.blocked);
+  assertFalse(v.budgetExhausted);
+  assertStringIncludes(
+    buildMutationGateComment(v),
+    "install cargo-nextest to match CI",
+  );
+});
+
 Deno.test("buildMutationGateComment - includes the budget note when exhausted", () => {
   const v = evaluateMutationGate({ ...EXHAUSTED, survivors: [SURVIVOR] }, "");
   assertStringIncludes(buildMutationGateComment(v), "untested, not passed");

@@ -145,6 +145,16 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- Review follow-up: the nextest probe's exit 127 and timeout, both
+  budget-exhaustion paths, and the fallback's error and no-mutants messages
+  are covered by `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - missing cargo on probe falls through to missing mutants`,
+  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - timed-out nextest probe stops before mutants`,
+  `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - nextest fallback survives both budget exhaustion paths`,
+  and `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - nextest fallback is reported for errors and no mutants`.
+  The recovery comment retains the install action for a completed survivor in
+  `worker/deno/tests/mutation_gate_test.ts::buildMutationGateComment - includes nextest substitution for a completed survivor`.
+  No twinned implementation was changed.
+
 - Review follow-up: removed the unreachable missing-nextest error action. The
   obsolete error is replaced by a cargo test runner fallback that still judges
   survivors and reports the substitution, covered by

@@ -806,6 +806,76 @@ Deno.test("runMutationCheck rust - nextest probe failure reports its exit code",
   assertEquals(f.calls.length, 1);
 });
 
+Deno.test("runMutationCheck rust - missing cargo on probe falls through to missing mutants", async () => {
+  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, () => ok(127));
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--test-tool", "nextest"],
+  }, f.seams);
+  assertEquals(f.calls.map((call) => call.args[0]), ["nextest", "mutants"]);
+  assert(r.kind === "error");
+  assert(r.reason.startsWith(CARGO_MUTANTS_MISSING));
+  assertStringIncludes(r.reason, "install cargo-nextest to match CI");
+});
+
+Deno.test("runMutationCheck rust - timed-out nextest probe stops before mutants", async () => {
+  const f = fake(
+    { [`${REPO}/Cargo.toml`]: "" },
+    () => ({ ...ok(127), timedOut: true }),
+  );
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--test-tool", "nextest"],
+  }, f.seams);
+  assert(r.kind === "error");
+  assertEquals(r.reason, "cargo nextest --version timed out");
+  assertEquals(f.calls.map((call) => call.args[0]), ["nextest"]);
+});
+
+Deno.test("runMutationCheck rust - nextest fallback survives both budget exhaustion paths", async () => {
+  for (const outcomes of [null, outcomesJson([["MissedMutant", 2]])]) {
+    const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+      if (args[0] === "nextest") return ok(127);
+      if (outcomes !== null) writeOutcomes(fs, args, outcomes);
+      return { ...ok(137), timedOut: true };
+    });
+    const r = await runMutationCheck({
+      ...rsInput,
+      cargoMutantsArgs: ["--test-tool", "nextest"],
+    }, f.seams);
+    assert(r.kind === "budget_exhausted");
+    assertEquals(r.substitutedNextest, true);
+    assertStringIncludes(
+      evaluateMutationGate(r, "").note,
+      "install cargo-nextest to match CI",
+    );
+  }
+});
+
+Deno.test("runMutationCheck rust - nextest fallback is reported for errors and no mutants", async () => {
+  for (
+    const [proc, kind] of [
+      [ok(1), "error"],
+      [ok(3), "error"],
+      [ok(0), "error"],
+      [{ ...ok(), stderr: "No mutants to filter" }, "not_applicable"],
+    ] as const
+  ) {
+    const f = fake(
+      { [`${REPO}/Cargo.toml`]: "" },
+      (_c, args) => args[0] === "nextest" ? ok(127) : proc,
+    );
+    const r = await runMutationCheck({
+      ...rsInput,
+      cargoMutantsArgs: ["--test-tool", "nextest"],
+    }, f.seams);
+    assert(
+      r.kind === kind && (r.kind === "error" || r.kind === "not_applicable"),
+    );
+    assertStringIncludes(r.reason, "install cargo-nextest to match CI");
+  }
+});
+
 Deno.test("runMutationCheck rust - missing nextest falls back to cargo and judges survivors", async () => {
   for (
     const toolArgs of [["--test-tool", "nextest"], ["--test-tool=nextest"]]
