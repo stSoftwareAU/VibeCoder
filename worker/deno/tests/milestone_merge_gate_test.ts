@@ -15,6 +15,7 @@ import {
   CARGO_MERGE_GATE_TIMEOUT_MS,
   checkMergedTree,
   collapseRepeatedLines,
+  detectCargoRegistryGap,
   detectRemoteModuleGap,
   detectRustToolchainGap,
   findTypeCheckProjects,
@@ -24,6 +25,7 @@ import {
   spawnTypeCheck,
   type TypeCheckProject,
   typeCheckTimeoutMs,
+  withCargoOffline,
 } from "../lib/milestone_merge_gate.ts";
 import type { runRepositoryCommand } from "../lib/untrusted_gate_spawn.ts";
 import { CARGO_BUILD_SKIPPED_FOR_MERGE } from "../lib/heavy_build_gate.ts";
@@ -880,6 +882,297 @@ Deno.test("checkMergedTree - a cargo check the real runner reports as timed out 
     assert(outcome.status !== "failed", outcome.detail);
     assertEquals(outcome.cargoSkipped, true);
     assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #4786 — a cargo check that cannot reach its crate registry is a host
+// fault: it is retried once offline, from the local cargo cache, and left to CI
+// if the registry is still unreachable. Any other failure is not retried.
+// ---------------------------------------------------------------------------
+
+/** The connection-class cause the host printed in the Issue #4786 report. */
+const REGISTRY_CAUSE =
+  "[6] Could not resolve hostname (Could not resolve host: index.crates.io)";
+
+/** cargo's retry warning, one per attempt, as in the Issue #4786 report. */
+const REGISTRY_RETRY_WARNINGS = [
+  `warning: spurious network error (3 tries remaining): ${REGISTRY_CAUSE}`,
+  `warning: spurious network error (2 tries remaining): ${REGISTRY_CAUSE}`,
+  `warning: spurious network error (1 try remaining): ${REGISTRY_CAUSE}`,
+];
+
+/** The verbatim `cargo check` refusal from Issue #4786 (exit 101). */
+const REGISTRY_GAP_OUTPUT = [
+  ...REGISTRY_RETRY_WARNINGS,
+  ...REGISTRY_RETRY_WARNINGS,
+  ...REGISTRY_RETRY_WARNINGS,
+  "error: failed to get `jiff` as a dependency of package `grq-policy v0.1.0 (/home/vibe/auto-issue-work/GRQ-AutoTrader/crates/policy)`",
+  "",
+  "Caused by:",
+  "  failed to load source for dependency `jiff`",
+  "",
+  "Caused by:",
+  "  unable to update registry `crates-io`",
+  "",
+  "Caused by:",
+  "  download of config.json failed",
+  "",
+  "Caused by:",
+  `  ${REGISTRY_CAUSE}`,
+].join("\n");
+
+/** What the offline retry prints when the local cargo cache lacks a crate. */
+const OFFLINE_MISSING_CRATE_OUTPUT = [
+  "error: failed to get `jiff` as a dependency of package `grq-policy v0.1.0`",
+  "",
+  "Caused by:",
+  "  attempting to make an HTTP request, but --offline was specified",
+].join("\n");
+
+Deno.test("detectCargoRegistryGap - the verbatim Issue #4786 refusal names the connection-class cause, not a retry warning (Issue #4786)", () => {
+  assertEquals(detectCargoRegistryGap(REGISTRY_GAP_OUTPUT), {
+    cause: REGISTRY_CAUSE,
+  });
+});
+
+Deno.test("detectCargoRegistryGap - a spurious retry warning is the fallback cause when no other connection line exists (Issue #4786)", () => {
+  assertEquals(
+    detectCargoRegistryGap(
+      `error: failed to get \`jiff\`\n${REGISTRY_RETRY_WARNINGS[0]}\n`,
+    ),
+    { cause: REGISTRY_RETRY_WARNINGS[0] },
+  );
+});
+
+Deno.test("detectCargoRegistryGap - an ordinary compile error is not a registry gap (Issue #4786)", () => {
+  assertEquals(
+    detectCargoRegistryGap(
+      "error[E0425]: cannot find value `x` in this scope\n" +
+        " --> src/lib.rs:3:5\n" +
+        "error: could not compile `demo` (lib) due to 1 previous error\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectCargoRegistryGap - a --locked lockfile refusal is not a registry gap (Issue #4786)", () => {
+  assertEquals(
+    detectCargoRegistryGap(
+      "error: the lock file /work/Cargo.lock needs to be updated but --locked was passed to prevent this\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectCargoRegistryGap - a manifest parse error is not a registry gap (Issue #4786)", () => {
+  assertEquals(
+    detectCargoRegistryGap(
+      "error: failed to parse manifest at `/work/Cargo.toml`\n\n" +
+        "Caused by:\n  TOML parse error at line 1, column 1\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectCargoRegistryGap - a failed fetch with a non-network cause is not a registry gap (Issue #4786)", () => {
+  assertEquals(
+    detectCargoRegistryGap(
+      "error: failed to get `serde` as a dependency of package `demo v0.1.0`\n\n" +
+        'Caused by:\n  failed to select a version for the requirement `serde = "^9"`\n',
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectCargoRegistryGap - a rustc-version gap is not a registry gap (Issue #4786)", () => {
+  assertEquals(
+    detectCargoRegistryGap(
+      "error: rustc 1.70.0 is not supported by the following packages:\n" +
+        "  foo@1.2.3 requires rustc 1.80\n" +
+        "Either upgrade rustc or select compatible dependency versions\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectCargoRegistryGap - a registry refusal with no connection line is not a registry gap (Issue #4786)", () => {
+  assertEquals(
+    detectCargoRegistryGap(
+      "error: failed to get `jiff` as a dependency of package `demo v0.1.0`\n\n" +
+        "Caused by:\n  no matching package named `jiff` found\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectCargoRegistryGap - a 200000-character line is capped and returns undefined (Issue #4786)", () => {
+  const hostile = "a".repeat(200_000) + "!";
+  assertEquals(hostile.length, 200_001);
+  assertEquals(detectCargoRegistryGap(hostile), undefined);
+});
+
+Deno.test("withCargoOffline - --offline goes straight after the subcommand, and is not added twice (Issue #4786)", () => {
+  assertEquals(
+    withCargoOffline(["check", "--workspace", "--all-targets"]),
+    ["check", "--offline", "--workspace", "--all-targets"],
+  );
+  assertEquals(
+    withCargoOffline(["test", "--workspace", "--locked"]),
+    ["test", "--offline", "--workspace", "--locked"],
+  );
+  const once = withCargoOffline(["check", "--workspace"]);
+  assertEquals(withCargoOffline(once), once);
+  assertEquals(withCargoOffline([]), []);
+});
+
+Deno.test("checkMergedTree - a cargo check that cannot reach its registry passes when the offline retry succeeds (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    const argv: string[][] = [];
+    const outcome = await checkMergedTree(
+      dir,
+      (project) => {
+        argv.push(project.args);
+        return Promise.resolve(
+          argv.length === 1
+            ? { code: 101, output: REGISTRY_GAP_OUTPUT }
+            : { code: 0, output: "" },
+        );
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(argv.length, 2);
+    assertEquals(argv[0], ["check", "--workspace", "--all-targets"]);
+    assertEquals(argv[1], [
+      "check",
+      "--offline",
+      "--workspace",
+      "--all-targets",
+    ]);
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, undefined);
+    assertStringIncludes(
+      outcome.detail,
+      "verified offline from the local cargo cache",
+    );
+    assertEquals(outcome.detail.includes("left to CI"), false);
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check that cannot reach its registry twice is left to CI, naming the first cause (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve(
+          runs === 1
+            ? { code: 101, output: REGISTRY_GAP_OUTPUT }
+            : { code: 101, output: OFFLINE_MISSING_CRATE_OUTPUT },
+        );
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 2);
+    assertEquals(outcome.status, "skipped", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(
+      outcome.detail,
+      `could not reach its crate registry (${REGISTRY_CAUSE})`,
+    );
+    assertEquals(outcome.detail.includes("--offline was specified"), false);
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check whose offline retry is a real compile error is failed (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve(
+          runs === 1
+            ? { code: 101, output: REGISTRY_GAP_OUTPUT }
+            : { code: 101, output: "error[E0425]: cannot find value `x`" },
+        );
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 2);
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.detail, "failed (exit 101)");
+  });
+});
+
+Deno.test("checkMergedTree - a cargo check that fails without a registry gap is not retried (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve({
+          code: 101,
+          output: "error[E0425]: cannot find value `x`",
+        });
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 1);
+    assertEquals(outcome.status, "failed", outcome.detail);
+  });
+});
+
+Deno.test("checkMergedTree - a mixed tree whose cargo registry is unreachable twice passes its Deno half and never offlines the Deno check (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    await writeFile(`${dir}/Cargo.toml`, CARGO_ONLY_MANIFEST);
+    const denoArgs: string[][] = [];
+    let cargoRuns = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      (project) => {
+        if (project.kind === "deno") {
+          denoArgs.push(project.args);
+          return Promise.resolve({ code: 0, output: "" });
+        }
+        cargoRuns++;
+        return Promise.resolve({ code: 101, output: REGISTRY_GAP_OUTPUT });
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(cargoRuns, 2);
+    assertEquals(denoArgs.length, 1);
+    assertEquals(denoArgs.flat().includes("--offline"), false);
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(outcome.detail, "deno check");
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+  });
+});
+
+Deno.test("checkMergedTree - a Deno check whose output names a registry gap is failed once, never retried offline (Issue #4786)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    let runs = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        runs++;
+        return Promise.resolve({ code: 1, output: REGISTRY_GAP_OUTPUT });
+      },
+      () => Promise.resolve(false),
+    );
+    assertEquals(runs, 1);
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, undefined);
   });
 });
 

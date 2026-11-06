@@ -476,6 +476,134 @@ Deno.test("verifyResolvedTree - Deno runs before a cargo timeout exhausts the bu
   }
 });
 
+/** The `cargo test` refusal of a host with no route to the crate registry (Issue #4786). */
+const CARGO_REGISTRY_REFUSAL =
+  "warning: spurious network error (1 try remaining): [6] Could not resolve hostname (Could not resolve host: index.crates.io)\n" +
+  "error: failed to get `jiff` as a dependency of package `grq-policy v0.1.0`\n\n" +
+  "Caused by:\n  unable to update registry `crates-io`\n\n" +
+  "Caused by:\n  [6] Could not resolve hostname (Could not resolve host: index.crates.io)\n";
+
+Deno.test("verifyResolvedTree - a cargo test that cannot reach its registry passes when the offline retry succeeds (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-registry-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        return Promise.resolve(
+          seen.length === 1
+            ? { code: 101, output: CARGO_REGISTRY_REFUSAL }
+            : { code: 0, output: "" },
+        );
+      },
+      passingTypeCheck,
+      () => 0,
+      () => Promise.resolve(false),
+    );
+    assertEquals(seen.map((task) => task.args), [
+      ["test", "--workspace"],
+      ["test", "--offline", "--workspace"],
+    ]);
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, undefined);
+    assertStringIncludes(
+      outcome.detail,
+      "verified offline from the local cargo cache",
+    );
+    assertEquals(outcome.detail.includes("left to CI"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - a cargo test that cannot reach its registry twice is left to CI, naming the first cause (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-registry-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        return Promise.resolve(
+          seen.length === 1 ? { code: 101, output: CARGO_REGISTRY_REFUSAL } : {
+            code: 101,
+            output:
+              "error: failed to get `jiff` as a dependency of package `grq-policy v0.1.0`\n\nCaused by:\n  attempting to make an HTTP request, but --offline was specified\n",
+          },
+        );
+      },
+      passingTypeCheck,
+      () => 0,
+      () => Promise.resolve(false),
+    );
+    assertEquals(seen.length, 2);
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(
+      outcome.detail,
+      "could not reach its crate registry ([6] Could not resolve hostname (Could not resolve host: index.crates.io))",
+    );
+    assertEquals(outcome.detail.includes("--offline was specified"), false);
+    assertStringIncludes(outcome.detail, "left to CI (Issue #4786)");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - a cargo test failure without a registry gap is failed, and not retried (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-registry-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        return Promise.resolve({
+          code: 101,
+          output: "test prune::bias ... FAILED\ntest result: FAILED. 1 failed",
+        });
+      },
+      passingTypeCheck,
+      () => 0,
+      () => Promise.resolve(false),
+    );
+    assertEquals(seen.length, 1);
+    assertEquals(outcome.status, "failed", outcome.detail);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - a registry gap with no budget left for the offline retry is not reached, not retried (Issue #4786)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4786-registry-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    let clock = 0;
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        // The first attempt spends the whole remaining budget.
+        clock += task.timeoutMs;
+        return Promise.resolve({ code: 101, output: CARGO_REGISTRY_REFUSAL });
+      },
+      passingTypeCheck,
+      () => clock,
+      () => Promise.resolve(false),
+    );
+    assertEquals(seen.length, 1);
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.detail, "was not reached within the");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("verifyResolvedTree - a Deno task that times out is still failed (Issue #4786)", async () => {
   const { outcome } = await gate(
     { "test:unit": "deno test" },
