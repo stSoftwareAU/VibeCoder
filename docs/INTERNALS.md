@@ -1336,19 +1336,19 @@ excludes a verified owner hold only when it already existed at verification.
 `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
 commit, approval or dismissal), `repair-recovery` (from a failed verified repair
 action until its next confirmed repair action), `branch-refresh` (from a
-verified reviewer branch update until the first workflow run on its correlated
-updated commit completes), and `ci-failure` (opened when a workflow run
-completes with `failure`, `timed_out` or `action_required`). A `ci-failure`
-closes at the first later successful run of the same workflow: a later attempt
-of the failed run, or a different run on any head of the PR (including a
-ready-for-review or reopened run on the same head). It never extends past the
-PR's merge or close. When the PR has ended, an open blocker ends at that moment,
-and a failure completed after it is not a blocker. Overlapping workflow failure
-intervals are combined so waiting time is not counted twice. Concurrency
-cancellations do not open a blocker. Repair-recovery intervals use only
-hash-chained failed and confirmed repair actions. Branch-refresh intervals use
-the reviewer audit action and its correlated commit; missing action or commit
-evidence remains unknown rather than being inferred from a login or branch name.
+verified branch update until the first workflow run on its correlated updated
+commit completes), and `ci-failure` (opened when a workflow run completes with
+`failure`, `timed_out` or `action_required`). A `ci-failure` closes at the first
+later successful run of the same workflow: a later attempt of the failed run, or
+a different run on any head of the PR (including a ready-for-review or reopened
+run on the same head). It never extends past the PR's merge or close. When the
+PR has ended, an open blocker ends at that moment, and a failure completed after
+it is not a blocker. Overlapping workflow failure intervals are combined so
+waiting time is not counted twice. Concurrency cancellations do not open a
+blocker. Repair-recovery intervals use only hash-chained failed and confirmed
+repair actions. Branch-refresh intervals use the verified update action and its
+correlated commit; missing action or commit evidence remains unknown rather than
+being inferred from a login or branch name.
 
 **Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`

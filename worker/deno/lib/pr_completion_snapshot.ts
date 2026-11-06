@@ -799,7 +799,7 @@ function branchRefreshBlockersFor(
   return actions.flatMap((action) => {
     if (
       !action.verified || action.actor !== "fleet" ||
-      action.component !== "reviewer" || action.kind !== "branch-update" ||
+      action.kind !== "branch-update" ||
       action.outcome !== "confirmed"
     ) return [];
     const commitShas = action.githubEvents?.filter((event) =>

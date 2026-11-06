@@ -1231,7 +1231,7 @@ Deno.test("collect - incomplete CI is reflected in delivered metrics and coverag
   assertEquals(runs.length, 1);
   assertEquals(runs[0]?.durationMinutes, 10);
   const report = buildPrCompletionReport(snapshot.input);
-  assertEquals(report.coverage.deliveredChangesWithoutCiData, 1);
+  assertEquals(report.coverage.deliveredChangesWithoutCiData, 2);
   assertEquals(report.delivery.ciRunsPerDeliveredChange, null);
   assertEquals(report.delivery.ciMinutesPerDeliveredChange, null);
   assertEquals(report.waiting.ciFailureComplete, false);

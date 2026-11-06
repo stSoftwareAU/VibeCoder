@@ -683,7 +683,7 @@ Deno.test("moving test merge leaves the reviewed head retryable", async () => {
   }
 });
 
-Deno.test("updateBranchOnce journals the reviewer branch refresh with PR and head provenance", async () => {
+Deno.test("updateBranchOnce journals the reviewer branch refresh with PR provenance", async () => {
   const dir = await Deno.makeTempDir();
   const auditDir = `${dir}/audit`;
   try {
@@ -713,6 +713,42 @@ Deno.test("updateBranchOnce journals the reviewer branch refresh with PR and hea
         entry.outcome,
       ]),
       [["reviewer", "branch-update", "acme/app", 20, "success"]],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("updateBranchOnce journals a refused reviewer branch refresh as failed", async () => {
+  const dir = await Deno.makeTempDir();
+  const auditDir = `${dir}/audit`;
+  try {
+    const f = strictRefreshFixture("acme/app");
+    f.state.refusal = "gh api: HTTP 422: expected head sha";
+    const result = await updateBranchOnce(
+      { repo: "acme/app", number: 20, headSha: f.head, baseRefName: "main" },
+      `${dir}/state`,
+      f.gh,
+      { fleetAuthors: [...FLEET] },
+      undefined,
+      { auditDir, runId: "reviewer:round-20" },
+    );
+    assertEquals(result?.updated, false);
+    const rows = await loadEntries(auditFilePath({
+      baseDir: auditDir,
+      workerId: "fleet-reviewer",
+      date: new Date().toISOString().slice(0, 10),
+    }));
+    assertEquals(rows.ok, true);
+    if (!rows.ok) throw rows.error;
+    assertEquals(
+      rows.value.map((entry) => [
+        entry.actionKind,
+        entry.repo,
+        entry.prNumber,
+        entry.outcome,
+      ]),
+      [["branch-update", "acme/app", 20, "error"]],
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
