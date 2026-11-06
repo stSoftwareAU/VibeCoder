@@ -7,8 +7,8 @@ agent that made no change) as a verified, failed `repair` in its hash-chained
 audit journal. The existing `repair-recovery` interval in the collector then
 measures the wait until the next confirmed repair push, or to the PR's merge or
 close. The provisional 90%-within-24-hours target stays an operational
-evaluation after rollout; no baseline or achieved result is claimed.
-Closes #4658.
+evaluation after rollout; no baseline or achieved result is claimed. Closes
+#4658.
 
 ## Spec
 
@@ -22,14 +22,16 @@ Closes #4658.
 ### Essential Design Decisions
 
 - The entry reuses `component: "babysitter"`, `actionKind: "repair"` and
-  `outcome: "error"` with the verb `babysitter-attempt`. No new action kind
-  was added, so existing readers of the journal and the report stay compatible;
-  a failed repair is never counted as a fix round (only confirmed repairs are).
+  `outcome: "error"` with the verb `babysitter-attempt`. No new action kind was
+  added, so existing readers of the journal and the report stay compatible; a
+  failed repair is never counted as a fix round (only confirmed repairs are).
 - Owner holds are not journalled (already `needs-human` waits). A failure after
   a push is not journalled either, because a confirmed push already exists.
 - Journalling is best-effort and never replaces the repair's real error, but a
-  refused append or invalid input is logged as `[SECURITY]
-  [AUDIT_JOURNAL_REFUSED]`, and nothing is recorded for invalid input.
+  refused append or invalid input is logged as
+  `[SECURITY]
+  [AUDIT_JOURNAL_REFUSED]`, and nothing is recorded for invalid
+  input.
 
 ### Undiscoverable Facts
 
