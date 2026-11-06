@@ -215,6 +215,7 @@ Deno.test("babysitter review verifier - a verifier that throws fails closed with
     id: 1,
     verified: false,
     reason: "verifier failed: boom",
+    unavailable: true,
   }]);
 });
 
@@ -379,4 +380,61 @@ Deno.test("babysitter review verifier - PR #4611: a stale published body stays o
     { verify },
   );
   assertEquals(published[0]!.verified, true);
+});
+
+Deno.test("babysitter review verifier - the pass runs with the credentials it is given (PR #4849 review)", async () => {
+  const fake = fakeVerifier(() =>
+    checked([{ index: 1, verdict: "fixed", note: "ok" }])
+  );
+  const outcomes = await verifyBabysitterReviews(baseInput(), {
+    verify: fake.verify,
+    credentials: () =>
+      Promise.resolve({
+        parentEnv: { GH_TOKEN: "ghs_read_only" },
+        disallowedTools: ["Bash"],
+      }),
+  });
+  assertEquals(outcomes[0]!.verified, true);
+  assertEquals(fake.calls[0]!.input.parentEnv, { GH_TOKEN: "ghs_read_only" });
+  assertEquals(fake.calls[0]!.input.extraDisallowedTools, ["Bash"]);
+});
+
+Deno.test("babysitter review verifier - no credential and no stand-in never starts the model (PR #4849 review)", async () => {
+  let asked = 0;
+  const verifierDeps = {
+    ask: () => {
+      asked++;
+      return Promise.reject(new Error("the model must not start"));
+    },
+  } as unknown as PrePrVerifierDeps;
+  const outcomes = await verifyBabysitterReviews(baseInput(), { verifierDeps });
+  assertEquals(asked, 0);
+  assertEquals(outcomes[0]!.verified, false);
+  assertEquals(outcomes[0]!.unavailable, true);
+  assertStringIncludes(outcomes[0]!.reason, "no read-only credential");
+});
+
+Deno.test("babysitter review verifier - a credential that cannot be minted is an outage, not a verdict (PR #4849 review)", async () => {
+  const fake = fakeVerifier(() =>
+    checked([{ index: 1, verdict: "fixed", note: "ok" }])
+  );
+  const outcomes = await verifyBabysitterReviews(baseInput(), {
+    verify: fake.verify,
+    credentials: () => Promise.reject(new Error("GitHub returned 502")),
+  });
+  assertEquals(fake.calls.length, 0);
+  assertEquals(outcomes[0]!.verified, false);
+  assertEquals(outcomes[0]!.unavailable, true);
+  assertStringIncludes(outcomes[0]!.reason, "GitHub returned 502");
+});
+
+Deno.test("babysitter review verifier - a not-fixed verdict is a judgement, not an outage (PR #4849 review)", async () => {
+  const fake = fakeVerifier(() =>
+    checked([{ index: 1, verdict: "not fixed", note: "still open" }])
+  );
+  const outcomes = await verifyBabysitterReviews(baseInput(), {
+    verify: fake.verify,
+  });
+  assertEquals(outcomes[0]!.verified, false);
+  assertEquals(outcomes[0]!.unavailable, undefined);
 });

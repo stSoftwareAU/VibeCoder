@@ -25,9 +25,13 @@ judges every finding in it fixed at the published PR head and description
 must not have changed. A retry with no working-tree changes also synchronises
 the body before dismissal, so a prior failed publication can be repaired. A
 failed body publication or a stale repair checkout leaves the review open. A
-verifier outage, a partial or missing verdict, or a head or description that
-moves while the fixes are verified also leaves the review open, without blocking
-the push. Harmless skips, such as an unrelated
+partial or missing verdict, or a head or description that moves while the fixes
+are verified also leaves the review open, without blocking the push. A verifier
+outage (the verifier failed, was not checked, or could not get its credential)
+additionally keeps the pending-publication record and ends the pass as an
+infrastructure failure with infrastructure backoff, so the next scan re-runs only
+the publication and the verification, never the agent, and no substantive attempt
+is spent. A pass that leaves its reviews open is journalled as a failed repair. Harmless skips, such as an unrelated
 marker-less PR or an already-current description, do not block dismissal. GitHub
 CI then runs the repository's quality and regression checks on the updated
 branch.
@@ -139,7 +143,10 @@ failure is logged and the next pass retries. Organisation-specific extensions
 can use this to publish a separate babysitter heartbeat and failure record. Dry
 runs and runs limited to a repository or PR do not report service health.
 
-The host needs `gh`, `git` and `deno`. Codex CLI must be 0.164.0 or newer,
+The host needs `gh`, `git` and `deno`, and the Claude CLI with a working Claude
+credential for the review verifier (Issue #4657). Without them the verifier
+reports an outage and every review stays open, retried under infrastructure
+backoff. Codex CLI must be 0.164.0 or newer,
 because older versions may silently ignore the permissions profile; a
 pre-release counts when its base version is newer (0.166.0-alpha passes,
 0.164.0-beta does not). Setup and each repair check the `codex` on PATH before
@@ -179,7 +186,13 @@ stop a run and must be corrected by the operator. Codex gets its own
 installation token, minted per repair for the target repository only, with
 read-only permissions (contents, pull requests, issues, checks, actions). Every
 GitHub write (lock, push, branch update, review dismissal, PR description) is
-made by the runner with its own token. The runner restarts a session with a fresh repository-scoped read token
+made by the runner with its own token. The review verifier is a Claude model
+that reads untrusted review text and repository code as the same OS user, so it
+gets the same boundary: its own read-only token for the target repository as
+`GH_TOKEN`, minted per verification, never the runner's write token; no Bash; and
+no Read or Edit of the protected paths listed above or of `/proc`. It reads the
+checkout and judges, and does not execute repository code. If its token cannot
+be minted, the pass is an outage. The runner restarts a session with a fresh repository-scoped read token
 when its token approaches expiry, preserving the repair clone. When a review asks
 for a description change, the agent writes the complete new description
 (Markdown) to `.babysitter-pr-body` in the clone. The proposal is data, not
@@ -256,7 +269,9 @@ unchanged head, the description steps run in order:
    for that review, at the head and description read after the publication. The
    verifier reads that published description and the agent's reply. An outage, a
    partial or missing verdict, or a head or description that moved during
-   verification keeps the review open. The push still stands.
+   verification keeps the review open. The push still stands. An outage also
+   keeps the pending-publication record, so the next scan re-verifies without
+   running the agent.
 
 A proposal over GitHub's 65,536-character limit is rejected at intake, once
 surrounding whitespace is trimmed, and the review stays open. The composed

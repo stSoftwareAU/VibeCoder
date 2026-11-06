@@ -4,7 +4,10 @@
  * Before a babysitter dismisses a review as fixed, every finding of that review
  * is judged by the pre-PR verifier against the live PR description at the head.
  * The repair agent's final reply is untrusted evidence: it is shown to the
- * verifier, never taken as the decision.
+ * verifier, never taken as the decision. The verifier model runs with a
+ * read-only token and no Bash, never the runner's write token (see
+ * {@link VerifierCredentials}); an outage is flagged `unavailable` so the caller
+ * retries without re-running the agent.
  */
 import type { Logger } from "../types.ts";
 import {
@@ -33,6 +36,12 @@ export interface ReviewVerificationOutcome {
   id: number;
   verified: boolean;
   reason: string;
+  /**
+   * True when the verifier could not judge (it was not checked, failed, or had
+   * no credential), as opposed to judging the review not fixed. An outage is
+   * retried without running the agent again; a judgement is not.
+   */
+  unavailable?: boolean;
 }
 
 export interface ReviewVerificationInput {
@@ -51,9 +60,23 @@ export interface ReviewVerificationInput {
   logger: Logger;
 }
 
+/** What the verifier's Claude child is allowed to hold (Issue #4657). */
+export interface VerifierCredentials {
+  /** The child's parent environment, carrying a read-only token as GH_TOKEN. */
+  parentEnv: Record<string, string>;
+  /** Tools denied beyond the pre-PR verifier's own list. */
+  disallowedTools: readonly string[];
+}
+
 export interface ReviewVerificationDeps {
   verify?: typeof runPrePrVerifier;
   verifierDeps?: PrePrVerifierDeps;
+  /**
+   * Mints the verifier's read-only credential. Required for the real verifier:
+   * without it (and without a `verify` stand-in) the pass is an outage, so the
+   * runner's own write token is never inherited by the model.
+   */
+  credentials?: () => Promise<VerifierCredentials>;
 }
 
 /** The verifier pass: its verdicts, or why it could not run (full reason text). */
@@ -97,6 +120,14 @@ async function runPass(
   previousFindings: readonly string[],
 ): Promise<PassResult> {
   try {
+    if (deps.verify === undefined && deps.credentials === undefined) {
+      return {
+        kind: "unavailable",
+        reason:
+          "verifier unavailable: no read-only credential was provided, so the model is not started with the runner's token",
+      };
+    }
+    const credentials = await deps.credentials?.();
     const result: PrePrVerifierResult = await (deps.verify ??
       runPrePrVerifier)({
         repo: input.repo,
@@ -113,6 +144,10 @@ async function runPass(
         changedFiles: null,
         previousFindings,
         timeoutSeconds: input.timeoutSeconds,
+        ...(credentials === undefined ? {} : {
+          parentEnv: credentials.parentEnv,
+          extraDisallowedTools: credentials.disallowedTools,
+        }),
         logger: input.logger,
       }, deps.verifierDeps ?? defaultPrePrVerifierDeps);
     if (result.status === "not_checked") {
@@ -180,6 +215,7 @@ export async function verifyBabysitterReviews(
         reason: pass?.kind === "unavailable"
           ? pass.reason
           : "verifier unavailable: no verifier pass ran",
+        unavailable: true,
       };
     }
     const judgements = owned.map((n) => judgeFinding(n, pass.verdicts));

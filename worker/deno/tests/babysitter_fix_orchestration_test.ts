@@ -18,6 +18,7 @@ import {
   forwardAgentStderr,
   observeTrackedPr,
   pendingPublicationStore,
+  readOnlyReviewVerifier,
   readSharedBabysitterAttempts,
   reconcileTrackedPr,
   repairFailureIdentity,
@@ -28,6 +29,7 @@ import {
   listBabysitterRetryStates,
   saveBabysitterRetryState,
 } from "../lib/babysitter_retry_state.ts";
+import { createLogger } from "../lib/logger.ts";
 import { acquireBranchUpdateLock } from "../lib/pr_branch_lock.ts";
 import type {
   ReviewVerificationInput,
@@ -1546,6 +1548,140 @@ Deno.test("a no-push review repair dismisses the review without journalling fail
     await h.attempt();
     assertEquals(h.state.dismissals, 1);
     assertEquals(h.state.journalled, []);
+  });
+});
+
+/** A verifier that could not judge: the outage shape the production verifier returns. */
+const verifierOutage = (
+  input: ReviewVerificationInput,
+): Promise<ReviewVerificationOutcome[]> =>
+  Promise.resolve(
+    input.reviews.map((review) => ({
+      id: review.id,
+      verified: false,
+      reason: "verifier unavailable: Claude CLI not found",
+      unavailable: true,
+    })),
+  );
+
+const reviewsFixture = [{
+  id: 10,
+  state: "CHANGES_REQUESTED",
+  user: { login: "reviewer" },
+}] as never;
+
+Deno.test("a no-change review repair with a verifier outage is an infrastructure wait that re-verifies without the agent (PR #4849 review)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    h.deps.verifyReviews = verifierOutage;
+    await assertRejects(
+      () => h.attempt(),
+      Error,
+      "the review verifier was unavailable",
+    );
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "infrastructure");
+    assertEquals(record!.attempts.substantive, 0);
+    assertEquals(record!.attempts.infrastructure, 1);
+    assertEquals(record!.escalation, undefined);
+    assertStringIncludes(record!.lastOutcome ?? "", "Claude CLI not found");
+    assertEquals(h.state.dismissals, 0);
+    assertEquals(h.state.escalations, 0);
+    assertEquals(h.state.journalled.length, 1);
+    const store = pendingPublicationStore(stateDir, REPO, 1, reviewsFixture);
+    assertEquals(await store.load(HEAD), {
+      proposal: "Rewritten description.",
+      pushed: false,
+    });
+
+    // The host recovers: the next scan re-verifies and dismisses; no new agent.
+    h.deps.verifyReviews = allVerified;
+    await elapse(stateDir);
+    await h.attempt();
+    assertEquals(h.state.sessions, 1);
+    assertEquals(h.state.dismissals, 1);
+    assertEquals(await store.load(HEAD), undefined);
+  });
+});
+
+Deno.test("a verifier outage on a resumed publication keeps the record and backs off without the agent (PR #4849 review)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    h.deps.verifyReviews = verifierOutage;
+    await assertRejects(() => h.attempt(), Error, "verifier was unavailable");
+    await elapse(stateDir);
+    await assertRejects(() => h.attempt(), Error, "verifier was unavailable");
+    assertEquals(h.state.sessions, 1);
+    const [record] = await records(stateDir);
+    assertEquals(record!.attempts.infrastructure, 2);
+    assertEquals(record!.attempts.substantive, 0);
+    const store = pendingPublicationStore(stateDir, REPO, 1, reviewsFixture);
+    assertEquals((await store.load(HEAD))?.proposal, "Rewritten description.");
+  });
+});
+
+Deno.test("the production verifier fails closed when its read-only token cannot be minted (PR #4849 review)", async () => {
+  const verify = readOnlyReviewVerifier(
+    { ...APP, privateKeyPath: "/nonexistent/app-key.pem" },
+    REPO,
+    "/unused",
+  );
+  const outcomes = await verify({
+    repo: REPO,
+    prNumber: 1,
+    repoPath: "/unused",
+    title: "fix",
+    body: "body",
+    baseRef: "origin/main",
+    reviews: [{
+      id: 10,
+      body: "**`a.ts:1`**: problem\n\n**Fix:** fix it",
+    }],
+    timeoutSeconds: 1,
+    logger: createLogger(),
+  });
+  assertEquals(outcomes.map((o) => [o.id, o.verified, o.unavailable]), [[
+    10,
+    false,
+    true,
+  ]]);
+});
+
+Deno.test("a no-change review repair the verifier judges not fixed is journalled as a failed repair (PR #4849 review)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    h.deps.verifyReviews = (input) =>
+      Promise.resolve(input.reviews.map((review) => ({
+        id: review.id,
+        verified: false,
+        reason: 'finding 1 verdict "not fixed": still open',
+      })));
+    await h.attempt();
+    assertEquals(h.state.dismissals, 0);
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "code");
+    const store = pendingPublicationStore(stateDir, REPO, 1, reviewsFixture);
+    assertEquals(await store.load(HEAD), undefined);
   });
 });
 

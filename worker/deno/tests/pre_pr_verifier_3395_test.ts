@@ -212,6 +212,35 @@ function inputFor(
   };
 }
 
+Deno.test("runPrePrVerifier hands the model the caller's environment and extra denials, and nothing when none are given (PR #4849 review)", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    const seen: Array<
+      { parentEnv: unknown; tools: readonly string[] | undefined }
+    > = [];
+    const deps = makeDeps((o) => {
+      seen.push({ parentEnv: o.parentEnv, tools: o.disallowedTools });
+      return Promise.resolve(okRun({ output: `Review:\n${REPLY_FINDING}` }));
+    }, tmps);
+    await runPrePrVerifier(inputFor(f), deps);
+    await runPrePrVerifier(
+      inputFor(f, {
+        parentEnv: { GH_TOKEN: "ghs_read_only" },
+        extraDisallowedTools: ["Bash"],
+      }),
+      deps,
+    );
+    assertEquals(seen[0]!.parentEnv, undefined);
+    assert(!seen[0]!.tools!.includes("Bash"));
+    assertEquals(seen[1]!.parentEnv, { GH_TOKEN: "ghs_read_only" });
+    assert(seen[1]!.tools!.includes("Bash"));
+    assert(seen[1]!.tools!.includes("Bash(gh:*)"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
 Deno.test("runPrePrVerifier runs the brief in a disposable, remote-less checkout and reports findings", async () => {
   const f = await makeRepo();
   const tmps: string[] = [];

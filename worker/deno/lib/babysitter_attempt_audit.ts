@@ -7,6 +7,9 @@
  * the wait until the next confirmed repair or verified fleet dismissal, or the
  * PR's merge or close, as a `repair-recovery` interval. Owner holds, failures
  * after a push and no-change passes that dismiss reviews are not journalled.
+ * A no-change pass whose reviews the verifier left open is journalled; one
+ * the verifier could not judge is thrown as an infrastructure failure, which
+ * the failure path journals.
  *
  * Best-effort, like the other journalling hooks: this never throws, and a
  * refused append is logged loud rather than swallowed (Issue #3234). Invalid

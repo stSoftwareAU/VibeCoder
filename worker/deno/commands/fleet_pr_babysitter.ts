@@ -34,6 +34,7 @@ import { createLogger } from "../lib/logger.ts";
 import {
   type ReviewVerificationInput,
   type ReviewVerificationOutcome,
+  type VerifierCredentials,
   verifyBabysitterReviews,
 } from "../lib/babysitter_review_verifier.ts";
 import {
@@ -1370,7 +1371,7 @@ async function reviewsVerifiedAtPublishedHead(options: {
   agentReply?: string;
   gh: GhRunner;
   verifyReviews: BabysitterRepairFinishDeps["verifyReviews"];
-}): Promise<Review[]> {
+}): Promise<{ verified: Review[]; outage?: string }> {
   const {
     repo,
     pr,
@@ -1416,12 +1417,16 @@ async function reviewsVerifiedAtPublishedHead(options: {
       "the PR head or description changed while the fixes were being verified";
   }
   const verified: Review[] = [];
+  let outage: string | undefined;
   for (const review of reviews) {
     const matches = verdicts.filter((verdict) => verdict.id === review.id);
     const verdict = matches.length === 1 ? matches[0] : undefined;
     if (unavailable === undefined && verdict?.verified === true) {
       verified.push(review);
       continue;
+    }
+    if (unavailable === undefined && verdict?.unavailable === true) {
+      outage ??= String(verdict.reason ?? "the verifier was unavailable");
     }
     const reason = unavailable ??
       (verdict === undefined
@@ -1437,7 +1442,19 @@ async function reviewsVerifiedAtPublishedHead(options: {
       `${repo}#${pr.number}: review ${review.id} stays open: ${clipped}; next action: the next scan retries, or the reviewer's review of the pushed head decides`,
     );
   }
-  return verified;
+  return { verified, outage: unavailable ?? outage };
+}
+
+/**
+ * What a finished repair did with the reviews it addressed (Issue #4657).
+ * `reviewsDismissed` is true only when at least one review was dismissed. An
+ * `outage` is why the verifier could not judge (it failed, was not checked, or
+ * the head or description moved): the pending-publication record is then kept,
+ * so the next scan re-verifies without running the agent again.
+ */
+export interface BabysitterRepairFinish {
+  reviewsDismissed: boolean;
+  outage?: string;
 }
 
 /**
@@ -1462,7 +1479,7 @@ export async function finishBabysitterRepair(
   reviews: Review[],
   deps: BabysitterRepairFinishDeps,
   change: BabysitterRepairChange,
-): Promise<void> {
+): Promise<BabysitterRepairFinish> {
   const runCommand = deps.runCommand ?? run;
   const gh: GhRunner = deps.gh ?? ((args) => run("gh", args));
   let expectedHead: string;
@@ -1543,6 +1560,7 @@ export async function finishBabysitterRepair(
     proposal: change.proposal,
     pushed: expectedHead !== pr.headRefOid || !!change.pushedByEarlierRepair,
   });
+  let finish: BabysitterRepairFinish = { reviewsDismissed: false };
   try {
     await syncBabysitterRepairBody(
       repo,
@@ -1571,8 +1589,8 @@ export async function finishBabysitterRepair(
           gh,
         });
         // A CI or conflict repair addresses no review, so nothing is verified.
-        const toDismiss = reviews.length === 0
-          ? reviews
+        const checked = reviews.length === 0
+          ? { verified: reviews, outage: undefined }
           : await reviewsVerifiedAtPublishedHead({
             repo,
             pr,
@@ -1583,6 +1601,13 @@ export async function finishBabysitterRepair(
             gh,
             verifyReviews: deps.verifyReviews,
           });
+        const toDismiss = checked.verified;
+        finish = {
+          reviewsDismissed: toDismiss.length > 0,
+          ...(checked.outage === undefined || toDismiss.length > 0
+            ? {}
+            : { outage: checked.outage }),
+        };
         if (reviews.length === 0 || toDismiss.length > 0) {
           await (deps.dismiss
             ? deps.dismiss(toDismiss, expectedHead)
@@ -1602,7 +1627,18 @@ export async function finishBabysitterRepair(
     }
     throw error;
   }
-  await deps.publication?.clear(expectedHead);
+  // An outage keeps the record: the next scan re-runs the publication and the
+  // verification only, never the agent (Issue #4657).
+  if (finish.outage === undefined) await deps.publication?.clear(expectedHead);
+  return finish;
+}
+
+/** The infrastructure failure a verifier outage becomes, so the retry backs off. */
+function verifierOutageFailure(outage: string): BabysitterFailure {
+  return new BabysitterFailure(
+    `the review verifier was unavailable, so the reviews stay open: ${outage}`,
+    "infrastructure",
+  );
 }
 
 /**
@@ -1614,7 +1650,9 @@ export async function finishBabysitterRepair(
  * and publishes the saved proposal for that head.
  *
  * @returns Whether a pending publication existed and was finished. A failed
- *   finish throws and leaves the record, so the next scan retries.
+ *   finish throws and leaves the record, so the next scan retries. A verifier
+ *   outage also leaves the record and throws an infrastructure failure, so the
+ *   next scan re-verifies after the infrastructure backoff (Issue #4657).
  */
 export async function resumePendingPublication(options: {
   repo: string;
@@ -1631,11 +1669,20 @@ export async function resumePendingPublication(options: {
   console.log(
     `${repo}#${pr.number}: resuming the unfinished description publication for ${pr.headRefOid}`,
   );
-  await finishBabysitterRepair(repo, pr, repoPath, login, reviews, deps, {
-    proposal: pending.proposal,
-    exchange,
-    pushedByEarlierRepair: pending.pushed,
-  });
+  const finish = await finishBabysitterRepair(
+    repo,
+    pr,
+    repoPath,
+    login,
+    reviews,
+    deps,
+    {
+      proposal: pending.proposal,
+      exchange,
+      pushedByEarlierRepair: pending.pushed,
+    },
+  );
+  if (finish.outage !== undefined) throw verifierOutageFailure(finish.outage);
   return true;
 }
 
@@ -1819,6 +1866,82 @@ export async function forwardAgentStderr(
     tail = combined;
   }
   return new TextDecoder().decode(tail);
+}
+
+/** Variables that would hand the verifier a write credential or the App identity. */
+const VERIFIER_WITHHELD_ENV = [
+  "GITHUB_TOKEN",
+  "GITHUB_APP_ID",
+  "GITHUB_APP_INSTALLATION_ID",
+  "GITHUB_APP_PRIVATE_KEY_PATH",
+];
+
+/**
+ * What the review verifier's Claude child may hold (Issue #4657). The verifier
+ * is a model that reads untrusted review text and a repository's code, and it
+ * shares the runner's OS user, so it gets the Codex agent's boundary
+ * (Issue #4572): its own freshly minted read-only token for the target
+ * repository as `GH_TOKEN`, never the runner's write token; no Bash, so it runs
+ * no code that could read a credential; and no Read or Edit of the babysitter's
+ * protected paths (the App key, credential directory, gh config, other App
+ * keys) or of /proc. It reads the checkout and judges.
+ *
+ * @throws Error when the read-only token cannot be minted; the caller treats
+ *   that as a verifier outage, so the reviews stay open.
+ */
+export async function babysitterVerifierCredentials(
+  app: BabysitterAppConfig,
+  repo: string,
+  options: {
+    home: string;
+    configPath: string;
+    env?: (name: string) => string | undefined;
+    parentEnv?: Record<string, string>;
+    fetchFn?: FetchFn;
+  },
+): Promise<VerifierCredentials> {
+  const hostCredentials = await babysitterHostCredentialPaths(
+    options.configPath,
+    options.home,
+    options.env,
+  );
+  const protectedPaths = await babysitterProtectedPaths(
+    options.home,
+    app.privateKeyPath,
+    hostCredentials,
+  );
+  const minted = await mintBabysitterAgentToken(
+    app,
+    repo,
+    options.fetchFn ?? globalThis.fetch,
+  );
+  const parentEnv = { ...(options.parentEnv ?? Deno.env.toObject()) };
+  for (const name of VERIFIER_WITHHELD_ENV) delete parentEnv[name];
+  parentEnv.GH_TOKEN = minted.token;
+  // Claude permission rules spell an absolute path with a leading "//".
+  const denied = [...protectedPaths, "/proc"].flatMap((path) => [
+    `Read(/${path})`,
+    `Read(/${path}/**)`,
+    `Edit(/${path})`,
+    `Edit(/${path}/**)`,
+  ]);
+  return { parentEnv, disallowedTools: ["Bash", ...denied] };
+}
+
+/** The production review verifier, run with the read-only credential above. */
+export function readOnlyReviewVerifier(
+  app: BabysitterAppConfig,
+  repo: string,
+  configPath: string,
+): BabysitterRepairFinishDeps["verifyReviews"] {
+  return (input) =>
+    verifyBabysitterReviews(input, {
+      credentials: () => {
+        const home = Deno.env.get("HOME");
+        if (!home) throw new Error("HOME is not set");
+        return babysitterVerifierCredentials(app, repo, { home, configPath });
+      },
+    });
 }
 
 /** Mint a scoped credential and bound the child session to its expiry. */
@@ -2522,6 +2645,8 @@ export async function fix(
     await exec("git", buildFetchTrackingRefArgs("origin", pr.headRefName), dir);
     await exec("git", buildFetchTrackingRefArgs("origin", pr.baseRefName), dir);
     await exec("git", ["checkout", "-b", "babysitter", pr.headRefOid], dir);
+    const verifyReviews = deps.verifyReviews ??
+      readOnlyReviewVerifier(app, repo, configPath);
     const publication = reviews.length > 0
       ? pendingPublicationStore(stateDir, repo, pr.number, reviews)
       : undefined;
@@ -2539,7 +2664,7 @@ export async function fix(
           runCommand: exec,
           publication,
           dismiss: deps.dismiss,
-          verifyReviews: deps.verifyReviews ?? verifyBabysitterReviews,
+          verifyReviews,
         },
       })
     ) return;
@@ -2717,14 +2842,14 @@ export async function fix(
       throw new Error("agent changed HEAD; refusing to push");
     }
     let pushed = false;
-    await finishBabysitterRepair(repo, pr, dir, login, reviews, {
+    const finish = await finishBabysitterRepair(repo, pr, dir, login, reviews, {
       runCommand: exec,
       validateAndCommit: deps.commit,
       gh,
       renewalFailed: () => renewalFailed,
       publication,
       dismiss: deps.dismiss,
-      verifyReviews: deps.verifyReviews ?? verifyBabysitterReviews,
+      verifyReviews,
       onPushed: async (pushedHead) => {
         pushed = true;
         retryRecord = {
@@ -2753,6 +2878,11 @@ export async function fix(
       agentReply: response,
       exchange,
     });
+    if (!pushed && finish.outage !== undefined) {
+      // Nothing was pushed and the verifier could not judge: an infrastructure
+      // outage with the publication kept, not an agent that made no progress.
+      throw verifierOutageFailure(finish.outage);
+    }
     if (!pushed) {
       const substantive = retryRecord!.attempts.substantive + 1;
       retryRecord = noProgressRecord(
@@ -2766,8 +2896,9 @@ export async function fix(
       retryRecord.unpublishedAttempts = (retryRecord.unpublishedAttempts ?? 0) +
         1;
       await saveBabysitterRetryState(stateDir, retryRecord);
-      // A normal return with reviews means publication and dismissal finished.
-      if (reviews.length === 0) {
+      // A pass that dismissed its reviews is not a failed repair; one the
+      // verifier left open (or a CI repair that changed nothing) is.
+      if (!finish.reviewsDismissed) {
         await journalAttempt({
           repo,
           prNumber: initial.number,

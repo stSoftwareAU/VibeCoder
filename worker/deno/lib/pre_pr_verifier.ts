@@ -397,6 +397,14 @@ export interface PrePrVerifierInput {
   killAfterSeconds?: number;
   model?: string;
   maxRetries?: number;
+  /**
+   * The environment the verifier's child is built from. Omitted, it reads the
+   * process environment; the babysitter supplies one carrying a read-only
+   * token so the runner's write token never reaches the model (Issue #4657).
+   */
+  parentEnv?: Record<string, string>;
+  /** Tools denied on top of {@link PRE_PR_VERIFIER_DISALLOWED_TOOLS}. */
+  extraDisallowedTools?: readonly string[];
   logger: Logger;
 }
 
@@ -1078,7 +1086,11 @@ async function verifyInCheckout(
     model: input.model,
     cwd: checkout,
     logger: input.logger,
-    disallowedTools: [...PRE_PR_VERIFIER_DISALLOWED_TOOLS],
+    disallowedTools: [
+      ...PRE_PR_VERIFIER_DISALLOWED_TOOLS,
+      ...(input.extraDisallowedTools ?? []),
+    ],
+    ...(input.parentEnv === undefined ? {} : { parentEnv: input.parentEnv }),
   }, input.maxRetries === undefined ? {} : { maxRetries: input.maxRetries });
   if (!asked.ok) {
     return notChecked(`verifier run failed: ${asked.error.message}`);
