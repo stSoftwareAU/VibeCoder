@@ -27,6 +27,9 @@ agreement:
   A missing cargo-nextest is identified before the run and gets an install
   action. Reusable child checks are matched by their full caller path, including
   a required child that depends on the mutation job, rather than by a sibling.
+- **Bounded process spawn.** The mutation runner passes an abort signal to its
+  child process and aborts it alongside the existing SIGKILL fallback after a
+  timeout or low-disk stop, satisfying the spawn-timeout gate.
 
 The flags of a `deno task` are still not read: the worker's Deno runner does not
 run the repository's task, so there is nothing to apply them to. Part of #4617.
@@ -134,6 +137,11 @@ the reason text (`completion_phase.ts`, `pr_deferral.ts`) only display it.
 
 ## Test Plan
 
+- CI repair: checked the mutation runner's explicit abort signal and its two
+  hard-stop paths; `deno task test:unit tests/spawn_timeout_check_test.ts
+  tests/mutation_runner_test.ts` passed (97 tests). The PR-summary freshness
+  command reads commit history, so this summary update becomes visible to that
+  check after the babysitter commits it.
 - Review follow-up: reusable checks match the full caller and child name;
   a sibling is no longer treated as the mutation job. Required feeders still
   count, as verified by
