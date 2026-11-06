@@ -1358,8 +1358,13 @@ last update is not completion evidence. Both waits are capped by the PR's
 merge or close; otherwise they remain open and their duration is measured to
 observation time. Missing action or commit evidence remains
 unknown rather than being inferred from a login or branch name.
-Babysitter retry cooldowns from failed attempts without a repair push are not
-measured as recovery waits. Issue #4658 remains open for that follow-up.
+When a babysitter repair attempt ends without a push (an agent failure, an
+infrastructure, capability or race cooldown, or an agent that made no change),
+the babysitter journals a verified `babysitter-attempt` failed repair in its
+audit journal. The existing `repair-recovery` interval then covers that cooldown
+until the next confirmed repair push. Owner holds are not journalled, because
+they are already `needs-human` waits, and a failure after a push is not
+journalled, because that push is already confirmed.
 
 **Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
