@@ -1355,7 +1355,8 @@ next confirmed repair action, with repeated failures combined into one wait;
 `branch-refresh` runs from a verified branch update to the first completed
 workflow run or external check on its correlated commit. A running workflow's
 last update is not completion evidence. Both waits are capped by the PR's
-merge, close or observation time. Missing action or commit evidence remains
+merge or close; otherwise they remain open and their duration is measured to
+observation time. Missing action or commit evidence remains
 unknown rather than being inferred from a login or branch name.
 
 **Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
@@ -1386,7 +1387,8 @@ rollup, not a delivered change, so the root's merge is the one delivery.
 **Truncation.** Pull requests are read newest first until the page holding the
 cohort's oldest PR, up to 500 per repository. `--max-prs-per-repo <n>` sets that
 cap to a positive integer. Rollout verification also reads older pages until
-exhaustion or the bound. A repository with potentially unseen PRs is listed as
+exhaustion or the bound; exhausting that older scan leaves rollout evidence
+incomplete. A repository with potentially unseen cohort PRs is listed as
 truncated: the command prints a `TRUNCATED` line, returns the repository in its
 data, and records it in `coverage.truncatedRepos`. The same field is written
 into `--write-snapshot`, so an `--input` replay reports the truncation too.

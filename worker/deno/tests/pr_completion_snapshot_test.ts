@@ -1226,7 +1226,6 @@ Deno.test("collect - incomplete CI is reflected in delivered metrics and coverag
     options(fakeGh(fixture), { ciCallBudget: 5 }),
   );
   assertEquals(snapshot.input.ciIncompletePrs, [
-    { repo: REPO, prNumber: 1 },
     { repo: REPO, prNumber: 2 },
   ]);
   const runs = snapshot.input.ciRuns.filter((run) =>
@@ -1235,7 +1234,7 @@ Deno.test("collect - incomplete CI is reflected in delivered metrics and coverag
   assertEquals(runs.length, 1);
   assertEquals(runs[0]?.durationMinutes, 10);
   const report = buildPrCompletionReport(snapshot.input);
-  assertEquals(report.coverage.deliveredChangesWithoutCiData, 2);
+  assertEquals(report.coverage.deliveredChangesWithoutCiData, 1);
   assertEquals(report.delivery.ciRunsPerDeliveredChange, null);
   assertEquals(report.delivery.ciMinutesPerDeliveredChange, null);
   assertEquals(report.waiting.ciFailureComplete, false);
@@ -2325,6 +2324,9 @@ Deno.test("collect - CI history includes observed heads, workflow attempts and p
     fixture.calls.some((path) =>
       path.startsWith("repos/org/repo/commits/sha2/check-runs?")
     ),
+  );
+  assert(
+    !fixture.calls.some((path) => path.includes("/commits/merge1/check-runs")),
   );
   // The merge commit's runs are read for post-merge regressions only, so they
   // do not enter the CI history that feeds the cost totals.
@@ -5390,7 +5392,7 @@ Deno.test("collect regression - rollout scans beyond the first pre-cohort page a
         snapshot.input.rollout!.discoveryEvidenceComplete,
         maxPrs === 200,
       );
-      assertEquals(snapshot.truncatedRepos.includes(REPO), maxPrs === 100);
+      assertEquals(snapshot.truncatedRepos.includes(REPO), false);
       const report = buildPrCompletionReport(snapshot.input);
       assertEquals(report.cohort.prCount, 99);
     }
@@ -5462,6 +5464,10 @@ Deno.test("collect regression - repeated failed repairs form one recovery interv
             cohort: { ...COHORT, observedAt: "2026-10-20T01:00:00Z" },
           },
         ),
+      );
+      assertEquals(
+        buildPrCompletionReport(snapshot.input).waiting.openIntervals,
+        recovered ? 0 : 1,
       );
       assertEquals(
         buildPrCompletionReport(snapshot.input).waiting
@@ -5536,7 +5542,11 @@ Deno.test("collect regression - refresh waits require completed CI and accept ex
       assertEquals(
         snapshot.input.blockers.filter((b) => b.blocker === "branch-refresh")
           .map((b) => b.endedAt),
-        [external ? "2026-10-20T01:20:00Z" : "2026-10-20T02:00:00Z"],
+        [external ? "2026-10-20T01:20:00Z" : null],
+      );
+      assertEquals(
+        buildPrCompletionReport(snapshot.input).waiting.openIntervals,
+        external ? 0 : 1,
       );
       assertEquals(
         buildPrCompletionReport(snapshot.input).waiting
@@ -5746,7 +5756,7 @@ Deno.test("recovery boundaries - trust, kind, outcomes, ordering and terminal ca
     expected(null, at(10)),
   );
   for (
-    const cap of [{ observedAt: at(20) }, {
+    const cap of [{
       closedAt: at(20),
       observedAt: at(50),
     }, { mergedAt: at(20), closedAt: at(40), observedAt: at(50) }]
@@ -5858,7 +5868,7 @@ Deno.test("refresh boundaries - trusted fleet updates require correlated complet
     expected(at(20)),
   );
   for (
-    const cap of [{ observedAt: at(10) }, {
+    const cap of [{
       closedAt: at(10),
       observedAt: at(50),
     }, { mergedAt: at(10), closedAt: at(40), observedAt: at(50) }]
@@ -5933,7 +5943,7 @@ Deno.test("collect boundaries - older candidate cap and future PRs keep rollout 
         snapshot.input.rollout!.discoveryEvidenceComplete,
         maxPrsPerRepo === 2,
       );
-      assertEquals(snapshot.truncatedRepos, maxPrsPerRepo === 1 ? [REPO] : []);
+      assertEquals(snapshot.truncatedRepos, []);
       assertEquals(buildPrCompletionReport(snapshot.input).cohort.prCount, 0);
     }
   });

@@ -417,7 +417,7 @@ async function observeRepo(
     if (batch.length < PER_PAGE) break;
     if (rolloutVerifiedAt === undefined && oldest < startMs) break;
     if (page >= pageBound) {
-      truncated = true;
+      truncated = oldest >= startMs;
       rolloutIncomplete = rolloutVerifiedAt !== undefined;
       break;
     }
@@ -429,7 +429,6 @@ async function observeRepo(
   if (rolloutKept.length > maxPrs) {
     rolloutKept.length = maxPrs;
     rolloutIncomplete = true;
-    truncated = true;
   }
   if (truncated) truncatedRepos.push(repo);
   const observed = kept.map((pr) =>
@@ -746,8 +745,7 @@ export function recoveryBlockersFor(
   record: PrCompletionRecord,
   actions: readonly TrustedPrAction[],
 ): Blocker[] {
-  const endCap = record.mergedAt ?? record.closedAt ?? record.observedAt ??
-    null;
+  const endCap = record.mergedAt ?? record.closedAt ?? null;
   const repairs = actions.filter((action) =>
     action.verified && action.kind === "repair"
   ).sort((a, b) =>
@@ -792,8 +790,7 @@ export function branchRefreshBlockersFor(
   actions: readonly TrustedPrAction[],
   runs: readonly CiRun[],
 ): Blocker[] {
-  const endCap = record.mergedAt ?? record.closedAt ?? record.observedAt ??
-    null;
+  const endCap = record.mergedAt ?? record.closedAt ?? null;
   const endCapMs = endCap === null ? null : utcMillis(endCap, "PR end");
   return actions.flatMap((action) => {
     if (
@@ -1156,7 +1153,7 @@ async function ciRunsFor(
     if (headSha === null || !heads.includes(headSha)) continue;
     workflowRuns.set(asId(run.id, `${label} workflow run`), { run, headSha });
   }
-  for (const headSha of heads) {
+  for (const headSha of mergeCommit ? [] : heads) {
     // filter=all: otherwise GitHub lists only the latest run per check name.
     const checks = await fetchPages(
       `repos/${record.repo}/commits/${headSha}/check-runs?filter=all`,

@@ -24,10 +24,11 @@ claimed. Closes #4658.
   candidates affect rollout verification, not delivery denominators.
 - Repeated failed repairs share one recovery interval until the next confirmed
   repair. Branch-refresh intervals end at a positively completed workflow or
-  external check on the correlated commit, capped by the PR terminal state or
-  observation time.
+  external check on the correlated commit, capped by the PR terminal state.
+  Open waits remain open and are measured through observation time.
 - Rollout scans continue through older pages to exhaustion or the collection
-  bound. Bound exhaustion and candidate truncation leave coverage incomplete.
+  bound. Bound exhaustion and candidate truncation leave rollout coverage
+  incomplete without marking a complete cohort truncated.
 - CI cost ratios retain check-only heads alongside workflow heads. Workflow
   checks and jobs are not counted again in the primary cost totals.
 - Missing, truncated or unverified action evidence remains unknown or
@@ -163,7 +164,7 @@ the fixes and pass with the fixes:
   that the cohort denominator stays 99 while rollout eligibility is 101.
 - **Overlapping recovery waits:** failures at 00:00 and 00:10 followed by a
   00:30 recovery yield one 1,800-second interval. Without recovery there is one
-  interval capped at observation time.
+  open interval measured through observation time.
 - **Refresh completion:** an in-progress workflow updated at 01:03 keeps the
   wait open; a completed external check closes it at 01:20. Running workflow
   snapshot rows carry no completion timestamp.
@@ -178,6 +179,25 @@ the fixes and pass with the fixes:
 repair waits, positive workflow/external-check completion and mixed-source cost
 accounting. No second implementation of these rules was found; collector and CLI
 use the same report consumer and blocker functions.
+
+### Review corrections and test-change evidence
+
+Merge-commit check-run reads were unused by post-merge regression detection and
+incorrectly consumed the CI budget. They are removed; observed PR-head check
+runs remain covered by `worker/deno/tests/pr_completion_snapshot_test.ts::collect - check runs are read for an observed head with no workflow runs`.
+The restored `worker/deno/tests/pr_completion_snapshot_test.ts::collect - incomplete CI is reflected in delivered metrics and coverage`
+distinguishes a fully collected PR from one cut by the budget. The CI history
+test also asserts that merge-commit check runs are not requested.
+
+Observation time no longer closes unresolved repair or refresh waits; terminal
+PR states still cap them. The `collect regression - repeated failed repairs form
+one recovery interval` and `collect regression - refresh waits require completed
+CI and accept external checks` tests in `worker/deno/tests/pr_completion_snapshot_test.ts`
+assert open counts and durations. The boundary tests retain terminal cap
+coverage. The obsolete expectation that an older rollout scan cap truncates a
+complete cohort is replaced by the rollout scan and older candidate boundary
+tests in the same file; they still assert incomplete rollout evidence. All five
+updated regression tests failed before the review fixes and pass afterwards.
 
 ## Deno regression avoided
 
