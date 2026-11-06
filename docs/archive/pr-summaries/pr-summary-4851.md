@@ -14,15 +14,15 @@ Version bump: No version change was made for this fix.
 
 ### Intent and Rationale
 
-- An agent can push a rewritten summary and then fail in the same invocation,
-  or leave more local work during a later invocation. The live description
-  should reflect the summary that reached the PR branch in either case.
+- An agent can push a rewritten summary and then fail in the same invocation, or
+  leave more local work during a later invocation. The live description should
+  reflect the summary that reached the PR branch in either case.
 
 ### Essential Design Decisions
 
 - Initial and later turn-limit failures share the sync-aware handler. It
-  preserves the original error and charges the attempt after the refresh.
-  Other early agent exits preserve their existing failure or release outcome.
+  preserves the original error and charges the attempt after the refresh. Other
+  early agent exits preserve their existing failure or release outcome.
 - The failure path uses the push verifier's confirmed `remoteSha`, even when
   `landed` is false because local HEAD has advanced. `committedHeadSha` pins
   summary reads, digest and image resolution to that remote commit.
@@ -87,21 +87,22 @@ normal-push, no-change and held-review entry points retain their guards.
 - For REQUIRED ITEM 1's original `pr_feedback_processor.ts:1275–1276` mutations,
   `bodySyncAttempted` was never read after being set: every caller returns
   before any other sync site. The inner `fixBranch` check also duplicated all
-  callers' guards. These dead checks and the assignment were removed rather
-  than exempted. The reachable failure-path gated-head guard is mutation-pinned
-  by the new safety test; ordinary gated-head exclusion remains covered too.
-- `deno lint` and `deno fmt --check` on the four changed TypeScript files passed.
-  The focused test command also type-checked all three test files and imports.
+  callers' guards. These dead checks and the assignment were removed rather than
+  exempted. The reachable failure-path gated-head guard is mutation-pinned by
+  the new safety test; ordinary gated-head exclusion remains covered too.
+- `deno lint` and `deno fmt --check` on the four changed TypeScript files
+  passed. The focused test command also type-checked all three test files and
+  imports.
 - `deno task check:manifests` passed: 847 tests, 1 ignored.
 - `./quality.sh < /dev/null` — both parallel and serial test passes succeeded,
   but the unit-test time-budget audit failed: both tests in unchanged
-  `tests/launcher_harness_reclaim_stub_test.ts` exceeded one second (3.18s).
-  The audit reported 90 slow tests overall. That file is unchanged from
+  `tests/launcher_harness_reclaim_stub_test.ts` exceeded one second (3.18s). The
+  audit reported 90 slow tests overall. That file is unchanged from
   `origin/main`. All other executed quality checks passed, including lint,
-  type-check, formatting, Markdown and security scans. Configuration
-  integration and Checkov were skipped because their prerequisites were absent.
-- The complete mutation campaign was not rerun; the eight targeted checks do
-  not claim coverage of mutants the earlier budget never tested.
+  type-check, formatting, Markdown and security scans. Configuration integration
+  and Checkov were skipped because their prerequisites were absent.
+- The complete mutation campaign was not rerun; the eight targeted checks do not
+  claim coverage of mutants the earlier budget never tested.
 
 ## Deno regression avoided
 
