@@ -75,8 +75,8 @@ const DEPENDENCY_UPDATE_TIMEOUT_MINUTES = 20;
  * not left on disk.
  */
 const CHECKOUT_NO_CREDENTIALS = `        with:
-          # Nothing here pushes, so the job token must not be left behind
-          # in .git/config where a later step could read it.
+          # The checkout credential is not needed, so do not leave it in
+          # .git/config where a later step could read it.
           persist-credentials: false`;
 
 /**

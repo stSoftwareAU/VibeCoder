@@ -26,10 +26,12 @@ Version bump: `VERSION` is not changed by this PR.
   `CREDENTIAL_USING_ACTIONS`. The other entries (`ad-m/github-push-action`,
   `stefanzweifel/git-auto-commit-action`, …) are untouched: the issue gives
   evidence for this action only, and I did not verify the others.
-- The templates reuse the shared `CHECKOUT_NO_CREDENTIALS` block, as the issue
-  asks. Its comment line "Nothing here pushes, …" sits under the new comment
-  saying create-pull-request pushes with its own token; I left the shared
-  constant alone to stay in scope.
+- The templates reuse the shared `CHECKOUT_NO_CREDENTIALS` block. Its comment
+  now describes the unused checkout credential rather than claiming nothing
+  pushes, which also holds for the dependency-update jobs.
+- The gate label, issue and workflow-setup prompts, audit documentation and
+  finding text describe the need for the checkout credential, not pushing in
+  general. `create-pull-request` uses its own token and is not an exemption.
 
 ### Undiscoverable Facts
 
@@ -42,7 +44,8 @@ Version bump: `VERSION` is not changed by this PR.
 Backend templates, scanner and docs only; no UI. Changed:
 `worker/deno/lib/workflow_definitions.ts`,
 `worker/deno/lib/checkout_persist_credentials_scanner.ts`, `docs/EXTENDING.md`,
-`docs/GITHUB-ACTIONS-AUDIT-SCAN.md`. Doc section read in full: EXTENDING "Every
+`docs/GITHUB-ACTIONS-AUDIT-SCAN.md`, `worker/deno/lib/workflow_file_checks.ts`,
+`prompts/issue/prompt.md` and `prompts/workflow_setup/prompt.md`. Doc section read in full: EXTENDING "Every
 emitted template now carries" list and the audit-scan
 "checkout-persist-credentials" signal table.
 
@@ -59,12 +62,19 @@ emitted template now carries" list and the audit-scan
   templates do not persist the checkout credential (Issue #4692)" — parses the
   `cargo-upgrade` and `deno-outdated` templates, asserts the checkout's
   `persist-credentials` is `false` and the create-pull-request step still has a
-  `token:`. Red with the `${CHECKOUT_NO_CREDENTIALS}` line removed from
+  `token:`, and neither rendered template says nothing pushes. Red with the `${CHECKOUT_NO_CREDENTIALS}` line removed from
   `cargo-upgrade`; the existing conformance test
   `worker/deno/tests/workflow_template_audit_conformance_test.ts` ("every
-  `actions/checkout` sets `persist-credentials: false` unless the job pushes")
+  `actions/checkout` sets `persist-credentials: false` unless the job needs the checkout credential")
   also goes red there, reporting `BP-PERSIST-CREDS-cargo-upgrade-upgrade-0`.
 - No existing assertion was removed or edited.
+- Review fix: the new comment assertion failed before the shared comment was
+  reworded. The workflow definitions, scanner and template conformance suites
+  passed together (117 tests); the scanner test also checks finding wording.
+- The review replaced the obsolete claim that all pushing jobs need checkout
+  credentials; jobs that use that credential remain exempt. Coverage:
+  `worker/deno/tests/checkout_persist_credentials_scanner_test.ts::scan - a job using create-pull-request with a persisting checkout is flagged`
+  and `worker/deno/tests/workflow_definitions_test.ts::workflow_definitions - dependency-update templates do not persist the checkout credential (Issue #4692)`.
 - Run: `deno task test:unit` over the 34 test files that reference the scanner,
   `workflow_definitions`, `workflow_file_checks` or the audit template — 794
   passed, 0 failed. `deno fmt --check` and `deno lint` clean on the four changed

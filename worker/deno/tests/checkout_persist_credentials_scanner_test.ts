@@ -509,6 +509,7 @@ jobs:
   );
   assert(f.whyItMatters.includes("has 1 `actions/checkout` step without"));
   assert(f.whyItMatters.includes("That job shows no static sign"));
+  assert(f.whyItMatters.includes("using the checkout credential"));
   assert(
     !f.whyItMatters.includes("All 1"),
     "no plural-count sentence for a single step",

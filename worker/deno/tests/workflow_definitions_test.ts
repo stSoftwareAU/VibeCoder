@@ -975,6 +975,7 @@ Deno.test(
     for (const id of ["cargo-upgrade", "deno-outdated"]) {
       const spec = WORKFLOW_SPECS.find((s) => s.id === id);
       assertNotEquals(spec, undefined, `${id} spec missing`);
+      assertEquals(spec!.template.includes("Nothing here pushes"), false);
       const workflow = parseYaml(spec!.template) as {
         jobs: Record<string, { steps: Record<string, unknown>[] }>;
       };
