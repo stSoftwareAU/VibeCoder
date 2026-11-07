@@ -20,8 +20,8 @@
  *
  * 1. Always runs a fast check over just the files the push introduces
  *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
- *    `markdownlint-cli2`, `cspell` when the repo's CI runs it, and the Floci
- *    CloudFormation deploy test
+ *    `markdownlint-cli2`, `cspell` and ShellCheck when the repo's CI runs
+ *    them, and the Floci CloudFormation deploy test
  *    when the push changes `infra/cloudformation/` and the repo tracks its
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
@@ -29,8 +29,8 @@
  * 2. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
- * call, an unquotable path, or a configured-but-missing markdownlint or
- * cspell binary is an `Err`, never a pass.
+ * call, an unquotable path, a ShellCheck policy the runner cannot interpret,
+ * or a configured-but-missing check binary is an `Err`, never a pass.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -38,7 +38,11 @@
 import type { Result } from "../types.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
-import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
+import {
+  type PreFlightRunner,
+  runPreFlightGate,
+  tokeniseCommand,
+} from "./pre_flight_gate.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
@@ -231,6 +235,161 @@ export interface ChangedFileCheck {
   command: string;
 }
 
+/** ShellCheck policy read from a repository's runnable CI workflow. */
+export interface ShellcheckPolicy {
+  version: string;
+  flags: string[];
+  configFiles: string[];
+  workflowFiles: string[];
+}
+
+const SHELLCHECK_CONFIG = ".shellcheckrc";
+
+/**
+ * Read the supported direct ShellCheck policy from tracked workflow steps.
+ * A workflow that invokes ShellCheck in another shape is an incomplete policy,
+ * never an implicit pass.
+ */
+export async function repoShellcheckPolicy(
+  repoRoot: string,
+  tracked: readonly string[],
+): Promise<Result<ShellcheckPolicy | null, string>> {
+  const policies: ShellcheckPolicy[] = [];
+  for (const path of tracked) {
+    if (!path.startsWith(".github/workflows/") || !/\.ya?ml$/.test(path)) {
+      continue;
+    }
+    let text: string;
+    try {
+      text = await Deno.readTextFile(`${repoRoot}/${path}`);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `cannot read tracked workflow ${path}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    const runSteps = workflowRunStepBodies(text);
+    const commands = runSteps.flatMap((body) => body.split("\n")).map((line) =>
+      line.trim()
+    ).filter((line) => line !== "" && !line.startsWith("#") &&
+      /\bshellcheck\b/.test(line) && !/\bshellcheck\s+--version\b/.test(line));
+    if (commands.length === 0) continue;
+    if (/^\s*working-directory\s*:\s*(?!["']?\.["']?\s*(?:#.*)?$)/m.test(text)) {
+      return {
+        ok: false,
+        error: `ShellCheck workflow ${path} sets an unsupported working-directory`,
+      };
+    }
+    const version = /\bSHELLCHECK_VERSION\s*:\s*["']?(\d+\.\d+\.\d+)["']?/.exec(
+      text,
+    )?.[1];
+    if (!version) {
+      return {
+        ok: false,
+        error: `ShellCheck workflow ${path} does not declare a supported pinned version`,
+      };
+    }
+    for (const command of commands) {
+      const match = /^find\s+\.\s+-name\s+["']\*\.sh["']\s+-type\s+f\s+-exec\s+shellcheck\s+(.+?)\s+\{\}\s+\+$/.exec(
+        command,
+      );
+      if (!match) {
+        return {
+          ok: false,
+          error: `unsupported ShellCheck command in ${path}: ${command}`,
+        };
+      }
+      const args = tokeniseCommand(match[1]!);
+      const configFiles = [SHELLCHECK_CONFIG];
+      for (let i = 0; i < args.length; i++) {
+        const arg = args[i]!;
+        if (!arg.startsWith("-")) {
+          return {
+            ok: false,
+            error: `unsupported positional ShellCheck argument in ${path}: ${command}`,
+          };
+        }
+        if (arg === "--rcfile" || arg === "-rc") {
+          const value = args[++i];
+          if (!value || value.startsWith("-")) {
+            return { ok: false, error: `missing ShellCheck rcfile in ${path}` };
+          }
+          configFiles.push(value);
+        } else if (arg.startsWith("--rcfile=")) {
+          configFiles.push(arg.slice("--rcfile=".length));
+          if (configFiles.at(-1) === "") {
+            return { ok: false, error: `missing ShellCheck rcfile in ${path}` };
+          }
+        } else if (["-e", "--exclude", "-s", "--shell"].includes(arg)) {
+          const value = args[++i];
+          if (!value || value.startsWith("-")) {
+            return { ok: false, error: `missing value for ShellCheck option ${arg} in ${path}` };
+          }
+        } else if (/^-[A-Za-z]$/.test(arg) || arg.startsWith("--")) {
+          // Other option forms pass through unchanged; ShellCheck validates them.
+        } else {
+          return { ok: false, error: `unsupported ShellCheck option ${arg} in ${path}` };
+        }
+      }
+      policies.push({ version, flags: args, configFiles, workflowFiles: [path] });
+    }
+  }
+  if (policies.length === 0) return { ok: true, value: null };
+  const first = policies[0]!;
+  if (policies.some((p) =>
+    p.version !== first.version ||
+    JSON.stringify(p.flags) !== JSON.stringify(first.flags) ||
+    JSON.stringify(p.configFiles) !== JSON.stringify(first.configFiles)
+  )) {
+    return { ok: false, error: "repository CI declares conflicting ShellCheck policies" };
+  }
+  return {
+    ok: true,
+    value: {
+      ...first,
+      workflowFiles: [...new Set(policies.flatMap((p) => p.workflowFiles))],
+    },
+  };
+}
+
+function workflowRunStepBodies(text: string): string[] {
+  const bodies: string[] = [];
+  const stepKey = /^(\s*)(?:-\s+)?run\s*:(.*)$/;
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!.replace(/\r$/, "");
+    const step = stepKey.exec(line);
+    if (!step) continue;
+    const rest = (step[2] ?? "").trim();
+    if (!/^[|>][-+0-9]*$/.test(rest)) {
+      bodies.push(rest);
+      continue;
+    }
+    const indent = (step[1] ?? "").length;
+    const block: string[] = [];
+    for (i++; i < lines.length; i++) {
+      const next = lines[i]!.replace(/\r$/, "");
+      if (next.trim() === "") {
+        block.push("");
+        continue;
+      }
+      if (next.length - next.trimStart().length <= indent) {
+        i--;
+        break;
+      }
+      block.push(next.trimStart());
+    }
+    bodies.push(block.join("\n"));
+  }
+  return bodies;
+}
+
+function shellcheckVersionOutput(text: string): string | null {
+  return /^version:\s*(\d+\.\d+\.\d+)\s*$/m.exec(text)?.[1] ?? null;
+}
+
 // SIMPLE-ON-PURPOSE: fixed deno fmt/lint extension allow-list, extra types a repo configures are left to its pre-flight — upgrade when a repo needs another type checked on push
 const DENO_FORMAT_EXTENSIONS = [
   ".ts",
@@ -364,6 +523,9 @@ export function planChangedFileChecks(
      */
     cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
+    shellcheckPolicy?: ShellcheckPolicy | null;
+    shellcheckBinary?: string | null;
+    shellcheckFiles?: string[];
   },
 ): Result<ChangedFileCheck[], string> {
   const checks: ChangedFileCheck[] = [];
@@ -493,6 +655,31 @@ export function planChangedFileChecks(
       label: "floci cloudformation",
       cwd: opts.repoRoot,
       command: `bash ${FLOCI_TEST_SCRIPT}`,
+    });
+  }
+
+  if (opts.shellcheckPolicy && (opts.shellcheckFiles?.length ?? 0) > 0) {
+    if (!opts.shellcheckBinary) {
+      return {
+        ok: false,
+        error: "ShellCheck is required by repository CI but could not be found",
+      };
+    }
+    const binary = quoteForTokeniser(opts.shellcheckBinary);
+    const files = quoteAll(opts.shellcheckFiles ?? []);
+    if (binary === null) {
+      return {
+        ok: false,
+        error: `cannot safely quote the ShellCheck path ${JSON.stringify(opts.shellcheckBinary)}`,
+      };
+    }
+    if (!files.ok) return files;
+    const flags = quoteAll(opts.shellcheckPolicy.flags);
+    if (!flags.ok) return flags;
+    checks.push({
+      label: "shellcheck",
+      cwd: opts.repoRoot,
+      command: `${binary} ${flags.value} ${files.value}`,
     });
   }
 
@@ -672,6 +859,14 @@ export function findCspellBinary(
   return findBinary("cspell", repoRoot, pathValue);
 }
 
+/** Find a runnable `shellcheck`: the repo's own install first, then `PATH`. */
+export function findShellcheckBinary(
+  repoRoot: string,
+  pathValue: string,
+): Promise<string | null> {
+  return findBinary("shellcheck", repoRoot, pathValue);
+}
+
 async function findBinary(
   name: string,
   repoRoot: string,
@@ -717,6 +912,7 @@ export async function runPrePushGate(opts: {
   git?: PrePushGit;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   findCspell?: (repoRoot: string) => Promise<string | null>;
+  findShellcheck?: (repoRoot: string) => Promise<string | null>;
   /**
    * Check every non-merge commit ahead of this ref instead of only commits on
    * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
@@ -777,12 +973,87 @@ export async function runPrePushGate(opts: {
     cspellBinary = await find(opts.cwd);
   }
 
+  const shellcheckPolicy = await repoShellcheckPolicy(opts.cwd, tracked);
+  if (!shellcheckPolicy.ok) {
+    return infrastructureFail(shellcheckPolicy.error);
+  }
+  const shellcheckTouchedConfigs = shellcheckPolicy.value?.configFiles.some((p) =>
+    changed.value.includes(p)
+  ) || shellcheckPolicy.value?.workflowFiles.some((p) =>
+    changed.value.includes(p)
+  ) || false;
+  const shellcheckFiles = shellcheckPolicy.value &&
+      (shellcheckTouchedConfigs || changed.value.some((p) => p.endsWith(".sh")))
+    ? (shellcheckTouchedConfigs
+      ? tracked.filter((p) => p.endsWith(".sh"))
+      : changed.value.filter((p) => p.endsWith(".sh")))
+    : [];
+  if (shellcheckPolicy.value && shellcheckFiles.length > 0) {
+    for (const path of shellcheckPolicy.value.configFiles) {
+      const required = path !== SHELLCHECK_CONFIG || tracked.includes(path);
+      if (!required) continue;
+      try {
+        await Deno.readTextFile(`${opts.cwd}/${path}`);
+      } catch (error) {
+        return infrastructureFail(
+          `cannot read ShellCheck configuration ${path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+  const existingShellcheckFiles: string[] = [];
+  for (const path of shellcheckFiles) {
+    try {
+      if ((await Deno.stat(`${opts.cwd}/${path}`)).isFile) {
+        existingShellcheckFiles.push(path);
+      }
+    } catch {
+      // A file removed since the index was read is not sent to ShellCheck.
+    }
+  }
+  let shellcheckBinary: string | null = null;
+  if (shellcheckPolicy.value && existingShellcheckFiles.length > 0) {
+    const find = opts.findShellcheck ??
+      ((root: string) =>
+        findShellcheckBinary(root, Deno.env.get("PATH") ?? ""));
+    shellcheckBinary = await find(opts.cwd);
+    if (!shellcheckBinary) {
+      return infrastructureFail(
+        "ShellCheck is required by repository CI but could not be found",
+      );
+    }
+    let versionResult: Deno.CommandOutput;
+    try {
+      versionResult = await new Deno.Command(shellcheckBinary, {
+        args: ["--version"],
+        cwd: opts.cwd,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+    } catch (error) {
+      return infrastructureFail(
+        `could not read ShellCheck version: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const versionOutput = new TextDecoder().decode(versionResult.stdout);
+    const actualVersion = shellcheckVersionOutput(versionOutput);
+    if (versionResult.code !== 0 || actualVersion !== shellcheckPolicy.value.version) {
+      return infrastructureFail(
+        `ShellCheck version mismatch: CI requires ${shellcheckPolicy.value.version}, ` +
+          `worker has ${actualVersion ?? "an unreadable version"}`,
+      );
+    }
+  }
+
   const plan = planChangedFileChecks(changed.value, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
     cspellBinary,
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
+    shellcheckPolicy: shellcheckPolicy.value,
+    shellcheckBinary,
+    shellcheckFiles: existingShellcheckFiles,
   });
   if (!plan.ok) return fail(plan.error);
 

@@ -5168,6 +5168,17 @@ The hook runs two stages:
      --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
+   - `shellcheck` on changed `.sh` files when a tracked workflow contains the
+     supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form.
+     The gate carries the workflow's options (including exclusions and an
+     explicit shell dialect), runs from the repository root, and reads the
+     repository's `.shellcheckrc` or configured `--rcfile`. A changed
+     ShellCheck workflow or config rechecks the remaining tracked `.sh` files;
+     deleted scripts are omitted. The gate checks the available binary against
+     the version declared by CI before running it. An unsupported command shape,
+     unreadable config or unavailable/mismatched tool is an incomplete
+     infrastructure result, never a successful validation. A repository with
+     no recognised CI ShellCheck invocation gets no ShellCheck check;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push
      adds or modifies a file whose path starts with `infra/cloudformation/` and
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
