@@ -2021,8 +2021,9 @@ In an issue run, a hand-off (the planning marker, a time deferral, or a
 A free-text escape hatch is honoured only while the branch has no commits
 and no uncommitted changes against the base (Issue #3058, #3088). A CI-fix
 run is the exception: a check
-already red on the base branch still defers on a `Depends on owner/repo#N`
-line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
+already red on the base branch with the same failure as the pull request's
+log (or the tree-equivalent merged-PR run of the same workflow) still defers
+on a `Depends on owner/repo#N` line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
 deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
 or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
 (`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
