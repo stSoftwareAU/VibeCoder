@@ -5,8 +5,7 @@
  * The base-branch deferral accepts a `Depends on` claim only when the base run
  * is red for the same check. Conclusion alone is not enough: a base run that
  * is red for an unrelated reason must not defer the pull request. This module
- * reads the base run's log and looks for a failure line the pull request
- * carries.
+ * reads the base run's log and compares all usable pull request failure lines.
  *
  * Every verdict is conservative: when either side cannot be read or compared
  * the result is `unreadable`, never `same` or `different`.
@@ -23,8 +22,8 @@ import {
 
 /** Verdict on whether the base run failed for the same reason as the PR. */
 export type BaseFailureComparison =
-  | { state: "same"; matched: string } // a PR failure line also appears in the base run's log
-  | { state: "different" } // base log read, none of the PR's failure lines appear in it
+  | { state: "same"; matched: string } // all comparable PR failure lines appear in the base log
+  | { state: "different" } // at least one comparable PR failure line is absent
   | { state: "unreadable"; reason: string }; // either side could not be read/compared (never a verdict)
 
 /** Lines read from a failure text, and their length; bounds keep hostile input cheap. */
@@ -46,12 +45,13 @@ const COMMAND_ECHO =
 /** A command-line flag, such as `--no-fail-fast` or `--fail`; not a failure. */
 const FLAG_TOKEN = /(?:^|\s)--?[a-z][\w-]*/g;
 /** The runner's closing line, shared by every failed job; not evidence. */
-const GENERIC_LINE = /process completed with exit code/;
+const GENERIC_LINE =
+  /process completed with exit code|^(?:<ts>\s*)?(?:##\[error\]\s*)?assertion `left (?:==|!=) right` failed\s*$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)/;
 /** The worker's own boilerplate from formatCiAnnotations; not evidence. */
 const BOILERPLATE =
   /no specific annotations were available|following ci failure details were detected/;
 const FAILURE_WORD =
-  /\b(?:error|fail(?:ed|ure|ing|s)?|panic|exception|fatal|assert\w*|cannot|denied)\b/;
+  /\b(?:error|fail(?:ed|ure|ing|s)?|panic(?:ked)?|exception|fatal|assert\w*|cannot|denied)\b/;
 
 /**
  * Failure lines of a CI failure text, normalised and de-duplicated in
@@ -109,7 +109,8 @@ export async function compareBaseFailure(options: {
   const { repo, checkName, baseCheckRunId, failureText, ghFn } = options;
 
   const prLines = failureSignatureLines(failureText);
-  if (prLines.length === 0) {
+  const firstLine = prLines[0];
+  if (firstLine === undefined) {
     return {
       state: "unreadable",
       reason:
@@ -149,10 +150,8 @@ export async function compareBaseFailure(options: {
       reason: "the base run's log was empty",
     };
   }
-  for (const line of prLines) {
-    if (baseText.includes(line)) {
-      return { state: "same", matched: line };
-    }
+  if (!prLines.every((line) => baseText.includes(line))) {
+    return { state: "different" };
   }
-  return { state: "different" };
+  return { state: "same", matched: firstLine };
 }

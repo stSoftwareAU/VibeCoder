@@ -489,12 +489,12 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   request's failure lines are its check annotation messages and its log lines
   containing `error`, `fail`, `panic`, `exception`, `fatal`, `assert`, `cannot`
   or `denied`; each is normalised, and the generic
-  `Process completed with exit code N` line is ignored. The comparison gives one
+  runner summaries, passing test lines and generic assertion lines are ignored. The comparison gives one
   of three signatures:
-  - **Same** — a normalised failure line of the pull request also appears in
+  - **Same** — every comparable normalised failure line of the pull request appears in
     the base run's log, so the base is red for this failure.
-  - **Different** — the base log was read and none of the pull request's failure
-    lines appear in it, so the base is red for another reason and the claim is
+  - **Different** — the base log was read and at least one comparable pull request failure
+    line is absent, so the base is red for another reason and the claim is
     not verified as this failure.
   - **Unreadable** — either side cannot be compared: the pull request has no
     failure line, the check is not a GitHub Actions check, or the base log cannot
@@ -504,13 +504,13 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   then applies the verdict:
   - **Red, same failure** — the latest matching run on the base head (or on a
     merged pull request's head with an identical tree) failed, and its log holds
-    a line of this pull request's failure (**Same**). The deferral stands as
+    all comparable lines of this pull request's failure (**Same**). The deferral stands as
     before: the diagnosis is posted **once** with a
     `vibe-ci-fix-deferred` marker, **no `needs-human`** is applied, **no attempt
     is charged**, and the PR resumes automatically when the blocking issue closes
     (Issue #1880, Issue #1849).
   - **Red, different failure** — the latest matching run failed, but its log
-    holds none of this pull request's failure lines (**Different**). The base is
+    is missing a comparable pull request failure line (**Different**). The base is
     red for another reason, so the claim is not verified as this failure: the
     ordinary charged path runs (the ordinary no-changes reply and one attempt
     charged), with no deferral and no hold.
@@ -668,9 +668,9 @@ The base-branch verdicts, on the claimed `Depends on` check (Issue #4680):
 flowchart TD
     A["agent claims 'Depends on o/r#N'<br/>after reproducing it on the base tree"] --> E{"completed run of the same check on the base head<br/>or on a merged PR head with the same tree,<br/>same app and workflow file?"}
     E -->|"success, or no base ref"| O["ordinary no-changes reply<br/>+ attempt charged"]
-    E -->|"failure"| L{"base run's failing log names<br/>a line of the PR's failure?"}
-    L -->|"same: a PR failure line<br/>appears in the base log"| R["deferred: diagnosis posted once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
-    L -->|"different: base log read,<br/>no PR failure line in it"| O
+    E -->|"failure"| L{"base run's failing log contains<br/>all comparable PR failure lines?"}
+    L -->|"same: all comparable PR failure lines<br/>appear in the base log"| R["deferred: diagnosis posted once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
+    L -->|"different: base log read,<br/>a PR failure line is missing"| O
     L -->|"unreadable: no failure line,<br/>non-Actions check, log fetch error"| H{"fewer than two holds<br/>for this signature?"}
     E -->|"no run, stale run,<br/>cancelled or skipped,<br/>lookup failed"| H
     H -->|yes| U["base-unverified note<br/>+ attempt marker, no charge"]

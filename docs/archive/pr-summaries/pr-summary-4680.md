@@ -11,12 +11,14 @@ like one base defect.
 `_resolveBaseBranchDeferral` now calls `compareBaseFailure`
 (`worker/deno/lib/ci_base_failure_signature.ts`) for a red base:
 
-- **same failure** (a normalised PR failure line also appears in the base run's
-  log) — the existing deferral: `Depends on` issue and `vibe-ci-fix-deferred`
-  marker, resumed by the existing scanner when the blocker closes;
-- **different failure** (the base log was read and shares none of the PR's
-  failure lines) — the base is red for another reason, so the claim is not
-  verified as this failure: the ordinary charged path, no deferral, no hold;
+- **same failure** (every comparable normalised PR failure line appears in the
+  base run's log) — the existing deferral: `Depends on` issue and
+  `vibe-ci-fix-deferred` marker, resumed by the existing scanner when the
+  blocker closes;
+- **different failure** (the base log was read and is missing at least one of
+  the PR's comparable failure lines) — the base is red for another reason, so
+  the claim is not verified as this failure: the ordinary charged path, no
+  deferral, no hold;
 - **unreadable** (no comparable PR line, non-Actions check, log fetch error or
   an empty base log) — held as unverified (`base-unverified`, no attempt
   charged), sharing the existing bound of two holds.
@@ -31,8 +33,8 @@ Version bump: `VERSION` is not changed by this PR.
 ```mermaid
 flowchart TD
     A[Red base run: head or tree-equivalent] --> B[Read the base run's log]
-    B -- PR failure line found --> C[Same: defer, no attempt]
-    B -- log read, no shared line --> D[Different: charged path]
+    B -- All comparable PR failure lines found --> C[Same: defer, no attempt]
+    B -- log read, a PR line missing --> D[Different: charged path]
     B -- unreadable / nothing to compare --> E{Holds < 2?}
     E -- yes --> F[Hold: base-unverified, no attempt]
     E -- no --> D
@@ -56,10 +58,9 @@ flowchart TD
   `Run cargo test --no-fail-fast`) and is not the runner's generic
   `Process completed with exit code N` line (every failed job has it). Flags
   such as `--no-fail-fast` or `curl --fail` are blanked before the failure-word
-  test, so a shared command echo is never failure evidence. Any one shared line
-  is "same". This favours deferral over a strict log diff because excerpts
-  differ in noise; the cost is that a shared generic-looking error line can
-  match.
+  test, so a shared command echo is never failure evidence. Passing test lines,
+  generic assertion and cargo, npm and lifecycle summaries are excluded. All
+  remaining comparable PR lines must appear in the base log to grant deferral.
 - "Different" charges the attempt (no hold): a base that is red for another
   reason proves nothing about this failure, and holding would only delay it.
 - The hold decision moved into `_holdOrChargeUnverified` so every unverified
@@ -144,5 +145,22 @@ seen-set add, `ghFn` argument, error-message ternary; `pr_ci_processor.ts` hold
 above; none is exempted.
 
 Not done / risk: no live GitHub run of a PR-only check; the comparison matches
-on any one shared line, so a coincidentally shared error line can read as the
-same failure; the worker does not re-run the check on the base tree.
+on all comparable lines, so differing log excerpts can prevent a deferral; the
+worker does not re-run the check on the base tree.
+
+Review follow-up: the obsolete any-shared-line match is replaced by requiring
+all comparable failure lines, while same-failure deferral remains covered by
+`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - the same failure across timestamps, run numbers and ANSI is same`.
+Unrelated cargo and Deno failures and shared generic output are covered by
+`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - unrelated cargo and Deno failures do not match shared runner output`
+and
+`worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - unrelated test failures sharing runner output are charged`.
+Generic-only output remains unreadable, covered by
+`worker/deno/tests/ci_base_failure_signature_test.ts::failureSignatureLines - generic runner output alone is unreadable`.
+
+Review follow-up validation: the two focused test files pass (49 tests), as do
+the Deno formatter, lint and type check, and `deno task check:manifests`.
+The full local gate's parallel test process panicked in Deno 2.9.0 on macOS
+(`pledge test permissions called before restoring previous pledge`), so its
+serial pass did not run. The latest base's merged PR #4866 passed all four
+test shards in CI. Semgrep and Checkov were unavailable locally.

@@ -1046,6 +1046,27 @@ Deno.test("processCiFailure - a red base whose log shows a different failure tak
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
 
+Deno.test("processCiFailure - unrelated test failures sharing runner output are charged", async () => {
+  const input = makeInput();
+  input.encodedAnnotations = btoa(
+    JSON.stringify([{
+      path: "test.ts",
+      start_line: 1,
+      message: "parser - parse header ... FAILED\nnpm error command failed",
+    }]),
+  );
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: jobLog([
+      "parser - render footer ... FAILED",
+      "npm error command failed",
+    ]),
+  }, input);
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+});
+
 Deno.test("processCiFailure - the base run's log is read for the failing check's name (Issue #4680)", async () => {
   const logCalls: ActionsLogOptions[] = [];
   await runDeferralScenario(AGENT_MESSAGE, { logCalls });

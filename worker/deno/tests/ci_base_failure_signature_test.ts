@@ -384,3 +384,48 @@ Deno.test("failureSignatureLines - a hostile unclosed annotation prefix is bound
   assertEquals(Array.isArray(lines), true);
   assertEquals(lines.length, 0);
 });
+
+Deno.test("compareBaseFailure - unrelated cargo and Deno failures do not match shared runner output", async () => {
+  const cases: [string, string][] = [
+    [
+      "thread 'tests::parse_header' panicked at src/lib.rs:10:\nassertion `left == right` failed\nerror: test failed, to rerun pass `-p crate --lib`",
+      "thread 'tests::render_footer' panicked at src/lib.rs:20:\nassertion `left == right` failed\nerror: test failed, to rerun pass `-p crate --lib`",
+    ],
+    [
+      "parser - rejects an unterminated string with an error ... ok (2ms)\nparser - parse header ... FAILED\nnpm error command failed",
+      "parser - rejects an unterminated string with an error ... ok (3ms)\nparser - render footer ... FAILED\nnpm error command failed",
+    ],
+    [
+      "error: shared setup problem with a specific detail\nerror: parse header failed",
+      "error: shared setup problem with a specific detail\nerror: render footer failed",
+    ],
+  ];
+  for (const [failureText, baseLog] of cases) {
+    const log = logFake(excerptOf(baseLog));
+    const result = await compareBaseFailure({
+      repo: REPO,
+      checkName: CHECK,
+      baseCheckRunId: BASE_RUN_ID,
+      failureText,
+      ghFn: unusedGh,
+      actionsLogFn: log.fn as typeof fetchGithubActionsLogExcerpt,
+    });
+    assertEquals(result, { state: "different" });
+  }
+});
+
+Deno.test("failureSignatureLines - generic runner output alone is unreadable", () => {
+  assertEquals(
+    failureSignatureLines(
+      [
+        "assertion `left == right` failed",
+        "assertion `left != right` failed",
+        "error: test failed, to rerun pass `-p crate --lib`",
+        "npm error command failed",
+        "npm error Lifecycle script test failed",
+        "parser - rejects an error ... ok (2ms)",
+      ].join("\n"),
+    ),
+    [],
+  );
+});

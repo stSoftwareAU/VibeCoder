@@ -1591,17 +1591,16 @@ the transcript: `unitTestPassTranscript` in `lib/unit_test_passes.ts` keeps a
 failing pass's output and drops a passing one's.
 
 **All quality checks MUST pass before creating a PR.** The worker runs
-`./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a
-PR with failing quality checks — fix the failures first.
+`./quality.sh` before creating any PR. Never raise a PR with failing quality
+checks — fix the failures first.
 
 **The agent's own run of the gate is conditional on the run budget
 (Issue #1138).** The gate's median observed run is 17 minutes inside a budget of
-roughly an hour, and the same checks arrive twice more for free — the worker
-runs the gate itself before the PR, and CI runs it on the PR. So an agent
-starts the gate only when the runway left covers it plus the time to fix,
-commit and push what it reports; the worker writes `.vibe-run-budget.md` into
-the checkout the moment it no longer does, and refuses the gate there. A gate
-skipped for budget is **recorded, never silent**: the
+roughly an hour, and the worker runs the gate itself before the PR is raised. So
+an agent starts the gate only when the runway left covers it plus the time to
+fix, commit and push what it reports; the worker writes `.vibe-run-budget.md`
+into the checkout the moment it no longer does, and refuses the gate there. A
+gate skipped for budget is **recorded, never silent**: the
 `<!-- vibe-quality-gate-skipped … -->` note goes in the PR summary (or
 `.pr_response_message`), because a gate nobody ran reads exactly like a gate
 that passed. That is not a licence to raise a PR over a *failing* check — the
