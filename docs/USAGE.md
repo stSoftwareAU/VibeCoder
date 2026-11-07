@@ -149,6 +149,13 @@ documented in `worker/deno/lib/pr_summary_loader.ts`).
 For backwards compatibility, the worker also checks for a legacy `.pr_summary`
 file in the repository root.
 
+The PR body is built from the summary committed at the pushed head. When a
+summary file has uncommitted changes (modified, staged, untracked or deleted),
+the completion phase publishes the copy committed at `HEAD` instead of the
+working-tree text, so a rewrite that was never committed cannot reach the PR
+(Issue #4764). A failed `git status` for the summary files gives the minimal
+body, never the working tree.
+
 ## 🔀 Auto Squash Merge
 
 When a PR is created, the worker automatically enables auto squash merge using

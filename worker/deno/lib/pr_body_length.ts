@@ -9,10 +9,10 @@
  *
  * The worker does not cut first. It asks the agent once to rewrite the
  * summary so the body fits, keeping the blocks the gates read, condensing the
- * prose and linking the summary file on the branch. Completion then runs the
- * same checks on that rewrite and publishes it. A mechanical cut is only the
- * last resort, when the rewrite is still too long or the turn fails, and the
- * pull request is still raised.
+ * prose and linking the summary file on the branch. Once the rewrite is
+ * committed, completion runs the same checks on it and publishes it. If the
+ * commit fails, completion uses the committed summary instead. A mechanical
+ * cut is the last resort when the resulting body is still too long.
  *
  * Australian English throughout (behaviour, summarised).
  */
@@ -436,7 +436,8 @@ async function commitRewrittenSummary(
   if (!reconcile.ok) {
     logger.error(
       `Could not put HEAD back on '${state.branchName}' to commit the ` +
-        `shortened summary — the re-run still reads the working tree: ${reconcile.error.message}`,
+        `shortened summary — the re-run uses the summary committed at HEAD; ` +
+        `an overlong body is cut mechanically (Issue #4764): ${reconcile.error.message}`,
       { repo, issueNumber },
     );
     return;
@@ -452,7 +453,8 @@ async function commitRewrittenSummary(
   if (!commit.ok) {
     logger.error(
       `Could not commit the shortened summary on '${state.branchName}' — ` +
-        `the re-run still reads the working tree: ${commit.error.message}`,
+        `the re-run uses the summary committed at HEAD; an overlong body is ` +
+        `cut mechanically (Issue #4764): ${commit.error.message}`,
       { repo, issueNumber },
     );
     return;

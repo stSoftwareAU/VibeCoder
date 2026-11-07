@@ -2358,6 +2358,7 @@ Deno.test("a repair whose only untracked files are tool byproducts reports no ch
               : repairDeps(command, args, cwd),
           gh: service.deps.runGhCommand,
           syncBodyDeps: service.deps,
+          verifyReviews: allVerified,
           validateAndCommit: () => {
             committed.push("commit");
             return Promise.reject(new Error("validateAndCommit must not run"));

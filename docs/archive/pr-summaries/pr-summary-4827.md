@@ -51,6 +51,8 @@ flowchart TD
   `validateAndCommit`; a tracked `lcov.info` edit is committed; repeated
   preparation preserves existing exclude lines; unresolved git output and
   filesystem errors fail loudly.
+- The byproducts-only fixture supplies the current review verifier dependency,
+  keeping the no-change repair test compatible with the merged base API.
 - Regression wiring check: removing only the `cloneForRepair` preparation call
   made the tracked-fix and byproducts-only tests fail (118 passed, 2 failed).
 - `deno task test:unit tests/fleet_pr_babysitter_test.ts tests/fleet_pr_babysitter_single_push_test.ts tests/fleet_babysitter_app_test.ts`
