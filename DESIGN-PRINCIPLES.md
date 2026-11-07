@@ -28,11 +28,11 @@ to complete that issue; nothing more from a person is needed or wanted.
 - **Finish in the PR, no follow-up tickets.** A run whose summary leaves a
   criterion unmet is told so once, in the session, and goes back to finish
   it. A criterion still unmet after that does not stop the PR: it is raised
-  and armed with that criterion named on it, and a `missing` entry makes the
-  body `Part of #N`, so the issue stays open for the next run. A run that runs
-  out of time may push a **draft** PR marked `Part of #N` and the worker
-  carries on with the same issue automatically. It never files a new issue for
-  the remainder: a new issue needs a human to read and
+  and armed with that criterion named on it, and a `partial` or `missing`
+  entry makes the body `Part of #N`, so the issue stays open for the next run.
+  A run that runs out of time may push a **draft** PR marked `Part of #N` and
+  the worker carries on with the same issue automatically. It never files a new
+  issue for the remainder: a new issue needs a human to read and
   approve it, and the original issue was already approved. "You ask for a
   hamburger, you don't get two buns and a follow-up ticket for the patty."
 - **"Too large" is a planning defect, not an exit.** An approved issue,
