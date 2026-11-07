@@ -108,6 +108,69 @@ Deno.test("isDockerInfraFailure - returns false for normal failure", () => {
   assertEquals(isDockerInfraFailure("npm test failed with exit code 1"), false);
 });
 
+// Issue #4891: only the Docker CLI's own whole, unindented error line counts.
+// A test name, a log line or a captured block that quotes the text does not.
+Deno.test("isDockerInfraFailure - a failing test named for docker and not found is not infrastructure (Issue #4891)", () => {
+  const output = [
+    "running 1 test from ./docker_test.ts",
+    "docker: reports not found when the image is missing ... FAILED (2ms)",
+    "",
+    " ERRORS ",
+    "",
+    "docker: reports not found when the image is missing => ./docker_test.ts:1:6",
+    "error: AssertionError: Values are not equal",
+  ].join("\n");
+  assertEquals(isDockerInfraFailure(output), false);
+});
+
+Deno.test("isDockerInfraFailure - ANSI-coloured result line is not infrastructure (Issue #4891)", () => {
+  assertEquals(
+    isDockerInfraFailure(
+      "docker: reports not found ... \x1b[0;31mFAILED\x1b[0m \x1b[0;38;5;245m(2ms)\x1b[0m",
+    ),
+    false,
+  );
+});
+
+Deno.test("isDockerInfraFailure - text inside a Deno output block is not infrastructure (Issue #4891)", () => {
+  const output = [
+    "------- output -------",
+    "docker: permission denied",
+    "----- output end -----",
+  ].join("\n");
+  assertEquals(isDockerInfraFailure(output), false);
+});
+
+Deno.test("isDockerInfraFailure - an indented quotation is not infrastructure (Issue #4891)", () => {
+  assertEquals(
+    isDockerInfraFailure("  docker: Cannot connect to the Docker daemon"),
+    false,
+  );
+});
+
+Deno.test("isDockerInfraFailure - detects genuine lines around other output (Issue #4891)", () => {
+  const real = [
+    "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+    "bash: docker: command not found",
+    "./quality.sh: line 4: docker: command not found",
+    "\x1b[31mdocker: permission denied while trying to connect\x1b[0m",
+  ];
+  for (const line of real) {
+    assertEquals(
+      isDockerInfraFailure(
+        `docker: reports not found ... FAILED (2ms)\n${line}\nerror: x`,
+      ),
+      true,
+      line,
+    );
+  }
+});
+
+Deno.test("isDockerInfraFailure - terminates on a hostile long line (Issue #4891)", () => {
+  assertEquals(isDockerInfraFailure("docker: " + "a ".repeat(50000)), false);
+  assertEquals(isDockerInfraFailure("a: ".repeat(50000) + "docker"), false);
+});
+
 // =============================================================================
 // isMissingCommandFailure tests
 // =============================================================================
@@ -243,6 +306,28 @@ Deno.test("isMissingCommandFailure - detects reports after inline Deno end marke
       true,
     );
   }
+});
+
+Deno.test("runQualityGateCheck - a failing Docker run whose test name quotes docker and not found is fixable (Issue #4891)", async () => {
+  const deps = createMockDeps({
+    getRepoConfig: (_configs, _repo, key) => {
+      if (key === "dockerImage") return "node:20";
+      return "";
+    },
+    runCommand: async (cmd, _opts) => {
+      if (cmd[0] === "docker" && cmd[1] === "version") {
+        return { exitCode: 0, output: "Docker version 27" };
+      }
+      return {
+        exitCode: 1,
+        output:
+          "docker: reports not found when the image is missing ... FAILED (2ms)\nerror: Test failed",
+      };
+    },
+  });
+  const result = await runQualityGateCheck(createParams(), deps);
+  assertEquals(result.action, "failed_fixable");
+  assertStringIncludes(result.retryPrompt!, "reports not found");
 });
 
 Deno.test("runQualityGateCheck - detects missing commands after inline Deno end markers", async () => {
