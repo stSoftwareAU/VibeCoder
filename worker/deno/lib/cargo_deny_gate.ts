@@ -216,23 +216,93 @@ function resolveWorkingDirectory(wd: string | undefined): WorkDir {
   return { ok: true, cwd: wd };
 }
 
-/** The findings for one shell line of a `run:` step. */
-function cargoDenyCommandFindings(
-  line: string,
+/** `NAME=` at the start of a shell command: an environment assignment. */
+const ENV_ASSIGNMENT = /^[A-Za-z_]\w*=/;
+
+/**
+ * Split a shell line into its command segments at unquoted `;`, `|`, `&`,
+ * `&&` and `||`, and stop at a shell comment. A `&` that is part of a
+ * redirect (`2>&1`, `&>`) is not a separator.
+ */
+function splitShellSegments(line: string): string[] {
+  const segments: string[] = [];
+  let quote = "";
+  let start = 0;
+  let end = line.length;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line.charAt(i);
+    if (quote !== "") {
+      if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    const startsWord = i === 0 || /\s/.test(line.charAt(i - 1));
+    if (ch === "#" && startsWord) {
+      end = i;
+      break;
+    }
+    if (ch !== ";" && ch !== "|" && ch !== "&") continue;
+    const inRedirect = ch === "&" &&
+      (line.charAt(i - 1) === ">" || line.charAt(i - 1) === "<" ||
+        line.charAt(i + 1) === ">");
+    if (inRedirect) continue;
+    segments.push(line.slice(start, i));
+    start = i + 1;
+  }
+  segments.push(line.slice(start, end));
+  return segments;
+}
+
+/**
+ * The command text after any leading `NAME=value` environment assignments.
+ * A quoted value may contain spaces or operators.
+ */
+function stripEnvAssignments(segment: string): string {
+  let rest = segment.trimStart();
+  while (ENV_ASSIGNMENT.test(rest)) {
+    let quote = "";
+    let i = rest.indexOf("=") + 1;
+    for (; i < rest.length; i++) {
+      const ch = rest.charAt(i);
+      if (quote !== "") {
+        if (ch === quote) quote = "";
+        continue;
+      }
+      // A `${{ ... }}` expression may hold spaces; it is one value.
+      if (rest.startsWith("${{", i)) {
+        const close = rest.indexOf("}}", i);
+        if (close === -1) break;
+        i = close + 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        continue;
+      }
+      if (/\s/.test(ch)) break;
+    }
+    rest = rest.slice(i).trimStart();
+  }
+  return rest;
+}
+
+/** The findings for one command segment of a shell line. */
+function segmentFindings(
+  segment: string,
   no: number,
   wd: string | undefined,
 ): CargoDenyCiFinding[] {
-  const command = line.trim();
+  // The text before any redirect or comment, environment assignments included.
+  const head = cutAtShellOperator(segment.trim());
+  const command = stripEnvAssignments(head);
   if (!CARGO_DENY_START.test(command)) return [];
-  const argv = tokeniseCommand(cutAtShellOperator(command));
-  if (
-    argv[0] !== "cargo" || argv[1] !== "deny" ||
-    !argv.slice(2).includes("check")
-  ) {
-    return [];
-  }
   const source = `line ${no}`;
-  if (argv.some((token) => token.includes("$") || token.includes("`"))) {
+  // A cargo deny segment with a shell variable or expression cannot be
+  // reproduced, whether or not it names `check`.
+  if (head.includes("$") || head.includes("`")) {
     return [{
       kind: "unrunnable",
       source,
@@ -240,9 +310,31 @@ function cargoDenyCommandFindings(
         "($ or a backtick), so it cannot be run as CI runs it",
     }];
   }
+  const argv = tokeniseCommand(command);
+  if (
+    argv[0] !== "cargo" || argv[1] !== "deny" ||
+    !argv.slice(2).includes("check")
+  ) {
+    return [];
+  }
   const cwd = resolveWorkingDirectory(wd);
   if (!cwd.ok) return [{ kind: "unrunnable", source, reason: cwd.reason }];
   return [{ kind: "command", argv, cwd: cwd.cwd }];
+}
+
+/**
+ * The findings for one logical `run:` line. Every command segment is
+ * examined, so `cargo fetch && cargo deny check` is found. A segment's `cd`
+ * or other commands are ignored, and the step's working directory applies.
+ */
+function cargoDenyCommandFindings(
+  line: string,
+  no: number,
+  wd: string | undefined,
+): CargoDenyCiFinding[] {
+  return splitShellSegments(line).flatMap((segment) =>
+    segmentFindings(segment, no, wd)
+  );
 }
 
 /**

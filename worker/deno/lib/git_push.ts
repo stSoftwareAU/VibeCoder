@@ -48,8 +48,10 @@ import { runGhOrThrow } from "./gh_spawn.ts";
  * (Issue #3577). Omit the spec to disable the gate — the repo then commits and
  * pushes with zero added latency. Passing a spec turns on Step 1b's
  * changed-file checks (Issue #3689: deno/cargo fmt, markdownlint, cspell and
- * the Floci deploy test) even when `commands` is empty; an empty list only means
- * no repo pre-flight commands run.
+ * the Floci deploy test) even when `commands` is empty, then the repo's
+ * `cargo deny check` when the push touches a cargo manifest or lock file and
+ * the repo's CI runs it (Issue #4626); an empty list only means no repo
+ * pre-flight commands run.
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */

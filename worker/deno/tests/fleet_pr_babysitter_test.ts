@@ -331,6 +331,22 @@ function babysitterBodySyncInput(
   };
 }
 
+/**
+ * The cargo-deny gate the repair helpers inject (Issue #4626). These repairs
+ * touch no cargo input, so it passes with nothing run. It records each call,
+ * so a test can prove the gate was reached before a push.
+ */
+function passingCargoDenyGate() {
+  const calls: { repoPath: string; baseHead: string }[] = [];
+  const gate: NonNullable<
+    Parameters<typeof finishBabysitterRepair>[5]["cargoDenyGate"]
+  > = (input) => {
+    calls.push(input);
+    return Promise.resolve({ ok: true as const, value: { checksRun: [] } });
+  };
+  return { gate, calls };
+}
+
 function cleanTreeFinishDeps(
   headSha: string,
   service: ReturnType<typeof fakePrBodyService>,
@@ -343,6 +359,7 @@ function cleanTreeFinishDeps(
     syncBodyDeps: service.deps,
     dismiss,
     verifyReviews: allVerified,
+    cargoDenyGate: passingCargoDenyGate().gate,
   };
 }
 
@@ -539,6 +556,7 @@ Deno.test("a pushed fix syncs the legacy body from its original head before dism
       {
         renewalFailed: () => false,
         verifyReviews: allVerified,
+        cargoDenyGate: passingCargoDenyGate().gate,
         runCommand: async (command, args, cwd) => {
           if (command === "git" && args[0] === "status") return " M summary";
           if (command === "git" && args[0] === "diff") return "";
@@ -723,6 +741,7 @@ Deno.test("Issue #4637: a pushed repair pins its body sync to the verified pushe
       {
         renewalFailed: () => false,
         verifyReviews: allVerified,
+        cargoDenyGate: passingCargoDenyGate().gate,
         runCommand: async (command, args) => {
           if (command === "git" && args[0] === "status") return " M summary";
           if (command === "git" && args[0] === "diff") return "";
@@ -1157,14 +1176,17 @@ function pushedRepair(
     ...repairPrFor("1".repeat(40), 7),
     reviewDecision: "CHANGES_REQUESTED",
   };
+  const cargoDeny = passingCargoDenyGate();
   return {
     repairPr,
+    cargoDeny,
     deps: {
       ...repairFinishDeps({
         headSha: fixture.headSha,
         github,
         events,
         changed: true,
+        cargoDeny,
       }),
       readPr: async () => repairPr,
       validateAndCommit: async () => {},
@@ -1194,10 +1216,12 @@ function repairFinishDeps(options: {
   events: string[];
   changed?: boolean;
   syncFn?: typeof syncPrBodyFromSummary;
+  cargoDeny?: ReturnType<typeof passingCargoDenyGate>;
 }) {
   return {
     renewalFailed: () => false,
     verifyReviews: allVerified,
+    cargoDenyGate: (options.cargoDeny ?? passingCargoDenyGate()).gate,
     runCommand: repairRunCommand({
       headSha: options.headSha,
       changed: options.changed,
@@ -1331,6 +1355,8 @@ Deno.test("a proposal that omits a fully met issue gets Closes #N", async () => 
       { exchange: fixture.scratch, proposal: "Rewritten description." },
     );
     assertEquals(events, ["push", "publish", "dismiss"]);
+    // Positive control: the pushed repair reached the cargo-deny gate once.
+    assertEquals(pushed.cargoDeny.calls.length, 1);
     assertStringIncludes(github.body(), "Rewritten description.");
     assertStringIncludes(github.body(), "Closes #4637");
   } finally {

@@ -79,6 +79,11 @@ import {
   buildPushCreateBranchArgs,
 } from "../lib/git_ref_args.ts";
 import {
+  type CargoDenyGateError,
+  runCargoDenyGate,
+} from "../lib/cargo_deny_gate.ts";
+import type { Result } from "../types.ts";
+import {
   runWithTimeout,
   spawnCommandWithTimeout,
 } from "../lib/subprocess_timeout.ts";
@@ -1191,6 +1196,16 @@ export interface BabysitterRepairFinishDeps {
   ) => Promise<ReviewVerificationOutcome[]>;
   /** The git runner the committed summary is read through. */
   runGit?: typeof runGitCommand;
+  /**
+   * Runs the repository's CI cargo-deny check on the repair's commit before it
+   * is pushed (Issue #4626). A `verdict` or `infrastructure` error throws a
+   * {@link BabysitterFailure} and nothing is pushed. Defaults to the check over
+   * the files the commit changes since the PR head.
+   */
+  cargoDenyGate?: (input: {
+    repoPath: string;
+    baseHead: string;
+  }) => Promise<Result<{ checksRun: string[] }, CargoDenyGateError>>;
   /** Pause between reads while GitHub's PR view catches up; 1 second by default. */
   headWaitDelayMs?: number;
   /**
@@ -1516,9 +1531,38 @@ export interface BabysitterRepairFinish {
   outage?: string;
 }
 
+/** NUL-separated git output as a list of non-empty entries. */
+function splitNulList(output: string): string[] {
+  return output.split("\0").filter((part) => part !== "");
+}
+
 /**
- * Validate, commit and push a repair, then sync the PR body and dismiss the
- * reviews it addressed (Issue #4637). On a push, GitHub's PR view must first
+ * The default cargo-deny gate for a repair (Issue #4626): the files the commit
+ * changes since the PR head and the tracked files, read through the repair's
+ * own git runner, then the repository's CI cargo-deny check over them.
+ */
+async function defaultCargoDenyGate(
+  input: { repoPath: string; baseHead: string },
+  runCommand: typeof run,
+): Promise<Result<{ checksRun: string[] }, CargoDenyGateError>> {
+  const changed = splitNulList(
+    await runCommand(
+      "git",
+      ["diff", "--name-only", "--diff-filter=d", "-z", input.baseHead, "HEAD"],
+      input.repoPath,
+    ),
+  );
+  const tracked = splitNulList(
+    await runCommand("git", ["ls-files", "-z"], input.repoPath),
+  );
+  return runCargoDenyGate({ cwd: input.repoPath, changed, tracked });
+}
+
+/**
+ * Validate, commit, run the repository's cargo-deny check (Issue #4626) and
+ * push a repair, then sync the PR body and dismiss the reviews it addressed
+ * (Issue #4637). The cargo-deny gate runs before the push, so a failing or
+ * unavailable check pushes nothing. On a push, GitHub's PR view must first
  * report the pushed head, since it lags behind the push. The body sync runs
  * on the committed summary at that head. Inside the sync, the guarded
  * description is published and checked. Reviews are then dismissed only for
@@ -1580,6 +1624,22 @@ export async function finishBabysitterRepair(
       current.baseRefName !== pr.baseRefName || !reason(current)
     ) {
       throw new Error("PR changed during the fix; refusing to push");
+    }
+    const cargoDeny = await (deps.cargoDenyGate ??
+      ((input) => defaultCargoDenyGate(input, runCommand)))({
+        repoPath,
+        baseHead: pr.headRefOid,
+      });
+    if (!cargoDeny.ok) {
+      throw new BabysitterFailure(
+        cargoDeny.error.message,
+        cargoDeny.error.kind === "infrastructure" ? "infrastructure" : "code",
+      );
+    }
+    if (cargoDeny.value.checksRun.length > 0) {
+      console.log(
+        `${repo}#${pr.number}: cargo deny passed locally (${cargoDeny.value.checksRun.length} check(s))`,
+      );
     }
     await runCommand(
       "git",

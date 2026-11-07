@@ -287,6 +287,65 @@ Deno.test("workflow: a workflow expression in an action input is unrunnable", ()
   assertEquals(findings[0]?.kind, "unrunnable");
 });
 
+Deno.test("workflow: a cargo deny check after && or || is found", () => {
+  const text = yaml(
+    "      - run: cargo fetch && cargo deny check",
+    "      - run: cargo deny check || true",
+  );
+  assertEquals(workflowCargoDenyFindings(text), [
+    { kind: "command", argv: ["cargo", "deny", "check"], cwd: "." },
+    { kind: "command", argv: ["cargo", "deny", "check"], cwd: "." },
+  ]);
+});
+
+Deno.test("workflow: a cargo deny check after env assignments is found", () => {
+  const text = yaml(
+    "      - run: CARGO_TERM_COLOR=always cargo deny --all-features check",
+    "      - run: RUST_LOG=\"warn x\" FOO='a && b' cargo deny check bans",
+  );
+  assertEquals(workflowCargoDenyFindings(text), [
+    {
+      kind: "command",
+      argv: ["cargo", "deny", "--all-features", "check"],
+      cwd: ".",
+    },
+    { kind: "command", argv: ["cargo", "deny", "check", "bans"], cwd: "." },
+  ]);
+});
+
+Deno.test("workflow: a cd segment is ignored and does not change the cwd", () => {
+  const text = yaml("      - run: cd x; cargo deny check");
+  assertEquals(workflowCargoDenyFindings(text), [
+    { kind: "command", argv: ["cargo", "deny", "check"], cwd: "." },
+  ]);
+});
+
+Deno.test("workflow: operator segments that are not cargo deny check runs are not findings", () => {
+  const text = yaml(
+    "      - run: echo cargo deny check && echo ok",
+    "      - run: CARGO_TERM_COLOR=always cargo install cargo-deny",
+    "      - run: cd x; cargo deny list",
+    "      - run: cargo deny list && cargo deny fetch",
+    '      - run: echo "cargo deny check && x"',
+    "      - run: FOO=bar",
+  );
+  assertEquals(workflowCargoDenyFindings(text), []);
+});
+
+Deno.test("workflow: a cargo deny segment with a shell variable is unrunnable even without check", () => {
+  const lines = [
+    "      - run: cargo deny ${{ matrix.cmd }}",
+    "      - run: cargo deny $CMD",
+    "      - run: cargo fetch && cargo deny $CMD",
+    "      - run: CARGO_TERM_COLOR=${{ matrix.color }} cargo deny check",
+  ];
+  for (const line of lines) {
+    const findings = workflowCargoDenyFindings(yaml(line));
+    assertEquals(findings.length, 1, line);
+    assertEquals(findings[0]?.kind, "unrunnable", line);
+  }
+});
+
 Deno.test("workflow: a 200000-character line returns promptly", () => {
   const long = "a".repeat(200_000) + "!";
   const findings = workflowCargoDenyFindings(

@@ -21,11 +21,14 @@
  * 1. Always runs a fast check over just the files the push introduces
  *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
  *    `markdownlint-cli2`, `cspell` when the repo's CI runs it, and the Floci
- *    CloudFormation deploy test
- *    when the push changes `infra/cloudformation/` and the repo tracks its
- *    script), whatever the repo's own pre-flight list says and whatever the
- *    run budget — these checks are never skipped for budget; all but the Floci
- *    deploy test are cheap.
+ *    CloudFormation deploy test when the push changes `infra/cloudformation/`
+ *    and the repo tracks its script), whatever the repo's own pre-flight list
+ *    says and whatever the run budget — these checks are never skipped for
+ *    budget; all but the Floci deploy test are cheap. Then the repo's
+ *    `cargo deny check` (Issue #4626) when the push changes a Cargo manifest,
+ *    lock file or deny config and the repo's CI runs it: CI's own argv, run
+ *    locally, with a missing tool or unreachable advisory database refused as
+ *    an infrastructure failure rather than passed.
  * 2. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
@@ -39,6 +42,7 @@ import type { Result } from "../types.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
+import { runCargoDenyGate } from "./cargo_deny_gate.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
@@ -703,10 +707,13 @@ async function findBinary(
 
 /**
  * Run the pre-push gate: the always-on changed-file checks first, then the
- * repo's pre-flight commands. `checksRun` lists the changed-file commands run.
- * The changed-file checks run whatever the run
- * budget — they are never skipped; all but the Floci deploy test are fast. Any
- * git, parse or planning error is an `Err`, never a pass.
+ * repo's `cargo deny check` (Issue #4626) when the push touches a cargo input
+ * and the repo's CI runs it, then the repo's pre-flight commands. `checksRun`
+ * lists the changed-file and cargo-deny commands run. The changed-file checks
+ * and the cargo-deny gate run whatever the run budget — they are never skipped;
+ * all but the Floci deploy test are fast. Any git, parse or planning error is
+ * an `Err`, never a pass. A cargo-deny failure that shows the tool or advisory
+ * database could not be reached is a {@link PrePushGateInfrastructureError}.
  */
 export async function runPrePushGate(opts: {
   cwd: string;
@@ -796,6 +803,20 @@ export async function runPrePushGate(opts: {
     if (!result.ok) return { ok: false, error: result.error };
     checksRun.push(check.command);
   }
+
+  const cargoDeny = await runCargoDenyGate({
+    cwd: opts.cwd,
+    changed: changed.value,
+    tracked,
+    runner: opts.runner,
+    timeoutSeconds: opts.timeoutSeconds,
+  });
+  if (!cargoDeny.ok) {
+    return cargoDeny.error.kind === "infrastructure"
+      ? infrastructureFail(cargoDeny.error.message)
+      : fail(cargoDeny.error.message);
+  }
+  checksRun.push(...cargoDeny.value.checksRun);
 
   const preFlight = await runPreFlightGate(opts.preFlightCommands, {
     cwd: opts.cwd,

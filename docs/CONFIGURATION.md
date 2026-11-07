@@ -5068,8 +5068,8 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
-test) still run and can fail the run. Unlike Step 1b, the completion gate
+fmt/lint, cargo fmt, markdownlint, cspell, cargo deny and the Floci
+CloudFormation deploy test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every non-merge commit the branch has ahead of the PR base
 (`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
 ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
@@ -5168,6 +5168,22 @@ The hook runs two stages:
      --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
+   - **`cargo deny`** (Issue #4626), only when the push changes a `Cargo.toml`,
+     `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
+     `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
+     `*.yaml` files for each `run:` step whose command is `cargo deny` with a
+     `check` argument, and for each `EmbarkStudios/cargo-deny-action` step,
+     whose inputs (with the action's own defaults) give the argv the action
+     runs. It runs CI's exact arguments: a `run:` step from its
+     `working-directory` (relative paths only), and an action step from the
+     repo root. No `--offline`, ignore list or reduced-scope flag is added. An
+     invocation the hook cannot reproduce (a shell variable, a workflow
+     expression such as `${{ matrix.check }}`, or a `working-directory` with
+     `..` or an absolute path) refuses the push. The hook does not read
+     job-level `defaults.run.working-directory`, matrix expansion, or
+     invocations hidden in a script the step calls, so those forms are not
+     checked. A push that touches none of those files is not checked, because
+     the advisory database can change without a push;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push
      adds or modifies a file whose path starts with `infra/cloudformation/` and
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
@@ -5194,8 +5210,12 @@ start, or times out refuses the push; markdownlint configured but
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a Floci deploy test that exits
 non-zero, including when Floci cannot be started or the `aws` CLI is missing for
-a deployable template, refuses the push; a missing hook module, spec or `deno`
-binary refuses the push. Refusals print lines starting
+a deployable template, refuses the push; a `cargo deny` diagnostic (`error[...]`)
+or a CI invocation the hook cannot reproduce refuses the push as a verdict, and
+a `cargo deny` that is missing, a cargo-deny run whose advisory database,
+network or host is unreachable, or a timeout refuses it as an infrastructure
+failure, never a pass; a missing hook module, spec or `deno` binary refuses the
+push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).
 
