@@ -37,6 +37,14 @@ const MIN_SIGNATURE_CHARS = 20;
 const ANNOTATION_PREFIX = /^-\s*\*\*[^*\n]*\*\*:\s*/;
 /** GitHub Actions workflow-command markers that precede the message. */
 const COMMAND_MARKER = /^##\[(?:error|warning|group|endgroup)\]/;
+/**
+ * A command echo: a `##[group]`, `##[endgroup]` or `##[command]` line, which
+ * prints the command being run (`Run cargo test --no-fail-fast`), not a result.
+ */
+const COMMAND_ECHO =
+  /^(?:\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?z?\s+)?(?:##\[(?:group|endgroup|command)\]|\[command\])/i;
+/** A command-line flag, such as `--no-fail-fast` or `--fail`; not a failure. */
+const FLAG_TOKEN = /(?:^|\s)--?[a-z][\w-]*/g;
 /** The runner's closing line, shared by every failed job; not evidence. */
 const GENERIC_LINE = /process completed with exit code/;
 /** The worker's own boilerplate from formatCiAnnotations; not evidence. */
@@ -48,8 +56,8 @@ const FAILURE_WORD =
 /**
  * Failure lines of a CI failure text, normalised and de-duplicated in
  * first-seen order. A line qualifies when it is long enough, is not the
- * generic runner exit line, and is either an annotation or carries a failure
- * word.
+ * generic runner exit line or a command echo, and is either an annotation or
+ * carries a failure word outside any command-line flag.
  */
 export function failureSignatureLines(text: string): string[] {
   const seen = new Set<string>();
@@ -57,6 +65,8 @@ export function failureSignatureLines(text: string): string[] {
 
   for (const raw of stripAnsi(text).split("\n").slice(0, MAX_LINES)) {
     let line = raw.slice(0, MAX_LINE_CHARS).trim();
+
+    if (COMMAND_ECHO.test(line)) continue;
 
     let annotation = false;
     const prefix = ANNOTATION_PREFIX.exec(line);
@@ -70,7 +80,10 @@ export function failureSignatureLines(text: string): string[] {
     if (normalised.length < MIN_SIGNATURE_CHARS) continue;
     if (GENERIC_LINE.test(normalised)) continue;
     if (BOILERPLATE.test(normalised)) continue;
-    if (!annotation && !FAILURE_WORD.test(normalised)) continue;
+    if (
+      !annotation &&
+      !FAILURE_WORD.test(normalised.replace(FLAG_TOKEN, " "))
+    ) continue;
     if (seen.has(normalised)) continue;
 
     seen.add(normalised);

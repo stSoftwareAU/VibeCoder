@@ -283,7 +283,88 @@ Deno.test("compareBaseFailure - a throwing log fetcher is unreadable with the er
     actionsLogFn: log.fn as typeof fetchGithubActionsLogExcerpt,
   });
 
-  assertStringIncludes(unreadableReason(result), "socket hang up");
+  assertEquals(
+    unreadableReason(result),
+    "the base run's log could not be read: socket hang up",
+  );
+});
+
+Deno.test("compareBaseFailure - a log fetcher rejecting with a non-Error value is unreadable with that value as text", async () => {
+  const failureText =
+    "src/foo.ts(10,5): error TS2345: Argument of type 'string' is not assignable.\n";
+  const fn = (): Promise<ActionsLogOutcome> => Promise.reject("rate limited");
+
+  const result = await compareBaseFailure({
+    repo: REPO,
+    checkName: CHECK,
+    baseCheckRunId: BASE_RUN_ID,
+    failureText,
+    ghFn: unusedGh,
+    actionsLogFn: fn as unknown as typeof fetchGithubActionsLogExcerpt,
+  });
+
+  assertEquals(
+    unreadableReason(result),
+    "the base run's log could not be read: rate limited",
+  );
+});
+
+Deno.test("compareBaseFailure - the caller's gh runner is handed to the log fetcher", async () => {
+  const failureText =
+    "src/foo.ts(10,5): error TS2345: Argument of type 'string' is not assignable.\n";
+  const log = logFake(excerptOf("nothing relevant here at all, just noise\n"));
+
+  await compareBaseFailure({
+    repo: REPO,
+    checkName: CHECK,
+    baseCheckRunId: BASE_RUN_ID,
+    failureText,
+    ghFn: unusedGh,
+    actionsLogFn: log.fn as typeof fetchGithubActionsLogExcerpt,
+  });
+
+  assertEquals(log.calls[0]?.ghFn, unusedGh);
+});
+
+Deno.test("compareBaseFailure - logs sharing only a command-echo line but with different errors are different", async () => {
+  const echo = "##[group]Run cargo test --workspace --no-fail-fast";
+  const failureText = `${echo}\n` +
+    "2026-11-01T10:00:00Z ##[error]thread 'a' panicked at src/a.rs:3: boom\n";
+  const baseLog = `2026-11-02T10:00:00Z ${echo}\n` +
+    "2026-11-02T10:00:01Z ##[command]curl --fail https://example.test/setup.sh\n" +
+    "2026-11-02T10:00:02Z ##[error]linker `cc` not found while building b\n";
+  const log = logFake(excerptOf(baseLog));
+
+  const result = await compareBaseFailure({
+    repo: REPO,
+    checkName: CHECK,
+    baseCheckRunId: BASE_RUN_ID,
+    failureText,
+    ghFn: unusedGh,
+    actionsLogFn: log.fn as typeof fetchGithubActionsLogExcerpt,
+  });
+
+  assertEquals(result, { state: "different" });
+});
+
+Deno.test("failureSignatureLines - command echoes and flag-only failure words are not failure lines", () => {
+  const lines = failureSignatureLines(
+    [
+      "##[group]Run cargo test --workspace --no-fail-fast",
+      "2026-11-01T10:00:00Z ##[group]Run curl --fail https://example.test/x.sh",
+      "Run curl --fail https://example.test/x.sh",
+      "[command]/usr/bin/git fetch --no-fail-fast origin",
+      "##[endgroup]",
+      "##[error]assertion failed: left == right in widget_test",
+    ].join("\n"),
+  );
+  assertEquals(lines, ["assertion failed: left == right in widget_test"]);
+});
+
+Deno.test("failureSignatureLines - a repeated failure line is listed once", () => {
+  const line = "##[error]assertion failed: left == right in widget_test";
+  const lines = failureSignatureLines(`${line}\n${line}\n${line}\n`);
+  assertEquals(lines, ["assertion failed: left == right in widget_test"]);
 });
 
 Deno.test("failureSignatureLines - hostile repeated failure words stay bounded", () => {

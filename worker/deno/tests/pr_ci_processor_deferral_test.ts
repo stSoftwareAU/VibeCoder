@@ -31,6 +31,10 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
+import {
+  type ActionsLogOptions,
+  fetchGithubActionsLogExcerpt,
+} from "../lib/github_actions_log_fetcher.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
@@ -136,6 +140,8 @@ interface StubOptions {
    * (Issue #4680). Defaults like {@link baseLog}.
    */
   mergedLog?: string | "error";
+  /** Collects each call the base run's log fetch makes (Issue #4680). */
+  logCalls?: ActionsLogOptions[];
   /** State the blocking issue reports. */
   blockerState?: "OPEN" | "CLOSED";
   /** Comments already on the pull request. */
@@ -477,6 +483,14 @@ async function runDeferralScenario(
       workRoot: tmpDir,
       ghCommandFn: runGh,
       fleetLogins: [FLEET_LOGIN],
+      ...(options.logCalls !== undefined
+        ? {
+          actionsLogFn: (opts: ActionsLogOptions) => {
+            options.logCalls?.push(opts);
+            return fetchGithubActionsLogExcerpt(opts);
+          },
+        }
+        : {}),
     };
 
     const result = await processCiFailure(input, processorDeps);
@@ -852,6 +866,9 @@ Deno.test("processCiFailure - a PR-only workflow with no base run is held unveri
   const body = captured.comments[0] ?? "";
   assertStringIncludes(body, "the finding is in the base branch");
   assertStringIncludes(body, "could not be verified");
+  // The hold names the claimed blocker and the base state it found.
+  assertStringIncludes(body, `Depends on ${BLOCKER}`);
+  assertStringIncludes(body, "check state is `no-run`");
   assertEquals(attemptOutcomes(body), ["base-unverified"]);
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
@@ -893,6 +910,8 @@ Deno.test("processCiFailure - a base run recorded against an older commit is sta
   assertEquals(captured.comments.length, 1);
   const body = captured.comments[0] ?? "";
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertStringIncludes(body, `Depends on ${BLOCKER}`);
+  assertStringIncludes(body, "check state is `stale`");
   assertEquals(attemptOutcomes(body), ["base-unverified"]);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
@@ -1025,6 +1044,19 @@ Deno.test("processCiFailure - a red base whose log shows a different failure tak
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
   assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure - the base run's log is read for the failing check's name (Issue #4680)", async () => {
+  const logCalls: ActionsLogOptions[] = [];
+  await runDeferralScenario(AGENT_MESSAGE, { logCalls });
+
+  // The failing check's own log is read too; pick the base run's read.
+  const baseReads = logCalls.filter((call) =>
+    call.checkRunId === String(BASE_CHECK_ID)
+  );
+  assertEquals(baseReads.length, 1);
+  assertEquals(baseReads[0]?.repo, "org/repo");
+  assertEquals(baseReads[0]?.checkName, "semgrep");
 });
 
 Deno.test("processCiFailure - a red base whose log cannot be fetched is held unverified: posts once, charges no attempt, pages no human (Issue #4680)", async () => {

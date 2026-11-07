@@ -50,12 +50,16 @@ flowchart TD
 
 ### Essential Design Decisions
 
-- A line counts when it is an annotation, or carries a failure word, is at least
-  20 normalised characters and is not the runner's generic
-  `Process completed with exit code N` line (every failed job has it). Any one
-  shared line is "same". This favours deferral over a strict log diff because
-  excerpts differ in noise; the cost is that a shared generic-looking error line
-  can match.
+- A line counts when it is an annotation, or carries a failure word outside a
+  command-line flag, is at least 20 normalised characters, is not a command echo
+  (`##[group]`, `##[endgroup]`, `##[command]`, `[command]` lines such as
+  `Run cargo test --no-fail-fast`) and is not the runner's generic
+  `Process completed with exit code N` line (every failed job has it). Flags
+  such as `--no-fail-fast` or `curl --fail` are blanked before the failure-word
+  test, so a shared command echo is never failure evidence. Any one shared line
+  is "same". This favours deferral over a strict log diff because excerpts
+  differ in noise; the cost is that a shared generic-looking error line can
+  match.
 - "Different" charges the attempt (no hold): a base that is red for another
   reason proves nothing about this failure, and holding would only delay it.
 - The hold decision moved into `_holdOrChargeUnverified` so every unverified
@@ -72,7 +76,7 @@ flowchart TD
 Backend-only change.
 
 - `deno task test:unit` on `worker/deno/tests/ci_base_failure_signature_test.ts`
-  (13), `worker/deno/tests/pr_ci_processor_deferral_test.ts` (27),
+  (18), `worker/deno/tests/pr_ci_processor_deferral_test.ts` (28),
   `worker/deno/tests/ci_base_branch_check_test.ts`,
   `worker/deno/tests/ci_fix_attempt_markers_test.ts`,
   `worker/deno/tests/ci_fix_audit_in_pr_3116_test.ts` and
@@ -94,22 +98,30 @@ Backend-only change.
 
 - `worker/deno/tests/ci_base_failure_signature_test.ts`: same failure across
   timestamps and ANSI; a different error; a shared generic exit line alone is
-  `different`; annotation-only text; empty text, the real `formatCiAnnotations`
-  fallback sentence and its header are `unreadable` and never fetch the log;
-  error, not-applicable and throwing log providers are `unreadable` with the
-  cause in the reason; an empty base log is `unreadable`; three hostile inputs
-  return deterministically. Red checks: removing the generic exclusion, the
-  boilerplate exclusion, the empty-log check and making `same` ignore the log
-  each turned a test red.
+  `different`; two logs that share only a command-echo line
+  (`##[group]Run cargo test --workspace --no-fail-fast`, `curl --fail`) but
+  carry different errors are `different`; echoes and flag-only matches yield no
+  signature line; a repeated line is listed once; annotation-only text; empty
+  text, the real `formatCiAnnotations` fallback sentence and its header are
+  `unreadable` and never fetch the log; error, not-applicable and throwing log
+  providers (an `Error` or a non-`Error` rejection) are `unreadable` with the
+  exact cause in the reason; the caller's `gh` runner reaches the log fetcher;
+  an empty base log is `unreadable`; three hostile inputs return
+  deterministically. Red checks: removing the generic exclusion, the boilerplate
+  exclusion, the empty-log check and making `same` ignore the log each turned a
+  test red.
 - `worker/deno/tests/pr_ci_processor_deferral_test.ts`: red base with a
   different failure is charged (no deferral, no hold); red base whose log cannot
   be fetched is held; a tree-equivalent red with a differing log is charged; two
   prior holds make an unreadable red base charged. The stub now serves the base
   run's identity and job log, defaulting to the failing check's own annotation
-  messages so the existing red-base tests are unchanged. Red checks: "different"
-  falling through to defer turns the first and third red; "unreadable" falling
-  through turns the second and fourth red; removing the hold bound for
-  unreadable turns the fourth red.
+  messages so the existing red-base tests are unchanged. The hold tests for a
+  missing and a stale base run now assert the `Depends on` reference and the
+  base state in the comment, and a new test asserts the base run's log is
+  fetched with the failing check's name. Red checks: "different" falling through
+  to defer turns the first and third red; "unreadable" falling through turns the
+  second and fourth red; removing the hold bound for unreadable turns the fourth
+  red.
 - Call sites: the only caller of `compareBaseFailure` is
   `_resolveBaseBranchDeferral`; reverting its call is the red check above.
 - Docs sweep: `docs/workflows/ci-fix.md` (base-branch section and both diagrams)
@@ -125,6 +137,11 @@ Backend-only change.
   staging), which fail the same way on the base branch and are not touched by
   this change; its serial pass did not run after that. Markdownlint, semgrep,
   lint, type check and fmt passed.
+
+Mutation survivors named by the completion check (`ci_base_failure_signature.ts`
+seen-set add, `ghFn` argument, error-message ternary; `pr_ci_processor.ts` hold
+`ref`, hold `state`, `checkName` to the comparison) are each pinned by a test
+above; none is exempted.
 
 Not done / risk: no live GitHub run of a PR-only check; the comparison matches
 on any one shared line, so a coincidentally shared error line can read as the
