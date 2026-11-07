@@ -1,158 +1,131 @@
 ## Summary
 
-The CI-fix base-branch deferral (#1880) no longer reads "the base branch has no
-run of this check" as "the base is green". The worker now reads the failing
-check's identity (name, producer app, workflow file) and the base head's SHA,
-and sorts the agent's `Depends on` claim into verified red (deferral, as
-before), verified green (claim refuted, ordinary charged path), or
-**unverified** (no run from the same workflow, a run for another commit, or an
-unreadable API). An unverified claim is held: the diagnosis is posted with a
-`vibe-ci-fix-attempt` marker whose outcome is `base-unverified`, no fix attempt
-is charged, nothing is marked passed, and no `needs-human` is applied. At most
-two holds are allowed per failure signature, after which the ordinary charged
-path runs so the fleet-wide cap still ends the loop. The CI-fix prompt and
-`docs/workflows/ci-fix.md` describe these states and no longer say "nothing on
-this branch can fix it".
+The CI-fix base-branch deferral (#1880) used to defer on a red base
+*conclusion*. Earlier work on #4680 (#4836) read the failing check by workflow
+identity and held claims it could not verify. This change closes the remaining
+gap: a red base run (on the base head, or the same workflow's run on a merged
+PR head with the base head's tree) is only accepted when its log carries the
+pull request's own failure. Two unrelated failures in the same job no longer
+look like one base defect.
 
-A PR-only check never runs on the base head, so the worker also reads
-commit-bound evidence from the same workflow: the runs of the same check (same
-app and workflow file) on the head of a pull request merged as the base head,
-but only when that commit's tree is identical to the base head's tree. A red
-there is a verified base defect and takes the existing deferral (the
-`Depends
-on` issue and `vibe-ci-fix-deferred` marker, resumed by the existing
-scanner when the blocker closes); a green refutes the claim. When no such commit
-exists or any lookup fails, the claim stays unverified (held, not deferred). The
-worker does not re-run the check on the base tree. Part of #4680.
+`_resolveBaseBranchDeferral` now calls `compareBaseFailure`
+(`worker/deno/lib/ci_base_failure_signature.ts`) for a red base:
+
+- **same failure** (a normalised PR failure line also appears in the base run's
+  log) — the existing deferral: `Depends on` issue and `vibe-ci-fix-deferred`
+  marker, resumed by the existing scanner when the blocker closes;
+- **different failure** (the base log was read and shares none of the PR's
+  failure lines) — the base is red for another reason, so the claim is not
+  verified as this failure: the ordinary charged path, no deferral, no hold;
+- **unreadable** (no comparable PR line, non-Actions check, log fetch error or
+  an empty base log) — held as unverified (`base-unverified`, no attempt
+  charged), sharing the existing bound of two holds.
+
+The worker still does not re-run the check on the base tree. The CI-fix prompt,
+`docs/workflows/ci-fix.md` and the three one-line restatements of the rule
+(`docs/PROMPTS.md`, `CODING-STANDARDS.md`, `prompts/coding_guidelines/prompt.md`)
+say the log must match. Closes #4680.
 
 Version bump: `VERSION` is not changed by this PR.
 
 ```mermaid
 flowchart TD
-    A[Agent: Depends on N] --> B[Read failing check identity]
-    B --> C[Read base head SHA and its check runs]
-    C -- same workflow, failure --> D[Red: defer once, no attempt]
-    C -- same workflow, success --> E[Green: ordinary path, attempt charged]
-    C -- no run on head --> T[Same workflow on a merged PR head with the base tree]
-    T -- failure --> D
-    T -- success --> E
-    C -- no run / stale / API error --> F{Holds so far < 2?}
-    T -- none / lookup failed --> F
-    F -- yes --> G[Unverified hold: marker base-unverified, no attempt]
-    F -- no --> E
+    A[Red base run: head or tree-equivalent] --> B[Read the base run's log]
+    B -- PR failure line found --> C[Same: defer, no attempt]
+    B -- log read, no shared line --> D[Different: charged path]
+    B -- unreadable / nothing to compare --> E{Holds < 2?}
+    E -- yes --> F[Hold: base-unverified, no attempt]
+    E -- no --> D
 ```
 
 ## Spec
 
 ### Intent and Rationale
 
-- Most fleet checks run only on pull requests, so the base never has a run and
-  the old reading made the deferral impossible; the agent then patched base
-  defects inside unrelated PRs (VibeCoder#4675, TagsTS#88).
-- Unknown evidence is its own state rather than a pass or a charged failure, as
-  the issue asks (item 3). A bounded hold keeps it recoverable without a new
-  scheduler (#4656 owns retry state).
+- #4836 verified *which* check ran on the base, but a red conclusion could still
+  come from an unrelated failure; the issue (item 2) asks for the same failure
+  signature and cause in the base tree.
+- Commit-bound evidence from the same workflow (the tree-equivalent merged-PR
+  run, from #4836) was kept; only its failure text is now compared.
 
 ### Essential Design Decisions
 
-- Identity is name + producer app + workflow file path, so a same-named check
-  from another workflow (TagsTS's default CodeQL setup) is not evidence. A
-  GitHub Actions check whose workflow path cannot be resolved is `unavailable`,
-  never matched by name alone.
-- Only `success` is green; cancelled, skipped, neutral, timed-out and
-  action-required runs are no evidence.
-- Holds are recorded as attempt markers with outcome `base-unverified` but are
-  kept out of `countAttempts` (a separate `unverifiedBaseHolds` map), so they do
-  not consume the fleet-wide cap. A merge-queue check (non-numeric id) cannot
-  have its identity read and is therefore held rather than read by name.
-- Assumption: an unrelated open PR failing the same job is not read, since the
-  issue says it is only a diagnostic lead. Only a PR merged as the base head,
-  and only when its head commit has the base head's tree, is read. A merge
-  queue's commit is not in `commits/{sha}/pulls`, so such a base stays held.
+- A line counts when it is an annotation, or carries a failure word, is at
+  least 20 normalised characters and is not the runner's generic
+  `Process completed with exit code N` line (every failed job has it). Any one
+  shared line is "same". This favours deferral over a strict log diff because
+  excerpts differ in noise; the cost is that a shared generic-looking error
+  line can match.
+- "Different" charges the attempt (no hold): a base that is red for another
+  reason proves nothing about this failure, and holding would only delay it.
+- The hold decision moved into `_holdOrChargeUnverified` so every unverified
+  reading shares one bound.
 
 ### Undiscoverable Facts
 
-- `conflict_needs_human_gate.ts` treats any parsed `vibe-ci-fix-attempt` marker
-  as "a CI fix was attempted", so a hold counts there too; left unchanged
-  because a hold does mean an agent ran.
+- Observed only in the test fixtures: `fetchGithubActionsLogExcerpt` is called
+  with the base *check-run id* and reads `check-runs/{id}` then the job log;
+  no live GitHub response for a PR-only check was observed.
 
 ## Evidence
 
-- `deno task test:unit` on `worker/deno/tests/ci_base_branch_check_test.ts`,
+Backend-only change.
+
+- `deno task test:unit` on
+  `worker/deno/tests/ci_base_failure_signature_test.ts` (13),
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts` (27),
+  `worker/deno/tests/ci_base_branch_check_test.ts`,
   `worker/deno/tests/ci_fix_attempt_markers_test.ts`,
-  `worker/deno/tests/pr_ci_processor_deferral_test.ts` and
-  `worker/deno/tests/ci_fix_audit_in_pr_3116_test.ts`: 100 passed, 0 failed.
-- Production readers of the new members: `readBaseBranchCheck` and
-  `readCheckIdentity` are called in `worker/deno/lib/pr_ci_processor.ts`;
-  `countUnverifiedBaseHolds` is called there; `base-unverified` is built in the
-  processor and parsed in `worker/deno/lib/ci_fix_attempt_markers.ts`.
-- Files read to cite behaviour: `worker/deno/lib/pr_ci_processor.ts`,
-  `worker/deno/lib/ci_fix_attempt_markers.ts`,
-  `worker/deno/lib/conflict_needs_human_gate.ts`.
-- Tree-equivalent evidence: `readTreeEquivalentVerdict` in
-  `worker/deno/lib/ci_base_branch_check.ts` is called by `readBaseBranchCheck`
-  when the base head has no verdict of its own.
-- Not observed: a live GitHub response for a PR-only check; fixtures follow the
-  documented REST shape of `check-runs` and `actions/runs`.
-
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **partial** — "Establish the same failure signature and its cause in the
-  relevant base tree, using an isolated baseline reproduction or equivalent
-  commit-bound evidence from the same workflow." — evidence:
-  `worker/deno/lib/ci_base_branch_check.ts::readTreeEquivalentVerdict`,
-  `worker/deno/tests/ci_base_branch_check_test.ts::a PR-only check red on the
-  merged PR's identical tree is red, bound to that commit`
-  — reviewer: partial — reason: the same check from the same workflow on a
-  commit with the base head's tree is now read, but only the check's conclusion
-  is compared; the failing step or log is not compared with the PR's failure
-  signature, and the worker does not re-run the check on the base tree.
-- **met** — "Once a base defect is verified, use the existing deduplicated
-  base-repair/dependency mechanism and automatically resume the PR when that
-  repair lands" for a PR-only workflow — evidence:
-  `worker/deno/tests/pr_ci_processor_deferral_test.ts::a PR-only workflow red
-  on the merged PR's identical tree defers, charging no attempt and paging no
-  human`,
-  `worker/deno/tests/pr_maintenance_ci_deferral_test.ts::once the named
-  issue closes the check is returned again`
-  — reviewer: met
+  `worker/deno/tests/ci_fix_audit_in_pr_3116_test.ts` and
+  `worker/deno/tests/pr_maintenance_ci_deferral_test.ts`: 145 passed, 0 failed
+  (the five-file run excluding the new signature test file).
+- Production readers: `compareBaseFailure` is called from
+  `_resolveBaseBranchDeferral` in `worker/deno/lib/pr_ci_processor.ts`;
+  `actionsLogFn` is threaded from `processorDeps.actionsLogFn` there.
+- Prose claims checked against: `worker/deno/lib/pr_ci_processor.ts`,
+  `worker/deno/lib/ci_base_failure_signature.ts`,
+  `worker/deno/lib/ci_base_branch_check.ts`.
+- Related rules checked: `prompts/ci_fix/prompt.md` Base-branch failures
+  section, the 3116 carve-out for dependency-audit checks (kept, pinned by
+  `ci_fix_audit_in_pr_3116_test.ts`) and the twinned restatement in
+  `CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md`. The phrase
+  "nothing on this branch can fix it" is absent.
 
 ## Test Plan
 
-- `worker/deno/tests/ci_base_branch_check_test.ts` (42): tree-equivalent red,
-  green, newest wins, differing tree, other workflow, cancelled, other commit,
-  several heads, a cancelled head run, failed and malformed lookups, and the
-  `--jq` request shapes of the check-runs and check-run calls (the surviving
-  mutations at lines 140, 167, 245 and 246 each turn a test red: the non-Actions
-  app with no workflow path, and the asserted `--jq` arguments). Earlier: (25):
-  red, green, no-run, other-workflow, other-app, stale, unresolved identity,
-  non-success conclusions, errors. Red checks: removing the workflow-path
-  comparison, the head-SHA filter, the GitHub Actions no-workflow-path guard and
-  the missing app-slug error each turned one test red.
-- `worker/deno/tests/pr_ci_processor_deferral_test.ts`: PR-only no-run hold,
-  same-named other-workflow check, other PR's red run, stale run, unreadable
-  identity, hold bound of two, resumption to deferral once the base is red,
-  known-good base. Red checks: forcing no-run to the ordinary path, raising the
-  hold cap and counting holds as attempts each turned tests red.
-- Tree-equivalent cases in `pr_ci_processor_deferral_test.ts`: red defers with
-  no attempt, green takes the charged path, a differing tree is held.
-- Coverage carry-over: `ci_base_branch_check.ts` line 503 (a JSON body that is
-  not an object) is reached by the "JSON but not an object" test;
-  `github_actions_log_fetcher.ts` lines 284-291 (a run-only and a job-less
-  details URL) by two `resolveActionsJobId` tests in
-  `github_actions_log_fetcher_test.ts`.
-- `worker/deno/tests/ci_fix_attempt_markers_test.ts`: round-trip and unknown
-  outcome rejection for `base-unverified`; holds excluded from `countAttempts`.
-- Edited expectation in `pr_ci_processor_deferral_test.ts`: a base lookup error
-  now holds (one comment, no attempt) instead of charging an attempt; the
-  required behaviour is the issue's item 3. It still goes red if the hold is
-  forced to the ordinary path (red check above).
-- Removed from `worker/deno/tests/ci_base_branch_check_test.ts`: the
-  `isCheckRedOnBranch` tests.
-  - Replaced by: `readBaseBranchCheck` tests of the same scenarios (latest run
-    wins, in-progress re-run, malformed body, API failure).
-  - Obsolete: `isCheckRedOnBranch` read a base with no run as `false`.
-- Twinned rules: the pinned prompt phrases in
-  `worker/deno/tests/ci_fix_audit_in_pr_3116_test.ts` still pass.
+- `worker/deno/tests/ci_base_failure_signature_test.ts`: same failure across
+  timestamps and ANSI; a different error; a shared generic exit line alone is
+  `different`; annotation-only text; empty text, the real
+  `formatCiAnnotations` fallback sentence and its header are `unreadable` and
+  never fetch the log; error, not-applicable and throwing log providers are
+  `unreadable` with the cause in the reason; an empty base log is `unreadable`;
+  three hostile inputs return deterministically. Red checks: removing the
+  generic exclusion, the boilerplate exclusion, the empty-log check and making
+  `same` ignore the log each turned a test red.
+- `worker/deno/tests/pr_ci_processor_deferral_test.ts`: red base with a
+  different failure is charged (no deferral, no hold); red base whose log
+  cannot be fetched is held; a tree-equivalent red with a differing log is
+  charged; two prior holds make an unreadable red base charged. The stub now
+  serves the base run's identity and job log, defaulting to the failing
+  check's own annotation messages so the existing red-base tests are
+  unchanged. Red checks: "different" falling through to defer turns the first
+  and third red; "unreadable" falling through turns the second and fourth red;
+  removing the hold bound for unreadable turns the fourth red.
+- Call sites: the only caller of `compareBaseFailure` is
+  `_resolveBaseBranchDeferral`; reverting its call is the red check above.
+- Docs sweep: `docs/workflows/ci-fix.md` (base-branch section and both
+  diagrams) and `prompts/ci_fix/prompt.md` re-read; sibling hits found with
+  `git grep -n -i "base-unverified\|tree-equivalent\|Depends on"`.
+- Added `docs/audits/lib-sweep-coverage/top-up-4680.json` for the new module;
+  `deno task check:manifests` passes.
+- Full gate `./quality.sh` (run before the sweep slice was added): `completeness
+  checks` failed only on the missing sweep slice, now added. `deno tests`
+  failed on that same ledger test and on two tests in
+  `worker/deno/tests/completion_phase_repo_formatters_test.ts` (cargo fmt
+  staging), which fail the same way on the base branch and are not touched by
+  this change; its serial pass did not run after that. Markdownlint, semgrep,
+  lint, type check and fmt passed.
+
+Not done / risk: no live GitHub run of a PR-only check; the comparison matches
+on any one shared line, so a coincidentally shared error line can read as the
+same failure; the worker does not re-run the check on the base tree.

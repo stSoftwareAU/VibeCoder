@@ -1,0 +1,12 @@
+{
+  "issue": 4680,
+  "chunk": "top-up-4680",
+  "title": "top-up: CI-fix base-branch failure signature comparison",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4680",
+  "definition": "Compare the pull request's failure lines with the red base run's log before the CI-fix base-branch deferral is granted; a different failure is charged and an unreadable comparison is held.",
+  "status": "claimed",
+  "sweptAt": "0bc8f344d488563152682d2181948dee8e71dd51",
+  "paths": [
+    "worker/deno/lib/ci_base_failure_signature.ts"
+  ]
+}
