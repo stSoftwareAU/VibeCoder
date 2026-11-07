@@ -2,8 +2,8 @@
 
 Removes the sentence "Name each remaining hit in the PR summary by `file:line`
 with the reason it is still true." from the "Grep for the **stem**" bullet in
-`CODING-STANDARDS.md` and from its twin in `prompts/coding_guidelines/prompt.md`.
-Closes #4735.
+`CODING-STANDARDS.md` and from its twin in
+`prompts/coding_guidelines/prompt.md`. Closes #4735.
 
 Version bump: `VERSION` is not changed by this PR.
 
@@ -39,16 +39,16 @@ Documentation-only change.
   `tests/coding_guidelines_additive_member_3137_test.ts`,
   `tests/coding_guidelines_overlay_test.ts`,
   `tests/coding_guidelines_layers_2574_test.ts` and
-  `tests/coding_guidelines_v42_test.ts` (run from `worker/deno`): 38 passed,
-  0 failed.
+  `tests/coding_guidelines_v42_test.ts` (run from `worker/deno`): 38 passed, 0
+  failed.
 
 ## Test Plan
 
 - No test added: the change deletes one sentence of guidance, and no code reads
   it. The existing twin-drift tests above still pass, so the two copies stay in
   step.
-- Rule-applied-to-own-diff: the removed sentence's nouns (`file:line`, "remaining
-  hit") do not appear in this PR's summary as a list of line numbers.
+- Rule-applied-to-own-diff: the removed sentence's nouns (`file:line`,
+  "remaining hit") do not appear in this PR's summary as a list of line numbers.
 - Related rules checked: the other "Grep for the stem" restatements in the issue
   prompt template say to name the section read and the doc files updated, not
   line numbers, so they agree with the removal.
