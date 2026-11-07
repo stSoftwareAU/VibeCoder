@@ -37,7 +37,6 @@
 
 import type { Result } from "../types.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
-import { checkBashCiGates } from "./bash_ci_gate_scanner.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import {
@@ -278,6 +277,19 @@ export async function repoShellcheckPolicy(
       };
     }
     const runSteps = workflowRunStepBodies(text);
+    const delegated = await workflowDelegatesToShellcheck(
+      repoRoot,
+      tracked,
+      runSteps,
+    );
+    if (!delegated.ok) return delegated;
+    if (delegated.value) {
+      return {
+        ok: false,
+        error:
+          `repository CI delegates ShellCheck through a script in workflow ${path}`,
+      };
+    }
     if (/^\s*(?:-\s*)?uses\s*:\s*[^\n]*\bshellcheck\b/im.test(text)) {
       return {
         ok: false,
@@ -415,6 +427,59 @@ export async function repoShellcheckPolicy(
       workflowFiles: [...new Set(policies.flatMap((p) => p.workflowFiles))],
     },
   };
+}
+
+async function workflowDelegatesToShellcheck(
+  repoRoot: string,
+  tracked: readonly string[],
+  runSteps: readonly string[],
+): Promise<Result<boolean, string>> {
+  const pending = new Set<string>();
+  for (const body of runSteps) {
+    for (const line of body.split("\n")) {
+      for (const token of tokeniseCommand(line)) {
+        const path = token.startsWith("./") ? token.slice(2) : token;
+        if (
+          path.endsWith(".sh") && !path.startsWith("/") &&
+          !path.split(/[\\/]/).includes("..") && tracked.includes(path)
+        ) {
+          pending.add(path);
+        }
+      }
+    }
+  }
+
+  const inspected = new Set<string>();
+  while (pending.size > 0) {
+    const path = pending.values().next().value as string;
+    pending.delete(path);
+    if (inspected.has(path)) continue;
+    inspected.add(path);
+    let text: string;
+    try {
+      text = await Deno.readTextFile(`${repoRoot}/${path}`);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `cannot read tracked workflow script ${path}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    if (/\bshellcheck\b/.test(text)) return { ok: true, value: true };
+    for (const line of text.split("\n")) {
+      for (const token of tokeniseCommand(line)) {
+        const path = token.startsWith("./") ? token.slice(2) : token;
+        if (
+          path.endsWith(".sh") && !path.startsWith("/") &&
+          !path.split(/[\\/]/).includes("..") && tracked.includes(path)
+        ) {
+          pending.add(path);
+        }
+      }
+    }
+  }
+  return { ok: true, value: false };
 }
 
 function workflowRunStepBodies(text: string): string[] {
@@ -1075,23 +1140,6 @@ export async function runPrePushGate(opts: {
   const shellcheckPolicy = await repoShellcheckPolicy(opts.cwd, tracked);
   if (!shellcheckPolicy.ok) {
     return infrastructureFail(shellcheckPolicy.error);
-  }
-  if (
-    shellcheckPolicy.value === null &&
-    (changed.value.some((p) => p.endsWith(".sh")) ||
-      changed.value.some((p) => p.startsWith(".github/workflows/")))
-  ) {
-    const bashCi = await checkBashCiGates(opts.cwd);
-    if (bashCi.gates.shellcheck === "present") {
-      return infrastructureFail(
-        "repository CI delegates ShellCheck through a script or action whose policy the pre-push gate cannot reproduce",
-      );
-    }
-    if (bashCi.workflowsLoaded && bashCi.gates.shellcheck === "unknown") {
-      return infrastructureFail(
-        "repository CI ShellCheck policy is incomplete because a workflow could not be parsed",
-      );
-    }
   }
   const shellcheckTouchedConfigs =
     shellcheckPolicy.value?.configFiles.some((p) =>
