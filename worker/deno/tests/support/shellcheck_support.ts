@@ -1,9 +1,7 @@
 /**
  * Shared ShellCheck test seams (Issue #4631): a stub binary for hermetic unit
  * tests, and the host's real binary for the few tests that need a genuine
- * diagnostic. Unit tests must not inherit the host's tools, so the real-binary
- * tests are skipped on a host without ShellCheck and read the version from the
- * binary they find, never from a typed-in literal.
+ * diagnostic. Integration tests require the real tool and read its version from the binary.
  */
 import {
   findShellcheckBinary,
@@ -50,8 +48,11 @@ export async function probeRealShellcheck(): Promise<
   }
 }
 
-/** Resolved once per test process. */
-export const REAL_SHELLCHECK = await probeRealShellcheck();
-
-/** Deno.test options that skip a real-binary test on a host without ShellCheck. */
-export const REQUIRES_REAL_SHELLCHECK = { ignore: REAL_SHELLCHECK === null };
+/** Integration suites fail loudly when their required tool is unavailable. */
+export async function requireRealShellcheck(): Promise<
+  { binary: string; version: string }
+> {
+  const result = await probeRealShellcheck();
+  if (!result) throw new Error("ShellCheck is required for integration tests");
+  return result;
+}

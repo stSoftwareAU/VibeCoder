@@ -1,7 +1,6 @@
 /**
  * Real publication entry points must enforce repository ShellCheck policy
- * (#4631). These drive the host's real ShellCheck, so each test is skipped on a
- * host without one and takes the CI version from the binary it finds.
+ * (#4631). These drive the host's real ShellCheck, and take the CI version from the binary it finds.
  */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
@@ -9,10 +8,9 @@ import {
   resolveRepairPreFlightSpec,
 } from "../lib/git_push.ts";
 import { validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
-import {
-  REAL_SHELLCHECK,
-  REQUIRES_REAL_SHELLCHECK,
-} from "./support/shellcheck_support.ts";
+import { requireRealShellcheck } from "./support/shellcheck_support.ts";
+
+const REAL_SHELLCHECK = await requireRealShellcheck();
 
 const repoRoot = new URL("../../../", import.meta.url).pathname;
 const config = `${repoRoot}worker/deno/deno.json`;
@@ -48,7 +46,7 @@ async function fixture(): Promise<{ root: string; dir: string }> {
   await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
   await Deno.writeTextFile(
     `${dir}/.github/workflows/check.yml`,
-    `jobs:\n  lint:\n    env:\n      SHELLCHECK_VERSION: "${REAL_SHELLCHECK?.version}"\n    steps:\n      - run: |\n          find . -name "*.sh" -type f -exec shellcheck -s sh {} +\n`,
+    `jobs:\n  lint:\n    env:\n      SHELLCHECK_VERSION: "${REAL_SHELLCHECK.version}"\n    steps:\n      - run: |\n          find . -name "*.sh" -type f -exec shellcheck -s sh {} +\n`,
   );
   await Deno.writeTextFile(`${dir}/script.sh`, '#!/bin/sh\necho "$1"\n');
   await git(dir, "add", ".");
@@ -92,7 +90,6 @@ async function child(
 
 Deno.test(
   "commitAndPushPending: a repair without pre-flight commands blocks a real ShellCheck diagnostic",
-  REQUIRES_REAL_SHELLCHECK,
   async () => {
     const { root, dir } = await fixture();
     try {
@@ -119,7 +116,6 @@ Deno.test(
 
 Deno.test(
   "commitAndPushPending: a WIP checkpoint with no spec still pushes a ShellCheck diagnostic",
-  REQUIRES_REAL_SHELLCHECK,
   async () => {
     const { root, dir } = await fixture();
     try {
@@ -143,7 +139,6 @@ Deno.test(
 
 Deno.test(
   "validateAndCommit: babysitter refuses a real ShellCheck diagnostic before commit",
-  REQUIRES_REAL_SHELLCHECK,
   async () => {
     const { root, dir } = await fixture();
     try {
@@ -166,7 +161,6 @@ Deno.test(
 for (const entry of ["commitAndPushPending", "validateAndCommit"]) {
   Deno.test(
     `${entry}: missing ShellCheck recovers and checks the repaired content`,
-    REQUIRES_REAL_SHELLCHECK,
     async () => {
       const { root, dir } = await fixture();
       try {
@@ -257,7 +251,6 @@ Deno.test("pre-push CLI: actual repository workflows pass with empty hook input 
 
 Deno.test(
   "pre-push CLI: ambient HOME, XDG and external ancestor configs cannot suppress repository diagnostics",
-  REQUIRES_REAL_SHELLCHECK,
   async () => {
     const { root, dir } = await fixture();
     try {

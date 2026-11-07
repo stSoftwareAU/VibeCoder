@@ -65,19 +65,19 @@ Version bump: none; no version file changed.
   absent, so this change shares the existing pre-push runner and its extracted
   ShellCheck implementation; it does not reuse #4625's reverted module or depend
   on its restoration.
-- Unit tests use a stub ShellCheck binary and version probe. The few tests that
-  need a genuine diagnostic use the host's ShellCheck, take the CI version from
-  that binary, and are skipped on a host without one.
+- Unit tests use a stub ShellCheck binary and version probe. Tests requiring a
+  genuine diagnostic are in the integration manifest, require ShellCheck, and
+  take the CI version from that binary.
 
 ## Evidence
 
 This changes backend and CLI validation; there is no visual surface.
 
-`pre_push_gate_test.ts` (79 tests at head) covers policy parsing, the synced
-ludeeus template, value-taking options, the push-relevance rule and stub-driven
-runs. `shellcheck_publication_test.ts` (7 tests at head) covers the repair and
-WIP entry points and the babysitter with real SC2086 diagnostics, missing-tool
-recovery, the CLI under `--no-config`, and conflicting ambient configuration.
+`pre_push_gate_test.ts` covers policy parsing, the synced ludeeus template,
+value-taking options, the push-relevance rule and stub-driven runs. The
+integration suites `shellcheck_gate_integration_test.ts` and
+`shellcheck_publication_test.ts` cover real diagnostics, repair and WIP entry
+points, the babysitter, missing-tool recovery and ambient configuration.
 
 Read and updated the operator manual's **Agent pre-push hook and the
 changed-files check** section in `docs/CONFIGURATION.md`.
@@ -96,14 +96,15 @@ all publication paths call the same implementation.
   in a repo with the synced template, an unsupported action or a delegating
   script, and a script push in the unsupported case is still refused. Real
   diagnostics (the actual repository workflow, dialect and exclusions, and a
-  later edit invalidating a clean result) use the host ShellCheck and are
-  skipped without one.
+  later edit invalidating a clean result) live in
+  `worker/deno/tests/shellcheck_gate_integration_test.ts`.
 - `worker/deno/tests/shellcheck_publication_test.ts`: a PR repair with
   `resolveRepairPreFlightSpec` leaves the remote unchanged on SC2086; a no-spec
   WIP checkpoint with the same diagnostic still pushes; the babysitter refuses
   its commit. Both repair entry points block with a missing binary, then
   revalidate after tool recovery and accept corrected content. All but the
-  empty-input CLI test need the host ShellCheck and are skipped without one.
+  empty-input CLI test need the host ShellCheck. The entire suite is in the
+  integration manifest and fails explicitly if the tool is unavailable.
 - Call sites: `worker/deno/tests/pr_round_repo_formatters_test.ts` (feedback and
   CI fix), `worker/deno/tests/pr_merge_conflict_processor_test.ts` and
   `worker/deno/tests/pr_spelling_processor_test.ts` assert the spec each
@@ -125,6 +126,11 @@ all publication paths call the same implementation.
   `git_push*`, `commit_and_push_pending`, the completion pre-push gate, pre-push
   CLI and hook, gate retry, babysitter, quality gate and the integration
   manifest.
-- The unit suites pass with no ShellCheck on `PATH` (77 passed, 9 ignored for
-  `pre_push_gate_test.ts` and `shellcheck_publication_test.ts` together) and
-  with the host's ShellCheck (79 and 7 tests, 0 failed).
+- The obsolete unit-suite behaviour conditionally skipped real-binary cases;
+  those cases remain required in the integration manifest. Coverage is in
+  `shellcheck_gate_integration_test.ts::runPrePushGate: a changed shell script is blocked through git_push with the actual repository workflow`
+  and `shellcheck_publication_test.ts::commitAndPushPending: a WIP checkpoint with no spec still pushes a ShellCheck diagnostic`.
+- The merged tree passed `deno fmt --check`, `deno lint`, `deno task check`,
+  and 100 targeted unit, integration and manifest tests on a host with
+  ShellCheck. The manifest classifier's required-tool rule is covered by
+  `integration_source_classifier_test.ts::integration classifier recognises a required real ShellCheck`.

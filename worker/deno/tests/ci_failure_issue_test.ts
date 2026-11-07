@@ -441,6 +441,29 @@ Deno.test("buildCiFailureContext - renders the log the provider resolved", async
   assertEquals(seen.length, 1);
 });
 
+Deno.test("buildCiFailureContext - tells the agent the worker raises the PR (Issue #4871)", async () => {
+  const seen: CiFailureContext[] = [];
+  const section = await buildCiFailureContext({
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: REAL_BODY,
+    repo: "owner/repo",
+    resolveProvider: () =>
+      fakeProvider({
+        ok: true,
+        value: {
+          providerId: "test-provider",
+          buildId: "4347",
+          url: "https://ci.example.com/job/Migration/job/Develop/4347/",
+          status: "FAILURE",
+          logText: "[ERROR] cannot find symbol\nBUILD FAILURE\n",
+        },
+      }, seen),
+  });
+
+  assert(!section.includes("raise the PR itself"));
+  assertStringIncludes(section, "worker raises the PR");
+});
+
 Deno.test("buildCiFailureContext - hands the untrusted build URL to the provider and fetches nothing itself", async () => {
   const seen: CiFailureContext[] = [];
   const section = await buildCiFailureContext({
