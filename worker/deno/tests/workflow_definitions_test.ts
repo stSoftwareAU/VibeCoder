@@ -501,6 +501,48 @@ Deno.test("workflow_definitions - includes Java workflow specs", () => {
     true,
     "Missing java-dependency-updates",
   );
+  assertEquals(
+    ids.includes("java-gradle-dependency-updates"),
+    true,
+    "Missing java-gradle-dependency-updates",
+  );
+});
+
+Deno.test("workflow_definitions - Java dependency update specs are split by ecosystem", () => {
+  const maven = WORKFLOW_SPECS.find((s) => s.id === "java-dependency-updates");
+  const gradle = WORKFLOW_SPECS.find(
+    (s) => s.id === "java-gradle-dependency-updates",
+  );
+  assertNotEquals(maven, undefined);
+  assertNotEquals(gradle, undefined);
+
+  // Each template files only its own Dependabot ecosystem.
+  assertEquals(maven!.template.includes("package-ecosystem: maven"), true);
+  assertEquals(maven!.template.includes("gradle"), false);
+  assertEquals(gradle!.template.includes("package-ecosystem: gradle"), true);
+  assertEquals(gradle!.template.includes("maven"), false);
+
+  // Root markers are keyed to each build system's own root file.
+  assertEquals(maven!.rootProjectMarkers, ["pom.xml"]);
+  assertEquals(gradle!.rootProjectMarkers, [
+    "build.gradle",
+    "build.gradle.kts",
+  ]);
+
+  // Detection is ecosystem-specific, so a Gradle-only dependabot.yml cannot
+  // satisfy the Maven spec and vice versa.
+  assertEquals(maven!.detectionPatternGroups, [[
+    "package-ecosystem: maven",
+    'package-ecosystem: "maven"',
+    "renovate",
+    "versions-maven-plugin",
+  ]]);
+  assertEquals(gradle!.detectionPatternGroups, [[
+    "package-ecosystem: gradle",
+    'package-ecosystem: "gradle"',
+    "renovate",
+    "gradle-versions-plugin",
+  ]]);
 });
 
 Deno.test("workflow_definitions - includes Bash workflow specs", () => {

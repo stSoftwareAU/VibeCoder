@@ -1096,13 +1096,163 @@ Deno.test("workflow_auditor - repository-wide templates accept nested project la
   assertEquals(missing.includes("shellcheck"), true);
   assertEquals(missing.includes("java-dependency-check"), true);
   assertEquals(missing.includes("java-dependency-updates"), false);
+  assertEquals(missing.includes("java-gradle-dependency-updates"), false);
   assertEquals(
     result.value.notApplicable.map((spec) => spec.id).filter((id) =>
       id.startsWith("java-")
     ),
     [
       "java-dependency-updates",
+      "java-gradle-dependency-updates",
     ],
+  );
+});
+
+Deno.test("workflow_auditor - Java Gradle build file alone files only the Gradle Dependabot spec", async () => {
+  const languages: RepoLanguages = {
+    detected: [{ language: "Java", confidence: "api" }],
+    primary: "Java",
+    raw: { Java: 200 },
+    rootFiles: ["build.gradle"],
+  };
+  const result = await auditRepoWorkflows("owner/repo", languages, {
+    runCommand: mockRunner({
+      "repos/owner/repo/contents/.github/workflows": ok("[]"),
+    }),
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(
+    result.value.missing.map((spec) => spec.id).includes(
+      "java-gradle-dependency-updates",
+    ),
+    true,
+  );
+  assertEquals(
+    result.value.missing.map((spec) => spec.id).includes(
+      "java-dependency-updates",
+    ),
+    false,
+  );
+  assertEquals(
+    result.value.notApplicable.map((spec) => spec.id).includes(
+      "java-dependency-updates",
+    ),
+    true,
+  );
+});
+
+Deno.test("workflow_auditor - Java Gradle Kotlin DSL build file alone files only the Gradle Dependabot spec", async () => {
+  const languages: RepoLanguages = {
+    detected: [{ language: "Java", confidence: "api" }],
+    primary: "Java",
+    raw: { Java: 200 },
+    rootFiles: ["build.gradle.kts"],
+  };
+  const result = await auditRepoWorkflows("owner/repo", languages, {
+    runCommand: mockRunner({
+      "repos/owner/repo/contents/.github/workflows": ok("[]"),
+    }),
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(
+    result.value.missing.map((spec) => spec.id).includes(
+      "java-gradle-dependency-updates",
+    ),
+    true,
+  );
+  assertEquals(
+    result.value.missing.map((spec) => spec.id).includes(
+      "java-dependency-updates",
+    ),
+    false,
+  );
+  assertEquals(
+    result.value.notApplicable.map((spec) => spec.id).includes(
+      "java-dependency-updates",
+    ),
+    true,
+  );
+});
+
+Deno.test("workflow_auditor - Maven pom.xml alone files only the Maven Dependabot spec", async () => {
+  const languages: RepoLanguages = {
+    detected: [{ language: "Java", confidence: "api" }],
+    primary: "Java",
+    raw: { Java: 200 },
+    rootFiles: ["pom.xml"],
+  };
+  const result = await auditRepoWorkflows("owner/repo", languages, {
+    runCommand: mockRunner({
+      "repos/owner/repo/contents/.github/workflows": ok("[]"),
+    }),
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(
+    result.value.missing.map((spec) => spec.id).includes(
+      "java-dependency-updates",
+    ),
+    true,
+  );
+  assertEquals(
+    result.value.missing.map((spec) => spec.id).includes(
+      "java-gradle-dependency-updates",
+    ),
+    false,
+  );
+  assertEquals(
+    result.value.notApplicable.map((spec) => spec.id).includes(
+      "java-gradle-dependency-updates",
+    ),
+    true,
+  );
+});
+
+Deno.test("workflow_auditor - Maven-only Dependabot entry does not satisfy the Gradle spec", async () => {
+  const mavenOnlyWorkflow = `version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+`;
+  const languages: RepoLanguages = {
+    detected: [{ language: "Java", confidence: "api" }],
+    primary: "Java",
+    raw: { Java: 200 },
+    rootFiles: ["build.gradle"],
+  };
+  const result = await auditRepoWorkflows("owner/repo", languages, {
+    runCommand: mockRunner({
+      "repos/owner/repo/contents/.github/workflows/java-dependabot.yml": ok(
+        mavenOnlyWorkflow,
+      ),
+      "repos/owner/repo/contents/.github/workflows": workflowDirResponse([
+        "java-dependabot.yml",
+      ]),
+    }),
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(
+    result.value.missing.map((spec) => spec.id).includes(
+      "java-gradle-dependency-updates",
+    ),
+    true,
+  );
+  assertEquals(
+    result.value.present.map((match) => match.spec.id).includes(
+      "java-gradle-dependency-updates",
+    ),
+    false,
+  );
+  assertEquals(
+    result.value.partial.map((match) => match.spec.id).includes(
+      "java-gradle-dependency-updates",
+    ),
+    false,
   );
 });
 
@@ -1259,5 +1409,6 @@ Deno.test("workflow_auditor - known root prerequisites remain inapplicable after
     "npm-dependency-updates",
     "eslint-quality",
     "java-dependency-updates",
+    "java-gradle-dependency-updates",
   ]);
 });
