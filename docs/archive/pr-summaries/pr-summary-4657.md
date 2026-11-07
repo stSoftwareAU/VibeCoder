@@ -98,6 +98,10 @@ flowchart TD
 
 ## Evidence
 
+- CI repair: the isolated-provider refusal test now injects the same fake clock
+  as the other runner calls in its file, keeping its deadline independent of
+  parallel load. `parallel_unsafe_test_manifest_test.ts::parallel-unsafe manifest - no wall-clock test is missing from it (Issue #940)`
+  covers the classification; no twinned rule was found.
 - Real tool observed:
   `gh api repos/stSoftwareAU/VibeCoder/pulls/4611/reviews --jq '.[] | {id,state,user:.user.login,body}'`
   returns `id`, `state`, `user.login` and `body` per review, so `body` flows

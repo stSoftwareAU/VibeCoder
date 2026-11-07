@@ -170,6 +170,7 @@ Deno.test({
   async fn() {
     await withAgentStub(buildRefusingCodexStubBody(), async (stub) => {
       const result = await runClaudeWithTimeout({
+        clock: fakeClock(),
         prompt: "test",
         agentProvider: "codex",
         isolateClaudeConfig: true,
