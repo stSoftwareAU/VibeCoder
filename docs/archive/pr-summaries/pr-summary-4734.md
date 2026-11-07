@@ -16,14 +16,14 @@ Version bump: `VERSION` is not changed by this PR.
 
 - A push or fetch of a large repository over a slow link can pass 60 s; git was
   killed and the repair lost, with the attempt marker already written.
-- The live branch keeps the chokepoint (timeout, audit journal, fault
-  detector), so the bound is added there rather than reviving the dead branch.
+- The live branch keeps the chokepoint (timeout, audit journal, fault detector),
+  so the bound is added there rather than reviving the dead branch.
 
 ### Essential Design Decisions
 
 - The 30-minute bound applies to every git command run through `run`, not only
-  fetch and push: the dead block applied it to all of them, and the issue
-  allows either.
+  fetch and push: the dead block applied it to all of them, and the issue allows
+  either.
 - `run` is exported and takes a `runGit` parameter defaulting to `runGitArgv`,
   following the `defaultGit` seam in the same file, so a test can observe the
   options reaching the chokepoint.
@@ -37,7 +37,8 @@ Version bump: `VERSION` is not changed by this PR.
 
 Backend-only change.
 
-- `deno task test:unit` on `worker/deno/tests/fleet_pr_babysitter_git_timeout_test.ts`,
+- `deno task test:unit` on
+  `worker/deno/tests/fleet_pr_babysitter_git_timeout_test.ts`,
   `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts` and
   `worker/deno/tests/babysitter_fix_orchestration_test.ts`: 59 passed, 0 failed.
 - Docs: `docs/workflows/fleet-pr-babysitter.md` (mirror paragraph) states the
@@ -50,14 +51,14 @@ Backend-only change.
 
 - `worker/deno/tests/fleet_pr_babysitter_git_timeout_test.ts`: a git push and a
   git fetch through `run` reach the chokepoint with the full argv, the cwd and
-  `timeoutSeconds` of 1800; a failing git throws with its stderr cause.
-  Red check: removing `timeoutSeconds: REPAIR_GIT_TIMEOUT_SECONDS` from the git
-  call turned the push and fetch tests red (`undefined` vs `1800`).
+  `timeoutSeconds` of 1800; a failing git throws with its stderr cause. Red
+  check: removing `timeoutSeconds: REPAIR_GIT_TIMEOUT_SECONDS` from the git call
+  turned the push and fetch tests red (`undefined` vs `1800`).
 - Changed call site: `run`'s git branch, reached from `fix`'s `exec` (fetches
   and the push at `finishBabysitterRepair`); the test drives `run` itself.
-- Removed code: the unreachable second git block in `run`. It could not run
-  (the earlier branch always returned or threw), so no behaviour or test
-  depended on it.
+- Removed code: the unreachable second git block in `run`. It could not run (the
+  earlier branch always returned or threw), so no behaviour or test depended on
+  it.
 - Full gate `./quality.sh`: `deno tests` failed on two tests in
   `worker/deno/tests/completion_phase_repo_formatters_test.ts` (cargo fmt
   staging), which also failed in earlier runs on other branches and are
