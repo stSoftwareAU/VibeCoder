@@ -29,20 +29,21 @@ None.
 
 ## Evidence
 
-Backend only; no UI. Changed: `worker/deno/lib/phases/handle_no_changes_phase.ts`
-(two template literals). No manual quotes either sentence (grepped `docs/`
-outside `archive/` and the READMEs for `closed as completed (Issue` and
-`handed to a human (Issue`: no hits).
+Backend only; no UI. Changed:
+`worker/deno/lib/phases/handle_no_changes_phase.ts` (two template literals). No
+manual quotes either sentence (grepped `docs/` outside `archive/` and the
+READMEs for `closed as completed (Issue` and `handed to a human (Issue`: no
+hits).
 
 ## Test Plan
 
 - Added to `worker/deno/tests/handle_no_changes_phase_test.ts`: "analysis-only
   close comment carries no VibeCoder issue number (Issue #4700)" and
   "already-complete close comment carries no VibeCoder issue number (Issue
-  #4700)". Each drives `workOnIssueHandleNoChanges` and asserts the worker-written
-  head of the posted close comment has no `#<digits>`.
-- Red checks: restoring ` (Issue #4298)` turns the analysis-only test red
-  (`[ "#4298" ]` vs `[]`); restoring ` (Issue #241)` turns the already-complete
+  #4700)". Each drives `workOnIssueHandleNoChanges` and asserts the
+  worker-written head of the posted close comment has no `#<digits>`.
+- Red checks: restoring `(Issue #4298)` turns the analysis-only test red
+  (`[ "#4298" ]` vs `[]`); restoring `(Issue #241)` turns the already-complete
   test red (`[ "#241" ]` vs `[]`).
 - No existing assertion was removed or edited.
 - Run: `deno task test:unit tests/handle_no_changes_phase_test.ts` — 33 passed,
