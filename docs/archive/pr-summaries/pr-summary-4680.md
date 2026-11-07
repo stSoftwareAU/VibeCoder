@@ -60,7 +60,7 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`:
-  63 passed, 0 failed.
+  64 passed, 0 failed.
 - `worker/deno/tests/ci_base_failure_signature_test.ts` (33 tests at head) and
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` (31 tests at head).
 - Review round 3 and 4 tests, six of the 33 in
