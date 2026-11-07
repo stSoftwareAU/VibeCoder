@@ -136,44 +136,45 @@ costs far more than any runaway cycle a timeout will reap anyway.
 
 ### Subscription quota first, metered API last
 
-Automatic routing spends fixed-price subscription quota first. Metered API spend
-is accepted as paid overflow in the reviewer round and the
-planned babysitter routing. The worker's auto-mode selection waits by default;
-an explicit fallback can also select a metered provider.
+Automatic routing spends fixed-price subscription quota first. Metered API
+spend is accepted as paid overflow in the reviewer round and the babysitter
+repair provider chooser. The worker's auto-mode selection waits by default; an
+explicit fallback can also select a metered provider.
 
 - **Subscription quota is use-it-or-lose-it.** Claude, Codex and other
   fixed-price plans waste any unused quota, so automatic routing spends it
   first.
-- **DeepSeek is paid overflow.** It is billed per call, which the owner prefers
-  to avoid. In the reviewer round and planned babysitter routing, it is used only
-  after every eligible subscription is exhausted. An operator who names DeepSeek
-  explicitly as a provider is making a separate, deliberate choice, which is not
-  overflow.
+- **DeepSeek is paid per call.** The owner prefers to avoid this spend. The two
+  metered overflow paths are reviewer rounds and babysitter repairs: each uses
+  DeepSeek only after every eligible subscription is exhausted. Babysitter
+  overflow logs each ranked provider, credential label and exclusion reason in
+  `worker/deno/lib/babysitter_provider_choice.ts`. An operator who names
+  DeepSeek explicitly as a provider is making a separate, deliberate choice,
+  which is not overflow.
 - **Reviewer-round overflow.** Today the round runs on the Claude credential
   pool. Once the whole pool is exhausted, it runs once more on DeepSeek
   (`worker/deno/lib/review_round.ts`, run from
   `.claude/skills/review-fleet-prs/scripts/run.sh`).
-- **Fleet PR babysitter overflow.** Accepted by the owner in #4738 but planned,
-  not yet in the code: #4766 will make babysitter repairs choose their
-  subscription first and log DeepSeek as paid overflow.
+- **Fleet PR babysitter overflow.** The babysitter provider chooser prefers
+  subscriptions and selects DeepSeek as logged overflow only when no eligible
+  subscription has budget. The chooser fails loudly when no DeepSeek
+  credential can be exported; it does not wait or run a host fallback.
 - **The worker keeps its auto-mode wait policy.** When every eligible
   subscription is exhausted or unavailable, auto-mode selection waits for the
   subscription reset (`retryAt` from `selectAutomaticProvider` in
-  `worker/deno/lib/provider_auto_selection.ts`, when a reset time is known) and
-  does not select a metered or unknown-billing account. With the default empty
-  `agent_provider_fallback`, the worker gains no overflow from this principle.
-  An operator can explicitly opt in to fallback providers, including metered
-  providers such as DeepSeek; this can switch the worker after subscription
-  exhaustion or a model refusal. See
-  [README — Choose your coding agent](README.md#-choose-your-coding-agent) and
+  `worker/deno/lib/provider_auto_selection.ts`, when a reset time is known).
+  The worker does **not** overflow to a metered account from auto mode. An
+  operator can explicitly opt in to fallback providers, including metered
+  providers such as DeepSeek; that is a separate configured worker fallback.
+  See the [README auto-mode policy](README.md#-choose-your-coding-agent) and
   [`agent_provider_mode` and `agent_provider_fallback` in the Configuration Reference](docs/CONFIGURATION.md#-configuration-defaults).
 - **Raising the DeepSeek API budget remains an owner action.** Nothing in the
   fleet raises it automatically.
 
 **Rationale:** fixed-price quota is lost if it goes unused, so it is spent
-first. Metered spend is paid per call, so the reviewer and planned babysitter
-overflow do not change the worker's default wait policy. An explicit fallback
-is a separate operator choice.
+first. Metered spend is paid per call, so reviewer and babysitter overflow do
+not change the worker's default wait policy. An explicit fallback is a separate
+operator choice.
 
 ### Every slot busy, always — the fleet throughput invariant
 
