@@ -1,9 +1,13 @@
 ## Summary
 
 Workflow auditing now requires root-project evidence for templates whose tools
-run from the checkout root. Workflow sync also closes trusted generated issues
-for root-project specs that no longer apply, with an explanatory comment, while
-leaving workflow files untouched. Closes #4693.
+run from the checkout root. Workflow sync and purge close trusted generated
+requests for known root-project specs whose manifests are absent, even after
+GitHub stops reporting their language. A complete root file inventory preserves
+legitimate npm requests when Deno and web assets coexist with `package.json`.
+Closure comments explain the missing prerequisite; dry-run sync logs each
+would-close issue number and spec. Existing workflow files remain untouched.
+Closes #4693.
 
 Version bump: no version file was changed for this update.
 
@@ -15,72 +19,100 @@ Version bump: no version file was changed for this update.
   themselves show that a root-level project tool can run.
 - Applicability is declared on each workflow spec and resolved by the auditor;
   repository-wide scans keep their nested-project coverage.
+- Reconciliation must outlive a language's presence in the API response while
+  preserving legitimate, unknown and human-authored requests.
 
 ### Essential Design Decisions
 
-- Root-project templates require one of their declared root marker files in
-  marker-based language detection; universal specs and repository-wide scans
-  have no such requirement.
+- The detector preserves its existing language selection, including Deno's
+  precedence over Node, and also returns the complete root file inventory.
+  Root-project applicability uses that inventory, independently of selected
+  language markers. Older language results without the optional inventory
+  trigger a root-contents fetch; a failed fetch fails the audit.
+- Required workflows still follow language and visibility selection. The
+  inapplicable set checks root prerequisites across the known catalogue,
+  independently of current language presence.
 - Only known workflow-sync requests verified as fleet-authored are reconciled.
-  Dry runs report the same candidates without closing them.
-- Existing workflow files are not removed when a language stops qualifying.
+  An unresolved fleet identity cannot authorise closure. Dry runs report the
+  same trusted candidates through helper results and workflow-sync logging.
+- Universal specs and repository-wide scans have no root-project requirement.
+  Existing workflow files are not removed when a language stops qualifying.
 
 ### Undiscoverable Facts
 
-- The issue identifies the VibeCoder Rust fixtures as the motivating case; its
-  root has no `Cargo.toml`.
-- Template contracts were checked in the workflow definitions: Cargo commands
-  run at the checkout root, ShellCheck's `scandir: .` recursively scans, Java
-  Dependency Check uses `path: .`, and Dependabot Java updates use root `/`.
+- The issue identifies VibeCoder's nested Rust fixtures as the motivating case;
+  the repository root has no `Cargo.toml`.
+- The template contracts distinguish root commands from recursive scans: Cargo
+  runs at the checkout root, ShellCheck uses `scandir: .`, Java Dependency Check
+  uses `path: .`, and Java dependency updates use Dependabot's root `/`.
 
 ## Evidence
 
-Backend and CLI change; no visual surface changed.
+Backend and CLI change; no visual surface changed. Read the workflow catalogue
+section of `docs/EXTENDING.md` and the workflow-sync operator entry in
+`docs/SETUP.md`; both now describe complete root evidence, reconciliation after
+language disappearance, and dry-run candidate logs.
 
-Template contract evidence:
-`gh api repos/ludeeus/action-shellcheck/contents/action.yaml` showed the
-`scandir` input and recursive file search. The Dependency Check Action README
-documents `path` as its scan path and uses `.` in its example. The Cargo
-templates invoke Cargo from the checkout root, and the Java update template
-configures Dependabot directory `/`.
+The reported baseline failure was reproduced: 39 tests passed and three Cargo
+capability regressions failed across the five named suites. Marker fixtures in
+the alternative-groups and local-path-fallback suites now carry root manifest
+evidence while retaining their original detection assertions.
 
-```mermaid
-flowchart LR
-    A[Detected languages] --> B[Resolve language and visibility specs]
-    B --> C{Root marker required?}
-    C -->|yes, present| D[Audit workflow]
-    C -->|yes, absent| E[Mark not applicable]
-    C -->|no| D
-    E --> F[Find trusted tagged requests]
-    F --> G[Close with reason, or report in dry run]
-```
+The new hybrid and disappeared-language probes failed against the incoming
+head. Restoring only the old auditor also made all six caller-level hybrid
+regressions fail: single-repo sync, fleet sync, single-repo purge, fleet purge,
+the command's single/fleet modes, and action-reference selection. Temporarily
+replacing the reconciliation helper's author selector with
+`const trusted = tagged` made both new sync author-verification cases fail.
+The author selector and final applicability logic were restored before the
+final test run.
 
 ## Deno regression avoided
 
-- Used the repository's `deno task`, `deno check`, and `deno lint`; no Node
-  tooling or dependencies were added.
+- Used Deno tooling; no Node tooling or dependencies were added.
+- The additive optional root inventory supports older callers through a live
+  fetch rather than assuming missing metadata proves a missing manifest.
 
 ## Test Plan
 
-- `worker/deno/tests/workflow_auditor_test.ts`: API-only Rust excludes Cargo
-  specs; a root `Cargo.toml` retains all three; mixed languages retain universal
-  and marker-backed specs; nested ShellCheck and Java Dependency Check remain
-  eligible; `index.html` alone does not satisfy npm project templates.
-- `worker/deno/tests/purge_stale_workflow_issues_test.ts`: trusted
-  missing/partial requests are reconciled; unknown specs and untrusted authors
-  remain open; root-marker projects retain their requests; dry-run and
-  close-failure outcomes are covered.
-- `worker/deno/tests/setup_workflow_sync_test.ts`: sync reconciles when there
-  are no workflow gaps; listing/close failures surface; dry-run does not close.
-- `worker/deno/tests/workflow_sync_actions_test.ts`: API-only Rust does not
-  select Cargo toolchain actions, while a root Cargo project does.
-- Regression red check: the API-only Rust Cargo assertion failed with the
-  unfixed auditor and passed with the final implementation.
-- `deno task test:unit tests/workflow_auditor_test.ts tests/purge_stale_workflow_issues_test.ts tests/setup_workflow_sync_test.ts tests/workflow_sync_actions_test.ts < /dev/null`
-  — passed, 104 tests.
-- Targeted `deno check --frozen --lock=deno.lock` and `deno lint` on the changed
-  source and test files — passed.
-- `timeout 900 ./quality.sh < /dev/null` — timed out with exit 124 while the
-  full parallel Deno test suite was still running; the earlier gate stages
-  reported passed.
-- No existing test assertions were removed.
+- `worker/deno/tests/workflow_auditor_test.ts`: API-only Rust excludes Cargo;
+  root Cargo retains all three specs; mixed languages and recursive scans
+  remain eligible; web assets alone do not satisfy npm; legacy language data
+  fetches complete root evidence; lookup failures fail the audit; vanished
+  languages retain all known absent root prerequisites in reconciliation.
+- `worker/deno/tests/language_detector_test.ts`: complete root inventory keeps
+  `package.json` despite Deno precedence and excludes directories.
+- `worker/deno/tests/purge_stale_workflow_issues_test.ts`: missing/partial
+  requests, unknown specs, human authors, root projects, dry runs and close
+  failures; hybrid npm preservation and disappeared Cargo reconciliation
+  through single/fleet helpers and both actual command modes; an empty language
+  response with only `README.md`; direct reconciliation result shapes,
+  malformed/unknown tags, dry-run writes, and exact close-failure causes.
+- `worker/deno/tests/setup_workflow_sync_test.ts`: reconciliation with no gaps;
+  listing/close failures; logged dry-run candidates; hybrid npm preservation;
+  disappeared-language reconciliation; human-authored matching requests and
+  unresolved fleet identity; fleet wrapper coverage; complete error results for
+  failed and thrown reconciliation, including non-Error throws.
+- `worker/deno/tests/workflow_sync_actions_test.ts`: API-only versus root Cargo
+  actions and hybrid-project npm action references with the universal Markdown
+  workflow already present, so it cannot supply a false-positive Node action.
+- Root applicability has one evaluator in `workflow_auditor.ts`; sync and purge
+  consume its result. No twinned applicability rule was found.
+- Existing Cargo alternative-implementation and local workflow/API fallback
+  assertions are retained. Inapplicable-set expectations now reflect the whole
+  known root catalogue. Filing dedup still asserts all three universal searches
+  use all issue states; the separate reconciliation listing uses open issues.
+- `deno task test:unit` over all auditor suites, alternative-groups, purge, sync,
+  action references, language detection, template audit conformance and
+  `spawn_timeout_bounds_1228_test.ts` — passed, 181 tests.
+- Mutation-driven cleanup removes a repeated tag guard already proved by the
+  preceding filter and redundant config forwarding to an already-built runner.
+- Diff-scoped mutation check of the branch's production changes in a disposable
+  checkout — completed: 87 candidates, 85 killed, two rejected as invalid syntax,
+  zero survivors. All importing-test baselines passed. No mutation exemptions
+  or repository skip setting were used.
+- Targeted `deno check --frozen --lock=deno.lock`, `deno lint`, and `deno fmt
+  --check` on changed source/test files — passed; Markdown lint — passed.
+- The earlier full `timeout 900 ./quality.sh < /dev/null` reached the parallel
+  test stage and timed out with exit 124. The worker reruns the full gate after
+  this repair.

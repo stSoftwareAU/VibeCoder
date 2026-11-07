@@ -93,6 +93,9 @@ function makeLanguages(langs: string[], primary?: string): RepoLanguages {
     })),
     primary: primary ?? langs[0] ?? "unknown",
     raw: {},
+    rootFiles: langs.flatMap((language) =>
+      markerFiles[language] ? [markerFiles[language]!] : []
+    ),
   };
 }
 
@@ -1000,11 +1003,16 @@ Deno.test("workflow_auditor - API-only Rust does not require root Cargo workflow
     result.value.missing.some((spec) => spec.id.startsWith("cargo-")),
     false,
   );
-  assertEquals(result.value.notApplicable.map((spec) => spec.id), [
-    "cargo-audit",
-    "cargo-upgrade",
-    "cargo-quality",
-  ]);
+  assertEquals(
+    result.value.notApplicable.map((spec) => spec.id).filter((id) =>
+      id.startsWith("cargo-")
+    ),
+    [
+      "cargo-audit",
+      "cargo-upgrade",
+      "cargo-quality",
+    ],
+  );
 });
 
 Deno.test("workflow_auditor - root Cargo marker keeps all Cargo workflows", async () => {
@@ -1018,6 +1026,7 @@ Deno.test("workflow_auditor - root Cargo marker keeps all Cargo workflows", asyn
       }],
       primary: "Rust",
       raw: { Rust: 4927 },
+      rootFiles: ["Cargo.toml"],
     },
     {
       runCommand: mockRunner({
@@ -1033,7 +1042,10 @@ Deno.test("workflow_auditor - root Cargo marker keeps all Cargo workflows", asyn
     ),
     ["cargo-audit", "cargo-upgrade", "cargo-quality"],
   );
-  assertEquals(result.value.notApplicable.length, 0);
+  assertEquals(
+    result.value.notApplicable.some((spec) => spec.id.startsWith("cargo-")),
+    false,
+  );
 });
 
 Deno.test("workflow_auditor - mixed languages retain marker workflows and universal specs", async () => {
@@ -1046,6 +1058,7 @@ Deno.test("workflow_auditor - mixed languages retain marker workflows and univer
       ],
       primary: "Rust",
       raw: { Deno: 500, Rust: 4927 },
+      rootFiles: ["deno.json"],
     },
     {
       runCommand: mockRunner({
@@ -1083,9 +1096,14 @@ Deno.test("workflow_auditor - repository-wide templates accept nested project la
   assertEquals(missing.includes("shellcheck"), true);
   assertEquals(missing.includes("java-dependency-check"), true);
   assertEquals(missing.includes("java-dependency-updates"), false);
-  assertEquals(result.value.notApplicable.map((spec) => spec.id), [
-    "java-dependency-updates",
-  ]);
+  assertEquals(
+    result.value.notApplicable.map((spec) => spec.id).filter((id) =>
+      id.startsWith("java-")
+    ),
+    [
+      "java-dependency-updates",
+    ],
+  );
 });
 
 Deno.test("workflow_auditor - web asset marker alone does not satisfy npm root manifest", async () => {
@@ -1114,11 +1132,16 @@ Deno.test("workflow_auditor - web asset marker alone does not satisfy npm root m
     ),
     false,
   );
-  assertEquals(result.value.notApplicable.map((spec) => spec.id), [
-    "npm-audit",
-    "npm-dependency-updates",
-    "eslint-quality",
-  ]);
+  assertEquals(
+    result.value.notApplicable.map((spec) => spec.id).filter((id) =>
+      id.startsWith("npm-") || id === "eslint-quality"
+    ),
+    [
+      "npm-audit",
+      "npm-dependency-updates",
+      "eslint-quality",
+    ],
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1145,6 +1168,7 @@ Deno.test("workflow_auditor - the default runner routes gh through the shared ch
     detected: [{ language: "Deno", confidence: "marker" }],
     primary: "Deno",
     raw: {},
+    rootFiles: [],
   };
 
   try {
@@ -1160,4 +1184,80 @@ Deno.test("workflow_auditor - the default runner routes gh through the shared ch
   } finally {
     _resetGhSpawnRunner();
   }
+});
+
+Deno.test("workflow_auditor - legacy language data fetches actual root files instead of selected markers", async () => {
+  const result = await auditRepoWorkflows("owner/repo", {
+    detected: [{
+      language: "Deno",
+      confidence: "marker",
+      markerFile: "deno.json",
+    }, {
+      language: "React/Web",
+      confidence: "marker",
+      markerFile: "index.html",
+    }],
+    primary: "Deno",
+    raw: {},
+  }, {
+    runCommand: mockRunner({
+      "repos/owner/repo/contents/": ok(
+        JSON.stringify(
+          ["deno.json", "package.json", "index.html"].map((name) => ({
+            name,
+            type: "file",
+          })),
+        ),
+      ),
+      "repos/owner/repo/contents/.github/workflows": ok("[]"),
+    }),
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(
+    result.value.missing.some((spec) => spec.id === "npm-audit"),
+    true,
+  );
+  assertEquals(
+    result.value.notApplicable.some((spec) => spec.id === "npm-audit"),
+    false,
+  );
+});
+
+Deno.test("workflow_auditor - failed root evidence lookup cannot authorise closures", async () => {
+  const result = await auditRepoWorkflows("owner/repo", {
+    detected: [],
+    primary: "unknown",
+    raw: {},
+  }, {
+    runCommand: mockRunner({
+      "repos/owner/repo/contents/": fail("HTTP 403: forbidden"),
+    }),
+  });
+  assertEquals(result, {
+    ok: false,
+    error: "Failed to fetch repository contents: HTTP 403: forbidden",
+  });
+});
+
+Deno.test("workflow_auditor - known root prerequisites remain inapplicable after every language disappears", async () => {
+  const result = await auditRepoWorkflows("owner/repo", {
+    detected: [],
+    primary: "unknown",
+    raw: {},
+    rootFiles: ["README.md"],
+  }, { runCommand: mockRunner({}) });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.notApplicable.map((spec) => spec.id), [
+    "cargo-audit",
+    "cargo-upgrade",
+    "cargo-quality",
+    "deno-outdated",
+    "deno-quality",
+    "npm-audit",
+    "npm-dependency-updates",
+    "eslint-quality",
+    "java-dependency-updates",
+  ]);
 });

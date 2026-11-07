@@ -254,9 +254,13 @@ root marker before workflow sync files an issue. Cargo specs require a root
 enough. Repository-wide scans remain eligible for nested projects: ShellCheck
 scans `.` and Java Dependency Check uses `path: .`. Java dependency updates
 use Dependabot's root `/` directory and require a root Java project marker.
-Existing workflow files are left in place when a language later stops
-qualifying while GitHub still reports that language; trusted generated
-requests for an inapplicable root-project spec are closed with the reason.
+The auditor uses the complete root file inventory, so Deno taking precedence
+over Node during language selection cannot hide an existing `package.json`.
+Older language results without that inventory trigger a root-contents fetch;
+a failed fetch fails the audit before reconciliation. Existing workflow files
+are left in place. Trusted generated requests for known inapplicable
+root-project specs are closed with the reason, including when GitHub no longer
+reports their language. Dry runs log each would-close issue number and spec.
 
 ### Pins are resolved when the issue is filed, and the body says so
 

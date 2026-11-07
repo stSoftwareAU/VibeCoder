@@ -706,7 +706,6 @@ export async function syncWorkflowsForRepo(
       audit.notApplicable.map((spec) => spec.id),
       {
         runCommand: runner,
-        ghConfigDir: options.ghConfigDir,
         dryRun: options.dryRun,
         fleetAuthors: options.fleetAuthors,
         log,
@@ -725,6 +724,13 @@ export async function syncWorkflowsForRepo(
         partialIssuesSkipped: 0,
         error: `Workflow issue reconciliation failed: ${reconciled.error}`,
       };
+    }
+    for (const candidate of reconciled.value.closed) {
+      log(
+        `[workflow-sync] ${
+          options.dryRun ? "Would close" : "Closed"
+        } #${candidate.number} (${candidate.specId}): root project marker absent`,
+      );
     }
     if (reconciled.value.failures.length > 0) {
       const reasons = reconciled.value.failureReasons.join("; ");

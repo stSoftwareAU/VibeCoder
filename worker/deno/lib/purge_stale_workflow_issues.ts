@@ -322,8 +322,8 @@ export async function reconcileInapplicableWorkflowIssues(
   const failures: CandidateIssue[] = [];
   const failureReasons: string[] = [];
   for (const issue of trusted) {
-    const tag = extractSpecIdFromIssueBody(issue.body);
-    if (!tag || !known.has(tag.specId)) continue;
+    // The tagged filter already proved this is a known, parseable request.
+    const tag = extractSpecIdFromIssueBody(issue.body)!;
     const candidate = {
       number: issue.number,
       specId: tag.specId,

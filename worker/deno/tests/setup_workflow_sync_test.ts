@@ -408,6 +408,19 @@ Deno.test("syncWorkflowsForRepo - reports reconciliation listing failures", asyn
   assertEquals(result.ok, false);
   assertEquals(result.error?.includes("reconciliation failed"), true);
   assertEquals(result.error?.includes("list failed"), true);
+  assertEquals(result, {
+    ok: false,
+    repo: "owner/repo",
+    languages: ["Rust"],
+    present: 0,
+    issuesRaised: 0,
+    issuesSkipped: 0,
+    partial: 0,
+    partialIssuesRaised: 0,
+    partialIssuesSkipped: 0,
+    error:
+      "Workflow issue reconciliation failed: gh issue list failed for owner/repo: list failed",
+  });
 });
 
 Deno.test("syncWorkflowsForRepo - dry run does not close inapplicable requests", async () => {
@@ -419,14 +432,22 @@ Deno.test("syncWorkflowsForRepo - dry run does not close inapplicable requests",
       body: partialDeduplicationTag("cargo-quality"),
     }],
   });
+  const logs: string[] = [];
   const result = await syncWorkflowsForRepo("owner/repo", {
     runCommand: runner,
     fleetAuthors: [FLEET_AUTHOR],
     dryRun: true,
+    log: (line) => logs.push(line),
     resolvePins: cataloguePins,
   });
   assertEquals(result.ok, true);
   assertEquals(state.closedIssues.length, 0);
+  assertEquals(
+    logs.some((line) =>
+      line.includes("Would close #4694") && line.includes("cargo-quality")
+    ),
+    true,
+  );
 });
 
 Deno.test("syncWorkflowsForRepo - reports issue-close failures during reconciliation", async () => {
@@ -447,6 +468,19 @@ Deno.test("syncWorkflowsForRepo - reports issue-close failures during reconcilia
   assertEquals(result.ok, false);
   assertEquals(result.error?.includes("Failed to close 1"), true);
   assertEquals(result.error?.includes("close failed"), true);
+  assertEquals(result, {
+    ok: false,
+    repo: "owner/repo",
+    languages: ["Rust"],
+    present: 0,
+    issuesRaised: 0,
+    issuesSkipped: 0,
+    partial: 0,
+    partialIssuesRaised: 0,
+    partialIssuesSkipped: 0,
+    error:
+      "Failed to close 1 inapplicable workflow issue(s): #4695 cargo-audit: close failed",
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1065,7 +1099,11 @@ Deno.test(
     const rawListCalls: string[][] = [];
     const wrapped: WorkflowSyncOptions["runCommand"] = (cmd) => {
       if (cmd.includes("gh") && cmd.includes("issue") && cmd.includes("list")) {
-        rawListCalls.push([...cmd]);
+        // Reconciliation lists open requests; filing dedup still includes closed ones.
+        const query = cmd[cmd.indexOf("--search") + 1];
+        if (query !== '"<!-- vibe-coder:workflow-sync:" in:body') {
+          rawListCalls.push([...cmd]);
+        }
       }
       return runner!(cmd);
     };
@@ -1074,7 +1112,7 @@ Deno.test(
       runCommand: wrapped,
       resolvePins: cataloguePins,
     });
-    assertEquals(rawListCalls.length > 0, true);
+    assertEquals(rawListCalls.length, 3);
     for (const cmd of rawListCalls) {
       const stateIdx = cmd.indexOf("--state");
       assertEquals(
@@ -1563,3 +1601,136 @@ Deno.test("pinResolverRunFn - a command that never settles is bounded by the bud
     assertEquals(result.error.message.includes("timed out after"), true);
   }
 });
+
+Deno.test("syncWorkflowsForRepo - hybrid Deno and web project preserves legitimate npm requests", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: [
+      "deno.json",
+      "package.json",
+      "package-lock.json",
+      "index.html",
+      "app.js",
+    ],
+    languagesApi: { JavaScript: 100 },
+    workflowSyncIssues: [{ number: 4700, body: deduplicationTag("npm-audit") }],
+  });
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    runCommand: runner,
+    fleetAuthors: [FLEET_AUTHOR],
+    resolvePins: cataloguePins,
+  });
+  assertEquals(result.ok, true);
+  assertEquals(result.languages.includes("Node"), false);
+  assertEquals(result.languages.includes("React/Web"), true);
+  assertEquals(state.closedIssues, []);
+  assertEquals(
+    state.issuesCreated.some((issue) =>
+      issue.body.includes(deduplicationTag("eslint-quality"))
+    ),
+    true,
+  );
+});
+
+for (const fleetAuthors of [[FLEET_AUTHOR], []]) {
+  Deno.test(`syncWorkflowsForRepo - disappeared language reconciles only verified requests (fleet=${fleetAuthors.length})`, async () => {
+    const { runner, state } = buildMockRunner({
+      rootFiles: ["README.md"],
+      languagesApi: {},
+      workflowSyncIssues: [
+        { number: 4701, body: deduplicationTag("cargo-audit") },
+        { number: 4702, body: partialDeduplicationTag("cargo-quality") },
+        {
+          number: 4703,
+          body: deduplicationTag("cargo-audit"),
+          author: "human",
+        },
+        {
+          number: 4704,
+          body: partialDeduplicationTag("cargo-quality"),
+          author: "human",
+        },
+        { number: 4705, body: deduplicationTag("unknown-spec") },
+      ],
+    });
+    const logs: string[] = [];
+    const result = await syncWorkflowsForRepo("owner/repo", {
+      runCommand: runner,
+      fleetAuthors,
+      resolvePins: cataloguePins,
+      log: (line) => logs.push(line),
+    });
+    assertEquals(result.ok, true);
+    assertEquals(result.languages, []);
+    assertEquals(
+      state.closedIssues.map((issue) => issue.number),
+      fleetAuthors.length ? [4701, 4702] : [],
+    );
+    assertEquals(
+      logs.some((line) =>
+        line.includes(
+          fleetAuthors.length
+            ? "authored outside the fleet"
+            : "fleet author set unresolved",
+        )
+      ),
+      true,
+    );
+  });
+}
+
+Deno.test("syncWorkflowsForAllRepos - hybrid root preserves npm while absent Cargo is reconciled", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: [
+      "deno.json",
+      "package.json",
+      "package-lock.json",
+      "index.html",
+      "app.js",
+    ],
+    languagesApi: {},
+    workflowSyncIssues: [
+      { number: 4710, body: deduplicationTag("npm-audit") },
+      { number: 4711, body: deduplicationTag("cargo-audit") },
+    ],
+  });
+  const results = await syncWorkflowsForAllRepos(["owner/repo"], {
+    runCommand: runner,
+    fleetAuthors: [FLEET_AUTHOR],
+    resolvePins: cataloguePins,
+    log: () => {},
+  });
+  assertEquals(results.length, 1);
+  assertEquals(results[0]!.ok, true);
+  assertEquals(state.closedIssues.map((issue) => issue.number), [4711]);
+});
+
+for (const thrown of [new Error("listing exploded"), "listing exploded"]) {
+  Deno.test(`syncWorkflowsForRepo - thrown reconciliation failure preserves full result (${typeof thrown})`, async () => {
+    const { runner } = buildMockRunner({
+      rootFiles: ["README.md"],
+      languagesApi: {},
+    });
+    const result = await syncWorkflowsForRepo("owner/repo", {
+      runCommand: (cmd) => {
+        if (cmd.includes("issue") && cmd.includes("list")) {
+          return Promise.reject(thrown);
+        }
+        return runner!(cmd);
+      },
+      fleetAuthors: [FLEET_AUTHOR],
+      resolvePins: cataloguePins,
+    });
+    assertEquals(result, {
+      ok: false,
+      repo: "owner/repo",
+      languages: [],
+      present: 0,
+      issuesRaised: 0,
+      issuesSkipped: 0,
+      partial: 0,
+      partialIssuesRaised: 0,
+      partialIssuesSkipped: 0,
+      error: "Workflow issue reconciliation failed: listing exploded",
+    });
+  });
+}

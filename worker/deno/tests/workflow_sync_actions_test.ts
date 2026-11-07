@@ -236,3 +236,28 @@ Deno.test("templateActionReferences - local and docker:// references are skipped
     "zed/last@" + "b".repeat(40),
   ]);
 });
+
+Deno.test("workflowSyncActionReferences - hybrid Deno and web root retains npm actions", async () => {
+  const gh = routedGh({
+    "repos/acme/hybrid/contents/": [
+      "deno.json",
+      "package.json",
+      "package-lock.json",
+      "index.html",
+      "app.js",
+    ].map((name) => ({ name, type: "file" })),
+    "repos/acme/hybrid/languages": {},
+    "repos/acme/hybrid/contents/.github/workflows": [{
+      name: "markdown.yml",
+      type: "file",
+    }],
+    "repos/acme/hybrid/contents/.github/workflows/markdown.yml":
+      "run: markdownlint-cli2",
+  });
+  const result = await workflowSyncActionReferences("acme/hybrid", gh);
+  assertEquals(result.fault, undefined);
+  assertEquals(
+    result.references.includes(pinnedReference("actions/setup-node")),
+    true,
+  );
+});
