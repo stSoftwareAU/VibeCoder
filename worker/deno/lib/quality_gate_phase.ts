@@ -126,11 +126,53 @@ export function untrustedAccountOf(
   return user && user !== "--" ? user : undefined;
 }
 
-/** A variable name that may be carried through `sudo` in argv. */
-const CARRIED_ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+/**
+ * A variable name that may be carried through `sudo` in argv. Lower case is
+ * allowed for the proxy names curl and cargo read only in that form.
+ */
+const CARRIED_ENV_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
 
-/** A value that may be carried through `sudo` in argv — a plain path. */
-const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/]+$/;
+/**
+ * A value that may be carried through `sudo` in argv — a plain path, or a
+ * proxy URL or host list (`:` and `,`). No `@`, so no URL with credentials.
+ */
+const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/:,\[\]]+$/;
+
+/**
+ * The egress variables a dropped command needs to reach a registry at all
+ * (Issue #4877). In a container the internal network has no DNS, so without
+ * the proxy every `cargo` and `deno` fetch fails to resolve its host.
+ */
+export const EGRESS_ENV_NAMES: readonly string[] = [
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "https_proxy",
+  "http_proxy",
+  "no_proxy",
+];
+
+/**
+ * The entries of a built environment that must travel through `sudo` in
+ * argv: the cargo target placement (Issue #2247) and the egress proxy
+ * (Issue #4877). Every one is non-secret; a proxy URL that carries
+ * credentials (`user:pass@`) is left out, because argv is visible to `ps`
+ * and to the sudo logs.
+ */
+export function sudoCarriedEnv(
+  env: Record<string, string>,
+): Record<string, string> {
+  const carried: Record<string, string> = {};
+  const target = env["CARGO_TARGET_DIR"];
+  if (target !== undefined) carried["CARGO_TARGET_DIR"] = target;
+  for (const name of EGRESS_ENV_NAMES) {
+    const value = env[name];
+    if (value !== undefined && CARRIED_ENV_VALUE.test(value)) {
+      carried[name] = value;
+    }
+  }
+  return carried;
+}
 
 /**
  * Carry an environment entry through `sudo`'s `env_reset` (Issue #2247).
@@ -141,7 +183,8 @@ const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/]+$/;
  * repository's own command. `--preserve-env` needs the tag the rule does not
  * grant. The value therefore travels in **argv** instead:
  * `sudo -n -u agent -- env NAME=value <cmd>`, which `env_reset` cannot touch.
- * Only that non-secret placement travels this way.
+ * Only non-secret values travel this way: the placement and the egress proxy
+ * ({@link sudoCarriedEnv}, Issue #4877).
  *
  * Declared credentials are never carried here. They ride the stdin channel of
  * `credential_channel.ts` (Issue #4705), because a value in argv is visible to
@@ -360,15 +403,13 @@ async function spawnRepositoryCommand(
       cwd: options?.cwd ?? Deno.cwd(),
       repoCredentialEnv,
     });
-    // `sudo`'s env_reset would strip the build-cache placement, so it
-    // travels in argv instead (Issue #2247). A worker-account spawn has no
-    // `sudo`, and `Deno.Command`'s env carries the placement.
-    const target = env["CARGO_TARGET_DIR"];
+    // `sudo`'s env_reset would strip the build-cache placement and the
+    // egress proxy, so they travel in argv instead (Issues #2247, #4877). A
+    // worker-account spawn has no `sudo`, and `Deno.Command`'s env carries
+    // them.
     const placed = carryEnvThroughSudo(
       dropped,
-      !dropToUntrusted || target === undefined
-        ? {}
-        : { CARGO_TARGET_DIR: target },
+      dropToUntrusted ? sudoCarriedEnv(env) : {},
     );
     // `sudo`'s env_reset would also strip the declared credentials, so on a
     // dropped spawn they ride stdin instead (Issue #4705). Nothing secret is
