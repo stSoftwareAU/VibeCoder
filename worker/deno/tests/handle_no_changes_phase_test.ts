@@ -289,6 +289,71 @@ Deno.test(
   },
 );
 
+const hashNumbers = (t: string) => t.match(/#\d+/g) ?? [];
+
+Deno.test(
+  "handle_no_changes_phase - analysis-only close comment carries no VibeCoder issue number (Issue #4700)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext({
+      issueBody: "Audit the heap clamp.\n\n<!-- analysis-only -->",
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      ctx,
+      makeState({ claudeOutput: GRQ_4871_OUTPUT }),
+      deps,
+    );
+
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_completed",
+    );
+    assertEquals(calls.closeIssue.length, 1);
+    const body = calls.closeIssue[0]!.comment ?? "";
+    const cut = body.indexOf("<details>");
+    assert(cut > 0, "the close comment carries the agent's analysis block");
+    // Only the worker-written sentence is checked: the agent's quoted analysis
+    // may legitimately hold numbers.
+    const head = body.slice(0, cut);
+    assertStringIncludes(head, "## Analysis");
+    assertEquals(hashNumbers(head), []);
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - already-complete close comment carries no VibeCoder issue number (Issue #4700)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      // Issue #241: the close needs cited evidence, so the claim names the
+      // commit that landed it.
+      claudeOutput:
+        "The implementation is already complete — commit `ab12cd3` landed it.",
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals((result as { reason: string }).reason, "already_complete");
+    assertEquals(calls.closeIssue.length, 1);
+    const body = calls.closeIssue[0]!.comment ?? "";
+    const cut = body.indexOf("<details>");
+    assert(cut > 0, "the close comment carries the agent's analysis block");
+    // The evidence block sits before <details>; only the worker-written text
+    // is checked.
+    const head = body.slice(0, cut);
+    assertStringIncludes(head, "## Already Complete");
+    assertEquals(hashNumbers(head), []);
+  },
+);
+
 Deno.test(
   "handle_no_changes_phase - an untrusted image keeps an analysis-only issue open and retries it (Issues #1385, #4298)",
   async () => {
