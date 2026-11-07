@@ -19,7 +19,10 @@ import {
 } from "../lib/fleet_babysitter_app.ts";
 import type { FetchFn } from "../lib/github_app_auth.ts";
 import { BABYSITTER_FILESYSTEM_KEY } from "../lib/fleet_babysitter_sandbox.ts";
-import { startBabysitterAgent } from "../commands/fleet_pr_babysitter.ts";
+import {
+  babysitterVerifierCredentials,
+  startBabysitterAgent,
+} from "../commands/fleet_pr_babysitter.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 
 Deno.test("production repair forwards CONFIG_PATH and denies canonical credential targets", async () => {
@@ -857,5 +860,82 @@ Deno.test("access discovery uses metadata-only credentials and rechecks changed 
       { permissions: { metadata: "read" } },
       { permissions: { metadata: "read" } },
     ]);
+  });
+});
+
+Deno.test("review verifier credentials carry the read-only token, never the runner's, and deny Bash and the protected paths (PR #4849 review)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const home = await Deno.makeTempDir();
+    try {
+      const requests: Array<{ url: string; body: unknown }> = [];
+      const credentials = await babysitterVerifierCredentials(
+        { appId: "123", installationId: "456", privateKeyPath },
+        "owner/repo",
+        {
+          home,
+          configPath: `${home}/.config.json`,
+          env: () => undefined,
+          parentEnv: {
+            GH_TOKEN: "ghs_RUNNER_WRITE_TOKEN",
+            GITHUB_TOKEN: "ghs_RUNNER_WRITE_TOKEN",
+            GITHUB_APP_PRIVATE_KEY_PATH: privateKeyPath,
+            PATH: "/usr/bin",
+          },
+          fetchFn: fakeTokenExchange(
+            { permissions: { ...BABYSITTER_AGENT_PERMISSIONS } },
+            requests,
+          ),
+        },
+      );
+      assertEquals(credentials.parentEnv.GH_TOKEN, "ghs_agent_token");
+      assertEquals(credentials.parentEnv.GITHUB_TOKEN, undefined);
+      assertEquals(
+        credentials.parentEnv.GITHUB_APP_PRIVATE_KEY_PATH,
+        undefined,
+      );
+      assertEquals(credentials.parentEnv.PATH, "/usr/bin");
+      assert(!JSON.stringify(credentials).includes("RUNNER_WRITE_TOKEN"));
+      assertEquals(requests[0]!.body, {
+        repositories: ["repo"],
+        permissions: BABYSITTER_AGENT_PERMISSIONS,
+      });
+      assert(credentials.disallowedTools.includes("Bash"));
+      assert(credentials.disallowedTools.includes(`Read(/${privateKeyPath})`));
+      assert(credentials.disallowedTools.includes(`Edit(/${privateKeyPath})`));
+      assert(credentials.disallowedTools.includes("Read(//proc/**)"));
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
+  });
+});
+
+Deno.test("review verifier credentials fail when GitHub grants a write permission (PR #4849 review)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const home = await Deno.makeTempDir();
+    try {
+      await assertRejects(
+        () =>
+          babysitterVerifierCredentials(
+            { appId: "123", installationId: "456", privateKeyPath },
+            "owner/repo",
+            {
+              home,
+              configPath: `${home}/.config.json`,
+              env: () => undefined,
+              parentEnv: {},
+              fetchFn: fakeTokenExchange({
+                permissions: {
+                  ...BABYSITTER_AGENT_PERMISSIONS,
+                  contents: "write",
+                },
+              }, []),
+            },
+          ),
+        Error,
+        "must be read-only",
+      );
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
   });
 });

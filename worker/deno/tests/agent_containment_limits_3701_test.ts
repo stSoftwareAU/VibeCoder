@@ -210,3 +210,35 @@ Deno.test("turn-limit classifier requires its result subtype, not another error 
     );
   }
 });
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout forwards isolateClaudeConfig to the claude argv (PR #4849 review)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withAgentStub(
+      `printf '%s\\n' "$@" > "$(dirname "$0")/argv"\nprintf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'`,
+      async (stub) => {
+        const argvFor = async (isolateClaudeConfig: boolean | undefined) => {
+          await runClaudeWithTimeout({
+            prompt: "test",
+            agentBinaryPath: stub.path,
+            agentProvider: "claude",
+            clock: fakeClock(),
+            timeoutSeconds: 30,
+            logger: createLogger({ write: () => {} }),
+            ...(isolateClaudeConfig === undefined
+              ? {}
+              : { isolateClaudeConfig }),
+          });
+          return (await Deno.readTextFile(`${stub.dir}/argv`)).split("\n");
+        };
+        const isolated = await argvFor(true);
+        assertEquals(isolated.includes("--setting-sources"), true);
+        assertEquals(isolated.includes("--strict-mcp-config"), true);
+        const plain = await argvFor(undefined);
+        assertEquals(plain.includes("--setting-sources"), false);
+      },
+    );
+  },
+});

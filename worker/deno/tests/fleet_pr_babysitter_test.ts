@@ -110,6 +110,22 @@ import {
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 import { escalationHostId } from "../lib/host_escalation.ts";
+import type {
+  ReviewVerificationInput,
+  ReviewVerificationOutcome,
+} from "../lib/babysitter_review_verifier.ts";
+
+/** A verifier that judges every requested review fixed (Issue #4657). */
+const allVerified = (
+  input: ReviewVerificationInput,
+): Promise<ReviewVerificationOutcome[]> =>
+  Promise.resolve(
+    input.reviews.map((review) => ({
+      id: review.id,
+      verified: true,
+      reason: "fixed",
+    })),
+  );
 
 /** Run a real git command for fixtures and for the injected runner in clone tests. */
 async function runGitForTest(
@@ -324,6 +340,7 @@ function cleanTreeFinishDeps(
     gh: service.deps.runGhCommand,
     syncBodyDeps: service.deps,
     dismiss,
+    verifyReviews: allVerified,
   };
 }
 
@@ -519,6 +536,7 @@ Deno.test("a pushed fix syncs the legacy body from its original head before dism
       [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
       {
         renewalFailed: () => false,
+        verifyReviews: allVerified,
         runCommand: async (command, args, cwd) => {
           if (command === "git" && args[0] === "status") return " M summary";
           if (command === "git" && args[0] === "diff") return "";
@@ -702,6 +720,7 @@ Deno.test("Issue #4637: a pushed repair pins its body sync to the verified pushe
       [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
       {
         renewalFailed: () => false,
+        verifyReviews: allVerified,
         runCommand: async (command, args) => {
           if (command === "git" && args[0] === "status") return " M summary";
           if (command === "git" && args[0] === "diff") return "";
@@ -759,6 +778,7 @@ Deno.test("Issue #4637: a no-change repair pins its body sync to the unchanged P
       [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
       {
         renewalFailed: () => false,
+        verifyReviews: allVerified,
         runCommand: async (command, args) => {
           if (command === "git" && args[0] === "status") return "";
           throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
@@ -1175,6 +1195,7 @@ function repairFinishDeps(options: {
 }) {
   return {
     renewalFailed: () => false,
+    verifyReviews: allVerified,
     runCommand: repairRunCommand({
       headSha: options.headSha,
       changed: options.changed,
