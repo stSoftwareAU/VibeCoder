@@ -573,3 +573,177 @@ Deno.test("failureSignatureLines - generic runner output alone is unreadable", (
     [],
   );
 });
+
+/** The verdict of comparing `pr` with a base log of `base`. */
+async function compareStates(pr: string, base: string): Promise<string> {
+  const result = await compareBaseFailure({
+    repo: REPO,
+    checkName: CHECK,
+    baseCheckRunId: BASE_RUN_ID,
+    failureText: pr,
+    ghFn: unusedGh,
+    actionsLogFn: logFake(excerptOf(base)).fn,
+  });
+  return result.state;
+}
+
+Deno.test("compareBaseFailure - a passing test whose name holds a failure word is not evidence, in every runner format", async () => {
+  const cases: [string, string, string][] = [
+    [
+      "Bats TAP with shifted numbers",
+      "ok 2 new PR test\nok 3 parser reports an error for a bad header\nnot ok 4 renderer pads the title\n# command failed",
+      "ok 2 parser reports an error for a bad header\nnot ok 3 renderer pads the title\n# command failed",
+    ],
+    [
+      "node:test TAP",
+      "ok 3 - throws an error on a bad header\nnot ok 4 - renderer pads the title\n# command failed",
+      "ok 2 - throws an error on a bad header\nnot ok 3 - renderer pads the title\n# command failed",
+    ],
+    [
+      "node:test spec",
+      "✔ rejects a header with an error (0.3ms)\n✖ renderer pads the title (1.2ms)",
+      "✖ renderer pads the title (0.9ms)",
+    ],
+    [
+      "Mocha",
+      "  ✓ throws an error on a bad header\n  1) renderer pads the title\nAssertionError: expected 3 to equal 4",
+      "  1) renderer pads the title\nAssertionError: expected 3 to equal 4",
+    ],
+    [
+      "Jest verbose",
+      "  ✓ throws an error on a bad header (1 ms)\n  ✕ renderer pads the title (3 ms)\n  ● renderer pads the title",
+      "  ✕ renderer pads the title (4 ms)\n  ● renderer pads the title",
+    ],
+    [
+      "Go",
+      "--- PASS: TestParseError (0.00s)\n--- FAIL: TestRenderTitle (0.01s)",
+      "--- FAIL: TestRenderTitle (0.02s)",
+    ],
+    [
+      "pytest verbose",
+      "tests/test_a.py::test_error_on_bad_header PASSED [ 50%]\nFAILED tests/test_a.py::test_render_title - AssertionError: assert 3 == 4",
+      "FAILED tests/test_a.py::test_render_title - AssertionError: assert 3 == 4",
+    ],
+  ];
+  for (const [label, pr, base] of cases) {
+    assertEquals(await compareStates(pr, base), "same", label);
+  }
+});
+
+Deno.test("compareBaseFailure - changing test counts in any runner's tally do not obscure the same failure", async () => {
+  const cases: [string, string, string][] = [
+    [
+      "pytest -q",
+      "FAILED tests/test_a.py::test_render_title - AssertionError: assert 3 == 4\n1 failed, 42 passed in 0.31s",
+      "FAILED tests/test_a.py::test_render_title - AssertionError: assert 3 == 4\n1 failed, 41 passed in 0.28s",
+    ],
+    [
+      "RSpec",
+      "Failure/Error: expect(title).to eq 'x'\n42 examples, 1 failure",
+      "Failure/Error: expect(title).to eq 'x'\n41 examples, 1 failure",
+    ],
+    [
+      "Bats pretty",
+      ' ✗ renderer pads the title\n   `[ "$status" -eq 0 ]\' failed\n126 tests, 1 failure',
+      ' ✗ renderer pads the title\n   `[ "$status" -eq 0 ]\' failed\n125 tests, 1 failure',
+    ],
+    [
+      "Maven",
+      "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.5 s <<< FAILURE! - in com.x.FooTest\n[ERROR] Tests run: 43, Failures: 1, Errors: 0, Skipped: 0",
+      "[ERROR] Tests run: 2, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.4 s <<< FAILURE! - in com.x.FooTest\n[ERROR] Tests run: 42, Failures: 1, Errors: 0, Skipped: 0",
+    ],
+    [
+      "dotnet",
+      "Failed!  - Failed: 1, Passed: 43, Skipped: 0, Total: 44, Duration: 3 s - Foo.dll (net8.0)",
+      "Failed!  - Failed: 1, Passed: 42, Skipped: 0, Total: 43, Duration: 4 s - Foo.dll (net8.0)",
+    ],
+    [
+      "minitest",
+      "SumTest#test_adds [test/sum_test.rb:5] failed: expected 4\n12 runs, 30 assertions, 1 failures, 0 errors, 0 skips",
+      "SumTest#test_adds [test/sum_test.rb:5] failed: expected 4\n11 runs, 29 assertions, 1 failures, 0 errors, 0 skips",
+    ],
+  ];
+  for (const [label, pr, base] of cases) {
+    assertEquals(await compareStates(pr, base), "same", label);
+  }
+});
+
+Deno.test("compareBaseFailure - a test name that is a prefix of another base test name is different", async () => {
+  const cases: [string, string, string][] = [
+    [
+      "Jest",
+      "  ● parser › parses header\n    Expected: 4\n    Received: 3",
+      "  ● parser › parses header with a BOM\n    Expected: 7\n    Received: 2",
+    ],
+    [
+      "Mocha",
+      "  1) parses header\nAssertionError: expected 3 to equal 4",
+      "  1) parses header with a BOM\nAssertionError: expected 3 to equal 4",
+    ],
+    [
+      "TAP",
+      "not ok 3 - parses header\n# AssertionError: expected 3 to equal 4",
+      "not ok 3 - parses header with a BOM\n# AssertionError: expected 3 to equal 4",
+    ],
+    [
+      "Deno",
+      "parse header ... FAILED (2ms)",
+      "full parse header ... FAILED (3ms)",
+    ],
+  ];
+  for (const [label, pr, base] of cases) {
+    assertEquals(await compareStates(pr, base), "different", label);
+  }
+  // Positive control: the same name with a timestamp and a changed duration is the same test.
+  assertEquals(
+    await compareStates(
+      "  ● parser › parses header\n    Expected: 4",
+      "2026-11-02T10:00:00.5Z   ● parser › parses header\n    Expected: 4",
+    ),
+    "same",
+  );
+});
+
+Deno.test("compareBaseFailure - generic failure headers never stand for a failing test", async () => {
+  // minitest prints `1) Failure:` for every failure; nothing else in the PR's
+  // failure is comparable, so the PR is unreadable and the base log is not read.
+  const minitest =
+    "  1) Failure:\nSumTest#test_adds [test/sum_test.rb:5]:\nExpected: 4\n12 runs, 30 assertions, 1 failures, 0 errors, 0 skips";
+  const log = logFake(excerptOf("1) Failure:\nSumTest#test_subtracts\n"));
+  const result = await compareBaseFailure({
+    repo: REPO,
+    checkName: CHECK,
+    baseCheckRunId: BASE_RUN_ID,
+    failureText: minitest,
+    ghFn: unusedGh,
+    actionsLogFn: log.fn,
+  });
+  assertStringIncludes(
+    unreadableReason(result),
+    "carried no line that could be compared",
+  );
+  assertEquals(log.calls.length, 0);
+
+  // Bats pretty: the shared `failed` line does not match the other test.
+  assertEquals(
+    await compareStates(
+      ' ✗ parser rejects a bad header\n   `[ "$status" -eq 0 ]\' failed',
+      ' ✗ renderer pads the title\n   `[ "$status" -eq 0 ]\' failed',
+    ),
+    "different",
+  );
+});
+
+Deno.test("failureSignatureLines - tally and count normalisation stays bounded on hostile input", async () => {
+  assertEquals(
+    failureSignatureLines("run" + " ".repeat(100000) + "x"),
+    [],
+  );
+  assertEquals(failureSignatureLines("1 ".repeat(100000)), []);
+  // A base log is not truncated per line, so its count normalisation is also bounded.
+  const hostile = "1 ".repeat(100000) + "tests" + " ".repeat(100000) + "x";
+  assertEquals(
+    await compareStates("parse header ... FAILED", hostile),
+    "different",
+  );
+});

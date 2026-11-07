@@ -488,12 +488,21 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   the same run and compares it with the pull request's own failure. The pull
   request's failure lines are its annotation messages and log lines containing
   `error`, `fail`, `panic`, `exception`, `fatal`, `assert`, `cannot` or
-  `denied`, as well as Jest `●`, node:test `✖`, TAP `not ok` and Mocha
-  numbered failing-test names. TAP and Mocha sequence numbers are normalised.
-  An annotation without a failure word is excluded; each line is
-  normalised, and the generic
-  runner summaries, passing test lines and generic assertion lines are ignored. The comparison gives one
-  of three signatures:
+  `denied`, as well as failing-test names: Jest `●` and `✕`, node:test `✖`,
+  Bats `✗`, TAP `not ok`, Mocha numbered names, Vitest `FAIL file > name`,
+  pytest `FAILED id::name`, Go `--- FAIL:` and Deno or cargo `name ... FAILED`.
+  Each line is normalised first: timestamps, durations, TAP and Mocha sequence
+  numbers and the counts beside `passed`, `failed`, `failures`, `errors`,
+  `tests` and the like are replaced. Left out of the comparison are passing
+  test lines in every runner format (`... ok`, TAP `ok <n>`, `✓`, `✔`, `√`,
+  `--- PASS`, `PASS`, pytest `PASSED`), lines made only of a test-run tally
+  (`1 failed, 42 passed in 0.31s`, `42 examples, 1 failure`, the generic
+  `1) Failure:` header), the runner's exit line, other generic assertion and
+  command-failed lines, and an annotation without a failure word. A
+  failing-test name must equal a whole line of the base log, so `parses header`
+  does not match `parses header with a BOM`; any other line may sit inside a
+  longer base line. Unknown runner formats can still produce generic-only
+  matches. The comparison gives one of three signatures:
   - **Same** — every comparable normalised failure line of the pull request appears in
     the base run's log, so the base is red for this failure.
   - **Different** — the base log was read and at least one comparable pull request failure
