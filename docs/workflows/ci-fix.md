@@ -514,7 +514,9 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   failure words), the lines of the failing step's own output (between its
   command echo and the `Process completed with exit code` line) are compared
   instead, with standalone numbers ignored; without that step the failure is
-  unreadable. A pull request whose only lines are generic is unreadable.
+unreadable. A pull request whose only lines are generic is unreadable. Deno
+failure-section and Jest suite-failure headers without a test or suite locus
+are unreadable even when an assertion or exception is present.
   matches. The comparison gives one of three signatures:
   - **Same** — every comparable normalised failure line of the pull request appears in
     the base run's log, so the base is red for this failure.

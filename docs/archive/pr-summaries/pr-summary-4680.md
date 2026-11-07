@@ -49,7 +49,9 @@ When no line qualifies, the lines of the failing step's own output (between its
 `##[endgroup]` and `##[error]Process completed with exit code` lines) are
 compared with standalone numbers ignored. That reads checks that print rule ids
 rather than failure words (semgrep). Without such a step the failure is
-unreadable, as is a failure whose only lines are generic.
+unreadable, as is a failure whose only lines are generic. Deno failure-section
+and Jest suite-failure headers without a test or suite locus are unreadable,
+even if an assertion or exception appears in the excerpt.
 
 Limits: output that a passing test prints without a recognised block marker
 (inline logger lines in Mocha or node:test) is still compared, and unrecognised
@@ -73,8 +75,8 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 ## Test Plan
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
-  tests/pr_ci_processor_deferral_test.ts`: 76 passed, 0 failed.
-- `worker/deno/tests/ci_base_failure_signature_test.ts` (42 tests at head) and
+  tests/pr_ci_processor_deferral_test.ts`: 77 passed, 0 failed.
+- `worker/deno/tests/ci_base_failure_signature_test.ts` (43 tests at head) and
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` (34 tests at head).
 - Review round 5 tests (PR #4873 review), against the previous commit's module
   the run was 52 passed, 24 failed, the new tests among the failures:
@@ -90,6 +92,9 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
     `compareBaseFailure - Jest suite failures in different files are different`
     and `compareBaseFailure - Mocha failures under one describe block are told apart by test name`.
   - `failureSignatureLines - the new line patterns stay bounded on hostile input`.
+  - `compareBaseFailure - recognised test failure without a locus is unreadable`
+    covers Deno and Jest excerpts that retain an assertion or exception but
+    omit the test or suite identity.
   - `processCiFailure - a semgrep failure with no failure word in its output is deferred when the base log shows the same rule (Issue #4680)`,
     `processCiFailure - a semgrep failure whose base log names another rule is charged, neither deferred nor held (Issue #4680)`
     and `processCiFailure - output a passing test prints and changing test tallies do not stop the deferral (Issue #4680)`.

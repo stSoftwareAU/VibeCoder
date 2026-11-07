@@ -331,6 +331,14 @@ interface FailureSignature {
 function failureSignature(text: string): FailureSignature {
   const prepared = preparedLines(text, MAX_LINES);
   const lines = comparableLines(prepared, true);
+  // These runner headers identify a test failure but not which test failed.
+  // An assertion or exception alone cannot establish the same test on base.
+  const testFailureHeader = prepared.some((line) =>
+    /^(?:errors|failures|[●] test suite failed to run)$/i.test(line.trim())
+  );
+  if (testFailureHeader && !lines.some((line) => TEST_NAME.test(line))) {
+    return { lines: [], loose: false };
+  }
   if (lines.length > 0) return { lines, loose: false };
   // A check whose output holds no failure word (semgrep, shellcheck, cspell)
   // is read from the failing step's own output instead.

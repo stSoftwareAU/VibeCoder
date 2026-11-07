@@ -64,13 +64,18 @@ jobs:
 `;
 
 function makeLanguages(langs: string[]): RepoLanguages {
+  const markerFiles: Record<string, string> = { Rust: "Cargo.toml" };
   return {
     detected: langs.map((l) => ({
       language: l,
       confidence: "marker" as const,
+      markerFile: markerFiles[l],
     })),
     primary: langs[0] ?? "unknown",
     raw: {},
+    rootFiles: langs.flatMap((language) =>
+      markerFiles[language] ? [markerFiles[language]!] : []
+    ),
   };
 }
 

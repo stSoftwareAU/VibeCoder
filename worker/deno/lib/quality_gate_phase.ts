@@ -426,7 +426,8 @@ async function spawnRepositoryCommand(
         output: `${CREDENTIAL_DELIVERY_FAILURE}: ${fault}`,
       };
     }
-    return { exitCode: result.code, output: stdout + stderr };
+    const separator = stdout && stderr && !stdout.endsWith("\n") ? "\n" : "";
+    return { exitCode: result.code, output: stdout + separator + stderr };
   } catch (err) {
     return { exitCode: 1, output: String(err) };
   }
@@ -713,9 +714,43 @@ export function isDockerInfraFailure(output: string): boolean {
   return /docker:.*(not found|Cannot connect|permission denied)/i.test(output);
 }
 
-/** Check if output indicates a missing command issue. */
+// A shell's own missing-command report, whole line, unindented: an optional
+// `<shell-or-script>: [line N: ]` prefix, then `<name>: command not found`.
+// Linear: every `[^\s:]+` run stops at the next `:` or space, and there are no
+// nested or overlapping quantifiers.
+const SHELL_MISSING_COMMAND_LINE =
+  /^(?:[^\s:]+: (?:line \d+: )?)?[^\s:]+: command not found$/;
+const DENO_OUTPUT_START = /^-{3,} (?:(?:pre|post)-test )?output -{3,}$/;
+const DENO_OUTPUT_END = /^-{3,} (?:(?:pre|post)-test )?output end -{3,}$/;
+
+/**
+ * Check if output contains a shell's own missing-command report, such as
+ * `bash: foo: command not found` or `./quality.sh: line 3: foo: command not
+ * found`. Only whole, unindented lines count. Deno's captured test output (the
+ * block from `------- output -------` to `----- output end -----`) is skipped,
+ * so a failing gate whose test merely quotes the text is not classed as a
+ * missing command (Issue #4829).
+ */
 export function isMissingCommandFailure(output: string): boolean {
-  return output.includes("command not found");
+  let inDenoOutput = false;
+  for (const raw of output.split(/\r?\n/)) {
+    // deno-lint-ignore no-control-regex
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trimEnd();
+    if (inDenoOutput) {
+      // Deno can append the marker to a test name or output without a newline.
+      const marker = line.lastIndexOf("--- ");
+      if (marker >= 0 && DENO_OUTPUT_END.test(line.slice(marker))) {
+        inDenoOutput = false;
+      }
+      continue;
+    }
+    if (DENO_OUTPUT_START.test(line)) {
+      inDenoOutput = true;
+      continue;
+    }
+    if (SHELL_MISSING_COMMAND_LINE.test(line)) return true;
+  }
+  return false;
 }
 
 /**

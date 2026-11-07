@@ -973,6 +973,17 @@ Deno.test("compareBaseFailure - Jest suite failures in different files are diffe
   assertEquals(failureSignatureLines("  ● Test suite failed to run"), []);
 });
 
+Deno.test("compareBaseFailure - recognised test failure without a locus is unreadable", async () => {
+  for (
+    const failure of [
+      " ERRORS \nerror: AssertionError: expected 3 to equal 4\n FAILURES ",
+      "  ● Test suite failed to run\nReferenceError: x is not defined",
+    ]
+  ) {
+    assertEquals(await compareStates(failure, failure), "unreadable");
+  }
+});
+
 Deno.test("compareBaseFailure - Mocha failures under one describe block are told apart by test name", async () => {
   const failure = (name: string) =>
     `  1) Parser\n       ${name}:\n     AssertionError: expected 3 to equal 4\n`;

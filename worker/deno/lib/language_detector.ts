@@ -72,6 +72,9 @@ export interface RepoLanguages {
   primary: string;
   /** Raw byte counts from the GitHub Languages API. */
   raw: Record<string, number>;
+  /** Complete root file inventory, independent of language-selection precedence.
+   * Optional for older callers; auditors fetch it when absent. */
+  rootFiles?: string[];
   /**
    * Optional marker-file metadata for the best-practices bucket picker
    * (Issue #2144). Populated by the language detector when callers request
@@ -120,7 +123,7 @@ interface ContentEntry {
 }
 
 /** Fetch the root-level file listing for a repository. */
-async function fetchRootContents(
+export async function fetchRootContents(
   repo: string,
   runner: (cmd: string[]) => Promise<CommandOutput>,
 ): Promise<Result<ContentEntry[], string>> {
@@ -333,6 +336,13 @@ export async function detectRepoLanguages(
 
   return {
     ok: true,
-    value: { detected, primary, raw },
+    value: {
+      detected,
+      primary,
+      raw,
+      rootFiles: entries.filter((entry) => entry.type === "file").map((entry) =>
+        entry.name
+      ),
+    },
   };
 }

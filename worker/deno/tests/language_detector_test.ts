@@ -475,3 +475,39 @@ Deno.test("language_detector - the default runner routes gh through the shared c
     _resetGhSpawnRunner();
   }
 });
+
+Deno.test("language_detector - complete root evidence retains manifests hidden by Deno precedence", async () => {
+  const files = [
+    "deno.json",
+    "package.json",
+    "package-lock.json",
+    "index.html",
+    "app.js",
+  ];
+  const result = await detectRepoLanguages("owner/repo", {
+    runCommand: mockRunner({
+      "contents/": ok(JSON.stringify([
+        ...files.map((name) => ({ name, type: "file" })),
+        { name: "Cargo.toml", type: "dir" },
+      ])),
+      "/languages": ok("{}"),
+    }),
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.rootFiles, files);
+  assertEquals(
+    result.value.detected.some((entry) => entry.language === "Node"),
+    false,
+  );
+  assertEquals(
+    result.value.detected.find((entry) => entry.language === "Deno")
+      ?.markerFile,
+    "deno.json",
+  );
+  assertEquals(
+    result.value.detected.find((entry) => entry.language === "React/Web")
+      ?.markerFile,
+    "index.html",
+  );
+});
