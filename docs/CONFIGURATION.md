@@ -5063,8 +5063,10 @@ environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
 agent runs goes through it. The worker's own pushes do not carry the agent's
 environment, so the hook does not gate them; instead its final-mile
 commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
-same changed-files check through `runPrePushGate` on the already-committed
+changed-files check through `runPrePushGate` on the already-committed
 unpushed commits before pushing, and refuses the push on failure (Issue #3689).
+That check includes the CI cargo checks, which the agent's own hook does not
+run (see the CI cargo bullet below).
 WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
 Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 (such as WIP-preservation pushes) are not gated there. The CI-fix and
@@ -5075,9 +5077,10 @@ changed-file checks listed below. Repos with pre-flight commands keep their own
 spec. The completion phase's
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
-the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, the CI cargo clippy and test-target compile, markdownlint,
-cspell and the Floci CloudFormation deploy test) still run and can fail the
+the changed-file checks (listed under the first stage below: deno
+fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
+test, and the CI cargo clippy and test-target compile, which the agent's hook
+does not run) still run and can fail the
 run. Unlike Step 1b, the completion gate checks every non-merge commit the
 branch has ahead of the PR base (`git log --no-merges <base>..HEAD`), not
 only commits on no remote-tracking ref. The execute phase's WIP checkpoints
@@ -5133,7 +5136,8 @@ or not the repo configures a pre-flight, so a repo with no Step 1b gate still
 has the miss fixed before CI sees it. A hook that throws is logged, and Step 1b
 still checks everything. WIP-preservation pushes pass no hook.
 
-The hook runs two stages:
+The gate runs two stages. The agent's own hook runs them without the CI cargo
+checks in stage 1, which only the worker's own gates run (see that bullet):
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
@@ -5161,8 +5165,11 @@ The hook runs two stages:
    - **CI's cargo clippy and test-target compile** (Issue #4630), when the push
      changes a Rust-relevant file (a `.rs` file, `Cargo.toml`, `Cargo.lock`,
      `rust-toolchain` or `rust-toolchain.toml`, `clippy.toml` or
-     `.clippy.toml`) in a directory the repo's CI runs cargo in. The commands
-     are read from the repo's own `.github/workflows/*.yml|yaml` files, and only
+     `.clippy.toml`) in a directory the repo's CI runs cargo in. Only the
+     worker's own gates run these (Step 1b, the completion gate and the repair
+     processors' cargo-only spec). The agent's own pre-push hook runs none of
+     them: it runs under `--no-config`, where the YAML parser that reads the
+     workflows cannot be loaded. The commands are read from the repo's own `.github/workflows/*.yml|yaml` files, and only
      from workflows triggered on `pull_request`. Each `cargo clippy` run in a
      step is run exactly as written: its `working-directory` (step, job or
      workflow; a plain relative path inside the repo), its `+toolchain` (or the
@@ -5234,7 +5241,8 @@ the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a Floci deploy test that exits
 non-zero, including when Floci cannot be started or the `aws` CLI is missing for
 a deployable template, refuses the push; a CI cargo check that fails refuses
-the push with its output, while a CI cargo check that cannot start or time out,
+the push with its output (in the worker's own gates; the agent's hook runs none
+of them), while a CI cargo check that cannot start or time out,
 hits host disk full, or whose toolchain, directory or command cannot be
 reproduced here refuses it as an infrastructure fault (the push is still
 refused, but the run does not blame the branch, and the checked set is not

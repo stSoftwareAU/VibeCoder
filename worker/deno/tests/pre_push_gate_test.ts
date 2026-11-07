@@ -25,6 +25,7 @@ import {
 import {
   type CiCargoCheck,
   type CiCargoScan,
+  repoCiCargoChecks,
   scanWorkflowForCargoChecks,
 } from "../lib/ci_cargo_checks.ts";
 import { TIMEOUT_EXIT_CODE } from "../lib/git_timeout.ts";
@@ -1326,6 +1327,7 @@ Deno.test("runPrePushGate: CI clippy runs exactly as the workflow wrote it, in i
       stdin,
       preFlightCommands: [],
       runner: scriptedRunner(() => ({}), calls),
+      findCiCargo: repoCiCargoChecks,
     });
     assert(result.ok, result.ok ? "" : result.error.message);
     assertEquals(ciRuns(calls).map((c) => c.command), [CLIPPY_CMD]);
@@ -1335,6 +1337,38 @@ Deno.test("runPrePushGate: CI clippy runs exactly as the workflow wrote it, in i
     const clippyAt = calls.findIndex((c) => c.command === CLIPPY_CMD);
     assert(probeAt >= 0 && probeAt < clippyAt, "probe must run first");
     assert(result.value.checksRun.includes(CLIPPY_CMD));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: without findCiCargo a Rust push runs no CI cargo command (the agent's hook), and with it the same push runs clippy", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles({
+    ...RUST_FILES,
+    ".github/workflows/ci.yml": RUST_WORKFLOW,
+  });
+  try {
+    const hookCalls: RanCall[] = [];
+    const hook = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: scriptedRunner(() => ({}), hookCalls),
+    });
+    assert(hook.ok, hook.ok ? "" : hook.error.message);
+    assertEquals(ciRuns(hookCalls), []);
+    assertEquals(hook.value.checksRun.filter((c) => c.includes("clippy")), []);
+
+    const workerCalls: RanCall[] = [];
+    const worker = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: scriptedRunner(() => ({}), workerCalls),
+      findCiCargo: repoCiCargoChecks,
+    });
+    assert(worker.ok, worker.ok ? "" : worker.error.message);
+    assertEquals(ciRuns(workerCalls).map((c) => c.command), [CLIPPY_CMD]);
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -1678,6 +1712,7 @@ Deno.test("runPrePushGate: the real workflow scan drives the CI clippy run end t
       stdin,
       preFlightCommands: [],
       runner: scriptedRunner(() => ({}), calls),
+      findCiCargo: repoCiCargoChecks,
     });
     assert(result.ok, result.ok ? "" : result.error.message);
     // The tools test build is not in this push, so only the rust clippy and no

@@ -1,0 +1,12 @@
+{
+  "issue": 4630,
+  "chunk": "top-up-4630",
+  "title": "top-up: CI cargo check scanner",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4630",
+  "definition": "module added to worker/deno/lib/ after the recorded security-sweep slices: ci_cargo_checks.ts reads the target repository's workflow YAML as data (never executes it), derives the cargo clippy and test-compile commands CI runs, and refuses working directories that are absolute, contain .. or hold expressions (#4630)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/ci_cargo_checks.ts"
+  ],
+  "sweptAt": "eb861bdb251e8921bd2bb36d6b57cfbd14b63f77"
+}

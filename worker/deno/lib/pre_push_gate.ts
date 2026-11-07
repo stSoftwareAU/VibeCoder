@@ -16,7 +16,7 @@
  *   content the execute phase's WIP checkpoints already pushed is checked
  *   before `gh pr create`.
  *
- * It does two things, in order:
+ * It does three things, in order:
  *
  * 1. Always runs a fast check over just the files the push introduces
  *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
@@ -906,9 +906,10 @@ function isHostFaultOfCheck(error: PreFlightGateError): boolean {
  * `findCiCargo`, which is opt-in with no default: a caller that does not pass it
  * gets no CI cargo check, planned or run. The agent's own pre-push hook does not
  * pass it (it runs under `--no-config` and cannot load the YAML parser); the
- * worker's gates in `git_push.ts` do. When the scan holds a command that cannot be reproduced here,
- * the push fails with a {@link PrePushGateInfrastructureError}. Before the first
- * CI cargo command runs, the Rust toolchain is probed. A CI cargo command that
+ * worker's gates in `git_push.ts` do. When the scan holds a command that cannot
+ * be reproduced here, the push fails with a
+ * {@link PrePushGateInfrastructureError}. Before the first CI cargo command
+ * runs, the Rust toolchain is probed. A CI cargo command that
  * fails to start, times out, or fails with host disk-full output is also an
  * infrastructure fault. Any other failing CI cargo command blocks the push, with
  * its output.
