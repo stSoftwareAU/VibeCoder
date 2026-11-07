@@ -91,82 +91,6 @@ Deno tests: PASSED
 Result: PASSED (with skipped checks)
 ```
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — Test: in auto mode with one subscription that has quota, it selects
-  that subscription, logs a line starting
-  `[quota] automatic provider selected=`, and returns `overflow: false`. —
-  evidence:
-  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::babysitter auto mode chooses a subscription with quota and logs runtime selection`
-  — reviewer: met
-- **met** — Test: in auto mode with two subscriptions, it selects the one with
-  more quota remaining. — evidence:
-  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::babysitter auto mode ranks subscriptions by remaining quota`
-  — reviewer: met
-- **met** — Test: in auto mode with every subscription exhausted, it selects
-  `deepseek`, returns `overflow: true` and the DeepSeek child env, and logs the
-  `babysitter paid overflow` line naming each exclusion reason. — evidence:
-  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::babysitter auto mode uses isolated DeepSeek env only after all subscriptions exhaust`
-  — reviewer: met
-- **met** — Test: the same fixture with one subscription restored never selects
-  DeepSeek. — evidence:
-  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::restored subscription quota keeps babysitter off DeepSeek`
-  — reviewer: met
-- **met** — Test: exhausted subscriptions with no DeepSeek credential throw with
-  that cause. — evidence:
-  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::exhausted subscriptions without a DeepSeek credential fail with the cause`
-  — reviewer: met
-- **met** — Test: pinned mode returns the pinned provider and never calls the
-  DeepSeek export. — evidence:
-  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::configured pinned mode returns the configured provider without probing or overflow`;
-  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::existing provider-less config honours the environment pin without probing or overflow`;
-  missing-config, auto-mode environment-pin and configured-list precedence
-  cases are also covered. — reviewer: met
-- **met** — The existing `provider_auto_runtime` and `review_round` tests
-  pass unchanged. — evidence: both files are unchanged; their combined run
-  passed 32 tests and they are included in the final 137-test run. — reviewer:
-  met
-- **met** — The `DESIGN-PRINCIPLES.md` section exists, links the README
-  auto-mode policy, and states that the worker does not overflow. — evidence:
-  `DESIGN-PRINCIPLES.md`, “Subscription quota first, metered API last”. —
-  reviewer: met
-- **met** — `./quality.sh` passes. — evidence: final run exited 0,
-  `PASSED (with skipped checks)`, as recorded above. — reviewer: met — reason:
-  config integration and Checkov were explicitly skipped; this verdict does
-  not claim those stages ran.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **violation** — Secret Redaction — Every Outbound Sink — evidence:
-  `worker/deno/lib/babysitter_provider_choice.ts` passes ranked exclusions
-  directly to the logger, including credential labels/status reasons, without
-  `redactSecrets()`. — reason: outstanding in the final independent review.
-  Recording the finding does not satisfy that standard. This retry limits
-  production fixes to the named verifier defect, mutation gaps and quality
-  criterion; this additional finding remains for the reviewer.
-- **clean** — The previous classifier finding is resolved: the shared lexer
-  recognises real import tokens. The focused classifier suite retains real
-  Bash/PowerShell controls and unused-import, comment, literal-call,
-  quoted-import-plus-real-call and hostile-input cases.
-- **clean** — The previous edited-expectation evidence finding is resolved:
-  the Test Plan explains changed contracts, retained exact PowerShell coverage,
-  separate Bash coverage assertions and both edited-expectation red-checks.
-- **clean** — The previous documentation finding is resolved:
-  `DESIGN-PRINCIPLES.md` distinguishes the chooser policy from production
-  orchestration and explicitly states that orchestration does not call it yet.
-- **clean** — Required launcher suites remain in `IN_GATE_SCRIPT_SUITES` and
-  outside the integration ignore list. No launcher/safety assertion, serial
-  manifest entry or timing threshold is removed.
-- **clean** — KISS/DRY: no reinvented standard-library operation, unnecessary
-  dependency, single-implementation abstraction or copied existing helper was
-  evidenced. Routing, credential export, environment filtering and lexing reuse
-  existing helpers. The reviewer inspected only the diff and standards;
-  execution evidence below was produced by the executor/parent.
-
 ## Test Plan
 
 - All test commands use stdin from `/dev/null`. The final targeted suite passed
@@ -237,3 +161,24 @@ runtime assertion failure. No untestable exemptions are claimed.
 Not checked: config integration needs a real config; Checkov needs an available
 pinned tool/image. Remaining risk: the independent Standards reviewer identified
 the overflow-log redaction gap above.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Test: in auto mode with one subscription that has quota, it selects that subscription, logs a line starting [quota] automatic provider selected= , and returns overflow: false . — evidence: `worker/deno/tests/babysitter provider choice 4738 test.ts::babysitter auto mode chooses a subscription with quota and logs runtime selection` — reviewer: met
+- **met** — Test: in auto mode with two subscriptions, it selects the one with more quota remaining. — evidence: `worker/deno/tests/babysitter provider choice 4738 test.ts::babysitter auto mode ranks subscriptions by remaining quota` — reviewer: met
+- **met** — Test: in auto mode with every subscription exhausted, it selects deepseek , returns overflow: true and the DeepSeek child env, and logs the babysitter paid overflow line naming each exclusion reason. — evidence: `worker/deno/tests/babysitter provider choice 4738 test.ts::babysitter auto mode uses isolated DeepSeek env only after all subscriptions exhaust` — reviewer: met
+- **met** — Test: the same fixture with one subscription restored never selects DeepSeek. — evidence: `worker/deno/tests/babysitter provider choice 4738 test.ts::restored subscription quota keeps babysitter off DeepSeek` — reviewer: met
+- **met** — Test: exhausted subscriptions with no DeepSeek credential throw with that cause. — evidence: `worker/deno/tests/babysitter provider choice 4738 test.ts::exhausted subscriptions without a DeepSeek credential fail with the cause` — reviewer: met
+- **met** — Test: pinned mode returns the pinned provider and never calls the DeepSeek export. — evidence: `worker/deno/tests/babysitter provider choice 4738 test.ts::configured pinned mode returns the configured provider without probing or overflow` — reviewer: met
+- **met** — The existing provider auto runtime and review round tests pass unchanged. — evidence: `worker/deno/tests/provider auto runtime test.ts and worker/deno/tests/review round test.ts are unchanged against origin/main; docs/archive/pr-summaries/pr-summary-4766.md records their 32-test passing run; /tmp/vibe-4766-quality-final.log records both unit passes passing.` — reviewer: met
+- **met** — The DESIGN-PRINCIPLES.md section exists, links the README auto-mode policy, and states that the worker does not overflow. — evidence: `DESIGN-PRINCIPLES.md::Subscription quota first, metered API last` — reviewer: met
+- **met** — ./quality.sh passes. — evidence: `/tmp/vibe-4766-quality-final.log::Result: PASSED (with skipped checks); config integration and Checkov were skipped. Existing execution evidence inspected; no tests rerun in this read-only turn.` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Secret Redaction — Every Outbound Sink: the new overflow logger emits ranked credential labels and exclusion text without independently applying redactSecrets(). — evidence: `worker/deno/lib/babysitter provider choice.ts:169` — reason: The fix is absent from the inspected diff. Reporting 'fixed in this diff' would be false; this turn prohibits code changes, and a follow-up cannot discharge a breach on newly added lines.
+- **clean** — Checked Australian English, KISS/DRY, existing routing and credential-helper reuse, contextual error propagation, behavioural test assertions, preserved launcher safety coverage and documentation consistency. No files changed.
