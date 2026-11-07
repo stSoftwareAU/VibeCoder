@@ -70,6 +70,14 @@ flowchart LR
 
 ## Test Plan
 
+- Review follow-up: treating every later same-quoted word as a splice is
+  obsolete. Adjacent quoted segments still form one shell word, while whitespace
+  or an operator ends the capture and a later script is scanned independently.
+  Pinned installs remain clean and unpinned installs retain their package names,
+  covered by `worker/deno/tests/ci_install_pin_scanner_test.ts::separate quoted scripts and shell words retain their boundaries`.
+  The test failed before the fix. No second command-normalisation implementation
+  was found; the independent test helper noted below serves a different contract.
+
 - Latest review: the old assumption that a closing quote ends a nested script
   line is obsolete; reopened segments remain part of the script. Unmatched
   arithmetic-like text no longer suppresses quote tracking on later lines.

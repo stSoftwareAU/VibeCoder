@@ -903,6 +903,51 @@ Deno.test("quoted scripts on their opening line retain installs", () => {
   ) assertEquals(findUnpinnedInstalls(script), [], script);
 });
 
+Deno.test("separate quoted scripts and shell words retain their boundaries", () => {
+  for (
+    const script of [
+      `docker run --rm img sh -c 'cargo install --locked cargo-audit --version 0.22.2' && echo 'done'`,
+      `bash -c 'cd /src && cargo install --locked cargo-audit@0.22.2' || echo 'install failed'`,
+      `bash -c '\n cd /x\n cargo install --locked cargo-audit --version 0.22.2' || echo 'install failed'`,
+      `sh -c 'npm install -g pa11y-ci@1.2.3' && echo 'ok'`,
+      `ssh host "gem install bundler -v 2.5.0" || echo "failed"`,
+    ]
+  ) assertEquals(findUnpinnedInstalls(script), [], script);
+
+  for (
+    const [script, name] of [
+      [`sh -c 'npm install -g pa11y-ci' && echo 'ok'`, "pa11y-ci"],
+      [`sh -c 'cd '"$DIR"' && npm install -g pa11y-ci'`, "pa11y-ci"],
+      [
+        `grep -E "foo|bar" f && sh -c 'cd x && npm install -g pa11y-ci'`,
+        "pa11y-ci",
+      ],
+      [
+        `jq -r '.a | .b' f && bash -c "cd x && npm install -g pa11y-ci"`,
+        "pa11y-ci",
+      ],
+      [
+        `sh -c 'npm ci' && ssh host "cd /srv && gem install bundler"`,
+        "bundler",
+      ],
+      [
+        `jq -r '.a | .b' f && bash -c "cd x && cargo install cargo-audit"`,
+        "cargo-audit",
+      ],
+      [
+        `bash -c '\n npm ci\n' && sh -c "cd x && npm install -g pa11y-ci"`,
+        "pa11y-ci",
+      ],
+    ] as const
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(script).map((f) => f.packageName),
+      [name],
+      script,
+    );
+  }
+});
+
 Deno.test("unmatched arithmetic on the opening line retains installs", () => {
   for (
     const [script, name] of [

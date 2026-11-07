@@ -412,6 +412,18 @@ function joinContinuations(run: string): LogicalLine[] {
     if (anchor === null) anchor = line;
     bufferedLines.push(line);
     for (let i = 0; i < line.length; i++) {
+      // A splice continues the same shell word; whitespace or an operator
+      // outside quotes ends it and allows a later script to be captured.
+      if (
+        nestedQuote && nestedStart < 0 && !quote &&
+        /[\s;|&()<>]/.test(line[i]!)
+      ) {
+        nestedLines.push(nestedText);
+        out.push(...joinContinuations(nestedLines.join("\n")));
+        nestedLines = [];
+        nestedText = "";
+        nestedQuote = "";
+      }
       const previousQuote = quote;
       if (arithmetic) {
         if (line.startsWith("))", i)) {
