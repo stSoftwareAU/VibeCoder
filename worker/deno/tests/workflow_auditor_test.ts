@@ -78,10 +78,18 @@ function workflowDirResponse(filenames: string[]): CommandOutput {
 
 /** Build a simple RepoLanguages object from a list of language names. */
 function makeLanguages(langs: string[], primary?: string): RepoLanguages {
+  const markerFiles: Record<string, string> = {
+    Rust: "Cargo.toml",
+    Deno: "deno.json",
+    Node: "package.json",
+    Java: "pom.xml",
+    "React/Web": "index.html",
+  };
   return {
     detected: langs.map((l) => ({
       language: l,
       confidence: "marker" as const,
+      markerFile: markerFiles[l],
     })),
     primary: primary ?? langs[0] ?? "unknown",
     raw: {},
@@ -1100,7 +1108,12 @@ Deno.test("workflow_auditor - web asset marker alone does not satisfy npm root m
   );
   assertEquals(result.ok, true);
   if (!result.ok) return;
-  assertEquals(result.value.missing.some((spec) => spec.id.startsWith("npm-") || spec.id === "eslint-quality"), false);
+  assertEquals(
+    result.value.missing.some((spec) =>
+      spec.id.startsWith("npm-") || spec.id === "eslint-quality"
+    ),
+    false,
+  );
   assertEquals(result.value.notApplicable.map((spec) => spec.id), [
     "npm-audit",
     "npm-dependency-updates",
