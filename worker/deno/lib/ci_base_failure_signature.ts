@@ -1,0 +1,145 @@
+/**
+ * Compare a pull request's CI failure with the failure of the same check on
+ * its base branch (Issue #4680).
+ *
+ * The base-branch deferral accepts a `Depends on` claim only when the base run
+ * is red for the same check. Conclusion alone is not enough: a base run that
+ * is red for an unrelated reason must not defer the pull request. This module
+ * reads the base run's log and looks for a failure line the pull request
+ * carries.
+ *
+ * Every verdict is conservative: when either side cannot be read or compared
+ * the result is `unreadable`, never `same` or `different`.
+ *
+ * Uses Australian English throughout (behaviour, normalise, unreadable).
+ */
+
+import { normaliseLogExcerpt } from "./auto_fix_attempt_tracker.ts";
+import {
+  type ActionsLogOutcome,
+  fetchGithubActionsLogExcerpt,
+  stripAnsi,
+} from "./github_actions_log_fetcher.ts";
+
+/** Verdict on whether the base run failed for the same reason as the PR. */
+export type BaseFailureComparison =
+  | { state: "same"; matched: string } // a PR failure line also appears in the base run's log
+  | { state: "different" } // base log read, none of the PR's failure lines appear in it
+  | { state: "unreadable"; reason: string }; // either side could not be read/compared (never a verdict)
+
+/** Lines read from a failure text, and their length; bounds keep hostile input cheap. */
+const MAX_LINES = 2000;
+const MAX_LINE_CHARS = 500;
+/** Shortest normalised line worth comparing. */
+const MIN_SIGNATURE_CHARS = 20;
+
+/** `- **path:line**: message`, as formatCiAnnotations renders an annotation. */
+const ANNOTATION_PREFIX = /^-\s*\*\*[^*\n]*\*\*:\s*/;
+/** GitHub Actions workflow-command markers that precede the message. */
+const COMMAND_MARKER = /^##\[(?:error|warning|group|endgroup)\]/;
+/** The runner's closing line, shared by every failed job; not evidence. */
+const GENERIC_LINE = /process completed with exit code/;
+/** The worker's own boilerplate from formatCiAnnotations; not evidence. */
+const BOILERPLATE =
+  /no specific annotations were available|following ci failure details were detected/;
+const FAILURE_WORD =
+  /\b(?:error|fail(?:ed|ure|ing|s)?|panic|exception|fatal|assert\w*|cannot|denied)\b/;
+
+/**
+ * Failure lines of a CI failure text, normalised and de-duplicated in
+ * first-seen order. A line qualifies when it is long enough, is not the
+ * generic runner exit line, and is either an annotation or carries a failure
+ * word.
+ */
+export function failureSignatureLines(text: string): string[] {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+
+  for (const raw of stripAnsi(text).split("\n").slice(0, MAX_LINES)) {
+    let line = raw.slice(0, MAX_LINE_CHARS).trim();
+
+    let annotation = false;
+    const prefix = ANNOTATION_PREFIX.exec(line);
+    if (prefix) {
+      line = line.slice(prefix[0].length);
+      annotation = true;
+    }
+    line = line.replace(COMMAND_MARKER, "");
+
+    const normalised = normaliseLogExcerpt(line);
+    if (normalised.length < MIN_SIGNATURE_CHARS) continue;
+    if (GENERIC_LINE.test(normalised)) continue;
+    if (BOILERPLATE.test(normalised)) continue;
+    if (!annotation && !FAILURE_WORD.test(normalised)) continue;
+    if (seen.has(normalised)) continue;
+
+    seen.add(normalised);
+    lines.push(normalised);
+  }
+
+  return lines;
+}
+
+/**
+ * Compare the pull request's failure with the base run's log for the same
+ * check. The base log is fetched through `actionsLogFn` (the real Actions log
+ * fetcher by default), so a test can answer without touching the network.
+ */
+export async function compareBaseFailure(options: {
+  repo: string;
+  checkName: string;
+  baseCheckRunId: number;
+  failureText: string;
+  ghFn: (args: string[]) => Promise<string>;
+  actionsLogFn?: typeof fetchGithubActionsLogExcerpt;
+}): Promise<BaseFailureComparison> {
+  const { repo, checkName, baseCheckRunId, failureText, ghFn } = options;
+
+  const prLines = failureSignatureLines(failureText);
+  if (prLines.length === 0) {
+    return {
+      state: "unreadable",
+      reason:
+        "the pull request's failure carried no line that could be compared",
+    };
+  }
+
+  const fetchLog = options.actionsLogFn ?? fetchGithubActionsLogExcerpt;
+  let outcome: ActionsLogOutcome;
+  try {
+    outcome = await fetchLog({
+      repo,
+      checkRunId: String(baseCheckRunId),
+      checkName,
+      ghFn,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      state: "unreadable",
+      reason: `the base run's log could not be read: ${message}`,
+    };
+  }
+
+  if (outcome.kind !== "excerpt") {
+    const cause = outcome.kind === "error" ? outcome.error : outcome.reason;
+    return {
+      state: "unreadable",
+      reason: `the base run's log was not readable: ${cause}`,
+    };
+  }
+
+  const baseText = normaliseLogExcerpt(stripAnsi(outcome.excerpt));
+  if (baseText.length === 0) {
+    return {
+      state: "unreadable",
+      reason: "the base run's log was empty",
+    };
+  }
+  for (const line of prLines) {
+    if (baseText.includes(line)) {
+      return { state: "same", matched: line };
+    }
+  }
+  return { state: "different" };
+}

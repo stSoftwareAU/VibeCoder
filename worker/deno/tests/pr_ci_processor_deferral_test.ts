@@ -3,9 +3,11 @@
  *
  * When the agent reports the failure as pre-existing on the base branch by
  * ending its `.pr_response_message` with a `Depends on owner/repo#N` line,
- * and the base branch's own latest run of the same check is red, the worker
- * must post the diagnosis **once**, record a deferral marker, apply no
- * `needs-human` and charge no attempt. A green base refutes the claim and
+ * and the base branch's own latest run of the same check is red **and** its log
+ * shows this pull request's own failure (Issue #4680), the worker must post the
+ * diagnosis **once**, record a deferral marker, apply no `needs-human` and
+ * charge no attempt. A red base whose log shows some other failure is charged,
+ * not held. A green base refutes the claim and
  * charges an attempt. A claim that cannot be verified (no run of the check
  * from the same workflow, a stale run, an unreadable API) is held as
  * `base-unverified`: the diagnosis is posted with a hold marker, no attempt is
@@ -89,6 +91,16 @@ const FAILING_RUN_ID = 900;
 /** The base branch's run of the same check, from the same workflow. */
 const BASE_RUN_ID = 700;
 
+/** The check run id of the base branch's run (Issue #4680). */
+const BASE_CHECK_ID = 7;
+
+/** The check run id of the merged pull request's run, a tree-equivalent stand-in. */
+const MERGED_CHECK_ID = 8;
+
+/** The annotation message makeInput carries for the failing semgrep check. */
+const SEMGREP_MESSAGE =
+  "semgrep: blocking code rules fired - detect-non-literal-regexp (possible ReDoS)";
+
 /** The workflow path each run id resolves to, unless a scenario overrides it. */
 const DEFAULT_RUN_PATHS: Record<string, string> = {
   [String(FAILING_RUN_ID)]: CI_WORKFLOW,
@@ -113,6 +125,17 @@ interface StubOptions {
    * workflow's run on that commit.
    */
   mergedPr?: { treeMatches: boolean; conclusion: string; runPath?: string };
+  /**
+   * The base run's Actions job log (Issue #4680): the text it printed, or
+   * `"error"` when the log cannot be fetched. Defaults to the failing check's
+   * own annotation messages, so the base run shares this pull request's failure.
+   */
+  baseLog?: string | "error";
+  /**
+   * The merged pull request's Actions job log, for a tree-equivalent red
+   * (Issue #4680). Defaults like {@link baseLog}.
+   */
+  mergedLog?: string | "error";
   /** State the blocking issue reports. */
   blockerState?: "OPEN" | "CLOSED";
   /** Comments already on the pull request. */
@@ -130,12 +153,14 @@ const NO_BASE_RUNS = JSON.stringify({ check_runs: [] });
 function baseCheckRunsPayload(
   conclusion: string,
   name = "semgrep",
-  row: { headSha?: string; runId?: number; app?: string } = {},
+  row: { headSha?: string; runId?: number; app?: string; checkId?: number } =
+    {},
 ): string {
+  const checkId = row.checkId ?? BASE_CHECK_ID;
   return JSON.stringify({
     check_runs: [
       {
-        id: 7,
+        id: checkId,
         name,
         status: "completed",
         conclusion,
@@ -143,10 +168,35 @@ function baseCheckRunsPayload(
         app_slug: row.app ?? APP,
         details_url: `https://github.com/org/repo/actions/runs/${
           row.runId ?? BASE_RUN_ID
-        }/job/7`,
+        }/job/${checkId}`,
       },
     ],
   });
+}
+
+/** A job log printing each message as a workflow error line (Issue #4680). */
+function jobLog(messages: string[]): string {
+  return [
+    "##[group]Run the check",
+    ...messages.map((message) => `##[error]${message}`),
+    "##[endgroup]",
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+}
+
+/** The messages of a CI-fix input's annotations. */
+function annotationMessages(input: CiFixInput): string[] {
+  const annotations = JSON.parse(
+    atob(input.encodedAnnotations),
+  ) as CheckAnnotation[];
+  return annotations.map((annotation) => annotation.message);
+}
+
+/** A job-log reply: the text, or a failed fetch when `log` is `"error"`. */
+function logReply(log: string | "error"): Promise<string> {
+  return log === "error"
+    ? Promise.reject(new Error("HTTP 404: Not Found"))
+    : Promise.resolve(log);
 }
 
 /** The attempt outcomes a comment's markers carry, in order. */
@@ -181,7 +231,11 @@ function makeGhRunner(
   return (args: string[]): Promise<string> => {
     if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
 
-    const endpoint = args[0] === "api" ? String(args[1] ?? "") : "";
+    // The endpoint is the `repos/` argument: the log fetcher passes
+    // `--allow-escape-sequences` ahead of it (Issue #4680).
+    const endpoint = args[0] === "api"
+      ? String(args.find((arg) => arg.startsWith("repos/")) ?? args[1] ?? "")
+      : "";
 
     // The base branch's head commit: the commit its check runs must be on.
     if (endpoint === "repos/org/repo/commits/develop") {
@@ -224,6 +278,7 @@ function makeGhRunner(
             {
               headSha: PR_HEAD_SHA,
               runId: 703,
+              checkId: MERGED_CHECK_ID,
             },
           ),
         );
@@ -241,6 +296,32 @@ function makeGhRunner(
         details_url:
           `https://github.com/org/repo/actions/runs/${FAILING_RUN_ID}/job/111`,
       }));
+    }
+
+    // The base run's check run, read by the log fetcher for its job (Issue
+    // #4680): the Actions app and the job the run's details URL names.
+    if (endpoint === `repos/org/repo/check-runs/${BASE_CHECK_ID}`) {
+      return Promise.resolve(JSON.stringify({
+        app: { slug: APP },
+        details_url:
+          `https://github.com/org/repo/actions/runs/${BASE_RUN_ID}/job/${BASE_CHECK_ID}`,
+      }));
+    }
+    if (endpoint === `repos/org/repo/check-runs/${MERGED_CHECK_ID}`) {
+      return Promise.resolve(JSON.stringify({
+        app: { slug: APP },
+        details_url:
+          `https://github.com/org/repo/actions/runs/703/job/${MERGED_CHECK_ID}`,
+      }));
+    }
+
+    // The base run's job log and the merged run's job log (Issue #4680). The
+    // failing check's own job (111) is deliberately not served here.
+    if (endpoint === `repos/org/repo/actions/jobs/${BASE_CHECK_ID}/logs`) {
+      return logReply(options.baseLog ?? jobLog([SEMGREP_MESSAGE]));
+    }
+    if (endpoint === `repos/org/repo/actions/jobs/${MERGED_CHECK_ID}/logs`) {
+      return logReply(options.mergedLog ?? jobLog([SEMGREP_MESSAGE]));
     }
 
     // The workflow path a run was created from (`--jq .path`, Issue #4680).
@@ -308,8 +389,7 @@ function makeInput(): CiFixInput {
     {
       path: "worker/deno/lib/some_regex.ts",
       start_line: 42,
-      message:
-        "semgrep: blocking code rules fired - detect-non-literal-regexp (possible ReDoS)",
+      message: SEMGREP_MESSAGE,
     },
   ];
   return {
@@ -346,8 +426,13 @@ async function runDeferralScenario(
       errors: [],
       warnings: [],
     };
+    // By default the base run and the merged run print this failure's own
+    // annotations, so a red base shares the pull request's failure (Issue #4680).
+    const ownLog = jobLog(annotationMessages(input));
     const runGh = makeGhRunner(captured, {
       checkName: input.checkName,
+      baseLog: ownLog,
+      mergedLog: ownLog,
       ...options,
     });
 
@@ -921,4 +1006,95 @@ Deno.test("processCiFailure - a merged PR whose tree differs from the base head 
   const body = captured.comments[0] ?? "";
   assertEquals(attemptOutcomes(body), ["base-unverified"]);
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+});
+
+// ---------------------------------------------------------------------------
+// A red base must show this failure, not merely a red conclusion (Issue #4680)
+// ---------------------------------------------------------------------------
+
+Deno.test("processCiFailure - a red base whose log shows a different failure takes the ordinary charged path, neither deferred nor held (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: jobLog(["lint: an unrelated finding in another file"]),
+  });
+
+  assertEquals(captured.comments.length >= 1, true);
+  const body = captured.comments.at(-1) ?? "";
+  // The base failed for another reason: the claim is not verified as this
+  // failure, so an attempt is charged and nothing is deferred or held.
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure - a red base whose log cannot be fetched is held unverified: posts once, charges no attempt, pages no human (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: "error",
+  });
+
+  assertEquals(
+    captured.comments.length,
+    1,
+    `expected exactly one comment; got ${captured.comments.length}`,
+  );
+  const body = captured.comments[0] ?? "";
+  assertStringIncludes(body, "the finding is in the base branch");
+  assertStringIncludes(body, "could not be compared");
+  assertEquals(attemptOutcomes(body), ["base-unverified"]);
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertEquals(
+    captured.errors.some((line) =>
+      line.includes("Could not compare the base branch's red run")
+    ),
+    true,
+    `expected a loud error about the failed comparison; got: ${
+      captured.errors.join(" | ")
+    }`,
+  );
+});
+
+Deno.test("processCiFailure - a tree-equivalent red whose merged run's log shows a different failure takes the ordinary charged path (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseCheckRuns: NO_BASE_RUNS,
+    mergedPr: { treeMatches: true, conclusion: "failure" },
+    mergedLog: jobLog(["lint: an unrelated finding in another file"]),
+  });
+
+  assertEquals(captured.comments.length >= 1, true);
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure - an unreadable red base after two holds takes the ordinary charged path (Issue #4680)", async () => {
+  // The hold the first scan posted, fed back twice as the pull request's
+  // history: the fleet has already held this failure twice.
+  const first = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: "error",
+  });
+  const holdBody = first.comments[0] ?? "";
+
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: "error",
+    existingComments: [
+      { id: 1, author: FLEET_LOGIN, body: holdBody, createdAt: "" },
+      { id: 2, author: FLEET_LOGIN, body: holdBody, createdAt: "" },
+    ] as unknown as GitHubComment[],
+  });
+
+  assertEquals(captured.comments.length, 1);
+  const body = captured.comments[0] ?? "";
+  // Charged: the attempt is recorded as a substantive outcome, not a hold.
+  assertEquals(attemptOutcomes(body).length, 1);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+  assertEquals(
+    captured.warnings.some((line) =>
+      line.includes("still unverified after 2 holds")
+    ),
+    true,
+    `expected the hold-bound warning; got: ${captured.warnings.join(" | ")}`,
+  );
 });

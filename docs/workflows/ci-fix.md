@@ -481,27 +481,53 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   is identical** to the base head's tree, reads that commit's runs of the same
   check from the same app and workflow file. That is commit-bound evidence from
   the same workflow on the same code, and its newest `success` or `failure`
-  decides as above. [`_resolveBaseBranchDeferral`](../../worker/deno/lib/pr_ci_processor.ts)
+  decides as above.
+
+  A red run's conclusion alone does not grant the deferral (Issue #4680). When
+  that newest evidence is `failure`, the worker reads the failing job's log of
+  the same run and compares it with the pull request's own failure. The pull
+  request's failure lines are its check annotation messages and its log lines
+  containing `error`, `fail`, `panic`, `exception`, `fatal`, `assert`, `cannot`
+  or `denied`; each is normalised, and the generic
+  `Process completed with exit code N` line is ignored. The comparison gives one
+  of three signatures:
+  - **Same** — a normalised failure line of the pull request also appears in
+    the base run's log, so the base is red for this failure.
+  - **Different** — the base log was read and none of the pull request's failure
+    lines appear in it, so the base is red for another reason and the claim is
+    not verified as this failure.
+  - **Unreadable** — either side cannot be compared: the pull request has no
+    failure line, the check is not a GitHub Actions check, or the base log cannot
+    be fetched.
+
+  [`_resolveBaseBranchDeferral`](../../worker/deno/lib/pr_ci_processor.ts)
   then applies the verdict:
-  - **Red** — the latest matching run on the base head (or on a merged pull
-    request's head with an identical tree) failed. The deferral
-    stands as before: the diagnosis is posted **once** with a
+  - **Red, same failure** — the latest matching run on the base head (or on a
+    merged pull request's head with an identical tree) failed, and its log holds
+    a line of this pull request's failure (**Same**). The deferral stands as
+    before: the diagnosis is posted **once** with a
     `vibe-ci-fix-deferred` marker, **no `needs-human`** is applied, **no attempt
     is charged**, and the PR resumes automatically when the blocking issue closes
     (Issue #1880, Issue #1849).
+  - **Red, different failure** — the latest matching run failed, but its log
+    holds none of this pull request's failure lines (**Different**). The base is
+    red for another reason, so the claim is not verified as this failure: the
+    ordinary charged path runs (the ordinary no-changes reply and one attempt
+    charged), with no deferral and no hold.
   - **Green** — the latest matching run succeeded, or there is no base ref to
     read. There is no deferral: the ordinary no-changes reply is posted and one
     attempt is charged.
   - **Unverified** — no applicable run on the base head (typical for a check that
-    runs only on pull requests), a run only for an older base commit (stale), or a
-    lookup that failed or could not resolve the check's identity. The claim is
-    neither accepted nor treated as a pass. The diagnosis is posted with a note
+    runs only on pull requests), a run only for an older base commit (stale), a
+    lookup that failed or could not resolve the check's identity, or a red run
+    whose log cannot be compared (**Unreadable**, evidence state `unavailable`).
+    The claim is neither accepted nor treated as a pass. The diagnosis is posted with a note
     that the base claim could not be verified, an attempt marker with
     `outcome="base-unverified"` is recorded, **no fix attempt is charged**, no
     `needs-human` is applied and nothing is deleted. There are at most two such
     holds per failure signature; after that the ordinary charged path runs, so
     the fleet-wide attempt cap still bounds the PR. A later scan that finds a red
-    base run grants the deferral.
+    base run whose log matches grants the deferral.
 
   A base-level defect belongs on the base branch, even when this PR could patch
   it locally: it is not fixed inside this unrelated PR, and no workflow or check
@@ -512,9 +538,11 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   (held) when no such run exists, for example when the pull request merged with
   a different tree or through a merge queue. In that case the agent says what it
   observed, which is not permission to patch the base defect or to delete or
-  disable a workflow inside this PR. A verified base defect uses the existing
-  deferral: the `Depends on` issue and `vibe-ci-fix-deferred` marker, and the PR
-  resumes automatically when that issue closes (Issue #1881, Issue #1849).
+  disable a workflow inside this PR. A base defect verified by a same-failure red
+  run uses the existing deferral: the `Depends on` issue and
+  `vibe-ci-fix-deferred` marker, and the PR resumes automatically when that issue
+  closes (Issue #1881, Issue #1849). Comparing logs reads the log of a run that
+  already exists; it re-runs nothing.
 
   A failure already carrying a fleet-authored deferral marker posts nothing at
   all; if that marker's blocker has since **closed** and the agent names it
@@ -607,14 +635,17 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
 - **Quality check fails after fix:** Claude is retried once. If it fails again,
   the fix is not pushed.
 
-The base-branch deferral, end to end (Issue #1880):
+The base-branch deferral, end to end (Issue #1880, with the Issue #4680 log comparison):
 
 ```mermaid
 flowchart TD
     A["agent: no change,<br/>message ends<br/>'Depends on o/r#N'"] --> B{"base branch's latest<br/>run of the check red?"}
     B -->|"green or no base ref"| D["ordinary no-changes reply<br/>+ attempt charged"]
     B -->|"no evidence: no run,<br/>stale run, lookup failed"| U["base-unverified note<br/>+ attempt marker, no charge"]
-    B -->|yes| P{"prior deferral<br/>for this signature?"}
+    B -->|yes| S{"base log holds a line<br/>of the PR's failure?"}
+    S -->|same| P{"prior deferral<br/>for this signature?"}
+    S -->|different| D
+    S -->|unreadable| U
     P -->|none| C["post the diagnosis once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
     P -->|"same blocker, now closed"| D
     P -->|otherwise| N["post nothing"]
@@ -637,8 +668,11 @@ The base-branch verdicts, on the claimed `Depends on` check (Issue #4680):
 flowchart TD
     A["agent claims 'Depends on o/r#N'<br/>after reproducing it on the base tree"] --> E{"completed run of the same check on the base head<br/>or on a merged PR head with the same tree,<br/>same app and workflow file?"}
     E -->|"success, or no base ref"| O["ordinary no-changes reply<br/>+ attempt charged"]
-    E -->|"failure"| R["deferred: diagnosis posted once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
-    E -->|"no run, stale run,<br/>cancelled or skipped,<br/>lookup failed"| H{"fewer than two holds<br/>for this signature?"}
+    E -->|"failure"| L{"base run's failing log names<br/>a line of the PR's failure?"}
+    L -->|"same: a PR failure line<br/>appears in the base log"| R["deferred: diagnosis posted once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
+    L -->|"different: base log read,<br/>no PR failure line in it"| O
+    L -->|"unreadable: no failure line,<br/>non-Actions check, log fetch error"| H{"fewer than two holds<br/>for this signature?"}
+    E -->|"no run, stale run,<br/>cancelled or skipped,<br/>lookup failed"| H
     H -->|yes| U["base-unverified note<br/>+ attempt marker, no charge"]
     H -->|no| O
 ```
@@ -721,6 +755,10 @@ gets the `needs-human` escalation naming the credential to rotate.
   [`worker/deno/lib/ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts)
   — `readBaseBranchCheck()` and `readCheckIdentity()`, the reads behind the
   base-branch verdicts.
+- **Base-failure signature (Issue #4680):**
+  [`worker/deno/lib/ci_base_failure_signature.ts`](../../worker/deno/lib/ci_base_failure_signature.ts)
+  — compares the red base run's failing log with the pull request's failure,
+  giving the same, different or unreadable signature.
 - **Base-branch deferral resolver:**
   [`worker/deno/lib/pr_ci_processor.ts`](../../worker/deno/lib/pr_ci_processor.ts)
   — `_resolveBaseBranchDeferral()`, which applies the verdict.
