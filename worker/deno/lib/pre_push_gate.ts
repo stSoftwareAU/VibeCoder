@@ -429,7 +429,7 @@ export async function repoShellcheckPolicy(
     const version = uniqueVersions[0]!;
     for (const command of commands) {
       const match =
-        /^find\s+\.\s+-name\s+["']\*\.sh["']\s+-type\s+f\s+-exec\s+shellcheck\s+(.+?)\s+\{\}\s+\+$/
+        /^find\s+\.\s+-name\s+["']\*\.sh["']\s+-type\s+f\s+-exec\s+shellcheck(?:\s+(.+?))?\s+\{\}\s+\+$/
           .exec(
             command,
           );
@@ -439,7 +439,7 @@ export async function repoShellcheckPolicy(
           error: `unsupported ShellCheck command in ${path}: ${command}`,
         };
       }
-      const args = tokeniseCommand(match[1]!);
+      const args = tokeniseCommand(match[1] ?? "");
       const explicitConfigFiles: string[] = [];
       for (let i = 0; i < args.length; i++) {
         const arg = args[i]!;
@@ -597,8 +597,15 @@ async function workflowDelegatesToShellcheck(
 
 function isShellcheckInvocation(line: string): boolean {
   const tokens = tokeniseCommand(line);
+  const wrapped = ["xargs", "parallel", "do", "time", "exec", "nice", "timeout"]
+    .includes(tokens[0] ?? "") &&
+    tokens.slice(1).some((token, index, rest) =>
+      token.split("/").at(-1) === "shellcheck" &&
+      rest[index + 1] !== "--version"
+    );
   return (tokens[0]?.split("/").at(-1) === "shellcheck" &&
     tokens[1] !== "--version") ||
+    wrapped ||
     (tokens[0] === "find" &&
       tokens.some((t, i) => t === "-exec" && tokens[i + 1] === "shellcheck"));
 }
@@ -1275,15 +1282,14 @@ const defaultShellcheckVersionProbe: ShellcheckVersionProbe = async (
 /** Whether a changed path can alter what the repository's ShellCheck CI checks. */
 function touchesShellcheckSurface(changed: readonly string[]): boolean {
   return changed.some((p) =>
-    p.endsWith(".sh") || SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "") ||
-    (p.startsWith(".github/workflows/") && /\.ya?ml$/.test(p))
+    p.endsWith(".sh") || SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "")
   );
 }
 
 /**
  * Shared ShellCheck validation for hooks, completion and repair publication.
  * A policy the gate cannot read blocks only a push that touches a script, a
- * ShellCheck config or a workflow; any other push has nothing ShellCheck
+ * ShellCheck config or a ShellCheck workflow; any other push has nothing ShellCheck
  * could check, so an unsupported policy cannot make the repository
  * unpublishable.
  */
@@ -1301,16 +1307,28 @@ export async function runAffectedShellcheckChecks(opts: {
     error: new PrePushGateInfrastructureError(message),
   });
   const shellcheckPolicy = await repoShellcheckPolicy(opts.cwd, opts.tracked);
+  const changedWorkflows = opts.changed.filter((path) =>
+    path.startsWith(".github/workflows/") && /\.ya?ml$/.test(path) &&
+    opts.tracked.includes(path)
+  );
+  let shellcheckWorkflowChanged = false;
+  for (const path of changedWorkflows) {
+    const policy = await repoShellcheckPolicy(opts.cwd, [
+      path,
+      ...opts.tracked.filter((p) => !p.startsWith(".github/workflows/")),
+    ]);
+    if (!policy.ok || policy.value !== null) shellcheckWorkflowChanged = true;
+  }
   if (!shellcheckPolicy.ok) {
-    return touchesShellcheckSurface(opts.changed)
+    return touchesShellcheckSurface(opts.changed) || shellcheckWorkflowChanged
       ? infrastructureFail(shellcheckPolicy.error)
       : { ok: true, value: { checksRun: [] } };
   }
-  const shellcheckTouchedConfigs = opts.changed.some((p) =>
-    SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "") ||
-    shellcheckPolicy.value?.configFiles.includes(p) ||
-    (p.startsWith(".github/workflows/") && /\.ya?ml$/.test(p))
-  );
+  const shellcheckTouchedConfigs =
+    opts.changed.some((p) =>
+      SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "") ||
+      shellcheckPolicy.value?.configFiles.includes(p)
+    ) || shellcheckWorkflowChanged;
   const shellcheckFiles = shellcheckPolicy.value &&
       (shellcheckTouchedConfigs || opts.changed.some((p) => p.endsWith(".sh")))
     ? (shellcheckTouchedConfigs

@@ -5,6 +5,7 @@
  */
 
 import { assert, assertEquals, assertInstanceOf } from "@std/assert";
+import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
 import {
   defaultPrePushGit,
   listPushedFiles,
@@ -246,23 +247,8 @@ const SHELLCHECK_WORKFLOW = (
 ) =>
   `jobs:\n  lint:\n    env:\n      SHELLCHECK_VERSION: "${version}"\n    steps:\n      - run: |\n          find . -name "*.sh" -type f -exec shellcheck ${flags} {} +\n`;
 
-/** The ShellCheck workflow shape the worker syncs into Bash repositories. */
-const SYNCED_SHELLCHECK_WORKFLOW = `name: ShellCheck
-
-on:
-  pull_request:
-
-jobs:
-  shellcheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@0000000000000000000000000000000000000000
-      - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@0000000000000000000000000000000000000000
-        with:
-          scandir: .
-          severity: warning
-`;
+const SYNCED_SHELLCHECK_WORKFLOW =
+  WORKFLOW_SPECS.find((spec) => spec.id === "shellcheck")!.template;
 
 async function commitShellcheckFiles(
   clone: string,
@@ -1409,8 +1395,8 @@ Deno.test("repoShellcheckPolicy: invalid policies return explicit errors", async
       ],
       [
         SYNCED_SHELLCHECK_WORKFLOW.replace(
-          "        with:",
-          "        env:\n          SHELLCHECK_OPTS: -e SC2086\n        with:",
+          "        with:\n          scandir: .",
+          "        env:\n          SHELLCHECK_OPTS: -e SC2086\n        with:\n          scandir: .",
         ),
         "unsupported ShellCheck action option SHELLCHECK_OPTS",
       ],
@@ -1656,6 +1642,96 @@ Deno.test("repoShellcheckPolicy: value-taking options consume their value", asyn
       assertEquals(result.ok, false, flags);
       if (!result.ok) assert(result.error.includes(error), result.error);
     }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("repoShellcheckPolicy: flagless find and wrapped invocations", async () => {
+  const root = await Deno.makeTempDir();
+  const path = ".github/workflows/check.yml";
+  await Deno.mkdir(`${root}/.github/workflows`, { recursive: true });
+  try {
+    await Deno.writeTextFile(`${root}/${path}`, SHELLCHECK_WORKFLOW(""));
+    const plain = await repoShellcheckPolicy(root, [path]);
+    assert(plain.ok);
+    assertEquals(plain.value?.flags, []);
+    for (
+      const command of [
+        "git ls-files '*.sh' | xargs shellcheck",
+        "find . -print0 | xargs -0 shellcheck",
+        'for f in *.sh; do shellcheck "$f"; done',
+        "time shellcheck x.sh",
+        "exec shellcheck x.sh",
+        "nice shellcheck x.sh",
+        "timeout 10 shellcheck x.sh",
+        "parallel shellcheck ::: x.sh",
+      ]
+    ) {
+      await Deno.writeTextFile(
+        `${root}/${path}`,
+        SHELLCHECK_WORKFLOW("").replace(
+          'find . -name "*.sh" -type f -exec shellcheck  {} +',
+          command,
+        ),
+      );
+      const result = await repoShellcheckPolicy(root, [path]);
+      assert(!result.ok, command);
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: flagless find checks a changed script", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await commitShellcheckFiles(clone, { "run.sh": "#!/bin/sh\ntrue\n" }, "");
+    const seen: string[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin: prePushInput(await git(clone, "rev-parse", "HEAD")),
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: recordingRunner(() => false, seen),
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assert(
+      seen.some((command) =>
+        command.includes("shellcheck") && command.includes("run.sh")
+      ),
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: unrelated workflow changes do not trigger an unsupported policy", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    await Deno.mkdir(`${clone}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${clone}/.github/workflows/shellcheck.yml`,
+      "jobs:\n  lint:\n    steps:\n      - uses: example/shellcheck-action@v1\n",
+    );
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-qm", "unsupported policy");
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    await Deno.writeTextFile(
+      `${clone}/.github/workflows/rust.yml`,
+      "name: Rust\n",
+    );
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-qm", "unrelated workflow");
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin: prePushInput(await git(clone, "rev-parse", "HEAD")),
+      preFlightCommands: [],
+      findShellcheck: () => Promise.resolve(null),
+      runner: recordingRunner(() => false, []),
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

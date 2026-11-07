@@ -5179,15 +5179,15 @@ The hook runs two stages:
      `shellcheckrc` in each script's repository ancestry, or uses the
      configured `--rcfile`; absent a repository config, `--norc` prevents
      worker HOME, XDG and external ancestor settings from changing the result.
-     A changed or deleted ShellCheck workflow or config rechecks the remaining
-     tracked `.sh` files; deleted scripts are omitted. For a `find` policy the
+     A changed ShellCheck workflow or changed or deleted config rechecks the
+     remaining tracked `.sh` files; deleted scripts are omitted. For a `find` policy the
      gate checks the available binary against the version declared by CI
      before running it (an action-managed ShellCheck declares none). A policy
      the gate cannot read (an unsupported command shape, other action input,
      delegated gate or action), an unreadable config, or an unavailable or
      mismatched tool is an incomplete infrastructure result, never a
      successful validation, but only for a push that changes a `.sh` file, a
-     ShellCheck config or a workflow; any other push has nothing for ShellCheck
+     ShellCheck config or a ShellCheck workflow; any other push has nothing for ShellCheck
      to check and is not refused. A repository with no CI ShellCheck invocation
      gets no ShellCheck check. The same validation runs before the PR repair
      processors (CI fix, review feedback, spelling and merge conflict) publish
@@ -5222,7 +5222,7 @@ start, or times out refuses the push; markdownlint configured but
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a ShellCheck CI policy with a missing or mismatched binary, an
 unreadable config, or an unsupported workflow shape is incomplete and refuses
-a push that changes a script, a ShellCheck config or a workflow; a Floci deploy
+a push that changes a script, a ShellCheck config or a ShellCheck workflow; a Floci deploy
 test that exits non-zero, including when Floci cannot be started or the `aws` CLI is missing for
 a deployable template, refuses the push; a missing hook module, spec or `deno`
 binary refuses the push. Refusals print lines starting

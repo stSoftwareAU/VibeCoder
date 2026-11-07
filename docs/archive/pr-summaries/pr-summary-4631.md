@@ -6,7 +6,7 @@ merge conflict, including repositories without configured pre-flight commands)
 and fleet babysitter repairs. Configuration changes and removals revalidate
 remaining tracked scripts. An unsupported policy, unreadable configuration and a
 missing or mismatched tool block a push that changes a script, a ShellCheck
-config or a workflow. WIP checkpoint, timeout-preservation and declared hand-off
+config or a ShellCheck workflow. WIP checkpoint, timeout-preservation and declared hand-off
 pushes stay ungated. Closes #4631.
 
 Version bump: none; no version file changed.
@@ -27,13 +27,14 @@ Version bump: none; no version file changed.
   `ludeeus/action-shellcheck` step the worker syncs into Bash repositories
   (`scandir: .` and `severity` only, run as `--severity=<level>`; any other
   input or a `SHELLCHECK_OPTS` override is unsupported). Discovery checks
-  executable commands, excluding logs, installation arguments, comments and
-  script path arrays. YAML block headers accept trailing comments.
+  executable commands, including wrapped invocations, excluding logs, installation
+  arguments, comments and script path arrays. Unsupported wrappers fail closed.
+  YAML block headers accept trailing comments.
 - Value-taking options (`-e -s -S -o -i -P -f -W` and their long forms,
   including `--opt=value` and attached `-Swarning`) consume their value instead
   of being read as positional arguments.
 - A policy the gate cannot read fails a push only when it changes a `.sh` file,
-  a ShellCheck config or a workflow (`touchesShellcheckSurface`). Any other push
+  a ShellCheck config or a workflow that invokes ShellCheck. Any other push
   has nothing to check, so an unsupported workflow cannot make a repository
   unpublishable.
 - The ShellCheck version probe is injectable (`readShellcheckVersion`, beside
@@ -94,7 +95,9 @@ all publication paths call the same implementation.
   missing-tool recovery, version mismatch, the synced ludeeus template
   (`--severity=warning`) and unsupported action inputs. A non-shell push passes
   in a repo with the synced template, an unsupported action or a delegating
-  script, and a script push in the unsupported case is still refused. Real
+  script, and a script push in the unsupported case is still refused. The actual
+  `WORKFLOW_SPECS` template is the fixture. Flagless find commands are checked,
+  wrapped invocations are refused, and an unrelated workflow change passes. Real
   diagnostics (the actual repository workflow, dialect and exclusions, and a
   later edit invalidating a clean result) live in
   `worker/deno/tests/shellcheck_gate_integration_test.ts`.
@@ -130,7 +133,10 @@ all publication paths call the same implementation.
   those cases remain required in the integration manifest. Coverage is in
   `shellcheck_gate_integration_test.ts::runPrePushGate: a changed shell script is blocked through git_push with the actual repository workflow`
   and `shellcheck_publication_test.ts::commitAndPushPending: a WIP checkpoint with no spec still pushes a ShellCheck diagnostic`.
-- The merged tree passed `deno fmt --check`, `deno lint`, `deno task check`,
-  and 100 targeted unit, integration and manifest tests on a host with
-  ShellCheck. The manifest classifier's required-tool rule is covered by
+- The hand-copied synced workflow fixture is obsolete: the gate must accept the
+  actual template as it evolves. The remaining policy and non-shell push paths
+  use `workflow_definitions.ts` directly, covered by
+  `pre_push_gate_test.ts::repoShellcheckPolicy: the worker's synced ludeeus template is a supported policy`
+  and `pre_push_gate_test.ts::runPrePushGate: a non-shell push is not refused in a repo with the worker's synced ludeeus template`.
+- The manifest classifier's required-tool rule is covered by
   `integration_source_classifier_test.ts::integration classifier recognises a required real ShellCheck`.

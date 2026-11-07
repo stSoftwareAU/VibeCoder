@@ -253,7 +253,12 @@ root marker before workflow sync files an issue. Cargo specs require a root
 `Cargo.toml`; Rust reported only by GitHub's language byte counts is not
 enough. Repository-wide scans remain eligible for nested projects: ShellCheck
 scans `.` and Java Dependency Check uses `path: .`. Java dependency updates
-use Dependabot's root `/` directory and require a root Java project marker.
+use Dependabot's root `/` directory and are split by build system: the Maven
+variant (`java-dependency-updates`) requires a root `pom.xml`, and the Gradle
+variant (`java-gradle-dependency-updates`) requires a root `build.gradle` or
+`build.gradle.kts`. Each variant files only its own Dependabot ecosystem entry,
+so a repository with both build files needs both `updates` entries in one
+`.github/dependabot.yml`.
 The auditor uses the complete root file inventory, so Deno taking precedence
 over Node during language selection cannot hide an existing `package.json`.
 Older language results without that inventory trigger a root-contents fetch;
