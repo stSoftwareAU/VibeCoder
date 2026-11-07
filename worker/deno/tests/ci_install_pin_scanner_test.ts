@@ -770,8 +770,8 @@ Deno.test("heredoc delimiters and arithmetic preserve subsequent normalisation",
     const prefix of [
       "cat <<END-OF-FILE\nIt's done\nEND-OF-FILE",
       "cat <<EOF.md\nIt's done\nEOF.md",
-      "cat <<\\EOF\nhello\nEOF",
-      `cat <<E"O"F\nhello\nEOF`,
+      "cat <<\\EOF\nIt's done\nEOF",
+      `cat <<E"O"F\nIt's done\nEOF`,
       "(( x = 1 << 2 ))",
       "echo $(( 1 << n ))",
     ]
@@ -799,6 +799,59 @@ Deno.test("heredoc delimiters and arithmetic preserve subsequent normalisation",
     ).map((f) => f.packageName),
     ["pa11y-ci"],
   );
+});
+
+Deno.test("quoted script splices and unmatched arithmetic retain installs", () => {
+  for (
+    const [install, name] of [
+      ["npm install -g pa11y-ci", "pa11y-ci"],
+      ["gem install bundler", "bundler"],
+      ["cargo install cargo-audit", "cargo-audit"],
+    ]
+  ) {
+    const script =
+      `docker run --rm --entrypoint bash "$IMAGE" -c '\n  cd '"$DIR"' && ${install}\n' < /dev/null`;
+    assertEquals(findUnpinnedInstalls(script).map((f) => f.packageName), [
+      name,
+    ]);
+  }
+  assertEquals(
+    findUnpinnedInstalls(
+      `docker run --rm --entrypoint bash "$IMAGE" -c '\n  test "$P" = '"$browsers"' && npm install -g pa11y-ci\n' < /dev/null`,
+    ).map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      `bash -c '\n echo '"$GREETING"'; gem install bundler\n'`,
+    )
+      .map((f) => f.packageName),
+    ["bundler"],
+  );
+  for (
+    const install of [
+      "npm install -g pa11y-ci@1.2.3",
+      "gem install bundler -v 2.5.0",
+      "cargo install --locked cargo-audit --version 0.22.2",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(`bash -c '\n cd '"$DIR"' && ${install}\n'`),
+      [],
+    );
+  }
+  for (
+    const prefix of [
+      'if [[ "$GITHUB_REF" =~ ^((a)b)? ]]; then echo tag; fi',
+      "((cd web && npm ci) || true)",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\necho "a\nb" && npm install -g pa11y-ci`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+    );
+  }
 });
 
 Deno.test("cargo expressions preserve logical operators and command boundaries", () => {

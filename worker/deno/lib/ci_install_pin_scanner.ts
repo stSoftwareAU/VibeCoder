@@ -387,10 +387,12 @@ function joinContinuations(run: string): LogicalLine[] {
       continue;
     }
     const nestedQuote = quote;
-    let nestedEnd = line.length;
+    let nestedStart = nestedQuote ? 0 : -1;
+    let nestedText = "";
     if (anchor === null) anchor = line;
     bufferedLines.push(line);
     for (let i = 0; i < line.length; i++) {
+      const previousQuote = quote;
       if (arithmetic) {
         if (line.startsWith("))", i)) {
           arithmetic = false;
@@ -414,7 +416,6 @@ function joinContinuations(run: string): LogicalLine[] {
         expression = true;
         i += 2;
       } else if (quote && line[i] === quote) {
-        if (nestedQuote && nestedEnd === line.length) nestedEnd = i;
         quote = "";
       } else if (!quote && (line[i] === "'" || line[i] === '"')) {
         quote = line[i] as string;
@@ -441,8 +442,17 @@ function joinContinuations(run: string): LogicalLine[] {
       ) {
         break;
       }
+      if (nestedQuote && previousQuote === nestedQuote && !quote) {
+        nestedText += line.slice(nestedStart, i);
+        nestedStart = -1;
+      } else if (nestedQuote && !previousQuote && quote === nestedQuote) {
+        nestedText += "X";
+        nestedStart = i + 1;
+      }
     }
-    if (nestedQuote) nestedLines.push(line.slice(0, nestedEnd));
+    if (nestedStart >= 0) nestedText += line.slice(nestedStart);
+    if (nestedQuote) nestedLines.push(nestedText);
+    if (!line.endsWith("\\")) arithmetic = false;
     if (line.endsWith("\\")) {
       buffer += `${line.slice(0, -1).trim()} `;
       continue;

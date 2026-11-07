@@ -70,6 +70,18 @@ flowchart LR
 
 ## Test Plan
 
+- Latest review: the old assumption that a closing quote ends a nested script
+  line is obsolete; reopened segments remain part of the script. Unmatched
+  arithmetic-like text no longer suppresses quote tracking on later lines.
+  Detection of npm, gem and cargo installs and acceptance of pinned forms remain
+  covered by `worker/deno/tests/ci_install_pin_scanner_test.ts::quoted script splices and unmatched arithmetic retain installs`.
+  The test failed before the fix. The existing
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::heredoc delimiters and arithmetic preserve subsequent normalisation`
+  now uses apostrophes in both quoted delimiter fixtures to exercise quote
+  removal: replacing quote removal with the raw match made that test fail; the
+  implementation was restored. No second command-normalisation implementation
+  was found.
+
 - Review follow-up: scanning script bodies as separate physical lines is
   obsolete because it loses continuations and quote state. Independent body
   normalisation retains detection of unpinned installs and accepts pinned
