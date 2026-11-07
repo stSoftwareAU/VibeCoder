@@ -58,14 +58,14 @@ capability regressions failed across the five named suites. Marker fixtures in
 the alternative-groups and local-path-fallback suites now carry root manifest
 evidence while retaining their original detection assertions.
 
-The new hybrid and disappeared-language probes failed against the incoming
-head. Restoring only the old auditor also made all six caller-level hybrid
-regressions fail: single-repo sync, fleet sync, single-repo purge, fleet purge,
-the command's single/fleet modes, and action-reference selection. Temporarily
+The new hybrid and disappeared-language probes failed against the incoming head.
+Restoring only the old auditor also made all six caller-level hybrid regressions
+fail: single-repo sync, fleet sync, single-repo purge, fleet purge, the
+command's single/fleet modes, and action-reference selection. Temporarily
 replacing the reconciliation helper's author selector with
-`const trusted = tagged` made both new sync author-verification cases fail.
-The author selector and final applicability logic were restored before the
-final test run.
+`const trusted = tagged` made both new sync author-verification cases fail. The
+author selector and final applicability logic were restored before the final
+test run.
 
 ## Deno regression avoided
 
@@ -76,18 +76,18 @@ final test run.
 ## Test Plan
 
 - `worker/deno/tests/workflow_auditor_test.ts`: API-only Rust excludes Cargo;
-  root Cargo retains all three specs; mixed languages and recursive scans
-  remain eligible; web assets alone do not satisfy npm; legacy language data
-  fetches complete root evidence; lookup failures fail the audit; vanished
-  languages retain all known absent root prerequisites in reconciliation.
+  root Cargo retains all three specs; mixed languages and recursive scans remain
+  eligible; web assets alone do not satisfy npm; legacy language data fetches
+  complete root evidence; lookup failures fail the audit; vanished languages
+  retain all known absent root prerequisites in reconciliation.
 - `worker/deno/tests/language_detector_test.ts`: complete root inventory keeps
   `package.json` despite Deno precedence and excludes directories.
 - `worker/deno/tests/purge_stale_workflow_issues_test.ts`: missing/partial
   requests, unknown specs, human authors, root projects, dry runs and close
-  failures; hybrid npm preservation and disappeared Cargo reconciliation
-  through single/fleet helpers and both actual command modes; an empty language
-  response with only `README.md`; direct reconciliation result shapes,
-  malformed/unknown tags, dry-run writes, and exact close-failure causes.
+  failures; hybrid npm preservation and disappeared Cargo reconciliation through
+  single/fleet helpers and both actual command modes; an empty language response
+  with only `README.md`; direct reconciliation result shapes, malformed/unknown
+  tags, dry-run writes, and exact close-failure causes.
 - `worker/deno/tests/setup_workflow_sync_test.ts`: reconciliation with no gaps;
   listing/close failures; logged dry-run candidates; hybrid npm preservation;
   disappeared-language reconciliation; human-authored matching requests and
@@ -102,17 +102,19 @@ final test run.
   assertions are retained. Inapplicable-set expectations now reflect the whole
   known root catalogue. Filing dedup still asserts all three universal searches
   use all issue states; the separate reconciliation listing uses open issues.
-- `deno task test:unit` over all auditor suites, alternative-groups, purge, sync,
-  action references, language detection, template audit conformance and
+- `deno task test:unit` over all auditor suites, alternative-groups, purge,
+  sync, action references, language detection, template audit conformance and
   `spawn_timeout_bounds_1228_test.ts` — passed, 181 tests.
 - Mutation-driven cleanup removes a repeated tag guard already proved by the
   preceding filter and redundant config forwarding to an already-built runner.
 - Diff-scoped mutation check of the branch's production changes in a disposable
-  checkout — completed: 87 candidates, 85 killed, two rejected as invalid syntax,
-  zero survivors. All importing-test baselines passed. No mutation exemptions
-  or repository skip setting were used.
-- Targeted `deno check --frozen --lock=deno.lock`, `deno lint`, and `deno fmt
-  --check` on changed source/test files — passed; Markdown lint — passed.
+  checkout — completed: 87 candidates, 85 killed, two rejected as invalid
+  syntax, zero survivors. All importing-test baselines passed. No mutation
+  exemptions or repository skip setting were used.
+- Targeted `deno check --frozen --lock=deno.lock`, `deno lint`, and
+  `deno fmt
+  --check` on changed source/test files — passed; Markdown lint —
+  passed.
 - The earlier full `timeout 900 ./quality.sh < /dev/null` reached the parallel
   test stage and timed out with exit 124. The worker reruns the full gate after
   this repair.
