@@ -38,6 +38,8 @@ the real `formatCiReport` and `buildRepairPrompt` functions.
 - `deno fmt --check` on the four changed Deno files — passed.
 - `deno lint` on the four changed Deno files — passed.
 - `deno check --frozen --lock=deno.lock` on the four changed Deno files — passed.
+- Full quality gate: `./quality.sh < /dev/null` exceeded the 900-second bound in the Deno test stage and exited 124. Reported checks before that stage passed; config integration and Checkov were skipped by the gate.
+  <!-- vibe-quality-gate-skipped reason="full ./quality.sh exceeded its 900s bound in the Deno test stage (exit 124); prior reported stages passed, config integration and Checkov were skipped by the gate; targeted format, lint, type check and affected tests passed" -->
 - Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`: `assertStringIncludes(prompt, "in the same fix");`
   - Required by: "replace \"update it to cover your change in the same fix, so the pushed commit passes that gate\" with \"rewrite it in the same fix so every claim, count and result matches the pushed head, instead of adding a follow-up note beside the old text\"."
   - Replaced by: `assertStringIncludes(prompt, "rewrite it in the same fix so every claim, count and result matches the pushed head")` and `assertStringIncludes(prompt, "instead of adding a follow-up note beside the old text")` in the same test.
