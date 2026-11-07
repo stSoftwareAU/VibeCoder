@@ -29,7 +29,7 @@
  *     AND `--locked` (or `--frozen`). A version-pinned install without
  *     `--locked` still re-resolves the tool's whole dependency tree to the
  *     newest crates.io releases, so it is flagged as unlocked. `--git` and
- *     `--path` installs are local or git sources and are never flagged.
+ *     `--path` installs require locking but are exempt from version pinning.
  *
  * Local, file, git, and URL specs, shell variables (`$PKG`), comment lines,
  * flags, and non-install subcommands (`npm ci`, `npm config set …`) are
@@ -121,11 +121,12 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /**
  * `cargo install` flags that consume the following token as their value
  * when written without `=` (Issue #4683). Their value is not the crate.
- * `--git` and `--path` are deliberately absent: they mark an external source,
- * which returns before any spec is examined, so their value never matters.
  */
 const CARGO_VALUE_FLAGS = new Set([
   "--version",
+  "--vers",
+  "--git",
+  "--path",
   "--branch",
   "--tag",
   "--rev",
@@ -425,7 +426,7 @@ function subcommandIndex(args: readonly string[]): number {
  *     binary in `node_modules` and is not flagged;
  *   - `gem install <pkg>` without an exact `-v`/`--version`;
  *   - `cargo install <crate>` without BOTH an exact version and `--locked`/
- *     `--frozen` (`--git`/`--path` installs are never flagged).
+ *     `--frozen` (git and path sources only require locking).
  *
  * Comment lines, flags, local/URL/variable specs, and non-install npm
  * subcommands (`npm ci`, `npm config set …`) are ignored.
@@ -548,7 +549,7 @@ function collectGemInstalls(
  *
  * `--locked`/`--frozen` are global cargo flags, so they count wherever they
  * sit, including before `install`. `--git`/`--path` installs are local or
- * git sources and are never flagged.
+ * git sources and are exempt from the version requirement, not locking.
  */
 function collectCargoInstalls(
   tokens: readonly string[],
@@ -582,7 +583,9 @@ function collectCargoInstalls(
         i++;
       }
       if (name === "--git" || name === "--path") externalSource = true;
-      if (name === "--version" && value !== undefined) flagVersion = value;
+      if ((name === "--version" || name === "--vers") && value !== undefined) {
+        flagVersion = value;
+      }
       continue;
     }
 
@@ -594,7 +597,14 @@ function collectCargoInstalls(
   }
 
   if (subcommand !== "install") return;
-  if (externalSource) return;
+  if (externalSource) {
+    if (!locked) {
+      for (const spec of specs.length ? specs : ["cargo-install"]) {
+        found.push(hit("cargo", spec, line, null, true));
+      }
+    }
+    return;
+  }
 
   for (const spec of specs) {
     if (SPEC_EXEMPT.test(spec)) continue;
@@ -804,7 +814,9 @@ function buildFinding(
     file: first.file,
     lines: first.line,
     whyItMatters:
-      `A \`run:\` step installs \`${pkg}\` with no exact version, so the ` +
+      (isCargo
+        ? `A \`run:\` step installs \`${pkg}\` without an exact registry version or without locking dependencies, so the `
+        : `A \`run:\` step installs \`${pkg}\` with no exact version, so the `) +
       "build resolves whatever the registry serves at that moment. A " +
       "hijacked or malicious release therefore executes on the runner — " +
       "with the workflow's `GITHUB_TOKEN` and any secrets in scope — the " +
@@ -816,11 +828,11 @@ function buildFinding(
       "`action_pin_scanner.ts` never inspects `run:`." +
       (isCargo ? CARGO_WHY_NOTE : ""),
     suggestedFix: isCargo
-      ? `Pin the install to an exact \`--version\` and pass \`--locked\`, e.g. ` +
+      ? `For registry installs, pin to an exact \`--version\` and pass \`--locked\`, e.g. ` +
         `\`${
           pinExample(entry.tool, pkg)
         }\`: \`--locked\` makes cargo use the Cargo.lock the crate publishes ` +
-        "instead of re-resolving its dependencies. Add a Renovate " +
+        "instead of re-resolving its dependencies. For git or path installs, retain the source and pass `--locked`. Add a Renovate " +
         "`customManagers` regex entry matching `cargo install --locked " +
         "<crate> --version x.y.z` in .github/workflows so the pin is kept " +
         "current inside the quarantine window. If this install is " +

@@ -537,6 +537,8 @@ Deno.test("findUnpinnedInstalls - accepts a cargo install that is exact and lock
       "cargo install --locked cargo-audit@0.22.2",
       "cargo install --locked cargo-audit --version 0.22.2",
       "cargo install --locked --version=0.22.2 cargo-audit",
+      "cargo install --locked cargo-audit --vers 0.22.2",
+      "cargo install --locked cargo-audit --vers=0.22.2",
       "cargo install cargo-audit@0.22.2 --locked",
       "cargo --locked install cargo-audit --version 0.22.2",
       "cargo install --frozen cargo-audit --version =0.22.2",
@@ -549,8 +551,8 @@ Deno.test("findUnpinnedInstalls - accepts a cargo install that is exact and lock
 Deno.test("findUnpinnedInstalls - ignores non-install, local, git, and variable cargo runs", () => {
   for (
     const run of [
-      "cargo install --path .",
-      "cargo install --git https://example.com/x cargo-x",
+      "cargo install --locked --path .",
+      "cargo install --frozen --git https://example.com/x cargo-x",
       "cargo build --locked",
       "cargo install",
       'cargo install --locked cargo-audit --version "$V"',
@@ -561,10 +563,25 @@ Deno.test("findUnpinnedInstalls - ignores non-install, local, git, and variable 
   }
 });
 
+Deno.test("findUnpinnedInstalls - external cargo sources still require a lock", () => {
+  for (
+    const run of [
+      "cargo install --path .",
+      "cargo install --git https://example.com/x cargo-x",
+      "cargo install --git=https://example.com/x",
+    ]
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.length, 1, run);
+    assertEquals(found[0]?.unlocked, true, run);
+  }
+});
+
 Deno.test("findUnpinnedInstalls - flags cargo versions that are not exact", () => {
   for (
     const [run, version] of [
       ["cargo install --locked cargo-audit --version 0.22", "0.22"],
+      ["cargo install --locked cargo-audit --vers 0.22", "0.22"],
       ["cargo install --locked cargo-audit@^0.22.2", "^0.22.2"],
       ["cargo install --locked cargo-audit@0.22", "0.22"],
     ] as const
@@ -572,6 +589,7 @@ Deno.test("findUnpinnedInstalls - flags cargo versions that are not exact", () =
     const found = findUnpinnedInstalls(run);
     assertEquals(found.length, 1, run);
     assertEquals(found[0]?.version, version, run);
+    assertEquals(found[0]?.packageName, "cargo-audit", run);
   }
 });
 

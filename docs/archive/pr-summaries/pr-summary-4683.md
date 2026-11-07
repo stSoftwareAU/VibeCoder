@@ -3,8 +3,8 @@
 The fleet `cargo-audit` and `cargo-upgrade` templates (and this repository's own
 copies) now install their crate with
 `cargo install --locked <crate> --version x.y.z`, and the `ci-install-pins`
-scanner now polices `cargo install`: an install must carry an exact version
-**and** `--locked` (or `--frozen`). Version bump: `VERSION` is not touched by
+scanner now polices `cargo install`: a registry install must carry an exact version
+and every install must pass `--locked` (or `--frozen`). Version bump: `VERSION` is not touched by
 this change. Closes #4683.
 
 ```mermaid
@@ -14,7 +14,7 @@ flowchart LR
     B -- yes --> C{--locked / --frozen?}
     C -- no --> F
     C -- yes --> OK[clean]
-    A -. "--git / --path" .-> OK
+    A -- "--git / --path" --> C
 ```
 
 ## Spec
@@ -34,12 +34,12 @@ flowchart LR
   (0.13.14) in `workflow_definitions.ts`; both crates were published well over
   24h ago (crates.io API `created_at`: cargo-audit 0.22.2 on 2026-06-05,
   cargo-edit 0.13.14 on 2026-10-21).
-- `--version x.y.z` and `crate@x.y.z` both count as exact because cargo treats a
+- `--version x.y.z`, `--vers x.y.z` and `crate@x.y.z` count as exact because cargo treats a
   bare full version as `=x.y.z`; `--version 0.22` or `^0.22.2` do not.
 - `--locked`/`--frozen` count wherever they appear, including before `install`,
   because cargo accepts them as global flags. `--git`/`--path` installs and
-  `$VAR` versions are exempt, matching the existing `git+`/local/variable
-  exemption for npm/gem.
+  cargo `$VAR` versions are exempt from version pinning, but still require locking.
+  npm and gem variable versions are flagged.
 - No Renovate manager is added for the cargo pins: touching `renovate.json`
   makes the local semgrep gate report its existing `"minimumReleaseAge": "0"`
   line (the stSoftwareAU exemption, Issue #2124), and the issue asks only for
@@ -74,7 +74,7 @@ flowchart LR
   (unpinned, unlocked, pinned-but-unlocked, non-exact `--version 0.22` /
   `@^0.22.2` / `@0.22`), clean forms (`--locked` with `--version`,
   `crate@x.y.z`, `--version=`, `--frozen`, `=` prefix, `--locked` before
-  `install`, `--locked` after the crate), exemptions (`--path`, `--git`, no
+  `install`, `--locked` after the crate), exemptions (locked `--path`, `--git`, no
   spec, `$V`, `cargo build --locked`, comment), evasions (`sudo`,
   `env VAR=… cargo`, `cargo +stable install`, backslash continuations, chained
   commands, value flags `--features foo` / `--root` before the crate),
@@ -97,12 +97,19 @@ flowchart LR
   npm/npx/gem findings carry `unlocked: false` (kills the swapped
   `unlocked = false` default in `hit`). Red-checked: renaming `--color` in the
   set and flipping the default to `true` each turned the scanner test red (2
-  failed). `--git` and `--path` were removed from `CARGO_VALUE_FLAGS`: they set
-  `externalSource`, which returns before any spec is read, so keeping them in
-  the set had no observable effect (equivalent mutants, now gone).
+  failed). `--git` and `--path` now consume their values before checking locking.
 - Type-check fix: the "flags cargo versions that are not exact" table is now
   `as const`, so `deno check` passes under `noUncheckedIndexedAccess`.
-- No existing assertion was removed or edited.
+- Review follow-up red checks: the scanner test failed on `--vers` and unlocked
+  external sources before the fix. The old expectation that unlocked git and
+  path installs are clean is obsolete; locked external installs remain clean,
+  while unlocked installs are covered by
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::findUnpinnedInstalls - external cargo sources still require a lock`.
+  Exact and non-exact `--vers` forms are covered by the existing cargo tests.
+- Review follow-up validation: repository-wide `deno fmt --check`, `deno lint`,
+  and `deno check '**/*.ts'` passed; the scanner, 4683 and template conformance
+  tests passed (67 tests). The archived-summary freshness check reads commit
+  history and will verify this working-tree update after the babysitter commits.
 - Targeted run: `deno task test:unit` over the scanner, 3642, 4683, conformance,
   file-checks, audit-template, definitions, auditor and changed-gate tests: 299
   passed, 0 failed.
@@ -122,5 +129,4 @@ flowchart LR
   Decisions); the cargo pins are bumped by hand.
 - `cargo build/test/clippy --locked` policing is not added (the issue scopes
   this to `cargo install`).
-- `--git` installs are exempt even without `--rev`, mirroring the existing
-  exemption for git specs; floating git sources are not policed here.
+- Floating git sources are not version-policed, even without `--rev`.

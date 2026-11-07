@@ -1020,10 +1020,11 @@ published. Workflows (`jobs.*.steps[].run`) and composite actions
 | `gem` | `gem install <spec>` with no exact `-v` / `--version` | `gem install <spec> -v 1.2.3` |
 | `cargo` | `cargo install <crate>` with no exact `--version` / `crate@x.y.z`, or with no `--locked` / `--frozen` (`--locked` is accepted anywhere in the command, including before `install`) | `cargo install --locked <crate> --version 1.2.3` |
 
-Local paths, `file:`, `git+`, `http(s):` specs, shell variables (`$TOOL`,
-`"$TOOL"`, `$VERSION`), `cargo install --git` / `--path` installs, and comment
-lines are exempt for every tool — their resolution is either immutable or not
-statically decidable.
+Local paths, `file:`, `git+`, `http(s):` specs, shell-variable package specs
+(`$TOOL`, `"$TOOL"`), and comment lines are exempt. A shell-variable version
+is exempt for cargo only; npm and gem still flag variable versions. Cargo
+`--git` / `--path` installs are exempt from version pinning but still require
+`--locked` or `--frozen`.
 
 **Commands are normalised before matching**. The tool used to
 have to be token 0 and the subcommand token 1, so two everyday spellings —
