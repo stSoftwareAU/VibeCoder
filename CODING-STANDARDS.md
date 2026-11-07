@@ -60,8 +60,9 @@ summarise, authorised.
   explicitly: a standard-library function reinvented by hand, a dependency
   added when an installed one or the standard library already does the job,
   an abstraction with a single implementation, and an in-repo helper,
-  component or policy re-implemented by hand instead of called — when that
-  owner is private, widen its visibility rather than copy it.
+  component or rule copied or re-implemented instead of called or imported,
+  in tests and scripts as in product code (a test's expected result is still
+  not computed by calling the implementation it asserts).
 - **Deno TypeScript for new logic** — All new business logic, decision-making,
   and data processing must be implemented in Deno TypeScript (`worker/deno/`),
   not in shell scripts. Shell scripts are for orchestration only (calling Deno

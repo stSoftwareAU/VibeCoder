@@ -156,19 +156,18 @@ guessing.
      neutralised, never with `includes()` or a first-occurrence match over the
      whole body, and test that the agent's text quoting the marker — in a code
      span, in prose, and after the worker re-wraps the body — does not fire it.
-   - **Call the existing owner — never copy it.** Before writing code that
-     formats, orders, ranks, validates or decides something the product
-     already does, find the helper, component or policy that owns it and
-     call it. Open every component or function the issue names — above all
-     in an Implementation section — and grep for the domain term (`rating`,
-     `buy_order`, `Stars`). When the owner is private (`pub(crate)`, not
-     exported), widen its visibility (`pub(crate)` → `pub`, add the export)
-     instead of copying it; that widening is part of this change, not the
-     adjacent refactor **Change Scope** rules out. A hand-made copy drifts
-     from its owner and drops the owner's edge cases. A component the issue
-     says to reuse is a stated requirement: the Spec reviewer judges it as a
-     criterion, and a diff that re-implements it by hand instead of calling
-     it is not `met`.
+   - **Call existing code — never copy it.** When the helper, component or
+     rule you need already exists in the repo (in product code, a script or
+     another test file), call or import it. If it is private or file-local,
+     export it or move it to a shared module in this change, and switch the
+     old callers to it. A component the issue says to reuse is a stated
+     criterion: the Spec reviewer judges it as one, and a diff that
+     re-implements it by hand instead of calling it is not `met`. A test
+     reuses production code as the system under test and shares genuine test
+     utilities and fixtures, but never computes its expected result by
+     calling the implementation it asserts: a literal expected value or an
+     independent behavioural fixture is what lets the test fail when the
+     result is wrong.
    - **Extend a module's existing imports.** When you add tests or code
      partway down an existing module — a new block inside an existing
      `mod tests`, say — merge each new name into the `use` / `import`
