@@ -60,9 +60,9 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`: 63 passed, 0 failed.
-- `worker/deno/tests/ci_base_failure_signature_test.ts` (32 tests at head) and
+- `worker/deno/tests/ci_base_failure_signature_test.ts` (33 tests at head) and
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` (31 tests at head).
-- Review round 3 tests, all in `worker/deno/tests/ci_base_failure_signature_test.ts`:
+- Review round 3 and 4 tests, six of the 33 in `worker/deno/tests/ci_base_failure_signature_test.ts`:
   - `compareBaseFailure - a passing test whose name holds a failure word is not evidence, in every runner format`
     (Bats and node:test TAP with shifted numbers, node:test spec, Mocha, Jest
     verbose, Go, pytest verbose) gives `same`.
@@ -75,9 +75,13 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
     different tests is `different`).
   - `failureSignatureLines - tally and count normalisation stays bounded on hostile input`
     covers the two count regexes with long runs of the shared characters.
-  - Against the previous commit's module, the first four fail (28 passed,
-    4 failed in that file's run); the hostile-input test passes on both, as it
-    guards the new regexes only.
+  - `failureSignatureLines - tally detection drops count-only lines and keeps lines without a count or words`
+    pins `isTallyLine` directly: `tests failed in 3m4s` is dropped, while
+    `Total test failure result` and `✖ ✖` are kept. Each of the three survivors
+    (`tokens === null` returning true, `hasCount` starting true, the `dur`
+    operand dropped) turns it red.
+  - Against the previous commit's module, the first four fail and the
+    hostile-input test passes on both, as it guards the new regexes only.
 - Branch outcomes, each flipped on its own with the named tests going red:
   passing-line drop (removed: the passing-line test fails), tally drop (removed:
   the tally, minitest header, Jest, Vitest and variable-output tests fail),

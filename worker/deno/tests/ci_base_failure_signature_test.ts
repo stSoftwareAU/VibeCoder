@@ -747,3 +747,14 @@ Deno.test("failureSignatureLines - tally and count normalisation stays bounded o
     "different",
   );
 });
+
+Deno.test("failureSignatureLines - tally detection drops count-only lines and keeps lines without a count or words", () => {
+  // Only tally words with a duration standing for the count: a tally, dropped.
+  assertEquals(failureSignatureLines("tests failed in 3m4s"), []);
+  // The same tally words with no count or duration are not a tally: kept.
+  assertEquals(failureSignatureLines("Total test failure result"), [
+    "total test failure result",
+  ]);
+  // A failing-test marker with no letters or digits has no tokens: kept.
+  assertEquals(failureSignatureLines("✖ ✖"), ["✖ ✖"]);
+});
