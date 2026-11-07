@@ -34,12 +34,15 @@ WIP-preservation pushes remain outside this gate. No VERSION file exists here.
 A real cargo-deny 0.20.2 scratch crate produced an advisory-fetch failure with
 an unreachable database and an `error[unlicensed]` diagnostic for a licence
 failure. Tests inject the command runner to verify argv, cwd and failure mapping.
-The recommended action matrix fixture exercises all four check subsets; an
-unknown command expression exercises the full-check fallback. The repository’s
+The recommended action matrix fixture exercises all four check subsets, and an
+unknown command expression exercises the full-check fallback. Source-only
+changes reach the gate in both the whole-branch pre-PR check and the babysitter
+repair path, so newly published advisories are checked even when the lockfile is
+unchanged; intermediate hooks still skip source-only changes. The repository’s
 container-build workflow contains a scratch-crate command inside a quoted
-container script, which the host gate now ignores.
-The YAML parser uses an explicit JSR specifier so reviewer entry points outside
-the worker's import map can load the gate as well.
+container script, which the host gate ignores. The YAML parser uses an explicit
+JSR specifier so reviewer entry points outside the worker's import map can load
+the gate. CI passed on head `572f8208` with these fixes.
 
 ## Test Plan
 
@@ -77,8 +80,8 @@ the worker's import map can load the gate as well.
   literal that is erased at runtime and is exempt (untestable) from mutation.
 
 The test suite does not run cargo-deny end to end; its runner is injected.
-Repository-wide formatting, lint and type checking and the local gate's
-markdownlint passed. The macOS sandbox refused `/bin/ps` in process-control
-tests, so the affected full shards did not complete locally. The sequential local
-gate was interrupted before completion; Semgrep and Checkov were skipped
-because the required local tool or pinned image was absent.
+Repository-wide formatting, lint and type checking, completeness checks and
+the local gate's markdownlint passed. The full local gate's parallel test pass
+ended in a Deno permission-pledge panic, so its serial pass did not run; CI
+passed the test shards on the PR head and on the base. Semgrep and Checkov were
+skipped locally because Semgrep and the pinned Checkov version were unavailable.
