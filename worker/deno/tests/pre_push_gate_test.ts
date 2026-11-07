@@ -1687,3 +1687,121 @@ Deno.test("runPrePushGate: the real workflow scan drives the CI clippy run end t
     await Deno.remove(root, { recursive: true });
   }
 });
+
+// ---- ciCargoOnly (repair pushes with no pre-flight configuration) -----------
+
+const BAD_TS = "const x   =1\n";
+
+Deno.test("runPrePushGate: ciCargoOnly runs only the CI cargo commands for a .rs and badly formatted .ts push", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles({
+    ...RUST_FILES,
+    "src/bad.ts": BAD_TS,
+  });
+  try {
+    const calls: RanCall[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: ["pre-flight-cmd"],
+      runner: scriptedRunner(() => ({}), calls),
+      findCiCargo: () => Promise.resolve(scanOf(CLIPPY_CHECK)),
+      ciCargoOnly: true,
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const commands = calls.map((c) => c.command);
+    assert(commands.includes(CLIPPY_CMD), JSON.stringify(commands));
+    assert(
+      commands.every((c) =>
+        c.startsWith("cargo ") && !c.startsWith("cargo fmt")
+      ),
+      JSON.stringify(commands),
+    );
+    assertEquals(result.value.checksRun, [CLIPPY_CMD]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: without ciCargoOnly the same push still runs deno fmt, cargo fmt and the pre-flight commands", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles({
+    ...RUST_FILES,
+    "src/bad.ts": BAD_TS,
+  });
+  try {
+    const calls: RanCall[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: ["pre-flight-cmd"],
+      runner: scriptedRunner(() => ({}), calls),
+      findCiCargo: () => Promise.resolve(scanOf(CLIPPY_CHECK)),
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const commands = calls.map((c) => c.command);
+    assert(
+      commands.some((c) => c.startsWith("deno fmt")),
+      JSON.stringify(commands),
+    );
+    assert(commands.includes("cargo fmt --all --check"));
+    assert(commands.includes(CLIPPY_CMD));
+    assert(commands.includes("pre-flight-cmd"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: ciCargoOnly on a docs-only push runs nothing, does not look up markdownlint and does not read the CI cargo scan", async () => {
+  const { root, clone, stdin } = await makeRepoWithDocCommit();
+  try {
+    const calls: RanCall[] = [];
+    let read = false;
+    let looked = false;
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: ["pre-flight-cmd"],
+      runner: scriptedRunner(() => ({}), calls),
+      // A missing markdownlint would block a full run; ciCargoOnly must not look
+      // for it at all.
+      findMarkdownlint: () => {
+        looked = true;
+        return Promise.resolve(null);
+      },
+      findCiCargo: () => {
+        read = true;
+        return Promise.resolve(scanOf(CLIPPY_CHECK));
+      },
+      ciCargoOnly: true,
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(calls, []);
+    assertEquals(result.value.checksRun, []);
+    assert(!read, "the CI cargo scan is read only for a Rust-relevant change");
+    assert(!looked, "markdownlint must not be looked up in ciCargoOnly mode");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: ciCargoOnly skips the repo's pre-flight commands, so a failing one does not block", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: ["make-it-fail"],
+      runner: scriptedRunner(
+        (c) => c === "make-it-fail" ? { code: 1, stderr: "boom" } : {},
+        calls,
+      ),
+      findCiCargo: () => Promise.resolve(scanOf(CLIPPY_CHECK)),
+      ciCargoOnly: true,
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assert(!calls.some((c) => c.command === "make-it-fail"));
+    assertEquals(result.value.checksRun, [CLIPPY_CMD]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

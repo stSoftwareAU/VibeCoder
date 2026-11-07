@@ -45,11 +45,15 @@ import { runGhOrThrow } from "./gh_spawn.ts";
 
 /**
  * Pre-flight gate specification passed to {@link commitAndPushPending}
- * (Issue #3577). Omit the spec to disable the gate — the repo then commits and
- * pushes with zero added latency. Passing a spec turns on Step 1b's
- * changed-file checks (Issue #3689: deno/cargo fmt, markdownlint, cspell and
- * the Floci deploy test) even when `commands` is empty; an empty list only means
- * no repo pre-flight commands run.
+ * (Issue #3577). Omit the spec to leave the push ungated — the repo then commits
+ * and pushes with zero added latency, as the WIP checkpoint push does. Passing a
+ * spec turns on Step 1b's changed-file checks (Issue #3689: deno/cargo fmt,
+ * markdownlint, cspell and the Floci deploy test) even when `commands` is empty;
+ * an empty list only means no repo pre-flight commands run.
+ *
+ * `ciCargoOnly` (Issue #4630) narrows Step 1b to the repo CI's own cargo
+ * clippy and test-target compile: no fmt, lint, markdownlint, cspell or Floci
+ * checks, and no pre-flight commands. See {@link CI_CARGO_ONLY_PRE_FLIGHT}.
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */
@@ -58,7 +62,25 @@ export interface PreFlightGateSpec {
   timeoutSeconds?: number;
   /** Injectable command runner (defaults to the real subprocess runner). */
   runner?: PreFlightRunner;
+  /**
+   * Run only the repo CI's cargo clippy and test-target compile over the
+   * unpushed commits (Issue #4630). Omit for the full changed-file gate.
+   */
+  ciCargoOnly?: boolean;
 }
+
+/**
+ * The gate the repair processors (CI fix and PR feedback) pass when a repo has
+ * no pre-flight commands (Issue #4630). Their repairs otherwise reach the
+ * branch with no gate, and CI then fails on clippy. Only the repo CI's cargo
+ * clippy and test-target compile run. Frozen so that no caller can change the
+ * shared spec. To inject a runner, copy it: `{ ...CI_CARGO_ONLY_PRE_FLIGHT,
+ * runner }`.
+ */
+export const CI_CARGO_ONLY_PRE_FLIGHT = Object.freeze<PreFlightGateSpec>({
+  commands: Object.freeze([]),
+  ciCargoOnly: true,
+});
 
 /**
  * Resolve a repo's pre-flight gate into a {@link PreFlightGateSpec}, or
@@ -68,9 +90,11 @@ export interface PreFlightGateSpec {
  * to {@link commitAndPushPending}. Returns `undefined` (not an empty spec) so
  * a caller that passes it straight through leaves a repo with no entry
  * ungated; the issue completion phase substitutes `{ commands: [] }` instead,
- * so it still runs the changed-file checks (Issue #3689). Throws on malformed
- * config via `getPreFlightCommands` — but config is already validated at load
- * (Issue #3577), so this is defence in depth.
+ * so it still runs the changed-file checks (Issue #3689). The CI-fix and
+ * PR-feedback repair processors substitute {@link CI_CARGO_ONLY_PRE_FLIGHT}
+ * (Issue #4630). Throws on malformed config via `getPreFlightCommands` — but
+ * config is already validated at load (Issue #3577), so this is defence in
+ * depth.
  */
 export function resolvePreFlightSpec(
   repoConfigs: Record<string, RepoConfig> | undefined,
@@ -794,6 +818,7 @@ export async function gateUnpushedCommits(
     preFlightCommands: preFlightAlreadyRan ? [] : preFlight.commands,
     timeoutSeconds: preFlight.timeoutSeconds,
     runner: preFlight.runner,
+    ciCargoOnly: preFlight.ciCargoOnly,
     baseRef,
   });
   if (!gate.ok) {
@@ -838,10 +863,13 @@ export async function gateUnpushedCommits(
  *      commits, including any the agent committed but never pushed (nothing
  *      runs when no commit is unpushed). When Step 1 committed nothing it
  *      also re-runs the repo's pre-flight commands; when Step 1 committed,
- *      those commands already ran there and are not repeated. A block
+ *      those commands already ran there and are not repeated. A spec with
+ *      `ciCargoOnly` (Issue #4630) runs only the repo CI's cargo clippy and
+ *      test-target compile in this step. A block
  *      refuses the push. The gate output in the
  *      returned error is cut to a head and a tail (as is Step 1's pre-flight
- *      block), because PR processors post it in a comment.
+ *      block), because PR processors post it in a comment. A caller that omits
+ *      `preFlight` gets no Step 1b at all, so the push is ungated.
  *   1c. Step 1c — when `options.syncBaseBranch` is set and there is a fix to
  *      push to an existing branch, {@link mergeBaseBeforePush} merges that
  *      base in, so the fix and the branch update go out in one push.
@@ -870,7 +898,8 @@ export async function gateUnpushedCommits(
  *   blocks BOTH the commit and the push. There is no override flag. Supplying
  *   a spec, even one with an empty `commands` list, also turns on Step 1b's
  *   changed-file checks (Issue #3689). Omit to leave the repo unaffected
- *   (zero added latency, no gate).
+ *   (zero added latency, no gate). A spec with `ciCargoOnly` narrows Step 1b to
+ *   the repo CI's cargo checks (Issue #4630).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly

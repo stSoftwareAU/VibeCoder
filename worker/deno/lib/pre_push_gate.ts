@@ -901,6 +901,13 @@ function isHostFaultOfCheck(error: PreFlightGateError): boolean {
  * fails to start, times out, or fails with host disk-full output is also an
  * infrastructure fault. Any other failing CI cargo command blocks the push, with
  * its output.
+ *
+ * `ciCargoOnly` (repair pushes of repos with no pre-flight configuration, where
+ * only the CI cargo checks should gate) runs nothing but those CI cargo checks:
+ * the changed files are still listed and the CI cargo scan still read, but the
+ * other changed-file checks, their binary lookups and the repo's pre-flight
+ * commands are skipped. Only the Rust-relevant changed files are planned, so no
+ * other checker's planning error can block the push.
  */
 export async function runPrePushGate(opts: {
   cwd: string;
@@ -911,6 +918,8 @@ export async function runPrePushGate(opts: {
   git?: PrePushGit;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   findCspell?: (repoRoot: string) => Promise<string | null>;
+  /** Run only the CI cargo checks (see the doc comment above). */
+  ciCargoOnly?: boolean;
   /**
    * Reads the repo's CI cargo checks. Defaults to `repoCiCargoChecks`. Only
    * called when a Rust-relevant file changed.
@@ -954,8 +963,13 @@ export async function runPrePushGate(opts: {
     );
   }
   const tracked = lsFiles.stdout.split("\0").filter((p) => p !== "");
+  // In CI-cargo-only mode just the Rust-relevant files are considered, so no
+  // other checker is looked up or planned.
+  const considered = opts.ciCargoOnly
+    ? changed.value.filter(isRustRelevant)
+    : changed.value;
 
-  const needsMarkdownlint = changed.value.some((p) =>
+  const needsMarkdownlint = considered.some((p) =>
     hasExtension(p, MARKDOWN_EXTENSIONS)
   );
   let markdownlintBinary: string | null = null;
@@ -968,7 +982,7 @@ export async function runPrePushGate(opts: {
 
   const cspellInCi = await repoCiRunsCspell(opts.cwd, tracked);
   const needsCspell = cspellInCi &&
-    changed.value.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
+    considered.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
     [...CSPELL_ROOT_CONFIGS, ...CSPELL_NESTED_CONFIGS].some((n) =>
       tracked.includes(n)
     );
@@ -998,7 +1012,7 @@ export async function runPrePushGate(opts: {
     ciCargo = scan;
   }
 
-  const plan = planChangedFileChecks(changed.value, tracked, {
+  const plan = planChangedFileChecks(considered, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
     cspellBinary,
@@ -1008,11 +1022,15 @@ export async function runPrePushGate(opts: {
   });
   if (!plan.ok) return fail(plan.error);
 
-  const cargoChecks = plan.value.filter((c) => c.cargo !== undefined);
+  // CI-cargo-only mode keeps the CI cargo checks and nothing else.
+  const checks = opts.ciCargoOnly
+    ? plan.value.filter((c) => c.cargo !== undefined)
+    : plan.value;
+  const cargoChecks = checks.filter((c) => c.cargo !== undefined);
   const clippyPlanned = cargoChecks.some((c) => c.cargo?.kind === "clippy");
   let probed = false;
   const checksRun: string[] = [];
-  for (const check of plan.value) {
+  for (const check of checks) {
     if (check.cargo === undefined) {
       const result = await runPreFlightGate([check.command], {
         cwd: check.cwd,
@@ -1084,11 +1102,14 @@ export async function runPrePushGate(opts: {
     checksRun.push(check.command);
   }
 
-  const preFlight = await runPreFlightGate(opts.preFlightCommands, {
-    cwd: opts.cwd,
-    runner: opts.runner,
-    timeoutSeconds: opts.timeoutSeconds,
-  });
+  const preFlight = await runPreFlightGate(
+    opts.ciCargoOnly ? [] : opts.preFlightCommands,
+    {
+      cwd: opts.cwd,
+      runner: opts.runner,
+      timeoutSeconds: opts.timeoutSeconds,
+    },
+  );
   if (!preFlight.ok) return { ok: false, error: preFlight.error };
 
   return { ok: true, value: { checksRun } };

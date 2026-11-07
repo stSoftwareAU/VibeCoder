@@ -35,7 +35,11 @@ import {
   mockGitHubClient,
 } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { Logger } from "../types.ts";
+import type { Logger, RepoConfig } from "../types.ts";
+import {
+  CI_CARGO_ONLY_PRE_FLIGHT,
+  type PreFlightGateSpec,
+} from "../lib/git_push.ts";
 import type {
   ClaudeDeps,
   GitDeps,
@@ -3441,4 +3445,82 @@ Deno.test("processCiFailure - refuses history rebuild when commit authors cannot
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #4630: the final-mile push's pre-flight spec
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs `processCiFailure` through to its final-mile push and returns the
+ * pre-flight spec that push was handed.
+ */
+async function finalMilePreFlight(
+  repoConfigs?: Record<string, RepoConfig>,
+): Promise<PreFlightGateSpec | undefined> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const finalMile: Array<PreFlightGateSpec | undefined> = [];
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+    const mockGithub: Partial<GitHubDeps> = {
+      runGhCommand: openPrGh(),
+    };
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: mockGithub,
+      git: {
+        commitAndPushPending: ((...args: unknown[]) => {
+          if (String(args[1]).startsWith("Fix CI failure:")) {
+            finalMile.push(args[4] as PreFlightGateSpec | undefined);
+          }
+          return Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          });
+        }) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      ...(repoConfigs ? { repoConfigs } : {}),
+    };
+
+    await processCiFailure(makeInput(), processorDeps);
+    assertEquals(finalMile.length >= 1, true, "expected a final-mile push");
+    return finalMile[0];
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+Deno.test("processCiFailure - repair push (Issue #4630): no pre-flight commands passes the cargo-only spec", async () => {
+  const spec = await finalMilePreFlight();
+  assertEquals(spec?.ciCargoOnly, true);
+  assertEquals(spec?.commands, []);
+  assertEquals(spec, CI_CARGO_ONLY_PRE_FLIGHT);
+});
+
+Deno.test("processCiFailure - repair push (Issue #4630): a repo's own pre-flight spec is kept", async () => {
+  const spec = await finalMilePreFlight({
+    "org/repo": { preFlight: ["deno task check"] },
+  });
+  assertEquals(spec?.commands, ["deno task check"]);
+  assertEquals(spec?.ciCargoOnly === true, false);
 });

@@ -5011,8 +5011,11 @@ repo-specific commands in the worker.
 - A repo with **no** `pre-flight` entry has no commands to run, but is not
   fully unaffected: the issue completion phase's push (and Step 1b, for
   callers that pass a pre-flight spec) still runs the changed-file checks
-  described below, and a failure there fails the run. Pushes that pass no spec
-  (such as WIP-preservation pushes) stay ungated.
+  described below, and a failure there fails the run. The CI-fix and PR-feedback
+  repair pushes are the exception: for such a repo they pass a cargo-only spec
+  (Issue #4630), so only the repo CI's cargo clippy and test-target compile run
+  there. Pushes that pass no spec (such as WIP-preservation pushes) stay
+  ungated.
 
 Commands run directly (not through a shell), so each entry is a program plus
 arguments; shell features (pipes, redirects, globs) are not interpreted. Wrap
@@ -5064,7 +5067,12 @@ same changed-files check through `runPrePushGate` on the already-committed
 unpushed commits before pushing, and refuses the push on failure (Issue #3689).
 WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
 Step 1b runs only when a pre-flight spec exists, so callers passing no spec
-(such as WIP-preservation pushes) are not gated there. The completion phase's
+(such as WIP-preservation pushes) are not gated there. The CI-fix and
+PR-feedback repair processors pass a cargo-only spec when the repo has no
+pre-flight commands (Issue #4630), so their repair pushes run only the repo
+CI's cargo clippy and test-target compile through Step 1b, and not the
+changed-file checks listed below. Repos with pre-flight commands keep their own
+spec. The completion phase's
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
