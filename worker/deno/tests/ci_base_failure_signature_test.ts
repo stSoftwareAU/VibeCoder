@@ -814,6 +814,26 @@ Deno.test("compareBaseFailure - semgrep keeps rule and exact file identity at ev
   }
 });
 
+Deno.test("compareBaseFailure - semgrep fallback compares rule and whole file at each severity", async () => {
+  const fixture = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  for (const icon of ["❱", "❯❱", "❯❯❱", "❯❯❯❱"]) {
+    const pr = fixture.replaceAll("❯❱", icon)
+      .replace("worker/deno/lib/marker_dedup_author_manifest.ts", "run.sh");
+    for (
+      const base of [
+        pr.replaceAll("detect-non-literal-regexp", "different-rule"),
+        pr.replace("run.sh", "fleet-pr-babysitter/run.sh"),
+        pr.replace("run.sh", "worker/deno/lib/other.ts"),
+      ]
+    ) {
+      assertEquals(await compareStates(pr, base), "different", icon);
+    }
+    assertEquals(await compareStates(pr, pr), "same", icon);
+  }
+});
+
 Deno.test("compareBaseFailure - output a passing test prints is not part of the failure, in Deno, Jest and Vitest", async () => {
   const errors =
     "ERRORS\n\nparser - parse header => ./tests/parser_test.ts:10:6\nerror: AssertionError: expected header to be valid\n";

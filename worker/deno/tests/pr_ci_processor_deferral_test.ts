@@ -1304,6 +1304,34 @@ Deno.test("processCiFailure - semgrep compares severity, rule and exact file des
   }
 });
 
+Deno.test("processCiFailure - semgrep fallback compares rule and whole file at each severity", async () => {
+  const fixture = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  for (const icon of ["❱", "❯❱", "❯❯❱", "❯❯❯❱"]) {
+    const pr = fixture.replaceAll("❯❱", icon)
+      .replace("worker/deno/lib/marker_dedup_author_manifest.ts", "run.sh");
+    for (
+      const [baseLog, marker] of [
+        [pr.replaceAll(SEMGREP_RULE, "rule.a.base-finding"), "attempt"],
+        [pr.replace("run.sh", "fleet-pr-babysitter/run.sh"), "attempt"],
+        [pr.replace("run.sh", "worker/deno/lib/other.ts"), "attempt"],
+        [pr, "deferred"],
+      ]
+    ) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: pr,
+        baseLog,
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+        icon,
+      );
+    }
+  }
+});
+
 Deno.test("processCiFailure - formatter identifies the failed file", async () => {
   const log = (file: string, count: number) =>
     `##[endgroup]\nfrom ${file}:\nerror: Found 1 not formatted file in ${count} files\n##[error]Process completed with exit code 1.\n`;

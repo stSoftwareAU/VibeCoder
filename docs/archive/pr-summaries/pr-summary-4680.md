@@ -82,7 +82,7 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`:
-  89 passed, 0 failed (49 and 40 tests respectively).
+  91 passed, 0 failed (50 and 41 tests respectively).
 - `worker/deno/tests/ci_base_failure_signature_test.ts` covers Jest console
   output, differing formatter and diagnostic file loci, shellcheck rules, and npm log paths.
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` covers deferral using
@@ -97,6 +97,11 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
   failure words is covered by
   `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - semgrep keeps rule and exact file identity at every severity`
   and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - semgrep compares severity, rule and exact file despite failure words`.
+  The real fixture without a failure-word line covers the fallback at all four
+  severity icons, with different rules, nested same-name files, different files
+  and identical findings:
+  `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - semgrep fallback compares rule and whole file at each severity`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - semgrep fallback compares rule and whole file at each severity`.
   The tally test formerly supplied an unrelated default Semgrep log; it now
   supplies the test failure it describes. Its remaining tally and deferral
   behaviour is covered by
@@ -122,7 +127,7 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
   `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a Depends on line with a red base defers once, charging no attempt (Issue #1880)`
   and
   `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
-- The focused tests, repository-wide `deno fmt --check`, `deno lint`,
+- The focused tests, Deno-tree `deno fmt --check`, `deno lint`,
   and `deno task check` passed.
 - The matching rule is documented in `docs/workflows/ci-fix.md` and
   `prompts/ci_fix/prompt.md`; both were updated together.

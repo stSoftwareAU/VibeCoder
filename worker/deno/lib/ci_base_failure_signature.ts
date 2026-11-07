@@ -402,7 +402,9 @@ function failureSignature(text: string): FailureSignature {
  * passing test results, test-run tallies, command echoes and generic runner
  * output never qualify. A line qualifies when it is long enough and is a
  * failing-test name or carries a failure word outside any command-line flag.
- * When no line does, distinctive rule and file loci in the failing step's
+ * Semgrep finding file and rule lines also qualify, even with failure words;
+ * the file is the non-empty line before a rule at any severity icon. When no
+ * failure line qualifies, distinctive rule and file loci in the failing step's
  * output qualify, with standalone numbers normalised.
  */
 export function failureSignatureLines(text: string): string[] {
@@ -469,7 +471,7 @@ export async function compareBaseFailure(options: {
       reason: "the base run's log was empty",
     };
   }
-  // A test name must be a whole base line; other lines may sit inside one.
+  // Test names and Semgrep finding files and rules must match whole base lines.
   const baseSet = new Set(baseLines);
   const baseText = baseLines.join("\n");
   const found = (line: string) =>
