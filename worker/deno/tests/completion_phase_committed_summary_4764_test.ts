@@ -12,7 +12,12 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
+import {
+  loadSummaryForPublication,
+  workOnIssueCompletion,
+} from "../lib/phases/completion_phase.ts";
+import { createLogger } from "../lib/logger.ts";
+import { prSummaryCandidatePaths } from "../lib/pr_summary_loader.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient } from "../types.ts";
@@ -264,5 +269,143 @@ Deno.test(
       !body.includes(COMMITTED_MARKER),
       "a failed status publishes no summary content",
     );
+  },
+);
+
+type GitReply =
+  | { ok: true; value: { code: number; stdout: string; stderr: string } }
+  | { ok: false; error: Error };
+
+interface DirectRun {
+  result: Awaited<ReturnType<typeof loadSummaryForPublication>>;
+  calls: { args: string[]; cwd: string | undefined }[];
+}
+
+/** Call `loadSummaryForPublication` directly with scripted git replies. */
+async function loadDirect(
+  replies: { status: GitReply; revParse?: GitReply },
+): Promise<DirectRun> {
+  const calls: DirectRun["calls"] = [];
+  const deps = createMockDeps({
+    git: {
+      runGitCommand: (cmdArgs: string[], opts?: { cwd?: string }) => {
+        calls.push({ args: cmdArgs, cwd: opts?.cwd });
+        if (cmdArgs[0] === "status") return Promise.resolve(replies.status);
+        if (cmdArgs[0] === "rev-parse" && replies.revParse) {
+          return Promise.resolve(replies.revParse);
+        }
+        return Promise.resolve({
+          ok: true as const,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      },
+    },
+  });
+  const state = { repoPath: "/repo-4764" } as PhaseState;
+  const result = await loadSummaryForPublication(
+    state,
+    ISSUE,
+    deps,
+    createLogger({ write: () => {} }),
+  );
+  return { result, calls };
+}
+
+const DIRTY: GitReply = {
+  ok: true,
+  value: { code: 0, stdout: ` M ${SUMMARY_PATH}\0`, stderr: "" },
+};
+
+Deno.test(
+  "loadSummaryForPublication - git status asks for every summary candidate, NUL-separated, untracked files included (Issue #4764)",
+  async () => {
+    const { calls } = await loadDirect({
+      status: { ok: false, error: new Error("boom") },
+    });
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0]!.args, [
+      "status",
+      "--porcelain",
+      "-z",
+      "--untracked-files=all",
+      "--",
+      ...prSummaryCandidatePaths(ISSUE),
+    ]);
+    assertEquals(calls[0]!.cwd, "/repo-4764");
+  },
+);
+
+Deno.test(
+  "loadSummaryForPublication - a git status process failure is an error result (Issue #4764)",
+  async () => {
+    const { result } = await loadDirect({
+      status: { ok: false, error: new Error("index.lock is held") },
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) assertStringIncludes(result.error.message, "index.lock");
+  },
+);
+
+Deno.test(
+  "loadSummaryForPublication - a non-zero git status exit is an error result naming the exit (Issue #4764)",
+  async () => {
+    const { result } = await loadDirect({
+      status: {
+        ok: true,
+        value: { code: 128, stdout: "", stderr: "fatal: not a repo\n" },
+      },
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, "exit 128");
+      assertStringIncludes(result.error.message, "fatal: not a repo");
+    }
+  },
+);
+
+Deno.test(
+  "loadSummaryForPublication - a dirty summary resolves HEAD in the repo directory (Issue #4764)",
+  async () => {
+    const { calls } = await loadDirect({
+      status: DIRTY,
+      revParse: {
+        ok: true,
+        value: { code: 0, stdout: `${SHA}\n`, stderr: "" },
+      },
+    });
+    const revParse = calls.find((c) => c.args[0] === "rev-parse");
+    assert(revParse !== undefined, "HEAD must be resolved");
+    assertEquals(revParse.args, ["rev-parse", "HEAD"]);
+    assertEquals(revParse.cwd, "/repo-4764");
+  },
+);
+
+Deno.test(
+  "loadSummaryForPublication - a failed rev-parse process is an error result, never the working tree (Issue #4764)",
+  async () => {
+    const { result } = await loadDirect({
+      status: DIRTY,
+      revParse: { ok: false, error: new Error("spawn failed") },
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) assertStringIncludes(result.error.message, "spawn failed");
+  },
+);
+
+Deno.test(
+  "loadSummaryForPublication - a non-zero rev-parse exit is an error result naming the exit (Issue #4764)",
+  async () => {
+    const { result } = await loadDirect({
+      status: DIRTY,
+      revParse: {
+        ok: true,
+        value: { code: 128, stdout: "", stderr: "fatal: bad HEAD\n" },
+      },
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, "exit 128");
+      assertStringIncludes(result.error.message, "fatal: bad HEAD");
+    }
   },
 );

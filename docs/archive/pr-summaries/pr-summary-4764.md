@@ -62,17 +62,24 @@ flowchart TD
 
 ## Test Plan
 
-- Added `worker/deno/tests/completion_phase_committed_summary_4764_test.ts` (4
-  tests, 4 passed):
+- Added `worker/deno/tests/completion_phase_committed_summary_4764_test.ts` (10
+  tests, 10 passed):
   - new PR body carries the committed text and never the uncommitted edit;
   - existing-PR recovery body carries the committed text and never the
     uncommitted edit;
   - positive control: clean tree publishes the working-tree text;
-  - failed `git status` gives a body with neither marker.
+  - failed `git status` gives a body with neither marker;
+  - direct `loadSummaryForPublication` tests pin the exact `git status` argv
+    (`--porcelain`, `-z`, `--untracked-files=all`, `--`, every candidate path)
+    and `cwd`, and the `rev-parse HEAD` argv and `cwd`;
+  - direct tests assert an error result (`ok: false`) for a failed `git status`
+    process, a non-zero `git status` exit, a failed `rev-parse` process and a
+    non-zero `rev-parse` exit, with the exit code and stderr in the message.
 - Red check: forcing the helper's dirty branch to always call `loadPrSummary`
   made the first two tests fail (body held `UNCOMMITTED-EDIT-4764`); restored
-  afterwards. The failed-status test goes red if the `!status.ok` /
-  non-zero-exit returns are replaced by a working-tree read.
+  afterwards. The direct tests kill the surviving mutants the mutation check
+  listed for the `status` argv, the `cwd` options and the four `ok: false`
+  error returns.
 - Existing completion-phase tests (`completion_phase_summary_rule_retry`,
   `acceptance_closure`, `pre_pr_verifier_3395`, `rest_pr_fallback`,
   `pr_body_limit_4359`, `branch_evidence`, `head_reconcile`,
@@ -84,11 +91,9 @@ flowchart TD
 - Docs: `docs/USAGE.md` gains a paragraph on the committed-copy rule;
   `docs/workflows/fleet-pr-babysitter.md` already describes the committed loader
   for a different path and is unchanged.
-- Not run: the `rev-parse HEAD` failure branch has no dedicated test (exempt
-  (untestable) for portability of staging a failing `rev-parse` through the
-  shared fake: `completion_phase_head_reconcile_test.ts` and
-  `completion_phase_summary_rule_retry_test.ts` fake `rev-parse` as always
-  succeeding).
+- Doc fix: the `commitRecoveredSummary` comment in
+  `summary_rule_gate_retry.ts` now says a completion re-run publishes the
+  summary committed at HEAD, never an uncommitted one.
 
 ## Merge verification
 
