@@ -61,6 +61,10 @@ flowchart LR
 - `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts::prSpellingProcessorCommand - the agent prompt carries the pre-flight-only push guarantee (Issue #4876)`
   — passed; temporarily removing the spelling caller's guarantee made this test
   fail.
+- `worker/deno/tests/run_core_production_deps_test.ts::run-core PR feedback callback records its pre-flight push guarantee (Issue #4876)`
+  — passed; removing this callback's guarantee made the test fail.
+- `worker/deno/tests/run_core_production_deps_test.ts::run-core custom PR prompt callback records the agent pre-push guarantee (Issue #4876)`
+  — passed; removing this callback's guarantee made the test fail.
 - `worker/deno/tests/pr_spelling_processor_test.ts` — 29 passed.
 - Full `./quality.sh < /dev/null` — passed. Deno tests, lint, type check,
   formatting, Markdown lint and Semgrep passed. Config integration was skipped
