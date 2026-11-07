@@ -26,8 +26,8 @@ overview, see the [main README](../README.md).
 
 All runtime configuration is managed through a `.config.json` (JSON = JavaScript
 Object Notation) file created by `./setup.sh`. Environment variables do not
-override config file values at runtime. To change configuration, either re-run
-`./setup.sh` or edit `.config.json` directly.
+override config file values at runtime. To change configuration,
+either re-run `./setup.sh` or edit `.config.json` directly.
 
 The `.config.json` file contains only your overridden values — defaults are not
 written to the file. This means when a default changes in the codebase, it flows
@@ -45,19 +45,19 @@ to all users unless explicitly overridden.
 ```
 
 `allowed_authors` in the sample is **not** a trust grant — see
-[Two axes of trust](#two-axes-of-trust) for who may direct the worker and whose
-input it acts on.
+[Two axes of trust](#two-axes-of-trust) for who may direct the worker and
+whose input it acts on.
 
 > **📝 Note:** The default branch is automatically detected per repository via
-> the GitHub API (API = Application Programming Interface). You don't need to
-> configure it manually.
+> the GitHub API (API = Application Programming Interface). You
+> don't need to configure it manually.
 
 The `./setup.sh` script creates this file. Only values that differ from the
 built-in defaults are written.
 
 Re-running `./setup.sh` rewrites `.config.json`, and every key you set by hand
-survives that rewrite — including keys setup itself never asks for, such as
-`fleet_pr_authors` and `worker_name`. The only keys removed are:
+survives that rewrite — including keys setup itself never asks
+for, such as `fleet_pr_authors` and `worker_name`. The only keys removed are:
 
 - The three hardwired discovery labels (`issue_labels`, `work_on_label`,
   `low_priority_label`), which are not configurable.
@@ -68,13 +68,14 @@ survives that rewrite — including keys setup itself never asks for, such as
   casing. The first spelling is kept and the drop is printed as a warning; see
   [Monitored Repositories](#-monitored-repositories).
 
-A `.config.json` setup **cannot read** stops the run instead (Issue #1294). Only
-an absent file means "no config yet"; a truncated write, a permission error, or
-a hand edit that broke the JSON is reported with the path and the parse error,
-and nothing is written. Because the rewrite is from scratch, treating a broken
-file as absent would have silently replaced your `service_accounts`, `repos`,
-`repo_config` and narrowed `authorized_commenters` with the built-in defaults.
-Fix the file by hand and re-run `./setup.sh`.
+A `.config.json` setup **cannot read** stops the run instead (Issue #1294).
+Only an absent file means "no config yet"; a truncated write, a permission
+error, or a hand edit that broke the JSON is reported with the path and the
+parse error, and nothing is written. Because the rewrite is from scratch,
+treating a broken file as absent would have silently replaced your
+`service_accounts`, `repos`, `repo_config` and narrowed
+`authorized_commenters` with the built-in defaults. Fix the file by hand and
+re-run `./setup.sh`.
 
 ### `quality_credentials` — what a repository's own checks may see
 
@@ -99,15 +100,15 @@ receives it.
   Provider-agnostic: `aws sts assume-role`, `gcloud auth print-access-token`,
   `vault read`, or a script of your own. **Preferred** (Issue #574): a
   credential that expires within the hour is worthless by the time a leak
-  reaches a log archive, which turns an open door into an incident with a clock
-  on it.
-- **`passthrough`** — names taken from the worker's own environment. Static and
-  long-lived by construction, so the run reports it under `[SECURITY]` and names
-  the variables. It exists for what cannot yet be minted.
+  reaches a log archive, which turns an open door into an incident with a
+  clock on it.
+- **`passthrough`** — names taken from the worker's own environment. Static
+  and long-lived by construction, so the run reports it under `[SECURITY]`
+  and names the variables. It exists for what cannot yet be minted.
 
 A failed `mint` fails the phase loudly rather than running the checks without
-the credential they declared — a check that runs unauthenticated fails later and
-further from the cause. Values are never logged; only names are.
+the credential they declared — a check that runs unauthenticated fails later
+and further from the cause. Values are never logged; only names are.
 
 Where the credentials go depends on the account the command runs as:
 
@@ -120,32 +121,34 @@ Where the credentials go depends on the account the command runs as:
   worker's own GitHub and App credentials are not. The allowlist (Issue #572)
   and `clearEnv` are unchanged, and the `sudo` rule is not widened.
 - **The worker account** (`vibe`) runs the gate commands above only where the
-  image has no `agent` account at all, with the same restricted environment, and
-  the declared values are placed in that environment. It also runs the
+  image has no `agent` account at all, with the same restricted environment,
+  and the declared values are placed in that environment. It also runs the
   repository formatters, the mutation check and the coverage carry-over, which
   never drop to `agent` and keep the environment route. A declared credential
   never changes the account a gate command runs as.
 
 The `agent` account can only run a gate command in a checkout it can reach. The
 image therefore gives group `vibework` search-only permission on the worker's
-home (`0710`) at build time, so the work root beneath it is reachable even on a
-read-only root filesystem. A checkout the account still cannot read or traverse
-leaves the command to CI rather than running as the worker (Issue #4659). So
-does a command that writes into its directory, such as cargo's `Cargo.lock`, a
-task or the repository script, when the account cannot write it; a cargo target
-the account cannot write is given a target of its own instead. A Deno type check
-caches in `DENO_DIR`, and the directories git creates inside a clone are group
-read-only, so a Deno project in a sub-directory with a `deno.lock` can still be
-checked (Issue #4782). A `check` task is eligible only when it is a single
-`deno check` with recognised non-writing flags; newline-separated commands,
-other chains, redirects and unrecognised flags keep the write requirement. A
-stale lockfile may need updating; a permission refusal writing that project's
-lockfile leaves the check to CI. A Deno project that may write into its
-directory (no `deno.lock`, a `package.json`, enabled `vendor`, or
-`nodeModulesDir` other than `none` or `manual`) keeps the write requirement and
-is left to CI when the account cannot write it. A milestone resolution whose
-every check is left to CI this way verified nothing and is refused as unverified
-(Issue #1559, #4761).
+home (`0710`) at build time, so the work root beneath it is reachable even on
+a read-only root filesystem. A checkout the account still cannot read or
+traverse leaves the command to CI rather than running as the worker
+(Issue #4659). So does a command that writes into its directory, such as cargo's
+`Cargo.lock`, a task or the repository script, when the account cannot write
+it; a cargo target the account cannot write is given a target of its own
+instead. A Deno type check caches in `DENO_DIR`, and the directories git
+creates inside a clone are group read-only, so a Deno project in a
+sub-directory with a `deno.lock` can still be checked (Issue #4782). A `check`
+task is eligible only when it is a single `deno check` with recognised
+non-writing flags; newline-separated commands, other chains, redirects and
+unrecognised flags keep the write requirement. A stale lockfile may need
+updating; a permission refusal
+writing that project's lockfile leaves the check to CI. A
+Deno project that may write into its directory (no `deno.lock`, a
+`package.json`, enabled `vendor`, or `nodeModulesDir` other than `none` or
+`manual`) keeps the write requirement and is left to CI when the account
+cannot write it.
+A milestone resolution whose every check is left to CI this way verified
+nothing and is refused as unverified (Issue #1559, #4761).
 
 The merge fast checks use the same `runRepositoryCommand` probe (Issue #4697).
 Before each check the account is probed for traversal and a readable manifest;
@@ -155,49 +158,48 @@ that fails, or an account that cannot reach the checkout, leaves the merge
 `unverified` and its push deferred, with no repair round spent. A manifest the
 worker can see is genuinely absent, such as no `Cargo.toml`, is a failing check
 instead. A cargo check whose target the account cannot write builds in a private
-target under the clone root's `.vibe-fast-check-target` on the executable work
-volume, separate from the milestone gate's target. The worker provisions that
-root, deferring if it cannot; the separate trim-refused target remains on the
-ephemeral layer. The `check` task runs read-only when the milestone gate's Deno
-criteria hold. Any check blocked by the project write probe, or by a stale Deno
-lockfile write refusal, is recorded as left to CI; if no check ran, the merge
-remains unverified.
+target under the clone root's `.vibe-fast-check-target` on the executable work volume,
+separate from the milestone gate's target.
+The worker provisions that root, deferring if it cannot; the separate
+trim-refused target remains on the ephemeral layer.
+The `check` task runs read-only when the milestone gate's Deno criteria hold.
+Any check blocked by the project write probe, or by a stale Deno lockfile write
+refusal, is recorded as left to CI; if no check ran, the merge remains unverified.
 
 A declared name must be a plain identifier. `IFS` and names starting with
 `_vibe_cc_` are the wrapper's own and are refused, so a declaration can never
 silently shorten what is delivered.
 
 If the channel itself faults, the wrapper exits 78 and writes a
-`[vibe-credential-channel]` line to stderr (a short or malformed stream). That
-is recoverable infrastructure, never a pass: the quality gate reports a failed
-run (`failed_credential_delivery`, never sent to the agent as a code fault) with
+`[vibe-credential-channel]` line to stderr (a short or malformed stream). That is
+recoverable infrastructure, never a pass: the quality gate reports a failed run
+(`failed_credential_delivery`, never sent to the agent as a code fault) with
 that line, the merge fast check reports the merge as `unverified`, and the
 milestone gates report `GateAccountUnavailable` and leave the check to CI. A
-credential that cannot be minted is never a pass either: the quality gate fails
-the phase with the mint error, and the merge conflict gate parks the merge with
-it.
+credential that cannot be minted is never a pass either: the quality gate fails the phase with the mint error, and the merge conflict gate parks the merge with it.
 
 The same credentials reach the diff-scoped mutation check, which reruns the
-repository's tests; there a failed `mint` makes the check not applicable, with a
-warning, instead of failing the phase. The check also runs on review-fix pushes,
-where survivors are reported in the PR reply rather than blocking the push (see
-[Diff-scoped mutation check](mutation-check.md)). The
-[coverage carry-over check](coverage-carryover-check.md) passes the repository's
-resolved `quality_credentials` to its test runs in the same way.
+repository's tests; there a failed `mint` makes the check not applicable, with
+a warning, instead of failing the phase. The check also runs on review-fix
+pushes, where survivors are reported in the PR reply rather than blocking the
+push (see [Diff-scoped mutation check](mutation-check.md)).
+The [coverage carry-over check](coverage-carryover-check.md) passes the
+repository's resolved `quality_credentials` to its test runs in the same way.
+
 
 ## Two axes of trust
 
-Who may **direct** the worker, and whose **input** it acts on, are two different
-questions with two different answers. There is no mode switch: the
+Who may **direct** the worker, and whose **input** it acts on, are two
+different questions with two different answers. There is no mode switch: the
 `author_source` key was removed in 1.3.0 (Issue #1066) and a `.config.json`
 still carrying it is refused at load, naming the edit.
 
-| Actor                                                    | May **direct** work (raise / label / schedule) | May **supply input** (test results, code reviews, PR comments) |
-| -------------------------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
-| Human with write access, not a Vibe Coder                | **yes**                                        | yes                                                            |
-| Vibe Coder (`VibeCoderST`, `stservice`)                  | **no**                                         | yes                                                            |
-| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no** — except adding `idle-task` (below)     | yes                                                            |
-| Anyone else — the public, unknown bots                   | **no**                                         | **no**                                                         |
+| Actor | May **direct** work (raise / label / schedule) | May **supply input** (test results, code reviews, PR comments) |
+| --- | --- | --- |
+| Human with write access, not a Vibe Coder | **yes** | yes |
+| Vibe Coder (`VibeCoderST`, `stservice`) | **no** | yes |
+| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no** — except adding `idle-task` (below) | yes |
+| Anyone else — the public, unknown bots | **no** | **no** |
 
 ### Axis 1 — who may direct work
 
@@ -220,15 +222,14 @@ raise or label work. Write access alone does not confer the right to direct.
 ### Axis 2 — whose input the worker acts on
 
 Axis 1, **plus a known list** — the Vibe Coder logins and
-`authorized_commenters`. "Known" is exactly the property that cannot be derived
-from repository permissions: a GitHub App is never a repository collaborator, so
-Copilot reviews and Actions results would silently stop being processed under a
-pure `hasWriteAccess` rule.
+`authorized_commenters`. "Known" is exactly the property that cannot be
+derived from repository permissions: a GitHub App is never a repository
+collaborator, so Copilot reviews and Actions results would silently stop being
+processed under a pure `hasWriteAccess` rule.
 
-`authorized_commenters` defaults to
-`["github-copilot[bot]",
-"github-actions[bot]"]` when the key is absent. Set it
-— including to `[]` — and you get exactly what you wrote.
+`authorized_commenters` defaults to `["github-copilot[bot]",
+"github-actions[bot]"]` when the key is absent. Set it — including to `[]` —
+and you get exactly what you wrote.
 
 **The asymmetry is the point.** A Vibe Coder's or a known bot's review is
 accepted as input; neither may schedule or change work.
@@ -238,39 +239,40 @@ accepted as input; neither may schedule or change work.
 A Vibe Coder login or an `authorized_commenters` bot may add the `idle-task`
 label, the lowest-priority work trigger, and the idle-task collector honours
 that add: an issue whose most recent `idle-task` add came from such a login is
-claimable. This is the only grant axis 2 carries into axis 1, and it is narrow —
-a listed bot is trusted only as the **adder** of that one label, never as the
-issue author, and never for `work-on`, `top-priority`, `low-priority` or
-`planning`, which it still cannot raise or change. The motivating case is the
-fleet PR-reviewer App (`stsoftware-pr-reviewer[bot]`, listed in
-`authorized_commenters` on fleet hosts), which files improvement issues labelled
-`idle-task` via the review-fleet-prs skill (Issue #2882).
+claimable. This is the only grant axis 2 carries into axis 1, and it is
+narrow — a listed bot is trusted only as the **adder** of that one label,
+never as the issue author, and never for `work-on`, `top-priority`,
+`low-priority` or `planning`, which it still cannot raise or change. The
+motivating case is the fleet PR-reviewer App
+(`stsoftware-pr-reviewer[bot]`, listed in `authorized_commenters` on fleet
+hosts), which files improvement issues labelled `idle-task` via the
+review-fleet-prs skill (Issue #2882).
 
 ### Which key serves which axis
 
-| Key                     | Axis    | What it does                                                                                                                                                  |
-| ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| _(none — derived)_      | 1       | Who may direct work. Repository collaborators with write/maintain/admin, minus the Vibe Coder logins and bots, intersected across the monitored repos.        |
-| `authorized_commenters` | 2       | The known bots whose input the worker acts on. Never a grant of the right to direct work, except that an `idle-task` label it adds is honoured (Issue #2882). |
-| `service_accounts`      | neither | The fleet's own logins (identity-guard allowlist). Also **the exclusion input** for axis 1, and part of the fleet-identity set that governs scheduling.       |
-| `fleet_pr_authors`      | neither | Sibling fleet logins. Same two roles as `service_accounts`.                                                                                                   |
-| `exclusion_team`        | 1       | Optional **additional** exclusion, `org/slug`. Never required to exclude the fleet's own accounts.                                                            |
-| `allowed_authors`       | neither | **No longer a trust grant** (Issue #1066). Parsed only as the default PR reviewer / assignee when `pr_reviewers` is unset. Set `pr_reviewers` and remove it.  |
-| `pr_reviewers`          | neither | Who is requested as a reviewer on worker PRs — an operator preference.                                                                                        |
+| Key | Axis | What it does |
+| --- | ---- | ------------ |
+| _(none — derived)_ | 1 | Who may direct work. Repository collaborators with write/maintain/admin, minus the Vibe Coder logins and bots, intersected across the monitored repos. |
+| `authorized_commenters` | 2 | The known bots whose input the worker acts on. Never a grant of the right to direct work, except that an `idle-task` label it adds is honoured (Issue #2882). |
+| `service_accounts` | neither | The fleet's own logins (identity-guard allowlist). Also **the exclusion input** for axis 1, and part of the fleet-identity set that governs scheduling. |
+| `fleet_pr_authors` | neither | Sibling fleet logins. Same two roles as `service_accounts`. |
+| `exclusion_team` | 1 | Optional **additional** exclusion, `org/slug`. Never required to exclude the fleet's own accounts. |
+| `allowed_authors` | neither | **No longer a trust grant** (Issue #1066). Parsed only as the default PR reviewer / assignee when `pr_reviewers` is unset. Set `pr_reviewers` and remove it. |
+| `pr_reviewers` | neither | Who is requested as a reviewer on worker PRs — an operator preference. |
 
 ### The fleet exclusion needs no configuration
 
 The Vibe Coder accounts hold repository write access **by necessity** — they
 push branches. Under a collaborator-derived rule they would therefore become
-trusted to direct their own work, which is the exact inverse of the requirement.
-So the exclusion defaults from the fleet login list the configuration already
-carries:
+trusted to direct their own work, which is the exact inverse of the
+requirement. So the exclusion defaults from the fleet login list the
+configuration already carries:
 
 ```text
 isVibeCoder(login) = login ∈ (service_accounts ∪ fleet_pr_authors ∪ {github_user})
 ```
 
-`exclusion_team` remains available as an _additional_ exclusion for
+`exclusion_team` remains available as an *additional* exclusion for
 org-team-based setups, and is never required. A deployment that resolves an
 **empty** fleet login set fails loudly at config load rather than running with
 the workers trusted — `./setup.sh` has defaulted `service_accounts` to the
@@ -302,16 +304,16 @@ skipped — never silently permissive. See
 [Setup — Token scopes for derived trust](SETUP.md#token-scopes-for-derived-trust).
 
 A monitored repo the worker's login **cannot list** — 404, or 403 "Must have
-push access to view repository collaborators" — is a different thing (Issue
-#1453). It is a property of the deployment, not an outage, and the worker could
-never write to that repo either. Such a repo is **skipped**: named once in a
-`[derived-authors] … skipped` warning with GitHub's own words, and left out of
-the fold. The fold still intersects across every repo that resolved, so write
-access on one repo still confers nothing on another. Only when _every_ monitored
-repo is skipped is there nothing to trust, and the resolve fails closed. A
-least-privilege service account with `read` on the fleet's data repositories
-therefore keeps working; before #1453 it stood the whole fleet down on every
-cycle.
+push access to view repository collaborators" — is a different thing
+(Issue #1453). It is a property of the deployment, not an outage, and the worker
+could never write to that repo either. Such a repo is **skipped**: named once
+in a `[derived-authors] … skipped` warning with GitHub's own words, and left
+out of the fold. The fold still intersects across every repo that resolved,
+so write access on one repo still confers nothing on another. Only when
+*every* monitored repo is skipped is there nothing to trust, and the resolve
+fails closed. A least-privilege service account with `read` on the fleet's
+data repositories therefore keeps working; before #1453 it stood the whole
+fleet down on every cycle.
 
 ### Who is excluded from axis 1
 
@@ -331,45 +333,44 @@ work it with no human in the loop. That is why `service_accounts` and
 
 ### Snapshot, refresh and `gh` cost
 
-The trusted-author snapshot is resolved at the start of a scan cycle and then
-**reused for `trusted_authors_cache_hours`** (default one hour; Issue #1453).
-One paginated `gh api` call lists collaborators per monitored repo
-(`repos/<owner>/<repo>/collaborators`); a configured `exclusion_team` adds one
-paginated team-members call (`orgs/<org>/teams/<slug>/members`). Before #1453
-that ran on **every** cycle — about 33 calls every 40 seconds on a 32-repo
-fleet, for a set that changes a few times a year, on a budget every host shares
-— and was a real part of why hosts spent most of each hour parked on the rate
-limit.
+The trusted-author snapshot is resolved at the start of a scan cycle and
+then **reused for `trusted_authors_cache_hours`** (default one hour;
+Issue #1453). One paginated `gh api` call lists collaborators per monitored repo
+(`repos/<owner>/<repo>/collaborators`); a configured `exclusion_team` adds
+one paginated team-members call (`orgs/<org>/teams/<slug>/members`).
+Before #1453 that ran on **every** cycle — about 33 calls every 40 seconds on a
+32-repo fleet, for a set that changes a few times a year, on a budget every
+host shares — and was a real part of why hosts spent most of each hour
+parked on the rate limit.
 
 Within the window no call is made. After it, a fresh resolve replaces the
 snapshot. The trade-off is stated and accepted: a collaborator granted or
 revoked mid-window is seen at the next refresh, at most
-`trusted_authors_cache_hours` later; `0` restores the per-cycle refresh for a
-deployment that wants it, and a restart always starts from a fresh fetch.
+`trusted_authors_cache_hours` later; `0` restores the per-cycle refresh for
+a deployment that wants it, and a restart always starts from a fresh fetch.
 
 The snapshot lives in the worker's **memory only**, never on disk: the work
-volume is writable by the agent subprocess, and a trust set the agent could edit
-would be exactly the widening the derived design exists to prevent.
+volume is writable by the agent subprocess, and a trust set the agent could
+edit would be exactly the widening the derived design exists to prevent.
 
-**Failure is still fail-closed**, with one narrowing (Issue #1453). When a fresh
-resolve fails _transiently_ — a network fault, a 5xx, a rate limit — and a
-snapshot no older than six hours exists, the snapshot is served and the log says
-so with its age:
+**Failure is still fail-closed**, with one narrowing (Issue #1453). When a
+fresh resolve fails *transiently* — a network fault, a 5xx, a rate limit —
+and a snapshot no older than six hours exists, the snapshot is served and
+the log says so with its age:
 `[derived-authors] refresh failed transiently on … serving the trusted-author
-snapshot fetched 4021s ago`.
-That is a timestamped result of a real fetch, not the local `allowed_authors`
-array the rule forbids. Past six hours, or with no snapshot at all, or on a
-_permanent_ failure — an empty Vibe Coder login set, a team that does not exist,
-no listable repo at all — the cycle logs `[TRUST_REFRESH]`, marks the host
-unhealthy, and skips every trust-dependent pass. It never falls back to the
-local arrays. See
+snapshot fetched 4021s ago`. That is a timestamped result of a real fetch,
+not the local `allowed_authors` array the rule forbids. Past six hours, or
+with no snapshot at all, or on a *permanent* failure — an empty Vibe Coder
+login set, a team that does not exist, no listable repo at all — the cycle
+logs `[TRUST_REFRESH]`, marks the host unhealthy, and skips every
+trust-dependent pass. It never falls back to the local arrays. See
 [Issue processing — Trusted-author refresh](workflows/issue-processing.md#per-cycle-trusted-author-refresh).
 
 ## 👥 Multiple Allowed Authors
 
-The trusted-author set — from `allowed_authors` under `"config"`, or from GitHub
-collaborators minus exclusions under `"github"` — lets multiple users schedule
-tasks. Each trusted author can:
+The trusted-author set — from `allowed_authors` under `"config"`, or from
+GitHub collaborators minus exclusions under `"github"` — lets multiple
+users schedule tasks. Each trusted author can:
 
 - Create issues that are automatically processed
 - Add the `work-on` label to trigger work on issues created by others
@@ -383,11 +384,12 @@ still supported and will be converted to an array internally.
 ### Trusted humans are not fleet hosts
 
 Two lists name GitHub logins and they grant opposite things. Merging them is the
-regression recorded in, so read the distinction before editing either:
+regression recorded in, so read the distinction before editing
+either:
 
-| List               | Members              | What membership grants                                                                                                                                                                                        |
-| ------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fleet_pr_authors` | Sibling fleet logins | Their PRs are **maintained** — claimed, fixed, commented on, merged                                                                                                                                           |
+| List               | Members              | What membership grants                                                        |
+| ------------------ | -------------------- | ------------------------------------------------------------------------------ |
+| `fleet_pr_authors` | Sibling fleet logins | Their PRs are **maintained** — claimed, fixed, commented on, merged             |
 | Trusted authors    | Trusted humans       | They may **instruct** the worker — issues, labels, comments, invitations. Derived from write/maintain/admin collaborators minus the Vibe Coder logins and bots — see [Two axes of trust](#two-axes-of-trust). |
 
 `service_accounts` names fleet logins too, so it is unioned into the effective
@@ -399,16 +401,16 @@ regression recorded in, so read the distinction before editing either:
 Two different questions read these lists, and mixing them up is a scheduling
 bug, not a permissions bug:
 
-| Question                                                                         | Governed by                                                 | Key(s)                                                  |
-| -------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------- |
-| **Permission** — whose issues, labels and comments may the worker act on?        | The trusted-author set                                      | `allowed_authors` (or derived collaborators)            |
-| **Scheduling** — who already holds this work stream, so I must not duplicate it? | The fleet-identity set (`resolveFleetMaintenanceAuthorSet`) | `github_user` + `fleet_pr_authors` + `service_accounts` |
+| Question                                                                    | Governed by                                                                    | Key(s)                                     |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------ |
+| **Permission** — whose issues, labels and comments may the worker act on?     | The trusted-author set                                                         | `allowed_authors` (or derived collaborators) |
+| **Scheduling** — who already holds this work stream, so I must not duplicate it? | The fleet-identity set (`resolveFleetMaintenanceAuthorSet`)                    | `github_user` + `fleet_pr_authors` + `service_accounts` |
 
 **Putting a human in `allowed_authors` does not make them a scheduler
 participant.** Locking and scheduling exist only between Vibe Coders; there is
 no locking or scheduling between humans and Vibe Coders. A human may be assigned
-an issue, hold a milestone, or have an open PR, and the worker will still pick
-up other work in that same work stream. Only another Vibe Coder — this host or a
+an issue, hold a milestone, or have an open PR, and the worker will still pick up
+other work in that same work stream. Only another Vibe Coder — this host or a
 sibling named in `fleet_pr_authors`/`service_accounts` — occupies a work stream
 or defers an issue.
 
@@ -453,9 +455,9 @@ singular key with an array value:
 
 `pr_reviewer_app` configures the GitHub App required by the unattended
 `review-fleet-prs` runner (`.claude/skills/review-fleet-prs/scripts/run.sh`).
-The runner stops if the App is missing or cannot authenticate, rather than using
-the host's signed-in `gh` user. It is read by that skill only, never by the
-worker.
+The runner stops if the App is missing or cannot authenticate, rather than
+using the host's signed-in `gh` user. It is read by that skill only, never by
+the worker.
 
 ```json
 {
@@ -466,43 +468,43 @@ worker.
 }
 ```
 
-The installation is looked up from the App on the owner of `repos`. Keep the key
-out of the checkout and out of `~/.vibe-coder/credentials/`, which is mounted
-into the container. Use a different App from the worker's own `github_app_*`
-identity, since GitHub refuses an approval from a PR's author. When the fleet PR
-babysitter runs under the same host user, its Codex filesystem profile denies
-this configured key along with the worker credential directory, the worker App
-and SSH keys, and the host `gh` store; see the
+The installation is looked up from the App on the owner of `repos`. Keep the
+key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
+mounted into the container. Use a different App from the worker's own
+`github_app_*` identity, since GitHub refuses an approval from a PR's author.
+When the fleet PR babysitter runs under the same host user, its Codex filesystem
+profile denies this configured key along with the worker credential directory,
+the worker App and SSH keys, and the host `gh` store; see the
 [babysitter credential boundary](workflows/fleet-pr-babysitter.md).
 
-The App needs **Pull requests**, **Issues**, **Contents** and **Workflows** read
-and write, plus **Checks** and **Commit statuses** read. Contents write lets the
-gate's Dependabot upkeep merge an already-clean PR with `gh pr merge --auto` and
-arm auto-merge, and lets the skill bring an approved fleet PR's branch up to
-date (`update-branch`); Workflows write lets it merge Dependabot's GitHub
-Actions bumps, which change `.github/workflows/*`. See
+The App needs **Pull requests**, **Issues**, **Contents** and **Workflows**
+read and write, plus **Checks** and **Commit statuses** read. Contents write
+lets the gate's Dependabot upkeep merge an already-clean PR with
+`gh pr merge --auto` and arm auto-merge, and lets the skill bring an approved
+fleet PR's branch up to date (`update-branch`); Workflows write lets it merge
+Dependabot's GitHub Actions bumps, which change `.github/workflows/*`. See
 [the skill doc](../.claude/skills/review-fleet-prs/references/running-unattended.md#as-a-github-app)
 for details.
 
 Then add `<app-slug>[bot]` to `authorized_commenters` on every fleet host, so
-the worker acts on its change requests. Also add that login to
-`service_accounts` or `fleet_pr_authors` on every fleet host: all lanes must
-trust its strict-base refresh ownership comments. The reviewer refuses refreshes
-until its own configuration includes the login. Keep `github-copilot[bot]` and
-`github-actions[bot]` in the list: setting the key replaces those defaults. Do
-**not** add the bot to `pr_reviewers`. That list is requested as reviewers on
-every new worker PR, and GitHub cannot request a review from an App, so PR
+the worker acts on its change requests. Also add that login to `service_accounts`
+or `fleet_pr_authors` on every fleet host: all lanes must trust its strict-base
+refresh ownership comments. The reviewer refuses refreshes until its own
+configuration includes the login. Keep `github-copilot[bot]` and
+`github-actions[bot]` in the list: setting the key replaces those defaults.
+Do **not** add the bot to `pr_reviewers`. That list is requested as reviewers
+on every new worker PR, and GitHub cannot request a review from an App, so PR
 creation would fail.
 
 ## ⏩ Parallel review rounds
 
 `pr_reviewer_parallel` sets how many review rounds the unattended
-`review-fleet-prs` runner (`scripts/run.sh`) runs at once, each reviewing one PR
-in its own worker container (Issue #4395). It defaults to `3`; `1` reviews one
-PR at a time. Each round uses a subscription from the worker's Claude credential
-pool, so a higher value spends quota faster and runs more containers side by
-side. A value that is not a whole number above 0 is logged and the default is
-used. It is read by `run.sh` only, never by the worker.
+`review-fleet-prs` runner (`scripts/run.sh`) runs at once, each reviewing one
+PR in its own worker container (Issue #4395). It defaults to `3`; `1` reviews
+one PR at a time. Each round uses a subscription from the worker's Claude
+credential pool, so a higher value spends quota faster and runs more
+containers side by side. A value that is not a whole number above 0 is logged
+and the default is used. It is read by `run.sh` only, never by the worker.
 
 ```json
 {
@@ -556,12 +558,12 @@ reviewer's assessment. It is read by the reviewer skill, never by the worker.
 
 ### Migrating from `pr_reviewer_auto_release`
 
-| Setting                                             | Before (Issue #3397, opt-in)                               | Now (Issue #4655)                                                                                                    |
-| --------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `pr_reviewer_auto_release` absent or `[]`           | Every test-change hold kept for the owner                  | Ignored; the policy is on by default for every repo                                                                  |
-| `pr_reviewer_auto_release: ["owner/repo"]`          | That repo auto-approved a qualifying issue-required change | Not read. The value is tolerated and reported as ignored in the effective-policy line; the repo gets the new default |
-| `pr_reviewer_auto_release` set to a malformed value | Failed loud in `post.ts`                                   | Tolerated and reported as ignored                                                                                    |
-| `pr_reviewer_test_hold_repos: ["owner/repo"]`       | Not available                                              | The explicit owner override: that repo keeps the owner hold for every meaningful test change                         |
+| Setting | Before (Issue #3397, opt-in) | Now (Issue #4655) |
+| --- | --- | --- |
+| `pr_reviewer_auto_release` absent or `[]` | Every test-change hold kept for the owner | Ignored; the policy is on by default for every repo |
+| `pr_reviewer_auto_release: ["owner/repo"]` | That repo auto-approved a qualifying issue-required change | Not read. The value is tolerated and reported as ignored in the effective-policy line; the repo gets the new default |
+| `pr_reviewer_auto_release` set to a malformed value | Failed loud in `post.ts` | Tolerated and reported as ignored |
+| `pr_reviewer_test_hold_repos: ["owner/repo"]` | Not available | The explicit owner override: that repo keeps the owner hold for every meaningful test change |
 
 ### Effective policy
 
@@ -581,64 +583,63 @@ The following settings have built-in defaults. Only values you override via
 changes in the codebase, the new default flows to all installations unless
 explicitly overridden.
 
-| Setting                           | Default                      | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| --------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `failed_label`                    | `failed`                     | Retired label: never applied, and a leftover one is stripped (Issue #4158)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `failed_once_label`               | `failed-once`                | Label applied after first failure (issue will be retried)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `refine_issue_label`              | `refine-issue`               | Label for collaborative issue refinement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `planning_label`                  | `planning`                   | Label for planning mode (task breakdown instead of implementation)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `codeowners_owners`               | `["@nleck", "@Green-Beret"]` | Owners of the default `.github/CODEOWNERS` that `./setup.sh` writes into a monitored repo's `WORK_DIR` checkout when the repo has no CODEOWNERS in the checkout or on its default branch (Issue #2627). The file holds exactly three rules — `/.github/workflows/`, `/.github/actions/` and `/.github/CODEOWNERS` — each owned by this list, and rides along in the next worker PR. An existing CODEOWNERS is never edited. Each entry must be `@user` or `@org/team`; a bot is refused at load naming the entry: any login ending `[bot]`, the fleet accounts `@stservice` and `@VibeCoderST`, and `@stSoftwareAU/developers` (the team includes the bots).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `question_label`                  | `question`                   | Label for question answering mode. After answering, the worker removes `question` and adds `needs-human` — the user re-adds `question` to ask a follow-up. The retired `answered_label` config key is no longer accepted.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `quorum_label`                    | `quorum`                     | Label for the Quorum plan-off. Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `needs_human_label`               | `needs-human`                | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `run_mode`                        | `container`                  | Where the worker runs. The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `update_mode`                     | `dynamic`                    | How this host tracks Vibe Coder releases. `dynamic` (the load-time default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. `./setup.sh` and `setup.ps1` offer whatever `update_mode` the config already holds (so a host that says `frozen` is offered `frozen` on a re-run); when the key is absent they offer `frozen` only if no `.config.json` existed before the setup run, and `dynamic` for an existing config with no `update_mode`. `./run.sh upgrade` moves a frozen host's pins onto the newest release — see [The upgrade loop](#the-upgrade-loop).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `pinned_ref`                      | _(unset)_                    | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `pinned_tool_versions`            | _(unset)_                    | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `copilot_code_review`             | `leave`                      | Whether setup's `repo-settings-harden` turns Copilot code review `on` or `off` on every monitored repository, or leaves each as it is (`leave`, the default — an absent key means the same, so an existing host changes nothing). Copilot code review is **billed per review, never free — even on a public repository**: GitHub charges each automatic review to the PR author's Copilot plan, or to the organisation. `off` removes the `copilot_code_review` rule from every repository ruleset, deleting a ruleset it leaves empty; an organisation ruleset is reported, never edited. `on` makes sure a review rule applies to the default branch, creating a `Vibe Coder Copilot review` ruleset when none does. `./setup.sh` and `setup.ps1` ask the question (Issue #2701). Any other value fails loudly at config load, naming the accepted values.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `agent_provider`                  | `claude`                     | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` selects the provider on a host whose file states none; since 1.4.0 it no longer overrides the file (Issue #1032 — see [Release notes](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)). An unsupported id fails loudly at startup, naming the supported providers. A per-repo pin (`repo_config.<repo>.agent_provider`, Issue #2048) scopes the choice to one repository: it binds when an invocation carries no explicit provider of its own, and wins over this global key and over `auto` ranking for that repo — Claude's behaviour is unchanged wherever no repo pins a provider. An `issue` run on `codex`, `gemini` or `deepseek` that carries sub-agent definitions is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has its split, reviewers and sub-agent definitions dropped with a warning otherwise (Issue #4109; see `issue_executor_split`). When the provider is a repository pin, the run is stripped and kept (Issue #4346).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `agent_provider_mode`             | `pinned`                     | Provider-selection strategy. `pinned` preserves the historical `agent_provider` behaviour. `auto` opts a mixed host into quota-aware selection before each work item; `agent_provider` becomes the preference tie-break and only enabled credentials proved to use fixed-price subscriptions are candidates. Explicit per-invocation selection remains absolute. While auto is enabled, `VIBE_AGENT_PROVIDER` is an emergency per-process pin and must name an enabled provider. If all eligible subscriptions are exhausted or unavailable, the worker waits rather than selecting metered or unknown billing. Currently Claude OAuth subscriptions and Codex ChatGPT subscriptions have status adapters; other providers are excluded from auto mode. See [Provider parity](PROVIDER-PARITY.md#routing-and-fallback).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `agent_providers`                 | `["claude"]`                 | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) applies when the file states no set; since 1.4.0 it no longer overrides the file (Issue #1032). The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `agent_provider_fallback`         | `[]`                         | Opt-in ordered alternatives when the preferred provider has a classified outage (subscription exhausted, transient rate limit, or model unavailable). With Claude preferred, the health gate first rotates to another Claude credential in the pool that still has budget, and switches to an alternative only once **every** credential is exhausted on its five-hour window or its weekly limit, switching back when one reopens; the weekly pace projection never moves work to an alternative (Issue #2637). Omitted or `[]` pins `agent_provider` — no substitution. Every id must already be in `agent_providers`; an unconfigured or uninstalled provider fails loudly at startup. Ordinary task failures and authentication/configuration errors never trigger a switch. This list is **not** restricted to fixed-price subscriptions: an alternative that bills per token is honoured as written, and the health gate logs `billing=<mode>` plus a loud line naming the metered credential variable before switching (Issue #1923). Leave it empty to keep the never-metered guarantee end to end. **Not enabled on the production fleet by default** (Issue #1700). See [Provider parity](PROVIDER-PARITY.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `egress_allow_hosts`              | `[]`                         | Extra hosts the worker container may reach, beyond the built-in list (GitHub, the package registries and each enabled provider's API hosts). Each entry is a hostname or `*.hostname`, port 443 only (e.g. `"llm-gateway.example.com"`, `"*.example.org"`). Validated at config load — a bad entry fails startup, naming the entry. Not enforced for the container until the container is routed through the egress proxy (Issue #4047). See [CONTAINMENT.md — egress allowlist](CONTAINMENT.md#egress-allowlist).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `container_tools`                 | `[]`                         | Extra build-time tools this deployment's image bakes in. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it — absolute, `~`-anchored, newline-bearing and `..`-escaping values are all refused — so no selection can point PATH or an environment variable at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked example](CONTAINER.md#deployer-supplied-build-time-tools) and [Private Extensions](PRIVATE-EXTENSIONS.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `container_extension`             | _(none)_                     | A private image layer this deployment builds on top of the standard one — for services and toolchains a declarative archive install cannot express. An object of `path` (absolute host directory holding the extension, never the home directory or an ancestor of it), optional `containerfile` (default `Containerfile`) and optional `start`, the last two **relative to `path`**. The operator syncs their own private repository into `path`; the Vibe Coder clones nothing. The Containerfile must derive `FROM ${VIBE_BASE_IMAGE}`, the extension is copied to the fixed in-image prefix `/opt/vibe-extension/`, and the image tag is a content hash of the whole directory, so changing any file rebuilds. A declared `start` runs before the worker and aborts the sandbox start with exit 76 if it fails. A malformed block fails loudly at config load, naming the field. See [Container Extension](CONTAINER-EXTENSION.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `claude_model`                    | unset                        | Host-wide Claude model for every phase. Unset, each phase uses its own default (the `issue` manager runs on `sonnet`). Setting it overrides the per-phase defaults, so leave it unset unless every phase should run on one model (Issue #4117).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `best_planning_model`             | `""` (derive from routing)   | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `phase_model_tiers`               | `{}`                         | Shared phase-to-tier overrides: `best`, `standard` or `fast`, independent of provider. See [Shared model policy](MODEL-AND-CACHING.md#model-selection).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `provider_model_tiers`            | `{}`                         | Each provider's concrete model ids for `best`, `standard` and `fast`. Explicit provider phase overrides take precedence.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `phase_model_overrides`           | `{}`                         | Per-phase model tier overrides (see below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `phase_effort_overrides`          | `{}`                         | Per-phase effort level overrides (see [Effort Level Configuration](#-effort-level-configuration))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `codex_phase_model_overrides`     | `{}`                         | Per-phase **Codex** model overrides, applied when `agent_provider` is `codex`. Same shape as `phase_model_overrides`, with Codex model ids. See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `codex_phase_effort_overrides`    | `{}`                         | Per-phase **Codex** reasoning-effort overrides (`minimal`, `low`, `medium`, `high` — Codex has no `xhigh`/`max`). See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `gemini_phase_model_overrides`    | `{}`                         | Per-phase **Gemini** model overrides, applied when `agent_provider` is `gemini`. Same shape as `phase_model_overrides`, with Gemini model ids. There is no Gemini effort key — the CLI has no reasoning-effort option, and an effort requested for a Gemini phase is warned about instead. See [Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `deepseek_phase_model_overrides`  | `{}`                         | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-v4-pro` for the planning-shaped phases, `deepseek-flash` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `issue_executor_split`            | `true`                       | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of an executor (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) — Haiku at `high` effort by default, or Sonnet at `medium` effort when `issue_sub_agent_tier` resolves `"sonnet"` (Issues #3402, #3473) — while the advisor — the main session — keeps the phase's own model and effort. Off, no executor definitions are built; `--agents` is still passed when `issue_reviewer_agents` is on or `issue_sub_agent_tier` resolves `"haiku"` (which adds the read-only explorer), and only with the split and the reviewers off and a tier other than `"haiku"` is no `--agents` argument passed and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` (which runs the same Claude binary against its own endpoint but strips `--agents`) an `issue` run that carries any `--agents` definition is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, and otherwise has its split, reviewers and sub-agent definitions dropped with a warning before the agent starts (Issue #4109). When the provider is a repository pin, the run is stripped and kept (Issue #4346); a run on a health-gate fallback provider (`agent_provider_fallback`) is dropped, never rerouted back to the exhausted Claude pool. The runner's refusal of such a run (Issue #4010) is a backstop: it still fires for a caller that bypasses the planner, and when the retry ladder switches to `agent_provider_fallback` and keeps the definitions (Issue #4034). On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The advisor's own run-record files are the one exception: it may still write the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` and the PR-feedback reply file `.pr_response_message`. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and every model the run served — the advisor's and each sub-agent's (executors and reviewers) — is costed from the CLI's per-model `modelUsage` breakdown at its own rate, one cost sub-bullet per model, in both the comment and the callback telemetry (Issue #3603); a run that served several models but recorded no readable breakdown says `sub-agents: not costed` instead of presenting the advisor-only figure as the run's cost. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
-| `issue_sub_agent_tier`            | `"haiku"`                    | Model tier for the `issue`-phase executor sub-agent, and for whether the run carries the read-only explorer sub-agent (Issue #3402). It never moves the reviewers: both run on Opus at every tier (owner decision 2026-10-22). `"haiku"` is the default since the owner's decision on Issue #3473, under a Sonnet `issue` manager. `"sonnet"` puts the executor on Sonnet at `medium` effort. `"haiku"` moves the executor (when `issue_executor_split` resolves on) to Haiku at `high` effort and adds a read-only `explorer` sub-agent (`Read`, `Grep`, `Glob` only, no `Agent` tool) to every run on the tier, whatever the split and reviewer switches resolved to. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the `"haiku"` default stands. A `repo_config.<repo>.issue_sub_agent_tier` entry overrides it for that repository. See [Haiku sub-agent tier](MODEL-AND-CACHING.md#haiku-sub-agent-tier-issue-phase). Under `codex`, `gemini` or `deepseek` the run's definitions are rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or dropped with a warning otherwise (Issue #4109; see `issue_executor_split`). When the provider is a repository pin, the run is stripped and kept (Issue #4346). The resolved tier is also counted in the fleet summary's per-tier `issue_tier_runs` / `issue_tier_usd` figures ([fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855)) and recorded on the PR an issue run opens as a hidden `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`) marker, which attributes that PR's outcomes — `pr_tier_rejections`, `ci_fix_tier_*`, `pr_feedback_tier_usd`, `merged_tier_prs` and `cost_per_merged_pr` (Issue #3404) — to the tier (Issue #3403).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `issue_reviewer_agents`           | `true`                       | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Sonnet at `high` since Issue #3473). On, the invocation carries a `spec-reviewer` and a `standards-reviewer`, both `opus` at `medium` effort at every `issue_sub_agent_tier` (owner decision 2026-10-22: Opus does the code reviews; they were Sonnet, and the Standards reviewer Haiku on the Haiku tier, under Issues #3402 and #3473), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` a run carrying the definitions is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has them dropped with a warning otherwise (Issue #4109) — see `issue_executor_split`. When the provider is a repository pin, the run is stripped and kept (Issue #4346). Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `external_orchestration`          | `false`                      | Opt into independent manager/executor/reviewer CLI calls for issue runs. A repository boolean overrides this host value; setting it to `false` restores native dispatch. See [Role configuration](ROLE-CONFIGURATION.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `subscription_allocation`         | absent                       | Optional dry-run-first allocation policy: explicit `auto_routing`, trial arms, fixed-subscription provider budgets, host capacities/weights, complete lifecycle ledger paths and measured capacity evidence. Applies to main-loop issue runs; no subscription changes or metered access. See [Subscription allocation](SUBSCRIPTION-ALLOCATION.md) for schema, defaults, sequential uncertainty, rollout and reset.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `external_orchestration_settings` | `{}`                         | Validated role selections (`manager`, `executor`, `reviewer`: `provider`, `model`, `effort`, `cli_adapter`) and call limits (`max_retries`, `max_concurrency`, `max_invocations`, `max_cost_usd`). Repository settings override individual host fields. Read only for opted-in issue runs; all named providers must be enabled in `agent_providers`. See [Role configuration](ROLE-CONFIGURATION.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `idle_task_template_weights`      | `{}`                         | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#%EF%B8%8F-idle-task-template-weights))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `idle_task_cadence`               | policy                       | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `software_min_versions`           | `{ "claude": "2.1.293" }`    | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `log_dir`                         | platform default             | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `verbosity`                       | `standard`                   | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `exclusion_team`                  | unset                        | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `fleet_run_archive`               | unset                        | Optional `owner/repo` slug naming the operator's private fleet run archive — a repository a hook extension fills with per-run records (outcome, mode, host, token and cost telemetry) from every host. Validated as an `owner/repo` slug at load; a malformed value fails config loading loudly. Absent (the default) means fleet-wide measurement is off. See [Fleet Run Archive](#-fleet-run-archive).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `subscription_allocation_label`   | unset                        | Operator-chosen label naming the subscription allocation this host's runs draw on (Issue #3718), recorded on each issue's lifecycle-ledger assignment event. A label only — do not put an account email, ID or fee in it; the format rule below refuses an e-mail address, but cannot tell a numeric account ID from a label. This is not cost or billing allocation. Lowercase letters, digits, `.`, `_`, `-`, starting with a letter or digit, at most 64 characters; anything else fails config loading, and the error does not echo the value. Unset records no label; blank and whitespace-bearing values are rejected. See [Lifecycle ledger and issue assignment](INTERNALS.md#-lifecycle-ledger-and-issue-assignment-issue-3718).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Setting                      | Default                   | Description                                                                                                                                                                                                                                                                                      |
+| ---------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `failed_label`               | `failed`                  | Retired label: never applied, and a leftover one is stripped (Issue #4158)                                                                                                                                                                                                                       |
+| `failed_once_label`          | `failed-once`             | Label applied after first failure (issue will be retried)                                                                                                                                                                                                                                        |
+| `refine_issue_label`         | `refine-issue`            | Label for collaborative issue refinement                                                                                                                                                                                                                                                         |
+| `planning_label`             | `planning`                | Label for planning mode (task breakdown instead of implementation)                                                                                                                                                                                                                               |
+| `codeowners_owners` | `["@nleck", "@Green-Beret"]` | Owners of the default `.github/CODEOWNERS` that `./setup.sh` writes into a monitored repo's `WORK_DIR` checkout when the repo has no CODEOWNERS in the checkout or on its default branch (Issue #2627). The file holds exactly three rules — `/.github/workflows/`, `/.github/actions/` and `/.github/CODEOWNERS` — each owned by this list, and rides along in the next worker PR. An existing CODEOWNERS is never edited. Each entry must be `@user` or `@org/team`; a bot is refused at load naming the entry: any login ending `[bot]`, the fleet accounts `@stservice` and `@VibeCoderST`, and `@stSoftwareAU/developers` (the team includes the bots). |
+| `question_label` | `question` | Label for question answering mode. After answering, the worker removes `question` and adds `needs-human` — the user re-adds `question` to ask a follow-up. The retired `answered_label` config key is no longer accepted. |
+| `quorum_label` | `quorum` | Label for the Quorum plan-off. Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
+| `needs_human_label` | `needs-human` | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel. |
+| `run_mode` | `container` | Where the worker runs. The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
+| `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the load-time default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. `./setup.sh` and `setup.ps1` offer whatever `update_mode` the config already holds (so a host that says `frozen` is offered `frozen` on a re-run); when the key is absent they offer `frozen` only if no `.config.json` existed before the setup run, and `dynamic` for an existing config with no `update_mode`. `./run.sh upgrade` moves a frozen host's pins onto the newest release — see [The upgrade loop](#the-upgrade-loop). |
+| `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
+| `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
+| `copilot_code_review` | `leave` | Whether setup's `repo-settings-harden` turns Copilot code review `on` or `off` on every monitored repository, or leaves each as it is (`leave`, the default — an absent key means the same, so an existing host changes nothing). Copilot code review is **billed per review, never free — even on a public repository**: GitHub charges each automatic review to the PR author's Copilot plan, or to the organisation. `off` removes the `copilot_code_review` rule from every repository ruleset, deleting a ruleset it leaves empty; an organisation ruleset is reported, never edited. `on` makes sure a review rule applies to the default branch, creating a `Vibe Coder Copilot review` ruleset when none does. `./setup.sh` and `setup.ps1` ask the question (Issue #2701). Any other value fails loudly at config load, naming the accepted values. |
+| `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` selects the provider on a host whose file states none; since 1.4.0 it no longer overrides the file (Issue #1032 — see [Release notes](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)). An unsupported id fails loudly at startup, naming the supported providers. A per-repo pin (`repo_config.<repo>.agent_provider`, Issue #2048) scopes the choice to one repository: it binds when an invocation carries no explicit provider of its own, and wins over this global key and over `auto` ranking for that repo — Claude's behaviour is unchanged wherever no repo pins a provider. An `issue` run on `codex`, `gemini` or `deepseek` that carries sub-agent definitions is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has its split, reviewers and sub-agent definitions dropped with a warning otherwise (Issue #4109; see `issue_executor_split`). When the provider is a repository pin, the run is stripped and kept (Issue #4346). |
+| `agent_provider_mode` | `pinned` | Provider-selection strategy. `pinned` preserves the historical `agent_provider` behaviour. `auto` opts a mixed host into quota-aware selection before each work item; `agent_provider` becomes the preference tie-break and only enabled credentials proved to use fixed-price subscriptions are candidates. Explicit per-invocation selection remains absolute. While auto is enabled, `VIBE_AGENT_PROVIDER` is an emergency per-process pin and must name an enabled provider. If all eligible subscriptions are exhausted or unavailable, the worker waits rather than selecting metered or unknown billing. Currently Claude OAuth subscriptions and Codex ChatGPT subscriptions have status adapters; other providers are excluded from auto mode. See [Provider parity](PROVIDER-PARITY.md#routing-and-fallback). |
+| `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) applies when the file states no set; since 1.4.0 it no longer overrides the file (Issue #1032). The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
+| `agent_provider_fallback` | `[]` | Opt-in ordered alternatives when the preferred provider has a classified outage (subscription exhausted, transient rate limit, or model unavailable). With Claude preferred, the health gate first rotates to another Claude credential in the pool that still has budget, and switches to an alternative only once **every** credential is exhausted on its five-hour window or its weekly limit, switching back when one reopens; the weekly pace projection never moves work to an alternative (Issue #2637). Omitted or `[]` pins `agent_provider` — no substitution. Every id must already be in `agent_providers`; an unconfigured or uninstalled provider fails loudly at startup. Ordinary task failures and authentication/configuration errors never trigger a switch. This list is **not** restricted to fixed-price subscriptions: an alternative that bills per token is honoured as written, and the health gate logs `billing=<mode>` plus a loud line naming the metered credential variable before switching (Issue #1923). Leave it empty to keep the never-metered guarantee end to end. **Not enabled on the production fleet by default** (Issue #1700). See [Provider parity](PROVIDER-PARITY.md). |
+| `egress_allow_hosts` | `[]` | Extra hosts the worker container may reach, beyond the built-in list (GitHub, the package registries and each enabled provider's API hosts). Each entry is a hostname or `*.hostname`, port 443 only (e.g. `"llm-gateway.example.com"`, `"*.example.org"`). Validated at config load — a bad entry fails startup, naming the entry. Not enforced for the container until the container is routed through the egress proxy (Issue #4047). See [CONTAINMENT.md — egress allowlist](CONTAINMENT.md#egress-allowlist). |
+| `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it — absolute, `~`-anchored, newline-bearing and `..`-escaping values are all refused — so no selection can point PATH or an environment variable at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked example](CONTAINER.md#deployer-supplied-build-time-tools) and [Private Extensions](PRIVATE-EXTENSIONS.md). |
+| `container_extension` | _(none)_ | A private image layer this deployment builds on top of the standard one — for services and toolchains a declarative archive install cannot express. An object of `path` (absolute host directory holding the extension, never the home directory or an ancestor of it), optional `containerfile` (default `Containerfile`) and optional `start`, the last two **relative to `path`**. The operator syncs their own private repository into `path`; the Vibe Coder clones nothing. The Containerfile must derive `FROM ${VIBE_BASE_IMAGE}`, the extension is copied to the fixed in-image prefix `/opt/vibe-extension/`, and the image tag is a content hash of the whole directory, so changing any file rebuilds. A declared `start` runs before the worker and aborts the sandbox start with exit 76 if it fails. A malformed block fails loudly at config load, naming the field. See [Container Extension](CONTAINER-EXTENSION.md). |
+| `claude_model`               | unset                     | Host-wide Claude model for every phase. Unset, each phase uses its own default (the `issue` manager runs on `sonnet`). Setting it overrides the per-phase defaults, so leave it unset unless every phase should run on one model (Issue #4117). |
+| `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
+| `phase_model_tiers` | `{}` | Shared phase-to-tier overrides: `best`, `standard` or `fast`, independent of provider. See [Shared model policy](MODEL-AND-CACHING.md#model-selection). |
+| `provider_model_tiers` | `{}` | Each provider's concrete model ids for `best`, `standard` and `fast`. Explicit provider phase overrides take precedence. |
+| `phase_model_overrides`      | `{}`                      | Per-phase model tier overrides (see below)                                                                                                                                                                                                                                                       |
+| `phase_effort_overrides`     | `{}`                      | Per-phase effort level overrides (see [Effort Level Configuration](#-effort-level-configuration))                                                                                                                                                                                     |
+| `codex_phase_model_overrides` | `{}` | Per-phase **Codex** model overrides, applied when `agent_provider` is `codex`. Same shape as `phase_model_overrides`, with Codex model ids. See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
+| `codex_phase_effort_overrides` | `{}` | Per-phase **Codex** reasoning-effort overrides (`minimal`, `low`, `medium`, `high` — Codex has no `xhigh`/`max`). See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
+| `gemini_phase_model_overrides` | `{}` | Per-phase **Gemini** model overrides, applied when `agent_provider` is `gemini`. Same shape as `phase_model_overrides`, with Gemini model ids. There is no Gemini effort key — the CLI has no reasoning-effort option, and an effort requested for a Gemini phase is warned about instead. See [Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing). |
+| `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-v4-pro` for the planning-shaped phases, `deepseek-flash` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
+| `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of an executor (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) — Haiku at `high` effort by default, or Sonnet at `medium` effort when `issue_sub_agent_tier` resolves `"sonnet"` (Issues #3402, #3473) — while the advisor — the main session — keeps the phase's own model and effort. Off, no executor definitions are built; `--agents` is still passed when `issue_reviewer_agents` is on or `issue_sub_agent_tier` resolves `"haiku"` (which adds the read-only explorer), and only with the split and the reviewers off and a tier other than `"haiku"` is no `--agents` argument passed and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` (which runs the same Claude binary against its own endpoint but strips `--agents`) an `issue` run that carries any `--agents` definition is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, and otherwise has its split, reviewers and sub-agent definitions dropped with a warning before the agent starts (Issue #4109). When the provider is a repository pin, the run is stripped and kept (Issue #4346); a run on a health-gate fallback provider (`agent_provider_fallback`) is dropped, never rerouted back to the exhausted Claude pool. The runner's refusal of such a run (Issue #4010) is a backstop: it still fires for a caller that bypasses the planner, and when the retry ladder switches to `agent_provider_fallback` and keeps the definitions (Issue #4034). On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The advisor's own run-record files are the one exception: it may still write the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` and the PR-feedback reply file `.pr_response_message`. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and every model the run served — the advisor's and each sub-agent's (executors and reviewers) — is costed from the CLI's per-model `modelUsage` breakdown at its own rate, one cost sub-bullet per model, in both the comment and the callback telemetry (Issue #3603); a run that served several models but recorded no readable breakdown says `sub-agents: not costed` instead of presenting the advisor-only figure as the run's cost. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
+| `issue_sub_agent_tier` | `"haiku"` | Model tier for the `issue`-phase executor sub-agent, and for whether the run carries the read-only explorer sub-agent (Issue #3402). It never moves the reviewers: both run on Opus at every tier (owner decision 2026-10-22). `"haiku"` is the default since the owner's decision on Issue #3473, under a Sonnet `issue` manager. `"sonnet"` puts the executor on Sonnet at `medium` effort. `"haiku"` moves the executor (when `issue_executor_split` resolves on) to Haiku at `high` effort and adds a read-only `explorer` sub-agent (`Read`, `Grep`, `Glob` only, no `Agent` tool) to every run on the tier, whatever the split and reviewer switches resolved to. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the `"haiku"` default stands. A `repo_config.<repo>.issue_sub_agent_tier` entry overrides it for that repository. See [Haiku sub-agent tier](MODEL-AND-CACHING.md#haiku-sub-agent-tier-issue-phase). Under `codex`, `gemini` or `deepseek` the run's definitions are rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or dropped with a warning otherwise (Issue #4109; see `issue_executor_split`). When the provider is a repository pin, the run is stripped and kept (Issue #4346). The resolved tier is also counted in the fleet summary's per-tier `issue_tier_runs` / `issue_tier_usd` figures ([fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855)) and recorded on the PR an issue run opens as a hidden `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`) marker, which attributes that PR's outcomes — `pr_tier_rejections`, `ci_fix_tier_*`, `pr_feedback_tier_usd`, `merged_tier_prs` and `cost_per_merged_pr` (Issue #3404) — to the tier (Issue #3403). |
+| `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Sonnet at `high` since Issue #3473). On, the invocation carries a `spec-reviewer` and a `standards-reviewer`, both `opus` at `medium` effort at every `issue_sub_agent_tier` (owner decision 2026-10-22: Opus does the code reviews; they were Sonnet, and the Standards reviewer Haiku on the Haiku tier, under Issues #3402 and #3473), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` a run carrying the definitions is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has them dropped with a warning otherwise (Issue #4109) — see `issue_executor_split`. When the provider is a repository pin, the run is stripped and kept (Issue #4346). Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
+| `external_orchestration` | `false` | Opt into independent manager/executor/reviewer CLI calls for issue runs. A repository boolean overrides this host value; setting it to `false` restores native dispatch. See [Role configuration](ROLE-CONFIGURATION.md). |
+| `subscription_allocation` | absent | Optional dry-run-first allocation policy: explicit `auto_routing`, trial arms, fixed-subscription provider budgets, host capacities/weights, complete lifecycle ledger paths and measured capacity evidence. Applies to main-loop issue runs; no subscription changes or metered access. See [Subscription allocation](SUBSCRIPTION-ALLOCATION.md) for schema, defaults, sequential uncertainty, rollout and reset. |
+| `external_orchestration_settings` | `{}` | Validated role selections (`manager`, `executor`, `reviewer`: `provider`, `model`, `effort`, `cli_adapter`) and call limits (`max_retries`, `max_concurrency`, `max_invocations`, `max_cost_usd`). Repository settings override individual host fields. Read only for opted-in issue runs; all named providers must be enabled in `agent_providers`. See [Role configuration](ROLE-CONFIGURATION.md). |
+| `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#%EF%B8%8F-idle-task-template-weights))                                                                                                                                                                      |
+| `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence)) |
+| `software_min_versions`      | `{ "claude": "2.1.293" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor))                                                                                                                                                                       |
+| `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
+| `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
+| `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
+| `fleet_run_archive` | unset | Optional `owner/repo` slug naming the operator's private fleet run archive — a repository a hook extension fills with per-run records (outcome, mode, host, token and cost telemetry) from every host. Validated as an `owner/repo` slug at load; a malformed value fails config loading loudly. Absent (the default) means fleet-wide measurement is off. See [Fleet Run Archive](#-fleet-run-archive). |
+| `subscription_allocation_label` | unset | Operator-chosen label naming the subscription allocation this host's runs draw on (Issue #3718), recorded on each issue's lifecycle-ledger assignment event. A label only — do not put an account email, ID or fee in it; the format rule below refuses an e-mail address, but cannot tell a numeric account ID from a label. This is not cost or billing allocation. Lowercase letters, digits, `.`, `_`, `-`, starting with a letter or digit, at most 64 characters; anything else fails config loading, and the error does not echo the value. Unset records no label; blank and whitespace-bearing values are rejected. See [Lifecycle ledger and issue assignment](INTERNALS.md#-lifecycle-ledger-and-issue-assignment-issue-3718). |
 
 > **📝 Hardwired labels (not overridable).** Some labels have **no** config key
 > — they are fixed in the codebase and any `.config.json` key that tries to set
 > them is rejected as an unknown key and ignored:
 >
-> - **Discovery labels** — `top-priority`, `work-on`, `low-priority` (Issue ).
->   The retired `issue_labels`, `work_on_label`, and `low_priority_label` keys
->   are no longer accepted. See
+> - **Discovery labels** — `top-priority`, `work-on`, `low-priority` (Issue
+>). The retired `issue_labels`, `work_on_label`, and `low_priority_label`
+>   keys are no longer accepted. See
 >   [Issue selection priority](workflows/issue-processing.md#-issue-selection-priority).
 > - **`documentation`** — applied to documentation-only issues.
-> - **`needs-screenshot`** — applied when a screenshot is needed for PR
->   evidence.
+> - **`needs-screenshot`** — applied when a screenshot is needed for PR evidence.
 >
 > To change the planning model, use `phase_model_overrides` (e.g.
 > `{ "planning": "sonnet" }`) or `best_planning_model` — there is no separate
@@ -646,29 +647,30 @@ explicitly overridden.
 
 ### 📈 Fleet Run Archive
 
-`fleet_run_archive` names a repository — `"your-org/vibe-fleet-archive"` — that
-an operator-maintained hook extension fills with per-run records (outcome, mode,
-host, token and cost telemetry) gathered from every host in the fleet. VibeCoder
-names no specific archive and ships no hook that writes to one; the operator
-builds and configures both. Validated with the canonical `owner/repo` slug check
-(`isValidRepoSlug` — rejects `..` and dot-led path segments); a malformed value
-fails config loading loudly rather than silently disabling fleet-wide
-measurement.
+`fleet_run_archive` names a repository —
+`"your-org/vibe-fleet-archive"` — that an operator-maintained hook
+extension fills with per-run records (outcome,
+mode, host, token and cost telemetry) gathered from every host in the fleet.
+VibeCoder names no specific archive and ships no hook that writes to one; the
+operator builds and configures both. Validated with the canonical
+`owner/repo` slug check (`isValidRepoSlug` — rejects `..` and dot-led path
+segments); a malformed value fails config loading loudly rather than
+silently disabling fleet-wide measurement.
 
 When set, an `issue`-phase run gains a `<fleet_data_source>` block naming the
 archive and explaining that a host's own `fleet_telemetry_*.json` sidecars and
 `.credit_log_*.json` only describe that one host. The run is told to read the
-archive **read-only** via `gh api repos/<archive>/contents/...` — starting with
-its README to learn the layout — and never to write to it. The slug itself is
-fenced inside the run's untrusted boundary; the archive's contents are fetched
-by the run itself at runtime, so the prompt instead **instructs** the run to
-treat everything it reads back as untrusted data — never an instruction to
-follow — and the standing untrusted-data rules apply to it. An incomplete or
-unreadable archive is reported as a **partial** verdict naming the hosts and
-dates covered and the gaps. The run's GitHub token must be able to read the
-archive repository; the `gh` guard already confines writes to the issue's own
-claim repository, so the archive stays read-only from the run regardless of
-token scope.
+archive **read-only** via `gh api repos/<archive>/contents/...` — starting
+with its README to learn the layout — and never to write to it. The slug
+itself is fenced inside the run's untrusted boundary; the archive's
+contents are fetched by the run itself at runtime, so the prompt instead
+**instructs** the run to treat everything it reads back as untrusted
+data — never an instruction to follow — and the standing untrusted-data
+rules apply to it. An incomplete or unreadable archive is reported as a
+**partial** verdict naming the hosts and dates covered and the gaps. The
+run's GitHub token must be able to read the archive repository; the `gh`
+guard already confines writes to the issue's own claim repository, so the
+archive stays read-only from the run regardless of token scope.
 
 Unset (the default), the `issue` prompt tells a measurement-shaped issue to
 label its verdict **single-host** or **partial** rather than claim fleet-wide
@@ -689,8 +691,8 @@ flowchart LR
 ### ⚖️ Idle-Task Template Weights
 
 When no claimable work exists, the worker files a background **idle-task**
-issue. It picks which template to run from the twenty registered templates by a
-random draw — the authoritative list lives in the
+issue. It picks which template to run from the twenty registered templates by
+a random draw — the authoritative list lives in the
 [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry), which this page
 deliberately does not restate. By default the draw is **uniform** — each
 template has a 1/20 chance, so only ~2/20 of idle runs are
@@ -728,12 +730,12 @@ Weights bias a random draw; they guarantee nothing. `idle_task_cadence` puts a
 **floor** under the scans that matter: three **important** templates
 (`security-scan`, `supply-chain-readiness`, `github-actions-audit`) are owed a
 cheap `sonnet` scan at least weekly and an expensive `fable` scan at least
-monthly, per monitored repository. Every other template stays busy work, drawn
-at random.
+monthly, per monitored repository. Every other template stays busy work, drawn at
+random.
 
-Which templates get a floor, over which windows, and at which tier is a
-**spend** decision, so — like `phase_model_overrides` — it is operator-only
-configuration with no in-repo equivalent.
+Which templates get a floor, over which windows, and at which tier is a **spend**
+decision, so — like `phase_model_overrides` — it is operator-only configuration
+with no in-repo equivalent.
 
 **The default is the full policy**: change nothing and the floor above is
 already in force. Configure the block only to alter it:
@@ -769,8 +771,7 @@ Semantics:
   registered template name; any registered template may be named.
 - **Model values are the known aliases only** — `fable`, `opus`, `sonnet`,
   `haiku`. An omitted model takes that window's default (`sonnet` / `fable`).
-- **Windows** must be finite positive numbers with
-  `monthly_days >
+- **Windows** must be finite positive numbers with `monthly_days >
   weekly_days`.
 - **Warn and fall back, never crash.** An unknown template name is warned about
   and dropped; a bad model alias or an unusable window pair is warned about and
@@ -820,51 +821,49 @@ Semantics:
 - **Skip flag still wins.** `SKIP_CLAUDE_UPDATE=true` (and the `gh`/`deno`
   equivalents) still suppresses the update, but logs that a version floor is
   unmet when it does so.
-- **Default.** `{ "claude": "2.1.293" }` — the oldest Claude CLI release that
-  resolves the `haiku` alias to **Haiku 5.5** (`claude-haiku-5-5`), the model
-  `MODEL_CONTEXT_WINDOWS.haiku`'s 1M window assumes (PR #3432 review, Issue
-  #3400). It was 2.1.280 before — the oldest release resolving `opus` to **Opus
-  5.5** (Issue #2560) — and 2.1.293 is above that, so a phase pinned back to
-  Opus or Fable keeps its own generation too. Setting the key replaces the
-  default map; provide an empty map to remove the floor.
+- **Default.** `{ "claude": "2.1.293" }` — the oldest Claude CLI release
+  that resolves the `haiku` alias to **Haiku 5.5** (`claude-haiku-5-5`), the
+  model `MODEL_CONTEXT_WINDOWS.haiku`'s 1M window assumes (PR #3432 review,
+  Issue #3400). It was 2.1.280 before — the oldest release resolving `opus` to
+  **Opus 5.5** (Issue #2560) — and 2.1.293 is above that, so a phase pinned
+  back to Opus or Fable keeps its own generation too. Setting the key replaces
+  the default map; provide an empty map to remove the floor.
 - **Hosts only, and the update channel bounds it.** Inside the worker container
   the software-update step is suppressed altogether — the image is the update
   mechanism, so `container/tools.json` is what decides the CLI version there
-  (pinned to 2.1.293 since PR #3432 review, Issue #3400). On a host in the
-  default `dynamic` mode the updater runs bare `claude update`, which follows
-  the CLI's `stable` channel; `stable` was 2.1.286 when this floor was raised to
-  2.1.293, so such a host logs "below required floor" once per interval until
-  `stable` catches up or the host moves to `update_mode: frozen` with a pinned
-  version.
+  (pinned to 2.1.293 since PR #3432 review, Issue #3400). On a host in the default `dynamic`
+  mode the updater runs bare `claude update`, which follows the CLI's `stable`
+  channel; `stable` was 2.1.286 when this floor was raised to 2.1.293, so such a
+  host logs "below required floor" once per interval until `stable` catches up
+  or the host moves to `update_mode: frozen` with a pinned version.
 
-**Gate role for new models.** Because the worker passes tier _aliases_ (`opus`,
-`fable`, `haiku`) and the CLI resolves each to the latest model of that tier,
-the `software_min_versions.claude` floor is what guarantees a worker is recent
-enough to resolve those aliases to the newest release. For Opus 5 the `opus`
-alias only resolves to `claude-opus-5` once the CLI is at (or above) an
-Opus-5-resolving version; raising the floor to that release is tracked
-separately in. Until the floor is raised, an older CLI resolves `opus` to Opus
-4.8 — still priced identically ($5 / $25 per MTok), so cost tracking is
-unaffected.
+**Gate role for new models.** Because the worker passes tier *aliases* (`opus`,
+`fable`, `haiku`) and the CLI resolves each to the latest model of that tier, the
+`software_min_versions.claude` floor is what guarantees a worker is recent enough
+to resolve those aliases to the newest release. For Opus 5 the `opus` alias only
+resolves to `claude-opus-5` once the CLI is at (or above) an Opus-5-resolving
+version; raising the floor to that release is tracked separately in. Until
+the floor is raised, an older CLI resolves `opus` to Opus 4.8 — still priced
+identically ($5 / $25 per MTok), so cost tracking is unaffected.
 
 ### 🏷️ Custom Label Prompts
 
 `custom_label_prompts` maps a GitHub label to a **non-public prompt template
 file** — an absolute path on the host, outside the public repository — so an
-operator can extend the Vibe Coder with private prompts without publishing them.
-Add the file, add the mapping, apply the label — the Vibe Coder runs that prompt
-against the labelled work.
+operator can extend the Vibe Coder with private prompts without publishing
+them. Add the file, add the mapping, apply the label — the Vibe Coder runs that
+prompt against the labelled work.
 
-Each mapping states the **phase** it runs in with `target_phase` (Issue #1008).
-An `issue`-phase mapping (the default) works a labelled _issue_ and raises a PR;
-a `pr`-phase mapping works a labelled open _pull request_ with a full checkout.
-A mapping is one or the other — never both.
+Each mapping states the **phase** it runs in with `target_phase`
+(Issue #1008). An `issue`-phase mapping (the default) works a labelled *issue*
+and raises a PR; a `pr`-phase mapping works a labelled open *pull request* with
+a full checkout. A mapping is one or the other — never both.
 
 > **📚 The operator guide is [Custom Label Prompts](CUSTOM-PROMPTS.md)** — the
 > extension point, a worked example an operator can follow verbatim, the
-> placeholder contract, what a prompt author must never do with the fenced issue
-> text, container operation, and the exact symptom of every failure mode. This
-> entry is the key reference.
+> placeholder contract, what a prompt author must never do with the fenced
+> issue text, container operation, and the exact symptom of every failure mode.
+> This entry is the key reference.
 
 ```json
 {
@@ -887,14 +886,15 @@ Semantics:
 
 - **`label`** — the GitHub label the mapping dispatches, or the built-in label
   whose prompt it overrides (see below). Must be a non-empty string with no NUL
-  or control characters, and — unless it names a built-in phase label — must not
-  be one of the reserved workflow labels or the `top-priority` / `low-priority`
-  discovery labels, which are never remappable. Each label/phase pair may appear
-  once: a plain mapping is unique on its label, and a label owning two templates
-  (`planning`, `quorum`) takes at most one entry per phase.
+  or control characters, and — unless it names a built-in phase label — must
+  not be one of the reserved workflow labels or the `top-priority` /
+  `low-priority` discovery labels, which are never remappable. Each
+  label/phase pair may appear once: a plain mapping is unique on its label, and
+  a label owning two templates (`planning`, `quorum`) takes at most one entry
+  per phase.
 - **`prompt_path`** — the absolute host path of the prompt template file. Must
-  be a non-empty, control-character-free string starting with `/`, and must name
-  a file that exists and is readable **at config load time**.
+  be a non-empty, control-character-free string starting with `/`, and must
+  name a file that exists and is readable **at config load time**.
 - **`phase`** (optional) — only on an override, and only where the label owns
   more than one template: `planning_critique` for a `planning` mapping,
   `quorum_judge` for a `quorum` one. Omitted, the mapping overrides the label's
@@ -912,39 +912,40 @@ Semantics:
 - **Per-phase placeholder contract.** An `issue` template must carry
   `{{ISSUE_NUMBER}}` and `{{QUALITY_INSTRUCTIONS}}`; a `pr` template must carry
   `{{PR_NUMBER}}` and `{{QUALITY_INSTRUCTIONS}}`. `{{VERBOSITY_INSTRUCTIONS}}`
-  is substituted in either where the template carries it. A template held to the
-  wrong contract is refused with both the phase and the template type named — an
-  `{{ISSUE_NUMBER}}` file on a `pr` mapping is told exactly that, rather than
-  being rejected for a placeholder it has no business carrying.
+  is substituted in either where the template carries it. A template held to
+  the wrong contract is refused with both the phase and the template type named
+  — an `{{ISSUE_NUMBER}}` file on a `pr` mapping is told exactly that, rather
+  than being rejected for a placeholder it has no business carrying.
 - **Fail loud, always.** Every fault above — a non-array value, a malformed
-  entry, a relative or unreadable `prompt_path`, a duplicate or reserved `label`
-  — throws from config load naming the offending entry and field. Nothing here
-  is warned about and defaulted: a silently dropped mapping would leave an
-  operator believing their extension was live when it never dispatched.
-- **Default = off.** The default empty list changes no existing behaviour — an
-  operator opts in by adding entries.
+  entry, a relative or unreadable `prompt_path`, a duplicate or reserved
+  `label` — throws from config load naming the offending entry and field.
+  Nothing here is warned about and defaulted: a silently dropped mapping would
+  leave an operator believing their extension was live when it never
+  dispatched.
+- **Default = off.** The default empty list changes no existing behaviour —
+  an operator opts in by adding entries.
 - **Trust-gated like `planning` (Issue #847), in both phases.** A configured
   label joins the operational dispatch set whichever phase it targets, so the
-  label **adder** must be an account that may direct work — a trusted issue
-  _author_ is not sufficient. An add by an untrusted account is stripped, not
-  honoured as a plain descriptive label, and an add that cannot be attributed
-  from the issue timeline fails closed (the issue is skipped). The worker's own
-  creation paths treat a configured label as reserved and strip it, and a label
-  the worker legitimately raises itself (`idle-task`, `security`, `severity:…`)
-  is refused at config load rather than remapped — so the worker cannot
-  self-apply a custom label into a dispatch. A custom label that a model-driven
-  `gh issue create` path puts on an issue is still stripped at dispatch time,
-  because a fleet worker login is never a trusted label adder. See
+  label **adder** must be an account that may direct work — a trusted issue *author* is not sufficient. An
+  add by an untrusted account is stripped, not honoured as a plain descriptive
+  label, and an add that cannot be attributed from the issue timeline fails
+  closed (the issue is skipped). The worker's own creation paths treat a
+  configured label as reserved and strip it, and a label the worker legitimately
+  raises itself (`idle-task`, `security`, `severity:…`) is refused at config
+  load rather than remapped — so the worker cannot self-apply a custom label
+  into a dispatch. A custom label that a model-driven `gh issue create` path
+  puts on an issue is still stripped at dispatch time, because a fleet worker
+  login is never a trusted label adder. See
   [INTERNALS.md — Issue discovery](INTERNALS.md#-issue-discovery-modular-issue-finder).
 
 #### How an `issue`-phase custom label dispatches (Issue #848)
 
-An issue carrying a configured `issue`-phase label is worked at **priority
-1.86**, between question answering (1.85) and stale-workflow detection (1.9).
-The handler runs the **generic implementation phase** — the same `workOnIssue`
-pipeline `work-on` runs — so the run produces a real branch, commits and a PR.
-Only the prompt body differs: the operator's file replaces
-`prompts/issue/prompt.md`.
+An issue carrying a configured `issue`-phase label is worked at
+**priority 1.86**, between
+question answering (1.85) and stale-workflow detection (1.9). The handler runs
+the **generic implementation phase** — the same `workOnIssue` pipeline `work-on`
+runs — so the run produces a real branch, commits and a PR. Only the prompt
+body differs: the operator's file replaces `prompts/issue/prompt.md`.
 
 ```mermaid
 flowchart LR
@@ -959,17 +960,17 @@ flowchart LR
 
 - **The template is an `issue` template.** It must carry `{{ISSUE_NUMBER}}` and
   `{{QUALITY_INSTRUCTIONS}}`; `{{REPO}}` and `{{VERBOSITY_INSTRUCTIONS}}` are
-  also substituted. Any _other_ `{{PLACEHOLDER}}` fails the build rather than
+  also substituted. Any *other* `{{PLACEHOLDER}}` fails the build rather than
   reaching the agent half-rendered. There is no `vN.md` versioning — the plain
   path is read as-is.
 - **The issue text stays untrusted.** The operator's file is configuration, so
   it is not fenced and its immutability is not checked — it is theirs to edit.
-  The issue title, labels, body and comments it renders around **are** fenced in
-  this run's nonce boundary, with the same boundary-integrity instruction the
-  built-in template gets. (As for `work-on`, the comments carry per-comment
-  trust headers bearing this run's nonce — Issue #1910 — so a maintainer's reply
-  reaches the agent while an untrusted commenter's forged header stays degraded
-  to data.)
+  The issue title, labels, body and comments it renders around **are** fenced
+  in this run's nonce boundary, with the same boundary-integrity instruction
+  the built-in template gets. (As for `work-on`, the comments carry per-comment
+  trust headers bearing this run's nonce — Issue #1910 — so a maintainer's
+  reply reaches the agent while an untrusted commenter's forged header stays
+  degraded to data.)
 - **Fail loud at dispatch, never a fallback.** A file that has become missing,
   unreadable, empty or invalid between config load and dispatch fails the run
   with the label and path named. The built-in `issue` template is never
@@ -981,29 +982,30 @@ flowchart LR
   are still scanned, each fault is logged as an error naming its label and path,
   and the pass fails when nothing else was worked.
 - **The dispatch is held by the `work-on` eligibility gates** (Issue #937). A
-  custom label is not removed when the run finishes and `unassign_on_pr_created`
-  hands the issue back unassigned, so without a gate the next cycle re-ran the
-  whole pipeline against the still-open PR. The scan therefore applies the same
-  gates the claim scan applies to `work-on`: a blocking label (never `failed`,
-  Issue #4158), the retry cooldown, milestone occupancy, a closed or merged
-  fleet PR, an open fleet PR, and an open dependency. A run that produces no
-  work puts the issue into the retry cooldown, so a persistently failing issue
-  backs off. The label-removing routes — `planning`, `question`, `grill-me`,
-  `refine-issue` — are unchanged: removing their own label already stops
-  re-dispatch. See
+  custom label is not removed when the run finishes and
+  `unassign_on_pr_created` hands the issue back unassigned, so without a gate
+  the next cycle re-ran the whole pipeline against the still-open PR. The scan
+  therefore applies the same gates the claim scan applies to `work-on`: a
+  blocking label (never `failed`, Issue #4158), the retry cooldown, milestone
+  occupancy, a closed or merged fleet PR, an open fleet PR, and an open
+  dependency. A run that produces no work puts the issue into the retry
+  cooldown, so a persistently failing issue backs off. The label-removing
+  routes — `planning`, `question`, `grill-me`, `refine-issue` — are unchanged:
+  removing their own label already stops re-dispatch. See
   [CUSTOM-PROMPTS.md — When a labelled issue is dispatched](CUSTOM-PROMPTS.md#-when-a-labelled-issue-is-dispatched).
 - **Container run mode: the launcher mounts the prompt directory read-only**
   (Issue #850). The **containing directory** of every configured `prompt_path`
   is bind-mounted into the container at
   `/home/vibe/.vibe-coder/custom-prompts/<n>`, read-only, and the worker
-  resolves the configured host path onto that mount — so the same `.config.json`
-  serves the host-side launcher and the container alike, and nothing inside the
+  resolves the configured host path onto that mount — so the same
+  `.config.json` serves the host-side launcher and the container alike, and
+  nothing inside the
   container can edit an operator's template. Keep the prompts in a directory of
   their own: everything beside them in that directory is readable inside the
   container too. A path the containment allowlist refuses — the host home
-  directory or an ancestor of it, the filesystem root, a runtime control socket,
-  a relative path — **fails the launch loudly** rather than starting a container
-  without the mount. See
+  directory or an ancestor of it, the filesystem root, a runtime control
+  socket, a relative path — **fails the launch loudly** rather than starting a
+  container without the mount. See
   [CONTAINMENT.md — the mount set](CONTAINMENT.md#the-mount-set).
 - **Default = off.** With no mapping configured the priority row does not exist
   and the ladder is unchanged.
@@ -1042,27 +1044,28 @@ flowchart TD
   Trust is derived from repository collaborators every cycle and starts closed;
   the PR timeline is read to attribute the add, and an add that cannot be
   attributed — no `labeled` event, a null actor, an unreadable timeline —
-  **fails closed** and is logged. A fleet login is never a trusted adder, so the
-  worker cannot dispatch itself by labelling its own PR.
+  **fails closed** and is logged. A fleet login is never a trusted adder, so
+  the worker cannot dispatch itself by labelling its own PR.
 - **A full checkout plus `gh`.** The PR head branch is fetched and checked out
   before the agent starts, so the prompt works the PR's own tree.
 - **One shot: the run consumes the label.** The label is removed **before** the
-  agent starts — before the prompt file is even read — so a run that crashes, is
-  killed by the watchdog, or dies with its container cannot leave the trigger in
-  place for the next cycle to pick up again. Re-apply the label to run again.
+  agent starts — before the prompt file is even read — so a run that crashes,
+  is killed by the watchdog, or dies with its container cannot leave the
+  trigger in place for the next cycle to pick up again. Re-apply the label to
+  run again.
 - **A failure consumes it too, and says so on the PR.** Every failure path — a
-  broken prompt file, a checkout that could not be prepared, an agent that threw
-  or timed out, work that never reached the remote — posts one comment naming
-  the label and stating that it can be re-applied to retry. The built-in
+  broken prompt file, a checkout that could not be prepared, an agent that
+  threw or timed out, work that never reached the remote — posts one comment
+  naming the label and stating that it can be re-applied to retry. The built-in
   `pr_feedback` template is never substituted for an operator's file.
 - **A claimed push that did not land is a failure.** After the run the branch's
   local head is compared against the remote; anything but agreement — including
   an unreachable remote — is reported as a failure rather than as success.
 - **The PR text stays untrusted.** The operator's file is configuration and is
   not fenced. The PR title, body and any review comments it renders around
-  **are** fenced in this run's nonce boundary, with the same boundary-integrity
-  instruction the built-in PR prompts carry, so a forged delimiter or a forged
-  `[TRUSTED] author=` header in a PR body is inert.
+  **are** fenced in this run's nonce boundary, with the same
+  boundary-integrity instruction the built-in PR prompts carry, so a forged
+  delimiter or a forged `[TRUSTED] author=` header in a PR body is inert.
 - **Default = off.** With no `pr` mapping configured, priority 1.87 does not
   exist and no PR scan runs.
 
@@ -1072,9 +1075,10 @@ The worked example an operator can follow verbatim lives in
 #### Overriding a built-in label's prompt (Issue #849)
 
 A mapping whose label matches a **built-in** label does not add a new dispatch
-row — it replaces that phase's own template, so an operator can run a non-public
-`planning`, `grill-me`, `question`, `quorum` or implementation prompt. The label
-keeps its existing handler, priority and trust gate; only the template changes.
+row — it replaces that phase's own template, so an operator can run a
+non-public `planning`, `grill-me`, `question`, `quorum` or implementation
+prompt. The label keeps its existing handler, priority and trust gate; only the
+template changes.
 
 ```json
 {
@@ -1092,13 +1096,13 @@ keeps its existing handler, priority and trust gate; only the template changes.
 }
 ```
 
-| Label (as configured)       | Phase overridden                                | Template replaced            |
-| --------------------------- | ----------------------------------------------- | ---------------------------- |
-| `work_on_label` (`work-on`) | `issue`                                         | `prompts/issue/prompt.md`    |
-| `planning_label`            | `planning`, or `planning_critique` with `phase` | `prompts/planning/prompt.md` |
-| `question_label`            | `question`                                      | `prompts/question/prompt.md` |
-| `grill_me_label`            | `grill-me`                                      | `prompts/grill-me/prompt.md` |
-| `quorum_label`              | `quorum`, or `quorum_judge` with `phase`        | `prompts/quorum/prompt.md`   |
+| Label (as configured) | Phase overridden | Template replaced |
+| --- | --- | --- |
+| `work_on_label` (`work-on`) | `issue` | `prompts/issue/prompt.md` |
+| `planning_label` | `planning`, or `planning_critique` with `phase` | `prompts/planning/prompt.md` |
+| `question_label` | `question` | `prompts/question/prompt.md` |
+| `grill_me_label` | `grill-me` | `prompts/grill-me/prompt.md` |
+| `quorum_label` | `quorum`, or `quorum_judge` with `phase` | `prompts/quorum/prompt.md` |
 
 - **The configured names are what match.** A fleet that renamed `planning` to
   `plan-it` overrides the planning phase with a `plan-it` mapping; the literal
@@ -1116,11 +1120,11 @@ keeps its existing handler, priority and trust gate; only the template changes.
   each takes its own entry naming its `phase`. Nothing is inferred from the
   first turn.
 - **`refine-issue` cannot be overridden.** The refinement phase builds its
-  prompt inline in `worker/deno/lib/refinement_processor.ts` and has no template
-  file, so a mapping naming it is refused by name with that reason.
+  prompt inline in `worker/deno/lib/refinement_processor.ts` and has no
+  template file, so a mapping naming it is refused by name with that reason.
 - **Overriding `work-on` overrides the implementation phase.** That template
   serves every issue-phase pickup — `top-priority` and `low-priority` too — so
-  the override applies to all of them. A run dispatched by a _new_ custom label
+  the override applies to all of them. A run dispatched by a *new* custom label
   still uses that label's own file.
 - **Ambiguity fails loud.** Two entries claiming the same phase are refused at
   config load rather than silently resolving to whichever came first.
@@ -1130,12 +1134,12 @@ keeps its existing handler, priority and trust gate; only the template changes.
   structurally, as `promptTemplate` beside `promptsCommit` in the phase result:
   the commit identifies the repository's templates and says nothing about an
   operator file.
-- **An override does not change the label's trust gate.** Only a _new_ label
+- **An override does not change the label's trust gate.** Only a *new* label
   joins the operational dispatch set (Issue #847). Overriding `work-on` swaps
-  its template and nothing else — the fleet's main discovery label keeps the OR
-  gate it has always had.
-- **Phases with no override are untouched.** They load the repository's template
-  exactly as before.
+  its template and nothing else — the fleet's main discovery label keeps the
+  OR gate it has always had.
+- **Phases with no override are untouched.** They load the repository's
+  template exactly as before.
 
 ### 🧭 Run Mode
 
@@ -1148,23 +1152,24 @@ launches it inside the Vibe Coder image. Containment is mandatory (Issue #4).
 }
 ```
 
-- **Precedence.** `VIBE_RUN_MODE` (one run) → `run_mode` in `.config.json` → the
-  `container` default. Leaving the key unset is the normal configuration.
-- **Removed modes fail loud.** `native` (the worker run directly on the host, ,)
-  and the macOS `seatbelt` profile were removed by Issue #4 — both sat outside
-  the containment boundary. A configuration that still names one is refused with
-  the removal explained; it is never coerced into a container run the operator
-  did not know they were getting. Any other value fails loudly naming the only
-  mode, so a typo never runs a host in a mode it did not ask for.
-- **No auto-fallback.** A missing container runtime is a loud non-zero exit ;
-  there is no host mode for it to fall back to. A repository whose build needs a
-  container runtime of its own cannot be served from inside the worker container
-  — [`container_launch.ts`](../worker/deno/lib/container_launch.ts) refuses
-  runtime-socket mounts and `--privileged` by design — and the answer is to
-  change the build, not to run the worker on the host.
-- **Prerequisites**: the host needs a working container runtime and the worker
-  image; the agent CLI, `jq` and `timeout` are container-owned (`claude` stays
-  on the host for setup's token minting,).
+- **Precedence.** `VIBE_RUN_MODE` (one run) → `run_mode` in `.config.json` →
+  the `container` default. Leaving the key unset is the normal configuration.
+- **Removed modes fail loud.** `native` (the worker run directly on the host,
+  ,) and the macOS `seatbelt` profile were
+  removed by Issue #4 — both sat outside the containment boundary. A
+  configuration that still names one is refused with the removal explained;
+  it is never coerced into a container run the operator did not know they
+  were getting. Any other value fails loudly naming the only mode, so a typo
+  never runs a host in a mode it did not ask for.
+- **No auto-fallback.** A missing container runtime is a loud non-zero exit
+ ; there is no host mode for it to fall back to. A repository
+  whose build needs a container runtime of its own cannot be served from
+  inside the worker container — [`container_launch.ts`](../worker/deno/lib/container_launch.ts)
+  refuses runtime-socket mounts and `--privileged` by design — and the answer
+  is to change the build, not to run the worker on the host.
+- **Prerequisites**: the host needs a working container runtime
+  and the worker image; the agent CLI, `jq` and `timeout` are
+  container-owned (`claude` stays on the host for setup's token minting,).
 
 Both launchers and `setup.sh` read the resolved value from one command rather
 than parsing `.config.json`, so the precedence cannot drift between hosts:
@@ -1175,8 +1180,8 @@ deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 
 ### 🧊 Update Mode
 
-`update_mode` names how a host tracks Vibe Coder releases. `dynamic` follows the
-latest, and is what an **absent** `update_mode` resolves to at config load.
+`update_mode` names how a host tracks Vibe Coder releases. `dynamic` follows
+the latest, and is what an **absent** `update_mode` resolves to at config load.
 `frozen` holds the host at a pinned checkout with pinned tool versions. Setup
 offers whatever `update_mode` the config already holds, so a host that already
 says `frozen` is offered `frozen` on a re-run. With no `update_mode` key, setup
@@ -1185,21 +1190,21 @@ fresh host (Issue #692). A `.config.json` that already exists with no
 `update_mode` is read as `dynamic`, the mode the host already runs, and setup
 keeps it, interactive or not.
 
-**Two different defaults, deliberately.** The setup conversation offers `frozen`
-to a fresh host, because a new host should reproduce a released, tested
-combination. The _load-time_ default for a missing key stays `dynamic`, because
-an existing host carries no pins and frozen is all-or-nothing — resolving an
-absent key to `frozen` would fail that host's config validation at its very next
-launch. So: a `.config.json` with no `update_mode` loads as `dynamic` with no
-warning and no new pin requirement, and setup keeps it as `dynamic`, whether or
-not a terminal is attached. A non-interactive setup run on such a config writes
-no pins.
+**Two different defaults, deliberately.** The setup conversation offers
+`frozen` to a fresh host, because a new host should reproduce a released,
+tested combination. The *load-time* default for a missing key stays `dynamic`,
+because an existing host carries no pins and frozen is all-or-nothing —
+resolving an absent key to `frozen` would fail that host's config validation at
+its very next launch. So: a `.config.json` with no `update_mode` loads as
+`dynamic` with no warning and no new pin requirement, and setup keeps it as
+`dynamic`, whether or not a terminal is attached. A non-interactive setup run on
+such a config writes no pins.
 
-| Field                  | Accepted values                                                                                                    | Default                                                                                                                                                                                                                                                                                               | Read in       |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `update_mode`          | `"dynamic"` or `"frozen"`                                                                                          | `"dynamic"` at config load — and the behaviour of any host with the key absent, including an existing config with no key; setup offers the value the config already holds; with the key absent it offers `"frozen"` only on a fresh host (no `.config.json` before the run) and `"dynamic"` otherwise | both modes    |
-| `pinned_ref`           | A commit SHA or a tag name: starts with a letter or digit, and contains only letters, digits and `. _ + - / @`     | _(unset)_                                                                                                                                                                                                                                                                                             | `frozen` only |
-| `pinned_tool_versions` | An object with an exact version string for each of `claude`, `gh` and `deno`, same character rules as `pinned_ref` | _(unset)_                                                                                                                                                                                                                                                                                             | `frozen` only |
+| Field | Accepted values | Default | Read in |
+| --- | --- | --- | --- |
+| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` at config load — and the behaviour of any host with the key absent, including an existing config with no key; setup offers the value the config already holds; with the key absent it offers `"frozen"` only on a fresh host (no `.config.json` before the run) and `"dynamic"` otherwise | both modes |
+| `pinned_ref` | A commit SHA or a tag name: starts with a letter or digit, and contains only letters, digits and `. _ + - / @` | _(unset)_ | `frozen` only |
+| `pinned_tool_versions` | An object with an exact version string for each of `claude`, `gh` and `deno`, same character rules as `pinned_ref` | _(unset)_ | `frozen` only |
 
 **Worked frozen example** — pinned to a release tag, with the three tool
 versions that release was running:
@@ -1230,8 +1235,8 @@ A commit SHA is equally valid where no tag covers the state you want:
 }
 ```
 
-**Worked dynamic example** — the whole of it, and even this is optional because
-an absent `update_mode` resolves to `dynamic`:
+**Worked dynamic example** — the whole of it, and even this is optional
+because an absent `update_mode` resolves to `dynamic`:
 
 ```json
 {
@@ -1242,10 +1247,10 @@ an absent `update_mode` resolves to `dynamic`:
 - **Absent means dynamic.** A `.config.json` with none of the three keys loads
   with `update_mode` resolved to `dynamic` and no warning, so an existing host
   is unchanged.
-- **Frozen is all-or-nothing.** `frozen` without `pinned_ref`, or with a missing
-  or blank entry for `claude`, `gh` or `deno`, fails loudly at config load
-  naming the field that is missing. A half-pinned host would drift on whatever
-  was left out, which is the failure the pin exists to prevent.
+- **Frozen is all-or-nothing.** `frozen` without `pinned_ref`, or with a
+  missing or blank entry for `claude`, `gh` or `deno`, fails loudly at config
+  load naming the field that is missing. A half-pinned host would drift on
+  whatever was left out, which is the failure the pin exists to prevent.
 - **Hand-editable, and checked.** Both the ref and the versions are meant to be
   edited in `.config.json` without re-running setup. They are handed to `git`
   and to tool installers, so each must start with a letter or digit and contain
@@ -1259,35 +1264,36 @@ an absent `update_mode` resolves to `dynamic`:
   requested version fails loudly naming the tool, the requested version and the
   installed one, so a launch never continues quietly on a version nobody chose.
   The weekly interval, the version floors and the release-age quarantine are
-  `dynamic`-mode machinery and do not apply — the quarantine keeps an unattended
-  "latest" pull off a just-published release, whereas a pin is a human's
-  recorded choice, logged at install so it stays auditable.
+  `dynamic`-mode machinery and do not apply — the quarantine keeps an
+  unattended "latest" pull off a just-published release, whereas a pin is a
+  human's recorded choice, logged at install so it stays auditable.
 - **Dynamic ignores the pins, it does not reject them.** Flipping back to
   `dynamic` needs one edit — the stale pins stay in the file and nothing reads
   them.
 - **Setup asks for all of it, and defaults only a new config to `frozen`.**
-  `./setup.sh` and `setup.ps1` run `setup update-mode`, which asks for the mode
-  — defaulting to the mode the host already has; with no `update_mode` key it
-  defaults to `frozen` when no `.config.json` existed before the run, and to
-  `dynamic` for an existing config — and then, under `frozen`, for the pinned
-  ref and one exact version per tool. The ref defaults to the latest release tag
-  and is validated by resolving it in the worker checkout after a fetch, so a
-  ref that does not resolve is rejected by name and nothing invalid reaches the
-  file. Each version prompt defaults to the version that release records in its
-  `tool-versions.json` manifest, so accepting every default reproduces a
-  released, tested combination; with no resolvable manifest the defaults fall
-  back to what `dynamic` mode would install today and setup says so in one line.
-  Blank accepts the default everywhere, so a re-run that presses Enter
-  throughout leaves `.config.json` unchanged on a host whose config already says
-  `dynamic` or `frozen`. On a config that exists with no `update_mode`, Enter
-  writes `"update_mode": "dynamic"` — the mode the host already ran. A run with
-  no terminal never asks: an existing `.config.json` is left alone — a host with
-  no `update_mode` stays `dynamic` and gets no pins — and a fresh config is
-  pinned to the latest release when it resolves with a manifest, or left
-  `dynamic` with one warning line when it does not. `setup.ps1` asks the same
-  questions: it notes whether `.config.json` existed before the run and passes
-  that to `setup update-mode` as `--config-existed`, exactly as `setup.sh` does.
-  The prompts in the order they are asked are
+  `./setup.sh` and `setup.ps1` run `setup update-mode`, which asks for the mode — defaulting to
+  the mode the host already has; with no `update_mode` key it defaults to
+  `frozen` when no `.config.json` existed before the run, and to `dynamic`
+  for an existing config — and then,
+  under `frozen`, for the pinned ref and one exact version per tool. The ref
+  defaults to the latest release tag and is validated by resolving it in the
+  worker checkout after a fetch, so a ref that does not resolve is rejected by
+  name and nothing invalid reaches the file. Each version prompt defaults to
+  the version that release records in its `tool-versions.json` manifest, so
+  accepting every default reproduces a released, tested combination; with no
+  resolvable manifest the defaults fall back to what `dynamic` mode would
+  install today and setup says so in one line. Blank accepts the default
+  everywhere, so a re-run that presses Enter throughout leaves `.config.json`
+  unchanged on a host whose config already says `dynamic` or `frozen`. On a
+  config that exists with no `update_mode`, Enter writes
+  `"update_mode": "dynamic"` — the mode the host already ran. A run with no
+  terminal never asks: an existing `.config.json` is left alone — a host with no
+  `update_mode` stays `dynamic` and gets no pins — and a fresh config is pinned
+  to the latest release when it resolves with a manifest, or left `dynamic` with
+  one warning line when it does not. `setup.ps1` asks the same questions: it
+  notes whether `.config.json` existed before the run and passes that to
+  `setup update-mode` as `--config-existed`, exactly as `setup.sh` does. The
+  prompts in the order they are asked are
   [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
 - **Shell surface.** `load-config` exports `VIBE_UPDATE_MODE`, so the launchers
   see the resolved mode without re-parsing `.config.json`.
@@ -1295,8 +1301,8 @@ an absent `update_mode` resolves to `dynamic`:
   checkout update leaves the worker checkout on `pinned_ref` instead of
   resetting it to the tip of the default branch, and says so in `run_core.log`
   (Issue #624) — see [Host-Side Checkout Update](#-host-side-checkout-update).
-  Because the container image reference is derived from the checkout's content,
-  a frozen checkout holds the image steady too.
+  Because the container image reference is derived from the checkout's
+  content, a frozen checkout holds the image steady too.
 - **Frozen says when it is behind.** A pin holds the host still; it does not
   hide that the world moved on. When a release newer than `pinned_ref` exists,
   each launch logs one WARNING line naming both versions and the command that
@@ -1334,18 +1340,18 @@ flowchart TD
 
 #### What each mode means for maintenance
 
-- **A dynamic host has no per-machine version upkeep.** It tracks the tip of the
-  default branch (`main`) at every launch and installs the latest eligible
-  `claude`, `gh` and `deno` on the weekly cadence, subject to the version floors
-  and the release-age quarantine. Nobody edits a version on that host, ever — it
-  is the right choice for a fleet that should move together.
+- **A dynamic host has no per-machine version upkeep.** It tracks the tip of
+  the default branch (`main`) at every launch and installs the latest eligible
+  `claude`, `gh` and `deno` on the weekly cadence, subject to the version
+  floors and the release-age quarantine. Nobody edits a version on that host,
+  ever — it is the right choice for a fleet that should move together.
 - **A frozen host stays exactly where it is pinned.** New commits on `main` and
   new tool releases never move it: the checkout is held at `pinned_ref` and the
   three tools are installed at `pinned_tool_versions` on every launch. The
   upkeep it does have is deliberate — someone chooses the next pin, edits it,
   and relaunches — which is the whole point on a host that must reproduce a
-  known-good state (a release candidate under evaluation, a customer deployment,
-  a machine bisecting a regression).
+  known-good state (a release candidate under evaluation, a customer
+  deployment, a machine bisecting a regression).
 
 #### Choosing a pin
 
@@ -1364,8 +1370,8 @@ next year — see [Release integrity](RELEASE-TAGGING.md#release-integrity).
 A commit SHA is still accepted, and is the right answer when the state you want
 is not a tagged one — a specific merge you are bisecting, for example. Either
 way the ref must exist on `origin`: the launch-time checkout fetches before it
-resolves, and a ref that resolves nowhere is a loud failure rather than a silent
-fall back to the tip.
+resolves, and a ref that resolves nowhere is a loud failure rather than a
+silent fall back to the tip.
 
 #### The upgrade loop
 
@@ -1386,9 +1392,9 @@ flowchart TD
     X --> L
 ```
 
-1. **The launch tells you.** A frozen host pinned behind the newest release logs
-   one line per launch at WARNING: on stderr as `[run.sh] WARNING: …`, and in
-   `run_core.log` as `WARNING: …`. The host is degraded but continuing on its
+1. **The launch tells you.** A frozen host pinned behind the newest release
+   logs one line per launch at WARNING: on stderr as `[run.sh] WARNING: …`, and
+   in `run_core.log` as `WARNING: …`. The host is degraded but continuing on its
    pin. The line reads:
 
    ```text
@@ -1407,14 +1413,14 @@ flowchart TD
    starts no container. See
    [Moving to the latest release](#moving-to-the-latest-release-runsh-upgrade).
 3. **The next launch installs them.** The checkout update puts the worker
-   checkout onto the new `pinned_ref` and the launch installs `claude`, `gh` and
-   `deno` at exactly the pinned versions, one log line per tool. Nothing waits
-   on the weekly interval — it is `dynamic`-mode machinery.
+   checkout onto the new `pinned_ref` and the launch installs `claude`, `gh`
+   and `deno` at exactly the pinned versions, one log line per tool. Nothing
+   waits on the weekly interval — it is `dynamic`-mode machinery.
 
-**Hand-editing a pin is still supported, and is the answer for a specific ref.**
-The upgrade command only ever chooses the newest release; a host that must sit
-on an older release, a commit SHA, or one tool version on its own is moved by
-editing `.config.json` and relaunching, with no re-run of setup — see
+**Hand-editing a pin is still supported, and is the answer for a specific
+ref.** The upgrade command only ever chooses the newest release; a host that
+must sit on an older release, a commit SHA, or one tool version on its own is
+moved by editing `.config.json` and relaunching, with no re-run of setup — see
 [Moving a pin by hand](#moving-a-pin-by-hand). A hand-edited host stays in the
 same loop: it is still told when a newer release exists, and `./run.sh upgrade`
 still moves it to the newest one when that is what you want.
@@ -1453,13 +1459,13 @@ Upgrading Vibe Coder: 1.0.4 → 1.0.5.
 Written to /path/to/.config.json — the next launch installs exactly these versions.
 ```
 
-Re-running it immediately prints `Vibe Coder is already up to date (1.0.5).` and
-writes nothing. On a dynamic host it explains there is nothing to pin — that
-host already tracks the latest at every launch — and exits 0 without touching
-the config. The pins are **all-or-nothing**: a release minted before releases
-recorded their tool versions, an unreachable GitHub or a value that fails the
-config validator is a loud refusal with `.config.json` left exactly as it was,
-never a fresh `pinned_ref` beside stale tool versions.
+Re-running it immediately prints `Vibe Coder is already up to date (1.0.5).`
+and writes nothing. On a dynamic host it explains there is nothing to pin —
+that host already tracks the latest at every launch — and exits 0 without
+touching the config. The pins are **all-or-nothing**: a release minted before
+releases recorded their tool versions, an unreachable GitHub or a value that
+fails the config validator is a loud refusal with `.config.json` left exactly
+as it was, never a fresh `pinned_ref` beside stale tool versions.
 
 Windows hosts move their pins by hand for now: `run.ps1 upgrade` is still a
 follow-up. `setup.ps1` already runs the same `setup update-mode` prompts as
@@ -1491,12 +1497,13 @@ there.
 
 Rolling back is [moving a pin by hand](#moving-a-pin-by-hand) in the one
 direction `./run.sh upgrade` will not go — it only ever chooses the newest
-release. The mechanics are the three steps above, with one addition that is easy
-to miss: **a release that changed a configuration contract changes it back when
-you roll the ref back**, so the pin and the affected keys move in the same edit.
+release. The mechanics are the three steps above, with one addition that is
+easy to miss: **a release that changed a configuration contract changes it back
+when you roll the ref back**, so the pin and the affected keys move in the same
+edit.
 
-1. Read what the release you are returning to shipped with, so the tool versions
-   go back with the ref rather than staying on the newer ones:
+1. Read what the release you are returning to shipped with, so the tool
+   versions go back with the ref rather than staying on the newer ones:
 
    ```bash
    gh release download 1.0.71 --repo stSoftwareAU/VibeCoder \
@@ -1512,103 +1519,103 @@ you roll the ref back**, so the pin and the affected keys move in the same edit.
    installs exactly the pinned versions, one log line per tool.
 
 A key the older release does not recognise is only a warning there, so a
-forward-looking block such as `callbacks` can stay in place across the rollback;
-a key the newer release **removed** is a hard config-load failure on the way
-forward again, which is why the rollback restores it explicitly rather than
-leaving the host with a config neither version loads.
+forward-looking block such as `callbacks` can stay in place across the
+rollback; a key the newer release **removed** is a hard config-load failure on
+the way forward again, which is why the rollback restores it explicitly rather
+than leaving the host with a config neither version loads.
 
 #### `VIBE_SKIP_CHECKOUT_UPDATE` is not frozen mode
 
 `VIBE_SKIP_CHECKOUT_UPDATE=1` is an **environment-variable escape hatch for one
 checkout**: it turns the host-side checkout update off entirely, for a
-development tree someone is working in or a CI tree that is a pull-request merge
-commit and must not be reset mid-run. It says so loudly and is never silent.
-Frozen mode is a **recorded configuration decision** that still updates the
-checkout — onto `pinned_ref` — and additionally pins the three tool versions,
-which the skip does nothing about. The skip wins over both modes when both are
-in play, so a frozen host with the variable set stays on whatever the checkout
-already holds. Use the variable for development trees and CI; use
+development tree someone is working in or a CI tree that is a pull-request
+merge commit and must not be reset mid-run. It says so loudly and is never
+silent. Frozen mode is a **recorded configuration decision** that still updates
+the checkout — onto `pinned_ref` — and additionally pins the three tool
+versions, which the skip does nothing about. The skip wins over both modes when
+both are in play, so a frozen host with the variable set stays on whatever the
+checkout already holds. Use the variable for development trees and CI; use
 `update_mode: "frozen"` for a host that must reproduce a known state. See
 [Host-Side Checkout Update](#-host-side-checkout-update).
 
 ### 🔄 Host-Side Checkout Update
 
-Before each launch, the launcher updates the worker checkout itself —
-`git
+Before each launch, the launcher updates the worker checkout itself — `git
 fetch origin`, then a hard reset to `origin/<default-branch>`, a
 `git clean -fd` (Issue #512) and a pathspec-scoped `git clean -ffdx` over the
 ignored directories that carry executable content (`node_modules/`, `.venv/`,
-`target/`, …) so nothing a previous launch left in them runs in this one (Issue
-#1443 — see `worker/deno/lib/ignored_path_clean.ts`). This is the **only**
-update of that checkout: Issue #513 retired the in-container reset, so nothing
-inside the container writes to `/workspace` and that mount can become read-only
-(Issue #509). The branch is read from the checkout's own `origin/HEAD`.
+`target/`, …) so nothing a previous launch left in them runs in this one
+(Issue #1443 — see `worker/deno/lib/ignored_path_clean.ts`). This is the
+**only** update of that checkout:
+Issue #513 retired the in-container reset, so nothing inside the container
+writes to `/workspace` and that mount can become read-only (Issue #509). The
+branch is read from the checkout's own `origin/HEAD`.
 
 The command runs before the launch plan is built, and so before the
 configuration load, so it reads `update_mode`, `pinned_ref` and
 `callbacks.host_failure` out of `.config.json` under `--base-dir` itself.
-`--work-dir` says where its self-heal events go — `WORK_DIR`, then `HOME`, when
-it is not given (Issue #2110).
+`--work-dir` says where its self-heal events go — `WORK_DIR`, then `HOME`,
+when it is not given (Issue #2110).
 
 ```bash
 deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
   worker/deno/mod.ts worker-checkout-update --base-dir "$(pwd)"
 ```
 
-- **A failed update is a warning, not a refused launch.** An unreachable remote
-  is reported on stderr and in `run_core.log`, and the worker launches on the
-  checkout it already has.
+- **A failed update is a warning, not a refused launch.** An unreachable
+  remote is reported on stderr and in `run_core.log`, and the worker launches
+  on the checkout it already has.
 - **The update discards uncommitted work in that checkout**, exactly as the
   in-container reset always has. Set `VIBE_SKIP_CHECKOUT_UPDATE=1` for a
-  checkout where that is wrong — a development tree someone is working in, or a
-  CI tree that is a pull-request merge commit and must not be reset to the
+  checkout where that is wrong — a development tree someone is working in, or
+  a CI tree that is a pull-request merge commit and must not be reset to the
   default branch mid-run. The skip is reported, never silent. Give the worker
-  its own dedicated clone rather than relying on the skip (see
-  [Deployment](DEPLOYMENT.md)).
-- **An update that actually changed the checkout names the variable** (Issue
-  #735). Moving the commit or discarding uncommitted work adds one line to
-  stderr and `run_core.log` —
+  its own dedicated clone rather than relying on the skip
+  (see [Deployment](DEPLOYMENT.md)).
+- **An update that actually changed the checkout names the variable**
+  (Issue #735). Moving the commit or discarding uncommitted work adds one line
+  to stderr and `run_core.log` —
   `The checkout update changed <path> (HEAD <before> → <after>; 2 uncommitted
   change(s) discarded). Local edits in this checkout do not survive a launch —
-  set VIBE_SKIP_CHECKOUT_UPDATE=1 to leave it exactly as it is.`
-  — so an operator debugging a launcher fault learns about the opt-out at the
-  moment it discards their patch, rather than from this page. An update that
-  changed nothing says nothing.
+  set VIBE_SKIP_CHECKOUT_UPDATE=1 to leave it exactly as it is.` — so an
+  operator debugging a launcher fault learns about the opt-out at the moment it
+  discards their patch, rather than from this page. An update that changed
+  nothing says nothing.
 - **Three consecutive failures spanning at least fifteen minutes fire the
   `callbacks.host_failure` hook** with a `checkout_update` payload — the host,
-  the consecutive-failure count, when the streak started, the failing git step's
-  exit status when it is known, the "active development tree" diagnosis and the
-  checkout's branch and dirty-file count (Issues #4204, #2107, #2110). Nothing
-  is filed on GitHub: a host-level fault belongs to whoever runs the host, and
-  the hook is where that operator already receives them — see
-  [Post-Run Callbacks](#-post-run-callbacks). The span qualifies the count
-  because three failures eight seconds apart are one transient host fault, not
-  the hour of stale code the threshold was written to report (Issue #1017). The
-  streak lives in `~/logs/checkout-update-failure-streak` — the count and the
-  first failure's timestamp, with the older bare-count format still read — and a
-  successful update resets it to zero. `--allow-sys=hostname` is what lets the
-  payload name the host; without it every host would report as the same one.
-- **A report the hook did not take is retried, up to five attempts** (Issues
-  #1018, #2110). The hook runs on the host whose fault is being reported, so it
-  is exactly the thing that can be broken too: an invocation that returns
-  anything but `ok` leaves the streak eligible — every later failing run tries
-  again — and the evidence is spooled in `~/logs/checkout-update-escalation`,
-  one entry per streak, overwritten, carrying the attempt count. The fifth
-  failed attempt records `escalation_lost` in `run_core.log` and in
-  `~/logs/self-heal.jsonl` and stops trying, so a permanently broken hook is not
-  paid for on every launch.
+  the consecutive-failure count, when the streak started, the failing git
+  step's exit status when it is known, the "active development tree" diagnosis
+  and the checkout's branch and dirty-file count (Issues #4204, #2107, #2110).
+  Nothing is filed on GitHub: a host-level fault belongs to whoever runs the
+  host, and the hook is where that operator already receives them — see
+  [Post-Run Callbacks](#-post-run-callbacks). The span qualifies the count because three failures
+  eight seconds apart are one transient host fault, not the hour of stale code
+  the threshold was written to report (Issue #1017). The streak lives in
+  `~/logs/checkout-update-failure-streak` — the count and the first failure's
+  timestamp, with the older bare-count format still read — and a successful
+  update resets it to zero. `--allow-sys=hostname` is what lets the payload
+  name the host; without it every host would report as the same one.
+- **A report the hook did not take is retried, up to five attempts**
+  (Issues #1018, #2110). The hook runs on the host whose fault is being
+  reported, so it is exactly the thing that can be broken too: an invocation
+  that returns anything but `ok` leaves the streak eligible — every later
+  failing run tries again — and the evidence is spooled in
+  `~/logs/checkout-update-escalation`, one entry per streak, overwritten,
+  carrying the attempt count. The fifth failed attempt records
+  `escalation_lost` in `run_core.log` and in `~/logs/self-heal.jsonl` and stops
+  trying, so a permanently broken hook is not paid for on every launch.
 - **Recovery reports nothing.** A run that updates cleanly is proof the
   condition has cleared, so it fires no hook: it clears
-  `~/logs/checkout-update-failure-streak` and
-  `~/logs/checkout-update-escalation` and writes one `run_core.log` line saying
-  the streak ended and whether its report was still undelivered (Issue #2110).
+  `~/logs/checkout-update-failure-streak` and `~/logs/checkout-update-escalation`
+  and writes one `run_core.log` line saying the streak ended and whether its
+  report was still undelivered (Issue #2110).
 - **A host with no hook says so locally.** No `callbacks.host_failure` in
-  `.config.json` records `no_hook_configured` once for the streak; a `callbacks`
-  block that will not parse records `config_invalid` with the reason. Neither is
-  retried — nothing about the host changes between runs — and neither stops the
-  update itself. Both are also `escalated` events under the `checkout_update`
-  module in `~/logs/self-heal.jsonl`, alongside the delivering case, which
-  carries the hook's status.
+  `.config.json` records `no_hook_configured` once for the streak; a
+  `callbacks` block that will not parse records `config_invalid` with the
+  reason. Neither is retried — nothing about the host changes between runs —
+  and neither stops the update itself. Both are also `escalated` events under
+  the `checkout_update` module in `~/logs/self-heal.jsonl`, alongside the
+  delivering case, which carries the hook's status.
 - **A frozen host is held at its pin instead** (Issue #624). Under
   `update_mode: "frozen"` the reset to `origin/<default-branch>` would defeat
   the pin, so the command fetches (a tag pushed since the last launch has to
@@ -1617,8 +1624,8 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
   `Checkout update skipped: update_mode=frozen, pinned to <ref>` to
   `run_core.log`. The skip is never silent.
 - **A checkout already on the pin is not written to at all.** `HEAD` resolving
-  to `pinned_ref` means no fetch, no checkout, no clean — just the log line — so
-  a launch never churns the tree.
+  to `pinned_ref` means no fetch, no checkout, no clean — just the log line —
+  so a launch never churns the tree.
 - **A pin that does not resolve is loud.** An unknown `pinned_ref`, an
   unreadable or malformed `.config.json`, an unrecognised `update_mode` or a
   `frozen` host with no `pinned_ref` exits non-zero naming the offending value;
@@ -1642,8 +1649,7 @@ flowchart TD
 Beside the checkout update, each launch asks whether this host is pinned behind
 the newest release (Issue #690). When it is, the launcher logs one line at
 WARNING — `[run.sh] WARNING: …` (`[run.ps1] WARNING: …` on Windows) on stderr
-and `WARNING: …` in `run_core.log` — and the host is degraded but continuing on
-its pin. The notice wording is:
+and `WARNING: …` in `run_core.log` — and the host is degraded but continuing on its pin. The notice wording is:
 
 ```text
 A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
@@ -1654,29 +1660,29 @@ deno run --allow-env --allow-read --allow-run \
   worker/deno/mod.ts release-notice --base-dir "$(pwd)"
 ```
 
-- **Notifying only.** The check changes no pin, installs nothing and never moves
-  the checkout. Moving the host is `./run.sh upgrade` (Issue #691) or the hand
-  edit in [Moving a pin by hand](#moving-a-pin-by-hand).
-- **Frozen hosts only.** A `dynamic` host already installs the newest release at
-  every launch, so there is nothing to tell it.
-- **Silent when there is nothing to say.** A host already on the newest release,
-  a repository with no releases, and a `pinned_ref` that is a commit SHA — which
-  cannot be ordered against a release tag — all print nothing. So do
-  pre-releases and moving names such as `latest`: the release series is the bare
-  `MAJOR.MINOR.PATCH` tags, ordered numerically.
+- **Notifying only.** The check changes no pin, installs nothing and never
+  moves the checkout. Moving the host is `./run.sh upgrade` (Issue #691) or the
+  hand edit in [Moving a pin by hand](#moving-a-pin-by-hand).
+- **Frozen hosts only.** A `dynamic` host already installs the newest release
+  at every launch, so there is nothing to tell it.
+- **Silent when there is nothing to say.** A host already on the newest
+  release, a repository with no releases, and a `pinned_ref` that is a commit
+  SHA — which cannot be ordered against a release tag — all print nothing. So
+  do pre-releases and moving names such as `latest`: the release series is the
+  bare `MAJOR.MINOR.PATCH` tags, ordered numerically.
 - **It never blocks the launch.** A `gh` failure, an unreachable GitHub or a
   timeout is a `[run.sh] warning: could not check for a newer release …` on
-  stderr and a `release-notice: failed …` line in `run_core.log`, and the launch
-  continues on the checkout the host already has. Every call is bounded, so an
-  unreachable GitHub costs seconds.
+  stderr and a `release-notice: failed …` line in `run_core.log`, and the
+  launch continues on the checkout the host already has. Every call is bounded,
+  so an unreachable GitHub costs seconds.
 - **The warning says why.** Both lines carry the check's own stderr — its
-  configuration error, its `gh` failure, its unresolvable hostname — and a check
-  the 120 s bound killed is logged as `timed out after 120s` rather than as a
-  failure that said nothing. `no explanation given` is now reserved for a check
-  that genuinely wrote no words; it used to be the only answer this warning
-  could give, because only stdout was captured (Issue #1020).
-- **One name for the upgrade.** The command the notice names comes from the same
-  constant the upgrade command registers under
+  configuration error, its `gh` failure, its unresolvable hostname — and a
+  check the 120 s bound killed is logged as `timed out after 120s` rather than
+  as a failure that said nothing. `no explanation given` is now reserved for a
+  check that genuinely wrote no words; it used to be the only answer this
+  warning could give, because only stdout was captured (Issue #1020).
+- **One name for the upgrade.** The command the notice names comes from the
+  same constant the upgrade command registers under
   ([`worker/deno/lib/upgrade_command.ts`](../worker/deno/lib/upgrade_command.ts)),
   so the wording cannot drift from the command that exists.
 - **Windows prints it too.** `run.ps1` runs the same `release-notice` command
@@ -1718,21 +1724,21 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 
 **Default phase model assignments:**
 
-| Phase            | Default Model | Description                                                                                      |
-| ---------------- | ------------- | ------------------------------------------------------------------------------------------------ |
-| `planning`       | `opus`        | Complex task decomposition — top tier at effort `high`, plan quality compounds across sub-issues |
-| `grill_me`       | `opus`        | Requirements interrogation — top tier at effort `high`, shapes everything downstream             |
-| `refinement`     | `opus`        | Rewording issue titles/descriptions — planning-shaped, effort `high`                             |
-| `revision`       | `opus`        | Rewriting issues from review feedback — planning-shaped, effort `high`                           |
-| `question`       | `opus`        | Answering codebase questions — planning-shaped, effort `high`                                    |
-| `clarification`  | `opus`        | Assessing whether an issue has sufficient detail — planning-shaped, effort `high`                |
-| `implementation` | `sonnet`      | Core work — the `issue` phase manager (effort `high`); a host-wide `claude_model` overrides it   |
-| `ci_fix`         | `sonnet`      | Fixing CI failures from structured error messages (effort `high`, Issue #2812)                   |
-| `quality_fix`    | `sonnet`      | Fixing quality check failures (lint, test errors) (effort `high`, Issue #2812)                   |
-| `pr_feedback`    | `sonnet`      | Applying targeted fixes from reviewer comments (effort `high`, Issue #2812)                      |
-| `spelling_fix`   | `haiku`       | Finding and fixing typos — simplest corrections                                                  |
-| `summarise`      | `haiku`       | Summarising long issue bodies                                                                    |
-| `health`         | `haiku`       | Health check ("Respond with exactly: OK")                                                        |
+| Phase            | Default Model | Description                                          |
+| ---------------- | ------------- | ---------------------------------------------------- |
+| `planning` | `opus` | Complex task decomposition — top tier at effort `high`, plan quality compounds across sub-issues |
+| `grill_me` | `opus` | Requirements interrogation — top tier at effort `high`, shapes everything downstream |
+| `refinement` | `opus` | Rewording issue titles/descriptions — planning-shaped, effort `high` |
+| `revision` | `opus` | Rewriting issues from review feedback — planning-shaped, effort `high` |
+| `question` | `opus` | Answering codebase questions — planning-shaped, effort `high` |
+| `clarification` | `opus` | Assessing whether an issue has sufficient detail — planning-shaped, effort `high` |
+| `implementation` | `sonnet` | Core work — the `issue` phase manager (effort `high`); a host-wide `claude_model` overrides it |
+| `ci_fix`         | `sonnet`      | Fixing CI failures from structured error messages (effort `high`, Issue #2812) |
+| `quality_fix`    | `sonnet`      | Fixing quality check failures (lint, test errors) (effort `high`, Issue #2812) |
+| `pr_feedback`    | `sonnet`      | Applying targeted fixes from reviewer comments (effort `high`, Issue #2812) |
+| `spelling_fix`   | `haiku`       | Finding and fixing typos — simplest corrections      |
+| `summarise`      | `haiku`       | Summarising long issue bodies                        |
+| `health`         | `haiku`       | Health check ("Respond with exactly: OK")            |
 
 **Override priority** (highest to lowest):
 
@@ -1744,16 +1750,16 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 
 **Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Since Issue #2560 the
 eight planning-shaped phases (`planning`, `grill_me`, `refinement`, `revision`,
-`question`, `clarification`, `quorum`, `quorum_judge`) default to `opus` (served
-as `claude-opus-5-5`), which matches Fable 5.1 on plan quality at roughly half
-the price. Fable (alias `fable`, served as `claude-fable-5-1`) is still the tier
-above Opus, with a 1M-token context window and a rate-limit fallback of
-`fable → opus → sonnet → haiku`; no phase defaults to it, so pin a phase to it
-explicitly to get it back (`CLAUDE_MODEL_PLANNING=fable` is the documented
-rollback), e.g. `"phase_model_overrides": { "issue": "fable" }` or
-`CLAUDE_MODEL=fable`. The `opus` alias resolves to the latest Opus (Opus 5 as of
-July 2026) once the CLI version floor is met — see
-[Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor).
+`question`, `clarification`, `quorum`, `quorum_judge`) default to `opus`
+(served as `claude-opus-5-5`), which matches Fable 5.1 on plan quality at
+roughly half the price. Fable (alias `fable`, served as `claude-fable-5-1`) is
+still the tier above Opus, with a 1M-token context window and a rate-limit
+fallback of `fable → opus → sonnet → haiku`; no phase defaults to it, so pin a
+phase to it explicitly to get it back (`CLAUDE_MODEL_PLANNING=fable` is the
+documented rollback), e.g.
+`"phase_model_overrides": { "issue": "fable" }` or `CLAUDE_MODEL=fable`. The
+`opus` alias resolves to the latest Opus (Opus 5 as of July 2026) once the CLI
+version floor is met — see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor).
 
 ### 🔊 Verbosity Configuration
 
@@ -1764,28 +1770,28 @@ renders `standard` on every surface.
 
 **Available levels:**
 
-| Level      | Behaviour                                                                            |
-| ---------- | ------------------------------------------------------------------------------------ |
-| `minimal`  | Single sentence naming what changed; that sentence is the whole response.            |
-| `concise`  | Brief response (2–3 sentences). Key changes and rationale only.                      |
-| `standard` | The default — an end-of-run summary, with no running commentary while the run works. |
-| `verbose`  | The standard summary plus one short section per genuinely close decision.            |
+| Level      | Behaviour                                                                             |
+| ---------- | ------------------------------------------------------------------------------------- |
+| `minimal`  | Single sentence naming what changed; that sentence is the whole response.             |
+| `concise`  | Brief response (2–3 sentences). Key changes and rationale only.                       |
+| `standard` | The default — an end-of-run summary, with no running commentary while the run works.  |
+| `verbose`  | The standard summary plus one short section per genuinely close decision.             |
 
 **Which override reaches which surface:**
 
 The two overrides are read by different code paths, so they do not both apply
 everywhere:
 
-| Surface                        | Level used                                         |
-| ------------------------------ | -------------------------------------------------- |
-| `issue` phase                  | Per-repo `verbosity` override, else `standard`     |
-| `grill_me` and `quorum` rounds | Global `.config.json` `verbosity`, else `standard` |
-| Every other phase              | `standard`                                         |
+| Surface                             | Level used                                             |
+| ----------------------------------- | ------------------------------------------------------ |
+| `issue` phase                       | Per-repo `verbosity` override, else `standard`         |
+| `grill_me` and `quorum` rounds      | Global `.config.json` `verbosity`, else `standard`     |
+| Every other phase                   | `standard`                                             |
 
 > **📝 Note:** every round is told "no running commentary while you work".
 > Nobody watches an unattended round in real time, so the `grill-me` template
-> stops asking for narration (`prompts/grill-me/prompt.md`, Issue #759); a
-> round's output is the comment it posts.
+> stops asking for narration (`prompts/grill-me/prompt.md`, Issue #759);
+> a round's output is the comment it posts.
 
 **Resolution priority** for the `issue` phase (highest to lowest):
 
@@ -1838,28 +1844,30 @@ This is useful when some repositories handle simple, mechanical tasks (use
 Lower verbosity levels reduce output tokens, which directly reduces API costs.
 Approximate savings compared to `standard`:
 
-| Level      | Output Token Impact         | Best For                                     |
-| ---------- | --------------------------- | -------------------------------------------- |
-| `minimal`  | ~60–80% fewer output tokens | Mechanical, low-risk repositories            |
-| `concise`  | ~30–50% fewer output tokens | Repositories needing only a short rationale  |
-| `standard` | Baseline                    | General implementation                       |
-| `verbose`  | ~20–40% more output tokens  | Repositories needing architectural reasoning |
+| Level      | Output Token Impact                | Best For                                     |
+| ---------- | ---------------------------------- | -------------------------------------------- |
+| `minimal`  | ~60–80% fewer output tokens        | Mechanical, low-risk repositories            |
+| `concise`  | ~30–50% fewer output tokens        | Repositories needing only a short rationale  |
+| `standard` | Baseline                           | General implementation                       |
+| `verbose`  | ~20–40% more output tokens         | Repositories needing architectural reasoning |
 
 **How verbosity instructions are injected:**
 
 The worker injects a `## Response Verbosity` block into the prompt template
-before passing it to Claude. Every level gets one, including `standard` — the
-highest-volume surface publishes its output as a PR body and an issue comment a
-human reads, so leaving it silent left the expected visible output unstated.
+before passing it to Claude. Every level gets one, including `standard`
+ — the highest-volume surface publishes its output as a PR body
+and an issue comment a human reads, so leaving it silent left the expected
+visible output unstated.
 
 Each level states the shape of the output to produce rather than a list of
-prohibitions. A `minimal` run receives _"Produce a single sentence naming what
-you changed. That sentence is the whole response."_; `standard` receives
-_"Summarise what you changed once the work is done … no running commentary while
-you work."_; `verbose` is bounded to the decisions that were genuinely close, so
-"thorough" does not mean "unbounded". The instruction text and the two-tier
-resolution both live in `worker/deno/lib/verbosity.ts`, and the `standard`
-default is `DEFAULT_VERBOSITY` in `worker/deno/lib/config_defaults.ts`.
+prohibitions. A `minimal` run receives _"Produce a single sentence naming
+what you changed. That sentence is the whole response."_; `standard` receives
+_"Summarise what you changed once the work is done … no running commentary
+while you work."_; `verbose` is bounded to the decisions that were genuinely
+close, so "thorough" does not mean "unbounded". The instruction text and the
+two-tier resolution both live in `worker/deno/lib/verbosity.ts`, and the
+`standard` default is `DEFAULT_VERBOSITY` in
+`worker/deno/lib/config_defaults.ts`.
 
 ### 💪 Effort Level Configuration
 
@@ -1870,20 +1878,20 @@ optimisation by matching reasoning depth to task complexity.
 
 **Available effort levels:**
 
-| Level    | Description                                                                                                                         |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `low`    | Minimal reasoning — simple, mechanical tasks                                                                                        |
-| `medium` | Moderate reasoning — well-scoped tasks with structured input                                                                        |
-| `high`   | Thorough reasoning — general implementation (global default)                                                                        |
-| `xhigh`  | Extra-high reasoning — between `high` and `max`; Anthropic's recommended setting for most coding/agentic use on Opus 4.7+ / Fable 5 |
-| `max`    | Deepest reasoning — architectural decisions                                                                                         |
+| Level    | Description                                                  |
+| -------- | ------------------------------------------------------------ |
+| `low`    | Minimal reasoning — simple, mechanical tasks                 |
+| `medium` | Moderate reasoning — well-scoped tasks with structured input |
+| `high`   | Thorough reasoning — general implementation (global default) |
+| `xhigh` | Extra-high reasoning — between `high` and `max`; Anthropic's recommended setting for most coding/agentic use on Opus 4.7+ / Fable 5 |
+| `max`    | Deepest reasoning — architectural decisions                  |
 
 **Default effort per phase:**
 
 | Phase           | Default Effort | Rationale                                               |
 | --------------- | -------------- | ------------------------------------------------------- |
 | `planning`      | `max`          | Architectural decisions need deepest reasoning          |
-| `grill_me`      | `max`          | Requirements interrogation shapes everything downstream |
+| `grill_me` | `max` | Requirements interrogation shapes everything downstream |
 | `issue`         | `high`         | General implementation benefits from thorough reasoning |
 | `question`      | `high`         | Answering questions needs careful thought               |
 | `ci_fix`        | `high`         | Reactive; Sonnet at `high` since Issue #2812            |
@@ -1924,248 +1932,127 @@ Use `phase_effort_overrides` to override the default effort for specific phases:
 4. `CLAUDE_EFFORT` environment variable (global fallback)
 5. `DEFAULT_EFFORT` constant (`"high"`)
 
-This priority chain mirrors the [Phase Model Overrides](#-phase-model-overrides)
-pattern — environment variables take precedence over config file overrides,
-which take precedence over built-in defaults.
+This priority chain mirrors the
+[Phase Model Overrides](#-phase-model-overrides) pattern —
+environment variables take precedence over config file overrides, which take
+precedence over built-in defaults.
 
 **Reference:** `worker/deno/lib/config_defaults.ts` (phase defaults),
 `worker/deno/lib/claude_executor.ts` (`buildClaudeEffortArgs()`).
 
 ### ⚙️ Operational Defaults
 
-These values have built-in defaults and can be overridden in `.config.json` .
-Only values that differ from the defaults need to be stored — if a default
-changes in the codebase, the new default flows to all installations unless
-explicitly overridden.
+These values have built-in defaults and can be overridden in `.config.json`
+. Only values that differ from the defaults need to be stored — if a
+default changes in the codebase, the new default flows to all installations
+unless explicitly overridden.
 
-| Setting                              | Config Key                                | Default                         | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------------------ | ----------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude timeout                       | `claude_timeout`                          | `3600`                          | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Claude turn cap                      | `claude_max_turns`                        | `100`                           | Positive integer agentic turns per Claude Code invocation (including the Claude-compatible DeepSeek CLI). Passed as `--max-turns`; reaching it logs `AGENT_TURN_LIMIT` / `error_max_turns` and ends that invocation without a retry. Issue, PR-feedback and CI-fix processing stop before publishing partial work, including capped recovery/verifier calls. The config value overrides stale internal shell transport. Each phase/resume has its own cap; this does not impose a total issue-wide token budget or a cap on Codex/Gemini.                                                                                                                                                                                                                                                                                                                                              |
-| Progress extension enabled           | `progress_extension_enabled`              | `true`                          | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. The same settings re-arm a maintenance handler's watchdog while its own agent is still producing output, up to one agent budget from dispatch (Issue #2720). See [Progress-extended deadline](#-progress-extended-deadline).                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Progress extension grant             | `progress_extension_grant_seconds`        | `900`                           | Seconds each grant adds to the deadline, measured from the moment of the check.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Progress extension stall window      | `progress_extension_stall_seconds`        | `300`                           | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Progress extension check interval    | `progress_extension_check_seconds`        | `300`                           | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Call-storm guard                     | `call_storm_enabled`                      | `true`                          | Stop an issue-work run that is polling instead of working — dozens of tool calls a minute with no working-tree change (Issue #2230). Evaluated at each progress check; the stopped run keeps its preserved WIP. `false` gives a polling loop its whole budget back. See [Call storm — polling is not progress](#call-storm--polling-is-not-progress-issue-2230).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Call-storm threshold                 | `call_storm_calls`                        | `60`                            | Tool calls inside the window at or above which that window reads as a storm. Must be positive and no greater than the 5000 tool calls the progress tracker retains; raise it if a genuinely fast exploration phase is being stopped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Call-storm window                    | `call_storm_window_seconds`               | `300`                           | Sliding window the calls are counted over. Must be positive and no wider than the tracker's 900 s of tool-call history, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Call-storm novel share               | `call_storm_novel_share`                  | `0.25`                          | Distinct normalised tool calls over total calls in the window below which a busy window reads as a storm (Issue #2773). A poll loop repeats itself; a read-heavy investigation such as a security sweep is nearly all novel and is not stopped. Must be above 0 and at most 1; lower it if an investigation that revisits files is being stopped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Quota-poll park floor                | `quota_poll_park_floor`                   | `1500`                          | GraphQL points remaining below which the polling gate parks repos with `nice` at or above `quota_poll_park_nice` for the cycle (Issue #3628): no PR fetches, no timeline batch, no candidate collectors. Whole number of points, at least `0`; `0` disables the park tier.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Quota-poll park nice                 | `quota_poll_park_nice`                    | `99`                            | The `nice` tier at or above which a repo is parked under the park floor (Issue #3628), and polled every `poll_cadence_park_cycles` cycles by the poll cadence (Issue #3667). Any integer — it is a `nice` comparison, so negative values are legal.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Poll cadence, low tier               | `poll_cadence_low_cycles`                 | `3`                             | Cycles between polls of a repo with `0 < nice < quota_poll_park_nice` by the per-repo Priority 1.x passes (Issue #3667). Whole number, at least `1`; `1` polls the tier every cycle.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Poll cadence, park tier              | `poll_cadence_park_cycles`                | `10`                            | Cycles between polls of a repo with `nice >= quota_poll_park_nice` by the per-repo Priority 1.x passes (Issue #3667). Whole number, at least `1`; `1` polls the tier every cycle.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Quota-poll idle floor                | `quota_poll_idle_floor`                   | `500`                           | GraphQL points remaining below which idle-task collection is deferred fleet-wide for the cycle — the scan's idle collector and the idle-task filer's repo walk both stand down (Issue #3628). Whole number of points, at least `0` and no greater than `quota_poll_park_floor`; `0` disables the idle tier.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Screenshot retry timeout             | `screenshot_retry_timeout_seconds`        | `600`                           | Seconds allowed for the one extra agent turn the completion phase gives a run whose UI change lacks screenshot evidence, before it fails with `needs-screenshot` (Issue #2960). Must be positive.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Pre-push retry timeout               | `pre_push_retry_timeout_seconds`          | `600`                           | Seconds allowed for the one extra agent turn given to a run whose push the pre-push gate blocked (Issue #4128). Must be positive.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Self-scheduled diagnostics           | `self_schedule_diagnostics_enabled`       | `true`                          | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b).                                                                                                                                                                                                                                                                                                                                                                  |
-| Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1`                             | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Agent transcript tee                 | `agent_transcript_enabled`                | `false`                         | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Claude kill-after                    | `claude_kill_after`                       | `30`                            | Grace period after timeout before force-kill                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Sleep interval                       | `sleep_interval`                          | `300`                           | Seconds between scans. Raised from `120` to reduce the shared GraphQL quota consumed by fixed per-cycle work. Set it explicitly to scan more often.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| PR repair scans                      | `pr_scanning_enabled`                     | `true`                          | Set to `false` on a host using an external babysitter to disable periodic PR feedback, spelling, CI repair, branch update, conflict, CI nudge and blocking-PR stall scans. Auto-merge and issue processing remain enabled. Other hosts keep scanning unless configured separately. Restart the worker after changing the setting.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Max concurrent issues                | `max_concurrent_issues`                   | `2`                             | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
-| Credit wait interval                 | `credit_wait_interval`                    | `300`                           | Seconds to wait when credits are exhausted                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Refinement timeout                   | `refinement_timeout`                      | `300`                           | Timeout for issue refinement (5 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Refinement kill-after                | `refinement_kill_after`                   | `10`                            | Grace period after refinement timeout                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Planning timeout                     | `planning_timeout`                        | `1800`                          | Safety-net ceiling for planning mode (30 minutes) — planning produces sub-issues, so it should be quick                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| PR feedback timeout                  | `pr_feedback_timeout`                     | `1800`                          | Timeout for the PR feedback phase (30 minutes). Distinct from `claude_timeout` so reactive phases do not inherit the issue-work budget. Both the run loop and the single-shot `pr-feedback` command pass this key (Issue #213 — the run loop used to pass `claude_timeout`). Left unset while `claude_timeout` is set explicitly, it inherits that value for back-compat; set it explicitly to pin the reactive budget.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| CI fix timeout                       | `ci_fix_timeout`                          | `1800`                          | Timeout for the CI (Continuous Integration) fix phase (30 minutes). Distinct from `claude_timeout` for the same reason as `pr_feedback_timeout`, and with the same back-compat inheritance — a host with `claude_timeout: 3600` and no `ci_fix_timeout` is why a CI fix logged a 3600 s budget against a documented 1800.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Planning kill-after                  | `planning_kill_after`                     | `10`                            | Grace period after planning timeout                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Question timeout                     | `question_timeout`                        | `600`                           | Timeout for question answering (10 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Question kill-after                  | `question_kill_after`                     | `10`                            | Grace period after question timeout                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Clarification timeout                | `clarification_timeout`                   | `120`                           | Timeout for clarification requests (2 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Clarification kill-after             | `clarification_kill_after`                | `10`                            | Grace period after clarification timeout                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Max clarification rounds             | `max_clarification_rounds`                | `3`                             | Retired (Issue #4298): the worker no longer asks clarifying questions on an approved issue, so the value is accepted and ignored                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Grill-me timeout                     | `grill_me_timeout`                        | `3600`                          | Timeout for a single grill-me round (1 hour). Raised from 10 minutes by — grill-me reasons at top-tier model and effort. See [Grill Me](workflows/grill-me.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Grill-me kill-after                  | `grill_me_kill_after`                     | `10`                            | Grace period after `grill_me_timeout` before force-kill                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Max grill-me rounds                  | `max_grill_me_rounds`                     | `20`                            | Runaway ceiling on grill-me rounds since the latest Ready comment ([Issue #1933](https://github.com/stSoftwareAU/VibeCoder/issues/1933)). The stall guard normally stops grilling first; the ceiling-th round is itself the forced final round                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Quorum timeout                       | `quorum_timeout`                          | `1800`                          | Wall-clock budget for **one** Quorum agent (30 minutes). The two drafts run concurrently, so a run costs one draft plus one judgement.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Quorum kill-after                    | `quorum_kill_after`                       | `10`                            | Grace period after `quorum_timeout` before the agent is killed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Quorum planners                      | `quorum_planners`                         | `["claude", "claude"]`          | The **two** drafting providers of a Quorum run. Exactly two ids; a different count is rejected at startup.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Quorum judge                         | `quorum_judge`                            | `"claude"`                      | The adjudicating provider of a Quorum run                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Max rate-limit retries               | `max_rate_limit_retries`                  | `2`                             | Maximum retries when rate limited                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Trusted-author cache                 | `trusted_authors_cache_hours`             | `1`                             | Hours a successful trusted-author resolve is reused before the collaborator lists are fetched again (Issue #1453). `0` refreshes every cycle; `24` is the ceiling. A newly granted collaborator waits at most this long — see [Snapshot, refresh and `gh` cost](#snapshot-refresh-and-gh-cost)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Max rate-limit wait                  | `max_rate_limit_wait`                     | `600`                           | Ceiling on the total time one model tier's rate-limit backoff may wait. The ladder gives up _before_ scheduling a wait that would reach it (Issue #1667), so the time actually served stays strictly below this — it never sleeps up to the handler watchdog's own budget and gets abandoned mid-wait                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Retry max delay                      | `retry_max_delay`                         | `60`                            | Maximum delay between retries                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Max issue body tokens                | `max_issue_body_tokens`                   | `50000`                         | Maximum tokens in issue body before summarisation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Summarise timeout                    | `summarise_timeout`                       | `120`                           | Timeout for issue body summarisation (2 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Summarise kill-after                 | `summarise_kill_after`                    | `10`                            | Grace period after summarise timeout                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Feature check timeout                | `feature_check_timeout`                   | `5`                             | Timeout for feature detection checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Claude no-output timeout             | `claude_no_output_timeout`                | `600`                           | Seconds of no output before Claude is considered stuck (10 minutes). Lowered from 15 minutes by so the silence watchdog fires earlier on unattended workers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Quality check timeout                | `quality_check_timeout`                   | `600`                           | Timeout for a repository's quality-gate command (10 minutes). Also settable per repository in `repo_config`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Max infrastructure retries           | `max_infra_retries`                       | `5`                             | Maximum retries for infrastructure failures (e.g., API errors)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Health check timeout                 | `health_check_timeout`                    | `30`                            | Timeout in seconds for Claude CLI health checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Log max size (MB)                    | `log_max_size_mb`                         | `10`                            | Maximum log file size in MB before rotation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Log max rotations                    | `log_max_rotations`                       | `3`                             | Number of rotated log copies to keep                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Stuck issue timeout                  | `stuck_issue_timeout`                     | `7200`                          | Seconds before an unresponsive worker's issue is recovered                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Timeout diagnostic lines             | `timeout_diagnostic_lines`                | `50`                            | Number of log lines to capture when a timeout occurs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Output progress interval             | `output_progress_interval`                | `300`                           | Seconds between progress log messages during Claude execution (5 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Label cache TTL (Time-To-Live)       | `label_cache_ttl`                         | `3600`                          | Time-to-live in seconds for cached label data (1 hour)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Shuffle repos                        | `shuffle_repos`                           | `true`                          | Randomise repository scan order to prevent starvation. Scan order controls which repos are queried first; issue selection is always by globally oldest eligible issue across all repos.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Update GitHub user status            | `update_gh_user_status`                   | `true`                          | Update GitHub profile status with current activity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ImgBB API key                        | `imgbb_api_key`                           | _(empty)_                       | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/. `VIBE_IMGBB_API_KEY` applies when this key is unset; since 1.4.0 this key wins when both are set (Issue #1032).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Worker name                          | `worker_name`                             | _(empty)_                       | Human-readable worker name for multi-worker visibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Issue retry cooldown                 | `issue_retry_cooldown`                    | `600`                           | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Minimum claim runway                 | `min_claim_runway_seconds`                | `300`                           | Seconds of runway a new implementation claim must have; `0` disables the floor. When a run timeline is set the floor measures to the two-hour finish deadline (Issue #4245); otherwise to the supervisor hard cap (`VIBE_RUN_MAX_SECONDS`). A claim taken below it would be ended before it could finish setup. Measured against that instant, not the one-hour cycle: the target does not truncate an active claim, but the session budget is bounded by the finish less the kill grace and WIP reserve — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with neither a timeline nor a hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425).                                                                                                                                                                         |
-| Run finish deadline                  | `run_finish_seconds`                      | `7200`                          | Seconds from run start of the finish deadline (2 h by default; the run target is 1 h and the launcher watchdog's hard kill, about 3 h, logged at run start as `Run timeline:`). Must exceed the 3600 s target; the worker clamps a finish at or past the hard kill minus the kill grace and WIP-checkpoint reserve (with a warning). Validated at load and logged at run start. When a timeline is set, agent sessions, extension grants, the claim floor and the drain read this finish (Issues #4244, #4245, #4246).                                                                                                                                                                                                                                                                                                                                                                 |
-| Long-job labels                      | `claim_long_job_labels`                   | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Fast-failure threshold (seconds)     | `fast_failure_seconds`                    | `60`                            | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Fast failures before back-off        | `repo_fast_failure_threshold`             | `3`                             | Fast failures in one repository inside the window before that repository stops being claimed and one diagnostic issue is filed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Fast-failure window (hours)          | `repo_fast_failure_window_hours`          | `24`                            | The rolling window the threshold is counted over, and the decay period — a repaired repository recovers on its own once its failures age out.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Setting                        | Config Key                       | Default    | Description                                                                                                                                                                                          |
+| ------------------------------ | -------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude timeout | `claude_timeout` | `3600` | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository. |
+| Claude turn cap | `claude_max_turns` | `100` | Positive integer agentic turns per Claude Code invocation (including the Claude-compatible DeepSeek CLI). Passed as `--max-turns`; reaching it logs `AGENT_TURN_LIMIT` / `error_max_turns` and ends that invocation without a retry. Issue, PR-feedback and CI-fix processing stop before publishing partial work, including capped recovery/verifier calls. The config value overrides stale internal shell transport. Each phase/resume has its own cap; this does not impose a total issue-wide token budget or a cap on Codex/Gemini. |
+| Progress extension enabled | `progress_extension_enabled` | `true` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. The same settings re-arm a maintenance handler's watchdog while its own agent is still producing output, up to one agent budget from dispatch (Issue #2720). See [Progress-extended deadline](#-progress-extended-deadline). |
+| Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
+| Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
+| Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
+| Call-storm guard | `call_storm_enabled` | `true` | Stop an issue-work run that is polling instead of working — dozens of tool calls a minute with no working-tree change (Issue #2230). Evaluated at each progress check; the stopped run keeps its preserved WIP. `false` gives a polling loop its whole budget back. See [Call storm — polling is not progress](#call-storm--polling-is-not-progress-issue-2230). |
+| Call-storm threshold | `call_storm_calls` | `60` | Tool calls inside the window at or above which that window reads as a storm. Must be positive and no greater than the 5000 tool calls the progress tracker retains; raise it if a genuinely fast exploration phase is being stopped. |
+| Call-storm window | `call_storm_window_seconds` | `300` | Sliding window the calls are counted over. Must be positive and no wider than the tracker's 900 s of tool-call history, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed. |
+| Call-storm novel share | `call_storm_novel_share` | `0.25` | Distinct normalised tool calls over total calls in the window below which a busy window reads as a storm (Issue #2773). A poll loop repeats itself; a read-heavy investigation such as a security sweep is nearly all novel and is not stopped. Must be above 0 and at most 1; lower it if an investigation that revisits files is being stopped. |
+| Quota-poll park floor | `quota_poll_park_floor` | `1500` | GraphQL points remaining below which the polling gate parks repos with `nice` at or above `quota_poll_park_nice` for the cycle (Issue #3628): no PR fetches, no timeline batch, no candidate collectors. Whole number of points, at least `0`; `0` disables the park tier. |
+| Quota-poll park nice | `quota_poll_park_nice` | `99` | The `nice` tier at or above which a repo is parked under the park floor (Issue #3628), and polled every `poll_cadence_park_cycles` cycles by the poll cadence (Issue #3667). Any integer — it is a `nice` comparison, so negative values are legal. |
+| Poll cadence, low tier | `poll_cadence_low_cycles` | `3` | Cycles between polls of a repo with `0 < nice < quota_poll_park_nice` by the per-repo Priority 1.x passes (Issue #3667). Whole number, at least `1`; `1` polls the tier every cycle. |
+| Poll cadence, park tier | `poll_cadence_park_cycles` | `10` | Cycles between polls of a repo with `nice >= quota_poll_park_nice` by the per-repo Priority 1.x passes (Issue #3667). Whole number, at least `1`; `1` polls the tier every cycle. |
+| Quota-poll idle floor | `quota_poll_idle_floor` | `500` | GraphQL points remaining below which idle-task collection is deferred fleet-wide for the cycle — the scan's idle collector and the idle-task filer's repo walk both stand down (Issue #3628). Whole number of points, at least `0` and no greater than `quota_poll_park_floor`; `0` disables the idle tier. |
+| Screenshot retry timeout | `screenshot_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn the completion phase gives a run whose UI change lacks screenshot evidence, before it fails with `needs-screenshot` (Issue #2960). Must be positive. |
+| Pre-push retry timeout | `pre_push_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn given to a run whose push the pre-push gate blocked (Issue #4128). Must be positive. |
+| Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
+| Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
+| Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
+| Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
+| Sleep interval                 | `sleep_interval`                 | `300`      | Seconds between scans. Raised from `120` to reduce the shared GraphQL quota consumed by fixed per-cycle work. Set it explicitly to scan more often.                                                                                                                                                             |
+| PR repair scans | `pr_scanning_enabled` | `true` | Set to `false` on a host using an external babysitter to disable periodic PR feedback, spelling, CI repair, branch update, conflict, CI nudge and blocking-PR stall scans. Auto-merge and issue processing remain enabled. Other hosts keep scanning unless configured separately. Restart the worker after changing the setting. |
+| Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
+| Credit wait interval           | `credit_wait_interval`           | `300`      | Seconds to wait when credits are exhausted                                                                                                                                                           |
+| Refinement timeout             | `refinement_timeout`             | `300`      | Timeout for issue refinement (5 minutes)                                                                                                                                                             |
+| Refinement kill-after          | `refinement_kill_after`          | `10`       | Grace period after refinement timeout                                                                                                                                                                |
+| Planning timeout | `planning_timeout` | `1800` | Safety-net ceiling for planning mode (30 minutes) — planning produces sub-issues, so it should be quick |
+| PR feedback timeout | `pr_feedback_timeout` | `1800` | Timeout for the PR feedback phase (30 minutes). Distinct from `claude_timeout` so reactive phases do not inherit the issue-work budget. Both the run loop and the single-shot `pr-feedback` command pass this key (Issue #213 — the run loop used to pass `claude_timeout`). Left unset while `claude_timeout` is set explicitly, it inherits that value for back-compat; set it explicitly to pin the reactive budget. |
+| CI fix timeout | `ci_fix_timeout` | `1800` | Timeout for the CI (Continuous Integration) fix phase (30 minutes). Distinct from `claude_timeout` for the same reason as `pr_feedback_timeout`, and with the same back-compat inheritance — a host with `claude_timeout: 3600` and no `ci_fix_timeout` is why a CI fix logged a 3600 s budget against a documented 1800. |
+| Planning kill-after            | `planning_kill_after`            | `10`       | Grace period after planning timeout                                                                                                                                                                  |
+| Question timeout               | `question_timeout`               | `600`      | Timeout for question answering (10 minutes)                                                                                                                                                          |
+| Question kill-after            | `question_kill_after`            | `10`       | Grace period after question timeout                                                                                                                                                                  |
+| Clarification timeout          | `clarification_timeout`          | `120`      | Timeout for clarification requests (2 minutes)                                                                                                                                                       |
+| Clarification kill-after       | `clarification_kill_after`       | `10`       | Grace period after clarification timeout                                                                                                                                                             |
+| Max clarification rounds       | `max_clarification_rounds`       | `3`        | Retired (Issue #4298): the worker no longer asks clarifying questions on an approved issue, so the value is accepted and ignored                                                                       |
+| Grill-me timeout | `grill_me_timeout` | `3600` | Timeout for a single grill-me round (1 hour). Raised from 10 minutes by — grill-me reasons at top-tier model and effort. See [Grill Me](workflows/grill-me.md). |
+| Grill-me kill-after            | `grill_me_kill_after`            | `10`       | Grace period after `grill_me_timeout` before force-kill                                                                                                                                              |
+| Max grill-me rounds | `max_grill_me_rounds` | `20` | Runaway ceiling on grill-me rounds since the latest Ready comment ([Issue #1933](https://github.com/stSoftwareAU/VibeCoder/issues/1933)). The stall guard normally stops grilling first; the ceiling-th round is itself the forced final round |
+| Quorum timeout | `quorum_timeout` | `1800` | Wall-clock budget for **one** Quorum agent (30 minutes). The two drafts run concurrently, so a run costs one draft plus one judgement. |
+| Quorum kill-after | `quorum_kill_after` | `10` | Grace period after `quorum_timeout` before the agent is killed |
+| Quorum planners | `quorum_planners` | `["claude", "claude"]` | The **two** drafting providers of a Quorum run. Exactly two ids; a different count is rejected at startup. |
+| Quorum judge | `quorum_judge` | `"claude"` | The adjudicating provider of a Quorum run |
+| Max rate-limit retries         | `max_rate_limit_retries`         | `2`        | Maximum retries when rate limited                                                                                                                                                                    |
+| Trusted-author cache           | `trusted_authors_cache_hours`    | `1`        | Hours a successful trusted-author resolve is reused before the collaborator lists are fetched again (Issue #1453). `0` refreshes every cycle; `24` is the ceiling. A newly granted collaborator waits at most this long — see [Snapshot, refresh and `gh` cost](#snapshot-refresh-and-gh-cost) |
+| Max rate-limit wait            | `max_rate_limit_wait`            | `600`      | Ceiling on the total time one model tier's rate-limit backoff may wait. The ladder gives up *before* scheduling a wait that would reach it (Issue #1667), so the time actually served stays strictly below this — it never sleeps up to the handler watchdog's own budget and gets abandoned mid-wait |
+| Retry max delay                | `retry_max_delay`                | `60`       | Maximum delay between retries                                                                                                                                                                        |
+| Max issue body tokens          | `max_issue_body_tokens`          | `50000`    | Maximum tokens in issue body before summarisation                                                                                                                                                    |
+| Summarise timeout              | `summarise_timeout`              | `120`      | Timeout for issue body summarisation (2 minutes)                                                                                                                                                     |
+| Summarise kill-after           | `summarise_kill_after`           | `10`       | Grace period after summarise timeout                                                                                                                                                                 |
+| Feature check timeout          | `feature_check_timeout`          | `5`        | Timeout for feature detection checks                                                                                                                                                                 |
+| Claude no-output timeout | `claude_no_output_timeout` | `600` | Seconds of no output before Claude is considered stuck (10 minutes). Lowered from 15 minutes by so the silence watchdog fires earlier on unattended workers. |
+| Quality check timeout          | `quality_check_timeout`          | `600`      | Timeout for a repository's quality-gate command (10 minutes). Also settable per repository in `repo_config`.                                                                                          |
+| Max infrastructure retries     | `max_infra_retries`              | `5`        | Maximum retries for infrastructure failures (e.g., API errors)                                                                                                                                       |
+| Health check timeout           | `health_check_timeout`           | `30`       | Timeout in seconds for Claude CLI health checks                                                                                                                                                      |
+| Log max size (MB) | `log_max_size_mb` | `10` | Maximum log file size in MB before rotation |
+| Log max rotations | `log_max_rotations` | `3` | Number of rotated log copies to keep |
+| Stuck issue timeout | `stuck_issue_timeout` | `7200` | Seconds before an unresponsive worker's issue is recovered |
+| Timeout diagnostic lines       | `timeout_diagnostic_lines`       | `50`       | Number of log lines to capture when a timeout occurs                                                                                                                                                 |
+| Output progress interval       | `output_progress_interval`       | `300`      | Seconds between progress log messages during Claude execution (5 minutes)                                                                                                                            |
+| Label cache TTL (Time-To-Live) | `label_cache_ttl`                | `3600`     | Time-to-live in seconds for cached label data (1 hour)                                                                                                                                               |
+| Shuffle repos | `shuffle_repos` | `true` | Randomise repository scan order to prevent starvation. Scan order controls which repos are queried first; issue selection is always by globally oldest eligible issue across all repos. |
+| Update GitHub user status | `update_gh_user_status` | `true` | Update GitHub profile status with current activity |
+| ImgBB API key | `imgbb_api_key` | _(empty)_ | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/. `VIBE_IMGBB_API_KEY` applies when this key is unset; since 1.4.0 this key wins when both are set (Issue #1032). |
+| Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
+| Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
+| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway a new implementation claim must have; `0` disables the floor. When a run timeline is set the floor measures to the two-hour finish deadline (Issue #4245); otherwise to the supervisor hard cap (`VIBE_RUN_MAX_SECONDS`). A claim taken below it would be ended before it could finish setup. Measured against that instant, not the one-hour cycle: the target does not truncate an active claim, but the session budget is bounded by the finish less the kill grace and WIP reserve — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with neither a timeline nor a hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
+| Run finish deadline | `run_finish_seconds` | `7200` | Seconds from run start of the finish deadline (2 h by default; the run target is 1 h and the launcher watchdog's hard kill, about 3 h, logged at run start as `Run timeline:`). Must exceed the 3600 s target; the worker clamps a finish at or past the hard kill minus the kill grace and WIP-checkpoint reserve (with a warning). Validated at load and logged at run start. When a timeline is set, agent sessions, extension grants, the claim floor and the drain read this finish (Issues #4244, #4245, #4246). |
+| Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
+| Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took. |
+| Fast failures before back-off | `repo_fast_failure_threshold` | `3` | Fast failures in one repository inside the window before that repository stops being claimed and one diagnostic issue is filed. |
+| Fast-failure window (hours) | `repo_fast_failure_window_hours` | `24` | The rolling window the threshold is counted over, and the decay period — a repaired repository recovers on its own once its failures age out. |
 
 > **`MIN_CLAIM_RUNWAY_SECONDS` is a fallback for a native run only.**
-> `container_launch.ts` forwards only the variables it sets itself (the base
-> directory, the config path, the host id, the host-disk reading and — when
-> `loop.sh` published them — the run cap pair `VIBE_RUN_MAX_SECONDS` /
-> `VIBE_RUN_STARTED_EPOCH`, and the launcher's hard-kill instant
-> `VIBE_HARD_KILL_AT_EPOCH`), so it does not reach a containerised worker — the
-> default run mode. Use the `.config.json` keys above, which are read from the
-> config mounted at `CONFIG_PATH`. A config key always wins over the variable
-> (Issue #289). | Circuit breaker threshold | `circuit_breaker_threshold` | `3`
-> | Consecutive zero-progress scan cycles before exponential backoff | | CI
-> check max retries | `ci_check_max_retries` | `3` | Maximum retries per CI
-> (Continuous Integration) check failure before skipping | | Security log file |
-> `security_log_file` | _(empty)_ | Path to a dedicated security event log file
-> | | Enable session resume | `enable_session_resume` | `true` | Per-stream
-> conversations, the stream locks and the per-issue compaction. See
-> [Session Resume](#-session-resume). | | Max session size (bytes) |
-> `max_session_size_bytes` | `52428800` | Maximum session store size per
-> repository before compaction (50 MB). See
-> [Session Compaction](#-session-compaction). | | Max session age (days) |
-> `max_session_age_days` | `7` | Maximum age for session files before cleanup.
-> See [Session Compaction](#-session-compaction). | | Context budget warning % |
-> `context_budget_warning_percent` | `50` | Usage percentage that triggers a
-> budget warning. See [Context Budget Monitoring](#-context-budget-monitoring).
-> | | Context budget error % | `context_budget_error_percent` | `80` | Usage
-> percentage that triggers a budget error. See
-> [Context Budget Monitoring](#-context-budget-monitoring). | | Context budget
-> block % | `context_budget_block_percent` | `95` | Hard ceiling — at or above
-> this usage the execution phase trims the comment and CI-log history and
-> retries, then hands the issue to planning (`0` disables). See
-> [Context Budget Monitoring](#-context-budget-monitoring). | | Max total
-> comment chars | `max_total_comment_chars` | `20000` | Maximum total characters
-> across all comments included in the prompt | | Max untrusted comment chars |
-> `max_untrusted_comment_chars` | `2000` | Maximum characters per untrusted
-> comment before truncation | | Max untrusted comment count |
-> `max_untrusted_comment_count` | `5` | Maximum number of untrusted comments to
-> include in the prompt | | Comment flood threshold | `comment_flood_threshold`
-> | `10` | Threshold of untrusted comments that triggers a flood audit event | |
-> Include untrusted comments | `include_untrusted_comments` | `true` | Whether
-> to include untrusted comments in the prompt. When `false` (strict mode),
-> untrusted comments are excluded entirely. | | Include codebase map |
-> `include_codebase_map` | `true` | Whether to inject the generated per-repo
-> codebase map (layout, modules, canonical commands) into issue prompts. See
-> [Codebase Map](MODEL-AND-CACHING.md#codebase-map). | | Graft repo context |
-> `graft_context.enabled` | `false` | Whether this host builds a Graft code
-> graph of each checkout and injects the resulting bundle beside the
-> repo-context docs. Off unless the host opts in. See
-> [Graft repo-context injection](#-graft-repo-context-injection). | | CodeGraph
-> repo context | `codegraph_context.enabled` | `false` | Whether a run offers
-> the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off
-> unless a host asks for it: an unset block behaves exactly as today. Turning it
-> on adds a CodeGraph index step at run start — capped at **300 s**, after which
-> the run carries on without an index — a `codegraph` MCP entry for the agent to
-> query, and one line in the prompt saying the index is there. The index is
-> written to `.codegraph/` on the **persistent checkout** and reused across
-> runs; switching the key back off stops the index being built or offered but
-> does not delete `.codegraph/`, which is removed by hand. A run routed to
-> Gemini records the context as `unsupported` (that CLI takes no MCP entry) and
-> proceeds without it. The block accepts only `enabled`; a non-object block, or
-> a non-boolean `enabled`, fails the config load naming
-> `codegraph_context.enabled` rather than reading as off. It is independent of
-> the Graft trial's `graft_context.enabled` (a separate block from milestone
-> #2060, not present on every build) — a host may turn both on, and neither
-> reads the other. The steps it describes run on the **issue, planning,
-> question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement,
-> revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is
-> prepared once per run and the `codegraph` MCP entry and the prompt line are
-> added together or not at all, so a run whose index did not build gets neither
-> and proceeds without one. The trial protocol both repo-context switches are
-> judged by — the bar, the sequential windows, the exclusions and the figure
-> sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). | | RTK output |
-> `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash
-> commands through RTK, the output filter trialled by Issue #2328. On by default
-> since Issue #2432 — the owner's decision once it was seen to function in a
-> live run, not a verdict on the trial's token bar: an unset or empty block
-> filters, and a host that wants the raw output back sets
-> `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning,
-> question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement,
-> revision and quorum** (Issue #2380 added the key, Issue #2382 the module
-> `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both
-> implementation phases, Issue #2384 the wiring into the planning, question,
-> PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue
-> #2569 the wiring into the clarification-family phases through
-> `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered
-> alike. A path that spawns the agent more than once in a run — planning's
-> draft, publish, retry and self-repair turns, a quorum plan-off's two drafts
-> and judge, and the CI fix's post-quality retry — prepares RTK once and hands
-> every spawn the same hook and prompt line, so the saved-token figure covers
-> the whole run from one baseline. An **issue** run's run-stats comment reports
-> it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above
-> the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare
-> `ok` when the saved-token figure could not be read), `- **RTK:** failed`,
-> `- **RTK:** off` on a host that opted out, or
-> `- **RTK:** unsupported (gemini)` naming the provider. It is a status line,
-> never a cost line, so it never moves the published issue total. A **question**
-> round's run-stats comment, a **planning** round's published stats — on its
-> failure path too — and a **grill-me** round's stats comment carry the same
-> line, and since Issue #2561 the planning and grill-me comments carry the
-> `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment,
-> refinement, revision and quorum stats comments carry all three lines too
-> (Issue #2569) — though clarity assessment and quorum post theirs only on a
-> degraded run. A **PR-feedback** or **CI-fix** round's run-stats comment,
-> posted on the PR it worked on, carries the `Graft:`, `CodeGraph:` and `RTK:`
-> lines too, above the cumulative PR total
-> ([One cost/model stats comment per run](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)).
-> Every issue run also publishes it to the post-run callbacks as the additive
-> `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see
-> [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite
-> hook to the `--settings` payload of every Claude spawn on the ten wired paths
-> (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment,
-> refinement, revision and quorum), so `git status` runs as `rtk git status`,
-> and one line in the prompt telling the agent its Bash output is filtered and
-> that `rtk recall` shows a failed command's full output. Codex receives the
-> same worker-authored hook through per-spawn `-c hooks.PreToolUse`
-> configuration with `features.hooks=true` and
-> `--dangerously-bypass-hook-trust`, without writing the operator's `~/.codex`.
-> Codex normalises shell input to `Bash` with a string `command`, so RTK needs
-> no shim. Support is declared by the provider seam's `supportsPreToolUseHooks`
-> capability: Claude and Codex can report `ok` and a saved-token delta; **Gemini
-> and DeepSeek** record `unsupported` and proceed without it. When the switch is
-> off, Codex receives no RTK hook configuration or hook-trust flag. RTK never
-> fails a run: a missing `rtk` binary, a preflight that times out or exits
-> non-zero, or a gain read that returns no usable figure, is logged as
-> `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on
-> unfiltered — the fault is surfaced, never swallowed as a clean pass. The block
-> accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails
-> the config load naming `rtk_output.enabled` rather than reading as the
-> default. It is independent of the repo-context switches
-> `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any
-> combination on, and none reads another. The trial protocol it is judged by —
-> the bar, the window, the comparison rule and the verdict template — is
-> [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of
-> [Repo-context Trial](REPO-CONTEXT-TRIAL.md). | | Max auto-fix attempts |
-> `max_auto_fix_attempts` | `3` | Automatic fix attempts per **failure
-> signature** before the worker closes the PR and redoes its issue (Issue
-> #4304). See [Auto-fix attempt cap](#-auto-fix-attempt-cap). | | Blocking-PR
-> stall threshold | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a
-> PR blocking a `work-on` issue may sit red or carry an unanswered authorised
-> comment before the watchdog repairs it (sync and rerun once, then abandon and
-> redo), or sit green and unmerged before the watchdog tries to merge it. See
-> [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). | | Fleet PR slots
-> | `fleet_pr_slots` | `8` | How many fleet PRs may be open at once on a
-> repository's **default branch** before a non-milestone issue is held — the
-> owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's
-> total slot count: the sum of every host's `max_concurrent_issues`. No host's
-> config carries the fleet's size, so the default cannot be derived; `8` is the
-> ceiling of `max_concurrent_issues`, so one host at its maximum never holds
-> itself and four hosts at the default two slots fill it exactly. Only fleet PRs
-> count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a
-> human's. Milestone issues are unaffected: each `milestone/*` branch still
-> holds one PR, so several milestones run several PRs at once. A non-positive or
-> non-integer value falls back to `8`. Per repository via
-> `repo_config.<repo>.fleet_pr_slots`. See
-> [Open PR blocking](workflows/issue-processing.md). |
+> `container_launch.ts` forwards only the
+> variables it sets itself (the base directory, the config path, the host id,
+> the host-disk reading and — when `loop.sh` published them — the run cap pair
+> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`, and the launcher's hard-kill
+> instant `VIBE_HARD_KILL_AT_EPOCH`), so it does not reach a
+> containerised worker —
+> the default run mode. Use the `.config.json` keys above, which are read from
+> the config mounted at `CONFIG_PATH`. A config key always wins over the
+> variable (Issue #289).
+| Circuit breaker threshold | `circuit_breaker_threshold` | `3` | Consecutive zero-progress scan cycles before exponential backoff |
+| CI check max retries | `ci_check_max_retries` | `3` | Maximum retries per CI (Continuous Integration) check failure before skipping |
+| Security log file              | `security_log_file`              | _(empty)_  | Path to a dedicated security event log file                                                                                                                                                          |
+| Enable session resume          | `enable_session_resume`          | `true`     | Per-stream conversations, the stream locks and the per-issue compaction. See [Session Resume](#-session-resume).                                                                          |
+| Max session size (bytes)       | `max_session_size_bytes`         | `52428800` | Maximum session store size per repository before compaction (50 MB). See [Session Compaction](#-session-compaction).                                                                      |
+| Max session age (days)         | `max_session_age_days`           | `7`        | Maximum age for session files before cleanup. See [Session Compaction](#-session-compaction).                                                                                             |
+| Context budget warning %       | `context_budget_warning_percent` | `50`       | Usage percentage that triggers a budget warning. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                            |
+| Context budget error %         | `context_budget_error_percent`   | `80`       | Usage percentage that triggers a budget error. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                              |
+| Context budget block %         | `context_budget_block_percent`   | `95`       | Hard ceiling — at or above this usage the execution phase trims the comment and CI-log history and retries, then hands the issue to planning (`0` disables). See [Context Budget Monitoring](#-context-budget-monitoring). |
+| Max total comment chars | `max_total_comment_chars` | `20000` | Maximum total characters across all comments included in the prompt |
+| Max untrusted comment chars | `max_untrusted_comment_chars` | `2000` | Maximum characters per untrusted comment before truncation |
+| Max untrusted comment count | `max_untrusted_comment_count` | `5` | Maximum number of untrusted comments to include in the prompt |
+| Comment flood threshold | `comment_flood_threshold` | `10` | Threshold of untrusted comments that triggers a flood audit event |
+| Include untrusted comments | `include_untrusted_comments` | `true` | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely. |
+| Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
+| Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
+| CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement, revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
+| RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. A **PR-feedback** or **CI-fix** round's run-stats comment, posted on the PR it worked on, carries the `Graft:`, `CodeGraph:` and `RTK:` lines too, above the cumulative PR total ([One cost/model stats comment per run](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)). Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. Codex receives the same worker-authored hook through per-spawn `-c hooks.PreToolUse` configuration with `features.hooks=true` and `--dangerously-bypass-hook-trust`, without writing the operator's `~/.codex`. Codex normalises shell input to `Bash` with a string `command`, so RTK needs no shim. Support is declared by the provider seam's `supportsPreToolUseHooks` capability: Claude and Codex can report `ok` and a saved-token delta; **Gemini and DeepSeek** record `unsupported` and proceed without it. When the switch is off, Codex receives no RTK hook configuration or hook-trust flag. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
+| Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker closes the PR and redoes its issue (Issue #4304). See [Auto-fix attempt cap](#-auto-fix-attempt-cap). |
+| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red or carry an unanswered authorised comment before the watchdog repairs it (sync and rerun once, then abandon and redo), or sit green and unmerged before the watchdog tries to merge it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+| Fleet PR slots                 | `fleet_pr_slots`                 | `8`        | How many fleet PRs may be open at once on a repository's **default branch** before a non-milestone issue is held — the owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's total slot count: the sum of every host's `max_concurrent_issues`. No host's config carries the fleet's size, so the default cannot be derived; `8` is the ceiling of `max_concurrent_issues`, so one host at its maximum never holds itself and four hosts at the default two slots fill it exactly. Only fleet PRs count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a human's. Milestone issues are unaffected: each `milestone/*` branch still holds one PR, so several milestones run several PRs at once. A non-positive or non-integer value falls back to `8`. Per repository via `repo_config.<repo>.fleet_pr_slots`. See [Open PR blocking](workflows/issue-processing.md). |
 
 ### 🌱 Graft repo-context injection
 
@@ -2177,19 +2064,20 @@ explicitly overridden.
 }
 ```
 
-`graft_context.enabled` is the **host** switch for Graft repo-context injection
-(Issue #2060). It defaults to **`false`**, and a host whose `.config.json`
-carries no `graft_context` block behaves exactly as it does today — nothing is
-built, nothing is injected, and no prompt changes.
+`graft_context.enabled` is the **host** switch for Graft repo-context
+injection (Issue #2060). It defaults to **`false`**, and a host whose
+`.config.json` carries no `graft_context` block behaves exactly as it does
+today — nothing is built, nothing is injected, and no prompt changes.
 
 This key is the configuration surface (Issue #2098). As of Issue #2569 it is
-live for all ten phases that accept a bundle — the **issue**, **planning** and
-**question** runs (Issue #2102), the **PR feedback** and **CI fix** runs (Issue
-#2103), the **grill-me** rounds (Issue #2561) and the **clarity assessment**,
-**refinement**, **revision** and **quorum** runs (Issue #2569): each collects a
-bundle before its prompt is built and injects it when the collection succeeded.
-The run-stats fields land with the rest of #2060. A host that leaves the switch
-off is unaffected everywhere.
+live for all ten phases that accept a bundle — the **issue**, **planning**
+and **question** runs (Issue #2102), the **PR feedback** and **CI fix**
+runs (Issue #2103), the **grill-me** rounds (Issue #2561) and the
+**clarity assessment**, **refinement**, **revision** and **quorum** runs
+(Issue #2569): each collects a
+bundle before its prompt is built and injects it when the collection
+succeeded. The run-stats fields land with the
+rest of #2060. A host that leaves the switch off is unaffected everywhere.
 
 **What it turns on.** On an enabled host, each run builds a
 [Graft](https://github.com/trailhq/Graft) tree-sitter code graph of the
@@ -2198,183 +2086,183 @@ section beside the existing `CLAUDE.md` / `AGENTS.md` repo-context docs. The
 switch is per host, not per repository: an enabled host uses Graft for every
 repository it works on. Ten phases take a bundle — **issue**, **planning**,
 **question**, **PR feedback**, **CI fix** and **grill-me** through their
-builders (Issue #2101), and **clarity assessment**, **refinement**, **revision**
-and **quorum** appended to the built prompt — and all ten collect one (Issues
-#2102, #2103, #2561 and #2569). The query is the issue title and body on the
-eight issue-shaped runs; on the two PR runs it is the PR title plus the feedback
-comment text (PR feedback) or the failing check's name, annotations and CI log
-excerpt (CI fix). The PR title costs one `gh pr view --json title`, made
-**only** on an enabled host; a title that cannot be read is warned about and the
-query is asked without it. On the PR runs the graph is built over the PR head
-branch, so the bundle is PR-author-influenced content — which is exactly why it
-is fenced as untrusted. The bundle renders as a fenced untrusted document,
-tagged `<document source="graft ask --source">` and named among the untrusted
-blocks the boundary-integrity instruction covers, because it reproduces
-repository source and is therefore data, never instructions. It is selected per
-query, so it deliberately sits **outside** the cacheable static prefix and
-outside the static prompt SHA: a bundle that differs on every issue costs no
-prompt-cache hits, and a phase run without one produces byte-identical prompt
-text to before.
+builders (Issue #2101), and **clarity assessment**, **refinement**,
+**revision** and **quorum** appended to the built prompt — and all ten collect
+one (Issues #2102, #2103, #2561 and #2569). The
+query is the issue title and body on the eight issue-shaped runs; on the two PR runs it is the PR title
+plus the feedback comment text (PR feedback) or the failing check's name,
+annotations and CI log excerpt (CI fix). The PR title costs one
+`gh pr view --json title`, made **only** on an enabled host; a title that
+cannot be read is warned about and the query is asked without it. On the PR
+runs the graph is built over the PR head branch, so the bundle is
+PR-author-influenced content — which is exactly why it is fenced as untrusted.
+The bundle renders as a fenced untrusted document, tagged
+`<document source="graft ask --source">` and named among the untrusted blocks
+the boundary-integrity instruction covers, because it reproduces repository
+source and is therefore data, never instructions. It is selected per query, so
+it deliberately sits **outside** the cacheable static prefix and outside the
+static prompt SHA: a bundle that differs on every issue costs no prompt-cache
+hits, and a phase run without one produces byte-identical prompt text to
+before.
 
-**The tools — the pull side (Issue #2314).** The bundle is a bounded selection
-made from the issue text before the run starts. On an `ok` collection the run is
-also handed Graft's own MCP server, `graft mcp
-<checkout>`, registered as
-`graft` in the per-run `mcpServers` configuration beside whatever the run
-already had (the Playwright browser grant, the `codegraph` server), and a short
-rule **leads** the built user prompt naming the tools — `graft_find_code`,
-`graft_file_api`, `graft_trace_calls`, `graft_find_all`, `graft_repo_map`,
-`graft_check_freshness` — each beside the `grep`, `cat` or `ls` habit it
-replaces, with the reason and the cases where reading is still right. It leads
-rather than trails because, as one sentence appended after the issue and the
-bundle, it was ignored: 25 of 29 `Graft: ok` runs reported `0 queries` (Issue
-#2435). The entry and the rule are added together or not at all, on the same six
-run kinds. The entry carries `alwaysLoad: true`, which exempts the server from
-the Claude CLI's tool-search deferral: deferred, a Graft tool is a name the
-agent must spend a call loading before it can use it, and it greps instead
-(Issue #2435). The exemption is per server, so nothing else the run carries is
-loaded up front, and Codex — which reads only `command`, `args` and `env` —
-never sees it. The server is rooted at the checkout the graph was built in,
+**The tools — the pull side (Issue #2314).** The bundle is a bounded
+selection made from the issue text before the run starts. On an `ok`
+collection the run is also handed Graft's own MCP server, `graft mcp
+<checkout>`, registered as `graft` in the per-run `mcpServers` configuration
+beside whatever the run already had (the Playwright browser grant, the
+`codegraph` server), and a short rule **leads** the built user prompt naming
+the tools — `graft_find_code`, `graft_file_api`, `graft_trace_calls`,
+`graft_find_all`, `graft_repo_map`, `graft_check_freshness` — each beside the
+`grep`, `cat` or `ls` habit it replaces, with the reason and the cases where
+reading is still right. It leads rather than trails because, as one sentence
+appended after the issue and the bundle, it was ignored: 25 of 29 `Graft: ok`
+runs reported `0 queries` (Issue #2435). The entry and the rule are added
+together or not at all, on the same six run kinds. The entry carries
+`alwaysLoad: true`, which exempts the server from the Claude CLI's tool-search
+deferral: deferred, a Graft tool is a name the agent must spend a call loading
+before it can use it, and it greps instead (Issue #2435). The exemption is per
+server, so nothing else the run carries is loaded up front, and Codex — which
+reads only `command`, `args` and `env` — never sees it. The server is rooted at the checkout the graph was built in,
 named in its arguments rather than a `cwd`, for the same reason CodeGraph's is
 (Issue #2200). A provider with no MCP transport (Gemini) keeps the bundle and
 gets no tools; the run logs `Graft tools: not handed to the agent` and reports
-no query figure at all, so "could not ask" is never read as "never asked". A run
-that names no checkout, or whose provider cannot be resolved, logs one
+no query figure at all, so "could not ask" is never read as "never asked". A
+run that names no checkout, or whose provider cannot be resolved, logs one
 `[GRAFT_TOOLS_UNAVAILABLE] <reason>` line and proceeds without the tools. The
 calls the agent made are counted from the run's per-tool tally — both the
-`mcp__graft__<tool>` spelling Claude records and the bare name — and reported as
-`queries` in the run-stats line, the log line and the callback block.
+`mcp__graft__<tool>` spelling Claude records and the bare name — and reported
+as `queries` in the run-stats line, the log line and the callback block.
 
-**When Graft is unavailable.** An enabled host that cannot run Graft — the graph
-directory inside the clone's git dir cannot be resolved, the binary is missing,
-the build or the query fails, the query succeeds but returns an empty bundle,
-the build produces a graph with 0 nodes (no file matched a language Graft
-parses, or the build matched no files), or the graph index cannot be read — logs
-one `[GRAFT_UNAVAILABLE] <reason>` line at `warn` and records a `failed` Graft
+**When Graft is unavailable.** An enabled host that cannot run Graft — the
+graph directory inside the clone's git dir cannot be resolved, the binary is
+missing, the build or the query fails, the query succeeds but returns an empty
+bundle, the build produces a graph with 0 nodes (no file matched a language
+Graft parses, or the build matched no files), or the graph index cannot be
+read — logs one
+`[GRAFT_UNAVAILABLE] <reason>` line at `warn` and records a `failed` Graft
 status. The run itself continues, without the bundle: the bundle is an
-accelerator, so a run never fails because Graft did. Grep the worker log for
-`[GRAFT_UNAVAILABLE]` to see why. Beside it the run logs one
-`Graft context: <status> — <figures>` line, so a run that asked for a bundle
-always says what came back — `failed` as loudly as `ok`. A run on a host with
-the switch off logs neither line.
+accelerator, so a run never fails because Graft did.
+Grep the worker log for `[GRAFT_UNAVAILABLE]` to see why. Beside it the run
+logs one `Graft context: <status> — <figures>` line, so a run that asked for a
+bundle always says what came back — `failed` as loudly as `ok`. A run on a
+host with the switch off logs neither line.
 
 **What the issue itself shows.** The worker log is private to the host, so the
 [per-issue run-stats comment](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)
 carries the same outcome as one bullet beside the run's costs (Issue #2105) —
 `- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714 nodes, 22,908 call
-edges, 12 queries`
-on a full collection whose tools were handed over, the figures it reached on a
-`failed` one (`- **Graft:** failed — build 300 s`), and `- **Graft:** off` when
-the host switch is off. The line is a bullet of the stats block and never counts
-toward the estimated-cost tally. It rides the comment the issue and question
-rounds post; a planning run posts its stats through the planning processor's own
-render, which carries no Graft bullet — its outcome is in the `Graft context:`
-log line alone.
+edges, 12 queries` on a full collection whose tools were handed over, the figures it reached on a `failed` one
+(`- **Graft:** failed — build 300 s`), and `- **Graft:** off` when the host
+switch is off. The line is a bullet of the stats block and never counts toward
+the estimated-cost tally. It rides the comment the issue and question rounds
+post; a planning run posts its stats through the planning processor's own
+render, which carries no Graft bullet — its outcome is in the
+`Graft context:` log line alone.
 
 **Query size.** The bundle query is passed to `graft ask --source` as a single
-argument, truncated to **64 KiB** of UTF-8 on a character boundary, so it stays
-well under Linux's 128 KiB single-argument limit (Issue #2099). A query that is
-actually cut logs one `[GRAFT_QUERY_TRUNCATED]` line at `warn`, so a thin bundle
-can be traced to a cut query rather than guessed at. The bundle Graft returns is
-not capped.
+argument, truncated to **64 KiB** of UTF-8 on a character boundary, so it
+stays well under Linux's 128 KiB single-argument limit (Issue #2099). A query that is
+actually cut logs one `[GRAFT_QUERY_TRUNCATED]` line at `warn`, so a thin
+bundle can be traced to a cut query rather than guessed at. The bundle Graft
+returns is not capped.
 
 **Time limits.** The graph build is given **300 seconds** and the bundle query
 **30 seconds**. Past either limit the run continues without the bundle and
 records a `failed` Graft status — the bundle is an accelerator, so losing it
-never fails the run, and the loss is recorded rather than passed off as a clean
-run.
+never fails the run, and the loss is recorded rather than passed off as a
+clean run.
 
 **Where the graph lives.** Graft writes its graph inside the clone's git
 directory, not the working tree: the worker resolves
-`git rev-parse --git-path graft` — ordinarily `<checkout>/.git/graft`, and for a
-lane worktree the `graft` directory inside that worktree's own git dir — and
-passes it as `graft --dir <path> build|ask|mcp` (Issue #2915). That directory is
-persistent between runs, so an unchanged file still replays from Graft's own
-cache on the next build instead of being re-parsed, but because it sits outside
-the working tree a repository's lint and format tools never glob it, nothing
-there can ever be staged, and `git reset --hard` plus `git clean -fd` — the
-per-run reset every run starts with — leaves it untouched, the same survival
-property the old `info/exclude` entry gave the in-tree `graft/` it replaces. The
-worker no longer appends `/graft/` to the clone's `.git/info/exclude`. Before
-each build the worker removes a **legacy in-tree `graft/`** left over from a
-checkout built before this change — recognised as a real directory (not a
-symlink) carrying `.graph/wiring.json` with nothing under it tracked by git —
-logging a `warn` line when it does; a `graft/` the repository itself tracks is
-never touched. `/graft/` stays in the canonical `.gitignore` pattern set the
-worker enforces (`gitignore-sync` at `setup.sh` time) as belt and braces for any
-lingering in-tree copy or a repository that still references the old path, even
-though the graph the worker builds today never lands there. Graft itself is run
-with `--no-gitignore --no-ignore`, which Issue #2060 records as the flags that
-stop it editing `.gitignore`; that is an assumption from Graft's documentation
-rather than one observed here, because Graft is not installed on the image this
-was written against.
+`git rev-parse --git-path graft` — ordinarily `<checkout>/.git/graft`, and for
+a lane worktree the `graft` directory inside that worktree's own git dir — and
+passes it as `graft --dir <path> build|ask|mcp` (Issue #2915). That directory
+is persistent between runs, so an unchanged file still replays from Graft's
+own cache on the next build instead of being re-parsed, but because it sits
+outside the working tree a repository's lint and format tools never glob it,
+nothing there can ever be staged, and `git reset --hard` plus `git clean -fd`
+— the per-run reset every run starts with — leaves it untouched, the same
+survival property the old `info/exclude` entry gave the in-tree `graft/` it
+replaces. The worker no longer appends `/graft/` to the clone's
+`.git/info/exclude`. Before each build the worker removes a **legacy in-tree
+`graft/`** left over from a checkout built before this change — recognised as
+a real directory (not a symlink) carrying `.graph/wiring.json` with nothing
+under it tracked by git — logging a `warn` line when it does; a `graft/` the
+repository itself tracks is never touched. `/graft/` stays in the canonical
+`.gitignore` pattern set the worker enforces (`gitignore-sync` at `setup.sh`
+time) as belt and braces for any lingering in-tree copy or a repository that
+still references the old path, even though the graph the worker builds today
+never lands there. Graft itself is run with `--no-gitignore --no-ignore`,
+which Issue #2060 records as the flags that stop it editing `.gitignore`;
+that is an assumption from Graft's documentation rather than one observed
+here, because Graft is not installed on the image this was written against.
 
 **Validation.** The block is validated at config load. An unrecognised key
 inside it warns and is ignored, the way an unknown top-level key does, but a
 block that is not an object — or an `enabled` that is not a boolean, such as
-`"yes"` — **stops the worker** with an error naming `graft_context.enabled`. A
-host whose operator believes Graft is on must never silently run with it off.
+`"yes"` — **stops the worker** with an error naming `graft_context.enabled`.
+A host whose operator believes Graft is on must never silently run with it
+off.
 
 ### 📝 Agent transcripts
 
-`agent_transcript_enabled: true` tees every agent invocation's raw stream-json
-to `~/logs/agent-<run-id>[-<issue>].jsonl` on the host that ran it, and
-publishes that path to post-run callbacks as `sessionLogPath` /
+`agent_transcript_enabled: true` tees every agent invocation's raw
+stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` on the host that ran
+it, and publishes that path to post-run callbacks as `sessionLogPath` /
 `VIBECODER_SESSION_LOG_PATH`.
 
-Without it, a failed run records its result, its exit code, its duration and its
-cost, and nothing about **why** it failed. That is not hypothetical: every one
-of the twenty fleet run records archived on 2026-09-05 carried
+Without it, a failed run records its result, its exit code, its duration and
+its cost, and nothing about **why** it failed. That is not hypothetical: every
+one of the twenty fleet run records archived on 2026-09-05 carried
 `"absentReason": "the worker exported no VIBECODER_SESSION_LOG_PATH (agent
-transcript tee not enabled for this run)"`,
-and diagnosing that day's failures from the run records alone produced the wrong
-answer.
+transcript tee not enabled for this run)"`, and diagnosing that day's failures
+from the run records alone produced the wrong answer.
 
-**`.config.json` is the only switch.** `DEBUG=true` used to enable the tee as a
-side effect and no longer does (Issue #1141) — a debug flag that silently starts
-capturing repository content is a surprise. `VIBE_AGENT_TRANSCRIPT` is internal
-plumbing the worker settles from this key on every run, so exporting it by hand
-changes nothing.
+**`.config.json` is the only switch.** `DEBUG=true` used to enable the tee as
+a side effect and no longer does (Issue #1141) — a debug flag that silently
+starts capturing repository content is a surprise. `VIBE_AGENT_TRANSCRIPT` is
+internal plumbing the worker settles from this key on every run, so exporting
+it by hand changes nothing.
 
 #### What is in the file
 
-A transcript is the **raw agent stream**: model output, the issue and repository
-text the agent was given, the contents of files it read, and the output of
-commands it ran. It passes through the console secret redaction on its way to
-disk, which is a net for known credential shapes — **not a guarantee**. Treat a
-transcript as carrying whatever the run touched.
+A transcript is the **raw agent stream**: model output, the issue and
+repository text the agent was given, the contents of files it read, and the
+output of commands it ran. It passes through the console secret redaction on
+its way to disk, which is a net for known credential shapes — **not a
+guarantee**. Treat a transcript as carrying whatever the run touched.
 
-That is why the default is off, and why it is worth deciding deliberately rather
-than switching on across a fleet by habit.
+That is why the default is off, and why it is worth deciding deliberately
+rather than switching on across a fleet by habit.
 
 #### It has to be on for every run
 
 You cannot know in advance which run will fail, so a tee that runs only on
-failures cannot exist — the stream has to be captured while the run is still in
-progress. Every run therefore writes a transcript once the key is on.
+failures cannot exist — the stream has to be captured while the run is still
+in progress. Every run therefore writes a transcript once the key is on.
 
 What happens to a given transcript afterwards is the **callback hook's**
 decision, not the tee's: the hook sees `sessionLogPath` and chooses whether to
-read, redact, archive or ignore it. Transcript _contents_ are never exported by
-the worker — only the path. A hook that copies a transcript into a health
-repository is putting raw repository content there, and owns both the redaction
-and the read access that follow. See [Post-Run Callbacks](#-post-run-callbacks)
-and [CALLBACKS.md](CALLBACKS.md).
+read, redact, archive or ignore it. Transcript *contents* are never exported
+by the worker — only the path. A hook that copies a transcript into a health
+repository is putting raw repository content there, and owns both the
+redaction and the read access that follow. See
+[Post-Run Callbacks](#-post-run-callbacks) and [CALLBACKS.md](CALLBACKS.md).
 
 #### Local retention
 
-Transcripts have a **30-day** default age window, separate from the worker logs'
-3-day policy. Tiny transcripts are evidence, so the worker-log stub rule does
-not delete them early. Plain, rotated and gzipped transcripts share a separate
-**2,000-file hard cap**, oldest first; reaching that cap can shorten the window
-and the cleanup summary reports the number removed by the cap. Worker restart
-logs cannot evict transcripts from that separate allowance.
+Transcripts have a **30-day** default age window, separate from the worker
+logs' 3-day policy. Tiny transcripts are evidence, so the worker-log stub
+rule does not delete them early. Plain, rotated and gzipped transcripts share
+a separate **2,000-file hard cap**, oldest first; reaching that cap can shorten
+the window and the cleanup summary reports the number removed by the cap.
+Worker restart logs cannot evict transcripts from that separate allowance.
 
 `log-rotation` still size-rotates the worker's `agent-*.jsonl` files, with its
-configured backup cap, and the writer stops capturing an invocation at 100 MiB.
-Neither a time window nor a scan restores data lost to these caps. Archive
-evidence off the worker before pruning when a longer guarantee is needed. Copies
-made by callback hooks have their own retention policy.
+configured backup cap, and the writer stops capturing an invocation at
+100 MiB. Neither a time window nor a scan restores data lost to these caps.
+Archive evidence off the worker before pruning when a longer guarantee is
+needed. Copies made by callback hooks have their own retention policy.
 
 #### Scheduled security scan
 
@@ -2383,30 +2271,30 @@ after the previous scan, the worker scans changed retained transcripts. The
 schedule and file size/mtime cursor live in
 `~/logs/.agent-transcript-scan-v1.json`, so restarting does not immediately
 repeat unchanged findings. This local task runs before the GitHub idle-task
-filing gates and needs no GitHub quota or agent call. A continuously busy worker
-waits until its next idle hook; this is not a real-time detector.
+filing gates and needs no GitHub quota or agent call. A continuously busy
+worker waits until its next idle hook; this is not a real-time detector.
 
 The scan recognises Claude/DeepSeek stream-json, Codex `item.started` /
-`item.completed` command execution records, and Gemini `tool_use` /
-`tool_result` records. It flags tool records for shell egress commands (`curl`,
-`wget`, `ssh`, `scp`, `sftp`, `nc`, `ncat`, `netcat`) and `WebFetch`, credential
-paths in `Read` or `Bash`, and permission denials or the worker's disallowed
-planning tools. Quoted assistant prose is not a tool attempt. These are
-investigation signals, not proof of compromise: a legitimate network fetch is
-flagged too, and custom tools, encoded commands and future provider event
-formats can evade these heuristics. Gemini shell/read/web tools and structured
-permission denials are matched alongside their Claude equivalents.
+`item.completed` command execution records, and Gemini `tool_use` / `tool_result`
+records. It flags tool records for shell egress commands
+(`curl`, `wget`, `ssh`, `scp`, `sftp`, `nc`, `ncat`, `netcat`) and `WebFetch`,
+credential paths in `Read` or `Bash`, and permission denials or the worker's
+disallowed planning tools. Quoted assistant prose is not a tool attempt.
+These are investigation signals, not proof of compromise: a legitimate
+network fetch is flagged too, and custom tools, encoded commands and future
+provider event formats can evade these heuristics. Gemini shell/read/web tools
+and structured permission denials are matched alongside their Claude equivalents.
 
 Each signal kind in a file appears at WARNING in the worker log as
 `[AGENT_TRANSCRIPT_SIGNAL] <file>:<first-line> signal=<kind> occurrences=<count>`.
 Repeated records are counted in that finding, bounding alerts and memory to
-three findings per file. This gives an operator a local evidence pointer without
-copying commands, URLs, credential paths or outputs into the alert. The
-`[agent-transcript-scan]` summary reports scanned files, findings, malformed
-lines and failed files. An unreadable or oversized file does not prevent other
-files being scanned, and is retried on the next scheduled pass. Malformed
-transcripts are also retried rather than recorded as fully scanned. The scan
-bounds decompressed input at 100 MiB per file.
+three findings per file. This gives an operator a
+local evidence pointer without copying commands, URLs, credential paths or
+outputs into the alert. The `[agent-transcript-scan]` summary reports scanned
+files, findings, malformed lines and failed files. An unreadable or oversized
+file does not prevent other files being scanned, and is retried on the next
+scheduled pass. Malformed transcripts are also retried rather than recorded
+as fully scanned. The scan bounds decompressed input at 100 MiB per file.
 
 Capture remains opt-in through `agent_transcript_enabled`; an empty or disabled
 capture is not evidence that the agent was safe. The scan reads existing
@@ -2416,23 +2304,23 @@ finding and preserve local evidence before any cleanup.
 
 ### 🧭 Adaptive claim floor
 
-`min_claim_runway_seconds` is the same floor for every issue, which is right for
-a fresh one-file fix and wrong for an issue already known to be a long job.
+`min_claim_runway_seconds` is the same floor for every issue, which is right
+for a fresh one-file fix and wrong for an issue already known to be a long job.
 VibeCoder#222 (a 21-file change) was claimed with 933 s of runway left: a
-near-certain timeout the moment it was taken, costing a claim cycle and a whole
-billed run that produced nothing the next attempt did not redo.
+near-certain timeout the moment it was taken, costing a claim cycle and a
+whole billed run that produced nothing the next attempt did not redo.
 
 Both floors measure the same runway — the runway left to the **supervisor hard
-cap** (Issue #425). The cycle deadline still stops new claims on its own (Issue
-#397), but it no longer truncates the execute of a claim already taken, so it is
-not what decides whether a claim can fit.
+cap** (Issue #425). The cycle deadline still stops new claims on its own
+(Issue #397), but it no longer truncates the execute of a claim already taken,
+so it is not what decides whether a claim can fit.
 
-So the floor adapts to what the issue already carries (Issue #245). Evidence is
-any one of: preserved WIP on the issue branch, a previous attempt whose recorded
-outcome was `timeout` in `execute`, or a label from `claim_long_job_labels`. It
-is read once per candidate from the issue's labels and the fleet's own release
-comments — comments from other authors are ignored, so a marker cannot be forged
-to keep an issue from being claimed.
+So the floor adapts to what the issue already carries (Issue #245). Evidence
+is any one of: preserved WIP on the issue branch, a previous attempt whose
+recorded outcome was `timeout` in `execute`, or a label from
+`claim_long_job_labels`. It is read once per candidate from the issue's labels
+and the fleet's own release comments — comments from other authors are ignored,
+so a marker cannot be forged to keep an issue from being claimed.
 
 ```mermaid
 flowchart TD
@@ -2446,35 +2334,38 @@ flowchart TD
     E --> F[Scan the next candidate]
 ```
 
-An issue with evidence needs three quarters of the best execute budget the host
-can offer — `claude_timeout`, or the hard-cap window's own equivalent where the
-cap can never fit that budget. Requiring the whole budget would leave such a
-host claiming nothing at all; three quarters refuses the doomed slice (933 s of
-3600 s) while leaving the runs that made progress on #222 — 56 min and 49 min —
-untouched. A deferral never parks the slot: it is logged once per cycle and the
-scan moves to the next candidate. A run with no hard cap has no adaptive floor
-at all: nothing will cut its execute short, so evidence of a long job is not
-evidence of a doomed claim.
+An issue with evidence needs three quarters of the best execute budget the
+host can offer — `claude_timeout`, or the hard-cap window's own equivalent
+where the cap can never fit that budget. Requiring the whole budget would leave
+such a host claiming nothing at all; three quarters refuses the doomed slice
+(933 s of 3600 s) while leaving the runs that made progress on #222 — 56 min
+and 49 min — untouched. A deferral never parks the slot: it is logged once per
+cycle and the scan moves to the next candidate. A run with no hard cap has no
+adaptive floor at all: nothing will cut its execute short, so evidence of a
+long job is not evidence of a doomed claim.
 
 #### The deferral is bounded (Issue #375)
 
-Three quarters is only safe while the requirement stays _satisfiable_, and on a
+Three quarters is only safe while the requirement stays *satisfiable*, and on a
 host whose hard-cap window is no longer than its `claude_timeout` it is not.
 There the requirement is 0.75 × 3600 = 2700 s of **remaining** runway, but a
 claim gate is first reached after startup, the maintenance passes and the scan
-have run — about twenty minutes in, so the best runway ever offered was 2430 s.
-VibeCoder #355 was refused on six consecutive cycles under the wording "leaving
-it for the next cycle", while the idle-decision census counted it as claimable
-and `[idle-census] ALERT inversion` fired every cycle. A permanent strand that
-reads as a passing deferral is the same failure shape as Issue #319.
+have run — about twenty minutes in, so the best runway ever offered was
+2430 s.
+VibeCoder #355 was refused on six consecutive cycles under the wording
+"leaving it for the next cycle", while the idle-decision census counted it as
+claimable and `[idle-census] ALERT inversion` fired every cycle. A permanent
+strand that reads as a passing deferral is the same failure shape as
+Issue #319.
 
-So the deferral has a memory. The worker counts the consecutive **cycles** (not
-scans — a slot re-scans every `sleep_interval`) that the floor deferred one
-issue in `adaptive_floor_deferrals.json` under the work directory. On the third
-it yields: the issue is claimed on whatever runway is left, and the hard-cap
-kill commits and pushes its WIP for the next run to resume — the last stage of
-[The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). The override is
-logged as
+So the deferral has a memory. The worker counts the consecutive **cycles**
+(not scans — a slot re-scans every `sleep_interval`) that the floor deferred one
+issue in
+`adaptive_floor_deferrals.json` under the work directory. On the third it
+yields: the issue is claimed on whatever runway is left, and the hard-cap kill
+commits and pushes its WIP for the next run to resume — the last stage of
+[The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). The override is logged
+as
 
 ```text
 [adaptive-floor] ALERT starvation issue=owner/repo#355 deferred_cycles=3 limit=3 runway=2360s required=2700s — …
@@ -2486,50 +2377,49 @@ after seven days.
 
 ### 🐢 Fast-failure repository back-off
 
-A repository whose runs die in their first minute is not failing at the issues —
-it is failing at claim or setup: a missing toolchain, a broken quality-gate
-bootstrap, a credential or branch problem. Until Issue #1950 nothing noticed.
-The per-cycle repo failure tracker is cleared at the top of every cycle and
-keyed on a PID-scoped file, so a repository with 12 failures in 14 runs was
-retried every cycle for a week, filed nothing, and the pattern only surfaced in
-a hand-written weekly report.
+A repository whose runs die in their first minute is not failing at the
+issues — it is failing at claim or setup: a missing toolchain, a broken
+quality-gate bootstrap, a credential or branch problem. Until Issue #1950
+nothing noticed. The per-cycle repo failure tracker is cleared at the top of
+every cycle and keyed on a PID-scoped file, so a repository with 12 failures
+in 14 runs was retried every cycle for a week, filed nothing, and the pattern
+only surfaced in a hand-written weekly report.
 
 The fast-failure tracker is the durable half. It lives on the work volume as
-`repo_fast_failures_<host>.json` — the hostname rides in the filename, never the
-PID — so the counters survive a worker restart. Fleet-wide tallying (Issue
-#2956) adds a second, shared record in the monitored repository itself, so a
-repository's failures are counted across every host, not just the one that hit
-them.
+`repo_fast_failures_<host>.json` — the hostname rides in the filename, never
+the PID — so the counters survive a worker restart. Fleet-wide tallying
+(Issue #2956) adds a second, shared record in the monitored repository
+itself, so a repository's failures are counted across every host, not just
+the one that hit them.
 
 A sibling file, `clone_recoveries_<host>.json`, records the last time each
 repo's corrupt clone was moved aside and re-cloned, written by `setupRepo`'s
-`clone-corrupt` recovery (Issue #2957). Entries written since Issue #2958 also
-record the git output that triggered the recovery and the moved-aside path
-(`{ "<owner/repo>": { "at": "<ISO timestamp>", "gitMessage": "...",
-"aside": "..." } }`);
-older entries are bare ISO strings and still count as a valid cap record. It
-caps that recovery at one re-clone per repo per 24 h; deleting the file, or just
-a repo's entry, resets the cap and lets the worker recover the next corrupt
-clone it meets.
+`clone-corrupt` recovery (Issue #2957). Entries written since Issue #2958
+also record the git output that triggered the recovery and the moved-aside
+path (`{ "<owner/repo>": { "at": "<ISO timestamp>", "gitMessage": "...",
+"aside": "..." } }`); older entries are bare ISO strings and still count as
+a valid cap record. It caps that recovery at one re-clone per repo per 24 h;
+deleting the file, or just a repo's entry, resets the cap and lets the
+worker recover the next corrupt clone it meets.
 
-A second corruption of the same repo on the same host inside that window is a
-different, worse signal: the run's setup failure carries a machine-readable
+A second corruption of the same repo on the same host inside that window is
+a different, worse signal: the run's setup failure carries a machine-readable
 `clone-corrupt-repeat` payload, and the release path backs the repository off
-fleet-wide at once and escalates the tally issue to a human (Issue #2958) — no
-waiting for the tally threshold. The release path reads that payload only from a
-setup-phase failure, and only from a line that begins with the marker, so a
-later phase's message that merely quotes it (an agent's PR summary, quality-gate
-output) never triggers the back-off (Issue #3446).
+fleet-wide at once and escalates the tally issue to a human (Issue #2958) —
+no waiting for the tally threshold. The release path reads that payload only
+from a setup-phase failure, and only from a line that begins with the marker,
+so a later phase's message that merely quotes it (an agent's PR summary,
+quality-gate output) never triggers the back-off (Issue #3446).
 
-The repository's diagnostic issue carries two independent markers on the same
-body, and the two states they describe are distinct:
+The repository's diagnostic issue carries two independent markers on the
+same body, and the two states they describe are distinct:
 
-- **tally** — `<!-- VIBE_REPO_FAST_FAILURE_TALLY:<owner/repo> -->`. Present as
-  soon as the first fast failure is recorded anywhere in the fleet. It only
-  counts failures; on its own it does **not** back the repository off.
-- **backed off** — `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->`, added to the
-  same body once the tally reaches threshold. This is the only marker the
-  fleet-wide lookup (below) honours.
+- **tally** — `<!-- VIBE_REPO_FAST_FAILURE_TALLY:<owner/repo> -->`. Present
+  as soon as the first fast failure is recorded anywhere in the fleet. It
+  only counts failures; on its own it does **not** back the repository off.
+- **backed off** — `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->`, added to
+  the same body once the tally reaches threshold. This is the only marker
+  the fleet-wide lookup (below) honours.
 
 ```mermaid
 flowchart TD
@@ -2543,68 +2433,69 @@ flowchart TD
     style H fill:#9d0208,stroke:#6a040f,color:#fff
 ```
 
-- **What counts as fast.** A run whose agent produced no output (`zero_output`)
-  at all, or one released inside `fast_failure_seconds`. Host-wide causes never
-  count — a rate-limited run dies in seconds on every repository at once, and a
-  scheduled release is a deliberate handover. An agent-API payment refusal
-  (`API Error: 402`, an out-of-credit message) is account state too and is
-  categorised `rate_limit`; before Issue #2590 it read as `internal_error` and
-  backed off a healthy repository. A setup fault — a run that died in the
-  `setup` phase, before the agent started, or whose failure names a recognised
-  host fault — counts however long it took (Issue #2954); a host-wide cause
-  still never counts.
+- **What counts as fast.** A run whose agent produced no output
+  (`zero_output`) at all, or one released inside `fast_failure_seconds`.
+  Host-wide causes never count — a rate-limited run dies in seconds on every
+  repository at once, and a scheduled release is a deliberate handover. An
+  agent-API payment refusal (`API Error: 402`, an out-of-credit message) is
+  account state too and is categorised `rate_limit`; before Issue #2590 it
+  read as `internal_error` and backed off a healthy repository. A setup
+  fault — a run that died in the `setup` phase, before the agent started, or
+  whose failure names a recognised host fault — counts however long it took
+  (Issue #2954); a host-wide cause still never counts.
 - **What the back-off stops.** The repository is excluded from the
   implementation claim scan (`findNextIssue` → `findOldestIssue`), which is
   where the retries Issue #1950 measured were spent. The label-driven lanes
-  (refinement, grill-me, planning, question) are not filtered — each removes its
-  own label and so stops itself.
-- **The local back-off decays on its own.** It is the count of this host's own
-  events still dated inside `repo_fast_failure_window_hours`, not a stored
-  expiry, so a repaired repository recovers with no operator action. A single
-  fast failure followed by a success clears that host's history outright. The
-  fleet-wide back-off marker is different: once added to the tally issue's body
-  it stays — the worker never removes it, so it persists until a human closes
-  the issue. The window only governs whether the threshold is reached in the
-  first place, not how long the marker lasts once it is there.
+  (refinement, grill-me, planning, question) are not filtered — each removes
+  its own label and so stops itself.
+- **The local back-off decays on its own.** It is the count of this host's
+  own events still dated inside `repo_fast_failure_window_hours`, not a
+  stored expiry, so a repaired repository recovers with no operator action.
+  A single fast failure followed by a success clears that host's history
+  outright. The fleet-wide back-off marker is different: once added to the
+  tally issue's body it stays — the worker never removes it, so it persists
+  until a human closes the issue. The window only governs whether the
+  threshold is reached in the first place, not how long the marker lasts
+  once it is there.
 - **On every fast failure, on any host.** The worker finds the open,
-  fleet-authored tally issue for the repository (lowest issue number wins when
-  more than one is somehow open); if none exists it creates one, labelled `bug`
-  (retried once without the label if the repository refuses it). It then adds
-  one comment of the form
+  fleet-authored tally issue for the repository (lowest issue number wins
+  when more than one is somehow open); if none exists it creates one, labelled
+  `bug` (retried once without the label if the repository refuses it). It
+  then adds one comment of the form
   `<!-- vibe-fast-failure host="<host>" at="<ISO time>" issue="<repo>#<n>" -->`
-  plus a one-line human-readable reason. For a multiline Git failure, the detail
-  skips generic trailing lines such as `Aborting`, git's
-  `Please commit
-  your changes or stash them…` / `Please move or remove them…`
-  advice and the indented path list (dropped before the last-20-lines window is
-  cut, so a refusal listing any number of paths still keeps its cause), so the
-  comment keeps the checkout refusal that explains why setup stopped. The detail
-  is redacted and length-bounded before it is posted. Only fleet-authored marker
+  plus a one-line human-readable reason. For a multiline Git failure, the
+  detail skips generic trailing lines such as `Aborting`, git's `Please commit
+  your changes or stash them…` / `Please move or remove them…` advice and the
+  indented path list (dropped before the last-20-lines window is cut, so a
+  refusal listing any number of paths still keeps its cause), so the comment
+  keeps the checkout refusal that explains why setup stopped. The detail is
+  redacted and length-bounded before it is posted. Only fleet-authored marker
   comments count — `service_accounts` ∪ `fleet_pr_authors` ∪ the host's own
   login — a comment from any other account is ignored, and a tally issue
   authored by a non-fleet account is ignored outright (a new one is filed
-  instead). When the count of fleet-authored marker comments dated inside
+  instead). When
+  the count of fleet-authored marker comments dated inside
   `repo_fast_failure_window_hours` reaches `repo_fast_failure_threshold` —
-  counted across the whole fleet, never per host — the body is edited to add the
-  back-off marker plus a short "backed off" line.
+  counted across the whole fleet, never per host — the body is edited to add
+  the back-off marker plus a short "backed off" line.
 - **Failures in the diagnostic path are non-fatal.** A `gh` failure while
-  finding, creating, commenting on, or editing the tally issue is logged at WARN
-  with the repository and the error; the claim release still completes either
-  way.
+  finding, creating, commenting on, or editing the tally issue is logged at
+  WARN with the repository and the error; the claim release still completes
+  either way.
 - **What the local state file still does.** The per-host
   `repo_fast_failures_<host>.json` sidecar is unchanged: it still drives this
-  host's own `backedOffUntil` and the `repo-fast-failures:` cycle-summary line
-  below. When this host's own count reaches threshold and backs the repository
-  off locally, the tally issue it found or created is recorded as the local
-  diagnostic.
-- **Where it is filed.** In the monitored repository the fault is about — the
-  tally issue for `owner/repo` lands in `owner/repo`, never in
-  `stSoftwareAU/VibeCoder`, and there is no opt-out (Issue #2592). The fault is
-  almost always repository-owned (a refused push, a missing branch), so the
-  report belongs beside the code its owners can fix. Filing happens on the first
-  fast failure recorded anywhere in the fleet, not only once threshold is
-  reached — a tally issue with too few comments inside the window is evidence
-  being gathered, not yet a back-off.
+  host's own `backedOffUntil` and the `repo-fast-failures:` cycle-summary
+  line below. When this host's own count reaches threshold and backs the
+  repository off locally, the tally issue it found or created is recorded as
+  the local diagnostic.
+- **Where it is filed.** In the monitored repository the fault is about —
+  the tally issue for `owner/repo` lands in `owner/repo`, never in
+  `stSoftwareAU/VibeCoder`, and there is no opt-out (Issue #2592). The fault
+  is almost always repository-owned (a refused push, a missing branch), so
+  the report belongs beside the code its owners can fix. Filing happens on
+  the first fast failure recorded anywhere in the fleet, not only once
+  threshold is reached — a tally issue with too few comments inside the
+  window is evidence being gathered, not yet a back-off.
 
   ```mermaid
   flowchart LR
@@ -2617,49 +2508,49 @@ flowchart TD
       style W fill:#9d0208,stroke:#6a040f,color:#fff
   ```
 
-  The marker comments carry the failing phase and the last error line that names
-  a cause — git's own summary lines
-  (`error: failed to push some refs
-  to '<url>'`, `To <url>`, trailing `hint:`
-  advice) are stepped over, so a run that died on a refused push reports the
-  refusal rather than the bare fact that a push failed (Issue #2034). The
-  markdown scaffolding the worker wraps the agent's last output in — the
-  `<details>` and `<summary>` tags and code fences — is stepped over too, so the
-  detail is never a bare `</details>` (Issue #2590). Closing the issue releases
-  the fleet-wide back-off on every host at its next lookup.
+  The marker comments carry the failing phase and the last error line that
+  names a cause — git's own summary lines (`error: failed to push some refs
+  to '<url>'`, `To <url>`, trailing `hint:` advice) are stepped over, so a run
+  that died on a refused push reports the refusal rather than the bare fact
+  that a push failed (Issue #2034). The markdown scaffolding the worker wraps
+  the agent's last output in — the `<details>` and `<summary>` tags and code
+  fences — is stepped over too, so the detail is never a bare `</details>`
+  (Issue #2590). Closing the issue releases the fleet-wide back-off on every
+  host at its next lookup.
 - **What an operator sees.** One cycle-summary line naming every tracked
   repository:
   `repo-fast-failures: owner/repo: 5 fast failures, backed off until 2026-09-12T04:05Z (owner/repo#123)`.
 
 #### Fleet-wide back-off (Issue #2955)
 
-Per-host counters alone never reached the threshold when a repository's failures
-spread across many hosts — each host saw too few fast failures to back the
-repository off itself, so it kept being claimed everywhere. The fleet-wide tally
-Issue #2956 adds (above) is what now closes that gap: every fast failure, on
-every host, is recorded against the one shared tally issue, so the threshold is
-reached on the fleet's combined count rather than any single host's. The lookup
-below still only honours the back-off marker — a tally issue that has not yet
-reached threshold carries only the tally marker, and on its own does not back
-the repository off anywhere.
+Per-host counters alone never reached the threshold when a repository's
+failures spread across many hosts — each host saw too few fast failures to
+back the repository off itself, so it kept being claimed everywhere. The
+fleet-wide tally Issue #2956 adds (above) is what now closes that gap: every
+fast failure, on every host, is recorded against the one shared tally issue, so
+the threshold is reached on the fleet's combined count rather than any single
+host's. The lookup below still only honours the back-off marker — a tally
+issue that has not yet reached threshold carries only the tally marker, and
+on its own does not back the repository off anywhere.
 
 Every host treats an **open** diagnostic issue carrying the
-`<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->` marker as a back-off, provided it
-was authored by a fleet account: `service_accounts` ∪ `fleet_pr_authors` ∪ the
-host's own login. This is on top of, not instead of, the host's own sidecar
-count.
+`<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->` marker as a back-off, provided
+it was authored by a fleet account: `service_accounts` ∪
+`fleet_pr_authors` ∪ the host's own login. This is on top of, not instead of,
+the host's own sidecar count.
 
 The lookup costs at most one `gh search issues` per owner of the monitored
-repositories, every 600 seconds, cached in process — a cycle's several reads of
-the back-off set share the one cached result. A failed or unparsable lookup
-keeps the last good result and logs a WARN; with no good result yet it logs an
-ERROR and the fleet-wide back-offs are treated as unknown for that lookup (the
-host's own local back-offs still apply). Closing the diagnostic lifts the
-back-off on every host at its next lookup, not only on the host that filed it.
+repositories, every 600 seconds, cached in process — a cycle's several reads
+of the back-off set share the one cached result. A failed or unparsable
+lookup keeps the last good result and logs a WARN; with no good result yet it
+logs an ERROR and the fleet-wide back-offs are treated as unknown for that
+lookup (the host's own local back-offs still apply). Closing the diagnostic
+lifts the back-off on every host at its next lookup, not only on the host
+that filed it.
 
-The `repo-fast-failures:` summary line names a repository backed off only by a
-fleet diagnostic — one this host never recorded a fast failure for itself — as
-`owner/repo: backed off fleet-wide (owner/repo#123)`.
+The `repo-fast-failures:` summary line names a repository backed off only by
+a fleet diagnostic — one this host never recorded a fast failure for itself —
+as `owner/repo: backed off fleet-wide (owner/repo#123)`.
 
 ### 🕰️ The cycle-deadline model
 
@@ -2669,7 +2560,7 @@ paraphrased on five pages, which is the drift
 [`DUPLICATED-KNOWLEDGE-SCAN.md`](DUPLICATED-KNOWLEDGE-SCAN.md) exists to stop.
 
 **The cycle deadline is a freshness restart, not a kill switch.** A cycle runs
-for `runDurationSeconds` (1 hour) so the _next_ one starts clean: a fresh clone,
+for `runDurationSeconds` (1 hour) so the *next* one starts clean: a fresh clone,
 the worker code and configuration that landed in the meantime, and a re-read
 backlog. Nothing about that goal requires killing work already under way, and
 killing it was expensive — a claim taken 16 minutes before the hour used to be
@@ -2681,48 +2572,50 @@ Five stages, in the order a claim meets them:
 1. **The claim gate is soft.** Past the one-hour target a slot takes **no new
    claim** (`slotShouldStop` returns `deadline`); nothing already running is
    touched (Issue #4243). The [claim-runway floor](#-adaptive-claim-floor)
-   refuses a claim for the other reason. When a run timeline is set it measures
-   runway to the two-hour finish deadline (Issue #4245); otherwise it measures
-   to the supervisor hard cap (Issue #425). A claim that deadline would end
-   before setup finished is the only claim worth refusing early.
+   refuses a claim for the other reason. When a run timeline is set it
+   measures runway to the two-hour finish deadline (Issue #4245); otherwise
+   it measures to the supervisor hard cap (Issue #425). A claim that deadline
+   would end before setup finished is the only claim worth refusing early.
 2. **An in-flight claim keeps its configured budget when the finish leaves
    room.** The execute phase does **not** truncate `claude_timeout` to the
    runway left in the one-hour cycle (Issue #420). A claim taken at minute 59
    has 61 minutes before the two-hour finish. With the default 30 s kill grace
-   and 120 s WIP reserve, its effective session budget is at most 58 minutes 30
-   seconds before preparation (Issue #4245). The requested timeout stays
-   unchanged; the runner uses the smaller of that request and finish − now − the
-   kill grace − 120 s, and the user prompt states the finish deadline (Issue
-   #4244). The runner refreshes that budget after preparation, refuses to spawn
-   below the 120 s minimum, and caps the watchdog at the absolute finish less
-   the kill grace and WIP reserve. A quality, security, summary, screenshot or
-   pre-push recovery released at that deadline preserves its WIP and ends as a
-   scheduled release without another gate run or an issue-failure charge. A
-   custom-label PR run posts that outcome on the PR and asks the developer to
-   re-apply its consumed label next run.
-3. **Extensions re-arm that budget while the run is progressing.** On by default
-   (Issue #422) — see [Progress-extended deadline](#-progress-extended-deadline)
-   for the two signals and the grant size.
+   and 120 s WIP reserve, its effective session budget is at most 58 minutes
+   30 seconds before preparation (Issue #4245). The requested timeout stays
+   unchanged; the runner uses the smaller of that request and finish − now −
+   the kill grace − 120 s, and the user prompt
+   states the finish deadline (Issue #4244). The runner refreshes that budget
+   after preparation, refuses to spawn below the 120 s minimum, and caps the
+   watchdog at the absolute finish less the kill grace and WIP reserve.
+   A quality, security, summary, screenshot or pre-push recovery released at that
+   deadline preserves its WIP and ends as a scheduled release without
+   another gate run or an issue-failure charge. A custom-label PR run posts
+   that outcome on the PR and asks the developer to re-apply its consumed
+   label next run.
+3. **Extensions re-arm that budget while the run is progressing.** On by
+   default (Issue #422) — see
+   [Progress-extended deadline](#-progress-extended-deadline) for the two
+   signals and the grant size.
 4. **The two-hour finish bounds every grant.** A progress-extension grant is
-   clamped to the finish less the kill grace and the 120 s WIP reserve. A grant
-   that would pass that ceiling is clamped to it, and the `[progress-extension]`
-   line says `grant clamped to the finish deadline`. With no runway left the run
-   is a **scheduled release** because the finish deadline was reached: the WIP
-   commit is kept, and no `failed-once` label, timeout cooldown or worker-fault
-   filing is applied (Issue #4245). The supervisor cap (`VIBE_RUN_MAX_SECONDS`,
-   default 10800 s) remains the outer kill of the process — see
+   clamped to the finish less the kill grace and the 120 s WIP reserve. A
+   grant that would pass that ceiling is clamped to it, and the
+   `[progress-extension]` line says `grant clamped to the finish deadline`.
+   With no runway left the run is a **scheduled release** because the finish
+   deadline was reached: the WIP commit is kept, and no `failed-once` label,
+   timeout cooldown or worker-fault filing is applied (Issue #4245). The
+   supervisor cap (`VIBE_RUN_MAX_SECONDS`, default 10800 s) remains the outer
+   kill of the process — see
    [The run hard cap bounds every grant](#the-run-hard-cap-bounds-every-grant).
 5. **The drain stops at the finish plus a bounded grace.** The default serial
-   claim uses the same bound as pooled claims. `drainSlots` and the
-   maintenance-lane drain wait no later than the finish plus the kill grace and
-   the 120 s WIP reserve (Issue #4246). At the finish they terminate in-flight
-   agents so the execute path can commit and push; a slot still running when the
-   grace ends has its claim released, and one line names each abandoned item.
-   The run then exits through `Run duration complete.
-   Exiting for refresh.`,
-   and the cycle heartbeat and the success and always run hooks fire as they do
-   on any other end. A SIGTERM shutdown still bounds its own wait with
-   `slotDrainGraceSeconds`.
+   claim uses the same bound as pooled claims. `drainSlots` and
+   the maintenance-lane drain wait no later than the finish plus the kill
+   grace and the 120 s WIP reserve (Issue #4246). At the finish they terminate
+   in-flight agents so the execute path can commit and push; a slot still
+   running when the grace ends has its claim released, and one line names
+   each abandoned item. The run then exits through `Run duration complete.
+   Exiting for refresh.`, and the cycle heartbeat and the success and always
+   run hooks fire as they do on any other end. A SIGTERM shutdown still bounds
+   its own wait with `slotDrainGraceSeconds`.
 
 ```mermaid
 flowchart TD
@@ -2742,7 +2635,8 @@ flowchart TD
 ```
 
 **What the deadline still bounds.** Two routes hold no work-in-progress, so
-stopping them at the hour loses nothing and letting them run delays the restart:
+stopping them at the hour loses nothing and letting them run delays the
+restart:
 
 - **Idle-task scans** — bounded to the runway left plus the kill grace, and
   their retries suppressed. See
@@ -2750,11 +2644,11 @@ stopping them at the hour loses nothing and letting them run delays the restart:
 - **The maintenance lane** — starts no further agent-backed PR pass once the
   deadline is reached; the pass defers to the next cycle.
 
-> **Relationship to Issue #399.** #397 removes the _deadline-truncation_ symptom
-> #399 cites — an issue claim is no longer killed at the hour with a partial
-> budget. It does **not** address what #399 is actually about: the cost of a
-> slow `./quality.sh` gate inside the execute budget. Both were true at once;
-> only the first is fixed here. The second is Issue #1138 — see
+> **Relationship to Issue #399.** #397 removes the *deadline-truncation*
+> symptom #399 cites — an issue claim is no longer killed at the hour with a
+> partial budget. It does **not** address what #399 is actually about: the cost
+> of a slow `./quality.sh` gate inside the execute budget. Both were true at
+> once; only the first is fixed here. The second is Issue #1138 — see
 > [The full gate is conditional on the budget left](#the-full-gate-is-conditional-on-the-budget-left-issue-1138).
 
 ### ⏱️ How timeouts interact
@@ -2762,21 +2656,21 @@ stopping them at the hour loses nothing and letting them run delays the restart:
 The worker uses two timeout mechanisms that work together to detect stuck Claude
 processes:
 
-1. **`claude_timeout`** (default: 3600s / 1 hour) — the **hard ceiling**. This
-   is a safety-net timeout applied via the `timeout` command. If Claude has not
+1. **`claude_timeout`** (default: 3600s / 1 hour) — the **hard ceiling**. This is
+   a safety-net timeout applied via the `timeout` command. If Claude has not
    completed after this duration, the process receives SIGTERM, then SIGKILL
-   after `claude_kill_after` seconds. lowered this from 4 hours: a 4-hour wedge
-   consumed an entire iteration's run-duration budget and starved other
-   repositories. Work that genuinely needs longer should raise a sub-issue via
-   the escape hatch rather than a bigger budget.
+   after `claude_kill_after` seconds. lowered this from 4 hours: a
+   4-hour wedge consumed an entire iteration's run-duration budget and starved
+   other repositories. Work that genuinely needs longer should raise a sub-issue
+   via the escape hatch rather than a bigger budget.
 
 2. **`claude_no_output_timeout`** (default: 600s / 10 minutes) — the
    **stuck-process detector**. A background progress monitor checks Claude's
    output file at regular intervals (`output_progress_interval`, default: 300s).
    If zero bytes of new output are produced for `claude_no_output_timeout`
    seconds, the process is considered stuck and terminated early — without
-   waiting for the full `claude_timeout`. lowered this from 15 minutes so wedged
-   processes are detected sooner on unattended workers.
+   waiting for the full `claude_timeout`. lowered this from 15
+   minutes so wedged processes are detected sooner on unattended workers.
 
 **In practice**, the no-output timeout fires first for genuinely stuck processes
 (e.g. Claude spinning with no progress), while the hard ceiling catches edge
@@ -2787,17 +2681,17 @@ between outputs.
 
 The reactive phases do not inherit the issue-work budget: `pr_feedback_timeout`
 and `ci_fix_timeout` cap at 1800s (30 minutes), `planning_timeout` at 1800s, and
-a grill-me round at `grill_me_timeout` (3600s). Each has its own `*_kill_after`
-grace period.
+a grill-me round at `grill_me_timeout` (3600s). Each has its own
+`*_kill_after` grace period.
 
 One exception, and it is the reason a live CI fix logged `3600s` against a
 documented `1800`: a reactive key left unset **while `claude_timeout` is set
-explicitly in the config file** inherits `claude_timeout` for back-compat (Issue
-#1824). Set `pr_feedback_timeout` / `ci_fix_timeout` explicitly whenever you
-raise `claude_timeout`, or the reactive phases follow it up. Separately, the run
-loop itself used to hand the reactive processors `claude_timeout` regardless of
-these keys — fixed in Issue #213, so the run loop and the single-shot commands
-now resolve the same budget.
+explicitly in the config file** inherits `claude_timeout` for back-compat
+(Issue #1824). Set `pr_feedback_timeout` / `ci_fix_timeout` explicitly whenever
+you raise `claude_timeout`, or the reactive phases follow it up. Separately,
+the run loop itself used to hand the reactive processors `claude_timeout`
+regardless of these keys — fixed in Issue #213, so the run loop and the
+single-shot commands now resolve the same budget.
 
 ```
 Timeline: 0 ─────────────────────────────── claude_timeout (1h) ─── SIGTERM
@@ -2809,9 +2703,9 @@ Timeline: 0 ──────────────────────�
 ```
 
 Because `progress_extension_enabled` defaults to on (Issue #422), the hard
-ceiling is a _deadline_ for **issue work only** rather than a kill. The
-no-output watchdog above is untouched — it still kills a silent run however many
-extensions were granted:
+ceiling is a *deadline* for **issue work only** rather than a kill. The
+no-output watchdog above is untouched — it still kills a silent run however
+many extensions were granted:
 
 ```
 Issue work,  0 ──── deadline (1h) ──── deadline+15m ──── deadline+30m ─── …
@@ -2827,8 +2721,8 @@ enabled:     │  └ tree sampled every 5 min (progress_extension_check_seconds
              └──────────────────────────────────────────────────────────────
 ```
 
-Only issue work (the execute phase) reads this deadline. Planning, grill-me, PR
-feedback and CI fix keep their unconditional caps.
+Only issue work (the execute phase) reads this deadline. Planning, grill-me,
+PR feedback and CI fix keep their unconditional caps.
 
 Example — override just the Claude timeout to 2 hours:
 
@@ -2849,19 +2743,19 @@ only kills if either answer is no:
 
 - **Is the agent still producing anything?** The stream-json progress tracker
   reports both the last tool call and the last stdout chunk, and the **fresher
-  of the two** answers this question; only when _both_ are older than
+  of the two** answers this question; only when *both* are older than
   `progress_extension_stall_seconds` is the agent judged stalled. This must
   always hold. Reading the tool clock alone killed an agent that was waiting
-  _inside_ one long tool call — `TaskOutput` polling a background job, a
+  *inside* one long tool call — `TaskOutput` polling a background job, a
   multi-minute build — because no new `tool_use` event appears for as long as
   that call runs (Issue #767).
-- **Is anything progressing?** Two independent signals, and _either_ one is
+- **Is anything progressing?** Two independent signals, and *either* one is
   enough:
   - **The checkout is changing.** A read-only `git status` / `rev-parse` /
     `diff --shortstat` fingerprint is compared with the one taken at the
-    previous check. `advanced` is progress; `unchanged` is not, and a probe that
-    cannot answer (`unknown` — not a repo, git missing, timed out) is **not**
-    treated as progress either. An `unknown` tree still kills outright.
+    previous check. `advanced` is progress; `unchanged` is not, and a probe
+    that cannot answer (`unknown` — not a repo, git missing, timed out) is
+    **not** treated as progress either. An `unknown` tree still kills outright.
   - **A descendant process is doing work** (Issue #508). One
     `ps -eo pid=,ppid=,time=` read is walked into the agent's own subtree and
     the CPU time those descendants have accumulated is compared with the
@@ -2869,17 +2763,17 @@ only kills if either answer is no:
     none — a `sleep 60` poll loop with nothing behind it — is not, and a read
     that fails is `unknown` and never earns an extension.
 
-The second signal is why an agent supervising a long-running job it started — a
-training run, an evolution sweep, a build — is no longer killed for changing
+The second signal is why an agent supervising a long-running job it started —
+a training run, an evolution sweep, a build — is no longer killed for changing
 nothing in the checkout while it waits. An agent with tool calls, no tree delta
-_and_ no working descendant is still refused, exactly as before.
+*and* no working descendant is still refused, exactly as before.
 
-Each grant moves the deadline `progress_extension_grant_seconds` from _now_, so
-a run that stalls dies within one grant of stalling, and each grant logs one
-`[progress-extension]` line naming the reason, the elapsed time, the extension
-count and the new deadline. There is deliberately no ceiling on the _number_ of
-grants — the concurrency slot pool bounds the blast radius — but there is one on
-wall clock, below.
+Each grant moves the deadline `progress_extension_grant_seconds`
+from *now*, so a run that stalls dies within one grant of stalling, and each
+grant logs one `[progress-extension]` line naming the reason, the elapsed time,
+the extension count and the new deadline. There is deliberately no ceiling on
+the *number* of grants — the concurrency slot pool bounds the blast radius —
+but there is one on wall clock, below.
 
 #### The run hard cap bounds every grant
 
@@ -2887,29 +2781,29 @@ A run has three instants. The **target** is one hour after the start
 (`runDurationSeconds`, 3600 s): past it, nothing new starts (Issue #4243). The
 **finish** is two hours after the start (`run_finish_seconds`, 7200 s): agent
 sessions, progress-extension grants and the claim floor are measured to it
-(Issues #4244, #4245), and the drain stops at the finish plus the kill grace and
-the 120 s WIP reserve (Issue #4246). The **hard cap** is three hours
+(Issues #4244, #4245), and the drain stops at the finish plus the kill grace
+and the 120 s WIP reserve (Issue #4246). The **hard cap** is three hours
 (`VIBE_RUN_MAX_SECONDS`, default 10800 s, `0` disables it): the supervisor's
 outer kill of the process (Issue #421).
 
 `loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` and exports that
-cap with the run's start epoch, so the worker can see the deadline it is running
-towards. The cap sits 600 s under the launcher's container watchdog
-(`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host never reaps
-a container this supervisor would still allow to run. A claim taken at minute 59
-has 61 minutes before the finish: with the default 150 s combined kill grace and
-WIP reserve, at most 58 minutes 30 seconds remain for its session before
-preparation. The one-hour target does not truncate the request; the
-finish-minus-reserve ceiling bounds the session and every extension grant.
+cap with the run's start epoch, so the worker can see the deadline it is
+running towards. The cap sits 600 s under the launcher's container watchdog
+(`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host never
+reaps a container this supervisor would still allow to run. A claim taken at
+minute 59 has 61 minutes before the finish: with the default 150 s combined
+kill grace and WIP reserve, at most 58 minutes 30 seconds remain for its
+session before preparation. The one-hour target does not truncate the request;
+the finish-minus-reserve ceiling bounds the session and every extension grant.
 
 When a timeline is set, extensions are bounded by the finish:
 
-- The **ceiling** is the finish, less `claude_kill_after` plus 120 s for the WIP
-  commit-and-push. A grant that would cross it is **clamped to it**, and the
-  `[progress-extension]` line says `grant clamped to the finish deadline`.
+- The **ceiling** is the finish, less `claude_kill_after` plus 120 s for the
+  WIP commit-and-push. A grant that would cross it is **clamped to it**, and
+  the `[progress-extension]` line says `grant clamped to the finish deadline`.
 - With no runway left the check refuses and the run is a scheduled release:
-  `the finish deadline was reached`. The WIP commit is kept. No `failed-once` is
-  added.
+  `the finish deadline was reached`. The WIP commit is kept. No `failed-once`
+  is added.
 - The claim floor measures runway to the finish itself, which is the reserve
   later than the ceiling. A claim whose runway is shorter than the floor is
   refused.
@@ -2932,58 +2826,55 @@ watchdog seconds, a conservative bound because an image build may run in
 between). The worker's run timeline (`lib/run_timeline.ts`) reads it as the
 hard-kill deadline, falling back to the `VIBE_RUN_MAX_SECONDS` /
 `VIBE_RUN_STARTED_EPOCH` pair. When it is absent the worker falls back to the
-pair, and only when that pair is also unusable does the run-start
-`Run timeline:` log line say `hard-kill=none (<reason>)`. The same line gives
-the run's target (1 h, `runDurationSeconds`) and finish (2 h,
-`run_finish_seconds`) as instants. The finish and the hard kill are logged and
-published through `lib/run_timeline.ts`. Agent sessions, extension grants, the
-claim floor and the drain read the finish from that publication. The one-hour
-target remains the start gate and is not the finish.
+pair, and only when that pair is also unusable does the run-start `Run timeline:`
+log line say `hard-kill=none (<reason>)`. The same line gives the run's target
+(1 h, `runDurationSeconds`) and finish (2 h, `run_finish_seconds`) as instants.
+The finish and the hard kill are logged and published through
+`lib/run_timeline.ts`. Agent sessions, extension grants, the claim floor and
+the drain read the finish from that publication. The one-hour target remains
+the start gate and is not the finish.
 
 The one-hour target is a start gate (Issue #4243). Once it has passed, nothing
 new starts. The Priority ladder defers the handler it reached, and every one
 after it, to the next cycle, logging one
 `stop reason=deadline — <handler> and any after it defer to the next cycle.`
 line; that covers milestone branch sync and the merge-conflict pass, which are
-ladder handlers. Past the target, the per-item loops take nothing new either, in
-those two handlers and in the Auto-Merge sweep: the merge-conflict drain starts
-no further resolution (one
-`Merge-conflict drain stopping: the run
-target has passed...` line, reported as
-a deadline stop), the milestone branch sync starts no further repository or
-milestone (one `Milestone sync stopped
-before ... the run target has passed...`
-line, and the sync cursor resumes there next cycle), and the Auto-Merge sweep's
-in-cycle milestone sync is deferred (one
-`In-cycle milestone sync deferred for <repo>#<n>: the run target
-has passed...`
-line; the PR is still armed). An issue run that completes a PR it has already
-claimed still syncs its milestone past the target, because that claim is already
-active. The issue scan takes no new claim, on its first pass as on later ones,
-and the Priority 2 slot pool and the maintenance lane refuse a new claim or pass
-past the target too. The idle-task filer is refused as well, logging one line
-for each refused observation (each slot plus the outer-cycle observer), with no
-permit spent and no transcript, audit or census call made. A handler already
-running is not interrupted at the target; it keeps its budget until the finish
-deadline, when the drain terminates it so the checkpoint can land.
+ladder handlers. Past the target, the per-item loops take nothing new either,
+in those two handlers and in the Auto-Merge sweep: the merge-conflict drain
+starts no further resolution (one `Merge-conflict drain stopping: the run
+target has passed...` line, reported as a deadline stop), the milestone branch
+sync starts no further repository or milestone (one `Milestone sync stopped
+before ... the run target has passed...` line, and the sync cursor resumes
+there next cycle), and the Auto-Merge sweep's in-cycle milestone sync is
+deferred (one `In-cycle milestone sync deferred for <repo>#<n>: the run target
+has passed...` line; the PR is still armed). An issue run that completes a PR it
+has already claimed still syncs its milestone past the target, because that
+claim is already active. The issue scan takes no new claim,
+on its first pass as on later ones, and the Priority 2 slot pool and the
+maintenance lane refuse a new claim or pass past the target too. The idle-task
+filer is refused as well, logging one line for each refused observation (each
+slot plus the outer-cycle observer), with no permit spent and no transcript,
+audit or census call made. A handler already
+running is not interrupted at the target; it keeps its budget until the
+finish deadline, when the drain terminates it so the checkpoint can land.
 
 #### The agent is told to wind down before the cap (Issue #508)
 
-An agent cannot be interrupted mid-session — its stdin carries the prompt and is
-closed — so the remaining budget is written where it can read it. The worker
+An agent cannot be interrupted mid-session — its stdin carries the prompt and
+is closed — so the remaining budget is written where it can read it. The worker
 writes `.vibe-run-budget.md` into the checkout, and refreshes it at every later
-check, once the runway can no longer cover something the agent might start. That
-is **two bands, one file** (Issue #1138):
+check, once the runway can no longer cover something the agent might start.
+That is **two bands, one file** (Issue #1138):
 
 - **Inside the last 600 s** — the wind-down window. The notice states the
   seconds remaining, elapsed, extensions granted, and the instruction to stop
   waiting, commit and push, and leave a resumable note. The operator log says
   `wind-down notice written`.
 - **Above the window, while the runway is still short of what the quality gate
-  needs** (~1080 s by default, more on a repo whose gate is measurably slower) —
-  the notice refuses the gate and says the run itself continues. No stop-waiting
-  instruction is emitted there: the run is fine, only the gate does not fit. The
-  operator log says `run-budget notice written`.
+  needs** (~1080 s by default, more on a repo whose gate is measurably slower)
+  — the notice refuses the gate and says the run itself continues. No
+  stop-waiting instruction is emitted there: the run is fine, only the gate
+  does not fit. The operator log says `run-budget notice written`.
 
 The issue prompt tells the agent to read that file between polls of any
 long-running job, and before starting the gate. Because the file now means two
@@ -3012,11 +2903,11 @@ of the run budget.
 So the instruction the agent receives is budget-aware, and it comes from one
 place: `buildQualityInstructions()` (`worker/deno/lib/repo_config.ts`), spliced
 into every prompt with a `{{QUALITY_INSTRUCTIONS}}` placeholder. It states what
-the gate costs — the duration the baseline gate actually took on this repository
-this cycle, or a 900 s fleet assumption when the baseline was reused — and tells
-the agent to check `.vibe-run-budget.md` before starting it. The wind-down
-notice refuses the gate outright when the runway cannot cover it, and hands over
-the note that records the skip:
+the gate costs — the duration the baseline gate actually took on this
+repository this cycle, or a 900 s fleet assumption when the baseline was reused
+— and tells the agent to check `.vibe-run-budget.md` before starting it. The
+wind-down notice refuses the gate outright when the runway cannot cover it, and
+hands over the note that records the skip:
 
 ```markdown
 <!-- vibe-quality-gate-skipped required="1080s" remaining="420s" -->
@@ -3060,66 +2951,62 @@ release**, not as the issue defeating the agent:
 
 - The failure reason opens with
   `Released on schedule: … — WIP preserved, resumes next cycle`, which
-  `detectFailureCategory` classifies as `scheduled_release` (category display
-  `scheduled-release`).
+  `detectFailureCategory` classifies as `scheduled_release`
+  (category display `scheduled-release`).
 - The release comment therefore never says "Claude ran out of time" and never
-  advises splitting the issue into sub-issues — that diagnosis is reserved for a
-  run that genuinely exhausted its own `claude_timeout`.
-- A scheduled release does **not** enter the `failed-once` ladder, does **not**
-  feed the escalating timeout cooldown, and is **not** auto-filed as a worker
-  fault. It is also not classed as an infrastructure failure: the bounded
-  in-process retry exists to re-run a transient blip, and a run released at the
-  cap has no runway to retry into.
-- The preserved work lands in a `wip:` commit whose subject names the real cause
-  (`wip: execute was released on schedule (cycle ended, finish deadline reached, or run hard cap
-  reached) after …`),
-  so the next claimant reads what actually happened.
-- The release comment carries a **Work in progress** line naming the branch that
-  work is on, and links the handover file when one exists (Issue #770). The
-  branch named is the one the push targeted, so a retitled issue cannot point a
-  reader at a ref nothing wrote, and a run that preserved nothing names no
-  branch.
+  advises splitting the issue into sub-issues — that diagnosis is reserved for
+  a run that genuinely exhausted its own `claude_timeout`.
+- A scheduled release does **not** enter the `failed-once` ladder,
+  does **not** feed the escalating timeout cooldown, and is **not** auto-filed
+  as a worker fault. It is also not classed as an infrastructure failure: the
+  bounded in-process retry exists to re-run a transient blip, and a run
+  released at the cap has no runway to retry into.
+- The preserved work lands in a `wip:` commit whose subject names the real
+  cause (`wip: execute was released on schedule (cycle ended, finish deadline reached, or run hard cap
+  reached) after …`), so the next claimant reads what actually happened.
+- The release comment carries a **Work in progress** line naming the branch
+  that work is on, and links the handover file when one exists (Issue #770).
+  The branch named is the one the push targeted, so a retitled issue cannot
+  point a reader at a ref nothing wrote, and a run that preserved nothing names
+  no branch.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
-is inside its budget, so the verdict read at the deadline describes the last
-check interval rather than the whole grant. An interim sample only gathers
-evidence — it can never kill, because the deadline is what guards the budget.
-Because that evidence can be up to one interval old,
+is inside its budget, so the verdict read at the deadline
+describes the last check interval rather than the whole grant. An interim
+sample only gathers evidence — it can never kill, because the deadline is what
+guards the budget. Because that evidence can be up to one interval old,
 `progress_extension_stall_seconds` may not be shorter than the interval;
-`loadConfig` rejects that combination rather than killing runs that demonstrably
-progressed inside the sampling window.
+`loadConfig` rejects that combination rather than killing runs that
+demonstrably progressed inside the sampling window.
 
 Everything else is unchanged: the no-output watchdog
 (`claude_no_output_timeout`) still kills a silent run no matter how many
 extensions were granted, and only issue work (the execute phase) reads the
-extendable deadline at all — PR feedback, CI fix, planning, grill-me and the
-health checks keep their unconditional caps.
+extendable deadline at all — PR feedback, CI fix, planning,
+grill-me and the health checks keep their unconditional caps.
 
 #### The kill explains itself (Issue #768)
 
-A run killed at its deadline states what the extension did, in both artefacts an
-operator reads — so diagnosing a kill never needs a dig through
+A run killed at its deadline states what the extension did, in both artefacts
+an operator reads — so diagnosing a kill never needs a dig through
 `claude_runner.ts`:
 
-- the **worker log** line at the hard timeout —
-  `Claude timed out after 5645s:
+- the **worker log** line at the hard timeout — `Claude timed out after 5645s:
   base budget 3600s extended 4× by 2040s (final deadline 5640s); last extension
   refused: working tree unchanged despite tool activity 31s ago — killing
-  process tree (PID …)`;
-  and
+  process tree (PID …)`; and
 - the **release comment** on the issue, whose timeout diagnosis carries
   `Progress extension: base timeout 3600s, deadline armed at kill 5640s, agent
   elapsed 5645s, 4 extensions granted (+2040s); last check refused because …`.
   The elapsed figure is labelled `agent elapsed` because the same line already
-  states the whole run's wall clock — the agent's own run is the shorter of the
-  two.
+  states the whole run's wall clock — the agent's own run is the shorter of
+  the two.
 
-Zero grants is itself a finding and reads differently —
-`no extensions granted
-— last check refused because no tool activity recorded` —
-so a run refused at its first check is never mistaken for one that was extended
-and still ran out. With `progress_extension_enabled` set to `false` no telemetry
-is produced and both surfaces keep their pre-extension wording.
+Zero grants is itself a finding and reads differently — `no extensions granted
+— last check refused because no tool activity recorded` — so a run refused at
+its first check is never mistaken for one that was extended and still ran out.
+With `progress_extension_enabled` set to `false` no telemetry is produced and
+both surfaces keep their pre-extension wording.
 
 ```mermaid
 flowchart TD
@@ -3168,8 +3055,8 @@ write anything. Set a key only to change it:
 #### Turning it off
 
 Extensions are on by default (Issue #422). One key restores the pre-#4290
-behaviour — a single unconditional `claude_timeout` kill for issue work, with no
-tree sampling and no grants:
+behaviour — a single unconditional `claude_timeout` kill for issue work, with
+no tree sampling and no grants:
 
 ```json
 {
@@ -3178,24 +3065,24 @@ tree sampling and no grants:
 ```
 
 The other three keys are then ignored. `loadConfig` still validates them, so a
-non-positive value or a stall window shorter than the check interval is rejected
-whether or not the feature is on.
+non-positive value or a stall window shorter than the check interval is
+rejected whether or not the feature is on.
 
 #### Call storm — polling is not progress (Issue #2230)
 
-Declining to extend does nothing until the deadline arrives, so a run that polls
-a job it started in the background kept its whole budget. GRQ-23 slot s2 spent
-an hour and roughly 700 billed turns on `pgrep`, `tail` and `echo w252` while a
-background `deno task test` ran — about 25 tool calls a minute for twenty
-minutes, with not one byte changed in the checkout — and no watchdog could see
-it: the no-output watchdog had output every second, and the progress extension
-only refused to extend a deadline still an hour away.
+Declining to extend does nothing until the deadline arrives, so a run that
+polls a job it started in the background kept its whole budget. GRQ-23 slot s2
+spent an hour and roughly 700 billed turns on `pgrep`, `tail` and `echo w252`
+while a background `deno task test` ran — about 25 tool calls a minute for
+twenty minutes, with not one byte changed in the checkout — and no watchdog
+could see it: the no-output watchdog had output every second, and the progress
+extension only refused to extend a deadline still an hour away.
 
 The call-storm guard closes that gap at the **interim check**. A check that
 finds `call_storm_calls` or more tool calls inside the last
-`call_storm_window_seconds`, fewer than `call_storm_novel_share` of them novel,
-**and** a working tree that has not advanced for a whole window reads as a storm
-window. One storm window is a warning:
+`call_storm_window_seconds`, fewer than `call_storm_novel_share` of them
+novel, **and** a working tree that has not advanced for a whole window reads as
+a storm window. One storm window is a warning:
 
 ```text
 [call-storm] call storm: 372 calls in 5m, 4 novel (1%), tree unchanged; last:
@@ -3211,41 +3098,41 @@ Bash echo w252 — check 1 of 2; the run is stopped if the next check agrees
 
 The result carries `timeoutReason: "call-storm"` and the reason, so the worker
 log and the issue comment both say which guard fired and what it saw — the
-comment reads _"Claude was stopped as stalled before its timeout — call storm:
-…"_ rather than claiming a timeout the run never reached. The ordinary
+comment reads *"Claude was stopped as stalled before its timeout — call storm:
+…"* rather than claiming a timeout the run never reached. The ordinary
 WIP-preservation path keeps whatever the agent had committed.
 
 Five deliberate limits keep it from stopping healthy runs:
 
 - **Repetition, not volume, is the loop (Issue #2773).** A security sweep reads
-  and greps dozens of modules before it writes its record, every call different,
-  and was stopped by volume alone. Each call in the window is normalised to its
-  tool name plus primary target — the file path for `Read`/`Edit`/`Write`, the
-  pattern plus path for `Grep`/`Glob`, the command for `Bash` with digit and
-  whitespace runs collapsed, so `echo w9` and `echo w252` are one call — and a
-  window is a storm only when the distinct share is below
-  `call_storm_novel_share`. The #2230 poll loop repeats three or four commands;
-  a sweep is nearly all novel.
+  and greps dozens of modules before it writes its record, every call
+  different, and was stopped by volume alone. Each call in the window is
+  normalised to its tool name plus primary target — the file path for
+  `Read`/`Edit`/`Write`, the pattern plus path for `Grep`/`Glob`, the command
+  for `Bash` with digit and whitespace runs collapsed, so `echo w9` and
+  `echo w252` are one call — and a window is a storm only when the distinct
+  share is below `call_storm_novel_share`. The #2230 poll loop repeats three or
+  four commands; a sweep is nearly all novel.
 - **One window is never enough.** A read-heavy investigation can genuinely make
   twelve calls a minute before its first edit, so a single storm window only
-  warns; ten minutes of that rate with nothing changed is the poll loop, not the
-  investigation. The incident that prompted the guard ran at ~25 calls a minute
-  for twenty minutes, so it is still stopped inside the second window. Any check
-  that is not a storm spends the streak.
+  warns; ten minutes of that rate with nothing changed is the poll loop, not
+  the investigation. The incident that prompted the guard ran at ~25 calls a
+  minute for twenty minutes, so it is still stopped inside the second window.
+  Any check that is not a storm spends the streak.
 - **Only an affirmative `unchanged` counts.** A working-tree probe that answers
-  `unknown` never trips the guard — an unverifiable tree is the deadline check's
-  business (Issue #4294), not a reason to stop a run early. This is the opposite
-  fail-safe direction to the extension policy, because this guard kills _inside_
-  the budget.
-- **The window must have been observed whole.** The tree has to have stood still
-  for the entire window, measured from the run start, so a run that edits a file
-  every few minutes can never be mistaken for one that only polls.
+  `unknown` never trips the guard — an unverifiable tree is the deadline
+  check's business (Issue #4294), not a reason to stop a run early. This is the
+  opposite fail-safe direction to the extension policy, because this guard
+  kills *inside* the budget.
+- **The window must have been observed whole.** The tree has to have stood
+  still for the entire window, measured from the run start, so a run that edits
+  a file every few minutes can never be mistaken for one that only polls.
 - **Waiting properly cannot trip it.** The tree is the only progress signal the
-  guard reads, and a descendant process burning CPU (Issue #508) does not excuse
-  a poll loop — polling is what costs a model turn a second. An agent that waits
-  the way the prompt tells it to, inside one bounded foreground command, issues
-  no tool calls at all while it waits, so it cannot trip the guard however long
-  that command takes.
+  guard reads, and a descendant process burning CPU (Issue #508) does not
+  excuse a poll loop — polling is what costs a model turn a second. An agent
+  that waits the way the prompt tells it to, inside one bounded foreground
+  command, issues no tool calls at all while it waits, so it cannot trip the
+  guard however long that command takes.
 
 The guard rides the progress extension's own interim check, so
 `progress_extension_enabled: false` turns it off as well — with no checks there
@@ -3259,27 +3146,27 @@ agent to run one bounded foreground command instead.
 #### Quota-poll gate — park the tail, defer the idle tier (Issue #3628)
 
 The fleet's shared GitHub GraphQL quota is 5,000 points an hour, and a single
-cycle's per-repo polling — the issue scan's searches, the idle-task filer's repo
-walk, the maintenance sweeps — used to spend the whole window within twenty-five
-minutes of each reset, leaving the fleet parked in the pre-flight pause for the
-rest of the hour. The polling gate reserves the tail of the window for priority
-work, judged once per scan from the **free** quota probe (`{ rateLimit { … } }`
-— a query GitHub does not charge):
+cycle's per-repo polling — the issue scan's searches, the idle-task filer's
+repo walk, the maintenance sweeps — used to spend the whole window within
+twenty-five minutes of each reset, leaving the fleet parked in the pre-flight
+pause for the rest of the hour. The polling gate reserves the tail of the
+window for priority work, judged once per scan from the **free** quota probe
+(`{ rateLimit { … } }` — a query GitHub does not charge):
 
 - **Park tier.** Below `quota_poll_park_floor` points remaining, repos whose
-  `nice` is at or above `quota_poll_park_nice` are skipped whole for that cycle
-  — no PR fetches, no timeline batch, no candidate collectors. Their work
-  resumes next cycle.
+  `nice` is at or above `quota_poll_park_nice` are skipped whole for that
+  cycle — no PR fetches, no timeline batch, no candidate collectors. Their
+  work resumes next cycle.
 - **Idle tier.** Below `quota_poll_idle_floor` points remaining, idle-task
   collection is deferred fleet-wide — the scan's idle-task collector and the
-  idle-task filer's repo walk both stand down, because nothing raised below that
-  floor could be claimed before the window resets.
+  idle-task filer's repo walk both stand down, because nothing raised below
+  that floor could be claimed before the window resets.
 
 Both boundaries are strict less-than, recovery is automatic (each cycle
 re-probes), and a floor of `0` disables its tier — set both floors to `0` to
 turn the gate off entirely. The gate fails open: an unreadable quota defers
-nothing, so it can never newly block work. One log line per condition per cycle
-records the decision:
+nothing, so it can never newly block work. One log line per condition per
+cycle records the decision:
 
 ```text
 polling-quota-gate: GraphQL quota remaining=1203/5000 below park_floor=1500 — parked 3 repo(s) with nice >= 99 this cycle; they resume next cycle
@@ -3287,30 +3174,30 @@ polling-quota-gate: GraphQL quota remaining=1203/5000 below park_floor=1500 — 
 
 #### Poll cadence — poll low-priority repos less often (Issue #3667)
 
-The quota gate above only engages once the hourly quota runs low, and only for
-the issue scan. The fleet's shared account was meanwhile tripping GitHub's
-**secondary** (burst) limit with most of its hourly quota unspent, because every
-Priority 1.x pass — PR feedback, spelling and CI fixes, branch updates, CI
-nudges, stall repair, closing issues for merged PRs, milestone sync, completions
-and housekeeping, failure-detection resume, stale-workflow detection and
-stale-assignment recovery — walked every monitored repo on every
-two-to-three-minute cycle.
+The quota gate above only engages once the hourly quota runs low, and only
+for the issue scan. The fleet's shared account was meanwhile tripping
+GitHub's **secondary** (burst) limit with most of its hourly quota unspent,
+because every Priority 1.x pass — PR feedback, spelling and CI fixes, branch
+updates, CI nudges, stall repair, closing issues for merged PRs, milestone
+sync, completions and housekeeping, failure-detection resume, stale-workflow
+detection and stale-assignment recovery — walked every monitored repo on
+every two-to-three-minute cycle.
 
 Those passes now poll each repo on a cadence set by its `nice`, always:
 
-| Repo `nice`                       | Polled by the Priority 1.x passes                      |
-| --------------------------------- | ------------------------------------------------------ |
-| `nice <= 0` (the default)         | every cycle                                            |
-| `0 < nice < quota_poll_park_nice` | every `poll_cadence_low_cycles` cycles (default `3`)   |
-| `nice >= quota_poll_park_nice`    | every `poll_cadence_park_cycles` cycles (default `10`) |
+| Repo `nice` | Polled by the Priority 1.x passes |
+| --- | --- |
+| `nice <= 0` (the default) | every cycle |
+| `0 < nice < quota_poll_park_nice` | every `poll_cadence_low_cycles` cycles (default `3`) |
+| `nice >= quota_poll_park_nice` | every `poll_cadence_park_cycles` cycles (default `10`) |
 
-Upkeep of a deprioritised repo slows down but never stops: an open PR there is
-still serviced, just later. First polls are staggered so the low-priority tier
-never lands on one cycle, and a burst refusal since the last cycle holds due
-low-priority repos one more cycle — never beyond twice their cadence, so a
-recurring burst limit cannot starve them. The issue scan, auto-merge, conflict
-repair and the idle hooks still see every repo. Set both cadences to `1` to turn
-the cadence off. One log line per cycle names what was deferred:
+Upkeep of a deprioritised repo slows down but never stops: an open PR there
+is still serviced, just later. First polls are staggered so the low-priority
+tier never lands on one cycle, and a burst refusal since the last cycle holds
+due low-priority repos one more cycle — never beyond twice their cadence, so
+a recurring burst limit cannot starve them. The issue scan, auto-merge,
+conflict repair and the idle hooks still see every repo. Set both cadences to
+`1` to turn the cadence off. One log line per cycle names what was deferred:
 
 ```text
 poll-cadence: polling 19 of 22 repo(s) this cycle — deferred 3 low-priority repo(s) (nice > 0) to a later cycle: stSoftwareAU/GRQ-extract-score, stSoftwareAU/TagsTS, stSoftwareAU/template-rust
@@ -3323,28 +3210,27 @@ every message says what actually happened rather than quoting the configured
 budget:
 
 - **The worker log** — one `[progress-extension]` line per grant, naming the
-  reason, the elapsed time, the extension count and the new deadline. Count them
-  to see how a three-hour run got there:
+  reason, the elapsed time, the extension count and the new deadline. Count
+  them to see how a three-hour run got there:
 
   ```bash
   LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
   grep '\[progress-extension\]' "${LOG_DIR}"/worker-*.log
   ```
 
-- **The kill line** —
-  `Claude timed out after 5640s: base budget 3600s extended
+- **The kill line** — `Claude timed out after 5640s: base budget 3600s extended
   4× by 2040s (final deadline 5640s); last extension refused: working tree
-  unchanged despite tool activity 31s ago`.
-  The clause after the semicolon is the signal that actually stalled.
+  unchanged despite tool activity 31s ago`. The clause after the semicolon is
+  the signal that actually stalled.
 - **The failure comment on the issue** — carries the same history, so a human
   reading a failed issue never sees a false "timed out after 3600 seconds".
 - **The `## Issue run model stats` comment** — a **Deadline extensions** line
   reports the count and the seconds added, so extension frequency is reviewable
   across issues after rollout.
 
-`watchdogLateSeconds` (the starved-timer signal, reported as `Ns late` on the
-kill line) is measured against the **final** deadline, not the original budget —
-an extended run that dies on time reports no lateness.
+`watchdogLateSeconds` (the starved-timer signal, reported as `Ns late` on
+the kill line) is measured against the **final** deadline, not the original
+budget — an extended run that dies on time reports no lateness.
 
 With the feature off, every one of those messages is byte-identical to what it
 was before.
@@ -3374,20 +3260,21 @@ Example — increase the no-output timeout and enable security logging:
 The following operational values are **not** configurable via `.config.json` and
 are determined at runtime:
 
-| Setting            | Default                  | Description                                             |
-| ------------------ | ------------------------ | ------------------------------------------------------- |
+| Setting            | Default                 | Description                                             |
+| ------------------ | ----------------------- | ------------------------------------------------------- |
 | `WORK_DIR`         | in-container work volume | Workspace where repos are cloned (see below)            |
-| `LOG_FILE`         | `$HOME/logs/worker.log`  | Log file location                                       |
-| `SET_WINDOW_TITLE` | `true`                   | When `true`, sets terminal window title to current task |
+| `LOG_FILE`         | `$HOME/logs/worker.log` | Log file location                                       |
+| `SET_WINDOW_TITLE` | `true`                  | When `true`, sets terminal window title to current task |
 
 `WORK_DIR` has no host default (Issue #131). The in-container run driver
-resolves and exports it, so the workspace lands on the `vibe-work` named volume
-— `/home/vibe/auto-issue-work` inside the container. Outside the container
-(setup, the launchers, housekeeping) an unset `WORK_DIR` means **no work
-directory and no cache at all**, not a `$HOME` path: nothing host-side creates
-or caches under such a directory (Issue #132) — setup re-queries the GitHub API
-instead of caching lookups. An explicit `WORK_DIR` in the environment is still
-honoured; it is how the in-container worker is pointed at the work volume.
+resolves and exports it, so the workspace lands on the `vibe-work` named
+volume — `/home/vibe/auto-issue-work` inside the container. Outside the
+container (setup, the launchers, housekeeping) an unset `WORK_DIR` means **no
+work directory and no cache at all**, not a `$HOME` path: nothing host-side
+creates or caches under such a directory (Issue #132) — setup re-queries the
+GitHub API instead of caching lookups. An explicit `WORK_DIR` in the
+environment is still honoured; it is how the in-container worker is pointed
+at the work volume.
 
 ### 🔩 Internal Operational Constants
 
@@ -3395,52 +3282,52 @@ The following values are defined in `worker/deno/lib/operational_defaults.ts`
 and are internal tuning parameters. They are not typically user-configurable but
 can be overridden via environment variables for testing or special deployments.
 
-| Setting                                             | Variable                                 | Default         | Description                                                                                                    |
-| --------------------------------------------------- | ---------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------- |
-| Characters per token                                | `CHARS_PER_TOKEN`                        | `4`             | Approximate characters per token for English text (used for token estimation)                                  |
-| Screenshot evidence directory                       | `SCREENSHOT_EVIDENCE_DIR`                | `docs/evidence` | Default directory for screenshot evidence files (relative to repo root)                                        |
-| Git command timeout                                 | `GIT_COMMAND_TIMEOUT`                    | `60`            | Timeout for standard git commands (fetch, push) in seconds                                                     |
-| Git merge timeout                                   | `GIT_MERGE_TIMEOUT`                      | `120`           | Timeout for merge/rebase/pull operations in seconds                                                            |
-| GitHub CLI (Command-Line Interface) command timeout | `GH_COMMAND_TIMEOUT`                     | `60`            | Timeout for individual `gh` CLI commands in seconds                                                            |
-| GitHub clone timeout                                | `GH_CLONE_TIMEOUT`                       | `600`           | Timeout for `gh repo clone` operations in seconds (large repos on shared networks need more time)              |
-| GitHub paginated read timeout                       | `GH_PAGINATED_TIMEOUT`                   | `300`           | Timeout for a `gh api --paginate` read in seconds — one call walks every page, so it outlives a single request |
-| GitHub rate-limit cooldown                          | `GH_RATE_LIMIT_COOLDOWN`                 | `300`           | Rate-limit circuit breaker cooldown in seconds                                                                 |
-| Assigned no-heartbeat timeout                       | `ASSIGNED_NO_HEARTBEAT_TIMEOUT`          | `1800`          | Grace period for assigned issues with no heartbeat before recovery (30 minutes)                                |
-| Stale assignment timeout                            | `STALE_ASSIGNMENT_TIMEOUT`               | `14400`         | Timeout for GitHub-based stale assignment recovery (4 hours)                                                   |
-| Health check cache TTL                              | `HEALTH_CHECK_CACHE_TTL`                 | `300`           | Health check cache time-to-live in seconds (5 minutes)                                                         |
-| Issue cache TTL                                     | `ISSUE_CACHE_TTL`                        | `600`           | Issue cache time-to-live in seconds (10 minutes)                                                               |
-| Retry max attempts                                  | `RETRY_MAX_ATTEMPTS`                     | `4`             | Maximum retry attempts for transient failures                                                                  |
-| Retry initial delay                                 | `RETRY_INITIAL_DELAY`                    | `2`             | Initial delay between retries in seconds                                                                       |
-| Rate-limit max wait                                 | `RATE_LIMIT_MAX_WAIT`                    | `3600`          | Maximum seconds to honour from a Retry-After header (1 hour)                                                   |
-| Circuit breaker state expiry                        | `CIRCUIT_BREAKER_STATE_EXPIRY_SECONDS`   | `3600`          | Expiry threshold for persisted circuit breaker state (1 hour)                                                  |
-| Operation backoff threshold                         | `OPERATION_BACKOFF_THRESHOLD`            | `2`             | Consecutive failure threshold for operation-specific backoff escalation                                        |
-| Failure state expiry                                | `FAILURE_STATE_EXPIRY_SECONDS`           | `3600`          | Expiry threshold for persisted failure tracker state (1 hour)                                                  |
-| Software update check interval                      | `SOFTWARE_UPDATE_CHECK_INTERVAL_SECONDS` | `604800`        | How often to check for software updates (7 days). Must be a positive whole number of seconds                   |
-| Claude update timeout                               | `CLAUDE_UPDATE_TIMEOUT`                  | `120`           | Claude CLI update timeout in seconds. Must be a positive whole number of seconds                               |
-| Claude update kill-after                            | `CLAUDE_UPDATE_KILL_AFTER`               | `10`            | Claude CLI update kill grace period in seconds                                                                 |
-| GitHub CLI update timeout                           | `GH_UPDATE_TIMEOUT`                      | `120`           | `gh` CLI update timeout in seconds                                                                             |
-| GitHub CLI update kill-after                        | `GH_UPDATE_KILL_AFTER`                   | `10`            | `gh` CLI update kill grace period in seconds                                                                   |
-| Deno update timeout                                 | `DENO_UPDATE_TIMEOUT`                    | `120`           | Deno update timeout in seconds                                                                                 |
-| Deno update kill-after                              | `DENO_UPDATE_KILL_AFTER`                 | `10`            | Deno update kill grace period in seconds                                                                       |
-| Crash notification cooldown                         | `CRASH_NOTIFICATION_COOLDOWN_SECONDS`    | `600`           | Minimum seconds between crash notifications to prevent spam (10 minutes)                                       |
-| Progress monitor min timeout                        | `PROGRESS_MONITOR_MIN_TIMEOUT`           | `60`            | Minimum timeout before enabling the progress monitor (1 minute)                                                |
-| Error scan tail lines                               | `ERROR_SCAN_TAIL_LINES`                  | `30`            | Number of tail lines to scan for rate-limit / authentication error patterns                                    |
-| Heartbeat update interval                           | `HEARTBEAT_UPDATE_INTERVAL`              | `120`           | Heartbeat update interval in seconds (2 minutes)                                                               |
-| Answer truncate length                              | `ANSWER_TRUNCATE_LENGTH`                 | `500`           | Maximum characters to keep from a bot answer before truncating                                                 |
-| Pre-setup command timeout                           | `PRE_SETUP_TIMEOUT`                      | `300`           | Timeout for repository pre-setup commands (5 minutes)                                                          |
-| GitHub issue list limit                             | `GH_ISSUE_LIST_LIMIT`                    | `50`            | Default limit for `gh issue list` queries                                                                      |
+| Setting                                             | Variable                                 | Default         | Description                                                                                       |
+| --------------------------------------------------- | ---------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------- |
+| Characters per token                                | `CHARS_PER_TOKEN`                        | `4`             | Approximate characters per token for English text (used for token estimation)                     |
+| Screenshot evidence directory                       | `SCREENSHOT_EVIDENCE_DIR`                | `docs/evidence` | Default directory for screenshot evidence files (relative to repo root)                           |
+| Git command timeout                                 | `GIT_COMMAND_TIMEOUT`                    | `60`            | Timeout for standard git commands (fetch, push) in seconds                                        |
+| Git merge timeout                                   | `GIT_MERGE_TIMEOUT`                      | `120`           | Timeout for merge/rebase/pull operations in seconds                                               |
+| GitHub CLI (Command-Line Interface) command timeout | `GH_COMMAND_TIMEOUT`                     | `60`            | Timeout for individual `gh` CLI commands in seconds                                               |
+| GitHub clone timeout                                | `GH_CLONE_TIMEOUT`                       | `600`           | Timeout for `gh repo clone` operations in seconds (large repos on shared networks need more time) |
+| GitHub paginated read timeout | `GH_PAGINATED_TIMEOUT` | `300` | Timeout for a `gh api --paginate` read in seconds — one call walks every page, so it outlives a single request |
+| GitHub rate-limit cooldown | `GH_RATE_LIMIT_COOLDOWN` | `300` | Rate-limit circuit breaker cooldown in seconds |
+| Assigned no-heartbeat timeout                       | `ASSIGNED_NO_HEARTBEAT_TIMEOUT`          | `1800`          | Grace period for assigned issues with no heartbeat before recovery (30 minutes)                   |
+| Stale assignment timeout                            | `STALE_ASSIGNMENT_TIMEOUT`               | `14400`         | Timeout for GitHub-based stale assignment recovery (4 hours)                                      |
+| Health check cache TTL                              | `HEALTH_CHECK_CACHE_TTL`                 | `300`           | Health check cache time-to-live in seconds (5 minutes)                                            |
+| Issue cache TTL                                     | `ISSUE_CACHE_TTL`                        | `600`           | Issue cache time-to-live in seconds (10 minutes)                                                  |
+| Retry max attempts                                  | `RETRY_MAX_ATTEMPTS`                     | `4`             | Maximum retry attempts for transient failures                                                     |
+| Retry initial delay                                 | `RETRY_INITIAL_DELAY`                    | `2`             | Initial delay between retries in seconds                                                          |
+| Rate-limit max wait                                 | `RATE_LIMIT_MAX_WAIT`                    | `3600`          | Maximum seconds to honour from a Retry-After header (1 hour)                                      |
+| Circuit breaker state expiry                        | `CIRCUIT_BREAKER_STATE_EXPIRY_SECONDS`   | `3600`          | Expiry threshold for persisted circuit breaker state (1 hour)                                     |
+| Operation backoff threshold                         | `OPERATION_BACKOFF_THRESHOLD`            | `2`             | Consecutive failure threshold for operation-specific backoff escalation                           |
+| Failure state expiry                                | `FAILURE_STATE_EXPIRY_SECONDS`           | `3600`          | Expiry threshold for persisted failure tracker state (1 hour)                                     |
+| Software update check interval                      | `SOFTWARE_UPDATE_CHECK_INTERVAL_SECONDS` | `604800`        | How often to check for software updates (7 days). Must be a positive whole number of seconds      |
+| Claude update timeout                               | `CLAUDE_UPDATE_TIMEOUT`                  | `120`           | Claude CLI update timeout in seconds. Must be a positive whole number of seconds                  |
+| Claude update kill-after                            | `CLAUDE_UPDATE_KILL_AFTER`               | `10`            | Claude CLI update kill grace period in seconds                                                    |
+| GitHub CLI update timeout                           | `GH_UPDATE_TIMEOUT`                      | `120`           | `gh` CLI update timeout in seconds                                                                |
+| GitHub CLI update kill-after                        | `GH_UPDATE_KILL_AFTER`                   | `10`            | `gh` CLI update kill grace period in seconds                                                      |
+| Deno update timeout                                 | `DENO_UPDATE_TIMEOUT`                    | `120`           | Deno update timeout in seconds                                                                    |
+| Deno update kill-after                              | `DENO_UPDATE_KILL_AFTER`                 | `10`            | Deno update kill grace period in seconds                                                          |
+| Crash notification cooldown                         | `CRASH_NOTIFICATION_COOLDOWN_SECONDS`    | `600`           | Minimum seconds between crash notifications to prevent spam (10 minutes)                          |
+| Progress monitor min timeout                        | `PROGRESS_MONITOR_MIN_TIMEOUT`           | `60`            | Minimum timeout before enabling the progress monitor (1 minute)                                   |
+| Error scan tail lines                               | `ERROR_SCAN_TAIL_LINES`                  | `30`            | Number of tail lines to scan for rate-limit / authentication error patterns                       |
+| Heartbeat update interval                           | `HEARTBEAT_UPDATE_INTERVAL`              | `120`           | Heartbeat update interval in seconds (2 minutes)                                                  |
+| Answer truncate length                              | `ANSWER_TRUNCATE_LENGTH`                 | `500`           | Maximum characters to keep from a bot answer before truncating                                    |
+| Pre-setup command timeout                           | `PRE_SETUP_TIMEOUT`                      | `300`           | Timeout for repository pre-setup commands (5 minutes)                                             |
+| GitHub issue list limit                             | `GH_ISSUE_LIST_LIMIT`                    | `50`            | Default limit for `gh issue list` queries                                                         |
 
 ### ⏱️ Every `gh` invocation is bounded
 
 The three `gh` timeouts are applied at the `gh` chokepoint itself
 ([`worker/deno/lib/gh_spawn.ts`](../worker/deno/lib/gh_spawn.ts) via
-[`gh_timeout.ts`](../worker/deno/lib/gh_timeout.ts)), not by each caller (Issue
-#1229): `GH_CLONE_TIMEOUT` for `gh repo clone`, `GH_PAGINATED_TIMEOUT` for a
-`gh api --paginate` read, and `GH_COMMAND_TIMEOUT` for everything else. A call
-that exceeds its budget is aborted and reported loudly — exit code `124` with
-`TIMEOUT: gh <args> timed out after <n>s` on stderr — so a stalled GitHub call
-can no longer hang the run. A caller that supplies its own `AbortSignal` (the
-rate-limit wrapper in `gh_wrapper.ts`) keeps its own deadline.
+[`gh_timeout.ts`](../worker/deno/lib/gh_timeout.ts)), not by each caller
+(Issue #1229): `GH_CLONE_TIMEOUT` for `gh repo clone`, `GH_PAGINATED_TIMEOUT`
+for a `gh api --paginate` read, and `GH_COMMAND_TIMEOUT` for everything else. A
+call that exceeds its budget is aborted and reported loudly — exit code `124`
+with `TIMEOUT: gh <args> timed out after <n>s` on stderr — so a stalled GitHub
+call can no longer hang the run. A caller that supplies its own `AbortSignal`
+(the rate-limit wrapper in `gh_wrapper.ts`) keeps its own deadline.
 
 An override that is missing, unparseable or non-positive falls back to the
 default: a `GH_COMMAND_TIMEOUT=0` cannot restore unbounded behaviour.
@@ -3474,10 +3361,10 @@ deprecation line yet.
 
 The `./setup.sh` script accepts `VIBE_*` environment variables for
 configuration. The Vibe Coder is designed to run on unattended machines where
-all interactions happen via GitHub issues and PRs; the system must never wait on
-any UI interaction. When run in a terminal, setup may optionally prompt for
-service-account paths; in non-interactive environments (e.g. CI), it runs
-without prompts.
+all interactions happen via GitHub issues and PRs; the system must
+never wait on any UI interaction. When run in a terminal, setup may optionally
+prompt for service-account paths; in non-interactive environments (e.g. CI), it
+runs without prompts.
 
 These variables are only used during setup to populate `.config.json` — they are
 not read at runtime.
@@ -3489,8 +3376,8 @@ VIBE_SERVICE_ACCOUNTS="stsvcbot,Vibecoderbot" \
 ./setup.sh
 ```
 
-`VIBE_SERVICE_ACCOUNTS` sets the worker identity guard allowlist. Omit it and
-setup defaults the allowlist to the login it authenticated as — see
+`VIBE_SERVICE_ACCOUNTS` sets the worker identity guard allowlist. Omit it and setup defaults the allowlist to the login it
+authenticated as — see
 [Service-Account Identity Guard](#%EF%B8%8F-service-account-identity-guard).
 
 Operational settings can also be configured during setup:
@@ -3505,16 +3392,16 @@ See `./setup.sh` header comments for the full list of `VIBE_*` variables.
 
 ### 📁 Where the logs go
 
-The host log directory is the fleet's **only writable host mount**: the checkout
-is mounted read-only and work and approval state ride named volumes, so this is
-the one directory an operator, a log shipper or a backup can read from the host.
-Its default follows the platform's own convention (Issue #873):
+The host log directory is the fleet's **only writable host mount**: the
+checkout is mounted read-only and work and approval state ride named volumes,
+so this is the one directory an operator, a log shipper or a backup can read
+from the host. Its default follows the platform's own convention (Issue #873):
 
-| Platform | Default                                                                   |
-| -------- | ------------------------------------------------------------------------- |
+| Platform | Default                                                                 |
+| -------- | ----------------------------------------------------------------------- |
 | Linux    | `$XDG_STATE_HOME/vibe-coder`, falling back to `~/.local/state/vibe-coder` |
 | macOS    | `~/Library/Logs/vibe-coder` — the directory Console.app reads             |
-| Windows  | `%LOCALAPPDATA%\vibe-coder\logs`                                          |
+| Windows  | `%LOCALAPPDATA%\vibe-coder\logs`                                         |
 
 Logs are **state**, which is why Linux uses the XDG state directory rather than
 cache or config: the XDG Base Directory Specification names state as the home
@@ -3531,14 +3418,14 @@ where the rest of its host configuration lives — no environment variable:
 }
 ```
 
-| Accepted value                                           | Example                                                        |
-| -------------------------------------------------------- | -------------------------------------------------------------- |
-| An absolute host path                                    | `"/var/log/vibe-coder"`, `"C:\\ProgramData\\vibe-coder\\logs"` |
-| A path anchored at `~`, expanded against the host's home | `"~/logs"`, `"~"`                                              |
-| Absent, or blank                                         | The variables below, then the platform default                 |
+| Accepted value | Example |
+| -------------- | ------- |
+| An absolute host path | `"/var/log/vibe-coder"`, `"C:\\ProgramData\\vibe-coder\\logs"` |
+| A path anchored at `~`, expanded against the host's home | `"~/logs"`, `"~"` |
+| Absent, or blank | The variables below, then the platform default |
 
-A **relative** path is refused, with the offending value named: it would resolve
-against whichever directory each launcher happened to be started in, so
+A **relative** path is refused, with the offending value named: it would
+resolve against whichever directory each launcher happened to be started in, so
 `launch-*.log` and `worker-*.log` could land in different places — the split
 this key exists to prevent. `~` is expanded exactly as it is for the other
 path-valued keys (`ssh_key_path`, `gh_config_dir`).
@@ -3549,24 +3436,25 @@ is the operator's own choice, not a default that moved.
 The precedence is **`log_dir`, then the platform default** — nothing else.
 Before Issue #1388 two environment variables sat between the two,
 `LAUNCH_LOG_DIR` (the supervisor's own spelling from `loop.sh`) and `LOG_DIR`.
-Both are now **ignored**: on the host, `.config.json` is the only configuration.
-A value exported in a shell profile, a crontab line, a launchd plist or a
-systemd unit is invisible to the next reader and differs per launcher, which is
-exactly how one host on a fleet comes to behave unlike the rest. A system
-service that wants `/var/log/vibe-coder` states it as `log_dir` in the config
-file the unit already points the launcher at.
+Both are now **ignored**: on the host, `.config.json` is the only
+configuration. A value exported in a shell profile, a crontab line, a launchd
+plist or a systemd unit is invisible to the next reader and differs per
+launcher, which is exactly how one host on a fleet comes to behave unlike the
+rest. A system service that wants `/var/log/vibe-coder` states it as `log_dir`
+in the config file the unit already points the launcher at.
 
-A host that still exports either variable is told once per launch, on stderr, by
-name and with the value quoted back so it can be moved into the file verbatim:
+A host that still exports either variable is told once per launch, on stderr,
+by name and with the value quoted back so it can be moved into the file
+verbatim:
 
 ```text
 [log-dir] LOG_DIR="/var/log/vibe-coder" is set but ignored (Issue #1388): on the host only .config.json configures the worker. To keep that directory, state "log_dir": "/var/log/vibe-coder" in .config.json and unset the variable.
 ```
 
-A blank config value means unset, exactly as an absent key does. One resolution
-serves the launcher, `run.sh`, `loop.sh`, `run.ps1`, `loop.ps1` and the
-container mount (Issues #872, #873, #1388, #1402) — ask for it rather than
-assuming it:
+A blank config value means unset, exactly as an absent key does. One
+resolution serves the launcher, `run.sh`, `loop.sh`, `run.ps1`, `loop.ps1`
+and the container mount (Issues #872, #873, #1388, #1402) — ask for it rather than assuming
+it:
 
 ```bash
 LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
@@ -3581,16 +3469,16 @@ default.
 
 Before 1.4.0 the default was `$HOME/logs`. **Nothing is migrated for you**: on
 the first launch after the upgrade, a host that still has `~/logs` and does not
-yet have the new directory prints one line naming both paths, and leaves the old
-directory exactly as it is. Bring the history across with:
+yet have the new directory prints one line naming both paths, and leaves the
+old directory exactly as it is. Bring the history across with:
 
 ```bash
 mkdir -p ~/.local/state/vibe-coder && mv ~/logs/* ~/.local/state/vibe-coder/
 ```
 
 Or keep the old location — it is still perfectly valid — by stating
-`"log_dir": "~/logs"` in `.config.json`. Rotated logs stay gzipped there just as
-they do anywhere else: compression and retention both run on the resolved
+`"log_dir": "~/logs"` in `.config.json`. Rotated logs stay gzipped there just
+as they do anywhere else: compression and retention both run on the resolved
 directory, not on a re-spelled default.
 
 ### 🔄 Special Runtime Variables
@@ -3598,27 +3486,27 @@ directory, not on a re-spelled default.
 A small number of variables are still read from the environment at runtime for
 operational purposes:
 
-| Variable                              | Default                   | Description                                                                                                                                                                                                                                                                                                                                           |
-| ------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CONFIG_FILE`                         | `<checkout>/.config.json` | Path to the configuration file, for setup and the launcher alike. `CONFIG_PATH` is accepted as an alias (the launcher's older spelling); a relative value resolves against the checkout, and setting both to different files is refused rather than silently resolved two ways — see [One config file, one name](#one-config-file-one-name-issue-750) |
-| `VIBE_DAILY_SPEND_CEILING_USD`        | `0` (disabled)            | Daily estimated model-spend ceiling in USD                                                                                                                                                                                                                                                                                                            |
-| `VIBE_HOST_DISK_LOW_FLOOR_GB`         | `20`                      | Gigabyte term of the claiming floor. The `.config.json` key `host_disk_low_floor_gb` wins over it — see [The claiming floor](#the-claiming-floor-issue-732)                                                                                                                                                                                           |
-| `VIBE_HOST_DISK_LOW_FLOOR_PERCENT`    | `10`                      | Percentage term of the claiming floor. The `.config.json` key `host_disk_low_floor_percent` wins over it — see [The claiming floor](#the-claiming-floor-issue-732)                                                                                                                                                                                    |
-| `VIBE_CREDIT_LOG_DIR`                 | `<workDir>/.credit-logs`  | Directory holding the `.credit_log_YYYY-MM-DD.json` files. The default is worker-private (`0700`) so the untrusted `agent` account cannot plant a symlink at the log path or delete the ceiling's only input — see [Where the credit logs live](#where-the-credit-logs-live-issue-1239)                                                               |
-| `VIBE_SIDE_REPO_CLONE_ARGS`           | `--filter=blob:none`      | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243)                                                                                                                                                                         |
-| `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS`  | `3`                       | Idle days before a side/data clone is aged out of the work volume                                                                                                                                                                                                                                                                                     |
-| `MERGED_PR_SWEEP_ISSUE_LIMIT`         | `200`                     | Open issues examined per repo by the housekeeping merged-PR issue sweep (Issue #504)                                                                                                                                                                                                                                                                  |
-| `WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES` | `2147483648` (2 GiB)      | Cap on a side/data clone's `.git`; over it the clone is dropped even while warm, because each blobless refresh leaves a tree of blobs git will not prune (`0` disables) — see [A warm clone's object store is capped too](CONTAINER.md#a-warm-clones-object-store-is-capped-too-issue-387)                                                            |
+| Variable                        | Default        | Description                                                   |
+| ------------------------------- | -------------- | ------------------------------------------------------------- |
+| `CONFIG_FILE`                   | `<checkout>/.config.json` | Path to the configuration file, for setup and the launcher alike. `CONFIG_PATH` is accepted as an alias (the launcher's older spelling); a relative value resolves against the checkout, and setting both to different files is refused rather than silently resolved two ways — see [One config file, one name](#one-config-file-one-name-issue-750) |
+| `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
+| `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` | Gigabyte term of the claiming floor. The `.config.json` key `host_disk_low_floor_gb` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
+| `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` | Percentage term of the claiming floor. The `.config.json` key `host_disk_low_floor_percent` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
+| `VIBE_CREDIT_LOG_DIR`           | `<workDir>/.credit-logs` | Directory holding the `.credit_log_YYYY-MM-DD.json` files. The default is worker-private (`0700`) so the untrusted `agent` account cannot plant a symlink at the log path or delete the ceiling's only input — see [Where the credit logs live](#where-the-credit-logs-live-issue-1239) |
+| `VIBE_SIDE_REPO_CLONE_ARGS`     | `--filter=blob:none` | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243) |
+| `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` | `3` | Idle days before a side/data clone is aged out of the work volume |
+| `MERGED_PR_SWEEP_ISSUE_LIMIT` | `200` | Open issues examined per repo by the housekeeping merged-PR issue sweep (Issue #504) |
+| `WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES` | `2147483648` (2 GiB) | Cap on a side/data clone's `.git`; over it the clone is dropped even while warm, because each blobless refresh leaves a tree of blobs git will not prune (`0` disables) — see [A warm clone's object store is capped too](CONTAINER.md#a-warm-clones-object-store-is-capped-too-issue-387) |
 
 ### The claiming floor (Issue #732)
 
 The worker stops claiming new work when the filesystem holding the container
 store falls below a floor. The floor is the **larger** of two terms:
 
-| Term                         | `.config.json` key            | Environment variable               | Default |
-| ---------------------------- | ----------------------------- | ---------------------------------- | ------- |
-| Gigabytes                    | `host_disk_low_floor_gb`      | `VIBE_HOST_DISK_LOW_FLOOR_GB`      | `20`    |
-| Percentage of the filesystem | `host_disk_low_floor_percent` | `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10`    |
+| Term | `.config.json` key | Environment variable | Default |
+| --- | --- | --- | --- |
+| Gigabytes | `host_disk_low_floor_gb` | `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` |
+| Percentage of the filesystem | `host_disk_low_floor_percent` | `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` |
 
 **Precedence, per term:** the `.config.json` key wins, then the environment
 variable, then the default — the rule Issue #289 set for every other knob. The
@@ -3628,9 +3516,9 @@ environment. A value that is negative, not a number, or (for the percentage)
 over 100 is ignored and the next source applies.
 
 The default formula is unchanged, and it is worth knowing what it does on a
-large disk: 10 % of a 1.875 TB filesystem is ≈ 187 GB, so such a host is "low"
-with 37.5 GB free and refuses work. That is the reported case, and the answer is
-to state the floor the host actually wants:
+large disk: 10 % of a 1.875 TB filesystem is ≈ 187 GB, so such a host is
+"low" with 37.5 GB free and refuses work. That is the reported case, and the
+answer is to state the floor the host actually wants:
 
 ```json
 {
@@ -3647,26 +3535,26 @@ host-disk: 38400 MB free on /var/lib/containers; claiming floor 20480 MB
 (larger of 20 GB and 1% of 1966080 MB; gb=config,percent=config)
 ```
 
-The same resolution feeds the launcher's low-disk self-heal and the worker's own
-claim gate — they ride the launch plan together — so the two can never heal at
-one floor and claim at another.
+The same resolution feeds the launcher's low-disk self-heal and the worker's
+own claim gate — they ride the launch plan together — so the two can never
+heal at one floor and claim at another.
 
 ### Host build-cache reclaim (Issue #4498)
 
-A host short of its claiming floor plus the 25 GB cargo build headroom (Issue
-#4540) first reclaims regenerable build caches (stale `target/` directories and
-their kind), before any work volume is considered for recreation. The reclaim is
-on by default and is configured only in `.config.json`; there is no environment
-variable for it. See
+A host short of its claiming floor plus the 25 GB cargo build headroom
+(Issue #4540) first reclaims regenerable build caches (stale `target/`
+directories and their kind), before any work volume is considered for
+recreation. The reclaim is on by default and is configured only in
+`.config.json`; there is no environment variable for it. See
 [Host build caches are reclaimed before a work volume is touched](CONTAINER.md#host-build-caches-are-reclaimed-before-a-work-volume-is-touched-issue-4498)
 for what is removed and where.
 
-| Key                                | Default | Meaning                                                                                                                                              |
-| ---------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `host_cache_reclaim_enabled`       | `true`  | `false` switches the reclaim off entirely.                                                                                                           |
-| `host_cache_reclaim_min_age_hours` | `24`    | A candidate cache must be at least this many hours old.                                                                                              |
-| `host_cache_reclaim_headroom_gb`   | `10`    | Free space, beyond the claiming floor, the reclaim aims for before it stops. The 25 GB cargo build headroom applies when it is larger (Issue #4540). |
-| `host_cache_reclaim_roots`         | none    | Extra absolute directories to search, in addition to the built-in locations.                                                                         |
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `host_cache_reclaim_enabled` | `true` | `false` switches the reclaim off entirely. |
+| `host_cache_reclaim_min_age_hours` | `24` | A candidate cache must be at least this many hours old. |
+| `host_cache_reclaim_headroom_gb` | `10` | Free space, beyond the claiming floor, the reclaim aims for before it stops. The 25 GB cargo build headroom applies when it is larger (Issue #4540). |
+| `host_cache_reclaim_roots` | none | Extra absolute directories to search, in addition to the built-in locations. |
 
 ```json
 {
@@ -3691,8 +3579,8 @@ both, in
 - a relative value resolves against the **checkout**, never the working
   directory, in `setup.sh`, `setup.ps1`, the setup CLI and the launcher alike;
 - both set to the same file (once resolved) is fine;
-- both set to **different** files is a deployment fault and is reported as one —
-  setup would read one while the launcher staged the other.
+- both set to **different** files is a deployment fault and is reported as one
+  — setup would read one while the launcher staged the other.
 
 Inside the container `CONFIG_PATH` keeps its second, unrelated meaning: the
 launcher sets it to the staged read-only copy of the file it resolved on the
@@ -3701,26 +3589,26 @@ host.
 ### 💰 Daily Spend Ceiling
 
 Before this gate existed, wall-clock was the **only** backpressure on model
-spend: the credit log was append-only and never compared against a threshold, so
-a persistently failing issue could bill unbounded model usage for the whole run
-duration.
+spend: the credit log was append-only and never compared against a threshold,
+so a persistently failing issue could bill unbounded model usage for the whole
+run duration.
 
-Set `VIBE_DAILY_SPEND_CEILING_USD` to a positive number to cap it. At the top of
-every priority-loop iteration the worker sums the day's estimated cost from the
-credit log and, if the ceiling has been reached, logs a `[SPEND_CEILING]` error
-and ends the cycle **before claiming any further billed work**. A value of `0`
-(the default) leaves the hook unwired, so existing deployments are unaffected
-until an operator opts in. A malformed value fails loudly at start-up rather
-than silently disabling the guard.
+Set `VIBE_DAILY_SPEND_CEILING_USD` to a positive number to cap it. At the top
+of every priority-loop iteration the worker sums the day's estimated cost from
+the credit log and, if the ceiling has been reached, logs a `[SPEND_CEILING]`
+error and ends the cycle **before claiming any further billed work**. A value
+of `0` (the default) leaves the hook unwired, so existing deployments are
+unaffected until an operator opts in. A malformed value fails loudly at
+start-up rather than silently disabling the guard.
 
 The settled policy:
 
-| Decision      | Behaviour                                                                                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Scope**     | Per worker, per UTC day, in USD — summed from that worker's own credit log directory                                                                          |
-| **Default**   | Opt-in: `0` (disabled). Nothing changes until an operator sets a value                                                                                        |
+| Decision      | Behaviour                                                                                     |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| **Scope**     | Per worker, per UTC day, in USD — summed from that worker's own credit log directory           |
+| **Default**   | Opt-in: `0` (disabled). Nothing changes until an operator sets a value                         |
 | **On breach** | The cycle stops before the next claim and the run exits with `Daily spend ceiling reached`; the next run re-checks, so spend resumes at the UTC date rollover |
-| **Notify**    | A `[SPEND_CEILING]` error line in the worker log **plus** a `spend-ceiling-stop` entry in the hash-chained audit journal                                      |
+| **Notify**    | A `[SPEND_CEILING]` error line in the worker log **plus** a `spend-ceiling-stop` entry in the hash-chained audit journal |
 
 The estimate comes from the credit log, so it tracks token usage rather than
 billed invoices — treat it as a guard rail, not an accounting record. The
@@ -3736,29 +3624,28 @@ The logs default to `<workDir>/.credit-logs/`, a directory the worker creates
 `0700`, and each `.credit_log_YYYY-MM-DD.json` is created `0600` through an
 append that refuses to follow a symlink.
 
-They used to sit directly in the work root, which the container shares with the
-untrusted `agent` account (group-writable, setgid, no sticky bit — the account
-the repository's own quality command runs as). That account could therefore
-plant a symlink at the predictable log path and redirect every appended JSON
-line into any file the worker uid can write, or simply delete the day's log —
-and because the ceiling reads only that file, the day's spend then read `$0`
-however much had actually been spent. It can do neither inside an owner-only
-directory: it cannot write the log path, and it cannot remove a directory whose
-contents it cannot unlink.
+They used to sit directly in the work root, which the container shares with
+the untrusted `agent` account (group-writable, setgid, no sticky bit — the
+account the repository's own quality command runs as). That account could
+therefore plant a symlink at the predictable log path and redirect every
+appended JSON line into any file the worker uid can write, or simply delete
+the day's log — and because the ceiling reads only that file, the day's spend
+then read `$0` however much had actually been spent. It can do neither
+inside an owner-only directory: it cannot write the log path, and it cannot
+remove a directory whose contents it cannot unlink.
 
 Two operator-visible consequences:
 
 - Logs written before this change stay in the work root and are no longer
-  summarised. Move them into `.credit-logs/` to keep the history, or delete them
-  — nothing sweeps the old location automatically (`credit-summary
-  --cleanup`
-  only prunes the `--log-dir` it is given). While today's log is still sitting
-  there, the worker logs a `[SPEND_CEILING]` warning at start-up naming both
-  paths, so the mismatch is never a silent `$0`.
-- An explicit `VIBE_CREDIT_LOG_DIR` still wins and is used as given. The worker
-  refuses a log directory another account owns, and strips group/other **write**
-  access from whichever directory it uses (unlinking an entry needs write on its
-  directory); read access is left as the operator set it.
+  summarised. Move them into `.credit-logs/` to keep the history, or delete
+  them — nothing sweeps the old location automatically (`credit-summary
+  --cleanup` only prunes the `--log-dir` it is given). While today's log is
+  still sitting there, the worker logs a `[SPEND_CEILING]` warning at
+  start-up naming both paths, so the mismatch is never a silent `$0`.
+- An explicit `VIBE_CREDIT_LOG_DIR` still wins and is used as given. The
+  worker refuses a log directory another account owns, and strips group/other
+  **write** access from whichever directory it uses (unlinking an entry needs
+  write on its directory); read access is left as the operator set it.
 
 ```mermaid
 flowchart LR
@@ -3769,10 +3656,11 @@ flowchart LR
 ```
 
 An invocation whose model id has no pricing row is charged at a conservative
-**upper bound** rather than counted as `$0` — otherwise a new model id, or a run
-that resolved no `--model` argument, would spend against a ceiling that could
-not see it. The ceiling message names the unpriced portion, and the hook logs a
-`[SPEND_CEILING]` line listing the ids whenever any is present, so the missing
+**upper bound** rather than counted as `$0` — otherwise a new
+model id, or a run that resolved no `--model` argument, would spend against a
+ceiling that could not see it. The ceiling message names the unpriced portion,
+and the hook logs a `[SPEND_CEILING]` line listing the ids whenever any is
+present, so the missing
 [pricing row](MODEL-AND-CACHING.md#unpriced-model-ids) gets added.
 
 ```mermaid
@@ -3791,11 +3679,11 @@ flowchart TD
 
 ## 🪝 Post-Run Callbacks
 
-Optional executables the worker runs after a terminal issue run, following the
-`success / failure / always` outcome semantics familiar from CI pipeline
-post-build blocks (Issue #806). They are the public extension point for
-fleet-specific reporting — health records, session-log archival, spend
-accounting — so none of that policy has to live in VibeCoder.
+Optional executables the worker runs after a terminal issue run, following
+the `success / failure / always` outcome semantics familiar from CI pipeline
+post-build blocks (Issue #806). They are the public
+extension point for fleet-specific reporting — health records, session-log
+archival, spend accounting — so none of that policy has to live in VibeCoder.
 
 > **📚 The full contract is [Post-Run Callbacks](CALLBACKS.md)** — ordering and
 > exactly-once scope, the versioned context schema, container filesystem
@@ -3819,9 +3707,9 @@ accounting — so none of that policy has to live in VibeCoder.
 
 All six entries are optional, and a configuration without a `callbacks` block
 behaves exactly as before. `host_failure` (Issue #2107) reports a host-level
-failure that happens before any issue is claimed, and is the one key whose path
-is resolved on the **host** rather than inside the container — the launcher
-spawns it, so a container path is the wrong answer.
+failure that happens before any issue is claimed, and is the one key whose
+path is resolved on the **host** rather than inside the container — the
+launcher spawns it, so a container path is the wrong answer.
 
 ```mermaid
 flowchart LR
@@ -3841,13 +3729,13 @@ flowchart LR
   when that hook exited non-zero, timed out or could not be spawned.
 - A missing hook is a no-op.
 - A claim that was **skipped** (rejected, or already held by another worker)
-  runs no `success` / `failure` / `always` callbacks: no run happened to report.
-  An idle cycle that claimed nothing still fires `callbacks.cycle` (Issue
-  #1955). A launcher that never reaches the scan loop emits nothing.
+  runs no `success` / `failure` / `always` callbacks: no run happened to
+  report. An idle cycle that claimed nothing still fires `callbacks.cycle`
+  (Issue #1955). A launcher that never reaches the scan loop emits nothing.
 - A shutdown or an exception after a claim takes the failure/`always` path
   exactly once.
-- Concurrent issue slots each receive their own context; hooks never share state
-  between slots.
+- Concurrent issue slots each receive their own context; hooks never share
+  state between slots.
 
 ### Invocation and path rules
 
@@ -3855,23 +3743,24 @@ flowchart LR
   arguments — so no issue or repository text can be parsed as a command.
 - Paths must be **absolute** and POSIX. A relative path is rejected at config
   load, because the worker's working directory changes between runs.
-- The path is resolved on the filesystem the **worker process** sees. The worker
-  runs inside the container ([Run Mode](#-run-mode) has one member), so the hook
-  must exist at that absolute path **inside the container** — a host path that
-  is not mounted in is not visible to it. `host_failure` is the exception: the
-  host launcher spawns it, so its path must exist on the **host**.
-- Every hook is bounded by `timeout_seconds` (default `60`, maximum `3600`); a
-  hook that exceeds it is terminated with `SIGTERM` and recorded as `timed_out`
-  with exit code `124`. A hook that ignores `SIGTERM`, or that forks a child
-  holding its output pipes, can outlive that signal — write hooks that terminate
-  on it.
+- The path is resolved on the filesystem the **worker process** sees. The
+  worker runs inside the container ([Run Mode](#-run-mode) has one member), so
+  the hook must exist at that absolute path **inside the container** — a host
+  path that is not mounted in is not visible to it. `host_failure` is the
+  exception: the host launcher spawns it, so its path must exist on the
+  **host**.
+- Every hook is bounded by `timeout_seconds` (default `60`, maximum `3600`);
+  a hook that exceeds it is terminated with `SIGTERM` and recorded as
+  `timed_out` with exit code `124`. A hook that ignores `SIGTERM`, or that
+  forks a child holding its output pipes, can outlive that signal — write
+  hooks that terminate on it.
 - stdout, stderr, the exit code and the duration are captured, redacted and
   logged — including whatever a timed-out hook printed before it was killed.
   Streams are truncated to 4000 characters each.
 - **A callback failure never rewrites the run's own result.** It is reported
   loudly and the VibeCoder outcome stands.
-- A malformed `callbacks` block fails the config load rather than leaving a hook
-  that silently never runs.
+- A malformed `callbacks` block fails the config load rather than leaving a
+  hook that silently never runs.
 
 ### What a hook receives
 
@@ -3883,8 +3772,8 @@ variables (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and their lower-case forms)
 are passed through as the spawning process holds them: for a run or cycle hook
 they name the egress proxy, while the `host_failure` hook gets the host
 launcher's own, usually none. A value containing `@` is dropped, since its
-userinfo could hold a credential. Transcript **contents** are never exported —
-only the path, and reading it is the callback author's decision.
+userinfo could hold a credential. Transcript **contents** are never exported — only the path, and
+reading it is the callback author's decision.
 
 `VIBECODER_CALLBACK_CONTEXT` names a versioned JSON document written for that
 invocation and removed after it exits:
@@ -3938,37 +3827,38 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_CALLBACK_CONTEXT`, `VIBECODER_RUN_ID`, `VIBECODER_RESULT`,
 `VIBECODER_REPOSITORY`, `VIBECODER_ISSUE_NUMBER`, `VIBECODER_HOST`,
 `VIBECODER_WORKER_NAME`, `VIBECODER_MODE`, `VIBECODER_PROVIDER`,
-`VIBECODER_SESSION_ID`, `VIBECODER_SESSION_LOG_PATH`,
-`VIBECODER_SESSION_LOG_ABSENT_REASON`, `VIBECODER_STARTED_AT`,
-`VIBECODER_FINISHED_AT`, `VIBECODER_DURATION_SECONDS`, `VIBECODER_EXIT_CODE`,
-`VIBECODER_INPUT_TOKENS`, `VIBECODER_OUTPUT_TOKENS`,
-`VIBECODER_CACHE_CREATION_TOKENS`, `VIBECODER_CACHE_READ_TOKENS`,
-`VIBECODER_ESTIMATED_COST_USD`, `VIBECODER_TURNS`, `VIBECODER_MODEL`,
-`VIBECODER_EFFORT`, `VIBECODER_TELEMETRY_ABSENT_REASON`,
-`VIBECODER_OUTCOME_KIND`, `VIBECODER_OUTCOME_CATEGORY`,
-`VIBECODER_OUTCOME_PHASE`, `VIBECODER_OUTCOME_FAILURE_CLASS`,
-`VIBECODER_PR_NUMBER`, `VIBECODER_GRAFT_ENABLED`, `VIBECODER_GRAFT_STATUS`,
+`VIBECODER_SESSION_ID`,
+`VIBECODER_SESSION_LOG_PATH`, `VIBECODER_SESSION_LOG_ABSENT_REASON`,
+`VIBECODER_STARTED_AT`, `VIBECODER_FINISHED_AT`,
+`VIBECODER_DURATION_SECONDS`, `VIBECODER_EXIT_CODE`, `VIBECODER_INPUT_TOKENS`,
+`VIBECODER_OUTPUT_TOKENS`, `VIBECODER_CACHE_CREATION_TOKENS`,
+`VIBECODER_CACHE_READ_TOKENS`, `VIBECODER_ESTIMATED_COST_USD`,
+`VIBECODER_TURNS`, `VIBECODER_MODEL`, `VIBECODER_EFFORT`,
+`VIBECODER_TELEMETRY_ABSENT_REASON`, `VIBECODER_OUTCOME_KIND`,
+`VIBECODER_OUTCOME_CATEGORY`, `VIBECODER_OUTCOME_PHASE`,
+`VIBECODER_OUTCOME_FAILURE_CLASS`, `VIBECODER_PR_NUMBER`,
+`VIBECODER_GRAFT_ENABLED`, `VIBECODER_GRAFT_STATUS`,
 `VIBECODER_GRAFT_BUILD_SECONDS`, `VIBECODER_GRAFT_BUNDLE_CHARS`,
 `VIBECODER_GRAFT_NODE_COUNT`, `VIBECODER_GRAFT_CALL_EDGE_COUNT`,
-`VIBECODER_GRAFT_QUERIES`, `VIBECODER_CODEGRAPH_ENABLED`,
-`VIBECODER_CODEGRAPH_STATUS`, `VIBECODER_CODEGRAPH_INDEX_SECONDS`,
-`VIBECODER_CODEGRAPH_NODE_COUNT`, `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT`,
-`VIBECODER_CODEGRAPH_QUERIES`, `VIBECODER_RTK_ENABLED`, `VIBECODER_RTK_STATUS`,
-`VIBECODER_RTK_SAVED_TOKENS`. A cycle hook also receives
-`VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
+`VIBECODER_GRAFT_QUERIES`, `VIBECODER_CODEGRAPH_ENABLED`, `VIBECODER_CODEGRAPH_STATUS`,
+`VIBECODER_CODEGRAPH_INDEX_SECONDS`, `VIBECODER_CODEGRAPH_NODE_COUNT`,
+`VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT`, `VIBECODER_CODEGRAPH_QUERIES`,
+`VIBECODER_RTK_ENABLED`, `VIBECODER_RTK_STATUS`, `VIBECODER_RTK_SAVED_TOKENS`.
+A cycle hook also receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
 `VIBECODER_CLAIMS_TAKEN` and `VIBECODER_CYCLE_END_REASON`.
 
-The `graft` block (Issue #2104) is on **every** run context: `graft.enabled` and
-`graft.status` (`ok`, `failed` or `off`) always, and the four figures only when
-the collection reached them. A host that never switched Graft on reports
+The `graft` block (Issue #2104) is on **every** run context: `graft.enabled`
+and `graft.status` (`ok`, `failed` or `off`) always, and the four figures only
+when the collection reached them. A host that never switched Graft on reports
 `{ "enabled": false, "status": "off" }` rather than omitting the block — see
 [Post-Run Callbacks](CALLBACKS.md#what-a-hook-receives).
 
-Every run context has either `telemetry` or `telemetryAbsentReason`, and either
-`sessionLogPath` or `sessionLogAbsentReason` — never neither. Other optional
-facts the run could not supply — no provider, no session — are **omitted** from
-both the document and the environment rather than emitted empty, so a hook can
-test for presence truthfully. `result` and `exitCode` are unchanged.
+Every run context has either `telemetry` or `telemetryAbsentReason`, and
+either `sessionLogPath` or `sessionLogAbsentReason` — never neither. Other
+optional facts the run could not supply — no provider, no session — are
+**omitted** from both the document and the environment rather than emitted
+empty, so a hook can test for presence truthfully. `result` and `exitCode`
+are unchanged.
 
 ## 🔄 Session Resume
 
@@ -3981,8 +3871,8 @@ earlier, reducing redundant token usage and improving coherence.
 
 **Configuration:**
 
-| Setting               | Config Key              | Default | Description                                                              |
-| --------------------- | ----------------------- | ------- | ------------------------------------------------------------------------ |
+| Setting               | Config Key              | Default | Description                                                             |
+| --------------------- | ----------------------- | ------- | ----------------------------------------------------------------------- |
 | Enable session resume | `enable_session_resume` | `true`  | Per-stream conversations, the stream locks, and the per-issue compaction |
 
 ```json
@@ -4004,15 +3894,15 @@ A **stream** is the unit that owns one agent conversation per provider
   two titles that slug alike cannot silently merge into one conversation.
 - **Implementation and planning runs join the stream**; idle-task, grill-me,
   question, PR-feedback and CI-fix runs each keep a per-issue session and touch
-  no stream record. That split is one exhaustive table — `STREAM_JOIN_POLICY` in
-  `worker/deno/lib/stream_session.ts` — so a run kind added later cannot join a
-  stream by omission.
+  no stream record. That split is one exhaustive table —
+  `STREAM_JOIN_POLICY` in `worker/deno/lib/stream_session.ts` — so a run kind
+  added later cannot join a stream by omission.
 - **Two locks, never both on one issue.** A milestone issue takes the
   **fleet-wide** stream lock: a claim is refused as `stream_busy` while another
   open issue of that milestone is live anywhere in the fleet. A blank-stream
   issue takes the **per-host** lock instead — an in-process registry keyed by
-  `streamKey`, so one non-milestone issue per repository per host, with no `gh`
-  call and no cross-host coordination. Both are skips, not failures.
+  `streamKey`, so one non-milestone issue per repository per host, with no
+  `gh` call and no cross-host coordination. Both are skips, not failures.
 - **Affinity with a five-minute grace.** The conversation lives on one host's
   disk, so the host that ran a stream last records itself as the holder on the
   milestone's tracking issue. Another host defers that stream's eligible issue
@@ -4020,12 +3910,12 @@ A **stream** is the unit that owns one agent conversation per provider
   the grace the first host to scan claims it and becomes the new holder. The
   head start also ends `STREAM_HOLDER_HEAD_START_SECONDS` (900 s) after the
   holding run **finished**, by the marker's own stamp — the one clock an hourly
-  relaunch does not reset. Hosts are told apart by the persisted install id, not
-  the per-launch container hostname. Affinity is an optimisation, never a lock.
+  relaunch does not reset. Hosts are told apart by the persisted install id,
+  not the per-launch container hostname. Affinity is an optimisation, never a
+  lock.
 - **Compaction before each new issue.** A resumed conversation has carried every
   issue of the stream so far, so it is compacted before the issue's first phase
-  — see
-  [Compaction behaviour by provider](MODEL-AND-CACHING.md#compaction-behaviour-by-provider).
+  — see [Compaction behaviour by provider](MODEL-AND-CACHING.md#compaction-behaviour-by-provider).
 - **Milestone-close housekeeping.** When a milestone closes, every host sweeps
   its worktrees, its local branches and that stream's session record. The sweep
   runs **regardless of this flag**: with resume off there is simply no stream
@@ -4059,11 +3949,11 @@ flowchart LR
   its five-minute head start; and a resumed conversation is compacted before
   each new issue.
 - **Off (`enable_session_resume: false`).** Every run keeps a **per-issue**
-  session, no stream record is read or written, **no stream lock** is taken (and
-  the milestone lock's extra `gh issue list` never runs), no affinity deferral
-  applies, and there is no stream conversation to compact. Milestone-close
-  housekeeping still sweeps worktrees and branches, and picking up pushed WIP is
-  unaffected — that never depended on this flag (Issue #220).
+  session, no stream record is read or written, **no stream lock** is taken
+  (and the milestone lock's extra `gh issue list` never runs), no affinity
+  deferral applies, and there is no stream conversation to compact.
+  Milestone-close housekeeping still sweeps worktrees and branches, and picking
+  up pushed WIP is unaffected — that never depended on this flag (Issue #220).
 
 **How it works:**
 
@@ -4090,8 +3980,8 @@ flowchart LR
 
 **Resume-on-reclaim:** a killed session (reboot, OOM, container death) resumes
 instead of restarting from zero. **Picking up pushed WIP does not depend on
-`enable_session_resume`** (Issue #220) — that flag gates only the CLI `--resume`
-conversation replay and the periodic checkpoints:
+`enable_session_resume`** (Issue #220) — that flag gates only the CLI
+`--resume` conversation replay and the periodic checkpoints:
 
 - During the execute phase the worker makes a **WIP checkpoint** every ~10
   minutes — and once more at phase end — committing and pushing the agent's
@@ -4101,56 +3991,55 @@ conversation replay and the periodic checkpoints:
   timeout preserves WIP the same way regardless of the flag.
 - The session id, phase count, and branch are persisted to
   `${WORK_DIR}/.claude-sessions/resume/<owner>-<repo>-<issue>.json`.
-- On every claim the worker asks the remote what already exists **for the issue
-  number** —
-  `git ls-remote --heads origin refs/heads/issue-<N>
-  refs/heads/issue-<N>-*`,
-  plus whatever branch the resume file names — and resumes the branch that
-  carries commits beyond base with a tip inside the 24 h window. Where several
-  qualify, the branch the resume file names wins, otherwise the most recently
-  pushed; the rest are named in the log. Keying on the number rather than the
-  title slug is what makes the contract survive a retitle: renaming an issue
-  mid-flight used to orphan its WIP branch, because the next claim derived a
-  different slug and started from scratch (#220).
+- On every claim the worker asks the remote what already exists **for the
+  issue number** — `git ls-remote --heads origin refs/heads/issue-<N>
+  refs/heads/issue-<N>-*`, plus whatever branch the resume file names — and
+  resumes the branch that carries commits beyond base with a tip inside the
+  24 h window. Where several qualify, the branch the resume file names wins,
+  otherwise the most recently pushed; the rest are named in the log. Keying on
+  the number rather than the title slug is what makes the contract survive a
+  retitle: renaming an issue mid-flight used to orphan its WIP branch, because
+  the next claim derived a different slug and started from scratch (#220).
 - Every claim logs which branch it resumed, or that no prior branch existed.
-- When a branch was resumed, the worker reads the handover file the interrupted
-  run committed to it (`docs/archive/handover/issue-<N>.md`, Issue #769) and
-  splices that content into the execute prompt, framed as a prior-run **status
-  report** — untrusted repository prose, fenced, capped at 8,000 characters and
-  counted against the context budget, never a directive that can redirect the
-  run (Issue #771). This works on any fleet host and under any provider, so it
-  does **not** depend on `enable_session_resume`; a branch with no handover file
-  falls back to the generic "prior progress exists, review `git log`" note and
-  still resumes.
+- When a branch was resumed, the worker reads the handover file the
+  interrupted run committed to it (`docs/archive/handover/issue-<N>.md`,
+  Issue #769) and splices that content into the execute prompt, framed as a
+  prior-run **status report** — untrusted repository prose, fenced, capped at
+  8,000 characters and counted against the context budget, never a directive
+  that can redirect the run (Issue #771). This works on any fleet host and
+  under any provider, so it does **not** depend on `enable_session_resume`;
+  a branch with no handover file falls back to the generic "prior progress
+  exists, review `git log`" note and still resumes.
 - When session resume is enabled and a branch was resumed, the worker also
   passes `--resume` so the durable transcript replays the prior conversation.
-  That replay is a same-host optimisation layered on top: the committed handover
-  is the portable contract and is spliced either way.
-- The resume file is deleted on successful PR creation and on claim release, so
-  deliberate outcomes always start the next attempt clean. The one exception is
-  a release whose run **preserved WIP** on the issue branch (a deadline timeout
-  with a dirty tree): the commit is the durable work and the resume file is the
-  pointer to it, so it is kept for the next claim.
+  That replay is a same-host optimisation layered on top: the committed
+  handover is the portable contract and is spliced either way.
+- The resume file is deleted on successful PR creation and on claim release,
+  so deliberate outcomes always start the next attempt clean. The one
+  exception is a release whose run **preserved WIP** on the issue branch
+  (a deadline timeout with a dirty tree): the commit is the durable work and
+  the resume file is the pointer to it, so it is kept for the next claim.
 - The **conversation** itself is keyed by stream, not by issue (Issue #2332).
   Its session id lives in a separate record,
   `${WORK_DIR}/.claude-sessions/resume/stream-<streamKey>.json`, holding one
   session per provider — a sub-issue that falls back to another provider opens
   that provider's own stream session and leaves the others untouched. Because
   the conversation outlives every issue that runs on it, the stream record has
-  **no 24-hour window**, is **not** deleted at PR creation or claim release, and
-  is never swept with the per-issue files. It is removed only by milestone-close
-  housekeeping, or when a session proves unresumable and the stream is reset. No
-  migration is involved: a pre-existing per-issue record keeps loading exactly
-  as before, and a host with no stream record starts the stream fresh.
+  **no 24-hour window**, is **not** deleted at PR creation or claim release,
+  and is never swept with the per-issue files. It is removed only by
+  milestone-close housekeeping, or when a session proves unresumable and the
+  stream is reset. No migration is involved: a pre-existing per-issue record
+  keeps loading exactly as before, and a host with no stream record starts the
+  stream fresh.
 - **Implementation and planning runs join that conversation** (Issue #2333).
   With `enable_session_resume` on, the setup phase resolves the issue's stream,
   loads the session recorded for the provider it is about to spawn, and primes
   `--resume` on it; the execute phase writes back the session the run ended on,
   naming this host as the holder. So the second issue of a milestone continues
   where the first left off instead of starting empty, and a planning run
-  continues the repository's blank-stream conversation. A **new milestone starts
-  fresh at its first sub-issue** — the planning run's own conversation is never
-  forked into the milestone it created.
+  continues the repository's blank-stream conversation. A **new milestone
+  starts fresh at its first sub-issue** — the planning run's own conversation
+  is never forked into the milestone it created.
 - **Every other run kind keeps a per-issue session** and reads and writes no
   stream record at all: grill-me, question, idle-task, PR-feedback and CI-fix.
   That exclusion is one list — `STREAM_JOIN_POLICY` in
@@ -4161,76 +4050,77 @@ conversation replay and the periodic checkpoints:
   closer to the work than the stream's, and leaves the stream record alone.
 - A stream record naming a session this provider cannot resume is **reset**,
   never fatal: the dead entry is dropped, a fresh session opens in its place,
-  and the run logs `stream session reset: <reason>` before continuing. Every run
-  logs one line naming what it joined —
+  and the run logs `stream session reset: <reason>` before continuing. Every
+  run logs one line naming what it joined —
   `stream <label> session <id> (resumed|new|reset)`.
-- **A resumed conversation is compacted before the issue's first phase** (Issue
-  #2337), because it has carried every issue of the stream so far and left alone
-  it is the _next_ issue that fills the context window. Claude and DeepSeek —
-  one CLI, so one lever — send `/compact` as the prompt of a `--resume` print
-  run, then **verify** it in the session's transcript under `CLAUDE_CONFIG_DIR`:
-  the transcript is append-only, so a working `/compact` grows the file and adds
-  a `compact_boundary` record. A new boundary means it worked, and the run logs
-  `compaction: /compact` (Issue #4116). Anything short of that proof — no new
-  boundary, a non-zero `/compact` run, a transcript that cannot be read, a spawn
-  that failed — starts the issue on a **new session** instead of resuming the
-  uncompacted one, logged as `compaction: fresh session`; the stream carries on
-  from that conversation. (The earlier fallback, `--autocompact 100000`, set the
-  CLI's compaction trigger below the size of the issue prompt itself, so runs
-  aborted with "Autocompact is thrashing".) A `new` or `reset` stream session
-  has no conversation to compact and logs
-  `compaction skipped: new stream session` without spending a CLI call, and
-  Codex and Gemini expose no compaction control at all, so they carry the full
-  transcript and log `compaction unavailable` naming the provider. Every run
-  logs **exactly one** compaction line, and no compaction outcome can fail an
-  issue.
-- **One run per milestone stream at a time, fleet-wide** (Issue #2334). With the
-  flag on, a claim on a milestone issue first asks whether any **other open**
-  issue of that milestone is live — a heartbeat that beat inside the live
-  window, or a `CLAIM_LOCK` posted in the last minute, from a fleet account. If
-  one is, the claim is refused as `stream_busy` before the assignee and the
-  claim comment are written, and the worker logs
+- **A resumed conversation is compacted before the issue's first phase**
+  (Issue #2337), because it has carried every issue of the stream so far and
+  left alone it is the *next* issue that fills the context window. Claude and
+  DeepSeek — one CLI, so one lever — send `/compact` as the prompt of a
+  `--resume` print run, then **verify** it in the session's transcript under
+  `CLAUDE_CONFIG_DIR`: the transcript is append-only, so a working `/compact`
+  grows the file and adds a `compact_boundary` record. A new boundary means it
+  worked, and the run logs `compaction: /compact` (Issue #4116). Anything short
+  of that proof — no new boundary, a non-zero `/compact` run, a transcript that
+  cannot be read, a spawn that failed — starts the issue on a **new session**
+  instead of resuming the uncompacted one, logged as
+  `compaction: fresh session`; the stream carries on from that conversation.
+  (The earlier fallback, `--autocompact 100000`, set the CLI's compaction
+  trigger below the size of the issue prompt itself, so runs aborted with
+  "Autocompact is thrashing".) A `new` or `reset` stream session has no
+  conversation to compact and logs `compaction skipped: new stream session`
+  without spending a CLI call, and Codex and Gemini expose no compaction
+  control at all, so they carry the full transcript and log
+  `compaction unavailable` naming the provider. Every run logs **exactly one**
+  compaction line, and no compaction outcome can fail an issue.
+- **One run per milestone stream at a time, fleet-wide** (Issue #2334). With
+  the flag on, a claim on a milestone issue first asks whether any **other
+  open** issue of that milestone is live — a heartbeat that beat inside the
+  live window, or a `CLAIM_LOCK` posted in the last minute, from a fleet
+  account. If one is, the claim is refused as `stream_busy` before the
+  assignee and the claim comment are written, and the worker logs
   `stream busy: <stream> held by #<issue> on <host>`. It is a **skip, not a
-  failure**: no `failed-once` label, no churn record and no cooldown beyond the
-  normal scan interval, so the issue is claimed on a later scan once the
+  failure**: no `failed-once` label, no churn record and no cooldown beyond
+  the normal scan interval, so the issue is claimed on a later scan once the
   holder's heartbeat goes stale. Blank-stream issues (no milestone) own no
-  shared conversation and are never checked, and with `enable_session_resume`
-  off the check — and its one extra `gh issue list` — never runs at all.
-- **…except `top-priority` and `work-on`, which share a busy stream** (Issue
-  #2530). Those two tiers are what a human has asked for now, so a busy stream
-  does not hold them up: the claim proceeds and the worker logs
+  shared conversation and are never checked, and with
+  `enable_session_resume` off the check — and its one extra `gh issue list` —
+  never runs at all.
+- **…except `top-priority` and `work-on`, which share a busy stream**
+  (Issue #2530). Those two tiers are what a human has asked for now, so a busy
+  stream does not hold them up: the claim proceeds and the worker logs
   `stream shared: <stream> held by #<issue> on <host> — claiming into a
-  per-issue session (Issue #2527)`.
-  Such a run keeps its **own per-issue conversation** — it joins no stream
-  session, compacts no one else's transcript, and writes back neither the stream
-  record nor the `vibe-stream-holder` marker — so the stream's shared
-  conversation still carries one run at a time, and the host holding it is left
-  undisturbed. The affinity head start (Issue #2336) is skipped with the wait,
-  because a second holder has no conversation to take over. Each host still
-  takes one issue per `(repo, milestone)` at a time (the host-local in-flight
-  registry is unchanged), so in-stream parallelism is bounded by the number of
-  hosts. `low-priority` and `idle-task` issues are unaffected and still wait for
-  the stream. This lifts the **claim-time** lock only: discovery's fleet-wide
-  milestone-occupancy filter still drops such a candidate earlier, and is
-  relaxed for these two tiers by Issue #2532.
+  per-issue session (Issue #2527)`. Such a run keeps its **own per-issue
+  conversation** — it
+  joins no stream session, compacts no one else's transcript, and writes back
+  neither the stream record nor the `vibe-stream-holder` marker — so the
+  stream's shared conversation still carries one run at a time, and the host
+  holding it is left undisturbed. The affinity head start (Issue #2336) is
+  skipped with the wait, because a second holder has no conversation to take
+  over. Each host still takes one issue per `(repo, milestone)` at a time (the
+  host-local in-flight registry is unchanged), so in-stream parallelism is
+  bounded by the number of hosts. `low-priority` and `idle-task` issues are
+  unaffected and still wait for the stream. This lifts the **claim-time** lock
+  only: discovery's fleet-wide milestone-occupancy filter still drops such a
+  candidate earlier, and is relaxed for these two tiers by Issue #2532.
 - **One non-milestone issue per repository per host** (Issue #2335). The blank
   stream has no fleet-wide conversation to collide in — each host keeps its
   **own** blank conversation per repository — so it is locked **host-locally**
   instead: an in-process registry, keyed by the conversation's own `streamKey`,
-  that a slot takes when it claims a non-milestone issue and gives back when the
-  run ends, on every terminal path (success, skip, failure, throw, timeout,
+  that a slot takes when it claims a non-milestone issue and gives back when
+  the run ends, on every terminal path (success, skip, failure, throw, timeout,
   kill). A sibling slot finding the stream held logs
   `stream busy: <stream> held by slot <slot> on #<issue>` and takes the next
   eligible issue rather than idling the scan. The refused issue leaves that
   slot's scan only while the stream stays busy: the exclusion lifts the moment
-  the holder releases, so the issue is claimable on the very next scan. The lock
-  consults **no GitHub state and makes no `gh` call**, so two hosts run that
-  repository's non-milestone issues in parallel, each with its own conversation
-  — which is correct, because they are two conversations. The two locks never
-  both apply to one issue: a milestone issue takes no host-local hold, and a
-  blank-stream issue skips the fleet-wide check entirely. With
-  `enable_session_resume` off there is no shared conversation, so no host-local
-  lock is taken.
+  the holder releases, so the issue is claimable on the very next scan.
+  The lock consults **no GitHub state and makes no `gh` call**, so two hosts
+  run that repository's non-milestone issues in parallel, each with its own
+  conversation — which is correct, because they are two conversations. The two
+  locks never both apply to one issue: a milestone issue takes no host-local
+  hold, and a blank-stream issue skips the fleet-wide check entirely. With
+  `enable_session_resume` off there is no shared conversation, so no
+  host-local lock is taken.
 
   ```mermaid
   flowchart TD
@@ -4257,26 +4147,26 @@ conversation replay and the periodic checkpoints:
   so a stream keeps exactly one live marker however long it lasts. A host that
   is **not** the recorded holder defers that stream's eligible issue for
   `STREAM_AFFINITY_GRACE_SECONDS` (300 s — between two and three scans at the
-  120 s default), measured from its own first sighting of the issue, and logs
-  the countdown once as
-  `stream affinity: deferring <stream> to <host> (<n>s left)`. After the grace
-  the first other host to scan claims it, logs
-  `stream session reset: affinity grace expired` and becomes the new holder. The
-  first-sighting clock is per process, and a deferral puts the issue on cooldown
-  for the rest of that process, so on a fleet that relaunches hourly it can
-  never run out by itself: every host logged `300s left` for 23 hours on
-  2026-09-18/19 and no milestone issue was claimed. The head start therefore
+  120 s default),
+  measured from its own first sighting of the issue, and logs the countdown
+  once as `stream affinity: deferring <stream> to <host> (<n>s left)`. After
+  the grace the first other host to scan claims it, logs
+  `stream session reset: affinity grace expired` and becomes the new holder.
+  The first-sighting clock is per process, and a deferral puts the issue on
+  cooldown for the rest of that process, so on a fleet that relaunches hourly
+  it can never run out by itself: every host logged `300s left` for 23 hours
+  on 2026-09-18/19 and no milestone issue was claimed. The head start therefore
   **also** ends `STREAM_HOLDER_HEAD_START_SECONDS` (900 s) after the holder's
   run finished, read from the marker's `at=` stamp, which no restart resets; a
   stamp in the future is clock skew and shortens nothing. "This host" means the
   same **install** — the uuid persisted beside the transcript in the work
   directory (`machine_id.ts`) — not the container hostname, which is
-  `vibe-coder-<random>` and new on every launch. As with the stream lock this is
-  a **skip, not a failure** (`stream_affinity`), and it never applies where
-  there is nothing to hold: no marker recorded, the holder being this host, a
-  milestone with no resolvable tracking issue, or a blank-stream issue. Affinity
-  is an optimisation, never a lock — a `gh` failure is logged and the claim
-  proceeds.
+  `vibe-coder-<random>` and new on every launch. As
+  with the stream lock this is a **skip, not a failure** (`stream_affinity`),
+  and it never applies where there is nothing to hold: no marker recorded, the
+  holder being this host, a milestone with no resolvable tracking issue, or a
+  blank-stream issue. Affinity is an optimisation, never a lock — a `gh`
+  failure is logged and the claim proceeds.
 
   ```mermaid
   sequenceDiagram
@@ -4297,8 +4187,8 @@ conversation replay and the periodic checkpoints:
 
 - A branch carrying **only** WIP markers does not become a PR: when a claim
   resumed a checkpoint and added no commit of its own, the completion phase
-  refuses to raise a half-done PR from parked work and the issue returns to the
-  queue for a claim that can advance it.
+  refuses to raise a half-done PR from parked work and the issue returns to
+  the queue for a claim that can advance it.
 - Stale-workdir housekeeping pushes any unpushed branches before deleting a
   stale clone, and keeps the clone (with a loud warning) if the push fails.
 - The durable transcript store (`${WORK_DIR}/.claude-config`) participates in
@@ -4313,9 +4203,9 @@ conversation replay and the periodic checkpoints:
 `worker/deno/lib/issue_branch_resume.ts` (issue-number branch lookup),
 `worker/deno/lib/stream_session.ts` (which run kinds join a stream, and how),
 `worker/deno/lib/stream_lock.ts` (the fleet-wide milestone lock and the
-host-local blank-stream lock), `worker/deno/lib/stream_holder.ts` (the holder
-marker and its head start), `worker/deno/lib/config_defaults.ts` (default
-value).
+host-local blank-stream lock),
+`worker/deno/lib/stream_holder.ts` (the holder marker and its head start),
+`worker/deno/lib/config_defaults.ts` (default value).
 
 ## 📦 Session Compaction
 
@@ -4381,11 +4271,11 @@ performance, or failures.
 
 **Configuration:**
 
-| Setting            | Config Key                       | Default | Description                                                                                 |
-| ------------------ | -------------------------------- | ------- | ------------------------------------------------------------------------------------------- |
-| Warning threshold  | `context_budget_warning_percent` | `50`    | Usage percentage that triggers a warning in the budget log                                  |
-| Error threshold    | `context_budget_error_percent`   | `80`    | Usage percentage that triggers an error in the budget log                                   |
-| Blocking threshold | `context_budget_block_percent`   | `95`    | Hard ceiling — the execution phase trims history, retries, then hands the issue to planning |
+| Setting            | Config Key                       | Default | Description                                                                                |
+| ------------------ | -------------------------------- | ------- | ------------------------------------------------------------------------------------------ |
+| Warning threshold  | `context_budget_warning_percent` | `50`    | Usage percentage that triggers a warning in the budget log                                 |
+| Error threshold    | `context_budget_error_percent`   | `80`    | Usage percentage that triggers an error in the budget log                                  |
+| Blocking threshold | `context_budget_block_percent` | `95` | Hard ceiling — the execution phase trims history, retries, then hands the issue to planning |
 
 ```json
 {
@@ -4405,15 +4295,15 @@ performance, or failures.
    id such as `claude-haiku-4-5`).
 3. If usage exceeds the warning threshold, a warning is logged. If it exceeds
    the error threshold, an error is logged.
-4. If usage reaches `context_budget_block_percent`, the check fails closed: the
-   execution phase stops **before** the billed Claude invocation. It never hands
-   the issue to a human (Issue #4298). It rebuilds the prompt with the comment
-   history (and, on the CLI path, the CI log and recent activity) trimmed and
-   checks again. A prompt that still does not fit goes to planning through the
-   `vibe-needs-planning` hand-off, which splits the issue into sub-issues; when
-   planning cannot take it, the run fails and the issue is retried on the normal
-   `failed-once` ladder. Warning and error thresholds remain observational —
-   only the blocking threshold stops work.
+4. If usage reaches `context_budget_block_percent`, the check fails closed:
+   the execution phase stops **before** the billed Claude invocation. It never
+   hands the issue to a human (Issue #4298). It rebuilds the prompt with the
+   comment history (and, on the CLI path, the CI log and recent activity)
+   trimmed and checks again. A prompt that still does not fit goes to planning
+   through the `vibe-needs-planning` hand-off, which splits the issue into
+   sub-issues; when planning cannot take it, the run fails and the issue is
+   retried on the normal `failed-once` ladder. Warning and error thresholds
+   remain observational — only the blocking threshold stops work.
 5. Budget entries are written to a daily JSON log file for operational
    visibility.
 
@@ -4434,9 +4324,9 @@ The budget log records each invocation's token breakdown, enabling operators to:
 - **Raise `context_budget_error_percent`** (e.g., to `90`) if you are
   comfortable operating closer to the context limit.
 - **Set `context_budget_block_percent` to `0`** to disable the hard ceiling and
-  restore warn-only behaviour. Raising it only defers the truncation — an issue
-  that reaches 95% of the window will not converge by retrying, which is why the
-  worker sends it to planning.
+  restore warn-only behaviour. Raising it only defers the truncation — an
+  issue that reaches 95% of the window will not converge by retrying, which
+  is why the worker sends it to planning.
 - The monitoring is lightweight (< 10 ms overhead). The warning and error
   thresholds are observational; the blocking threshold is the only one that
   stops a phase.
@@ -4446,11 +4336,11 @@ The budget log records each invocation's token breakdown, enabling operators to:
 
 ## 👤 Authorised Commenters
 
-> **🔒 Security-First Default:** Trusted authors — write collaborators minus the
-> Vibe Coder logins and bots — can trigger PR feedback fixes. So can the Vibe
-> Coders and the `authorized_commenters` bots, whose reviews and test results
-> are input the worker acts on but who may **never** raise, label or schedule
-> work — except that adding the `idle-task` label is honoured. See
+> **🔒 Security-First Default:** Trusted authors — write collaborators minus
+> the Vibe Coder logins and bots — can trigger PR feedback fixes. So can the
+> Vibe Coders and the `authorized_commenters` bots, whose reviews and test
+> results are input the worker acts on but who may **never** raise, label or
+> schedule work — except that adding the `idle-task` label is honoured. See
 > [Two axes of trust](#two-axes-of-trust).
 
 To add bot accounts to the authorised commenters list, use one of these methods:
@@ -4543,27 +4433,28 @@ never get its blocking CI failure fixed by any peer, and human "please fix"
 comments would land on a PR no running worker is scanning.
 
 List the **other** fleet logins here; the host's own `github_user` is always
-covered implicitly. The default `[]` preserves the prior single-author behaviour
-exactly.
+covered implicitly. The default `[]` preserves the prior single-author
+behaviour exactly.
 
 **This is also the scheduling list.** `github_user` + `fleet_pr_authors` +
-`service_accounts` — resolved by `resolveFleetMaintenanceAuthorSet` — is the set
-that decides whether a work stream is already occupied, so only a Vibe Coder's
-assignment can make the worker stand off an issue. `allowed_authors` is a
-permission list and never answers that question; see
+`service_accounts` — resolved by `resolveFleetMaintenanceAuthorSet` — is the
+set that decides whether a work stream is already occupied, so only a Vibe
+Coder's assignment can make the worker stand off an issue. `allowed_authors` is
+a permission list and never answers that question; see
 [Which list governs scheduling, and which governs permission](#which-list-governs-scheduling-and-which-governs-permission).
 
 **Scope:** Applies to every PR-maintenance scan — PR-feedback discovery
 (`findPrCommentsToFix`), CI-fix discovery (`findFailedCiChecks`), spelling
 failures (`findFailedPrChecks`), auto-merge (`ensureAutoMergeOnOpenPrs`) and the
-CI nudge (`findPrsNeedingCiNudge`). Since all five resolve their author set
-through `resolveFleetMaintenanceAuthorSet` — `github_user` + `fleet_pr_authors`,
-the accounts the fleet actually operates — so every fleet-authored PR is
-maintained by some host while a trusted human's PR is left alone. Cross-fleet
-pickup is collision-tolerant — concurrent PR-feedback handling already
-de-duplicates via the shared `eyes` reaction, and a duplicated CI-fix push is
-rejected by git as a non-fast-forward (the loser simply retries), bounded by the
-existing per-check retry cap.
+CI nudge (`findPrsNeedingCiNudge`). Since all five resolve their
+author set through `resolveFleetMaintenanceAuthorSet` — `github_user` +
+`fleet_pr_authors`, the accounts the fleet actually operates — so every
+fleet-authored PR is maintained by some host while a trusted human's PR is left
+alone. Cross-fleet
+pickup is collision-tolerant —
+concurrent PR-feedback handling already de-duplicates via the shared `eyes`
+reaction, and a duplicated CI-fix push is rejected by git as a non-fast-forward
+(the loser simply retries), bounded by the existing per-check retry cap.
 
 **Precedence:**
 
@@ -4584,11 +4475,11 @@ The `stsvcbot` host mirrors this with `"fleet_pr_authors": ["Vibecoderbot"]`.
 
 ### Fleet PR authors feed the open-PR duplicate guard too
 
-The open-PR duplicate guard that stops two fleet hosts raising duplicate PRs for
-the same issue enumerates fleet accounts from the **union** of the host
-`github_user`, `allowed_authors`, **and** `fleet_pr_authors`
-(`resolveFleetAuthors` in `worker/deno/lib/fleet_authors.ts`). Before the guard
-read `allowed_authors` only, so a sibling listed **solely** in
+The open-PR duplicate guard that stops two fleet hosts raising
+duplicate PRs for the same issue enumerates fleet accounts from the **union** of
+the host `github_user`, `allowed_authors`, **and** `fleet_pr_authors`
+(`resolveFleetAuthors` in `worker/deno/lib/fleet_authors.ts`). Before the
+guard read `allowed_authors` only, so a sibling listed **solely** in
 `fleet_pr_authors` was never queried and its open PRs were invisible to the
 guard — the root cause of the duplicate documented in
 [`DUPLICATE-PR-ROOT-CAUSE-3138.md`](DUPLICATE-PR-ROOT-CAUSE-3138.md).
@@ -4597,8 +4488,8 @@ At startup (and in `diagnose-repo`) the worker now validates this configuration
 and emits `[fleet-config]` lines. The **effective author set is named on every
 run** — `[fleet-config] effective-authors=<login>,<login>` — so the logins the
 guards actually cover are visible without reading `.config.json`. Alongside it:
-an **error** if the effective fleet set is empty. An empty `allowed_authors` is
-no longer a finding: the array grants nothing, and fleet identity comes from
+an **error** if the effective fleet set is empty. An empty `allowed_authors`
+is no longer a finding: the array grants nothing, and fleet identity comes from
 `service_accounts` / `fleet_pr_authors` (Issue #1066). Those fleet logins are
 collaborators on the monitored repos — and are then **excluded** from the
 directing set, which is the point: write access must not authorise a worker to
@@ -4607,15 +4498,15 @@ instruct itself.
 ### Service accounts are fleet PR authors too
 
 `service_accounts` and `fleet_pr_authors` both name **fleet** logins, and a
-service account is a fleet account by definition. They are not interchangeable
-inputs, though — `service_accounts` is the identity guard's allowlist, while
-`fleet_pr_authors` is what every PR guard resolves its author set from. A fleet
-that listed its siblings under `service_accounts` **only** was therefore
-uncoordinated by construction, and silently so: with `fleet_pr_authors` unset, a
-sibling's open PR neither blocked a claim nor counted as already merged, because
-the guards read it as some unrelated human's PR. That is how a host claimed an
-issue three minutes after a sibling opened a PR for it and duplicated ten
-minutes of work.
+service account is a fleet account by definition. They are not
+interchangeable inputs, though — `service_accounts` is the identity guard's
+allowlist, while `fleet_pr_authors` is what every PR guard resolves its author
+set from. A fleet that listed its siblings under `service_accounts` **only**
+was therefore uncoordinated by construction, and silently so: with
+`fleet_pr_authors` unset, a sibling's open PR neither blocked a claim nor
+counted as already merged, because the guards read it as some unrelated human's
+PR. That is how a host claimed an issue three minutes after a sibling opened a
+PR for it and duplicated ten minutes of work.
 
 `loadConfig` closes the gap by resolving the two keys into **one effective
 sibling list**: `config.fleetPrAuthors` is the deduplicated union of
@@ -4624,10 +4515,10 @@ either key — or both — now reaches every guard, and no consumer can see one 
 without the other.
 
 The trusted-author set that feeds those same downstream guards is
-**collaborators minus exclusions**, not the local `allowed_authors` array (Issue
-#1066). `service_accounts` and `fleet_pr_authors` are on both sides of that
-picture: they union into the sibling list, and they are also stripped from the
-collaborator set so a fleet login cannot authorise itself.
+**collaborators minus exclusions**, not the local `allowed_authors` array
+(Issue #1066). `service_accounts` and `fleet_pr_authors` are on both sides of
+that picture: they union into the sibling list, and they are also stripped from
+the collaborator set so a fleet login cannot authorise itself.
 
 ```mermaid
 flowchart LR
@@ -4651,36 +4542,38 @@ identity guard.
 That direction is one-way. Listing a fleet login in `allowed_authors` keeps the
 duplicate guard sighted; it does **not** follow that a login in
 `allowed_authors` may have its PRs maintained. Maintenance comes from
-`fleet_pr_authors` alone — see [`HUMAN-PR-POLICY.md`](HUMAN-PR-POLICY.md).
+`fleet_pr_authors` alone — see
+[`HUMAN-PR-POLICY.md`](HUMAN-PR-POLICY.md).
 
 ### Defer to a PR, or act on it?
 
 `getBlockingPRForIssue` defers a `work-on` issue behind an open PR the fleet
 **operates** — `github_user` + `fleet_pr_authors` — because the worker must not
 run a second PR into a work stream it already has open. The maintenance scans
-answer a different question: _may I claim this PR, push to it, comment on it,
-merge it?_
+answer a different question: *may I claim this PR, push to it, comment on it,
+merge it?*
 
-- **** widened the scans to the blocking set, which fixed a fleet PR stranded
-  with no host maintaining it (`private-repo-21`) …
+- **** widened the scans to the blocking set, which fixed a fleet PR
+  stranded with no host maintaining it (`private-repo-21`) …
 - **** exposed the cost: the scans then adopted a trusted **human's** PR
-  uninvited (`TitlePage/tp-web-react`) — claimed it, pushed to it, and commented
-  on it.
+  uninvited (`TitlePage/tp-web-react`) — claimed it, pushed to it, and
+  commented on it.
 - **/** split the two. Every scan that acts on a PR now resolves
   `resolveFleetMaintenanceAuthorSet` (host + `fleet_pr_authors`), so a human's
   login never reaches `gh pr list --author`.
-- **** finished the job on the issue side: the blocking guard resolves the same
-  push-capable set, so a human's open PR no longer defers issue pickup at all.
-  One unrelated human PR used to park a repo's entire `work-on` queue — and,
-  after, stamp `needs-human` on the blocked issue. The developer manages their
-  own PR; the worker works the issues it was invited to, alongside them. The
-  nudge-and-escalate path is retired.
+- **** finished the job on the issue side: the blocking guard resolves the
+  same push-capable set, so a human's open PR no longer defers issue pickup at
+  all. One unrelated human PR used to park a repo's entire `work-on` queue —
+  and, after, stamp `needs-human` on the blocked issue. The developer
+  manages their own PR; the worker works the issues it was invited to,
+  alongside them. The nudge-and-escalate path is retired.
 
 The fleet's own open PRs still block repo-wide (one at a time per work stream).
 A PR the worker cannot classify — an author never stamped, or an unresolved
 push-capable set — stays on the blocking side as a fail-safe.
 
-Regression tests in `worker/deno/tests/human_pr_never_blocks_test.ts`,
+Regression tests in
+`worker/deno/tests/human_pr_never_blocks_test.ts`,
 `worker/deno/tests/issue_query_test.ts`,
 `worker/deno/tests/pr_maintenance_test.ts` and
 `worker/deno/tests/pr_ci_nudge_scan_test.ts` cover the guard and the `--author`
@@ -4711,18 +4604,19 @@ admits only those carrying an explicit invitation (the operator-facing version
 of this, including how to revoke, is
 [`HUMAN-PR-POLICY.md`](HUMAN-PR-POLICY.md)):
 
-| Signal      | How to give it                                        | Checked by                                                                           |
-| ----------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| **Label**   | Add `work-on` to the PR                               | The timeline adder must be a trusted human — label presence is not enough            |
-| **Mention** | Comment or review the PR mentioning `@<worker-login>` | The commenter must be a trusted human; mentions in code blocks or quotes are ignored |
+| Signal      | How to give it                                          | Checked by                                                              |
+| ----------- | ------------------------------------------------------- | ----------------------------------------------------------------------- |
+| **Label**   | Add `work-on` to the PR                                  | The timeline adder must be a trusted human — label presence is not enough |
+| **Mention** | Comment or review the PR mentioning `@<worker-login>`    | The commenter must be a trusted human; mentions in code blocks or quotes are ignored |
 
 Details that matter in practice:
 
 - A **fleet account is never an inviter.** Fleet logins appear in
-  `allowed_authors` for PR dedup, so without that exclusion a worker could label
-  its way onto your PR.
+  `allowed_authors` for PR dedup, so without that exclusion a worker could
+  label its way onto your PR.
 - **Revocation is immediate.** Remove the label and the PR leaves the scan set
-  on the next pass — the verdict is re-derived every scan, with no stored state.
+  on the next pass — the verdict is re-derived every scan, with no stored
+  state.
 - **Every admission is logged**:
   `[pr-invitation] admitted repo=… prNumber=… author=… via=label|mention invitedBy=…`.
   A worker action on a human PR with no matching line is a wiring bug; an
@@ -4738,19 +4632,20 @@ guard through `resolveFleetPrAuthorSet()`, the scans through
 and `findOldestIssue` compares the two resolved sets once per iteration
 (`compareFleetAuthorSets`). Two log lines make the invariant observable:
 
-| Log line                      | When                                                                                   | Fields                                                         |
-| ----------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `fleet-author-set-divergence` | The sets differ by more than the expected `allowed_authors` delta (once per iteration) | `missing-from-maintenance`, `missing-from-blocking`            |
-| `pr-blocks-work-on`           | An open PR defers `work-on` issues                                                     | `pr`, `author`, `base`, `blocked-issues`, `in-maintenance-set` |
+| Log line                       | When                                       | Fields                                                                                |
+| ------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `fleet-author-set-divergence`  | The sets differ by more than the expected `allowed_authors` delta (once per iteration) | `missing-from-maintenance`, `missing-from-blocking` |
+| `pr-blocks-work-on`            | An open PR defers `work-on` issues         | `pr`, `author`, `base`, `blocked-issues`, `in-maintenance-set`                          |
 
 Both are written unconditionally — no `ISSUE_FINDER_DEBUG` needed. The
 divergence check is **observability, never a gate**: it warns and the iteration
 continues.
 
-Since the maintenance set deliberately omits `allowed_authors`, so the check is
-**intent-aware**. The invariant it asserts is _the maintenance set is the
-fleet-owned set minus the trusted humans, and nothing else_ — trusted humans are
-declared as the expected delta and never warn. Two shapes still do:
+Since the maintenance set deliberately omits `allowed_authors`, so the
+check is **intent-aware**. The invariant it asserts is *the
+maintenance set is the fleet-owned set minus the trusted humans, and nothing
+else* — trusted humans are declared as the expected delta and never warn. Two
+shapes still do:
 
 - `missing-from-maintenance=<login>` — a `fleet_pr_authors` sibling no scan
   covers: a fleet PR that blocks work and nothing will fix, answer, or merge.
@@ -4758,8 +4653,8 @@ declared as the expected delta and never warn. Two shapes still do:
   duplicate guard cannot see.
 
 Any occurrence of this warning is therefore a real hazard, not background noise.
-A recurrence of the stall also appears as `in-maintenance-set=false` on a
-blocking PR:
+A recurrence of the stall also appears as `in-maintenance-set=false`
+on a blocking PR:
 
 ```text
 [issue-finder] repo=owner/repo pr-blocks-work-on pr= author=stsvcbot base=main blocked-issues=, in-maintenance-set=false
@@ -4814,29 +4709,29 @@ Example configuration:
 
 ### 💰 Per-repository model/effort routing
 
-Model and effort routing is normally per-phase and fleet-wide. The `repo_config`
-keys below let you tier spend per repository — a high-value repo gets the best
-model regardless of cost, while a filler repo (worked on only when nothing else
-is queued) avoids burning premium tokens.
+Model and effort routing is normally per-phase and fleet-wide. The
+`repo_config` keys below let you tier spend per repository — a high-value repo
+gets the best model regardless of cost, while a filler repo (worked on only
+when nothing else is queued) avoids burning premium tokens.
 
-| Key                              | Type   | Description                                                                                                                                                                                                                                                                                                                               |
-| -------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude_model`                   | string | Per-repo base tier (alias such as `fable`/`sonnet`/`opus`, or a full model id) overriding the global base for every phase in this repo.                                                                                                                                                                                                   |
-| `best_planning_model`            | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it.                                                                                                                                                                                                 |
-| `phase_model_overrides`          | object | Per-repo per-phase model map (e.g. `{ "issue": "fable" }`). Same shape as the global `phase_model_overrides`.                                                                                                                                                                                                                             |
-| `phase_effort_overrides`         | object | Per-repo per-phase effort map (e.g. `{ "issue": "xhigh" }`). Same shape as the global `phase_effort_overrides`.                                                                                                                                                                                                                           |
-| `codex_model`                    | string | Per-repo base **Codex** model tier overriding the Codex phase defaults for every phase in this repo — the Codex counterpart of `claude_model`.                                                                                                                                                                                            |
-| `codex_phase_model_overrides`    | object | Per-repo per-phase **Codex** model map (e.g. `{ "issue": "gpt-6-luna" }`). Same shape as the global `codex_phase_model_overrides`.                                                                                                                                                                                                        |
-| `codex_phase_effort_overrides`   | object | Per-repo per-phase **Codex** effort map (e.g. `{ "issue": "medium" }`). Same shape as the global `codex_phase_effort_overrides`.                                                                                                                                                                                                          |
-| `gemini_model`                   | string | Per-repo base **Gemini** model tier overriding the Gemini phase defaults for every phase in this repo — the Gemini counterpart of `claude_model`.                                                                                                                                                                                         |
-| `gemini_phase_model_overrides`   | object | Per-repo per-phase **Gemini** model map (e.g. `{ "issue": "gemini-2.5-flash-lite" }`). Same shape as the global `gemini_phase_model_overrides`.                                                                                                                                                                                           |
-| `deepseek_model`                 | string | Per-repo base **DeepSeek** model tier overriding the DeepSeek phase defaults for every phase in this repo — the DeepSeek counterpart of `claude_model`.                                                                                                                                                                                   |
-| `deepseek_phase_model_overrides` | object | Per-repo per-phase **DeepSeek** model map (e.g. `{ "issue": "deepseek-flash" }`). Same shape as the global `deepseek_phase_model_overrides`.                                                                                                                                                                                              |
-| `agent_provider`                 | string | Per-repo coding-agent provider pin (Issue #2048) — `claude`, `codex`, `gemini` or `deepseek`. Scopes the provider choice to this repo: it binds when an invocation carries no explicit provider of its own and wins over the global `agent_provider` and over `auto` ranking here. A set-but-unregistered id fails loudly at phase start. |
+| Key                     | Type   | Description                                                                                                         |
+| ----------------------- | ------ | ----------------------------------------------------------------------------------------------------------------- |
+| `claude_model`          | string | Per-repo base tier (alias such as `fable`/`sonnet`/`opus`, or a full model id) overriding the global base for every phase in this repo. |
+| `best_planning_model` | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it. |
+| `phase_model_overrides` | object | Per-repo per-phase model map (e.g. `{ "issue": "fable" }`). Same shape as the global `phase_model_overrides`.       |
+| `phase_effort_overrides`| object | Per-repo per-phase effort map (e.g. `{ "issue": "xhigh" }`). Same shape as the global `phase_effort_overrides`.     |
+| `codex_model`           | string | Per-repo base **Codex** model tier overriding the Codex phase defaults for every phase in this repo — the Codex counterpart of `claude_model`. |
+| `codex_phase_model_overrides` | object | Per-repo per-phase **Codex** model map (e.g. `{ "issue": "gpt-6-luna" }`). Same shape as the global `codex_phase_model_overrides`. |
+| `codex_phase_effort_overrides`| object | Per-repo per-phase **Codex** effort map (e.g. `{ "issue": "medium" }`). Same shape as the global `codex_phase_effort_overrides`. |
+| `gemini_model`          | string | Per-repo base **Gemini** model tier overriding the Gemini phase defaults for every phase in this repo — the Gemini counterpart of `claude_model`. |
+| `gemini_phase_model_overrides` | object | Per-repo per-phase **Gemini** model map (e.g. `{ "issue": "gemini-2.5-flash-lite" }`). Same shape as the global `gemini_phase_model_overrides`. |
+| `deepseek_model`        | string | Per-repo base **DeepSeek** model tier overriding the DeepSeek phase defaults for every phase in this repo — the DeepSeek counterpart of `claude_model`. |
+| `deepseek_phase_model_overrides` | object | Per-repo per-phase **DeepSeek** model map (e.g. `{ "issue": "deepseek-flash" }`). Same shape as the global `deepseek_phase_model_overrides`. |
+| `agent_provider`        | string | Per-repo coding-agent provider pin (Issue #2048) — `claude`, `codex`, `gemini` or `deepseek`. Scopes the provider choice to this repo: it binds when an invocation carries no explicit provider of its own and wins over the global `agent_provider` and over `auto` ranking here. A set-but-unregistered id fails loudly at phase start. |
 
 The Codex keys mirror the Claude ones step for step — including the caveat that
-a per-repo `codex_model` base tier beats the built-in Codex phase defaults, so
-it demotes the top-tier planning phases unless they are re-pinned in
+a per-repo `codex_model` base tier beats the built-in Codex phase defaults, so it
+demotes the top-tier planning phases unless they are re-pinned in
 `codex_phase_model_overrides`. The full Codex chain is documented in
 [MODEL-AND-CACHING.md → Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing).
 
@@ -4855,14 +4750,16 @@ beat the built-in phase defaults. Overrides apply only while the worker is
 processing that repo — switching repos restores the other repo's (or global)
 routing, so a premium tier never leaks into a filler repo.
 
-> **⚠️ A per-repo `claude_model` demotes the planning/grill-me top tier unless
-> you re-pin them (audit F2/F3).** Because the per-repo base `claude_model`
-> beats the built-in phase defaults, setting it to cheapen a filler repo's
-> ordinary phases **also reroutes `planning` and `grill_me` off the top tier**
-> (and setting it to `opus` or `fable` promotes the trivial Haiku phases —
-> `spelling_fix`/`summarise`/ `health` — at ~5× their cost). The planning tier
-> is the highest-leverage spend, so to keep it while demoting the base, re-pin
-> the two planning-shaped phases in the same `repo_config` entry:
+> **⚠️ A per-repo `claude_model` demotes the planning/grill-me top tier
+> unless you re-pin them (audit
+> F2/F3).**
+> Because the per-repo base `claude_model` beats the built-in phase defaults,
+> setting it to cheapen a filler repo's ordinary phases **also reroutes
+> `planning` and `grill_me` off the top tier** (and setting it to `opus` or
+> `fable` promotes the trivial Haiku phases — `spelling_fix`/`summarise`/
+> `health` — at ~5× their cost). The planning tier is the highest-leverage
+> spend, so to keep it while demoting the base, re-pin the two planning-shaped
+> phases in the same `repo_config` entry:
 >
 > ```jsonc
 > "repo_config": {
@@ -4880,13 +4777,16 @@ routing, so a premium tier never leaks into a filler repo.
 > the same precedence chain and does not false-flag the demotion — so this is a
 > routing surprise to be aware of, not a bug. See
 > [MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#%EF%B8%8F-modeleffort-precedence-chain)
-> for the full chain, and / for the base-tier override docs and the
-> per-repo-switch log line that surfaces each rerouted phase.
+> for the full chain, and
+> /
+> for the
+> base-tier override docs and the per-repo-switch log line that surfaces each
+> rerouted phase.
 
 > **🛟 A per-repo `claude_model: "fable"` base tier is covered by the
-> Fable-unavailable fallback too.** Whether a repo lands on Fable via the
-> built-in top-tier phase defaults _or_ by pinning `claude_model: "fable"` (or
-> `phase_model_overrides`) in its `repo_config`, the same resilience applies:
+> Fable-unavailable fallback too.** Whether a repo lands on Fable
+> via the built-in top-tier phase defaults *or* by pinning `claude_model: "fable"`
+> (or `phase_model_overrides`) in its `repo_config`, the same resilience applies:
 > while Fable 5 is globally unavailable the run automatically falls back to Opus
 > 4.8, is flagged with the `degraded-model` label and a model-stats comment, and
 > self-heals once Fable returns — config keeps pointing at Fable, the
@@ -4906,20 +4806,20 @@ semantics:
 
 - **Lower runs sooner.** A repo with a smaller `nice` is considered before a
   repo with a larger one. This ordering is inverted on purpose — read `nice` as
-  "how willing this repo is to step aside", exactly like the `nice(1)` command.
-  **State it loudly to yourself when you set it: lower = worked first, higher =
-  worked last.**
+  "how willing this repo is to step aside", exactly like the `nice(1)`
+  command. **State it loudly to yourself when you set it: lower = worked first,
+  higher = worked last.**
 - **Default `0`.** A repo with no configured `nice` sits at the neutral tier —
   neither promoted nor demoted. A non-integer, non-finite, or wrong-type value
   is guarded down to `0` rather than propagated.
-- **Operator-side only.** Like every other `repo_config` field, `nice` lives in
-  the operator's `.config.json` — never in the target repository. There is no
-  in-repo channel for it.
+- **Operator-side only.** Like every other `repo_config` field,
+  `nice` lives in the operator's `.config.json` — never in the target
+  repository. There is no in-repo channel for it.
 - **New-work selection only.** `nice` tiers the next-issue / label / planning
-  **new-work** scans. It does **not** reorder Priority 1.x in-flight maintenance
-  (PR feedback, CI fixes, revisions) — once a piece of work is in flight it is
-  finished regardless of its repo's tier. A `nice > 0` repo's in-flight work is
-  polled less often, though (the
+  **new-work** scans. It does **not** reorder Priority 1.x in-flight
+  maintenance (PR feedback, CI fixes, revisions) — once a piece of work is in
+  flight it is finished regardless of its repo's tier. A `nice > 0` repo's
+  in-flight work is polled less often, though (the
   [poll cadence](#poll-cadence--poll-low-priority-repos-less-often-issue-3667),
   Issue #3667): later, never not at all.
 
@@ -4932,26 +4832,26 @@ never starves its peers.
 > urgency; `nice` shapes throughput between repos that are equally urgent. So
 > the fleet-wide order is:
 >
-> 1. **Label tier first, across the whole fleet** — `top-priority` > `work-on` >
->    self-scheduled diagnostic > `low-priority` > `idle-task` (see
->    [README → Supported labels](../README.md#%EF%B8%8F-supported-labels)).
-> 2. **`nice` orders repos within a label tier** — of two `top-priority` issues,
->    the one in the lower-`nice` repo is worked first.
+> 1. **Label tier first, across the whole fleet** — `top-priority` >
+>    `work-on` > self-scheduled diagnostic > `low-priority` > `idle-task`
+>    (see [README → Supported labels](../README.md#%EF%B8%8F-supported-labels)).
+> 2. **`nice` orders repos within a label tier** — of two `top-priority`
+>    issues, the one in the lower-`nice` repo is worked first.
 > 3. Milestone priority and age break the remaining ties, unchanged.
 >
-> | candidate A                  | candidate B                  | winner                         |
-> | ---------------------------- | ---------------------------- | ------------------------------ |
-> | `top-priority` @ `nice: -15` | `work-on` @ `nice: -20`      | **A** — label tier first       |
+> | candidate A | candidate B | winner |
+> | --- | --- | --- |
+> | `top-priority` @ `nice: -15` | `work-on` @ `nice: -20` | **A** — label tier first |
 > | `top-priority` @ `nice: -20` | `top-priority` @ `nice: -15` | **A** — `nice` within the tier |
-> | `work-on` @ `nice: -20`      | `work-on` @ `nice: -15`      | **A** — `nice` within the tier |
-> | `low-priority` @ `nice: -20` | `work-on` @ `nice: -15`      | **B** — label tier first       |
+> | `work-on` @ `nice: -20` | `work-on` @ `nice: -15` | **A** — `nice` within the tier |
+> | `low-priority` @ `nice: -20` | `work-on` @ `nice: -15` | **B** — label tier first |
 >
-> Setting a repo to a very low `nice` therefore **cannot** starve another repo's
-> `top-priority` work: no amount of routine backlog in a `nice: -20` repo delays
-> a `top-priority` issue in a `nice: 0` one.
+> Setting a repo to a very low `nice` therefore **cannot** starve another
+> repo's `top-priority` work: no amount of routine backlog in a `nice: -20`
+> repo delays a `top-priority` issue in a `nice: 0` one.
 
 **Worked example.** Give a filler repo a high `nice` so its work is only picked
-up when no lower-`nice` repo has work _of the same label tier_, and jump a
+up when no lower-`nice` repo has work *of the same label tier*, and jump a
 priority repo ahead of the default tier with a negative `nice`:
 
 ```json
@@ -4976,48 +4876,48 @@ issue in the `nice: -1` one.
 
 You can confirm a repo's resolved tier without reading the config — the
 [`check-repo-availability`](workflows/issue-processing.md#-issue-selection-priority)
-command surfaces it in both its structured `data.nice` and a `[nice N]` suffix
+command surfaces it in both its structured `data.nice` and a ` [nice N]` suffix
 on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 
 ### ⚙️ Repository Configuration Options
 
-| Option                                | Type    | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pre_setup_command`                   | string  | Command to run before Claude starts working (e.g., `./scripts/setup-env.sh`). See [Pre-Setup Command](#-pre-setup-command).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `skip_quality_check`                  | boolean | When `true`, skips running quality checks entirely for this repository                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `quality_command`                     | string  | Custom command to run instead of `./quality.sh`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `custom_instructions`                 | string  | Additional instructions to include in the Claude prompt for this repository                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `docker_image`                        | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#-docker-based-quality-checks).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `requires_screenshots`                | boolean | When `true`, always injects the screenshot retry notice into Claude's prompt. The Playwright MCP browser itself is handed to every run unless `skip_screenshot_check` is set (Issue #2925), so this is no longer needed to get the browser. Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `skip_screenshot_check`               | boolean | When `true`, skips screenshot validation in PR completion **and** disables the Playwright MCP browser: no Chromium and no MCP server are started for this repository (Issue #1584). It wins over both screenshot triggers — `requires_screenshots: true` and the `needs-screenshot` label — and the override is logged at info level, naming the repository. Use for non-UI repositories to prevent false positives.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `skip_security_fix_check`             | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, that the named test, run by the worker in a disposable checkout, passes at the head and fails with the merge-base versions of the changed non-test files restored (only Deno and Rust tests can be executed today, so a security fix whose cited test is in another language blocks as not checked), and additionally that the summary states the original trigger is closed with no trivial bypass. A diff that cannot be computed, or a discrimination run that cannot execute, blocks the PR rather than passing it. Opting out also skips the executed check. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
-| `skip_mutation_check`                 | boolean | When `true`, skips the diff-scoped mutation check that runs before the PR is raised. The check mutates only the lines the PR adds or changes and blocks the PR when a mutation survives the covering tests. Defaults to `false`. See [Diff-scoped mutation check](mutation-check.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `mutation_check_budget_seconds`       | integer | Time budget in seconds for one mutation-check run: a positive integer, default `300`, maximum `3600`. On exhaustion the gate warns that the remaining mutants are untested (never a pass); survivors found earlier still block. See [Diff-scoped mutation check](mutation-check.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `skip_coverage_carryover_check`       | boolean | When `true`, skips the coverage carry-over check that runs before the PR is raised. It always collects the PR diff, and blocks the PR when it cannot (including an unresolvable base ref). It runs tests only when the PR deletes or removes lines from a Deno test file, and then blocks the PR when a production line those tests used to execute is no longer executed at head, or when the runner fails (merge-base, worktree, a failing base or head test, or coverage export). Defaults to `false`. See [Coverage carry-over check](coverage-carryover-check.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `skip_auto_merge`                     | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `skip_reviewer_request`               | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `verbosity`                           | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `nice`                                | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only, and orders repos **within** a label tier — the label tier (`top-priority` > `work-on` > `low-priority` > `idle-task`) is decided first, fleet-wide, so `nice` never lets one repo's routine backlog outrank another's `top-priority` (Issue #1063). See [Per-repo `nice` rotation tier](#%EF%B8%8F-per-repo-nice-rotation-tier).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `ciProviders`                         | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; only `provider` is required. `jobPath` is passed through untouched — whether a provider needs one, and what shape it takes, is that provider's business. GitHub Actions is the built-in default and needs no entry; any other CI system registers its provider from a [private extension](PRIVATE-EXTENSIONS.md). Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider).                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `pre-flight`                          | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint, and again before the worker pushes commits it did not just make (Step 1b of `commitAndPushPending`, and the issue completion phase's first and retry pushes). The first non-zero exit **blocks both the commit and the push** — there is no override flag. The same commands also gate the agent's own `git push` through a per-run `pre-push` hook (see the section below). A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate).                                                                                                                                                                                                                                                                                                                                                                                             |
-| `ci_failure_labels`                   | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** console log through the repo's configured CI log provider, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `ci_failure_job_path`                 | string  | Fallback target handed to the CI log provider when a CI-failure issue body carries a build number but no `Build URL`. Used only when the repo's `ciProviders` entry names no `jobPath` of its own; opaque to core. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `max_auto_fix_attempts`               | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `blocking_pr_stall_threshold_seconds` | integer | Per-repo blocking-PR stall threshold, overriding the global `blocking_pr_stall_threshold_seconds`. Non-positive or non-integer values fall back to the global setting. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `fleet_pr_slots`                      | integer | Per-repo cap on the fleet's open PRs on this repository's default branch (Issue #2663), overriding the global `fleet_pr_slots`. Non-positive or non-integer values fall back to the global setting.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `claude_model`                        | string  | Per-repo base model tier overriding the global base for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `best_planning_model`                 | string  | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `phase_model_overrides`               | object  | Per-repo per-phase model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `phase_effort_overrides`              | object  | Per-repo per-phase effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `codex_model`                         | string  | Per-repo base Codex model tier overriding the Codex phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `codex_phase_model_overrides`         | object  | Per-repo per-phase Codex model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `codex_phase_effort_overrides`        | object  | Per-repo per-phase Codex reasoning-effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `gemini_model`                        | string  | Per-repo base Gemini model tier overriding the Gemini phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `gemini_phase_model_overrides`        | object  | Per-repo per-phase Gemini model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `deepseek_model`                      | string  | Per-repo base DeepSeek model tier overriding the DeepSeek phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `deepseek_phase_model_overrides`      | object  | Per-repo per-phase DeepSeek model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `issue_executor_split`                | boolean | Per-repo issue-executor split, overriding the host-wide `issue_executor_split` for this repository. Set `false` here to opt one repository out of a host that enables it (the default since Issue #2812), or `true` to opt one repository in on a host that does not. Omitted, the host-wide value stands. Only the `issue` phase is affected. The per-host counters behind the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) do not separate repositories, so a per-repo opt-out blurs them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `issue_sub_agent_tier`                | string  | Per-repo model tier for the `issue`-phase executor sub-agent and the read-only explorer (Issue #3402; the reviewers are Opus at every tier), overriding the host-wide `issue_sub_agent_tier` for this repository. `"sonnet"` or `"haiku"` — see the host-wide key above for what each tier does. It is also the tier that repository's issue runs count under in the fleet summary's per-tier figures and record in the PR body's hidden `vibe-sub-agent-tier` marker (Issue #3403). Omitted, the host-wide value stands. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the host-wide value stands.                                                                                                                                                                                                                                                                                                                                                                                    |
+| Option                  | Type    | Description                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pre_setup_command`     | string  | Command to run before Claude starts working (e.g., `./scripts/setup-env.sh`). See [Pre-Setup Command](#-pre-setup-command).                                                                                                                                                                                                                                                |
+| `skip_quality_check`    | boolean | When `true`, skips running quality checks entirely for this repository                                                                                                                                                                                                                                                                                                    |
+| `quality_command`       | string  | Custom command to run instead of `./quality.sh`                                                                                                                                                                                                                                                                                                                           |
+| `custom_instructions`   | string  | Additional instructions to include in the Claude prompt for this repository                                                                                                                                                                                                                                                                                               |
+| `docker_image`          | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#-docker-based-quality-checks).                                                                                                                                                                                                                           |
+| `requires_screenshots`  | boolean | When `true`, always injects the screenshot retry notice into Claude's prompt. The Playwright MCP browser itself is handed to every run unless `skip_screenshot_check` is set (Issue #2925), so this is no longer needed to get the browser. Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                               |
+| `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion **and** disables the Playwright MCP browser: no Chromium and no MCP server are started for this repository (Issue #1584). It wins over both screenshot triggers — `requires_screenshots: true` and the `needs-screenshot` label — and the override is logged at info level, naming the repository. Use for non-UI repositories to prevent false positives. |
+| `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, that the named test, run by the worker in a disposable checkout, passes at the head and fails with the merge-base versions of the changed non-test files restored (only Deno and Rust tests can be executed today, so a security fix whose cited test is in another language blocks as not checked), and additionally that the summary states the original trigger is closed with no trivial bypass. A diff that cannot be computed, or a discrimination run that cannot execute, blocks the PR rather than passing it. Opting out also skips the executed check. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
+| `skip_mutation_check` | boolean | When `true`, skips the diff-scoped mutation check that runs before the PR is raised. The check mutates only the lines the PR adds or changes and blocks the PR when a mutation survives the covering tests. Defaults to `false`. See [Diff-scoped mutation check](mutation-check.md). |
+| `mutation_check_budget_seconds` | integer | Time budget in seconds for one mutation-check run: a positive integer, default `300`, maximum `3600`. On exhaustion the gate warns that the remaining mutants are untested (never a pass); survivors found earlier still block. See [Diff-scoped mutation check](mutation-check.md). |
+| `skip_coverage_carryover_check` | boolean | When `true`, skips the coverage carry-over check that runs before the PR is raised. It always collects the PR diff, and blocks the PR when it cannot (including an unresolvable base ref). It runs tests only when the PR deletes or removes lines from a Deno test file, and then blocks the PR when a production line those tests used to execute is no longer executed at head, or when the runner fails (merge-base, worktree, a failing base or head test, or coverage export). Defaults to `false`. See [Coverage carry-over check](coverage-carryover-check.md). |
+| `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
+| `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
+| `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |
+| `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only, and orders repos **within** a label tier — the label tier (`top-priority` > `work-on` > `low-priority` > `idle-task`) is decided first, fleet-wide, so `nice` never lets one repo's routine backlog outrank another's `top-priority` (Issue #1063). See [Per-repo `nice` rotation tier](#%EF%B8%8F-per-repo-nice-rotation-tier).                                                                                                                                                                         |
+| `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; only `provider` is required. `jobPath` is passed through untouched — whether a provider needs one, and what shape it takes, is that provider's business. GitHub Actions is the built-in default and needs no entry; any other CI system registers its provider from a [private extension](PRIVATE-EXTENSIONS.md). Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider). |
+| `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint, and again before the worker pushes commits it did not just make (Step 1b of `commitAndPushPending`, and the issue completion phase's first and retry pushes). The first non-zero exit **blocks both the commit and the push** — there is no override flag. The same commands also gate the agent's own `git push` through a per-run `pre-push` hook (see the section below). A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
+| `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** console log through the repo's configured CI log provider, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
+| `ci_failure_job_path`   | string  | Fallback target handed to the CI log provider when a CI-failure issue body carries a build number but no `Build URL`. Used only when the repo's `ciProviders` entry names no `jobPath` of its own; opaque to core. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
+| `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                           |
+| `blocking_pr_stall_threshold_seconds` | integer | Per-repo blocking-PR stall threshold, overriding the global `blocking_pr_stall_threshold_seconds`. Non-positive or non-integer values fall back to the global setting. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+| `fleet_pr_slots` | integer | Per-repo cap on the fleet's open PRs on this repository's default branch (Issue #2663), overriding the global `fleet_pr_slots`. Non-positive or non-integer values fall back to the global setting. |
+| `claude_model`          | string  | Per-repo base model tier overriding the global base for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                          |
+| `best_planning_model` | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it. |
+| `phase_model_overrides` | object  | Per-repo per-phase model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                           |
+| `phase_effort_overrides`| object  | Per-repo per-phase effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                          |
+| `codex_model`           | string  | Per-repo base Codex model tier overriding the Codex phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `codex_phase_model_overrides` | object | Per-repo per-phase Codex model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `codex_phase_effort_overrides`| object | Per-repo per-phase Codex reasoning-effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `gemini_model`          | string  | Per-repo base Gemini model tier overriding the Gemini phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `gemini_phase_model_overrides` | object | Per-repo per-phase Gemini model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `deepseek_model`        | string  | Per-repo base DeepSeek model tier overriding the DeepSeek phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `deepseek_phase_model_overrides` | object | Per-repo per-phase DeepSeek model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `issue_executor_split` | boolean | Per-repo issue-executor split, overriding the host-wide `issue_executor_split` for this repository. Set `false` here to opt one repository out of a host that enables it (the default since Issue #2812), or `true` to opt one repository in on a host that does not. Omitted, the host-wide value stands. Only the `issue` phase is affected. The per-host counters behind the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) do not separate repositories, so a per-repo opt-out blurs them. |
+| `issue_sub_agent_tier` | string | Per-repo model tier for the `issue`-phase executor sub-agent and the read-only explorer (Issue #3402; the reviewers are Opus at every tier), overriding the host-wide `issue_sub_agent_tier` for this repository. `"sonnet"` or `"haiku"` — see the host-wide key above for what each tier does. It is also the tier that repository's issue runs count under in the fleet summary's per-tier figures and record in the PR body's hidden `vibe-sub-agent-tier` marker (Issue #3403). Omitted, the host-wide value stands. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the host-wide value stands. |
 
 **Use cases:**
 
@@ -5049,20 +4949,21 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 ### 🛫 Pre-flight enforcement gate
 
 Expensive builds (a full downstream pipeline, say) cost hours before a
-compilation error the worker pushed is even reported. The `pre-flight` gate
-refuses to commit or push work that is already known to be broken, so the
-failure is caught locally in seconds instead of downstream in the build.
+compilation error the worker
+pushed is even reported. The `pre-flight` gate refuses to commit or push work
+that is already known to be broken, so the failure is caught locally in
+seconds instead of downstream in the build.
 
 The gate runs at four points:
 
 1. the worker's own commit chokepoint (Step 1 of `commitAndPushPending`);
-2. Step 1b of `commitAndPushPending`, which gates commits that are already made
-   but unpushed (the agent committed them and never pushed) and re-runs the
-   pre-flight commands when Step 1 committed nothing;
+2. Step 1b of `commitAndPushPending`, which gates commits that are already
+   made but unpushed (the agent committed them and never pushed) and re-runs
+   the pre-flight commands when Step 1 committed nothing;
 3. the issue completion phase's `gateBeforePush()`, before the first push and
    again before the retry push that follows push-rejection recovery, over every
-   non-merge commit ahead of the PR base (including commits the execute phase's
-   ungated WIP checkpoint pushes already put on origin);
+   non-merge commit ahead of the PR base (including commits the execute
+   phase's ungated WIP checkpoint pushes already put on origin);
 4. the agent's own `git push` through a per-run `pre-push` hook.
 
 Points 2–4 are described in
@@ -5093,37 +4994,37 @@ repo-specific commands in the worker.
   then still gates any commits that are already made but unpushed, re-running
   the pre-flight commands because Step 1 did not; when Step 1 did commit, the
   pre-flight commands already ran there and Step 1b runs only the changed-file
-  checks. The issue completion phase runs the commands again before each push it
-  makes (the first, and the retry after recovery), even if they already ran at
-  the commit chokepoint earlier in the run.
+  checks. The issue completion phase runs the commands again before each push
+  it makes (the first, and the retry after recovery), even if they already ran
+  at the commit chokepoint earlier in the run.
 - A non-zero exit is a **hard block**: it aborts both the commit **and** the
-  push. The worker must fix and retry — there is deliberately **no** override or
-  force flag and **no** environment escape hatch.
+  push. The worker must fix and retry — there is deliberately **no** override
+  or force flag and **no** environment escape hatch.
 - **Fail loud, never fail open.** A command that is missing, not executable,
   cannot be started, or **times out** is a **block**, not a pass — "could not
   run the check" is never reported as "check passed". Each command has a
   generous default timeout of **30 minutes** (these builds legitimately take
   many minutes); a timeout blocks.
 - The failing command's stdout/stderr is **captured and surfaced** on the
-  returned error so the retry/diagnosis path sees the real compiler error, not a
-  bare "pre-flight failed".
-- A repo with **no** `pre-flight` entry has no commands to run, but is not fully
-  unaffected: the issue completion phase's push (and Step 1b, for callers that
-  pass a pre-flight spec) still runs the changed-file checks described below,
-  and a failure there fails the run. Pushes that pass no spec (such as
-  WIP-preservation pushes) stay ungated.
+  returned error so the retry/diagnosis path sees the real compiler error, not
+  a bare "pre-flight failed".
+- A repo with **no** `pre-flight` entry has no commands to run, but is not
+  fully unaffected: the issue completion phase's push (and Step 1b, for
+  callers that pass a pre-flight spec) still runs the changed-file checks
+  described below, and a failure there fails the run. Pushes that pass no spec
+  (such as WIP-preservation pushes) stay ungated.
 
 Commands run directly (not through a shell), so each entry is a program plus
 arguments; shell features (pipes, redirects, globs) are not interpreted. Wrap
 them in a script (as in the example) if you need shell behaviour.
 
 **The environment is built, not inherited (Issue #1214).** Because the scripts
-are supplied by the target repo, they are code the worker did not write, so they
-run with the same allowlisted environment as the repo's quality command —
-`PATH`, `HOME`, `TMPDIR`, the locale and the toolchain caches, and nothing else.
-No credential the worker holds is in scope for a pre-flight script to read. A
-repository whose pre-flight genuinely needs a further variable declares it the
-same way its checks do, via `untrusted_command_env.ts`'s allowlist.
+are supplied by the target repo, they are code the worker did not write, so
+they run with the same allowlisted environment as the repo's quality command —
+`PATH`, `HOME`, `TMPDIR`, the locale and the toolchain caches, and nothing
+else. No credential the worker holds is in scope for a pre-flight script to
+read. A repository whose pre-flight genuinely needs a further variable declares
+it the same way its checks do, via `untrusted_command_env.ts`'s allowlist.
 
 ```mermaid
 flowchart TD
@@ -5152,39 +5053,40 @@ flowchart TD
 
 The commit chokepoint above only sees the worker's own push. An agent that runs
 `git push` itself during its run would otherwise skip it (Issue #3394). For
-every agent run, the worker writes a per-run `pre-push` hook into a temporary
-directory and enables it in the **agent's environment only**, through git's
-environment config (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n=core.hooksPath`,
-`GIT_CONFIG_VALUE_n`). Every `git push` the agent runs goes through it. The
-worker's own pushes do not carry the agent's environment, so the hook does not
-gate them; instead its final-mile commit-and-push (`commitAndPushPending`, when
-given a pre-flight spec) runs the same changed-files check through
-`runPrePushGate` on the already-committed unpushed commits before pushing, and
-refuses the push on failure (Issue #3689). WIP-preservation pushes (no
-pre-flight spec) stay ungated so work is not lost. Step 1b runs only when a
-pre-flight spec exists, so callers passing no spec (such as WIP-preservation
-pushes) are not gated there. The completion phase's `gateBeforePush()` also runs
-this gate before the first push and the retry push, and falls back to
-`{ commands: [] }` when a repo has no pre-flight commands, so the changed-file
-checks (listed under the hook's first stage below: deno fmt/lint, cargo fmt,
-markdownlint, cspell and the Floci CloudFormation deploy test) still run and can
-fail the run. Unlike Step 1b, the completion gate checks every non-merge commit
-the branch has ahead of the PR base (`git log --no-merges <base>..HEAD`), not
-only commits on no remote-tracking ref. The execute phase's WIP checkpoints
-(periodic, and once more at phase end) push the agent's commits through
-`commitAndPushPending` with no spec, so those pushes are ungated and the commits
-are usually already on origin when the completion phase runs; the whole-branch
-range is what keeps them from reaching `gh pr create` unchecked (PR #3716
-review). If the base ref cannot be resolved, the completion gate falls back to
-the unpushed-only check. The completion gate does nothing when the branch has no
-commit of its own ahead of the base, and in that whole-branch mode it does not
-look up the branch's remote head. A git or remote lookup that fails (a network
-error, a timeout) is not reported as the branch failing its checks: it fails the
-run as a push failure, which is retried in-run (PR #3716 review). In Step 1b the
-pre-flight commands re-run only when Step 1 committed nothing; in the completion
-phase they run before every push. A verdict block (not an infrastructure
-failure) on the first block of a run resumes the agent session for exactly one
-extra turn (`worker/deno/lib/pre_push_gate_retry.ts`, timeout
+every agent run, the worker writes a per-run
+`pre-push` hook into a temporary directory and enables it in the **agent's
+environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
+`GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
+agent runs goes through it. The worker's own pushes do not carry the agent's
+environment, so the hook does not gate them; instead its final-mile
+commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
+same changed-files check through `runPrePushGate` on the already-committed
+unpushed commits before pushing, and refuses the push on failure (Issue #3689).
+WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
+Step 1b runs only when a pre-flight spec exists, so callers passing no spec
+(such as WIP-preservation pushes) are not gated there. The completion phase's
+`gateBeforePush()` also runs this gate before the first push and the retry push,
+and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
+the changed-file checks (listed under the hook's first stage below: deno
+fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
+test) still run and can fail the run. Unlike Step 1b, the completion gate
+checks every non-merge commit the branch has ahead of the PR base
+(`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
+ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
+push the agent's commits through `commitAndPushPending` with no spec, so those
+pushes are ungated and the commits are usually already on origin when the
+completion phase runs; the whole-branch range is what keeps them from reaching
+`gh pr create` unchecked (PR #3716 review). If the base ref cannot be resolved,
+the completion gate falls back to the unpushed-only check. The completion gate
+does nothing when the branch has no commit of its own ahead of the base, and in
+that whole-branch mode it does not look up the branch's remote head. A git or
+remote lookup that fails (a network error, a timeout) is not reported as the
+branch failing its checks: it fails the run as a push failure, which is retried
+in-run (PR #3716 review). In Step 1b the pre-flight commands
+re-run only when Step 1 committed nothing; in the completion phase they run
+before every push. A verdict block (not an infrastructure failure) on the first
+block of a run resumes the agent session for exactly one extra turn
+(`worker/deno/lib/pre_push_gate_retry.ts`, timeout
 `pre_push_retry_timeout_seconds`) with the gate output in the prompt; the worker
 then re-runs the formatters and the same gate, and pushes only if it passes. A
 second block in the same run, including one after push recovery, gets no further
@@ -5205,14 +5107,14 @@ round. The formatters cover exactly what the gate's format checks would flag:
 files changed. Markdown outside `docs/archive/pr-summaries/` and
 `docs/archive/handover/` is never formatted: `deno fmt` re-wraps whole documents
 and trips markdownlint MD018, so a Markdown miss there is left to the check to
-report. Those two directories are the worker's own notes, and `docs/archive/` is
-excluded from the markdownlint globs. After the repository formatters,
+report. Those two directories are the worker's own notes, and `docs/archive/`
+is excluded from the markdownlint globs. After the repository formatters,
 `formatBeforeGate` runs `deno fmt` on the Markdown and JSON the branch changed
 under them and commits that too. A missing formatter or a write failure is
-logged, and the gate still runs. Only the formatted paths are staged. A
-formatter that is missing, fails or throws never fails the run on its own: it is
-logged, and the gate that follows still runs every check and reports what was
-left unfixed.
+logged, and the gate still runs.
+Only the formatted paths are staged. A formatter that is missing, fails or
+throws never fails the run on its own: it is logged, and the gate that follows
+still runs every check and reports what was left unfixed.
 
 The PR-feedback and CI-fix rounds do the same through `commitAndPushPending`
 (follow-up to #3806): the processors pass a Step 1a hook that runs the
@@ -5228,17 +5130,17 @@ The hook runs two stages:
    files changed by the commits being pushed that are not already on any
    remote-tracking ref (merge commits and deleted files excluded; the issue
    completion phase widens the range to every non-merge commit ahead of the PR
-   base, see above), then runs the repo's own tools on just those files (deno
-   gets only the files its own config would check, see below). The one exception
-   is the Floci deploy test below: a changed file only triggers it, and it is
-   passed no files, so it deploys every template in `infra/cloudformation/`,
-   changed or not:
-   - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts, cts,
-     json, jsonc, md, markdown) and `deno lint --permit-no-files` (the ts/js
-     family), per outermost `deno.json` / `deno.jsonc` directory. Only files the
-     repo's own `deno fmt` / `deno lint` would check are passed: an explicit
-     path overrides deno's `fmt.include` / `lint.include`, so the hook drops a
-     changed file that falls outside the config's `include` or inside a
+   base, see above), then runs
+   the repo's own tools on just those files (deno gets only the files its own
+   config would check, see below). The one exception is the Floci deploy test
+   below: a changed file only triggers it, and it is passed no files, so it
+   deploys every template in `infra/cloudformation/`, changed or not:
+   - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
+     cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
+     ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only
+     files the repo's own `deno fmt` / `deno lint` would check are passed: an
+     explicit path overrides deno's `fmt.include` / `lint.include`, so the hook
+     drops a changed file that falls outside the config's `include` or inside a
      top-level or per-tool `exclude` (file, directory and glob entries; a
      `!`-negated `exclude` entry re-includes) before it runs deno. An entry of
      `.` or `./` names the whole config directory, as it does for deno, so
@@ -5247,8 +5149,8 @@ The hook runs two stages:
      deno to judge, and an unparseable `deno.json` is left unfiltered;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
-   - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo root
-     carries a markdownlint config (`.markdownlint-cli2.*` or
+   - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo
+     root carries a markdownlint config (`.markdownlint-cli2.*` or
      `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
      first, else the one on `PATH`;
    - `cspell` on changed `.md`, `.markdown`, `.html`, `.js`, `.ts`, `.css` and
@@ -5258,57 +5160,58 @@ The hook runs two stages:
      line or inside a `run: |` block. A repo with a cspell config but no such
      step gets no cspell run, so it is never blocked on a tool its required CI
      does not run. A cspell run reached only through a script the step calls
-     (for example `npm run spellcheck`) is not detected. The config is a root
-     one cspell finds itself (`cspell.json`, `.cspell.json`, `cSpell.json`,
-     `cspell.{yaml,yml}`, `[.]cspell.config.*`) or `docs/cspell.json`, which is
-     passed with `--config docs/cspell.json`. It runs from the repo root with
-     `--no-progress --no-summary
-     --no-must-find-files`, using the repo's
-     `node_modules/.bin/cspell` first, else the one on `PATH`. No tracked
-     config, or no matching changed file, means no cspell run;
+     (for example `npm run spellcheck`) is not detected. The config is a root one
+     cspell finds itself (`cspell.json`, `.cspell.json`,
+     `cSpell.json`, `cspell.{yaml,yml}`, `[.]cspell.config.*`) or
+     `docs/cspell.json`, which is passed with `--config docs/cspell.json`. It
+     runs from the repo root with `--no-progress --no-summary
+     --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
+     else the one on `PATH`. No tracked config, or no matching changed file,
+     means no cspell run;
    - `shellcheck` on changed `.sh` files when a tracked workflow contains the
      supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form. The
      gate carries the workflow's options (including exclusions and an explicit
-     shell dialect), runs from the repository root, and reads the tracked
-     `.shellcheckrc` or `shellcheckrc` files in each script's directory
-     ancestry, or the configured `--rcfile`. A changed ShellCheck workflow or
-     config rechecks the remaining tracked `.sh` files; deleted scripts are
-     omitted. The gate checks the available binary against the version declared
-     by CI before running it. An unsupported command shape, delegated
-     gate/action, unreadable config or unavailable/mismatched tool is an
-     incomplete infrastructure result, never a successful validation. A
+     shell dialect), runs from the repository root, and lets ShellCheck read
+     tracked `.shellcheckrc` or `shellcheckrc` files from each script's
+     directory ancestry, or the configured `--rcfile`. A changed ShellCheck
+     workflow or config rechecks the remaining tracked `.sh` files; deleted
+     scripts are omitted. The gate checks the available binary against the
+     version declared by CI before running it. An unsupported command shape,
+     delegated gate/action, unreadable config or unavailable/mismatched tool is
+     an incomplete infrastructure result, never a successful validation. A
      repository with no CI ShellCheck invocation gets no ShellCheck check;
-   - **Floci CloudFormation deploy test** (Issue #3727), only when the push adds
-     or modifies a file whose path starts with `infra/cloudformation/` and the
-     repo tracks `infra/cloudformation/test-floci.sh`: it runs
+   - **Floci CloudFormation deploy test** (Issue #3727), only when the push
+     adds or modifies a file whose path starts with `infra/cloudformation/` and
+     the repo tracks `infra/cloudformation/test-floci.sh`: it runs
      `bash infra/cloudformation/test-floci.sh` from the repo root, after the
      other changed-file checks. That is the same script
      `.github/workflows/floci.yml` runs in CI. Outside CI, a template that
      creates an `AWS::EC2::Instance` when there is no Docker socket is printed
-     `SKIPPED (needs Docker): <template>` and left to CI. When every template is
-     skipped the script exits 0 there, before it checks for the `aws` CLI or
-     starts anything. Otherwise it exits 1 when the `aws` CLI is missing, and
-     only then starts the baked `floci` on `127.0.0.1:4566` if nothing answers
-     there. The worker container has no Docker socket and no `aws` CLI, and
-     today's only template creates an `AWS::EC2::Instance`, so inside the
-     container this check skips it, exits 0 and never starts `floci`; only a
-     host with Docker and the `aws` CLI exercises it.
-2. **Configured `pre-flight` commands.** The commands are resolved by the run's
-   repo from `repo_config`, so every agent run that names its repo gets that
-   repo's `pre-flight` commands in the hook; a run that names no repo gets only
-   the changed-files check.
+     `SKIPPED (needs Docker): <template>` and left to CI. When every template
+     is skipped the script exits 0 there, before it checks for the `aws` CLI
+     or starts anything. Otherwise it exits 1 when the `aws` CLI is missing,
+     and only then starts the baked `floci` on `127.0.0.1:4566` if nothing
+     answers there. The worker container has no Docker socket and no `aws`
+     CLI, and today's only template creates an `AWS::EC2::Instance`, so inside
+     the container this check skips it, exits 0 and never starts `floci`; only
+     a host with Docker and the `aws` CLI exercises it.
+2. **Configured `pre-flight` commands.** The commands are resolved by the
+   run's repo from `repo_config`, so every agent run that names its repo gets
+   that repo's `pre-flight` commands in the hook; a run that names no repo gets
+   only the changed-files check.
 
 It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
-`markdownlint-cli2` not found refuses the push; cspell configured and run by the
-repo's CI but `cspell` not found refuses the push (a cspell config alone does
-not); a supported ShellCheck CI policy with a missing or mismatched binary, an
-unreadable config, or an unsupported workflow shape is incomplete and refuses to
-pass; a Floci deploy test that exits non-zero, including when Floci cannot be
-started or the `aws` CLI is missing for a deployable template, refuses the push;
-a missing hook module, spec or `deno` binary refuses the push. Refusals print
-lines starting `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered
-environment as pre-flight (the hook reuses `runPreFlightGate`).
+`markdownlint-cli2` not found refuses the push; cspell configured and run by
+the repo's CI but `cspell` not found refuses the push (a cspell config alone
+does not); a supported ShellCheck CI policy with a missing or mismatched
+binary, an unreadable config, or an unsupported workflow shape is incomplete
+and refuses to pass; a Floci deploy test that exits
+non-zero, including when Floci cannot be started or the `aws` CLI is missing for
+a deployable template, refuses the push; a missing hook module, spec or `deno`
+binary refuses the push. Refusals print lines starting
+`[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
+pre-flight (the hook reuses `runPreFlightGate`).
 
 ```mermaid
 flowchart TD
@@ -5327,82 +5230,82 @@ flowchart TD
 ```
 
 Residual risk: `git push --no-verify`, or the agent rewriting its own
-environment, bypasses the hook. It is containment against honest mistakes, not a
-security boundary. It also overrides `core.hooksPath` for the agent's git, so a
-repository's own hooks directory (for example husky) does not run for agent git
-commands.
+environment, bypasses the hook. It is containment against honest mistakes, not
+a security boundary. It also overrides `core.hooksPath` for the agent's git, so
+a repository's own hooks directory (for example husky) does not run for agent
+git commands.
 
 ### 🛑 Auto-fix attempt cap
 
 A hands-off fetch → diagnose → fix → merge loop on an **unfixable** failure
 would otherwise burn model spend indefinitely and flood the PR with
-near-identical "attempted fix" comments. After `max_auto_fix_attempts` (default
-`3`) attempts at the _same_ failure, the worker stops, closes the PR and
-re-queues its originating issue through the stall-repair rung
+near-identical "attempted fix" comments. After `max_auto_fix_attempts`
+(default `3`) attempts at the *same* failure, the worker stops, closes the
+PR and re-queues its originating issue through the stall-repair rung
 (`abandonAndRestart`) — never a fourth "I tried again" note, and never
-`needs-human` (Issue #4304). Every attempt's diagnosis stays on the closed PR's
-thread. Between attempts, a run that pushes nothing re-runs the failed jobs
-itself (`gh run rerun <run-id> --failed`) rather than asking a reviewer to, and
-a repeat failure on the same head is retried from that diagnosis.
+`needs-human` (Issue #4304). Every attempt's diagnosis stays on the closed
+PR's thread. Between attempts, a run that pushes nothing re-runs the failed
+jobs itself (`gh run rerun <run-id> --failed`) rather than asking a reviewer
+to, and a repeat failure on the same head is retried from that diagnosis.
 
 **The budget is the fleet's, not the host's.** The tally lives on the pull
 request itself, as a fleet-authored marker inside each comment the lane posts
 (`<!-- vibe-ci-fix-attempt signature="…" head="…" attempt="2"
-outcome="pushed" -->`).
-Every host reads the same record before it acts, so three attempts are three
-_across the fleet_. Until Issue #1879 the counter was a `.autofix.json` file
-under each host's own `.ci_check_state` directory, which no other host can see:
-two accounts working one pull request each spent their own three attempts and
-posted their own copy of the same diagnosis — the stock text nine times in 76
-minutes.
+outcome="pushed" -->`). Every host reads the same record before it acts, so
+three attempts are three *across the fleet*. Until Issue #1879 the counter was
+a `.autofix.json` file under each host's own `.ci_check_state` directory,
+which no other host can see: two accounts working one pull request each spent
+their own three attempts and posted their own copy of the same diagnosis —
+the stock text nine times in 76 minutes.
 
 Two properties follow from reading the record off the pull request:
 
-- **A marker counts only when a fleet account wrote it.** A comment body is text
-  anybody may write on a public pull request and only the _author_ is
+- **A marker counts only when a fleet account wrote it.** A comment body is
+  text anybody may write on a public pull request and only the *author* is
   authenticated, so markers from logins outside `github_user` /
   `fleet_pr_authors` / `service_accounts` are ignored and reported.
-- **An unreadable tally is never "no attempts yet".** A failed comment read, or
-  an unresolved fleet identity, is logged as an error saying the cap is not
+- **An unreadable tally is never "no attempts yet".** A failed comment read,
+  or an unresolved fleet identity, is logged as an error saying the cap is not
   enforced for that run — it does not quietly hand the host a fresh budget.
 - **The agent's own words cannot forge one.** The lane posts the agent's
-  `.pr_response_message` verbatim inside the comment the fleet account authors,
-  so a marker smuggled into that message would pass the author gate as the
-  fleet's own claim. Every HTML-comment delimiter in agent-authored text is made
-  inert at the `readPrResponseMessage` chokepoint
+  `.pr_response_message` verbatim inside the comment the fleet account
+  authors, so a marker smuggled into that message would pass the author gate
+  as the fleet's own claim. Every HTML-comment delimiter in agent-authored
+  text is made inert at the `readPrResponseMessage` chokepoint
   ([agent_marker_neutralisation.ts](../worker/deno/lib/agent_marker_neutralisation.ts))
   and the defusal is logged as `AGENT_MARKER_NEUTRALISED`; the worker's own
   marker is appended afterwards and still counts (Issue #2236).
 - **Nor can a leftover fill-in-later token.** A bare ALL-CAPS token ending in
   `_PLACEHOLDER`, `_PENDING`, `_TBD` or `_TODO` the agent forgot to resolve —
   e.g. `QUALITY_RESULT_PLACEHOLDER` — or, on a line citing a gate command, a
-  bare ALL-CAPS identifier with at least one underscore left standing in for the
-  result after the line's last colon, or after a dash or `=` following the cited
-  command — e.g. `GATE_OUTCOME_PENDING` — is replaced at the same
-  `readPrResponseMessage` chokepoint with `[result not reported]` and logged as
-  an error, so the posted reply never carries an unresolved token as if it were
-  the real result (Issues #3124, #3248, #3287).
+  bare ALL-CAPS identifier with at least one underscore left standing in for
+  the result after the line's last colon, or after a dash or `=` following
+  the cited command — e.g. `GATE_OUTCOME_PENDING` — is replaced at the same
+  `readPrResponseMessage` chokepoint with `[result not reported]` and logged
+  as an error, so the posted reply never carries an unresolved token as if
+  it were the real result (Issues #3124, #3248, #3287).
 - **Nor can the failing check's name.** On a `pull_request`-triggered workflow
   the job name comes from the head ref, so a fork chooses it — and the CI-fix
   replies interpolate it into the same fleet-authored bodies. The same helper
   makes it inert on the way into each of them: the no-changes reply and its
-  classifier trailer (which quotes the name back as `check:<name>`), the pushed
-  / push-failed replies, the log-access and timeout replies, the lock,
+  classifier trailer (which quotes the name back as `check:<name>`), the
+  pushed / push-failed replies, the log-access and timeout replies, the lock,
   max-retries and auto-fix-cap comments, and the heartbeat milestones. The
   defusal is reported once per run by the processor as
   `CHECK_NAME_MARKER_NEUTRALISED`; the pure body builders neutralise again by
   construction, so a future caller cannot reopen the hole (Issue #2260).
 
 **One comment per failure signature.** The same failure diagnosed again on the
-**same head** posts nothing at all and runs no agent: nothing has changed since
-the diagnosis already on the pull request. On a **new** head the failure is
-diagnosed afresh, but a repeat "no change required" answer appends its marker to
-the existing comment rather than posting a second copy of it.
+**same head** posts nothing at all and runs no agent: nothing has changed
+since the diagnosis already on the pull request. On a **new** head the failure
+is diagnosed afresh, but a repeat "no change required" answer appends its
+marker to the existing comment rather than posting a second copy of it.
 
-**Why a signature, not a check-run id.** The pre-existing `ci_check_max_retries`
-counter keys on the GitHub check-run id, which is new on every push — so each
-attempted fix reset it to zero and the cap never bound. The attempt counter
-instead keys on a **failure signature** composed of durable parts only:
+**Why a signature, not a check-run id.** The pre-existing
+`ci_check_max_retries` counter keys on the GitHub check-run id, which is new
+on every push — so each attempted fix reset it to zero and the cap never
+bound. The attempt counter instead keys on a **failure signature** composed
+of durable parts only:
 
 - the repository,
 - the failure locus (PR number, or the failure-issue number in issue mode),
@@ -5410,48 +5313,50 @@ instead keys on a **failure signature** composed of durable parts only:
 - a fingerprint of the normalised root-cause log excerpt.
 
 Normalisation strips the parts that change on every build — ISO timestamps,
-dates, clock times, build/run/job numbers, URL build segments, memory addresses,
-durations, and the workspace-root path prefix — before hashing. Two attempts at
-the same underlying failure therefore produce the same signature; a genuinely
-different failure on the same PR produces a different one and gets its own
-budget. The computed signature is logged on every attempt
-(`Auto-fix failure signature`), so an operator can audit the sequence in the
-worker log.
+dates, clock times, build/run/job numbers, URL build segments, memory
+addresses, durations, and the workspace-root path prefix — before hashing.
+Two attempts at the same underlying failure therefore produce the same
+signature; a genuinely different failure on the same PR produces a different
+one and gets its own budget. The computed signature is logged on every
+attempt (`Auto-fix failure signature`), so an operator can audit the
+sequence in the worker log.
 
-**Infrastructure failures do not consume an attempt.** A failure classified as
-`infrastructure` by `ci_failure_classifier.ts` (ETIMEDOUT, ENOTFOUND, 5xx,
-runner lost connection, …) says nothing about the worker's ability to fix the
-code, so charging it against the human-escalation budget would escalate
-perfectly healthy repos. Nor does a `human-gate` failure — a check whose log or
-annotation carries a `vibe-human-gate: <step>` line, declaring that a human
-action clears it (Issue #2726). Every other category (`code-fix-required`,
-`history-rewrite-required`, `timing`, `unknown`) consumes an attempt.
+**Infrastructure failures do not consume an attempt.** A failure classified
+as `infrastructure` by `ci_failure_classifier.ts` (ETIMEDOUT, ENOTFOUND,
+5xx, runner lost connection, …) says nothing about the worker's ability to
+fix the code, so charging it against the human-escalation budget would
+escalate perfectly healthy repos. Nor does a `human-gate` failure — a check
+whose log or annotation carries a `vibe-human-gate: <step>` line, declaring
+that a human action clears it (Issue #2726). Every other category
+(`code-fix-required`, `history-rewrite-required`, `timing`, `unknown`)
+consumes an attempt.
 
-**`timing` needs a timing statement, not the word "timeout".** A job log echoes
-`timeout-minutes:` for every step that sets one, and a script may wrap a command
-in `timeout 900 …` — neither says the step ran out of time. The classifier
-therefore matches `timing` only on an explicit statement: "timed out", a
-cancelled job, the maximum execution time exceeded, or a budget named as overrun
-on either side of the word ("timeout of 30000ms exceeded", "Exceeded timeout of
-5000 ms", "npm ERR! network Socket timeout").
+**`timing` needs a timing statement, not the word "timeout".** A job log
+echoes `timeout-minutes:` for every step that sets one, and a script may wrap
+a command in `timeout 900 …` — neither says the step ran out of time. The
+classifier therefore matches `timing` only on an explicit statement: "timed
+out", a cancelled job, the maximum execution time exceeded, or a budget named
+as overrun on either side of the word ("timeout of 30000ms exceeded",
+"Exceeded timeout of 5000 ms", "npm ERR! network Socket timeout").
 
 **A step's own non-zero exit is the next-best evidence.** With no timing or
-infrastructure statement, "Process completed with exit code 1" makes the failure
-`code-fix-required` rather than `unknown`, so an ordinary script failure gets a
-fix attempt — and, if the agent cannot find one, the honest `needs-human`
-escalation that `code-fix-required` carries — instead of being steered to a
-timing remedy by an incidental mention (Issue #1882). Exit codes that report how
-the step **died** rather than what the code got wrong — 124 (GNU `timeout`), 137
-(SIGKILL/OOM) and 143 (SIGTERM) — are excluded and fall through to `unknown`.
+infrastructure statement, "Process completed with exit code 1" makes the
+failure `code-fix-required` rather than `unknown`, so an ordinary script
+failure gets a fix attempt — and, if the agent cannot find one, the honest
+`needs-human` escalation that `code-fix-required` carries — instead of being
+steered to a timing remedy by an incidental mention (Issue #1882). Exit codes
+that report how the step **died** rather than what the code got wrong — 124
+(GNU `timeout`), 137 (SIGKILL/OOM) and 143 (SIGTERM) — are excluded and fall
+through to `unknown`.
 
-**Secret findings are fixed by rebuilding the branch, not by another commit.** A
-failure classified `history-rewrite-required` — gitleaks, trufflehog, or any
+**Secret findings are fixed by rebuilding the branch, not by another commit.**
+A failure classified `history-rewrite-required` — gitleaks, trufflehog, or any
 check whose log carries a `Fingerprint: <sha>:<file>:…` line — is a property of
 the branch's **commit range**, not its working tree. Correcting the file and
 committing the correction leaves the finding in the original commit's diff, so
 the check fails again, identically, naming a commit that has already been
-superseded. A fix loop that does not know this retries until the attempt cap and
-ends at `needs-human`.
+superseded. A fix loop that does not know this retries until the attempt cap
+and ends at `needs-human`.
 
 The worker therefore corrects the content, commits and pushes it as usual, and
 then collapses the branch to a single commit on its merge base and force-pushes
@@ -5460,10 +5365,10 @@ with `--force-with-lease`. Guards, all required:
 - The branch must be one a run creates (`fix/`, `issue/`, `chore/`,
   `milestone/`) and must not be the default branch.
 - Git resolves the worker's effective author identity in the target checkout,
-  including author environment overrides and repository/global configuration. If
-  Git cannot provide a usable identity, the rebuild is refused. Only that
-  resolved identity is trusted; commits are never treated as owned because they
-  already appear on the branch.
+  including author environment overrides and repository/global configuration.
+  If Git cannot provide a usable identity, the rebuild is refused. Only that
+  resolved identity is trusted; commits are never treated as owned because
+  they already appear on the branch.
 - Every commit being collapsed must use the resolved author email; a branch
   carrying someone else's commit, a commit with a blank author email, or whose
   commit authors cannot be read, is refused before reset, replacement commit or
@@ -5472,30 +5377,30 @@ with `--force-with-lease`. Guards, all required:
   rather than clobbered.
 - **One rebuild per underlying failure.** A finding that survives a rebuild is
   in the base branch, not the PR, and the escalation says so — and says to
-  rotate the credential first, because it is compromised whatever happens to the
-  history.
+  rotate the credential first, because it is compromised whatever happens to
+  the history.
 
 The PR comment records that the history was rebuilt, so anyone with the branch
 checked out knows to re-fetch rather than pull.
 
 **A green build needs no reset, and the record is not wiped by one.** There is
-no counter to clear — a green pull request has no failing check, so no signature
-is computed. The markers already on the pull request stay there, so the budget
-is per **failure signature for the life of the pull request**: a
-recurring-but-_different_ failure fingerprints differently and gets its own
-three attempts, while the _identical_ failure returning after a green build
+no counter to clear — a green pull request has no failing check, so no
+signature is computed. The markers already on the pull request stay there, so
+the budget is per **failure signature for the life of the pull request**: a
+recurring-but-*different* failure fingerprints differently and gets its own
+three attempts, while the *identical* failure returning after a green build
 resumes the tally it left. That is the deliberate consequence of moving the
 record onto the pull request (Issue #1879) — three failed fixes of one failure
 are three failed fixes whether or not the build was briefly green in between —
 and it replaces the old locus-wide sweep, which handed a flapping check a fresh
 budget on every green cycle and so never reached the cap at all.
 
-An agent run the provider refused to serve is not an attempt at all (Issue
-#4038). That covers a refused model, spent quota, a rejected credential or an
-outage, which `isProviderUnavailableFailure` classifies. Such a run leaves the
-working tree empty because the agent never read the failure, not because no
-change was needed. So it posts nothing, writes no marker and applies no label,
-and the next scan retries.
+An agent run the provider refused to serve is not an attempt at all
+(Issue #4038). That covers a refused model, spent quota, a rejected credential
+or an outage, which `isProviderUnavailableFailure` classifies. Such a run
+leaves the working tree empty because the agent never read the failure, not
+because no change was needed. So it posts nothing, writes no marker and
+applies no label, and the next scan retries.
 
 ```mermaid
 flowchart TD
@@ -5520,15 +5425,16 @@ flowchart TD
 
 A `work-on` issue defers to the open PR that
 [blocks it](#-fleet-pr-authors-fleet-aware-pr-maintenance). When that PR stops
-making progress the work stream stops with it — and until this watchdog existed,
-silently: private-repo-21 sat red with an unanswered authorised comment for ~13
+making progress
+the work stream stops with it — and until this watchdog existed, silently:
+private-repo-21 sat red with an unanswered authorised comment for ~13
 hours while two `work-on` issues waited behind it and nothing in the worker
 noticed.
 
 Priority 1.63 closes that gap. Each iteration it looks at every open PR that
 `getBlockingPRForIssue()` says is blocking at least one open `work-on` issue —
-never at PRs blocking nothing, and since never at a human's PR, which cannot
-block — and trips on either signal:
+never at PRs blocking nothing, and since never at a human's PR,
+which cannot block — and trips on either signal:
 
 - **red CI** — a failing check whose run has **not** been superseded by a newer
   fleet push, older than the threshold;
@@ -5536,11 +5442,11 @@ block — and trips on either signal:
   `authorized_commenters` login is newer than the newest fleet reply **and** the
   newest push, by longer than the threshold;
 - **green but unmerged** — no failing check, no auto-merge armed, and no
-  movement for longer than the threshold. Nothing is _wrong_ with the PR; it
+  movement for longer than the threshold. Nothing is *wrong* with the PR; it
   simply is not landing, and its repository's whole work stream is stopped
   behind it. `GRQ-GTC#305` sat exactly like that for five days and neither of
-  the two signals above saw it. Only reported when the other two are silent — a
-  red PR is a red PR, not a green one — and never for a PR the
+  the two signals above saw it. Only reported when the other two are silent —
+  a red PR is a red PR, not a green one — and never for a PR the
   [merge-conflict ladder](workflows/merge-conflicts.md) owns.
 
 #### A green PR is never a stall
@@ -5549,15 +5455,15 @@ Since Issue #2801 the green signal is **not escalated**. A green PR is handed,
 once per cycle, to the worker's own gated merge path (`directMergePr`, with the
 non-fleet-approval policy), and its answer decides what happens:
 
-- **awaiting approval** — the PR targets the default branch and has no approving
-  review from outside the fleet (`default_branch_unapproved`). That is healthy:
-  it is waiting on a human. No comment, no label, never closed.
+- **awaiting approval** — the PR targets the default branch and has no
+  approving review from outside the fleet (`default_branch_unapproved`). That
+  is healthy: it is waiting on a human. No comment, no label, never closed.
 - **mergeable** — any other green PR goes through the pre-merge gate and is
   merged.
 - **merge refused** for any other reason (behind its base, head too recent, a
   protection rule, a lookup failure) — a loud warning naming the PR and the
-  reason, and a retry next cycle. A green PR is never closed and never handed to
-  abandon-and-redo.
+  reason, and a retry next cycle. A green PR is never closed and never handed
+  to abandon-and-redo.
 
 A repository with `skip_auto_merge: true` never reaches the merge path: its
 green PR is **awaiting a manual merge**, logged at info with no merge, comment
@@ -5602,39 +5508,40 @@ the next cycle — and climbs a two-trip ladder:
   re-queued, keeping its own pickup label or gaining `idle-task` — never
   `work-on`. A PR naming no originating issue is closed and **no** issue is
   filed. The issue shares the same restart marker vocabulary as the
-  merge-conflict ladder, and the same rules: there is no cap on restarts (Issue
-  #3033), so a further stall simply redoes the work again — on a fresh branch
-  cut from the base branch's current tip — rather than ever handing the issue to
-  a human for a spent restart budget.
+  merge-conflict ladder, and the same rules: there is no cap on restarts
+  (Issue #3033), so a further stall simply redoes the work again — on a
+  fresh branch cut from the base branch's current tip — rather than ever
+  handing the issue to a human for a spent restart budget.
 - **A marker counts for one stall only** — a trip marker left by an earlier
   stall the PR has since recovered from is ignored, and the new stall takes its
-  own first trip. For an unanswered comment, the marker counts only if it is no
-  older than the comment: a newer authorised comment is a new request. For red
-  CI, it counts for three thresholds (6 hours by default), which covers the CI
-  rerun the first trip's sync starts; a red-CI marker days old belongs to an
+  own first trip. For an unanswered comment, the marker counts only if it is
+  no older than the comment: a newer authorised comment is a new request. For
+  red CI, it counts for three thresholds (6 hours by default), which covers the
+  CI rerun the first trip's sync starts; a red-CI marker days old belongs to an
   earlier stall.
 - **Auto-fix cap** — a PR carrying the legacy
   [auto-fix attempt cap](#-auto-fix-attempt-cap) marker skips the rerun (its
-  lane has already given up) and goes straight to the second trip. Since Issue
-  #4304 the CI-fix lane abandons a capped PR itself, so no new marker is
-  written.
+  lane has already given up) and goes straight to the second trip. Since
+  Issue #4304 the CI-fix lane abandons a capped PR itself, so no new marker
+  is written.
 - **Human-authored PRs** — only a PR a push-capable fleet login authored is
   repaired or abandoned. Anyone else's stalled PR is logged and left alone.
 - **A `needs-human` PR is repaired, not parked (Issue #4304).** A fleet PR
-  carrying `needs_human_label` — a legacy escalation, or one hand-applied — has
-  the label removed under the lease and then takes the same two-trip repair as
-  any other stalled PR. The one exception is a PR held for a credential
-  rotation: when its thread carries the fleet's `history-rewrite:` escalation
-  marker (a secret already in the base branch's history), it is skipped with no
-  comment, no sync and no lane rerun, because no repair can clear it.
+  carrying `needs_human_label` — a legacy escalation, or one hand-applied —
+  has the label removed under the lease and then takes the same two-trip
+  repair as any other stalled PR. The one exception is a PR held for a
+  credential rotation: when its thread carries the fleet's
+  `history-rewrite:` escalation marker (a secret already in the base
+  branch's history), it is skipped with no comment, no sync and no lane
+  rerun, because no repair can clear it.
 
-Only fleet-authored marker comments count, so an outsider cannot trip the ladder
-by pasting a marker.
+Only fleet-authored marker comments count, so an outsider cannot trip the
+ladder by pasting a marker.
 
 The threshold is `blocking_pr_stall_threshold_seconds` (default `7200` — 2
 hours), overridable per repo via
-[`repo_config`](#-per-repository-configuration). would have tripped at 14:07
-UTC, about 13 hours before a human noticed.
+[`repo_config`](#-per-repository-configuration). would have tripped at
+14:07 UTC, about 13 hours before a human noticed.
 
 ```mermaid
 flowchart TD
@@ -5665,11 +5572,12 @@ flowchart TD
 
 ## 📦 In-Repo Configuration removed (`.vibecoder.json`,)
 
-The in-repo `.vibecoder.json` mechanism has been **removed**. Vibe Coder
-configuration must not live in the target repositories themselves — a config
-channel from repo content into worker behaviour is an attack/steering surface.
-Every field it once supported is available operator-side in
-[`repo_config`](#-per-repository-configuration), which already takes precedence.
+The in-repo `.vibecoder.json` mechanism has been **removed**.
+Vibe Coder configuration must not live in the target repositories themselves — a
+config channel from repo content into worker behaviour is an attack/steering
+surface. Every field it once supported is available operator-side in
+[`repo_config`](#-per-repository-configuration), which already takes
+precedence.
 
 - **No code path reads `.vibecoder.json`.** A leftover file at a repo root is
   ignored; the worker logs one informative warning naming the operator-side
@@ -5929,8 +5837,8 @@ automatically.
 At worker startup, the Deno `load-config` command reads `.config.json` and:
 
 - Exports
-  `GIT_SSH_COMMAND="ssh -i ~/.ssh/stsvcbot_ed25519 -o IdentitiesOnly=yes"` — all
-  git operations use this key
+  `GIT_SSH_COMMAND="ssh -i ~/.ssh/stsvcbot_ed25519 -o IdentitiesOnly=yes"` —
+  all git operations use this key
 - Exports `GH_CONFIG_DIR=~/.config/gh-vibe` — all `gh` CLI operations use the
   service account's session
 
@@ -5985,10 +5893,11 @@ Behaviour:
 
 - **At startup**, the worker resolves the live `gh` login and aborts (exit 1)
   when it is not on the allowlist — before any work runs.
-- **Before every milestone write** (tracking-issue creation, summary-PR raising,
-  tracking-issue closing) the login is **re-resolved and re-checked**, so auth
-  that drifts mid-run is still caught. On a mismatch the milestone operation
-  refuses to write and fails loud — it never proceeds as the drifted account.
+- **Before every milestone write** (tracking-issue creation, summary-PR
+  raising, tracking-issue closing) the login is **re-resolved and re-checked**,
+  so auth that drifts mid-run is still caught. On a mismatch the milestone
+  operation refuses to write and fails loud — it never proceeds as the drifted
+  account.
 - The refusal log names the **hostname** plus the **expected** and **actual**
   login, so the offending host self-identifies. Fixing that host's `gh` auth is
   a human action once the guard surfaces it.
@@ -6000,9 +5909,9 @@ Behaviour:
   [Service accounts are fleet PR authors too](#service-accounts-are-fleet-pr-authors-too).
 - When `service_accounts` is **empty** the guard cannot enforce. Rather than
   fail silently it logs a loud `[SECURITY] … INACTIVE` warning on every run.
-  Since that state is only reachable by emptying the key by hand or by a failed
-  login lookup at setup time — and the collaborator precheck files an issue for
-  it either way.
+  Since that state is only reachable by emptying the key by hand or
+  by a failed login lookup at setup time — and the collaborator precheck files
+  an issue for it either way.
 
 ```mermaid
 flowchart TD
@@ -6037,15 +5946,16 @@ Two things make the order matter:
 
 - The worker holds the identity in **two places**. `gh_config_dir` in
   `.config.json` is the host-side `gh` login, and
-  `~/.vibe-coder/credentials/gh/hosts.yml` is the copy the container is given
-  (read-only, then staged writable by `container/entrypoint.sh` and
-  [`gh_credential_stage.ts`](../worker/deno/lib/gh_credential_stage.ts)). Inside
-  the container git runs over HTTPS with that token, so the SSH key never
-  crosses into it; `ssh_key_path` serves host-side git.
-- The [identity guard](#%EF%B8%8F-service-account-identity-guard) exits at
-  startup on any login not in `service_accounts`, and every sibling host decides
-  whether a PR is fleet work from the same lists. So the new account is allowed
-  **everywhere first**, and the old one is removed **everywhere last**.
+  `~/.vibe-coder/credentials/gh/hosts.yml` is the copy the container is
+  given (read-only, then staged writable by `container/entrypoint.sh` and
+  [`gh_credential_stage.ts`](../worker/deno/lib/gh_credential_stage.ts)).
+  Inside the container git runs over HTTPS with that token, so the SSH key
+  never crosses into it; `ssh_key_path` serves host-side git.
+- The [identity guard](#%EF%B8%8F-service-account-identity-guard) exits at startup
+  on any login not in `service_accounts`, and every sibling host decides
+  whether a PR is fleet work from the same lists. So the new account is
+  allowed **everywhere first**, and the old one is removed **everywhere
+  last**.
 
 ```mermaid
 flowchart TD
@@ -6073,10 +5983,10 @@ On **every** host, before any host switches, add the new login to
 ```
 
 Edit `.config.json`, or pass the list to setup:
-`VIBE_SERVICE_ACCOUNTS="stsvcbot,vibebot" ./setup.sh` (the variable replaces the
-list, so name both). A host that has not yet switched still runs as `stsvcbot`
-and must accept `vibebot`'s PRs as fleet work, and a switched host running as
-`vibebot` must not fail the guard.
+`VIBE_SERVICE_ACCOUNTS="stsvcbot,vibebot" ./setup.sh` (the variable replaces
+the list, so name both). A host that has not yet switched still runs as
+`stsvcbot` and must accept `vibebot`'s PRs as fleet work, and a switched host
+running as `vibebot` must not fail the guard.
 
 `fleet_pr_authors` needs no separate edit: `loadConfig` unions
 `service_accounts` into the effective fleet PR authors
@@ -6087,8 +5997,7 @@ Listing the new login there as well is harmless.
 Give the new account **write** access to every monitored repository (an
 organisation invitation or a collaborator invitation, accepted as the new
 account). Write is enough: setup holds fleet accounts at write, never admin
-(Issue #2690,
-[Repository settings hardening](SETUP.md#repository-settings-hardening)).
+(Issue #2690, [Repository settings hardening](SETUP.md#repository-settings-hardening)).
 
 #### Step 2: A new SSH key per host
 
@@ -6115,24 +6024,25 @@ GH_CONFIG_DIR=~/.config/gh-vibebot gh auth login -h github.com -p ssh -s repo,wo
 GH_CONFIG_DIR=~/.config/gh-vibebot gh auth status
 ```
 
-Then set `gh_config_dir` to `~/.config/gh-vibebot` in `.config.json` **by hand,
-before running setup**. Setup's offer to copy the identity into the credential
-directory reads `gh_config_dir` from the config file as it stands when setup
-starts, ahead of the prompts (`prompt_interactive_credentials` in `setup.sh`),
-so answering the prompt in the same run is too late for the copy.
+Then set `gh_config_dir` to `~/.config/gh-vibebot` in `.config.json` **by
+hand, before running setup**. Setup's offer to copy the identity into the
+credential directory reads `gh_config_dir` from the config file as it stands
+when setup starts, ahead of the prompts (`prompt_interactive_credentials` in
+`setup.sh`), so answering the prompt in the same run is too late for the copy.
 
-The scopes are the ones the token-scope preflight checks (`FLEET_TOKEN_SCOPES`
-in [`gh_auth.ts`](../worker/deno/lib/gh_auth.ts)): `repo` to clone, push and
-open PRs, `workflow` to push `.github/workflows/` changes, and `read:org` for
-team and organisation reads. A **fine-grained** token has no scope list; it
-needs Contents, Pull requests, Issues and Workflows (read and write) on every
-monitored repository, and Members (read) on the organisation.
+The scopes are the ones the token-scope preflight checks
+(`FLEET_TOKEN_SCOPES` in [`gh_auth.ts`](../worker/deno/lib/gh_auth.ts)):
+`repo` to clone, push and open PRs, `workflow` to push
+`.github/workflows/` changes, and `read:org` for team and organisation reads.
+A **fine-grained** token has no scope list; it needs Contents, Pull requests,
+Issues and Workflows (read and write) on every monitored repository, and
+Members (read) on the organisation.
 
 #### Step 4: Replace the container credential
 
 Setup **never overwrites an existing `hosts.yml`**. With one present and no
-token variable set it reports the credential directory "left unchanged", and the
-copy offer only appears when `hosts.yml` is missing (`setup.sh`,
+token variable set it reports the credential directory "left unchanged", and
+the copy offer only appears when `hosts.yml` is missing (`setup.sh`,
 `provision_vibe_credentials` and `interactive_credentials_flow`). Move the old
 one aside first:
 
@@ -6140,8 +6050,8 @@ one aside first:
 mv ~/.vibe-coder/credentials/gh ~/.vibe-coder/credentials/gh.stsvcbot
 ```
 
-> **⚠️ Ambient tokens win.** If `VIBE_LAUNCHAGENT_GH_TOKEN` or `GH_TOKEN` is set
-> when setup runs, setup **does** rewrite `hosts.yml` — with that token's
+> **⚠️ Ambient tokens win.** If `VIBE_LAUNCHAGENT_GH_TOKEN` or `GH_TOKEN` is
+> set when setup runs, setup **does** rewrite `hosts.yml` — with that token's
 > account, whoever it is. Unset both (or set `VIBE_LAUNCHAGENT_GH_TOKEN` to the
 > new account's token deliberately) before Step 5.
 
@@ -6159,8 +6069,8 @@ does the checks that matter for a new account:
 
 - **token-scope preflight** — names any missing scope with the exact
   `gh auth refresh` command, or lists the fine-grained permissions to check;
-- **collaborator precheck** — files one issue naming every monitored repository
-  the new account cannot reach, with the commands that grant it.
+- **collaborator precheck** — files one issue naming every monitored
+  repository the new account cannot reach, with the commands that grant it.
 
 Verify the credential the container will be given:
 
@@ -6190,29 +6100,30 @@ Select-String -Path "$env:USERPROFILE\.vibe-coder\credentials\gh\hosts.yml" -Pat
 
 #### Step 6: Retire the old account
 
-Keep the old login in `service_accounts` until nothing of its own is open — its
-PRs are still fleet PRs to be maintained and merged, and its claims are still
-fleet claims:
+Keep the old login in `service_accounts` until nothing of its own is open —
+its PRs are still fleet PRs to be maintained and merged, and its claims are
+still fleet claims:
 
 ```bash
 gh search prs --author stsvcbot --state open
 gh search issues --assignee stsvcbot --state open
 ```
 
-When both are empty, remove it from `service_accounts` (and `fleet_pr_authors`,
-if you listed it there) on **every** host, then revoke its SSH keys and tokens
-and delete the moved-aside `gh.stsvcbot` directory.
+When both are empty, remove it from `service_accounts` (and
+`fleet_pr_authors`, if you listed it there) on **every** host, then revoke its
+SSH keys and tokens and delete the moved-aside `gh.stsvcbot` directory.
 
 #### Consequences to expect
 
 - **Milestone sync becomes sync PRs.** An admin account could push a
-  milestone-branch sync straight past a `milestone/**` ruleset; a write account
-  cannot. A push the ruleset refuses now lands through a `sync/milestone-*` PR,
-  merged as a merge commit. That is by design (Issue #2690), not a fault — see
+  milestone-branch sync straight past a `milestone/**` ruleset; a write
+  account cannot. A push the ruleset refuses now lands through a
+  `sync/milestone-*` PR, merged as a merge commit. That is by design
+  (Issue #2690), not a fault — see
   [the sync PR](INTERNALS.md#-a-sync-pr-never-outlives-the-branch-it-targets).
 - **One login, one API budget.** GitHub rate-limits per account, so every host
-  running as the new login shares its one REST and GraphQL budget. A fleet that
-  used to spread over two accounts now draws on one; see
+  running as the new login shares its one REST and GraphQL budget. A fleet
+  that used to spread over two accounts now draws on one; see
   [GH-API-OPTIMISATION.md](GH-API-OPTIMISATION.md).
 
 ## 📡 Monitored Repositories
@@ -6226,32 +6137,32 @@ add or modify repositories, either:
 
 ### One repository, one entry — casing is not a difference
 
-GitHub repository names are case-insensitive, so `org/My-Repo` and `org/my-repo`
-are the **same repository**. Listing both once meant every per-repository scan
-ran twice and the two slots of one worker raced each other for its issues (Issue
-#1546).
+GitHub repository names are case-insensitive, so `org/My-Repo` and
+`org/my-repo` are the **same repository**. Listing both once meant every
+per-repository scan ran twice and the two slots of one worker raced each other
+for its issues (Issue #1546).
 
-Both the worker's config load and `./setup.sh` now collapse case-variant `repos`
-entries to the **first** spelling and say which entry was dropped:
+Both the worker's config load and `./setup.sh` now collapse case-variant
+`repos` entries to the **first** spelling and say which entry was dropped:
 
 ```text
 repos: "stSoftwareAU/GRQ-actual" duplicates "stSoftwareAU/GRQ-Actual"
 (GitHub repository names are case-insensitive) — ignoring the second
 ```
 
-It is a warning, not a hard failure, so a casing slip never stands a host down —
-but the file has a defect worth fixing, because anything keyed by the configured
-spelling (watermarks, caches, the write-repo allowlist) is kept twice until it
-is. `./setup.sh` writes the collapsed list back, and `--add-repo` for a
-case-variant of a monitored repository is a no-op naming the spelling already in
-the list. Repositories that genuinely differ — a different owner or a different
-name — are untouched.
+It is a warning, not a hard failure, so a casing slip never stands a host
+down — but the file has a defect worth fixing, because anything keyed by the
+configured spelling (watermarks, caches, the write-repo allowlist) is kept
+twice until it is. `./setup.sh` writes the collapsed list back, and
+`--add-repo` for a case-variant of a monitored repository is a no-op naming
+the spelling already in the list. Repositories that genuinely differ — a
+different owner or a different name — are untouched.
 
 One consequence gets its own warning: a `repo_config` block keyed to the
 **dropped** spelling survives the rewrite (the orphan prune matches
-case-insensitively) but is no longer read, because per-repo settings are looked
-up by the exact configured slug. Rather than lose those settings silently, both
-the loader and setup say so:
+case-insensitively) but is no longer read, because per-repo settings are
+looked up by the exact configured slug. Rather than lose those settings
+silently, both the loader and setup say so:
 
 ```text
 repo_config is keyed to "stSoftwareAU/GRQ-actual", the spelling just dropped,

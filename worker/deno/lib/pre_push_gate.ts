@@ -1150,6 +1150,7 @@ export async function runPrePushGate(opts: {
         cwd: opts.cwd,
         stdout: "piped",
         stderr: "piped",
+        signal: AbortSignal.timeout(10_000),
       }).output();
     } catch (error) {
       return infrastructureFail(
