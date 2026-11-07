@@ -5169,22 +5169,33 @@ The hook runs two stages:
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
    - `shellcheck` on changed `.sh` files when a tracked workflow contains the
-     supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form. The
-     gate carries the workflow's options (including exclusions and an explicit
-     shell dialect) and runs from the repository root. It selects the nearest
-     tracked `.shellcheckrc` or `shellcheckrc` in each script's repository
-     ancestry, or uses the configured `--rcfile`; absent a repository config,
-     `--norc` prevents worker HOME, XDG and external ancestor settings from
-     changing the result. A changed or deleted ShellCheck workflow or config
-     rechecks the remaining tracked `.sh` files; deleted scripts are omitted.
-     The gate checks the available binary against the
-     version declared by CI before running it. An unsupported command shape,
-     delegated gate/action, unreadable config or unavailable/mismatched tool is
-     an incomplete infrastructure result, never a successful validation. A
-     repository with no CI ShellCheck invocation gets no ShellCheck check.
-     The same validation runs before `commitAndPushPending` publishes repairs,
-     including repositories without configured pre-flight commands, and before
-     the fleet babysitter commits staged repairs;
+     supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form, or a
+     `ludeeus/action-shellcheck` step (the shape the worker syncs into Bash
+     repositories) that sets only `scandir: .` and `severity`, which the gate
+     runs as `--severity=<level>` over the `.sh` files. The gate carries the
+     workflow's options (including exclusions, an explicit shell dialect and
+     value-taking options such as `-S warning` or `--enable all`) and runs from
+     the repository root. It selects the nearest tracked `.shellcheckrc` or
+     `shellcheckrc` in each script's repository ancestry, or uses the
+     configured `--rcfile`; absent a repository config, `--norc` prevents
+     worker HOME, XDG and external ancestor settings from changing the result.
+     A changed or deleted ShellCheck workflow or config rechecks the remaining
+     tracked `.sh` files; deleted scripts are omitted. For a `find` policy the
+     gate checks the available binary against the version declared by CI
+     before running it (an action-managed ShellCheck declares none). A policy
+     the gate cannot read (an unsupported command shape, other action input,
+     delegated gate or action), an unreadable config, or an unavailable or
+     mismatched tool is an incomplete infrastructure result, never a
+     successful validation, but only for a push that changes a `.sh` file, a
+     ShellCheck config or a workflow; any other push has nothing for ShellCheck
+     to check and is not refused. A repository with no CI ShellCheck invocation
+     gets no ShellCheck check. The same validation runs before the PR repair
+     processors (CI fix, review feedback, spelling and merge conflict) publish
+     a repair through `commitAndPushPending`, including repositories without
+     configured pre-flight commands, where it is the only Step 1b check, and
+     before the fleet babysitter commits staged repairs. WIP checkpoint,
+     timeout-preservation and declared hand-off pushes pass no pre-flight spec
+     and stay ungated;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push
      adds or modifies a file whose path starts with `infra/cloudformation/` and
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
@@ -5209,10 +5220,10 @@ It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
 `markdownlint-cli2` not found refuses the push; cspell configured and run by
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
-does not); a supported ShellCheck CI policy with a missing or mismatched
-binary, an unreadable config, or an unsupported workflow shape is incomplete
-and refuses to pass; a Floci deploy test that exits
-non-zero, including when Floci cannot be started or the `aws` CLI is missing for
+does not); a ShellCheck CI policy with a missing or mismatched binary, an
+unreadable config, or an unsupported workflow shape is incomplete and refuses
+a push that changes a script, a ShellCheck config or a workflow; a Floci deploy
+test that exits non-zero, including when Floci cannot be started or the `aws` CLI is missing for
 a deployable template, refuses the push; a missing hook module, spec or `deno`
 binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as

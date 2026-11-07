@@ -1,7 +1,18 @@
-/** Real publication entry points must enforce repository ShellCheck policy (#4631). */
+/**
+ * Real publication entry points must enforce repository ShellCheck policy
+ * (#4631). These drive the host's real ShellCheck, so each test is skipped on a
+ * host without one and takes the CI version from the binary it finds.
+ */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { commitAndPushPending } from "../lib/git_push.ts";
+import {
+  commitAndPushPending,
+  resolveRepairPreFlightSpec,
+} from "../lib/git_push.ts";
 import { validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
+import {
+  REAL_SHELLCHECK,
+  REQUIRES_REAL_SHELLCHECK,
+} from "./support/shellcheck_support.ts";
 
 const repoRoot = new URL("../../../", import.meta.url).pathname;
 const config = `${repoRoot}worker/deno/deno.json`;
@@ -37,7 +48,7 @@ async function fixture(): Promise<{ root: string; dir: string }> {
   await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
   await Deno.writeTextFile(
     `${dir}/.github/workflows/check.yml`,
-    'jobs:\n  lint:\n    env:\n      SHELLCHECK_VERSION: "0.11.0"\n    steps:\n      - run: |\n          find . -name "*.sh" -type f -exec shellcheck -s sh {} +\n',
+    `jobs:\n  lint:\n    env:\n      SHELLCHECK_VERSION: "${REAL_SHELLCHECK?.version}"\n    steps:\n      - run: |\n          find . -name "*.sh" -type f -exec shellcheck -s sh {} +\n`,
   );
   await Deno.writeTextFile(`${dir}/script.sh`, '#!/bin/sh\necho "$1"\n');
   await git(dir, "add", ".");
@@ -79,92 +90,131 @@ async function child(
   return JSON.parse(last);
 }
 
-Deno.test("commitAndPushPending: unconfigured repair blocks a real ShellCheck diagnostic", async () => {
-  const { root, dir } = await fixture();
-  try {
-    const remote = await git(dir, "rev-parse", "origin/repair");
-    await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
-    const result = await commitAndPushPending("repair", "Fix #4631", {
-      cwd: dir,
-      env: { GIT_CONFIG_COUNT: "0" },
-    });
-    assertEquals(result.ok, false);
-    if (!result.ok) assertStringIncludes(result.error.message, "SC2086");
-    assertEquals(
-      await git(dir, "ls-remote", "origin", "refs/heads/repair"),
-      `${remote}\trefs/heads/repair`,
-    );
-  } finally {
-    await Deno.remove(root, { recursive: true });
-  }
-});
-
-Deno.test("validateAndCommit: babysitter refuses a real ShellCheck diagnostic before commit", async () => {
-  const { root, dir } = await fixture();
-  try {
-    const head = await git(dir, "rev-parse", "HEAD");
-    await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
-    let message = "";
-    try {
-      await validateAndCommit(dir, 4631, { login: "test", id: "1" });
-    } catch (error) {
-      message = (error as Error).message;
-    }
-    assertStringIncludes(message, "SC2086");
-    assertEquals(await git(dir, "rev-parse", "HEAD"), head);
-  } finally {
-    await Deno.remove(root, { recursive: true });
-  }
-});
-
-for (const entry of ["commitAndPushPending", "validateAndCommit"]) {
-  Deno.test(`${entry}: missing ShellCheck recovers and checks the repaired content`, async () => {
+Deno.test(
+  "commitAndPushPending: a repair without pre-flight commands blocks a real ShellCheck diagnostic",
+  REQUIRES_REAL_SHELLCHECK,
+  async () => {
     const { root, dir } = await fixture();
     try {
-      const tools = `${root}/tools`;
-      await Deno.mkdir(tools);
-      const gitPath = decoder.decode(
-        (await new Deno.Command("which", { args: ["git"], stdout: "piped" })
-          .output()).stdout,
-      ).trim();
-      const shellcheckPath = decoder.decode(
-        (await new Deno.Command("which", {
-          args: ["shellcheck"],
-          stdout: "piped",
-        }).output()).stdout,
-      ).trim();
-      await Deno.symlink(gitPath, `${tools}/git`);
-      const source = entry === "commitAndPushPending"
-        ? `import { commitAndPushPending } from ${
-          JSON.stringify(`${repoRoot}worker/deno/lib/git_push.ts`)
-        };
-           const result = await commitAndPushPending("repair", "Fix #4631", { cwd: Deno.cwd() });
-           console.log(JSON.stringify(result.ok ? {ok:true} : {ok:false, message:result.error.message}));`
-        : `import { validateAndCommit } from ${
-          JSON.stringify(
-            `${repoRoot}worker/deno/commands/fleet_pr_babysitter.ts`,
-          )
-        };
-           try { await validateAndCommit(Deno.cwd(), 4631, {login:"test",id:"1"}); console.log(JSON.stringify({ok:true})); }
-           catch (error) { console.log(JSON.stringify({ok:false, message:error.message})); }`;
+      const remote = await git(dir, "rev-parse", "origin/repair");
       await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
-      const missing = await child(source, dir, tools);
-      assertEquals(missing.ok, false);
-      assertStringIncludes(missing.message!, "could not be found");
-      await Deno.symlink(shellcheckPath, `${tools}/shellcheck`);
-      const diagnostic = await child(source, dir, tools);
-      assertEquals(diagnostic.ok, false);
-      assertStringIncludes(diagnostic.message!, "SC2086");
-      await Deno.writeTextFile(
-        `${dir}/script.sh`,
-        '#!/bin/sh\necho "fixed: $1"\n',
+      const result = await commitAndPushPending(
+        "repair",
+        "Fix #4631",
+        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        false,
+        resolveRepairPreFlightSpec(undefined, "org/repo"),
       );
-      const recovered = await child(source, dir, tools);
-      assertEquals(recovered, { ok: true });
+      assertEquals(result.ok, false);
+      if (!result.ok) assertStringIncludes(result.error.message, "SC2086");
+      assertEquals(
+        await git(dir, "ls-remote", "origin", "refs/heads/repair"),
+        `${remote}\trefs/heads/repair`,
+      );
     } finally {
       await Deno.remove(root, { recursive: true });
     }
-  });
+  },
+);
+
+Deno.test(
+  "commitAndPushPending: a WIP checkpoint with no spec still pushes a ShellCheck diagnostic",
+  REQUIRES_REAL_SHELLCHECK,
+  async () => {
+    const { root, dir } = await fixture();
+    try {
+      await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
+      // The WIP checkpoint, timeout-preservation and hand-off call shape: no spec.
+      const result = await commitAndPushPending("repair", "wip: checkpoint", {
+        cwd: dir,
+        env: { GIT_CONFIG_COUNT: "0" },
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(result.value.finalUnpushedCount, 0);
+      assertEquals(
+        await git(dir, "rev-parse", "origin/repair"),
+        await git(dir, "rev-parse", "HEAD"),
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "validateAndCommit: babysitter refuses a real ShellCheck diagnostic before commit",
+  REQUIRES_REAL_SHELLCHECK,
+  async () => {
+    const { root, dir } = await fixture();
+    try {
+      const head = await git(dir, "rev-parse", "HEAD");
+      await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
+      let message = "";
+      try {
+        await validateAndCommit(dir, 4631, { login: "test", id: "1" });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      assertStringIncludes(message, "SC2086");
+      assertEquals(await git(dir, "rev-parse", "HEAD"), head);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);
+
+for (const entry of ["commitAndPushPending", "validateAndCommit"]) {
+  Deno.test(
+    `${entry}: missing ShellCheck recovers and checks the repaired content`,
+    REQUIRES_REAL_SHELLCHECK,
+    async () => {
+      const { root, dir } = await fixture();
+      try {
+        const tools = `${root}/tools`;
+        await Deno.mkdir(tools);
+        const gitPath = decoder.decode(
+          (await new Deno.Command("which", { args: ["git"], stdout: "piped" })
+            .output()).stdout,
+        ).trim();
+        const shellcheckPath = decoder.decode(
+          (await new Deno.Command("which", {
+            args: ["shellcheck"],
+            stdout: "piped",
+          }).output()).stdout,
+        ).trim();
+        await Deno.symlink(gitPath, `${tools}/git`);
+        const source = entry === "commitAndPushPending"
+          ? `import { commitAndPushPending, resolveRepairPreFlightSpec } from ${
+            JSON.stringify(`${repoRoot}worker/deno/lib/git_push.ts`)
+          };
+           const result = await commitAndPushPending("repair", "Fix #4631", { cwd: Deno.cwd() }, false, resolveRepairPreFlightSpec(undefined, "org/repo"));
+           console.log(JSON.stringify(result.ok ? {ok:true} : {ok:false, message:result.error.message}));`
+          : `import { validateAndCommit } from ${
+            JSON.stringify(
+              `${repoRoot}worker/deno/commands/fleet_pr_babysitter.ts`,
+            )
+          };
+           try { await validateAndCommit(Deno.cwd(), 4631, {login:"test",id:"1"}); console.log(JSON.stringify({ok:true})); }
+           catch (error) { console.log(JSON.stringify({ok:false, message:error.message})); }`;
+        await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
+        const missing = await child(source, dir, tools);
+        assertEquals(missing.ok, false);
+        assertStringIncludes(missing.message!, "could not be found");
+        await Deno.symlink(shellcheckPath, `${tools}/shellcheck`);
+        const diagnostic = await child(source, dir, tools);
+        assertEquals(diagnostic.ok, false);
+        assertStringIncludes(diagnostic.message!, "SC2086");
+        await Deno.writeTextFile(
+          `${dir}/script.sh`,
+          '#!/bin/sh\necho "fixed: $1"\n',
+        );
+        const recovered = await child(source, dir, tools);
+        assertEquals(recovered, { ok: true });
+      } finally {
+        await Deno.remove(root, { recursive: true });
+      }
+    },
+  );
 }
 
 Deno.test("pre-push CLI: actual repository workflows pass with empty hook input under --no-config", async () => {
@@ -205,51 +255,55 @@ Deno.test("pre-push CLI: actual repository workflows pass with empty hook input 
   }
 });
 
-Deno.test("pre-push CLI: ambient HOME, XDG and external ancestor configs cannot suppress repository diagnostics", async () => {
-  const { root, dir } = await fixture();
-  try {
-    await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
-    await git(dir, "add", ".");
-    await git(dir, "commit", "-qm", "diagnostic");
-    await Deno.writeTextFile(`${root}/.shellcheckrc`, "disable=SC2086\n");
-    await Deno.mkdir(`${root}/xdg`, { recursive: true });
-    await Deno.writeTextFile(`${root}/xdg/shellcheckrc`, "disable=SC2086\n");
-    const spec = `${root}/spec.json`;
-    await Deno.writeTextFile(spec, '{"preFlightCommands":[]}');
-    const head = await git(dir, "rev-parse", "HEAD");
-    const process = new Deno.Command(Deno.execPath(), {
-      cwd: dir,
-      args: [
-        "run",
-        "--no-config",
-        "--no-lock",
-        "--allow-all",
-        cli,
-        "--spec",
-        spec,
-      ],
-      stdin: "piped",
-      stdout: "piped",
-      stderr: "piped",
-      clearEnv: true,
-      env: {
-        PATH: Deno.env.get("PATH") ?? "",
-        HOME: root,
-        XDG_CONFIG_HOME: `${root}/xdg`,
-        GIT_CONFIG_COUNT: "0",
-      },
-    }).spawn();
-    const writer = process.stdin.getWriter();
-    await writer.write(
-      new TextEncoder().encode(
-        `refs/heads/repair ${head} refs/heads/repair ${"0".repeat(40)}\n`,
-      ),
-    );
-    await writer.close();
-    const out = await process.output();
-    assertEquals(out.code, 1, decoder.decode(out.stderr));
-    assertStringIncludes(decoder.decode(out.stderr), "SC2086");
-  } finally {
-    await Deno.remove(root, { recursive: true });
-  }
-});
+Deno.test(
+  "pre-push CLI: ambient HOME, XDG and external ancestor configs cannot suppress repository diagnostics",
+  REQUIRES_REAL_SHELLCHECK,
+  async () => {
+    const { root, dir } = await fixture();
+    try {
+      await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
+      await git(dir, "add", ".");
+      await git(dir, "commit", "-qm", "diagnostic");
+      await Deno.writeTextFile(`${root}/.shellcheckrc`, "disable=SC2086\n");
+      await Deno.mkdir(`${root}/xdg`, { recursive: true });
+      await Deno.writeTextFile(`${root}/xdg/shellcheckrc`, "disable=SC2086\n");
+      const spec = `${root}/spec.json`;
+      await Deno.writeTextFile(spec, '{"preFlightCommands":[]}');
+      const head = await git(dir, "rev-parse", "HEAD");
+      const process = new Deno.Command(Deno.execPath(), {
+        cwd: dir,
+        args: [
+          "run",
+          "--no-config",
+          "--no-lock",
+          "--allow-all",
+          cli,
+          "--spec",
+          spec,
+        ],
+        stdin: "piped",
+        stdout: "piped",
+        stderr: "piped",
+        clearEnv: true,
+        env: {
+          PATH: Deno.env.get("PATH") ?? "",
+          HOME: root,
+          XDG_CONFIG_HOME: `${root}/xdg`,
+          GIT_CONFIG_COUNT: "0",
+        },
+      }).spawn();
+      const writer = process.stdin.getWriter();
+      await writer.write(
+        new TextEncoder().encode(
+          `refs/heads/repair ${head} refs/heads/repair ${"0".repeat(40)}\n`,
+        ),
+      );
+      await writer.close();
+      const out = await process.output();
+      assertEquals(out.code, 1, decoder.decode(out.stderr));
+      assertStringIncludes(decoder.decode(out.stderr), "SC2086");
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);

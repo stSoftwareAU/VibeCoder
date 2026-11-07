@@ -1,10 +1,13 @@
 ## Summary
 
 Repository ShellCheck CI policy now validates affected scripts before agent,
-completion and repair publication, including repairs without configured
-pre-flight commands and fleet babysitter repairs. Configuration changes and
-removals revalidate remaining tracked scripts. Unsupported policy, unreadable
-configuration and missing or mismatched tools block validation. Closes #4631.
+completion and PR-repair publication (CI fix, review feedback, spelling and
+merge conflict, including repositories without configured pre-flight commands)
+and fleet babysitter repairs. Configuration changes and removals revalidate
+remaining tracked scripts. An unsupported policy, unreadable configuration and a
+missing or mismatched tool block a push that changes a script, a ShellCheck
+config or a workflow. WIP checkpoint, timeout-preservation and declared hand-off
+pushes stay ungated. Closes #4631.
 
 Version bump: none; no version file changed.
 
@@ -20,9 +23,22 @@ Version bump: none; no version file changed.
 ### Essential Design Decisions
 
 - `runAffectedShellcheckChecks` in `pre_push_gate.ts` implements the supported
-  `find . -name "*.sh" -type f -exec shellcheck … {} +` policy. Discovery checks
+  `find . -name "*.sh" -type f -exec shellcheck … {} +` policy and the
+  `ludeeus/action-shellcheck` step the worker syncs into Bash repositories
+  (`scandir: .` and `severity` only, run as `--severity=<level>`; any other
+  input or a `SHELLCHECK_OPTS` override is unsupported). Discovery checks
   executable commands, excluding logs, installation arguments, comments and
   script path arrays. YAML block headers accept trailing comments.
+- Value-taking options (`-e -s -S -o -i -P -f -W` and their long forms,
+  including `--opt=value` and attached `-Swarning`) consume their value instead
+  of being read as positional arguments.
+- A policy the gate cannot read fails a push only when it changes a `.sh` file,
+  a ShellCheck config or a workflow (`touchesShellcheckSurface`). Any other push
+  has nothing to check, so an unsupported workflow cannot make a repository
+  unpublishable.
+- The ShellCheck version probe is injectable (`readShellcheckVersion`, beside
+  `findShellcheck`). An action-managed policy declares no version, so the probe
+  result is not compared.
 - The runner selects the nearest tracked repository `.shellcheckrc` or
   `shellcheckrc`, honours an explicit repository-relative rcfile, and otherwise
   uses `--norc`. Worker HOME, XDG and external ancestor configs cannot affect
@@ -31,9 +47,15 @@ Version bump: none; no version file changed.
   deleted scripts. Unsupported policy, delegation, missing tools and version
   mismatches return incomplete infrastructure results rather than success.
   ShellCheck execution failures propagate the pre-flight result.
-- `runPrePushGate` uses the shared implementation. `commitAndPushPending` gates
-  unpushed commits even without a pre-flight spec, applying ShellCheck alone in
-  that case. The babysitter's `validateAndCommit` checks staged repairs before
+- Opt-in, not blanket: `commitAndPushPending` Step 1b runs only when a
+  pre-flight spec is passed, as before. The four PR-repair processors pass
+  `resolveRepairPreFlightSpec`, which yields
+  `{ commands: [], shellcheckOnly:
+  true }` for a repo with no pre-flight
+  commands, so Step 1b runs ShellCheck alone there. Callers that pass no spec
+  (`wip_checkpoint.ts`, `run_wip_preservation.ts`, `declared_handoff.ts`,
+  `pre_push_gate_retry.ts`) stay ungated, as `docs/pre-pr-ci-audit.md`
+  documents. The babysitter's `validateAndCommit` checks staged repairs before
   committing. The blanket scan remains outside `quality_gate.ts`.
 
 ### Undiscoverable Facts
@@ -43,70 +65,66 @@ Version bump: none; no version file changed.
   absent, so this change shares the existing pre-push runner and its extracted
   ShellCheck implementation; it does not reuse #4625's reverted module or depend
   on its restoration.
-- The behavioural tests use the available ShellCheck 0.11.0 binary, matching
-  `.github/workflows/validate-scripts.yml`.
+- Unit tests use a stub ShellCheck binary and version probe. The few tests that
+  need a genuine diagnostic use the host's ShellCheck, take the CI version from
+  that binary, and are skipped on a host without one.
 
 ## Evidence
 
 This changes backend and CLI validation; there is no visual surface.
 
-`pre_push_gate_test.ts` covers this repository's actual validate-scripts
-workflow and container-build workflow. `shellcheck_publication_test.ts` covers
-both repair entry points with real SC2086 diagnostics, missing-tool recovery,
-the CLI under `--no-config`, and conflicting ambient configuration.
+`pre_push_gate_test.ts` (79 tests at head) covers policy parsing, the synced
+ludeeus template, value-taking options, the push-relevance rule and stub-driven
+runs. `shellcheck_publication_test.ts` (7 tests at head) covers the repair and
+WIP entry points and the babysitter with real SC2086 diagnostics, missing-tool
+recovery, the CLI under `--no-config`, and conflicting ambient configuration.
 
 Read and updated the operator manual's **Agent pre-push hook and the
-changed-files check** section in `docs/CONFIGURATION.md`. Updated affected API
-comments to describe ShellCheck validation without a pre-flight spec. No second
-copy of the ShellCheck execution rule was found; all publication paths call the
-same implementation.
+changed-files check** section in `docs/CONFIGURATION.md`.
+`docs/pre-pr-ci-audit.md` (WIP checkpoint pushes "ungated on purpose") is true
+again and unchanged. No second copy of the ShellCheck execution rule was found;
+all publication paths call the same implementation.
 
 ## Test Plan
 
-- `pre_push_gate_test.ts`: direct policy assertions pin unsafe paths, workflow
-  filtering, explicit failure discriminants and messages, delegated execution,
-  unsupported actions/commands/options, working directories, version pins,
-  missing rcfile values, `-rc`, comments and version probes. A real diagnostic
-  blocks through the existing `git_push.ts` caller with the actual repository
-  workflow. Commented YAML block headers and root/nested config deletion also
-  block on SC2086.
-- The ShellCheck fixtures put the earlier documentation commit on the remote
-  before adding scripts. The old fixture unintentionally required markdownlint
-  for ShellCheck-only tests; `pre_push_gate_test.ts` still covers the separate
-  Markdown blocking path in `runPrePushGate: doc-only push blocked by failing
-  markdownlint`, while the clean-script and recovery tests exercise ShellCheck
-  without that unrelated tool. With markdownlint absent, the suite reproduced
-  the three CI failures before the repair and passed all 72 tests afterwards.
-- `shellcheck_publication_test.ts`: unconfigured repair publication leaves the
-  remote unchanged on SC2086; the babysitter refuses its commit. Both entry
-  points block with a missing binary, then revalidate diagnostics after tool
-  recovery, and accept corrected content. The real CLI accepts this repository's
-  workflows with empty hook input and rejects SC2086 despite HOME, XDG and
-  external ancestor suppression files.
-- In a disposable checkout of the original head, `f2a18ae1`, the two changed
-  ShellCheck test files produced 65 passes and 13 failures. Those failures
-  reproduce workflow discovery, the existing git/CLI caller regressions, YAML
-  block comments, root/nested config deletion, both repair entry-point
-  diagnostic and missing-tool checks, and ambient configuration suppression.
-  Both files pass with the fixes. The eight-file targeted suite passed all 147
-  tests, including completion, pre-flight, babysitter and hook coverage.
-- Reapplying 41 targeted mutations to the policy validation and replacement
-  comment/version guards made a test fail in every case, against a passing
-  unmutated baseline. This is targeted evidence for the reported survivors, not
-  a claim that the entire diff received a mutation sweep.
-- The reported empty-path operand was unreachable after rcfile value validation;
-  it was removed. The empty-line operand was redundant with invocation
-  recognition and was removed when command discovery was corrected. Comment and
-  version-probe guards are pinned by direct policy tests. No mutation exemption
-  is claimed.
-- `./quality.sh < /dev/null`: passed before the CI fixture repair, including the
-  full Deno suite, lint, type-check, formatting, Markdown lint, Semgrep and
-  completeness checks. Config integration and Checkov were skipped by the gate.
-- `deno task check:manifests`: 848 passed, 0 failed, 1 ignored.
-- The CI shard was retried after the fixture repair, but this host's sandbox
-  denied `/bin/ps` during process-tree tests, preventing the shard from
-  completing. The affected test file passed separately; CI runs the full shard.
-- `deno task pr-summary-check --base origin/main ../../docs/archive/pr-summaries/pr-summary-4631.md`:
-  0 blocked; closure, independent review and reproduction status were not
-  checked because no issue-body file or labels were supplied.
-- Markdown lint and `git diff --check` passed.
+- `worker/deno/tests/pre_push_gate_test.ts`: policy tests derive the repository
+  workflow's version and flags from its text and use a fixture version rather
+  than a typed-in pin. Stub-driven runs cover config and nested-config rechecks,
+  config deletion (`--norc` replaces `--rcfile`), commented YAML block headers,
+  missing-tool recovery, version mismatch, the synced ludeeus template
+  (`--severity=warning`) and unsupported action inputs. A non-shell push passes
+  in a repo with the synced template, an unsupported action or a delegating
+  script, and a script push in the unsupported case is still refused. Real
+  diagnostics (the actual repository workflow, dialect and exclusions, and a
+  later edit invalidating a clean result) use the host ShellCheck and are
+  skipped without one.
+- `worker/deno/tests/shellcheck_publication_test.ts`: a PR repair with
+  `resolveRepairPreFlightSpec` leaves the remote unchanged on SC2086; a no-spec
+  WIP checkpoint with the same diagnostic still pushes; the babysitter refuses
+  its commit. Both repair entry points block with a missing binary, then
+  revalidate after tool recovery and accept corrected content. All but the
+  empty-input CLI test need the host ShellCheck and are skipped without one.
+- Call sites: `worker/deno/tests/pr_round_repo_formatters_test.ts` (feedback and
+  CI fix), `worker/deno/tests/pr_merge_conflict_processor_test.ts` and
+  `worker/deno/tests/pr_spelling_processor_test.ts` assert the spec each
+  processor passes. Reverting a processor to `resolvePreFlightSpec` turned that
+  processor's test red (feedback, CI fix, merge conflict and spelling each
+  checked).
+- Red checks: Step 1b made unconditional with a ShellCheck-only default → WIP
+  test red (SC2086 blocks the push); `touchesShellcheckSurface` forced true →
+  the unsupported-action and delegating-script non-shell tests red; policy
+  failure forced to pass → the script-push refusal red; short value options cut
+  to `es` → the value-option test red; version compared for a null policy
+  version → the synced-template run red.
+- Branch outcomes: relevant push with unsupported policy → refused
+  (`pre_push_gate_test.ts` unsupported-action script push); irrelevant push with
+  unsupported policy → passes (three non-shell tests); action policy with `null`
+  version → probe not compared (synced-template run); `find` policy with a
+  mismatched version → refused (mismatch test).
+- Existing tests that reached the changed paths still pass: 335 tests across
+  `git_push*`, `commit_and_push_pending`, the completion pre-push gate, pre-push
+  CLI and hook, gate retry, babysitter, quality gate and the integration
+  manifest.
+- The unit suites pass with no ShellCheck on `PATH` (77 passed, 9 ignored for
+  `pre_push_gate_test.ts` and `shellcheck_publication_test.ts` together) and
+  with the host's ShellCheck (79 and 7 tests, 0 failed).

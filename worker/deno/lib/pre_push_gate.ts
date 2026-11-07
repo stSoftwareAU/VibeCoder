@@ -242,13 +242,106 @@ export interface ChangedFileCheck {
 
 /** ShellCheck policy read from a repository's runnable CI workflow. */
 export interface ShellcheckPolicy {
-  version: string;
+  /** Pinned CI version, or null when CI uses an action's own ShellCheck. */
+  version: string | null;
   flags: string[];
   configFiles: string[];
   workflowFiles: string[];
 }
 
 const SHELLCHECK_CONFIGS = new Set([".shellcheckrc", "shellcheckrc"]);
+
+// ShellCheck options that take a value (`shellcheck --help`); the gate must
+// consume the value, not read it as a positional argument.
+const SHELLCHECK_SHORT_VALUE_OPTIONS = "esSoiPfW";
+const SHELLCHECK_LONG_VALUE_OPTIONS = [
+  "exclude",
+  "shell",
+  "severity",
+  "enable",
+  "include",
+  "source-path",
+  "format",
+  "wiki-link-count",
+];
+
+function defaultShellcheckConfigs(tracked: readonly string[]): string[] {
+  return tracked.filter((candidate) =>
+    SHELLCHECK_CONFIGS.has(candidate.split("/").at(-1) ?? "")
+  );
+}
+
+const SHELLCHECK_ACTION_SEVERITIES = ["error", "warning", "info", "style"];
+
+/**
+ * Flags for each `ludeeus/action-shellcheck` step in a workflow (the template
+ * the worker syncs into Bash repositories). Only `scandir: .` and `severity`
+ * are understood; any other input, a `SHELLCHECK_OPTS` override or another
+ * ShellCheck action is an unsupported policy, never an implicit pass. The
+ * action scans more extensions than `.sh`; the gate checks the `.sh` subset.
+ */
+function shellcheckActionFlags(
+  text: string,
+  path: string,
+): Result<string[][], string> {
+  const lines = text.split("\n").map((line) => line.replace(/\r$/, ""));
+  const indentOf = (line: string) => line.length - line.trimStart().length;
+  const flagsPerStep: string[][] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const uses = /^(\s*)(?:-\s+)?uses\s*:\s*([^\s#]+)/.exec(lines[i]!);
+    if (!uses || !/shellcheck/i.test(uses[2]!)) continue;
+    if (!/^ludeeus\/action-shellcheck@/.test(uses[2]!)) {
+      return {
+        ok: false,
+        error: `unsupported ShellCheck action in workflow ${path}`,
+      };
+    }
+    // The step runs from its `- ` line to the next line at that indent or less.
+    let start = i;
+    while (start > 0 && !/^\s*-\s/.test(lines[start]!)) start--;
+    const stepIndent = indentOf(lines[start]!);
+    let end = i + 1;
+    while (
+      end < lines.length &&
+      (lines[end]!.trim() === "" || indentOf(lines[end]!) > stepIndent)
+    ) end++;
+    const step = lines.slice(start, end);
+    if (step.some((line) => /SHELLCHECK_OPTS/.test(line))) {
+      return {
+        ok: false,
+        error:
+          `unsupported ShellCheck action option SHELLCHECK_OPTS in ${path}`,
+      };
+    }
+    const flags: string[] = [];
+    const withAt = step.findIndex((line) => /^\s*with\s*:\s*$/.test(line));
+    if (withAt >= 0) {
+      const withIndent = indentOf(step[withAt]!);
+      for (const line of step.slice(withAt + 1)) {
+        if (line.trim() === "" || line.trim().startsWith("#")) continue;
+        if (indentOf(line) <= withIndent) break;
+        const input = /^\s*([\w-]+)\s*:\s*["']?([^"'#\s]*)["']?\s*(?:#.*)?$/
+          .exec(line);
+        const [, key, value] = input ?? [];
+        if (key === "scandir" && (value === "." || value === "./")) continue;
+        if (
+          key === "severity" && SHELLCHECK_ACTION_SEVERITIES.includes(value!)
+        ) {
+          flags.push(`--severity=${value}`);
+          continue;
+        }
+        return {
+          ok: false,
+          error: `unsupported ShellCheck action option ${
+            key ?? line.trim()
+          } in ${path}`,
+        };
+      }
+    }
+    flagsPerStep.push(flags);
+  }
+  return { ok: true, value: flagsPerStep };
+}
 
 function isRepoRelativeShellcheckConfig(path: string): boolean {
   return !path.startsWith("/") &&
@@ -296,11 +389,15 @@ export async function repoShellcheckPolicy(
           `repository CI delegates ShellCheck through a script in workflow ${path}`,
       };
     }
-    if (/^\s*(?:-\s*)?uses\s*:\s*[^\n]*\bshellcheck\b/im.test(text)) {
-      return {
-        ok: false,
-        error: `unsupported ShellCheck action in workflow ${path}`,
-      };
+    const actionFlags = shellcheckActionFlags(text, path);
+    if (!actionFlags.ok) return actionFlags;
+    for (const flags of actionFlags.value) {
+      policies.push({
+        version: null,
+        flags,
+        configFiles: defaultShellcheckConfigs(tracked),
+        workflowFiles: [path],
+      });
     }
     const commands = runSteps.flatMap(executableShellCommands).filter(
       isShellcheckInvocation,
@@ -369,16 +466,43 @@ export async function repoShellcheckPolicy(
             };
           }
           explicitConfigFiles.push(value);
-        } else if (["-e", "--exclude", "-s", "--shell"].includes(arg)) {
-          const value = args[++i];
-          if (!value || value.startsWith("-")) {
-            return {
-              ok: false,
-              error: `missing value for ShellCheck option ${arg} in ${path}`,
-            };
+        } else if (arg.startsWith("--")) {
+          const [name, ...inline] = arg.slice(2).split("=");
+          const takesValue = SHELLCHECK_LONG_VALUE_OPTIONS.includes(name!);
+          if (takesValue && inline.length > 0) {
+            if (inline.join("=") === "") {
+              return {
+                ok: false,
+                error:
+                  `missing value for ShellCheck option --${name} in ${path}`,
+              };
+            }
+          } else if (takesValue) {
+            const value = args[++i];
+            if (!value || value.startsWith("-")) {
+              return {
+                ok: false,
+                error: `missing value for ShellCheck option ${arg} in ${path}`,
+              };
+            }
           }
-        } else if (/^-[A-Za-z]$/.test(arg) || arg.startsWith("--")) {
-          // Other option forms pass through unchanged; ShellCheck validates them.
+          // Other long options pass through unchanged; ShellCheck validates them.
+        } else if (/^-[A-Za-z]$/.test(arg)) {
+          if (SHELLCHECK_SHORT_VALUE_OPTIONS.includes(arg[1]!)) {
+            const value = args[++i];
+            if (!value || value.startsWith("-")) {
+              return {
+                ok: false,
+                error: `missing value for ShellCheck option ${arg} in ${path}`,
+              };
+            }
+          }
+          // Other short options pass through unchanged; ShellCheck validates them.
+        } else if (
+          arg.length > 2 && SHELLCHECK_SHORT_VALUE_OPTIONS.includes(arg[1]!) &&
+          /^-[A-Za-z]/.test(arg)
+        ) {
+          // Attached value (-Swarning): one token, nothing further to consume.
         } else {
           return {
             ok: false,
@@ -390,9 +514,7 @@ export async function repoShellcheckPolicy(
         ? []
         : explicitConfigFiles.length > 0
         ? explicitConfigFiles
-        : tracked.filter((candidate) =>
-          SHELLCHECK_CONFIGS.has(candidate.split("/").at(-1) ?? "")
-        );
+        : defaultShellcheckConfigs(tracked);
       policies.push({
         version,
         flags: args,
@@ -1128,7 +1250,43 @@ async function findPathBinary(
   return null;
 }
 
-/** Shared ShellCheck validation for hooks, completion and repair publication. */
+/** Output of `shellcheck --version`; injectable so unit tests need no host binary. */
+export type ShellcheckVersionProbe = (
+  binary: string,
+  cwd: string,
+) => Promise<{ code: number; stdout: string }>;
+
+const defaultShellcheckVersionProbe: ShellcheckVersionProbe = async (
+  binary,
+  cwd,
+) => {
+  const out = await new Deno.Command(binary, {
+    args: ["--version"],
+    cwd,
+    stdout: "piped",
+    stderr: "piped",
+    env: buildUntrustedCommandEnv(),
+    clearEnv: true,
+    signal: AbortSignal.timeout(10_000),
+  }).output();
+  return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
+};
+
+/** Whether a changed path can alter what the repository's ShellCheck CI checks. */
+function touchesShellcheckSurface(changed: readonly string[]): boolean {
+  return changed.some((p) =>
+    p.endsWith(".sh") || SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "") ||
+    (p.startsWith(".github/workflows/") && /\.ya?ml$/.test(p))
+  );
+}
+
+/**
+ * Shared ShellCheck validation for hooks, completion and repair publication.
+ * A policy the gate cannot read blocks only a push that touches a script, a
+ * ShellCheck config or a workflow; any other push has nothing ShellCheck
+ * could check, so an unsupported policy cannot make the repository
+ * unpublishable.
+ */
 export async function runAffectedShellcheckChecks(opts: {
   cwd: string;
   changed: readonly string[];
@@ -1136,6 +1294,7 @@ export async function runAffectedShellcheckChecks(opts: {
   runner?: PreFlightRunner;
   timeoutSeconds?: number;
   findShellcheck?: (repoRoot: string) => Promise<string | null>;
+  readShellcheckVersion?: ShellcheckVersionProbe;
 }): Promise<Result<{ checksRun: string[] }, Error>> {
   const infrastructureFail = (message: string): Result<never, Error> => ({
     ok: false,
@@ -1143,7 +1302,9 @@ export async function runAffectedShellcheckChecks(opts: {
   });
   const shellcheckPolicy = await repoShellcheckPolicy(opts.cwd, opts.tracked);
   if (!shellcheckPolicy.ok) {
-    return infrastructureFail(shellcheckPolicy.error);
+    return touchesShellcheckSurface(opts.changed)
+      ? infrastructureFail(shellcheckPolicy.error)
+      : { ok: true, value: { checksRun: [] } };
   }
   const shellcheckTouchedConfigs = opts.changed.some((p) =>
     SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "") ||
@@ -1194,17 +1355,10 @@ export async function runAffectedShellcheckChecks(opts: {
         "ShellCheck is required by repository CI but could not be found",
       );
     }
-    let versionResult: Deno.CommandOutput;
+    const probe = opts.readShellcheckVersion ?? defaultShellcheckVersionProbe;
+    let versionResult: { code: number; stdout: string };
     try {
-      versionResult = await new Deno.Command(shellcheckBinary, {
-        args: ["--version"],
-        cwd: opts.cwd,
-        stdout: "piped",
-        stderr: "piped",
-        env: buildUntrustedCommandEnv(),
-        clearEnv: true,
-        signal: AbortSignal.timeout(10_000),
-      }).output();
+      versionResult = await probe(shellcheckBinary, opts.cwd);
     } catch (error) {
       return infrastructureFail(
         `could not read ShellCheck version: ${
@@ -1212,11 +1366,12 @@ export async function runAffectedShellcheckChecks(opts: {
         }`,
       );
     }
-    const versionOutput = new TextDecoder().decode(versionResult.stdout);
-    const actualVersion = shellcheckVersionOutput(versionOutput);
+    const actualVersion = shellcheckVersionOutput(versionResult.stdout);
+    // A null policy version is an action-managed ShellCheck: nothing to pin.
     if (
-      versionResult.code !== 0 ||
-      actualVersion !== shellcheckPolicy.value.version
+      shellcheckPolicy.value.version !== null &&
+      (versionResult.code !== 0 ||
+        actualVersion !== shellcheckPolicy.value.version)
     ) {
       return infrastructureFail(
         `ShellCheck version mismatch: CI requires ${shellcheckPolicy.value.version}, ` +
@@ -1296,6 +1451,7 @@ export async function runPrePushGate(opts: {
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   findCspell?: (repoRoot: string) => Promise<string | null>;
   findShellcheck?: (repoRoot: string) => Promise<string | null>;
+  readShellcheckVersion?: ShellcheckVersionProbe;
   /**
    * Check every non-merge commit ahead of this ref instead of only commits on
    * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
