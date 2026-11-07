@@ -486,6 +486,31 @@ Deno.test("runQualityGateCheck - returns missing command failure", async () => {
   assertEquals(result.failureMessage !== undefined, true);
 });
 
+Deno.test("runQualityGateCheck - a quoted command not found inside a Deno output block is a fixable failure (Issue #4829)", async () => {
+  const deps = createMockDeps({
+    runCommand: async (_cmd, _opts) => ({
+      exitCode: 1,
+      output: `${DENO_OUTPUT_BLOCK}\nFAILED | 1 passed | 1 failed`,
+    }),
+  });
+  const result = await runQualityGateCheck(createParams(), deps);
+  assertEquals(result.action, "failed_fixable");
+  assertEquals(result.failureMessage, undefined);
+  assertStringIncludes(result.retryPrompt!, "foo: command not found");
+});
+
+Deno.test("runQualityGateCheck - a genuine Bash report with exit 1 stays a missing command failure (Issue #4829)", async () => {
+  const deps = createMockDeps({
+    runCommand: async (_cmd, _opts) => ({
+      exitCode: 1,
+      output: "bash: foo: command not found",
+    }),
+  });
+  const result = await runQualityGateCheck(createParams(), deps);
+  assertEquals(result.action, "failed_missing_command");
+  assertEquals(result.failureMessage !== undefined, true);
+});
+
 // =============================================================================
 // runQualityGateCheck tests — timeout configuration
 // =============================================================================

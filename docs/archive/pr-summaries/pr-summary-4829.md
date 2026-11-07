@@ -55,22 +55,19 @@ phase's existing failed-verdict path passes the failure to a repair turn.
   Disabling the shell-report regex made 7 tests fail; disabling the Deno start
   regex made the captured-block tests fail; disabling the Deno end regex made
   both the post-block report tests fail.
-- `worker/deno/tests/publication_validation_test.ts` runs a failing shell gate
-  containing Deno-style captured test output and expects `failed`. A genuine
-  Bash report remains `unavailable` both at exit 127 and when a wrapper exits 1.
-  A feature-branch case asserts that the head and base gates both run and that a
-  new failure stays `failed` when the base gate passes.
-- `worker/deno/tests/completion_phase_publication_validation_4625_test.ts`
-  drives the real completion phase with the quoted-output failure and asserts
-  that it reaches the repair turn and then publishes after a passing recheck.
+- The same file drives `runQualityGateCheck` end to end with two tests. A
+  non-zero run whose output holds a Deno output block quoting
+  `foo: command not found` followed by a failed-tests line returns
+  `failed_fixable` (not `failed_missing_command`) and its retry prompt carries
+  the output. A genuine `bash: foo: command not found` line at exit 1 returns
+  `failed_missing_command` with a failure message.
 - Base-production red check: restoring `quality_gate_phase.ts` from
-  `origin/main` while keeping these tests produced 9 failures, including the
-  quoted-output verdict and the matcher lookalikes. Restoring the branch code
-  returned the three-file suite to green.
-- `deno task test:unit tests/quality_gate_phase_test.ts tests/publication_validation_test.ts tests/completion_phase_publication_validation_4625_test.ts`:
-  136 passed, 0 failed.
-- `deno fmt --check`, `deno lint` and `deno check` on the four changed
-  TypeScript files passed.
+  `origin/main` while keeping `quality_gate_phase_test.ts` produced 7 failures
+  (63 passed), including the quoted-output `runQualityGateCheck` test and the
+  lookalike/Deno-block matcher tests. Restoring the branch code returned the
+  file to green.
+- `deno task test:unit tests/quality_gate_phase_test.ts`: 70 passed, 0 failed.
+- `deno fmt --check` and `deno lint` on the changed test file passed.
 - Pre-push recovery: `deno task check:manifests` passed (847 passed, 0 failed, 1
   ignored), `deno task check` passed, and the production `runSemgrepCheck`
   passed over four changed files with Semgrep 1.182.1. The reported JSR manifest
@@ -91,6 +88,15 @@ phase's existing failed-verdict path passes the failure to a repair turn.
   `worker/deno/tests/fleet_pr_babysitter_validation_test.ts` and
   `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` over budget. No
   timing threshold or test was changed.
+- Mutation check: it failed to run because the baseline run of seven other test
+  files (`fence_coverage_verifier_test.ts`, `quality_gate_credentials_4705_test.ts`,
+  `quality_gate_phase_test.ts`, `repo_formatters_4113_test.ts`,
+  `tool_output_treat_as_data_3046_test.ts`, `untrusted_command_env_test.ts`,
+  `untrusted_gate_spawn_test.ts`) failed in the harness. It listed no
+  unpinned mutation. Run directly, `quality_gate_phase_test.ts`,
+  `untrusted_gate_spawn_test.ts`, `repo_formatters_4113_test.ts` and
+  `fence_coverage_verifier_test.ts` pass together (115 passed, 0 failed), so
+  the failure is environmental, not a test gap in the changed lines.
 - No twinned matcher or gate rule was found. Other `command not found` checks
   classify different failure text and were not changed.
 
