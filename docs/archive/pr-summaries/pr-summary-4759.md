@@ -28,3 +28,6 @@ Backend/shell change only; no UI. The new test runs the real entrypoint against 
 - Red check: with the `[[ -L "${entry%/}" ]] && continue` line removed, the test fails (`.container-state was changed through a symlink in the work root`); restored, it passes.
 - `deno task test tests/work_root_group_grant_test.ts`: 18 passed, 0 failed. `deno task test tests/container_entrypoint_test.ts`: 43 passed, 0 failed. `bash -n container/entrypoint.sh`, `deno fmt --check` and `deno lint` clean.
 - `container/entrypoint.sh` ownership-skip (`! -O`): `exempt (untestable)`: the check reads the real euid, the `id` stub cannot affect it, and a foreign-owned directory cannot be created without root. Harness searched: `grep -ln entrypoint worker/deno/tests` finds `work_root_group_grant_test.ts` and `container_entrypoint_test.ts`, and neither can stage a foreign owner as uid 1000.
+- `./quality.sh`: ran twice; both runs passed every stage up to and including `release-tag ruleset` (formatting, lint, type checks, completeness, mermaid, markdownlint, semgrep), then hung in the stage after it until the 400 s and 600 s timeouts killed it. No stage failed.
+
+<!-- vibe-quality-gate-skipped reason="quality.sh hung past its timeout after the release-tag ruleset stage; all earlier stages passed; the worker runs the gate again before the PR is raised" -->
