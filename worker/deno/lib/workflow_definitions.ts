@@ -75,8 +75,8 @@ const DEPENDENCY_UPDATE_TIMEOUT_MINUTES = 20;
  * not left on disk.
  */
 const CHECKOUT_NO_CREDENTIALS = `        with:
-          # Nothing here pushes, so the job token must not be left behind
-          # in .git/config where a later step could read it.
+          # The checkout credential is not needed, so do not leave it in
+          # .git/config where a later step could read it.
           persist-credentials: false`;
 
 /**
@@ -437,9 +437,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${DEPENDENCY_UPDATE_TIMEOUT_MINUTES}
     steps:
-      # Credential persistence stays on: create-pull-request below pushes
-      # the update branch with the checkout credential.
+      # create-pull-request pushes with its own \`token\` input, so the checkout
+      # credential is not needed and is not persisted.
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       # SHA-pinned, so the toolchain can no longer be read from the ref
       # name — it is named explicitly instead (Issue #3645).
       - uses: ${pinnedAction("dtolnay/rust-toolchain")}
@@ -550,9 +551,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${DEPENDENCY_UPDATE_TIMEOUT_MINUTES}
     steps:
-      # Credential persistence stays on: create-pull-request below pushes
-      # the update branch with the checkout credential.
+      # create-pull-request pushes with its own \`token\` input, so the checkout
+      # credential is not needed and is not persisted.
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("denoland/setup-deno")}
         with:
           deno-version: v2.x

@@ -389,10 +389,11 @@ before Issue #1639. Every emitted template now carries:
 - an explicit `pull_request` branch list, `[Develop, main, milestone/*]` —
   a GitHub `*` never matches a `/`, so the old `["*"]` skipped every
   `milestone/<slug>` PR;
-- `persist-credentials: false` on every read-only `actions/checkout`, so
-  the job token is not left in `.git/config` for a later step to read.
-  The two dependency-update templates keep the credential and say so in a
-  comment — `peter-evans/create-pull-request` pushes with it;
+- `persist-credentials: false` on every `actions/checkout`, including the
+  two dependency-update templates, so the job token is not left in
+  `.git/config` for a later step to read. Those templates do not need the
+  checkout credential because `peter-evans/create-pull-request` pushes with
+  its own `token` input;
 - a `concurrency:` group of `${{ github.workflow }}-${{ github.ref }}`
   with `cancel-in-progress: true`;
 - `timeout-minutes:` on every job — 10 for scan and quality jobs, 20 for
@@ -465,12 +466,15 @@ commands and run via `deno run worker/deno/mod.ts <name>`.
 ### `purge-stale-workflow-issues`
 
 Re-audits each configured repo (or a single repo passed via `--repo`)
-and closes any open issue carrying a workflow-sync deduplication tag —
+and closes open, fleet-authored issues carrying a workflow-sync deduplication tag —
 `<!-- vibe-coder:workflow-sync:<specId> -->` or
-`<!-- vibe-coder:workflow-sync:partial:<specId> -->` — whose underlying
-workflow now classifies as **present** under the current detection
-logic. Issues that still classify as `partial` or `missing` are left
-untouched.
+`<!-- vibe-coder:workflow-sync:partial:<specId> -->` — when the known spec
+is present, is public-only on a private repo, or requires a root-project
+marker that is absent. Root markers are `Cargo.toml`, `deno.json` or
+`deno.jsonc`, `package.json`, and `pom.xml`, `build.gradle` or
+`build.gradle.kts`, depending on the spec. Missing markers make a spec
+inapplicable even if its language no longer appears in GitHub's language
+counts. The command never changes workflow files.
 
 ```bash
 # Dry run across all configured repos
@@ -483,9 +487,8 @@ deno run --allow-all worker/deno/mod.ts \
 ```
 
 The command is intended as a one-off cleanup after improvements to the
-workflow auditor — the existing dedup tag prevents
-the regular `workflow-sync` from re-creating the false-positive issues,
-but it does not retroactively close them.
+workflow auditor. Regular `workflow-sync` also reconciles trusted requests
+whose root-project markers are absent.
 
 ### `audit-default-branch-rulesets`
 

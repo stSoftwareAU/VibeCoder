@@ -49,9 +49,9 @@ Version bump: no version file was changed for this update.
 ## Evidence
 
 Backend and CLI change; no visual surface changed. Read the workflow catalogue
-section of `docs/EXTENDING.md` and the workflow-sync operator entry in
-`docs/SETUP.md`; both now describe complete root evidence, reconciliation after
-language disappearance, and dry-run candidate logs.
+and purge command sections of `docs/EXTENDING.md` and the workflow-sync
+operator entry in `docs/SETUP.md`. They describe root evidence, reconciliation
+after language disappearance, dry-run candidate logs, and purge close conditions.
 
 The reported baseline failure was reproduced: 39 tests passed and three Cargo
 capability regressions failed across the five named suites. Marker fixtures in
@@ -100,8 +100,11 @@ test run.
   consume its result. No twinned applicability rule was found.
 - Existing Cargo alternative-implementation and local workflow/API fallback
   assertions are retained. Inapplicable-set expectations now reflect the whole
-  known root catalogue. Filing dedup still asserts all three universal searches
-  use all issue states; the separate reconciliation listing uses open issues.
+  known root catalogue. The old expectation that every issue listing uses all
+  states is obsolete: reconciliation lists open requests. Filing dedup must
+  still search all states, covered by
+  `worker/deno/tests/setup_workflow_sync_test.ts::syncWorkflowsForRepo - issue search uses '--state all' so closed issues dedupe (Issue #1829)`,
+  which checks all three universal dedup searches.
 - `deno task test:unit` over all auditor suites, alternative-groups, purge,
   sync, action references, language detection, template audit conformance and
   `spawn_timeout_bounds_1228_test.ts` — passed, 181 tests.
