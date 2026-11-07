@@ -138,10 +138,15 @@ depend on the mirror afterwards. The clone's `origin` is then set back to the
 GitHub URL: `git@github.com:<repo>.git` when
 `gh config get git_protocol -h github.com` reports `ssh`, otherwise HTTPS. Each
 fetch uses the currently resolved URL, even if the mirror was created with a
-different protocol. If the fetch fails, the repair fails with git's cause, the
-mirror is kept, and the next pass retries. Passes never remove mirrors; delete a
-mirror directory to force a fresh download. Codex reads the filesystem under its
-permissions profile, so it can read a mirror, but it cannot write to one because
+different protocol. The clone's `info/exclude` also lists the tool byproducts
+`*.profraw`, `*.profdata`, `lcov.info`, `/mutants.out/` and `/mutants.out.old/`,
+so an untracked copy is never committed as part of a fix (Issue #4827). The
+exclusion covers untracked paths only; a file the repository tracks is still
+committed when a repair edits it. If the fetch fails, the repair fails with git's
+cause, the mirror is kept, and the next pass retries. Passes never remove
+mirrors; delete a mirror directory to force a fresh download. Codex reads the
+filesystem under its permissions profile, so it can read a mirror, but it
+cannot write to one because
 its write grants are only the clone and scratch directory. Mirrors are not among
 the `~/.vibe-coder/fleet-pr-babysitter*` denylist entries, so do not treat them
 as credential-protected. Every other git command a repair runs through the
