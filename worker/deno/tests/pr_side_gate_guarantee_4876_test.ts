@@ -1,20 +1,24 @@
 /**
  * The PR-side push guarantee reaches the agent's prompt (Issue #4876).
  *
- * The PR-side flows push to a PR that already exists, after running only the
- * repository's configured pre-flight commands. Their skip record must therefore
+ * The PR-side flows push to a PR that already exists, with conditional
+ * checks and an independent PR-review fix verifier. Their skip record must
  * not promise a full gate run before the push. Each test drives one production
  * caller through its real seam and reads the prompt the agent is handed.
  *
  * Covered callers:
  * - `prFeedbackProcessorCommand.execute` (commands/pr_feedback_processor.ts)
+ * - `prSpellingProcessorCommand.execute` (commands/pr_spelling_processor.ts)
+ * - `prCiProcessorCommand.execute` (commands/pr_ci_processor.ts)
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { prSpellingProcessorCommand } from "../commands/pr_spelling_processor.ts";
+import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   type ClaudeDeps,
@@ -124,9 +128,31 @@ function makeGit(): GitDeps["runGitCommand"] {
   }) as unknown as GitDeps["runGitCommand"];
 }
 
-/** A `gh` stub answering the base-ref read and ignoring every other write. */
+/** A `gh` stub serving base-ref reads and the CI command's branch-lock timeline. */
 function makeGh(): GitHubDeps["runGhCommand"] {
+  let lockBody = "";
   return openPrGh((args: string[]) => {
+    if (args[0] === "issue" && args[1] === "comment") {
+      lockBody = args[args.indexOf("--body") + 1] ?? "";
+      return Promise.resolve(
+        "https://github.com/org/repo/issues/42#issuecomment-123",
+      );
+    }
+    if (
+      args.includes("--paginate") &&
+      args.some((arg) => arg.includes("BRANCH_UPDATE_LOCK"))
+    ) {
+      return Promise.resolve(JSON.stringify(
+        lockBody
+          ? [{
+            id: 123,
+            body: lockBody,
+            created_at: new Date().toISOString(),
+            author: "worker",
+          }]
+          : [],
+      ));
+    }
     if (
       args[0] === "pr" && args[1] === "view" && args.includes("baseRefName")
     ) {
@@ -210,6 +236,11 @@ Deno.test("prFeedbackProcessorCommand - the agent prompt carries the pre-flight-
     );
     const prompt = recordedOptions[0]!.prompt;
     assertStringIncludes(prompt, PRE_FLIGHT_SENTENCE);
+    assertStringIncludes(
+      prompt,
+      "PR-review feedback also runs its fix verifier",
+    );
+    assertEquals(prompt.includes("runs no checks"), false);
     assertEquals(
       prompt.includes(FULL_GATE_SENTENCE),
       false,
@@ -220,70 +251,139 @@ Deno.test("prFeedbackProcessorCommand - the agent prompt carries the pre-flight-
   }
 });
 
-Deno.test("prSpellingProcessorCommand - the agent prompt carries the pre-flight-only push guarantee (Issue #4876)", async () => {
+for (const preFlight of [undefined, ["deno fmt --check"]]) {
+  Deno.test(`prSpellingProcessorCommand - prompt budget and push checks with ${preFlight ? "configured pre-flight" : "no pre-flight"} (Issue #4876)`, async () => {
+    const workDir = await makeWorkDir();
+    try {
+      const recordedOptions: CapturedOptions[] = [];
+      let capturedPreFlight: Parameters<GitDeps["commitAndPushPending"]>[4];
+      const deps = createMockDeps({
+        logger: makeSilentLogger(),
+        claude: {
+          runClaudeWithRetry: makeClaudeMock(
+            ["Fixed spelling"],
+            recordedOptions,
+          ),
+        },
+        github: { runGhCommand: makeGh() },
+        git: {
+          setupRepo: () => Promise.resolve({ ok: true, value: workDir }),
+          runGitCommand: makeGit(),
+          getRepoDefaultBranch: () =>
+            Promise.resolve({ ok: true, value: "main" }),
+          syncFeatureBranchWithDefault: () =>
+            Promise.resolve({ ok: true, value: "main" }),
+          commitAndPushPending: (_branch, _message, _options, _allow, spec) => {
+            capturedPreFlight = spec;
+            return Promise.resolve({
+              ok: true,
+              value: {
+                committedNewChanges: false,
+                commitsPushed: 1,
+                finalUnpushedCount: 0,
+                finalUnpushedSource: "remote-head",
+              },
+            });
+          },
+        },
+      });
+      const config = buildDefaultWorkerConfig({
+        workDir,
+        claudeTimeout: 600,
+        repoConfig: {
+          "org/repo": {
+            skipMutationCheck: true,
+            ...(preFlight ? { preFlight } : {}),
+          },
+        },
+      });
+
+      const result = await prSpellingProcessorCommand.execute(
+        {
+          operation: "process",
+          repo: "org/repo",
+          "pr-number": 42,
+          "branch-name": "issue-42-fix-bug",
+          "check-run-id": "12345",
+          "check-name": "cspell",
+          "encoded-annotations": btoa(JSON.stringify([{
+            path: "src/main.ts",
+            start_line: 1,
+            message: "Unknown word: colour",
+          }])),
+        },
+        config,
+        deps,
+      );
+
+      assertEquals(result.success, true, result.message);
+      assertEquals(capturedPreFlight?.commands, preFlight);
+      assertEquals(recordedOptions.length, 1, "the agent must be invoked");
+      const prompt = recordedOptions[0]!.prompt;
+      assertStringIncludes(prompt, PRE_FLIGHT_SENTENCE);
+      assertStringIncludes(prompt, "Do NOT run ./quality.sh in this run");
+      assertEquals(
+        prompt.includes(FULL_GATE_SENTENCE),
+        false,
+        "a spelling-fix prompt must not promise a full gate before the push",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  });
+}
+
+Deno.test("prCiProcessorCommand - agent receives the CI push guarantee and dedicated budget (Issue #4876)", async () => {
   const workDir = await makeWorkDir();
+  const checkRunId = `4876-${crypto.randomUUID()}`;
   try {
     const recordedOptions: CapturedOptions[] = [];
     const deps = createMockDeps({
       logger: makeSilentLogger(),
       claude: {
-        runClaudeWithRetry: makeClaudeMock(["Fixed spelling"], recordedOptions),
+        runClaudeWithRetry: makeClaudeMock(["Fixed CI"], recordedOptions),
       },
       github: { runGhCommand: makeGh() },
       git: {
         setupRepo: () => Promise.resolve({ ok: true, value: workDir }),
         runGitCommand: makeGit(),
-        getRepoDefaultBranch: () =>
-          Promise.resolve({ ok: true, value: "main" }),
-        syncFeatureBranchWithDefault: () =>
-          Promise.resolve({ ok: true, value: "main" }),
-        commitAndPushPending: () =>
-          Promise.resolve({
-            ok: true,
-            value: {
-              committedNewChanges: false,
-              commitsPushed: 1,
-              finalUnpushedCount: 0,
-              finalUnpushedSource: "remote-head",
-            },
-          }),
       },
     });
-    const config = buildDefaultWorkerConfig({
-      workDir,
-      claudeTimeout: 600,
-      repoConfig: { "org/repo": { skipMutationCheck: true } },
-    });
-
-    const result = await prSpellingProcessorCommand.execute(
+    const result = await prCiProcessorCommand.execute(
       {
         operation: "process",
         repo: "org/repo",
         "pr-number": 42,
         "branch-name": "issue-42-fix-bug",
-        "check-run-id": "12345",
-        "check-name": "cspell",
-        "encoded-annotations": btoa(JSON.stringify([{
-          path: "src/main.ts",
-          start_line: 1,
-          message: "Unknown word: colour",
-        }])),
+        "check-run-id": checkRunId,
+        "check-name": "tests",
+        "encoded-annotations": btoa("[]"),
       },
-      config,
+      buildDefaultWorkerConfig({
+        workDir,
+        ciFixTimeout: 600,
+        claudeTimeout: 3600,
+        repoConfig: { "org/repo": { skipMutationCheck: true } },
+      }),
       deps,
     );
-
     assertEquals(result.success, true, result.message);
-    assertEquals(recordedOptions.length, 1, "the agent must be invoked");
-    const prompt = recordedOptions[0]!.prompt;
-    assertStringIncludes(prompt, PRE_FLIGHT_SENTENCE);
-    assertStringIncludes(prompt, "With none configured");
     assertEquals(
-      prompt.includes(FULL_GATE_SENTENCE),
-      false,
-      "a spelling-fix prompt must not promise a full gate before the push",
+      recordedOptions.length >= 1,
+      true,
+      result.data?.summary ?? "the agent must be invoked",
     );
+    const prompt = recordedOptions[0]!.prompt;
+    assertStringIncludes(prompt, "Do NOT run ./quality.sh in this run");
+    assertStringIncludes(prompt, "600s");
+    assertStringIncludes(prompt, "if Claude leaves uncommitted changes");
+    assertEquals(prompt.includes(FULL_GATE_SENTENCE), false);
   } finally {
     await Deno.remove(workDir, { recursive: true });
+    await Deno.remove(
+      `${resolveCiCheckStateDir()}/org_repo_${checkRunId}.retries`,
+    ).catch((error) => {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    });
   }
 });

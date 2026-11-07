@@ -2593,8 +2593,8 @@ export async function createProductionRunCoreDeps(
         }
 
         // Load quality and custom instructions for this repo. The PR already
-        // exists, so the skip record names only the pre-flight commands
-        // (Issue #4876).
+        // exists, so describe conditional push checks and the PR-review
+        // verifier without promising a full gate (Issue #4876).
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           comment.repo,

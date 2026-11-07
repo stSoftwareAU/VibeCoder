@@ -3013,13 +3013,15 @@ The push guarantee follows the flow. Issue completion runs the full worker gate
 before creating the PR. A CI fix attempts that gate when Claude leaves
 uncommitted changes after its attempt, then runs configured pre-flight commands
 before the worker push; with no such changes and no pre-flight commands, it runs
-no checks before that push. PR feedback and spelling fixes run only configured
-pre-flight commands before the worker push, if any; with none configured, they
-run no checks before that push. Custom PR prompts use the agent's pre-push hook,
-which runs changed-file checks and configured pre-flight commands when the agent
-pushes; the worker verifies that push afterwards. Each caller passes its flow to
-`buildQualityInstructions()` (Issue #4876), so a skip record names the checks
-that path runs and tells the agent to name the checks it ran.
+no checks before that push. PR feedback and spelling fixes do not run the full
+gate before the worker push. Configured pre-flight commands also enable
+changed-file checks. PR-review feedback runs its independent fix verifier even
+without pre-flight configuration; persistent findings can block the push.
+Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
+and configured pre-flight commands when the agent pushes; the worker verifies that push afterwards. PR-side callers pass their
+flow to `buildQualityInstructions()`; issue completion uses its full-gate
+default (Issue #4876). The skip record names that path's checks and tells the
+agent to name the checks it ran.
 
 So the instruction the agent receives is budget-aware, and it comes from one
 place: `buildQualityInstructions()` (`worker/deno/lib/repo_config.ts`), spliced
@@ -3059,7 +3061,7 @@ flowchart TD
     E --> F
     F -->|"issue completion"| G["Worker full gate before PR creation"]
     F -->|"CI fix"| H["Worker gate attempt if uncommitted changes remain; configured pre-flight before push"]
-    F -->|"feedback / spelling"| I["Configured pre-flight before worker push, if any"]
+    F -->|"feedback / spelling"| I["Configured pre-flight and changed-file checks; PR-review fix verifier even without configuration"]
     style E fill:#f4a261,stroke:#b5651d,color:#000
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```

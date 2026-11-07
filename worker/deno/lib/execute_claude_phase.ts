@@ -1177,9 +1177,7 @@ async function executeClaudePhaseBody(
     getRepoConfig(repoConfigs, repo, "skipAutoMerge") === "true";
 
   // --- Build quality and custom instructions ---
-  const qualityInstructions = buildQualityInstructions(repoConfigs, repo, {
-    pushGuarantee: "full-gate",
-  });
+  const qualityInstructions = buildQualityInstructions(repoConfigs, repo);
   const customInstructions = getCustomInstructions(repoConfigs, repo);
 
   // --- CI-failure log auto-fetch (Issue #3581) ---

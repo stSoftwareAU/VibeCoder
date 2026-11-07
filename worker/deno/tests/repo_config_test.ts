@@ -321,7 +321,15 @@ Deno.test("repo_config - buildQualityInstructions carries the pre-flight record 
       preFlightOnly,
       "does not run the full gate before this push",
     );
-    assertStringIncludes(preFlightOnly, "With none configured");
+    assertStringIncludes(
+      preFlightOnly,
+      "PR-review feedback also runs its fix verifier, even without configured pre-flight commands",
+    );
+    assertEquals(preFlightOnly.includes("runs no checks"), false);
+    assertStringIncludes(
+      preFlightOnly,
+      "Configured pre-flight commands enable changed-file checks",
+    );
     assertEquals(
       preFlightOnly.includes("again before the PR is raised"),
       false,

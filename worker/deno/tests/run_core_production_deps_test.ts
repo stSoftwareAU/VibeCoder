@@ -235,7 +235,11 @@ Deno.test("run-core PR feedback callback records its pre-flight push guarantee (
   let qualityInstructions = "";
   const { deps, cleanup } = await createProductionRunCoreDeps(
     createTestOptions({
-      config: buildDefaultWorkerConfig({ repos: ["org/repo"] }),
+      config: buildDefaultWorkerConfig({
+        repos: ["org/repo"],
+        prFeedbackTimeout: 600,
+        claudeTimeout: 3600,
+      }),
       findPrCommentsToFix: () =>
         Promise.resolve({
           ok: true,
@@ -243,7 +247,7 @@ Deno.test("run-core PR feedback callback records its pre-flight push guarantee (
             repo: "org/repo",
             prNumber: 42,
             branchName: "issue-42-fix",
-            commentType: "review",
+            commentType: "pr_review",
             commentId: "comment-1",
             encodedBody: btoa("Please fix the issue"),
           },
@@ -263,6 +267,16 @@ Deno.test("run-core PR feedback callback records its pre-flight push guarantee (
   );
   try {
     await deps.findAndProcessPrFeedback();
+    assertStringIncludes(
+      qualityInstructions,
+      "Do NOT run ./quality.sh in this run",
+    );
+    assertStringIncludes(qualityInstructions, "600s");
+    assertStringIncludes(
+      qualityInstructions,
+      "PR-review feedback also runs its fix verifier, even without configured pre-flight commands",
+    );
+    assertEquals(qualityInstructions.includes("runs no checks"), false);
     assertStringIncludes(
       qualityInstructions,
       "does not run the full gate before this push",

@@ -29,7 +29,10 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import { decodeAnnotations } from "../lib/pr_spelling_processor.ts";
-import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createDefaultDeps,
+  type WorkerDeps,
+} from "../lib/issue_worker_wiring.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -45,12 +48,13 @@ export { formatCiAnnotations };
 export type { CiFixResult };
 
 /** The pr-ci-processor command. */
-export const prCiProcessorCommand: Command = {
+export const prCiProcessorCommand = {
   name: "pr-ci-processor",
   description: "Process CI check failures on PRs (Issue #967, #1230)",
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    workerDeps?: WorkerDeps,
   ): Promise<CommandResult<CiFixResult>> {
     const operation = String(args["operation"] ?? "");
 
@@ -102,7 +106,7 @@ export const prCiProcessorCommand: Command = {
         };
       }
 
-      const deps = createDefaultDeps();
+      const deps = workerDeps ?? createDefaultDeps();
 
       // Top-level try/catch to prevent silent crashes (Issue #1230)
       try {
@@ -257,4 +261,4 @@ export const prCiProcessorCommand: Command = {
         `Unknown operation: ${operation}. Valid: format-ci-annotations, process`,
     };
   },
-};
+} satisfies Command;
