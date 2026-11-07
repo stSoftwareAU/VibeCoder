@@ -1,100 +1,100 @@
 ## Summary
 
-The shared pre-push gate now runs a repository's supported ShellCheck CI policy
-on affected shell scripts, and rechecks tracked scripts when ShellCheck
-configuration changes. Unsupported or unreadable policy, and an unavailable or
-mismatched binary, produce an incomplete result. This shifts ShellCheck
-diagnostics before completion and repair pushes. Closes #4631.
+Repository ShellCheck CI policy now validates affected scripts before agent,
+completion and repair publication, including repairs without configured
+pre-flight commands and fleet babysitter repairs. Configuration changes and
+removals revalidate remaining tracked scripts. Unsupported policy, unreadable
+configuration and missing or mismatched tools block validation. Closes #4631.
 
-Version bump: none; no version file was changed.
+Version bump: none; no version file changed.
 
 ## Spec
 
 ### Intent and Rationale
 
-- CI failures on changed shell scripts should be caught by the shared runner
-  before a PR or repair push.
-- Reusing the runner from #4625 keeps issue completion and repair validation on
-  the same path without adding a second scheduler.
+- Catch repository ShellCheck diagnostics before publication, using CI's flags,
+  exclusions, dialect and pinned version.
+- Share the implementation between completion, hooks and repair publication
+  without requiring configured pre-flight commands.
 
 ### Essential Design Decisions
 
-- The gate supports the repository-owned
-  `find . -name "*.sh" -type f -exec shellcheck … {} +` workflow form, carrying
-  its flags, exclusions, and explicit dialect.
-- ShellCheck runs from the repository root. Tracked `.shellcheckrc` and
-  `shellcheckrc` files in script ancestry, plus a configured `--rcfile`, remain
-  effective.
-- Changes to a tracked ShellCheck workflow or configuration revalidate remaining
-  tracked `.sh` files; deleted scripts are not passed to ShellCheck.
-- Unsupported, delegated, unreadable, unavailable, or version-mismatched policy
-  is incomplete and blocks success.
-- The blanket scan remains out of `quality_gate.ts`; the shared runner applies
-  each target repository's policy to affected files.
+- `runAffectedShellcheckChecks` in `pre_push_gate.ts` implements the supported
+  `find . -name "*.sh" -type f -exec shellcheck … {} +` policy. Discovery checks
+  executable commands, excluding logs, installation arguments, comments and
+  script path arrays. YAML block headers accept trailing comments.
+- The runner selects the nearest tracked repository `.shellcheckrc` or
+  `shellcheckrc`, honours an explicit repository-relative rcfile, and otherwise
+  uses `--norc`. Worker HOME, XDG and external ancestor configs cannot affect it.
+- Touched paths retain configuration deletions; execution targets exclude
+  deleted scripts. Unsupported or uninterpretable policy, delegation and tool
+  failures return incomplete infrastructure results rather than success.
+- `runPrePushGate` uses the shared implementation. `commitAndPushPending` gates
+  unpushed commits even without a pre-flight spec, applying ShellCheck alone in
+  that case. The babysitter's `validateAndCommit` checks staged repairs before
+  committing. The blanket scan remains outside `quality_gate.ts`.
 
 ### Undiscoverable Facts
 
-- Issue #4625 is closed and PR #4826 is merged. Its shared runner is
-  `worker/deno/lib/pre_push_gate.ts::runPrePushGate`.
-- VibeCoder CI pins ShellCheck 0.11.0 and invokes
-  `find . -name "*.sh" -type f -exec shellcheck -e SC1091 -e SC2034 {} +` from
-  the repository root, as recorded in `.github/workflows/validate-scripts.yml`.
-- The environment used for the behavioural tests provided ShellCheck 0.11.0.
+- #4625 originally added `publication_validation.ts` in commit `2350b1956`;
+  commit `1f8d83a1` reverted it before this branch's base. That module is absent,
+  so this change shares the existing pre-push runner and its extracted
+  ShellCheck implementation; it does not reuse #4625's reverted module or
+  depend on its restoration.
+- The behavioural tests use the available ShellCheck 0.11.0 binary, matching
+  `.github/workflows/validate-scripts.yml`.
 
 ## Evidence
 
-This is a backend/CLI validation change; no visual surface changed.
+This changes backend and CLI validation; there is no visual surface.
 
-```mermaid
-flowchart LR
-    A[Changed files and repository CI policy] --> B[Shared pre-push gate]
-    B -->|supported policy| C[ShellCheck affected scripts]
-    B -->|config or workflow changed| D[ShellCheck remaining tracked scripts]
-    C --> E[Pass or block push]
-    D --> E
-    B -->|unsupported or incomplete policy| F[Infrastructure failure]
-    F --> E
-```
+`pre_push_gate_test.ts` covers this repository's actual validate-scripts
+workflow and container-build workflow. `shellcheck_publication_test.ts` covers
+both repair entry points with real SC2086 diagnostics, missing-tool recovery,
+the CLI under `--no-config`, and conflicting ambient configuration.
 
-The Deno-native implementation adds no Node tooling or dependency and changes no
-lockfile.
+Read and updated the operator manual's **Agent pre-push hook and the
+changed-files check** section in `docs/CONFIGURATION.md`. Updated affected API
+comments to describe ShellCheck validation without a pre-flight spec. No
+second copy of the ShellCheck execution rule was found; all publication paths
+call the same implementation.
 
 ## Test Plan
 
-- `worker/deno/tests/pre_push_gate_test.ts`: a real SC2086 diagnostic blocks the
-  gate; clean and excluded diagnostics pass; explicit dialect and filenames with
-  spaces are handled; deleted and non-shell files are skipped; root and nested
-  config changes recheck tracked scripts; unsupported/delegated workflows and
-  unreadable configuration fail incomplete; missing-tool recovery revalidates;
-  CI/tool version mismatch fails incomplete; a later edit invalidates a prior
-  clean result.
-- `worker/deno/tests/git_push_preflight_test.ts`,
-  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`,
-  `worker/deno/tests/claude_runner_pre_push_3394_test.ts`, and
-  `worker/deno/tests/pre_push_hook_test.ts`: shared-runner blocking and
-  completion/repair paths remain covered.
-- `deno fmt --check lib/pre_push_gate.ts lib/quality_gate.ts tests/pre_push_gate_test.ts`
-  from `worker/deno`: passed.
-- `deno lint lib/pre_push_gate.ts lib/quality_gate.ts tests/pre_push_gate_test.ts`
-  from `worker/deno`: passed.
-- `deno check lib/pre_push_gate.ts tests/pre_push_gate_test.ts` from
-  `worker/deno`: passed.
-- `deno task test:unit tests/pre_push_gate_test.ts tests/git_push_preflight_test.ts tests/completion_phase_pre_push_gate_3689_test.ts tests/quality_gate_docs_consistency_test.ts tests/claude_runner_pre_push_3394_test.ts tests/pre_push_hook_test.ts`
-  from `worker/deno`: 124 passed, 0 failed.
-- `./quality.sh < /dev/null`: the last completed run failed with 33,014 passed,
-  36 failed, and 5 ignored. The failures traced to a `bash_ci_gate_scanner.ts`
-  import resolving `@std/yaml/parse` as “not a dependency” in
-  temporary-repository subprocesses. That import was removed and the delegation
-  check was implemented locally; the targeted six-file suite then passed. The
-  full gate was not rerun after that correction because the three full-gate
-  attempts for this run had been used. Full-gate status on the final code is
-  unverified.
-- `deno task pr-summary-check --base origin/main --issue-body-file /tmp/issue-4631-body.md --labels enhancement,work-on ../../docs/archive/pr-summaries/pr-summary-4631.md`
-  from `worker/deno`: passed; 0 blocked and 0 not checked.
-- `markdownlint-cli2 docs/archive/pr-summaries/pr-summary-4631.md`: passed; 0
-  issues.
-
-## Not checked
-
-The full quality gate was not rerun after the final correction. No PR was
-created because the required full gate did not pass on a verified final head.
+- `pre_push_gate_test.ts`: direct policy assertions pin unsafe paths, workflow
+  filtering, explicit failure discriminants and messages, delegated execution,
+  unsupported actions/commands/options, working directories, version pins,
+  missing rcfile values, `-rc`, comments and version probes. A real diagnostic
+  blocks through the existing `git_push.ts` caller with the actual repository
+  workflow. Commented YAML block headers and root/nested config deletion also
+  block on SC2086.
+- `shellcheck_publication_test.ts`: unconfigured repair publication leaves the
+  remote unchanged on SC2086; the babysitter refuses its commit. Both entry
+  points block with a missing binary, then revalidate diagnostics after tool
+  recovery, and accept corrected content. The real CLI accepts this
+  repository's workflows with empty hook input and rejects SC2086 despite
+  HOME, XDG and external ancestor suppression files.
+- In a disposable checkout of the original head, `f2a18ae1`, the two changed
+  ShellCheck test files produced 65 passes and 13 failures. Those failures
+  reproduce workflow discovery, the existing git/CLI caller regressions, YAML
+  block comments, root/nested config deletion, both repair entry-point
+  diagnostic and missing-tool checks, and ambient configuration suppression.
+  Both files pass with the fixes. The eight-file targeted suite passed all
+  147 tests, including completion, pre-flight, babysitter and hook coverage.
+- Reapplying 41 targeted mutations to the policy validation and replacement
+  comment/version guards made a test fail in every case, against a passing
+  unmutated baseline. This is targeted evidence for the reported survivors,
+  not a claim that the entire diff received a mutation sweep.
+- The reported empty-path operand was unreachable after rcfile value
+  validation; it was removed. The empty-line operand was redundant with
+  invocation recognition and was removed when command discovery was corrected.
+  Comment and version-probe guards are pinned by direct policy tests. No
+  mutation exemption is claimed.
+- `./quality.sh < /dev/null`: passed on the final implementation, including
+  the full Deno suite, lint, type-check, formatting, Markdown lint, Semgrep and
+  completeness checks. Config integration and Checkov were skipped by the gate.
+- `deno task check:manifests`: 848 passed, 0 failed, 1 ignored.
+- `deno task pr-summary-check --base origin/main ../../docs/archive/pr-summaries/pr-summary-4631.md`:
+  0 blocked; closure, independent review and reproduction status were not
+  checked because no issue-body file or labels were supplied.
+- Markdown lint and `git diff --check` passed.

@@ -173,6 +173,8 @@ export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
  * reachable from the pushed tips but not from `baseRef` — by default no
  * remote-tracking ref (`--remotes`) — minus deletions, and only those that
  * still exist as files in the working tree. Sorted and unique.
+ * `includeDeleted` retains all touched paths for configuration invalidation;
+ * callers must filter execution targets separately.
  *
  * `baseRef` widens the range to everything the branch has ahead of that ref,
  * including commits a WIP checkpoint already pushed (Issue #3689). It must be
@@ -184,6 +186,7 @@ export async function listPushedFiles(
   cwd: string,
   git: PrePushGit,
   baseRef?: string,
+  includeDeleted = false,
 ): Promise<Result<string[], string>> {
   if (refs.length === 0) return { ok: true, value: [] };
   if (baseRef !== undefined && (baseRef === "" || baseRef.startsWith("-"))) {
@@ -196,7 +199,7 @@ export async function listPushedFiles(
       "--name-only",
       "-z",
       "--format=",
-      "--diff-filter=d",
+      ...(includeDeleted ? [] : ["--diff-filter=d"]),
       ...refs.map((r) => r.localSha),
       "--not",
       baseRef ?? "--remotes",
@@ -216,6 +219,7 @@ export async function listPushedFiles(
     const name = part.replace(/^\n+|\n+$/g, "");
     if (name !== "") names.add(name);
   }
+  if (includeDeleted) return { ok: true, value: [...names].sort() };
   const existing: string[] = [];
   for (const name of names) {
     try {
@@ -247,7 +251,7 @@ export interface ShellcheckPolicy {
 const SHELLCHECK_CONFIGS = new Set([".shellcheckrc", "shellcheckrc"]);
 
 function isRepoRelativeShellcheckConfig(path: string): boolean {
-  return path !== "" && !path.startsWith("/") &&
+  return !path.startsWith("/") &&
     !path.split(/[\\/]/).some((part) => part === "." || part === "..");
 }
 
@@ -276,7 +280,9 @@ export async function repoShellcheckPolicy(
         }`,
       };
     }
-    const runSteps = workflowRunStepBodies(text);
+    const bodies = workflowRunStepBodies(text);
+    if (!bodies.ok) return bodies;
+    const runSteps = bodies.value;
     const delegated = await workflowDelegatesToShellcheck(
       repoRoot,
       tracked,
@@ -296,11 +302,8 @@ export async function repoShellcheckPolicy(
         error: `unsupported ShellCheck action in workflow ${path}`,
       };
     }
-    const commands = runSteps.flatMap((body) => body.split("\n")).map((line) =>
-      line.trim()
-    ).filter((line) =>
-      line !== "" && !line.startsWith("#") &&
-      /\bshellcheck\b/.test(line) && !/\bshellcheck\s+--version\b/.test(line)
+    const commands = runSteps.flatMap(executableShellCommands).filter(
+      isShellcheckInvocation,
     );
     if (commands.length === 0) continue;
     if (
@@ -350,21 +353,13 @@ export async function repoShellcheckPolicy(
               `unsupported positional ShellCheck argument in ${path}: ${command}`,
           };
         }
-        if (arg === "--rcfile" || arg === "-rc") {
-          const value = args[++i];
+        if (
+          arg === "--rcfile" || arg === "-rc" || arg.startsWith("--rcfile=")
+        ) {
+          const value = arg.startsWith("--rcfile=")
+            ? arg.slice("--rcfile=".length)
+            : args[++i];
           if (!value || value.startsWith("-")) {
-            return { ok: false, error: `missing ShellCheck rcfile in ${path}` };
-          }
-          if (!isRepoRelativeShellcheckConfig(value)) {
-            return {
-              ok: false,
-              error: `unsafe ShellCheck rcfile path in ${path}`,
-            };
-          }
-          explicitConfigFiles.push(value);
-        } else if (arg.startsWith("--rcfile=")) {
-          const value = arg.slice("--rcfile=".length);
-          if (value === "") {
             return { ok: false, error: `missing ShellCheck rcfile in ${path}` };
           }
           if (!isRepoRelativeShellcheckConfig(value)) {
@@ -434,20 +429,24 @@ async function workflowDelegatesToShellcheck(
   tracked: readonly string[],
   runSteps: readonly string[],
 ): Promise<Result<boolean, string>> {
-  const pending = new Set<string>();
-  for (const body of runSteps) {
-    for (const line of body.split("\n")) {
-      for (const token of tokeniseCommand(line)) {
-        const path = token.startsWith("./") ? token.slice(2) : token;
+  const scriptCalls = (body: string): string[] =>
+    executableShellCommands(body)
+      .map((line) => {
+        const tokens = tokeniseCommand(line);
+        const first = tokens[0];
         if (
-          path.endsWith(".sh") && !path.startsWith("/") &&
-          !path.split(/[\\/]/).includes("..") && tracked.includes(path)
+          first === "bash" || first === "sh" || first === "source" ||
+          first === "."
         ) {
-          pending.add(path);
+          return tokens.slice(1).find((t) => !t.startsWith("-")) ?? "";
         }
-      }
-    }
-  }
+        return first ?? "";
+      }).map((path) => path.startsWith("./") ? path.slice(2) : path)
+      .filter((path) =>
+        path.endsWith(".sh") &&
+        isRepoRelativeShellcheckConfig(path) && tracked.includes(path)
+      );
+  const pending = new Set(runSteps.flatMap(scriptCalls));
 
   const inspected = new Set<string>();
   while (pending.size > 0) {
@@ -466,23 +465,61 @@ async function workflowDelegatesToShellcheck(
         }`,
       };
     }
-    if (/\bshellcheck\b/.test(text)) return { ok: true, value: true };
-    for (const line of text.split("\n")) {
-      for (const token of tokeniseCommand(line)) {
-        const path = token.startsWith("./") ? token.slice(2) : token;
-        if (
-          path.endsWith(".sh") && !path.startsWith("/") &&
-          !path.split(/[\\/]/).includes("..") && tracked.includes(path)
-        ) {
-          pending.add(path);
-        }
-      }
+    if (executableShellCommands(text).some(isShellcheckInvocation)) {
+      return { ok: true, value: true };
     }
+    for (const called of scriptCalls(text)) pending.add(called);
   }
   return { ok: true, value: false };
 }
 
-function workflowRunStepBodies(text: string): string[] {
+function isShellcheckInvocation(line: string): boolean {
+  const tokens = tokeniseCommand(line);
+  return (tokens[0]?.split("/").at(-1) === "shellcheck" &&
+    tokens[1] !== "--version") ||
+    (tokens[0] === "find" &&
+      tokens.some((t, i) => t === "-exec" && tokens[i + 1] === "shellcheck"));
+}
+
+/** Inspect command positions, keeping quoted log/data strings out of discovery. */
+function executableShellCommands(body: string): string[] {
+  const commands: string[] = [];
+  let inArray = false;
+  for (const line of body.split("\n")) {
+    if (inArray) {
+      if (/^\s*\)/.test(line)) inArray = false;
+      continue;
+    }
+    if (/^\s*(?:(?:readonly|local|declare)(?:\s+-\w+)*\s+)?\w+=\(/.test(line)) {
+      inArray = !/\)\s*(?:#.*)?$/.test(line);
+      continue;
+    }
+    const parts =
+      line.match(/"[^"\n]*"|'[^'\n]*'|#[^\n]*|&&|\|\||[;|]|[^\s;|]+/g) ?? [];
+    let current: string[] = [];
+    const flush = () => {
+      while (
+        current.length &&
+        (/^[A-Za-z_][A-Za-z0-9_]*=/.test(current[0]!) ||
+          ["if", "then", "elif", "else", "!", "sudo", "env", "command"]
+            .includes(current[0]!))
+      ) {
+        current.shift();
+      }
+      if (current.length) commands.push(current.join(" "));
+      current = [];
+    };
+    for (const part of parts) {
+      if (part.startsWith("#")) break;
+      if ([";", "|", "&&", "||"].includes(part)) flush();
+      else current.push(part);
+    }
+    flush();
+  }
+  return commands;
+}
+
+function workflowRunStepBodies(text: string): Result<string[], string> {
   const bodies: string[] = [];
   const stepKey = /^(\s*)(?:-\s+)?run\s*:(.*)$/;
   const lines = text.split("\n");
@@ -491,8 +528,14 @@ function workflowRunStepBodies(text: string): string[] {
     const step = stepKey.exec(line);
     if (!step) continue;
     const rest = (step[2] ?? "").trim();
-    if (!/^[|>][-+0-9]*$/.test(rest)) {
-      bodies.push(rest);
+    if (!/^[|>][-+0-9]*(?:\s+#.*)?$/.test(rest)) {
+      if (/^[|>]/.test(rest)) {
+        return {
+          ok: false,
+          error: `cannot interpret workflow run body: ${rest}`,
+        };
+      }
+      bodies.push(/^(".*"|'.*')$/.test(rest) ? rest.slice(1, -1) : rest);
       continue;
     }
     const indent = (step[1] ?? "").length;
@@ -511,7 +554,7 @@ function workflowRunStepBodies(text: string): string[] {
     }
     bodies.push(block.join("\n"));
   }
-  return bodies;
+  return { ok: true, value: bodies };
 }
 
 function shellcheckVersionOutput(text: string): string | null {
@@ -809,23 +852,48 @@ export function planChangedFileChecks(
       };
     }
     const binary = quoteForTokeniser(opts.shellcheckBinary);
-    const files = quoteAll(opts.shellcheckFiles ?? []);
     if (binary === null) {
-      return {
-        ok: false,
-        error: `cannot safely quote the ShellCheck path ${
-          JSON.stringify(opts.shellcheckBinary)
-        }`,
-      };
+      return { ok: false, error: "cannot safely quote the ShellCheck path" };
     }
-    if (!files.ok) return files;
-    const flags = quoteArguments(opts.shellcheckPolicy.flags);
-    if (!flags.ok) return flags;
-    checks.push({
-      label: "shellcheck",
-      cwd: opts.repoRoot,
-      command: `${binary} ${flags.value} ${files.value}`,
-    });
+    const policy = opts.shellcheckPolicy;
+    for (const file of opts.shellcheckFiles ?? []) {
+      const explicit = policy.flags.some((a) =>
+        a === "--rcfile" || a === "-rc" || a.startsWith("--rcfile=")
+      );
+      // Choose the nearest tracked config, matching ShellCheck's search order,
+      // and stop at the repo root instead of falling back to the worker's HOME.
+      let config: string | undefined;
+      if (!explicit && !policy.flags.includes("--norc")) {
+        let dir = file.includes("/")
+          ? file.slice(0, file.lastIndexOf("/"))
+          : "";
+        for (;;) {
+          config = [".shellcheckrc", "shellcheckrc"].map((name) =>
+            dir ? `${dir}/${name}` : name
+          )
+            .find((candidate) => policy.configFiles.includes(candidate));
+          if (config || dir === "") break;
+          dir = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : "";
+        }
+      }
+      const args = [
+        ...policy.flags,
+        ...(explicit || policy.flags.includes("--norc")
+          ? []
+          : config
+          ? ["--rcfile", config]
+          : ["--norc"]),
+      ];
+      const quoted = quoteArguments(args);
+      if (!quoted.ok) return quoted;
+      const files = quoteAll([file]);
+      if (!files.ok) return files;
+      checks.push({
+        label: "shellcheck",
+        cwd: opts.repoRoot,
+        command: `${binary} ${quoted.value} ${files.value}`,
+      });
+    }
   }
 
   return { ok: true, value: checks };
@@ -1060,99 +1128,33 @@ async function findPathBinary(
   return null;
 }
 
-/**
- * Run the pre-push gate: the always-on changed-file checks first, then the
- * repo's pre-flight commands. `checksRun` lists the changed-file commands run.
- * The changed-file checks run whatever the run
- * budget — they are never skipped; all but the Floci deploy test are fast. Any
- * git, parse or planning error is an `Err`, never a pass.
- */
-export async function runPrePushGate(opts: {
+/** Shared ShellCheck validation for hooks, completion and repair publication. */
+export async function runAffectedShellcheckChecks(opts: {
   cwd: string;
-  stdin: string;
-  preFlightCommands: readonly string[];
-  timeoutSeconds?: number;
+  changed: readonly string[];
+  tracked: string[];
   runner?: PreFlightRunner;
-  git?: PrePushGit;
-  findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
-  findCspell?: (repoRoot: string) => Promise<string | null>;
+  timeoutSeconds?: number;
   findShellcheck?: (repoRoot: string) => Promise<string | null>;
-  /**
-   * Check every non-merge commit ahead of this ref instead of only commits on
-   * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
-   */
-  baseRef?: string;
 }): Promise<Result<{ checksRun: string[] }, Error>> {
-  const git = opts.git ?? defaultPrePushGit;
-  const fail = (message: string): Result<never, Error> => ({
-    ok: false,
-    error: new Error(message),
-  });
-
   const infrastructureFail = (message: string): Result<never, Error> => ({
     ok: false,
     error: new PrePushGateInfrastructureError(message),
   });
-
-  const refs = parsePrePushRefs(opts.stdin);
-  if (!refs.ok) return fail(refs.error);
-
-  const changed = await listPushedFiles(
-    refs.value,
-    opts.cwd,
-    git,
-    opts.baseRef,
-  );
-  if (!changed.ok) return infrastructureFail(changed.error);
-
-  const lsFiles = await git(["ls-files", "-z"], opts.cwd);
-  if (lsFiles.code !== 0) {
-    return infrastructureFail(
-      `git ls-files failed (exit ${lsFiles.code}): ${lsFiles.stderr.trim()}`,
-    );
-  }
-  const tracked = lsFiles.stdout.split("\0").filter((p) => p !== "");
-
-  const needsMarkdownlint = changed.value.some((p) =>
-    hasExtension(p, MARKDOWN_EXTENSIONS)
-  );
-  let markdownlintBinary: string | null = null;
-  if (needsMarkdownlint) {
-    const find = opts.findMarkdownlint ??
-      ((root: string) =>
-        findMarkdownlintBinary(root, Deno.env.get("PATH") ?? ""));
-    markdownlintBinary = await find(opts.cwd);
-  }
-
-  const cspellInCi = await repoCiRunsCspell(opts.cwd, tracked);
-  const needsCspell = cspellInCi &&
-    changed.value.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
-    [...CSPELL_ROOT_CONFIGS, ...CSPELL_NESTED_CONFIGS].some((n) =>
-      tracked.includes(n)
-    );
-  let cspellBinary: string | null = null;
-  if (needsCspell) {
-    const find = opts.findCspell ??
-      ((root: string) => findCspellBinary(root, Deno.env.get("PATH") ?? ""));
-    cspellBinary = await find(opts.cwd);
-  }
-
-  const shellcheckPolicy = await repoShellcheckPolicy(opts.cwd, tracked);
+  const shellcheckPolicy = await repoShellcheckPolicy(opts.cwd, opts.tracked);
   if (!shellcheckPolicy.ok) {
     return infrastructureFail(shellcheckPolicy.error);
   }
-  const shellcheckTouchedConfigs =
-    shellcheckPolicy.value?.configFiles.some((p) =>
-      changed.value.includes(p)
-    ) ||
-    shellcheckPolicy.value?.workflowFiles.some((p) =>
-      changed.value.includes(p)
-    ) || false;
+  const shellcheckTouchedConfigs = opts.changed.some((p) =>
+    SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "") ||
+    shellcheckPolicy.value?.configFiles.includes(p) ||
+    (p.startsWith(".github/workflows/") && /\.ya?ml$/.test(p))
+  );
   const shellcheckFiles = shellcheckPolicy.value &&
-      (shellcheckTouchedConfigs || changed.value.some((p) => p.endsWith(".sh")))
+      (shellcheckTouchedConfigs || opts.changed.some((p) => p.endsWith(".sh")))
     ? (shellcheckTouchedConfigs
-      ? tracked.filter((p) => p.endsWith(".sh"))
-      : changed.value.filter((p) => p.endsWith(".sh")))
+      ? opts.tracked.filter((p) => p.endsWith(".sh"))
+      : opts.changed.filter((p) => p.endsWith(".sh")))
     : [];
   if (shellcheckPolicy.value && shellcheckFiles.length > 0) {
     for (const path of shellcheckPolicy.value.configFiles) {
@@ -1223,19 +1225,168 @@ export async function runPrePushGate(opts: {
     }
   }
 
+  const plan = planChangedFileChecks([], [], {
+    repoRoot: opts.cwd,
+    markdownlintBinary: null,
+    shellcheckPolicy: shellcheckPolicy.value,
+    shellcheckBinary,
+    shellcheckFiles: existingShellcheckFiles,
+  });
+  if (!plan.ok) return infrastructureFail(plan.error);
+  const checksRun: string[] = [];
+  for (const check of plan.value) {
+    const result = await runPreFlightGate([check.command], {
+      cwd: check.cwd,
+      runner: opts.runner,
+      timeoutSeconds: opts.timeoutSeconds,
+    });
+    if (!result.ok) return result;
+    checksRun.push(check.command);
+  }
+  return { ok: true, value: { checksRun } };
+}
+
+/** Check staged repair files, including configuration deletions, before commit. */
+export async function gateStagedShellcheck(
+  cwd: string,
+  baseline = "HEAD",
+): Promise<Result<{ checksRun: string[] }, Error>> {
+  const paths = await defaultPrePushGit([
+    "diff",
+    "--cached",
+    "--name-only",
+    "-z",
+    baseline,
+    "--",
+  ], cwd);
+  const tracked = await defaultPrePushGit(["ls-files", "-z"], cwd);
+  for (const result of [paths, tracked]) {
+    if (result.code !== 0) {
+      return {
+        ok: false,
+        error: new PrePushGateInfrastructureError(
+          result.stderr || "cannot list staged ShellCheck inputs",
+        ),
+      };
+    }
+  }
+  return runAffectedShellcheckChecks({
+    cwd,
+    changed: paths.stdout.split("\0").filter(Boolean),
+    tracked: tracked.stdout.split("\0").filter(Boolean),
+  });
+}
+
+/**
+ * Run the pre-push gate: the always-on changed-file checks first, then the
+ * repo's pre-flight commands. `checksRun` lists the changed-file commands run.
+ * The changed-file checks run whatever the run
+ * budget — they are never skipped; all but the Floci deploy test are fast. Any
+ * git, parse or planning error is an `Err`, never a pass.
+ */
+export async function runPrePushGate(opts: {
+  cwd: string;
+  stdin: string;
+  preFlightCommands: readonly string[];
+  /** Repairs without configured pre-flight retain their existing formatter policy. */
+  shellcheckOnly?: boolean;
+  timeoutSeconds?: number;
+  runner?: PreFlightRunner;
+  git?: PrePushGit;
+  findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
+  findCspell?: (repoRoot: string) => Promise<string | null>;
+  findShellcheck?: (repoRoot: string) => Promise<string | null>;
+  /**
+   * Check every non-merge commit ahead of this ref instead of only commits on
+   * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
+   */
+  baseRef?: string;
+}): Promise<Result<{ checksRun: string[] }, Error>> {
+  const git = opts.git ?? defaultPrePushGit;
+  const fail = (message: string): Result<never, Error> => ({
+    ok: false,
+    error: new Error(message),
+  });
+
+  const infrastructureFail = (message: string): Result<never, Error> => ({
+    ok: false,
+    error: new PrePushGateInfrastructureError(message),
+  });
+
+  const refs = parsePrePushRefs(opts.stdin);
+  if (!refs.ok) return fail(refs.error);
+
+  const touched = await listPushedFiles(
+    refs.value,
+    opts.cwd,
+    git,
+    opts.baseRef,
+    true,
+  );
+  if (!touched.ok) return infrastructureFail(touched.error);
+  const existing: string[] = [];
+  for (const path of touched.value) {
+    try {
+      if ((await Deno.lstat(`${opts.cwd}/${path}`)).isFile) existing.push(path);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        return infrastructureFail(
+          `cannot inspect pushed file ${path}: ${error}`,
+        );
+      }
+    }
+  }
+  const changed = { value: opts.shellcheckOnly ? [] : existing };
+
+  const lsFiles = await git(["ls-files", "-z"], opts.cwd);
+  if (lsFiles.code !== 0) {
+    return infrastructureFail(
+      `git ls-files failed (exit ${lsFiles.code}): ${lsFiles.stderr.trim()}`,
+    );
+  }
+  const tracked = lsFiles.stdout.split("\0").filter((p) => p !== "");
+
+  const needsMarkdownlint = changed.value.some((p) =>
+    hasExtension(p, MARKDOWN_EXTENSIONS)
+  );
+  let markdownlintBinary: string | null = null;
+  if (needsMarkdownlint) {
+    const find = opts.findMarkdownlint ??
+      ((root: string) =>
+        findMarkdownlintBinary(root, Deno.env.get("PATH") ?? ""));
+    markdownlintBinary = await find(opts.cwd);
+  }
+
+  const cspellInCi = await repoCiRunsCspell(opts.cwd, tracked);
+  const needsCspell = cspellInCi &&
+    changed.value.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
+    [...CSPELL_ROOT_CONFIGS, ...CSPELL_NESTED_CONFIGS].some((n) =>
+      tracked.includes(n)
+    );
+  let cspellBinary: string | null = null;
+  if (needsCspell) {
+    const find = opts.findCspell ??
+      ((root: string) => findCspellBinary(root, Deno.env.get("PATH") ?? ""));
+    cspellBinary = await find(opts.cwd);
+  }
+
+  const shellcheck = await runAffectedShellcheckChecks({
+    ...opts,
+    changed: touched.value,
+    tracked,
+  });
+  if (!shellcheck.ok) return shellcheck;
+
   const plan = planChangedFileChecks(changed.value, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
     cspellBinary,
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
-    shellcheckPolicy: shellcheckPolicy.value,
-    shellcheckBinary,
-    shellcheckFiles: existingShellcheckFiles,
   });
   if (!plan.ok) return fail(plan.error);
 
-  const checksRun: string[] = [];
+  const checksRun: string[] = [...shellcheck.value.checksRun];
   for (const check of plan.value) {
     const result = await runPreFlightGate([check.command], {
       cwd: check.cwd,

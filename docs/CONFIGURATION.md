@@ -5171,15 +5171,20 @@ The hook runs two stages:
    - `shellcheck` on changed `.sh` files when a tracked workflow contains the
      supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form. The
      gate carries the workflow's options (including exclusions and an explicit
-     shell dialect), runs from the repository root, and lets ShellCheck read
-     tracked `.shellcheckrc` or `shellcheckrc` files from each script's
-     directory ancestry, or the configured `--rcfile`. A changed ShellCheck
-     workflow or config rechecks the remaining tracked `.sh` files; deleted
-     scripts are omitted. The gate checks the available binary against the
+     shell dialect) and runs from the repository root. It selects the nearest
+     tracked `.shellcheckrc` or `shellcheckrc` in each script's repository
+     ancestry, or uses the configured `--rcfile`; absent a repository config,
+     `--norc` prevents worker HOME, XDG and external ancestor settings from
+     changing the result. A changed or deleted ShellCheck workflow or config
+     rechecks the remaining tracked `.sh` files; deleted scripts are omitted.
+     The gate checks the available binary against the
      version declared by CI before running it. An unsupported command shape,
      delegated gate/action, unreadable config or unavailable/mismatched tool is
      an incomplete infrastructure result, never a successful validation. A
-     repository with no CI ShellCheck invocation gets no ShellCheck check;
+     repository with no CI ShellCheck invocation gets no ShellCheck check.
+     The same validation runs before `commitAndPushPending` publishes repairs,
+     including repositories without configured pre-flight commands, and before
+     the fleet babysitter commits staged repairs;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push
      adds or modifies a file whose path starts with `infra/cloudformation/` and
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
