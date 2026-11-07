@@ -222,6 +222,10 @@ function buildMockRunner(config: {
       return Promise.resolve(ok(""));
     }
 
+    if (cmd.includes("view")) {
+      return Promise.resolve(ok(JSON.stringify({ comments: [] })));
+    }
+
     // Issue creation
     if (joined.includes("gh issue create")) {
       if (config.issueCreationFails) {
@@ -397,6 +401,42 @@ Deno.test("syncWorkflowsForRepo - reconciles obsolete Cargo issue with no workfl
     true,
   );
 });
+
+for (const scenario of ["reopened", "lookup failure"] as const) {
+  Deno.test(`syncWorkflowsForRepo - ${scenario} is not closed`, async () => {
+    const { runner: base, state } = buildMockRunner({
+      languagesApi: { Rust: 1 },
+      workflowSyncIssues: [{
+        number: 4693,
+        body: deduplicationTag("cargo-audit"),
+      }],
+    });
+    const logs: string[] = [];
+    await syncWorkflowsForRepo("owner/repo", {
+      fleetAuthors: [FLEET_AUTHOR],
+      resolvePins: cataloguePins,
+      log: (message) => logs.push(message),
+      runCommand: (cmd) => {
+        if (cmd.includes("view")) {
+          return Promise.resolve(
+            scenario === "lookup failure"
+              ? fail("lookup failed")
+              : ok(JSON.stringify({
+                comments: [{
+                  body:
+                    "requires a root project marker that is absent\n<!-- vibe-coder:purge-not-applicable:cargo-audit -->",
+                  author: { login: FLEET_AUTHOR },
+                }],
+              })),
+          );
+        }
+        return base!(cmd);
+      },
+    });
+    assertEquals(state.closedIssues.length, 0);
+    assertEquals(logs.length > 0, true);
+  });
+}
 
 Deno.test("syncWorkflowsForRepo - files Cargo again after a missing root marker returns", async () => {
   let rootPresent = false;

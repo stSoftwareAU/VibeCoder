@@ -83,6 +83,7 @@ import {
   type CloneForRepairDeps,
   defaultRemoteUrl,
   eligibleAuthor,
+  excludeRepairByproducts,
   finishBabysitterRepair,
   fix,
   loadConfigAndPublishDeployment,
@@ -95,6 +96,7 @@ import {
   recordBabysitterDeployment,
   recoverTemporaryClones,
   removeRepairDirs,
+  REPAIR_BYPRODUCT_EXCLUDES,
   requestedReviews,
   resumePendingPublication,
   runRepairs,
@@ -2265,6 +2267,171 @@ Deno.test("failed clone is attempted once and preserves its original error", asy
       "clone timed out",
     );
     assertEquals(calls.filter((args) => args.includes("clone")).length, 1);
+  });
+});
+
+const repairBot = { login: "babysitter[bot]", id: "12345" };
+
+/**
+ * A repair clone of a local upstream, checked out on main as the agent would
+ * find it (cloneForRepair leaves it `--no-checkout`). `beforeClone` may change
+ * the upstream first.
+ */
+async function prepareRepairClone(
+  root: string,
+  beforeClone?: (work: string, upstream: string) => Promise<void>,
+): Promise<string> {
+  const { upstream, work } = await makeUpstream(root);
+  await beforeClone?.(work, upstream);
+  const dir = `${root}/clone`;
+  await cloneForRepair("owner/repo", dir, {
+    remoteUrl: () => Promise.resolve(upstream),
+    mirrorRoot: `${root}/mirrors`,
+  });
+  await runGitForTest(["checkout", "-q", "main"], { cwd: dir });
+  return dir;
+}
+
+/** The untracked byproducts a test run leaves behind (Issue #4827). */
+async function writeToolByproducts(dir: string): Promise<void> {
+  await Deno.mkdir(`${dir}/crate`, { recursive: true });
+  await Deno.writeTextFile(`${dir}/crate/default_1_0_2.profraw`, "raw\n");
+  await Deno.writeTextFile(`${dir}/crate/default_1_0_2.profdata`, "indexed\n");
+  await Deno.writeTextFile(`${dir}/lcov.info`, "TN:\n");
+  await Deno.mkdir(`${dir}/mutants.out`, { recursive: true });
+  await Deno.writeTextFile(`${dir}/mutants.out/x.json`, "{}\n");
+  await Deno.mkdir(`${dir}/mutants.out.old`, { recursive: true });
+  await Deno.writeTextFile(`${dir}/mutants.out.old/x.json`, "{}\n");
+}
+
+Deno.test("a repair commit stages the tracked fix and leaves untracked tool byproducts out (Issue #4827)", async () => {
+  await withTempRoot(async (root) => {
+    const dir = await prepareRepairClone(root);
+    await Deno.writeTextFile(`${dir}/a.txt`, "fixed\n");
+    await writeToolByproducts(dir);
+    await validateAndCommit(dir, 7, repairBot);
+    assertEquals(
+      await runGitForTest(["show", "--name-only", "--format=", "HEAD"], {
+        cwd: dir,
+      }),
+      "a.txt",
+    );
+    assert(await exists(`${dir}/crate/default_1_0_2.profraw`));
+    assert(await exists(`${dir}/crate/default_1_0_2.profdata`));
+    assert(await exists(`${dir}/lcov.info`));
+    assert(await exists(`${dir}/mutants.out/x.json`));
+    assert(await exists(`${dir}/mutants.out.old/x.json`));
+  });
+});
+
+Deno.test("a repair whose only untracked files are tool byproducts reports no changes and commits nothing (Issue #4827)", async () => {
+  await withTempRoot(async (root) => {
+    const dir = await prepareRepairClone(root);
+    const head = await runGitForTest(["rev-parse", "HEAD"], { cwd: dir });
+    await writeToolByproducts(dir);
+    const exchange = `${await Deno.realPath(dir)}/.git/babysitter-scratch`;
+    await Deno.mkdir(exchange);
+    const service = fakePrBodyService({
+      headSha: head,
+      body: staleMarkerlessBody,
+    });
+    const repairDeps = repairRunCommand({ headSha: head });
+    const committed: string[] = [];
+    const logged: string[] = [];
+    const log = console.log;
+    console.log = (...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    };
+    try {
+      await finishBabysitterRepair(
+        "owner/repo",
+        { ...pr, number: 7, headRefName: "issue-4827-fix", headRefOid: head },
+        dir,
+        "babysitter[bot]",
+        [],
+        {
+          renewalFailed: () => false,
+          // Real git for the status read, so the clone's exclude file decides.
+          runCommand: (command, args, cwd) =>
+            command === "git" && args[0] === "status"
+              ? runGitForTest(args, { cwd })
+              : repairDeps(command, args, cwd),
+          gh: service.deps.runGhCommand,
+          syncBodyDeps: service.deps,
+          verifyReviews: allVerified,
+          validateAndCommit: () => {
+            committed.push("commit");
+            return Promise.reject(new Error("validateAndCommit must not run"));
+          },
+          dismiss: () => Promise.resolve(),
+        },
+        { exchange },
+      );
+    } finally {
+      console.log = log;
+    }
+    assertEquals(committed, []);
+    assert(
+      logged.some((line) => line.includes("agent made no changes")),
+      logged.join("\n"),
+    );
+  });
+});
+
+Deno.test("a repo that tracks lcov.info still commits an edit to it (Issue #4827)", async () => {
+  await withTempRoot(async (root) => {
+    const dir = await prepareRepairClone(root, async (work, upstream) => {
+      await commitFile(work, "lcov.info", "TN:\n");
+      await fixtureGit(["push", "-q", upstream, "main"], work);
+    });
+    await Deno.writeTextFile(`${dir}/lcov.info`, "TN:\nSF:a.txt\n");
+    await validateAndCommit(dir, 7, repairBot);
+    assertEquals(
+      await runGitForTest(["show", "--name-only", "--format=", "HEAD"], {
+        cwd: dir,
+      }),
+      "lcov.info",
+    );
+  });
+});
+
+Deno.test("the repair clone's info/exclude gets each byproduct pattern once, however often the helper runs (Issue #4827)", async () => {
+  await withTempRoot(async (root) => {
+    const dir = await prepareRepairClone(root);
+    const excludePath = `${dir}/.git/info/exclude`;
+    // No trailing newline, so the helper must separate its lines from it.
+    await Deno.writeTextFile(excludePath, "# local\ncustom-line");
+    await excludeRepairByproducts(dir, runGitForTest);
+    await excludeRepairByproducts(dir, runGitForTest);
+    const lines = (await Deno.readTextFile(excludePath)).split("\n");
+    assertEquals(lines[0], "# local");
+    assertEquals(lines[1], "custom-line");
+    for (const pattern of REPAIR_BYPRODUCT_EXCLUDES) {
+      assertEquals(lines.filter((line) => line === pattern).length, 1, pattern);
+    }
+  });
+});
+
+Deno.test("byproduct preparation rejects an unresolved git exclude path", async () => {
+  await withTempRoot(async (root) => {
+    await assertRejects(
+      () => excludeRepairByproducts(root, () => Promise.resolve("  \n")),
+      Error,
+      "git printed nothing",
+    );
+  });
+});
+
+Deno.test("byproduct preparation preserves a non-missing filesystem error", async () => {
+  await withTempRoot(async (root) => {
+    const dir = await prepareRepairClone(root);
+    const excludePath = `${dir}/.git/info/exclude`;
+    await Deno.remove(excludePath);
+    await Deno.mkdir(excludePath);
+    await assertRejects(
+      () => excludeRepairByproducts(dir, runGitForTest),
+      Error,
+    );
   });
 });
 

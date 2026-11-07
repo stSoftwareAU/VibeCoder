@@ -42,6 +42,8 @@ import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupAuthorOptions,
   type AlertDedupRow,
+  parseIssueViewCommentRows,
+  selectFleetAuthoredComments,
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
 import {
@@ -252,6 +254,50 @@ function notApplicableMarker(specId: string): string {
   return `<!-- vibe-coder:purge-not-applicable:${specId} -->`;
 }
 
+/** Verify whether a fleet closure retired this request for a missing root marker. */
+export async function hasMissingRootClosure(
+  repo: string,
+  number: number,
+  specId: string,
+  runner: (cmd: string[]) => Promise<CommandOutput>,
+  options: AlertDedupAuthorOptions,
+  log: (message: string) => void,
+): Promise<boolean> {
+  const view = await runner([
+    "gh",
+    "issue",
+    "view",
+    String(number),
+    "--repo",
+    repo,
+    "--json",
+    "comments",
+  ]);
+  if (!view.success) {
+    throw new Error(`Could not read comments on #${number}: ${view.stderr}`);
+  }
+  const parsed: unknown = JSON.parse(view.stdout);
+  if (
+    !parsed || typeof parsed !== "object" ||
+    !Array.isArray((parsed as Record<string, unknown>).comments)
+  ) {
+    throw new Error(`Missing comments on #${number}`);
+  }
+  const comments = parseIssueViewCommentRows(
+    (parsed as Record<string, unknown>).comments,
+  )
+    .filter((comment) =>
+      comment.body.includes(notApplicableMarker(specId)) &&
+      comment.body.includes("requires a root project marker that is absent")
+    );
+  return (await selectFleetAuthoredComments(
+    comments,
+    `workflow-sync ${repo} #${number}`,
+    options,
+    log,
+  )).length > 0;
+}
+
 /** Build the closing comment posted on a stale workflow-sync issue. */
 function buildClosingComment(
   candidate: CandidateIssue,
@@ -330,6 +376,29 @@ export async function reconcileInapplicableWorkflowIssues(
       specId: tag.specId,
       kind: tag.kind,
     };
+    try {
+      if (
+        await hasMissingRootClosure(
+          repo,
+          issue.number,
+          tag.specId,
+          runner,
+          options,
+          log,
+        )
+      ) {
+        log(`Skipping reopened workflow request #${issue.number} in ${repo}`);
+        continue;
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log(`Skipping workflow request #${issue.number} in ${repo}: ${reason}`);
+      failures.push(candidate);
+      failureReasons.push(
+        `#${candidate.number} ${candidate.specId}: ${reason}`,
+      );
+      continue;
+    }
     if (options.dryRun) {
       closed.push(candidate);
     } else {
@@ -559,6 +628,32 @@ export async function purgeStaleWorkflowIssuesForRepo(
   // 6. Decide and act per remaining candidate.
   for (const candidate of auditCandidates) {
     if (inapplicableSpecIds.has(candidate.specId)) {
+      try {
+        if (
+          await hasMissingRootClosure(
+            repo,
+            candidate.number,
+            candidate.specId,
+            runner,
+            options,
+            log,
+          )
+        ) {
+          log(
+            `Skipping reopened workflow request #${candidate.number} in ${repo}`,
+          );
+          kept.push(candidate);
+          continue;
+        }
+      } catch (error) {
+        log(
+          `Skipping workflow request #${candidate.number} in ${repo}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        failures.push(candidate);
+        continue;
+      }
       if (options.dryRun) {
         notApplicable.push(candidate);
       } else {

@@ -109,6 +109,8 @@ function commandOutput(
       return "[]";
     }
   }
+  // Liveness probe for interrupted babysitter clones; success means "owner alive", so nothing is removed.
+  if (executable === "/bin/kill" && args[0] === "-0") return "";
   if (executable === "git") {
     if (args.includes("maintenance")) return "";
     if (args[0] === "clone") {
@@ -126,6 +128,10 @@ function commandOutput(
       return "";
     }
     if (args.includes("fetch") || args.includes("checkout")) return "";
+    // The repair clone's byproduct excludes (Issue #4827); git answers relative.
+    if (args.join(" ") === "rev-parse --git-path info/exclude") {
+      return ".git/info/exclude\n";
+    }
     // Exit 0: the base is already in the head, so the repair merges nothing.
     if (args.includes("merge-base") && args.includes("--is-ancestor")) {
       return "";

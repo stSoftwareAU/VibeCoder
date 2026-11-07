@@ -8,6 +8,8 @@ legitimate npm requests when Deno and web assets coexist with `package.json`.
 Closure comments explain the missing prerequisite, and their authenticated
 markers allow a new request when the root marker returns. Comments name the
 command that closed the request, and setup help describes automatic closures.
+Both commands leave a request open when a trusted prior closure shows that it
+was reopened; an unreadable comment list prevents closure and reports failure.
 The purge command's
 dry run reports the would-close candidates; setup workflow-sync has no dry run.
 Existing workflow files remain untouched.
@@ -38,7 +40,8 @@ Version bump: no version file was changed for this update.
   independently of current language presence.
 - Only known workflow-sync requests verified as fleet-authored are reconciled.
   An unresolved fleet identity cannot authorise closure. The purge dry run
-  reports the same trusted root-marker candidates without closing them.
+  reports the same trusted root-marker candidates without closing them. Both
+  paths check comments before closing and respect a verified previous closure.
 - Filing dedup checks closed matches for fleet-authored missing-root-project
   comments. Other closed requests still suppress duplicates; a failed comment
   lookup skips filing that spec and logs the failure.
@@ -97,6 +100,7 @@ test run.
   tags, dry-run writes, and exact close-failure causes.
 - `worker/deno/tests/setup_workflow_sync_test.ts`: reconciliation with no gaps;
   the reconciliation comment identifies `setup workflow-sync`;
+  reopened requests and comment lookup failures remain open;
   listing/close failures; logged dry-run candidates; hybrid npm preservation;
   disappeared-language reconciliation; human-authored matching requests and
   unresolved fleet identity; fleet wrapper coverage; complete error results for
@@ -117,19 +121,18 @@ test run.
   still search all states, covered by
   `worker/deno/tests/setup_workflow_sync_test.ts::syncWorkflowsForRepo - issue search uses '--state all' so closed issues dedupe (Issue #1829)`,
   which checks all three universal dedup searches.
-- `deno task test:unit` over all auditor suites, alternative-groups, purge,
-  sync, action references, language detection, template audit conformance and
-  `spawn_timeout_bounds_1228_test.ts` — passed, 181 tests.
+- `worker/deno/tests/purge_stale_workflow_issues_test.ts::purge - fleet closure comment protects only verified reopened requests`:
+  a previously closed and reopened request remains open; human-authored marker
+  comments do not prevent a first closure and failed reads prevent the write.
+- The former behaviour that reclosed every eligible reopened request is obsolete;
+  first closures remain covered by
+  `worker/deno/tests/setup_workflow_sync_test.ts::syncWorkflowsForRepo - reconciles obsolete Cargo issue with no workflow gaps`.
 - Mutation-driven cleanup removes a repeated tag guard already proved by the
   preceding filter and redundant config forwarding to an already-built runner.
 - Diff-scoped mutation check of the branch's production changes in a disposable
-  checkout — completed: 87 candidates, 85 killed, two rejected as invalid
-  syntax, zero survivors. All importing-test baselines passed. No mutation
-  exemptions or repository skip setting were used.
-- Targeted `deno check --frozen --lock=deno.lock`, `deno lint`, and
-  `deno fmt
-  --check` on changed source/test files — passed; Markdown lint —
-  passed.
-- The earlier full `timeout 900 ./quality.sh < /dev/null` reached the parallel
-  test stage and timed out with exit 124. The worker reruns the full gate after
-  this repair.
+  checkout before the reopened-request repair — completed: 87 candidates, 85
+  killed, two rejected as invalid syntax, zero survivors. All importing-test
+  baselines passed. No mutation exemptions or repository skip setting were used.
+- After the review repair, the sync, purge and marker-verification suites passed
+  117 tests. Whole-tree Deno format, lint and type checks passed. The reopened
+  sync regression failed before the repair and passed after it.

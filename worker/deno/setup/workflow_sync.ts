@@ -40,8 +40,6 @@ import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupAuthorOptions,
   type AlertDedupRow,
-  parseIssueViewCommentRows,
-  selectFleetAuthoredComments,
   selectFleetAuthoredMatches,
 } from "../lib/alert_dedup_authors.ts";
 import {
@@ -51,7 +49,10 @@ import {
   type ResolvedActionPins,
 } from "../lib/action_pin_resolver.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
-import { reconcileInapplicableWorkflowIssues } from "../lib/purge_stale_workflow_issues.ts";
+import {
+  hasMissingRootClosure,
+  reconcileInapplicableWorkflowIssues,
+} from "../lib/purge_stale_workflow_issues.ts";
 import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 // ---------------------------------------------------------------------------
@@ -210,44 +211,16 @@ async function issueExistsByTag(
   const specId = tag.match(/workflow-sync:(?:partial:)?([^ ]+) -->/)?.[1];
   for (const row of verified) {
     if (row.state !== "CLOSED" || !specId) return true;
-    const view = await runner([
-      "gh",
-      "issue",
-      "view",
-      String(row.number),
-      "--repo",
-      repo,
-      "--json",
-      "comments",
-    ]);
-    if (!view.success) {
-      throw new Error(
-        `Could not read comments on #${row.number}: ${view.stderr}`,
-      );
-    }
-    const parsed: unknown = JSON.parse(view.stdout);
     if (
-      !parsed || typeof parsed !== "object" ||
-      !Array.isArray((parsed as Record<string, unknown>).comments)
-    ) {
-      throw new Error(`Missing comments on #${row.number}`);
-    }
-    const comments = parseIssueViewCommentRows(
-      (parsed as Record<string, unknown>).comments,
-    )
-      .filter((comment) =>
-        comment.body.includes(
-          `<!-- vibe-coder:purge-not-applicable:${specId} -->`,
-        ) &&
-        comment.body.includes("requires a root project marker that is absent")
-      );
-    const retired = await selectFleetAuthoredComments(
-      comments,
-      `workflow-sync ${repo} #${row.number}`,
-      options,
-      log,
-    );
-    if (retired.length === 0) return true;
+      !await hasMissingRootClosure(
+        repo,
+        row.number,
+        specId,
+        runner,
+        options,
+        log,
+      )
+    ) return true;
   }
   return false;
 }

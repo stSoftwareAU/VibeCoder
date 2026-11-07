@@ -140,6 +140,10 @@ function buildMockRunner(opts: MockOptions): {
       return Promise.resolve(ok(JSON.stringify(json)));
     }
 
+    if (joined.includes("gh issue view")) {
+      return Promise.resolve(ok(JSON.stringify({ comments: [] })));
+    }
+
     // gh issue close
     if (joined.includes("gh issue close")) {
       state.closeCalls++;
@@ -921,6 +925,8 @@ Deno.test("purge command - single and fleet modes preserve hybrid npm requests a
         },
       ])
     });
+        } else if (args[0] === "issue" && args[1] === "view") {
+          stdout = JSON.stringify({ comments: [] });
         } else if (args[0] === "issue" && args[1] === "close") {
           closed.push(Number(args[2]));
         } else if (args[1] === "repos/owner/repo/contents/") {
@@ -976,6 +982,42 @@ Deno.test("reconcileInapplicableWorkflowIssues - empty prerequisites return empt
     value: { closed: [], failures: [], failureReasons: [] },
   });
 });
+
+for (const scenario of ["fleet", "human", "failure"] as const) {
+  Deno.test(`purge - ${scenario} closure comment protects only verified reopened requests`, async () => {
+    const { runner, state } = buildMockRunner({
+      issues: [{ number: 5000, body: deduplicationTag("cargo-audit") }],
+    });
+    const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+      fleetAuthors: [FLEET_AUTHOR],
+      log: () => {},
+      runCommand: (cmd) => {
+        if (cmd.includes("view")) {
+          return Promise.resolve(
+            scenario === "failure" ? fail("lookup failed") : ok(JSON.stringify({
+              comments: [{
+                body:
+                  "requires a root project marker that is absent\n<!-- vibe-coder:purge-not-applicable:cargo-audit -->",
+                author: {
+                  login: scenario === "fleet" ? FLEET_AUTHOR : "human",
+                },
+              }],
+            })),
+          );
+        }
+        return runner!(cmd);
+      },
+    });
+    assertEquals(result.ok, true);
+    assertEquals(state.closeCalls, scenario === "human" ? 1 : 0);
+    if (result.ok) {
+      assertEquals(
+        result.value.failures.length,
+        scenario === "failure" ? 1 : 0,
+      );
+    }
+  });
+}
 
 for (const dryRun of [false, true]) {
   Deno.test(`reconcileInapplicableWorkflowIssues - exact trusted candidates and writes (dryRun=${dryRun})`, async () => {
