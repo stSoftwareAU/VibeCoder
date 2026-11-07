@@ -70,6 +70,16 @@ flowchart LR
 
 ## Test Plan
 
+- Review follow-up: the obsolete assumption that heredoc bodies cannot contain
+  installs is replaced by scanning each body line. Multiline quoted script lines
+  are also scanned while retaining the joined command; full heredoc delimiters
+  and unfinished heredocs preserve later findings. The remaining quote-state
+  isolation and npm, gem and cargo detection are covered by
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::heredoc bodies and unfinished quotes do not hide later installs`
+  and `worker/deno/tests/ci_install_pin_scanner_test.ts::script bodies and full heredoc delimiters remain scanned`.
+  Both failed before the fix. The scanner and audit documentation are the
+  copies of the normalisation description; no second implementation was found.
+
 - Review follow-up: heredoc bodies no longer contribute shell quote state;
   unfinished quotes and expressions fall back to scanning physical lines.
   npm, gem and cargo installs after heredocs remain detectable, covered by

@@ -676,8 +676,60 @@ Deno.test("heredoc bodies and unfinished quotes do not hide later installs", () 
     findUnpinnedInstalls(
       "cat <<A <<-'B'\nnpm install -g phantom\nA\nIt's done\n\tB\ncargo install cargo-audit",
     ).map((f) => f.packageName),
-    ["cargo-audit"],
+    ["phantom", "cargo-audit"],
   );
+});
+
+Deno.test("script bodies and full heredoc delimiters remain scanned", () => {
+  for (
+    const opener of [
+      "bash <<'EOF'",
+      "sudo sh -s <<EOF",
+      "ssh deploy@host <<'EOF'",
+      "docker run -i node:22 sh <<'EOF'",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(`${opener}\nnpm install -g pa11y-ci\nEOF`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+      opener,
+    );
+  }
+  for (
+    const opener of [
+      `docker run --rm --entrypoint bash "$IMAGE" -c '`,
+      `bash -c "`,
+    ]
+  ) {
+    const close = opener.endsWith("'") ? "'" : '"';
+    assertEquals(
+      findUnpinnedInstalls(
+        `${opener}\nset -euo pipefail\ngem install bundler\n${close} < /dev/null`,
+      )
+        .map((f) => f.packageName),
+      ["bundler"],
+      opener,
+    );
+  }
+  for (const delimiter of ["END-OF-FILE", "EOF.md"]) {
+    assertEquals(
+      findUnpinnedInstalls(
+        `cat <<${delimiter}\nIt's done\n${delimiter}\nnpm install -g pa11y-ci`,
+      )
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+      delimiter,
+    );
+  }
+  for (const prefix of ["cat <<EOF\nunfinished", "echo $(( 1 << n ))"]) {
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\nnpm install -g pa11y-ci`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+      prefix,
+    );
+  }
 });
 
 Deno.test("cargo expressions preserve logical operators and command boundaries", () => {

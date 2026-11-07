@@ -37,7 +37,8 @@
  *
  * Commands are normalised before matching (Issue #3953): backslash line
  * continuations and multiline quotes or expressions are joined; heredoc
- * bodies are data. Chains split at `;`, `|`, `&&`, `||`, background `&`
+ * bodies and multiline quoted lines are also scanned individually without
+ * changing outer quote state. Chains split at `;`, `|`, `&&`, `||`, background `&`
  * and subshell parentheses outside quotes and expressions. Wrapper prefixes
  * (`sudo`, `env`, `command`, `exec`, their flags, leading `VAR=value`
  * assignments, and `then`, `do`, `else`, `elif`, `!`, `time`, `{`) are stripped,
@@ -174,7 +175,7 @@ export interface UnpinnedInstall {
   packageName: string;
   /** The unpinned version as written (`3`, `^14.1.1`), or `null` if absent. */
   version: string | null;
-  /** The whole command the spec came from, backslash continuations joined. */
+  /** The normalised command the spec came from. */
   command: string;
   /**
    * First physical line of that command as written in the file — the text
@@ -346,7 +347,7 @@ function hit(
 
 /** One shell command, with the first physical line it started on. */
 interface LogicalLine {
-  /** The command with any backslash continuations joined onto one line. */
+  /** The normalised logical or physical command. */
   command: string;
   /** The first physical line as written, used to anchor the file line. */
   anchor: string;
@@ -354,8 +355,8 @@ interface LogicalLine {
 
 /**
  * Join backslash continuations and multiline quotes or expressions, while
- * treating heredoc bodies as data. Preserve individual lines as a fallback
- * when a quote or expression remains unfinished at the end of the block.
+ * scanning heredoc bodies and multiline quoted lines individually without
+ * changing outer quote state. Fall back to physical lines for unfinished input.
  */
 function joinContinuations(run: string): LogicalLine[] {
   const out: LogicalLine[] = [];
@@ -363,7 +364,9 @@ function joinContinuations(run: string): LogicalLine[] {
   let anchor: string | null = null;
   let quote = "";
   let expression = false;
+  let arithmetic = false;
   let bufferedLines: string[] = [];
+  let nestedLines: string[] = [];
   const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
 
   for (const rawLine of run.split("\n")) {
@@ -375,13 +378,21 @@ function joinContinuations(run: string): LogicalLine[] {
           here.delimiter
       ) {
         heredocs.shift();
+      } else {
+        out.push({ command: line, anchor: line });
       }
       continue;
     }
+    if (quote || expression) nestedLines.push(line);
     if (anchor === null) anchor = line;
     bufferedLines.push(line);
     for (let i = 0; i < line.length; i++) {
-      if (expression) {
+      if (arithmetic) {
+        if (line.startsWith("))", i)) {
+          arithmetic = false;
+          i++;
+        }
+      } else if (expression) {
         if (line.startsWith("}}", i)) {
           expression = false;
           i++;
@@ -390,6 +401,9 @@ function joinContinuations(run: string): LogicalLine[] {
         i++;
       } else if (quote === "'" && line[i] === "'") {
         quote = "";
+      } else if (!quote && line.startsWith("$((", i)) {
+        arithmetic = true;
+        i += 2;
       } else if (line.startsWith("${{", i) && quote !== "'") {
         expression = true;
         i += 2;
@@ -402,7 +416,7 @@ function joinContinuations(run: string): LogicalLine[] {
         line[i + 2] !== "<"
       ) {
         const match = line.slice(i).match(
-          /^<<(-)?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/,
+          /^<<(-)?\s*(?:'([^']+)'|"([^"]+)"|([^\s;|&()<>]+))/,
         );
         if (match) {
           heredocs.push({
@@ -427,9 +441,13 @@ function joinContinuations(run: string): LogicalLine[] {
       continue;
     }
     out.push({ command: `${buffer}${line}`.trim(), anchor });
+    for (const nested of nestedLines) {
+      out.push({ command: nested, anchor: nested });
+    }
     buffer = "";
     anchor = null;
     bufferedLines = [];
+    nestedLines = [];
   }
   // A trailing continuation with nothing after it still yields its command.
   if (buffer.length > 0) {
