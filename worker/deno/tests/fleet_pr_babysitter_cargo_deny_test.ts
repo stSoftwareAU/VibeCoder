@@ -228,7 +228,7 @@ Deno.test("cargo deny gate: a passing gate runs before the push and the push hap
   );
 });
 
-Deno.test("cargo deny gate: the default gate reads the repair's own commit and refuses an unreproducible CI invocation", async () => {
+Deno.test("cargo deny gate: the default gate checks a source-only repair and refuses an unreproducible CI invocation", async () => {
   // A real repository: the workflow's cargo-deny step uses a matrix expression,
   // so the default gate refuses before any cargo-deny process starts.
   const dir = await Deno.makeTempDir({ prefix: "vibe-babysitter-deny-" });
@@ -264,7 +264,8 @@ Deno.test("cargo deny gate: the default gate reads the repair's own commit and r
     await realGit(["add", "."]);
     await realGit(["commit", "-qm", "base"]);
     const baseHead = (await realGit(["rev-parse", "HEAD"])).trim();
-    await Deno.writeTextFile(`${dir}/Cargo.lock`, "version = 4\n# repair\n");
+    await Deno.writeTextFile(`${dir}/source.rs`, "fn main() {}\n");
+    await realGit(["add", "source.rs"]);
     await realGit(["commit", "-qam", "repair"]);
 
     const events: string[] = [];

@@ -807,6 +807,7 @@ export async function runPrePushGate(opts: {
   const cargoDeny = await runCargoDenyGate({
     cwd: opts.cwd,
     changed: changed.value,
+    always: opts.baseRef !== undefined,
     tracked,
     runner: opts.runner,
     timeoutSeconds: opts.timeoutSeconds,

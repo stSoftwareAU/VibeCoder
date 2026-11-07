@@ -5169,22 +5169,25 @@ The hook runs two stages:
      --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
-   - **`cargo deny`** (Issue #4626), only when the push changes a `Cargo.toml`,
+   - **`cargo deny`** (Issue #4626), for the whole-branch completion check and
+     every babysitter repair push. Intermediate push hooks run it when changes
+     include a `Cargo.toml`,
      `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
      `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
      `*.yaml` files for each `run:` step whose command is `cargo deny` with a
      `check` argument, and for each `EmbarkStudios/cargo-deny-action` step,
      whose inputs (with the action's own defaults) give the argv the action
-     runs. It runs CI's exact arguments: a `run:` step from its
+     runs. It runs CI's arguments: a `run:` step from its
      `working-directory` (relative paths only), and an action step from the
      repo root. No `--offline`, ignore list or reduced-scope flag is added. An
-     invocation the hook cannot reproduce (a shell variable, a workflow
-     expression such as `${{ matrix.check }}`, or a `working-directory` with
+     Action input matrix expressions expand literal job matrix lists; an
+     unresolved action command expression falls back to a full `check`. An
+     invocation the hook cannot reproduce (a shell variable, an expression
+     outside those action command inputs, or a `working-directory` with
      `..` or an absolute path) refuses the push. The hook does not read
-     job-level `defaults.run.working-directory`, matrix expansion, or
+     job-level `defaults.run.working-directory`, other matrix expansion, or
      invocations hidden in a script the step calls, so those forms are not
-     checked. A push that touches none of those files is not checked, because
-     the advisory database can change without a push;
+     checked. Quoted multiline container scripts are not host commands;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push
      adds or modifies a file whose path starts with `infra/cloudformation/` and
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs

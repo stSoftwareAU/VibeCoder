@@ -26,6 +26,26 @@ const GIT_ENV = ["-c", "user.email=t@e", "-c", "user.name=t"];
 const ZERO = "0".repeat(40);
 const DENY_ARGV = "'cargo' 'deny' '--all-features' 'check' 'advisories' 'bans'";
 
+Deno.test("cargo deny: baseRef checks a source-only branch", async () => {
+  const { root, clone, stdin } = await makeRepo(CI_WITH_DENY, {
+    "src/main.rs": "fn main() { }\n",
+  });
+  try {
+    const seen: Seen[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      baseRef: "origin/main",
+      preFlightCommands: [],
+      runner: recordingRunner(seen, () => PASS),
+    });
+    assert(result.ok);
+    assertEquals(denyCommands(seen), [{ command: DENY_ARGV, cwd: clone }]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 const CI_WITH_DENY = [
   "name: ci",
   "on: push",

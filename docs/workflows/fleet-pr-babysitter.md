@@ -15,7 +15,7 @@ branch would run the whole CI again and roughly double the Actions cost of the
 repair. After Codex reports a completed fix, the babysitter commits the fix and
 the merge together as one merge commit, checks the fix (not the base's own
 changes) for whitespace errors and conflict markers, and rechecks the PR. When
-the repair touches a Cargo manifest, lock file or deny config, it first runs
+the repair is ready to push, it first runs
 the repository's CI `cargo deny` check locally (Issue #4626). A failing check
 is a code attempt, and a check that cannot run (cargo-deny missing, or the
 advisory database or network unreachable) is an infrastructure attempt with
@@ -55,7 +55,7 @@ sequenceDiagram
     participant B as Babysitter
     participant G as GitHub
     B->>B: Validate and commit repair
-    B->>B: Run CI cargo deny check when cargo inputs changed
+    B->>B: Run CI cargo deny check before every repair push
     Note over B: A failing or unavailable check stops the push
     B->>G: Push updated branch
     B->>G: Rebuild and publish PR description

@@ -1555,7 +1555,12 @@ async function defaultCargoDenyGate(
   const tracked = splitNulList(
     await runCommand("git", ["ls-files", "-z"], input.repoPath),
   );
-  return runCargoDenyGate({ cwd: input.repoPath, changed, tracked });
+  return runCargoDenyGate({
+    cwd: input.repoPath,
+    changed,
+    tracked,
+    always: true,
+  });
 }
 
 /**

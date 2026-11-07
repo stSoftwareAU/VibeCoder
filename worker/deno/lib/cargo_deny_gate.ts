@@ -12,13 +12,14 @@
  * advisory database, no cargo-deny binary) is an infrastructure deferral,
  * never a pass and never a verdict. Any other non-zero exit is a verdict.
  *
- * The gate never adds `--offline`, an ignore list or any reduced-scope flag:
- * it runs exactly the argv CI runs.
+ * The gate never adds `--offline`, an ignore list or a reduced-scope flag.
+ * An unresolved action command expression falls back to a full check.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
 import type { Result } from "../types.ts";
+import { parse as parseYaml } from "@std/yaml/parse";
 import {
   type PreFlightGateError,
   type PreFlightRunner,
@@ -358,8 +359,24 @@ function runFindings(
       no: run.no,
     }];
   const findings: CargoDenyCiFinding[] = [];
+  let quote = "";
   for (const command of joinContinuations(script)) {
-    findings.push(...cargoDenyCommandFindings(command.text, command.no, wd));
+    const startsInQuote = quote !== "";
+    for (let i = 0; i < command.text.length; i++) {
+      const ch = command.text[i];
+      if (ch === "\\" && quote !== "'") {
+        i++;
+        continue;
+      }
+      if (quote !== "") { if (ch === quote) quote = ""; }
+      else if (ch === "'" || ch === '"') quote = ch;
+      else if (
+        ch === "#" && (i === 0 || /\s/.test(command.text[i - 1] ?? ""))
+      ) break;
+    }
+    if (!startsInQuote) {
+      findings.push(...cargoDenyCommandFindings(command.text, command.no, wd));
+    }
   }
   return findings;
 }
@@ -380,11 +397,63 @@ function parseWith(children: readonly YamlLine[]): Map<string, string> {
 function actionFindings(
   inputs: ReadonlyMap<string, string>,
   no: number,
+  matrix: Record<string, unknown>,
+): CargoDenyCiFinding[] {
+  const expression = /\$\{\{\s*matrix\.([\w-]+)\s*\}\}/g;
+  const matches = [
+    ...new Map(
+      [...inputs.values()].flatMap((value) =>
+        [...value.matchAll(expression)].map((match) =>
+          [match[0], match] as const
+        )
+      ),
+    ).values(),
+  ];
+  let variants = [new Map(inputs)];
+  for (const match of matches) {
+    const values = matrix[match[1] ?? ""];
+    if (
+      !Array.isArray(values) || !values.length ||
+      !values.every((v) => typeof v === "string" && /^[\w./-]+$/.test(v))
+    ) {
+      continue;
+    }
+    variants = variants.flatMap((variant) =>
+      values.map((v: string) => {
+        const next = new Map(variant);
+        for (const key of inputs.keys()) {
+          const value = next.get(key);
+          if (value !== undefined) next.set(key, value.replaceAll(match[0], v));
+        }
+        return next;
+      })
+    );
+  }
+  if (
+    variants.some((v) =>
+      /[$`]/.test(
+        `${v.get("command") ?? ""} ${v.get("command-arguments") ?? ""}`,
+      )
+    )
+  ) {
+    variants = variants.map((variant) => {
+      const fallback = new Map(variant);
+      fallback.set("command", "check");
+      fallback.set("command-arguments", "");
+      return fallback;
+    });
+  }
+  return variants.flatMap((variant) => actionVariantFindings(variant, no));
+}
+
+function actionVariantFindings(
+  inputs: ReadonlyMap<string, string>,
+  no: number,
 ): CargoDenyCiFinding[] {
   const value = (name: ActionInput): string =>
     inputs.get(name) ?? ACTION_DEFAULTS[name];
   for (const name of Object.keys(ACTION_DEFAULTS) as ActionInput[]) {
-    if (value(name).includes("$")) {
+    if (/[$`]/.test(value(name))) {
       return [{
         kind: "unrunnable",
         source: `line ${no}`,
@@ -432,6 +501,7 @@ function stepFindings(
   start: number,
   end: number,
   dashIndent: number,
+  matrix: Record<string, unknown>,
 ): CargoDenyCiFinding[] {
   const afterDash = LIST_ITEM.exec(lines[start] ?? "")?.[2] ?? "";
   const content = afterDash.trimStart();
@@ -481,6 +551,7 @@ function stepFindings(
       ...actionFindings(
         withKey === undefined ? new Map() : parseWith(withKey.children),
         usesKey.no,
+        matrix,
       ),
     );
   }
@@ -495,7 +566,7 @@ function stepFindings(
  * make. A step starts at a `- ` line and ends at the next non-blank line at
  * or below its dash's indent. Comment lines are ignored.
  *
- * SIMPLE-ON-PURPOSE: job- or workflow-level `defaults.run.working-directory`, matrix expansion and script-hidden invocations are not read — upgrade when a cargo deny check run escapes this gate in practice or a workflow uses one of those forms.
+ * SIMPLE-ON-PURPOSE: job- or workflow-level `defaults.run.working-directory`, non-action matrix expansion and script-hidden invocations are not read — upgrade when a cargo deny check run escapes this gate in practice or a workflow uses one of those forms.
  */
 export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
   const lines = text.split("\n").map((raw) => raw.replace(/\r$/, ""));
@@ -515,7 +586,28 @@ export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
       if (!isSkippable(line) && indentOf(line) <= dashIndent) break;
       end++;
     }
-    findings.push(...stepFindings(lines, start, end, dashIndent));
+    let matrix: Record<string, unknown> = {};
+    try {
+      const jobLine = lines.slice(0, start).findLastIndex((line) =>
+        /^ {2}[\w-]+:\s*(?:#.*)?$/.test(line)
+      );
+      if (jobLine >= 0) {
+        let jobEnd = jobLine + 1;
+        while (
+          jobEnd < lines.length &&
+          (isSkippable(lines[jobEnd] ?? "") ||
+            indentOf(lines[jobEnd] ?? "") > 2)
+        ) jobEnd++;
+        const parsed = parseYaml(
+          lines.slice(jobLine, jobEnd).map((line) => line.slice(2)).join("\n"),
+        ) as Record<
+          string,
+          { strategy?: { matrix?: Record<string, unknown> } }
+        >;
+        matrix = Object.values(parsed)[0]?.strategy?.matrix ?? {};
+      }
+    } catch { /* Unsupported job syntax uses the full-check fallback. */ }
+    findings.push(...stepFindings(lines, start, end, dashIndent, matrix));
     start = end;
   }
   return findings;
@@ -633,19 +725,19 @@ function quoteArg(value: string): string | null {
 }
 
 /**
- * Run the cargo-deny gate (Issue #4626). A change that touches no cargo input
- * passes with nothing run. Otherwise every CI invocation runs in order, with
- * CI's exact argv, and the first failure stops the gate.
+ * Run the cargo-deny gate (Issue #4626). Intermediate pushes without cargo
+ * inputs skip it unless `always` is set. The first failed check stops the gate.
  */
 export async function runCargoDenyGate(opts: {
   cwd: string;
   changed: readonly string[];
+  always?: boolean;
   tracked: readonly string[];
   runner?: PreFlightRunner;
   timeoutSeconds?: number;
   findings?: CargoDenyCiFinding[];
 }): Promise<Result<{ checksRun: string[] }, CargoDenyGateError>> {
-  if (!cargoDenyTriggered(opts.changed)) {
+  if (!opts.always && !cargoDenyTriggered(opts.changed)) {
     return { ok: true, value: { checksRun: [] } };
   }
   const findings = opts.findings ??

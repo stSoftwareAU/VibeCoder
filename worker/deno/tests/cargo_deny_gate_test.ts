@@ -8,6 +8,86 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+
+Deno.test("workflow: action matrix expands and unknown command checks all", () => {
+  const text = `jobs:
+  deny:
+    strategy:
+      matrix:
+        checks: [advisories, bans, licenses, sources]
+    steps:
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check \${{ matrix.checks }}
+`;
+  const findings = workflowCargoDenyFindings(text);
+  assertEquals(
+    findings.map((f) => f.kind === "command" ? f.argv.slice(-2) : f.kind),
+    [["check", "advisories"], ["check", "bans"], ["check", "licenses"], [
+      "check",
+      "sources",
+    ]],
+  );
+  const fallback = workflowCargoDenyFindings(
+    text.replace("matrix.checks }}", "matrix.unknown }}"),
+  );
+  assertEquals(
+    fallback[0]?.kind === "command" && fallback[0].argv.at(-1),
+    "check",
+  );
+});
+
+Deno.test("workflow: quoted multiline container script is not a host check", () => {
+  assertEquals(
+    workflowCargoDenyFindings(`jobs:
+  build:
+    steps:
+      - run: |
+          docker run image bash -c '
+            cd /scratch
+            cargo deny check bans
+          '
+`),
+    [],
+  );
+});
+
+Deno.test("workflow: action matrix expands manifest paths too", () => {
+  const text = `jobs:
+  deny:
+    strategy:
+      matrix:
+        manifest: [one/Cargo.toml, two/Cargo.toml]
+    steps:
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: \${{ matrix.manifest }}
+`;
+  assertEquals(
+    workflowCargoDenyFindings(text).map((f) =>
+      f.kind === "command" ? f.argv[5] : f.kind
+    ),
+    ["one/Cargo.toml", "two/Cargo.toml"],
+  );
+});
+
+Deno.test("repository container workflow does not run its scratch crate on the host", async () => {
+  const text = await Deno.readTextFile(
+    "../../.github/workflows/container-build.yml",
+  );
+  const findings = workflowCargoDenyFindings(text);
+  assertEquals(findings, []);
+  const { runner, calls } = fakeRunner(() => ({}));
+  const result = await runCargoDenyGate({
+    cwd: ".",
+    changed: ["evals/capability_security/accept/rust/Cargo.toml"],
+    tracked: [],
+    findings,
+    runner,
+  });
+  assert(result.ok);
+  assertEquals(calls, []);
+});
 import {
   type CargoDenyCiFinding,
   cargoDenyTriggered,
