@@ -79,14 +79,18 @@ const GIT_CREDENTIAL_RUN =
   /\bgit\s+(?:-[^\s]+\s+)*(?:push|fetch|pull|submodule|clone|remote)\b/;
 
 /**
- * Known actions that push to / write the repository using the checkout
- * credential. A job invoking one is skipped. Compared against the action
- * coordinate (the `uses:` value without its `@ref`), lower-cased.
+ * The list holds actions that push using the checkout credential. A job
+ * invoking one is skipped. Compared against the action coordinate (the
+ * `uses:` value without its `@ref`), lower-cased.
+ *
+ * `peter-evans/create-pull-request` is deliberately absent: it sets up its
+ * own credential from its `token`/`branch-token` input (default
+ * `github.token`) before it touches the remote, so a job using it still gets
+ * flagged when its checkout persists credentials.
  */
 export const CREDENTIAL_USING_ACTIONS: readonly string[] = Object.freeze([
   "stefanzweifel/git-auto-commit-action",
   "ad-m/github-push-action",
-  "peter-evans/create-pull-request",
   "endbug/add-and-commit",
   "jamesives/github-pages-deploy-action",
   "peaceiris/actions-gh-pages",
@@ -412,12 +416,9 @@ function buildFinding(
       "header, where any later step in the job — including a compromised " +
       "dependency or an injected script — can read it and act as the token. " +
       (one
-        ? "That job shows no static sign of pushing back to the repository " +
-          "or fetching private submodules, so it does not need the persisted " +
-          "credential"
-        : "None of these jobs shows a static sign of pushing back to the " +
-          "repository or fetching private submodules, so they do not need " +
-          "the persisted credential") +
+        ? "That job shows no static sign of using the checkout credential"
+        : "None of these jobs shows a static sign of using the checkout " +
+          "credential") +
       ", and keeping it on disk only widens the blast radius of a " +
       "compromised step." +
       (one
@@ -432,8 +433,8 @@ function buildFinding(
       "```yaml\n      - uses: actions/checkout@<sha>\n" +
       "        with:\n          persist-credentials: false\n```\n\nIf a later " +
       "step in " + (one ? "that job" : "one of these jobs") +
-      " genuinely pushes back to the repository (or fetches a private " +
-      "submodule) using the checkout credential, that step is a false " +
+      " genuinely uses the checkout credential (for example, to push, fetch " +
+      "or fetch a private submodule), that step is a false " +
       "positive — suppress it with an in-source " +
       `\`# best-practice-ignore: ${id} — <reason>\` comment above that ` +
       "step's `uses:` line. Each step is suppressed on its own; the finding " +

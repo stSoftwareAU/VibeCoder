@@ -115,12 +115,39 @@ export function isBotLogin(login: string): boolean {
  * prefix ever matches, so a human login is admitted only if it *is* one of
  * those three names. Comparison is case-insensitive
  * ({@link normaliseLogin}).
+ *
+ * It does not accept the `app/<slug>` spelling `gh pr list --json author`
+ * reports for a GitHub App; pass such a login through
+ * {@link normaliseGhAppLogin} first (Issue #4719).
  */
 export function isBotAuthorForMaintenance(login: string): boolean {
   const normalised = normaliseLogin(login);
   if (!normalised) return false;
   if (KNOWN_NON_SUFFIX_BOTS.has(normalised)) return true;
   return BOT_SUFFIX.test(normalised);
+}
+
+/** `app/<slug>` as `gh pr list --json author` reports a GitHub App author. */
+const GH_APP_LOGIN = /^app\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)$/i;
+
+/**
+ * Re-spell a `gh`-reported GitHub App author in the REST `<slug>[bot]` form
+ * (Issue #4719).
+ *
+ * `gh pr list --json author` reports a GitHub App as
+ * `{"is_bot":true,"login":"app/dependabot"}`, while the REST API and
+ * {@link isBotAuthorForMaintenance} use `dependabot[bot]`. A `/` cannot occur
+ * in a real user login, so `app/<slug>` is unambiguous. Anything else is
+ * returned trimmed and otherwise unchanged.
+ *
+ * This is representation handling only. It confers no trust: admission still
+ * goes through {@link isBotAuthorForMaintenance} plus the cross-repository and
+ * fleet checks in `listBotPrs`.
+ */
+export function normaliseGhAppLogin(login: string): string {
+  const trimmed = login.trim();
+  const match = GH_APP_LOGIN.exec(trimmed);
+  return match ? `${match[1]}[bot]` : trimmed;
 }
 
 /**

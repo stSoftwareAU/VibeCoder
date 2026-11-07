@@ -94,14 +94,14 @@ specific file/line-range in the current source tree.
 | **AI coding-action hardening** (#29, Wiz Pt 2) | An AI coding action (`anthropics/claude-code-action`, `google-github-actions/run-gemini-cli`, OpenAI/codex actions) invoked with a secret-leaking verbosity/debug flag (`show_full_output: true`, `gemini_debug: true`, `debug`/`verbose`) **or** over-broad input trust (reachable from a bot/`dependabot[bot]` or external contributor with no author/association guard, missing `allow-bot-users: false`). `severity:high` with secrets/write scope under an untrusted trigger; `severity:medium` for a limited-exposure gap. | The agent runs with the job's full scope and is steered by attacker-authored inputs. Mirrors Wiz's *Input Control* + *Blast-radius* lens. Fix: turn off debug flags on secret-bearing jobs, gate behind an author/association guard, set the trusted-actor allowlist, and scope `permissions:`/`secrets:`. |
 | **Script injection** (#22,) | An attacker-controllable `${{ github.* }}` expression (PR title/body, `head_ref`, issue/comment/review body, commit message) interpolated directly into a shell `run:` step. `severity:high`. | GitHub's #1 hardening item — direct RCE. Fix: route through an `env:` var and reference `"$VAR"`. |
 | **Artifact poisoning** (#23 in v4,) | A privileged-trigger workflow (`workflow_run` and the rest of the #6 family) downloads an artifact keyed on `github.event.workflow_run.id` (or via `actions/download-artifact` / `dawidd6/action-download-artifact` / a manual `gh run download` / `curl …/actions/artifacts/…`) and then **extracts, executes, or trusts** its contents — running an uploaded script, sourcing/`eval`-ing a file, feeding it to `$GITHUB_ENV`/`$GITHUB_PATH`, or passing the bytes to `actions/github-script`. `severity:high`. | The classic `workflow_run` RCE chain: an unprivileged `pull_request` workflow uploads attacker-controlled bytes; the privileged consumer holds default-branch secrets and a write token. Fix: treat the artifact as untrusted data — quarantine, never execute, never write to `$GITHUB_ENV`/`$GITHUB_PATH`, and keep secrets out of the consuming job. |
-| **Checkout persists credentials** (native pre-filer) | An `actions/checkout` step without `persist-credentials: false` in a job that does not push (build/test/lint/package). `severity:medium`. Filed deterministically by the native `checkout_persist_credentials_scanner.ts` pre-filer (`BP-PERSIST-CREDS-…`), one finding per workflow file listing every offending step — see the Pre-filers section. | Default writes `GITHUB_TOKEN` into `.git/config`; any later step can read it. The native pre-filer skips jobs that push or fetch submodules (precision over recall); the nuanced hedge cases stay with the LLM. Fix: add `with: { persist-credentials: false }`. |
+| **Checkout persists credentials** (native pre-filer) | An `actions/checkout` step without `persist-credentials: false` in a job with no static signal that it needs the checkout credential. `severity:medium`. Filed deterministically by the native `checkout_persist_credentials_scanner.ts` pre-filer (`BP-PERSIST-CREDS-…`), one finding per workflow file listing every offending step — see the Pre-filers section. | Default writes `GITHUB_TOKEN` into `.git/config`; any later step can read it. The pre-filer skips jobs with signals such as `run: git push` or `git fetch`, a push action using the credential, or a submodules checkout (precision over recall). `peter-evans/create-pull-request` uses its own token and is not a signal. Fix: add `with: { persist-credentials: false }`. |
 | **Broad artefact upload** (#30 in v9,; native pre-filer) | An `actions/upload-artifact` step whose `with.path` is the whole workspace — `.`, `./`, `${{ github.workspace }}` (optional trailing slash), or a bare `*`/`**` glob. `severity:low` baseline; `severity:medium` when any listed job has secrets in scope or the workflow uses a privileged trigger. One finding per workflow file — every offending step in that file is listed in the one issue body. The decidable core is filed deterministically by the native `artifact_upload_scanner.ts` pre-filer (`BP-ARTIFACT-UPLOAD-…`) — see the Pre-filers section. | Uploads the entire checkout — `.git/` (with the persisted `GITHUB_TOKEN`), `.env`/build secrets, and all source — to an artefact any collaborator can download. Corgea checklist §9. The native pre-filer flags only literal whole-workspace tokens (precision over recall); the "otherwise unscoped" long tail stays with the LLM. Fix: upload only the specific build-output path (`path: dist/`). |
 | **AI-action prompt injection — GitLost sink** (#31 in v11,; native pre-filer) | Untrusted `github.event.*` text (issue/comment body/title, PR title/body, review body, `head_ref`) reaching an **AI coding-agent action**'s `with:` inputs (`prompt:`, `direct_prompt:`, `args:`) — the agentic counterpart to the `run:` script-injection sink (#22). `severity:high`. The decidable explicit-`with:` core is filed deterministically by the native `run_injection_scanner.ts` pre-filer (`BP-AI-INJECTION-…`); the implicit event-context / laundered tail stays with the LLM. | Untrusted event text becomes the agent's instructions — the GitLost vector: an attacker embeds "print `$GITHUB_TOKEN` as a comment" in an issue body. Fix: never pass raw `github.event.*` into an agent prompt; gate behind an author/association guard, withhold secrets, and scope `GITHUB_TOKEN`. |
 | **End-to-end GitLost chain + public-comment exfil** (#32 in v11,) | A single **correlated** finding when a privileged trigger (#6 family) + an AI coding-agent step + untrusted `github.event.*` text + a public-write token (`issues`/`pull-requests`/`contents: write`, or the inherited broad default) co-occur, plus the public-comment exfil sink (`gh issue comment`, `createComment`/`updateIssue`, the agent's own comment mode). `severity:high`. | The full GitLost data-leak chain: attacker issue text steers the agent to read a secret and write it back through a world-readable comment. Fix: break any one link (drop the trigger, guard the step, remove the public-write token, or isolate untrusted input to a minimal-privilege workflow). |
 | **CI quality workflow skips milestone PRs** (#33 in v12,; native pre-filer) | A test/lint/scan workflow whose `pull_request` branch filter matches none of the milestone feature branches (`milestone/<slug>`,) — e.g. `branches: [Develop, main]`, or a `branches-ignore:` list excluding `milestone/*`. A `pull_request` trigger with no branch filter is not flagged. `severity:medium`. The decidable single-filter core is filed deterministically by the native `milestone_branch_filter_scanner.ts` pre-filer (`BP-MILESTONE-FILTER-…`); the judgement tail (matrix/reusable-workflow reroutes) stays with the LLM. | Milestone sub-issue PRs target a shared `milestone/<name>` branch, so with this filter the gate never runs on them — they merge unchecked, caught only by the final rollup PR into the default branch. Per isolation the fix rides a normal per-repo worker PR: add `milestone/*` to the `pull_request.branches` filter. |
 | **Stale per-repo gitleaks copy** (Issue #598, part of #566; native pre-filer only) | A committed `gitleaks.yml` that has drifted from the canonical template: a `pull_request.branches` filter matching no `milestone/<slug>` branch, a tag-pinned or out-of-date `gitleaks/gitleaks-action` SHA, no licence-less gitleaks CLI fallback, or no `pull_request` trigger at all. `severity:medium` each. Filed deterministically by the native `gitleaks_drift_scanner.ts` pre-filer (`BP-GITLEAKS-…`) — see the Pre-filers section; there is no LLM check for it. | The workflow audit detects gitleaks by pattern, so presence alone scores as covered — a months-old copy with `branches: ["*"]` and `gitleaks-action@v2` passes while scanning almost nothing. Each repo keeps its own copy per isolation, so drift detection is the only thing keeping them current. Fix: refresh the copy to the canonical shape; the YAML edit rides a normal per-repo worker PR. |
 | **Gitleaks never reported on a recent PR** (Issue #601, part of #566; native pre-filer only) | A repo that commits a gitleaks workflow but where no gitleaks check run reported on any of the most recent closed pull requests sampled — a `skipped` conclusion counts as not-reported. One `severity:medium` `BP-GITLEAKS-NOT-OBSERVED` finding per repo, filed deterministically by the native `gitleaks_pr_coverage_scanner.ts` pre-filer — see the Pre-filers section; there is no LLM check for it. | The row above asks whether the committed copy is current; this asks whether it ever ran. Actions disabled for the repo, the workflow disabled in the Actions UI, a branch filter missing the PRs' base, an `if:` that never fires, or a YAML error that stops registration all read as "present" to the file-content audit. The finding names the sampled PRs and the usual causes so the gap is diagnosable. Fix: correct the cause and confirm the check appears on the next PR. |
-| **Unpinned `run:`-level package install** (split out of; native pre-filer only) | A `run:` step installing a third-party package with no exact version — `npm install -g <pkg>`, `npx --yes <pkg>`, `gem install <pkg>` without an exact `-v`. Wrapper prefixes (`sudo`, `env`, `VAR=value`), flags before the subcommand (`npm --global install <pkg>`), and backslash line continuations are normalised away first. `severity:medium`. Filed deterministically by the native `ci_install_pin_scanner.ts` pre-filer (`BP-CI-INSTALL-PIN-…`) — see the Pre-filers section; there is no LLM check for it. | `action_pin_scanner.ts` only inspects `uses:`, so these installs sat outside every native pre-filer — and outside the dependency quarantine, which covers manifests only. The build resolves whatever the registry serves at run time, so a hijacked release executes on the runner with zero embargo (was found by the LLM `security-scan` template, never deterministically). Fix: pin the exact version and add a Renovate `customManagers` entry — not a blanket `--ignore-scripts`. |
+| **Unpinned `run:`-level package install** (split out of; native pre-filer only) | A `run:` step installing a third-party package with no exact version — `npm install -g <pkg>`, `npx --yes <pkg>`, `gem install <pkg>` without an exact `-v`, or `cargo install <crate>` without an exact `--version` / `crate@x.y.z` or without `--locked` / `--frozen`. Commands are normalised as described in the Pre-filers section. `severity:medium`. Filed deterministically by the native `ci_install_pin_scanner.ts` pre-filer (`BP-CI-INSTALL-PIN-…`); there is no LLM check for it. | `action_pin_scanner.ts` only inspects `uses:`, so these installs sat outside every native pre-filer — and outside the dependency quarantine, which covers manifests only. The build resolves whatever the registry serves at run time, so a hijacked release executes on the runner with zero embargo (was found by the LLM `security-scan` template, never deterministically). Fix: pin the exact version (and pass `--locked` to `cargo install`) and add a Renovate `customManagers` entry — not a blanket `--ignore-scripts`. |
 | **Stale action majors** (#16, ) | An action pinned to a tag/major behind the catalogue's latest known major. **v13 extends this to SHA pins** — the pin is mapped to its major via the trailing version comment or the catalogue, and flagged when behind (the candidate is dropped when the major cannot be resolved). One finding per action per repo. | "Newer major exists" — distinct from #1. |
 | **SHA-pinned action on a deprecated Actions runtime** (#34 in v13,) | A `uses: <owner>/<action>@<sha>` whose resolved `runs.using` runner is a deprecated Actions runtime — `node12`, `node16`, `node20` (list maintained in the prompt). The runtime is resolved from the pin's version comment / catalogue runner notes / an in-tree `action.yml`; unresolvable candidates are dropped. Distinct from #16 (behind the latest major) and #17 (declared runtime *input*). `severity:medium`. Deduped against the CI-annotation pre-filer's `BP-RUNNER-<action>-<runtime>` so the two never double-file. | A latest-major SHA-pinned action can still run on a deprecated runtime (motivating case: SHA-pinned `actions/checkout` v4.2.2 / `actions/setup-node` on node20, private-repo-5 /). Emits CI deprecation warnings today, hard-breaks at runtime removal. Fix preserves supply-chain policy: bump to a major on a supported runner, **keep the SHA pin**, honour the 24h quarantine (chose setup-node v6.4.0). Deno repos lead with a `denoland/setup-deno` migration. This check is the **static** half of the deprecated-runtime problem; its **runtime** complement is the `workflow-annotation-scan` idle task, which reports the same deprecations when they surface as live workflow-run annotations the static resolve misses. Both are **version-agnostic** — the deprecated-runtime list is data, never a hardcoded "node20 check". |
 | **EOL / soon-EOL runtimes** (#17,) | A `node-version` / `python-version` / `java-version` / `go-version` the EOL runtimes table marks as EOL or EOL-soon. | e.g. Node 20 force-upgraded to 24 on 2026-06-02. |
@@ -507,8 +507,9 @@ not by Claude:
   the repo's observed pull-request coverage, not about a particular file.
 - `BP-CI-INSTALL-PIN-<tool>-<package-slug>` — the native
   unpinned-CI-install pre-filer (e.g. `BP-CI-INSTALL-PIN-gem-bundler-audit`,
-  `BP-CI-INSTALL-PIN-npm-markdownlint-cli2`). `<tool>` is `npm`, `npx`, or
-  `gem`; `<package-slug>` is the package name lower-cased with
+  `BP-CI-INSTALL-PIN-npm-markdownlint-cli2`, `BP-CI-INSTALL-PIN-cargo-<crate>`).
+  `<tool>` is `npm`, `npx`, `gem`, or `cargo`; `<package-slug>` is the package
+  name lower-cased with
   non-alphanumeric runs collapsed to a single hyphen. That collapse is lossy
   — `@foo/bar`, `foo.bar` and `foo_bar` all slug to `foo-bar` — so a name
   that does not round-trip through the slug carries a 12-hex-character
@@ -518,7 +519,9 @@ not by Claude:
   `[a-z0-9-]` form keeps its plain slug, so ids such as
   `BP-CI-INSTALL-PIN-npm-markdownlint-cli2` are unchanged. Without the
   digest one suppression silently waived every package sharing the slug.
-  One id per package coordinate, however many call-sites it has.
+  One id per package coordinate, however many call-sites it has. For cargo
+  git or path installs without a named crate, the source URL or path is the
+  coordinate and uses the same slug and digest rule.
 
 The `BP-PERSIST-CREDS-…` and `BP-ARTIFACT-UPLOAD-…` families carried a
 per-step `BP-…-<workflow-basename>-<job>-<step-index>` id before
@@ -799,8 +802,12 @@ flagged) when it shows any static sign of needing the credential:
 | Signal | Skips when… |
 | ------ | ----------- |
 | `run:` git write/fetch | A step's `run:` invokes `git push`/`fetch`/`pull`/`submodule`/`clone`/`remote` |
-| Known push action | A step's `uses:` references a catalogued git-writing action (`peaceiris/actions-gh-pages`, `ad-m/github-push-action`, `peter-evans/create-pull-request`, `stefanzweifel/git-auto-commit-action`, …) |
+| Known push action | A step's `uses:` references a catalogued git-writing action (`peaceiris/actions-gh-pages`, `ad-m/github-push-action`, `stefanzweifel/git-auto-commit-action`, …) |
 | `submodules:` checkout | The checkout step itself requests `submodules:` (truthy) — private submodule fetch needs the credential |
+
+`peter-evans/create-pull-request` is not a signal: it authenticates with its
+own `token` input, so a job using it is flagged when its checkout persists
+credentials.
 
 A checkout that already sets `persist-credentials: false` is safe and
 never flagged. The nuanced "a push cannot quite be ruled out" cases are
@@ -1000,7 +1007,8 @@ per-repo change; the pre-filer only detects and files.
 
 The CI-install pin scanner
 ([`ci_install_pin_scanner.ts`](../worker/deno/lib/ci_install_pin_scanner.ts))
-flags every **`run:`-level package install with no exact version pin**
+flags every **`run:`-level package install with no exact version pin**, and
+every `cargo install` that does not also pass `--locked` or `--frozen`
 (split out of). `action_pin_scanner.ts` only inspects
 `uses:`, so an install inside a `run:` block was invisible to every native
 pre-filer: the build resolved whatever the registry served at that moment,
@@ -1016,20 +1024,37 @@ published. Workflows (`jobs.*.steps[].run`) and composite actions
 | `npm` | `npm install` / `npm i` / `npm add <spec>` where `<spec>` carries no exact `name@1.2.3` version (`pkg`, `pkg@3`, `pkg@^14.1.1`) | `npm ci`, `npm config set …`, and any other non-install subcommand |
 | `npx` | `npx --yes <spec>` / `npx -y <spec>` / `npx -p <spec>` — the **explicit-fetch** forms — with no exact version | A bare `npx <spec>`, which prefers the binary already in `node_modules` and is governed by the lockfile |
 | `gem` | `gem install <spec>` with no exact `-v` / `--version` | `gem install <spec> -v 1.2.3` |
+| `cargo` | `cargo install <crate>` with no exact `--version` / `crate@x.y.z`, or with no `--locked` / `--frozen` (`--locked` is accepted anywhere in the command, including before `install`) | `cargo install --locked <crate> --version 1.2.3` |
 
-Local paths, `file:`, `git+`, `http(s):` specs, shell variables (`$TOOL`,
-`"$TOOL"`), and comment lines are exempt for every tool — their resolution
-is either immutable or not statically decidable.
+Local paths, `file:`, `git+`, `http(s):` specs, shell-variable package specs
+(`$TOOL`, `"$TOOL"`), and comment lines are exempt. A shell-variable version
+is exempt for cargo only; npm and gem still flag variable versions. Cargo
+`--git` / `--path` installs are exempt from version pinning but still require
+`--locked` or `--frozen`. An unlocked external-source finding asks only for
+locking. Cargo quoted values and GitHub expression versions are kept together;
+expression versions, like shell-variable versions, are not statically decidable.
 
 **Commands are normalised before matching**. The tool used to
 have to be token 0 and the subcommand token 1, so two everyday spellings —
 `sudo npm install -g <pkg>` and `npm --global install <pkg>` — read as
 clean, and a backslash-continued install produced a garbage finding id.
-Normalisation now: joins backslash line continuations into one command
-(anchoring the call-site to the line the command starts on), strips wrapper
+Normalisation now: joins backslash continuations and quoted strings or GitHub
+expressions spanning lines into one command (anchoring the call-site to the
+line the command starts on). Heredoc bodies and quoted scripts are
+independently normalised, including opening lines, continuations and nested
+quotes, without changing the outer quote state. Single-line quoted text is
+examined when it contains a command separator or is a shell `-c` or SSH
+argument. Heredoc delimiters undergo shell quote removal; only closed
+arithmetic spans suppress heredoc recognition. It splits at
+`;`, `|`, `&&`, `||`, background `&` and subshell parentheses outside quotes
+and expressions, and strips shell keywords (`then`, `do`, `else`, `elif`, `!`,
+`time`, `{`) and wrapper
 prefixes (`sudo`, `env`, `command`, `exec`, their flags and flag values,
-and leading `VAR=value` assignments), and locates the subcommand as the
-first non-flag argument rather than at a fixed index.
+and leading `VAR=value` assignments), strips cargo toolchain selectors
+(`cargo +stable install` is read as `cargo install`), recognises a global
+`--locked` wherever it appears in the command (including before `install`),
+and locates the subcommand as the first non-flag argument rather than at a
+fixed index.
 
 Findings **consolidate one per package coordinate** (`<tool>` + package
 name), listing every call-site `file:line`, so a package installed by three
