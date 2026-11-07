@@ -152,7 +152,7 @@ Nine consequences worth knowing:
 - **`pwsh` is what let the gate take the `run.ps1` suites back.** Baking the
   interpreter in removed the reason they were excluded — a suite that needs an
   interpreter the gate cannot count on fails for reasons no change of its own
-  could affect — so the three `run.ps1` launcher suites now run in the local
+  could affect — so the `run.ps1` launcher suites now run in the local
   gate (Issue #1598, `IN_GATE_SCRIPT_SUITES` in
   `worker/deno/lib/integration_test_manifest.ts`), and
   `worker/deno/tests/pwsh_suites_in_the_gate_test.ts` fails the gate on a host

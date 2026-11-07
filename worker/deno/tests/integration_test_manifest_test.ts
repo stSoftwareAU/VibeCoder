@@ -29,6 +29,19 @@ import {
 
 const TESTS_DIR = new URL(".", import.meta.url).pathname;
 
+Deno.test("integration classifier keeps harness safety suites in the required gate", () => {
+  for (
+    const file of [
+      "tests/launcher_harness_reclaim_stub_test.ts",
+      "tests/launcher_signal_readiness_test.ts",
+    ]
+  ) {
+    assert(IN_GATE_SCRIPT_SUITES.has(file));
+    assert(!INTEGRATION_TEST_FILES.includes(file));
+    assert(!integrationTestIgnoreArg().split(",").includes(file));
+  }
+});
+
 /** Test files that drive one of the repository's own scripts, right now. */
 async function detected(): Promise<string[]> {
   const found: string[] = [];

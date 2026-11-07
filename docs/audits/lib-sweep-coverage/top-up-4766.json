@@ -1,0 +1,12 @@
+{
+  "issue": 4766,
+  "chunk": "top-up-4766",
+  "title": "top-up: babysitter subscription-first provider choice",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4766",
+  "definition": "module added to worker/deno/lib/ after the recorded security-sweep slices: babysitter_provider_choice.ts (#4766)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/babysitter_provider_choice.ts"
+  ],
+  "sweptAt": "c583620d58abe33db596a343cf60934a2e83356e"
+}

@@ -44,6 +44,8 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { sourceProseLines } from "./doc_prose_scope.ts";
+
 /**
  * Test files excluded from the gate's default suite.
  *
@@ -166,6 +168,18 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
  */
 export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
   [
+    "tests/launcher_harness_reclaim_stub_test.ts",
+    "runs the real run.sh through the shared harness to prove host cache " +
+    "reclaim is intercepted before it can delete host caches; 2.87s for " +
+    "two launches, retained in the gate for test-host safety (Issue #4766)",
+  ],
+  [
+    "tests/launcher_signal_readiness_test.ts",
+    "runs run.sh through the shared harness to prove readiness records " +
+    "are safe to signal; retains the required serial coverage and measured " +
+    "scheduler-race reason in SUBPROCESS_TIMING_TEST_FILES (Issue #4766)",
+  ],
+  [
     "tests/run_ps1_launcher_test.ts",
     "drives run.ps1, the Windows containment boundary, against a stub " +
     "PATH; the image ships pwsh 7.6.8 (Issue #1596) so the gate can run " +
@@ -261,10 +275,10 @@ export const SCRIPT_READING_UNIT_TESTS: ReadonlyMap<string, string> = new Map([
 /**
  * Whether `source` drives one of the repository's own scripts.
  *
- * The signal is deliberately narrow: reading a `.sh` or `.ps1` **from the
- * repository root** and spawning it. A test that merely spawns `git` is not
- * caught — plenty of those exist and they are fast — and a test that reads a
- * script without running it is not caught either.
+ * The signal is deliberately narrow: constructing a repository script path,
+ * or passing an imported shared-harness launcher descriptor to its launch
+ * helper. Merely importing the harness's path or stub utilities does not
+ * claim a test. A test that only spawns `git` is not caught either.
  *
  * Narrow because the cost of a false positive is real: a unit test wrongly
  * excluded stops running on every change, and nobody would notice. A false
@@ -289,7 +303,39 @@ export function isIntegrationTestSource(source: string): boolean {
   // script. That asymmetry is the whole design: a false negative leaves a
   // slow test in the gate, which is visible, while a false positive stops a
   // unit test running on every change, which nobody would notice.
-  return INTEGRATION_SOURCE_PATTERNS.some((pattern) => pattern.test(source));
+  if (INTEGRATION_SOURCE_PATTERNS.some((pattern) => pattern.test(source))) {
+    return true;
+  }
+  // The shared harness owns the script path. Importing its helpers alone
+  // does not run a script: require a launcher descriptor passed to a spawn.
+  const rawLines = source.split("\n");
+  const executable = sourceProseLines(source, "test.ts").lines.map((
+    line,
+    index,
+  ) => line.code.padEnd(rawLines[index]!.length)).join("\n");
+  const names = new Set<string>();
+  for (
+    const imported of executable.matchAll(
+      /\bimport\s*\{([\w$\s,]+)\}\s*from\s*(["'])/g,
+    )
+  ) {
+    const specifierAt = imported.index + imported[0].length;
+    if (
+      !source.startsWith(
+        `./fixtures/launcher_harness.ts${imported[2]}`,
+        specifierAt,
+      )
+    ) continue;
+    for (const name of imported[1]!.split(",")) names.add(name.trim());
+  }
+  for (
+    const call of executable.matchAll(
+      /\b(runLauncher|spawnLauncher)\s*\([^,;()]+,\s*(BASH_LAUNCHER|POWERSHELL_LAUNCHER)\b/g,
+    )
+  ) {
+    if (names.has(call[1]!) && names.has(call[2]!)) return true;
+  }
+  return false;
 }
 
 /** Path constructions that name a repository script. */
