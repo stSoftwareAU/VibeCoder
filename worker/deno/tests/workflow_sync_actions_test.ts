@@ -78,6 +78,40 @@ Deno.test("workflowSyncActionReferences - a partial spec's third-party action is
   );
 });
 
+Deno.test("workflowSyncActionReferences - API-only Rust omits Cargo actions until a root manifest exists", async () => {
+  const apiOnly = routedGh({
+    "repos/acme/rust-fixtures/contents/": [],
+    "repos/acme/rust-fixtures/languages": { Rust: 10 },
+  });
+  const apiOnlyResult = await workflowSyncActionReferences(
+    "acme/rust-fixtures",
+    apiOnly,
+  );
+  assertEquals(apiOnlyResult.fault, undefined);
+  assertEquals(
+    apiOnlyResult.references.includes(
+      pinnedReference("dtolnay/rust-toolchain"),
+    ),
+    false,
+  );
+
+  const rooted = routedGh({
+    "repos/acme/rust-project/contents/": [
+      { name: "Cargo.toml", path: "Cargo.toml", type: "file" },
+    ],
+    "repos/acme/rust-project/languages": { Rust: 10 },
+  });
+  const rootedResult = await workflowSyncActionReferences(
+    "acme/rust-project",
+    rooted,
+  );
+  assertEquals(rootedResult.fault, undefined);
+  assertEquals(
+    rootedResult.references.includes(pinnedReference("dtolnay/rust-toolchain")),
+    true,
+  );
+});
+
 Deno.test("workflowSyncActionReferences - a failed language detection is a fault naming the cause, never a throw (Issue #4448)", async () => {
   const gh = async (): Promise<string> => {
     throw new Error("HTTP 503: unavailable");
@@ -201,4 +235,29 @@ Deno.test("templateActionReferences - local and docker:// references are skipped
     "acme/first@" + "a".repeat(40),
     "zed/last@" + "b".repeat(40),
   ]);
+});
+
+Deno.test("workflowSyncActionReferences - hybrid Deno and web root retains npm actions", async () => {
+  const gh = routedGh({
+    "repos/acme/hybrid/contents/": [
+      "deno.json",
+      "package.json",
+      "package-lock.json",
+      "index.html",
+      "app.js",
+    ].map((name) => ({ name, type: "file" })),
+    "repos/acme/hybrid/languages": {},
+    "repos/acme/hybrid/contents/.github/workflows": [{
+      name: "markdown.yml",
+      type: "file",
+    }],
+    "repos/acme/hybrid/contents/.github/workflows/markdown.yml":
+      "run: markdownlint-cli2",
+  });
+  const result = await workflowSyncActionReferences("acme/hybrid", gh);
+  assertEquals(result.fault, undefined);
+  assertEquals(
+    result.references.includes(pinnedReference("actions/setup-node")),
+    true,
+  );
 });

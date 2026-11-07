@@ -225,6 +225,40 @@ Deno.test("runQualityGateCheck - coloured Deno output remains fixable", async ()
   }
 });
 
+const DENO_INLINE_END_OUTPUTS = [
+  [
+    "\x1b[0m\x1b[38;5;245m------- output -------\x1b[0m",
+    "some output",
+    "./a_test.ts => prints ...\x1b[0m\x1b[38;5;245m----- output end -----\x1b[0m",
+  ].join("\n"),
+  "------- output -------\nprogress...----- output end -----",
+];
+
+Deno.test("isMissingCommandFailure - detects reports after inline Deno end markers", () => {
+  for (const output of DENO_INLINE_END_OUTPUTS) {
+    assertEquals(
+      isMissingCommandFailure(
+        `${output}\n./quality.sh: line 4: shellcheck: command not found`,
+      ),
+      true,
+    );
+  }
+});
+
+Deno.test("runQualityGateCheck - detects missing commands after inline Deno end markers", async () => {
+  for (const output of DENO_INLINE_END_OUTPUTS) {
+    const deps = createMockDeps({
+      runCommand: async () => ({
+        exitCode: 127,
+        output:
+          `${output}\n./quality.sh: line 4: shellcheck: command not found`,
+      }),
+    });
+    const result = await runQualityGateCheck(createParams(), deps);
+    assertEquals(result.action, "failed_missing_command");
+  }
+});
+
 Deno.test("isMissingCommandFailure - an unclosed Deno output block stays skipped", () => {
   assertEquals(
     isMissingCommandFailure(

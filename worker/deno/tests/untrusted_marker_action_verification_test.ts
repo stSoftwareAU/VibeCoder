@@ -21,7 +21,7 @@
  *   | `purge_stale_workflow_…`   | close nothing (destructive write)   |
  *   | `security_scan_template`   | scan (never report clean)           |
  *   | `references_refresh`       | file the proposal                   |
- *   | `workflow_sync`            | file the issue                      |
+ *   | `workflow_sync`            | file on unverified body tag; close nothing on unverified reconciliation; keep suppression on unverified closure comment, skip on lookup failure |
  *   | `shared_cooldown`          | do not suppress the work            |
  *   | `failure_detection_resume` | retry rather than escalate          |
  *   | `escalated_cleanup`        | close nothing (destructive write)   |

@@ -16,7 +16,7 @@
  *   - it says which pass a parallel-unsafe unit test runs in, because the
  *     manifests keep 42 such files inside the unit verdict;
  *   - it states the quiet-machine rule for timed workloads, with its reason;
- *   - the Quality Gates section says a quality run is unit-only;
+ *   - the Quality Gates section names unit tests and script exceptions;
  *   - every repository path the section links to still exists.
  *
  * Modelled on the existing standards drift tests
@@ -151,11 +151,14 @@ Deno.test("test taxonomy - the surviving carve-outs did not go with the rewrite 
   );
 });
 
-Deno.test("test taxonomy - the quality gate is documented as unit-only (Issue #941)", async () => {
+Deno.test("test taxonomy - the quality gate names unit tests and script exceptions (Issue #941)", async () => {
   const body = collapse(
     section(await readRepoDoc(STANDARDS), "Quality Gates"),
   );
-  assertStringIncludes(body, "A quality run executes the unit suite only");
+  assertStringIncludes(
+    body,
+    "A quality run executes the unit suite and named script exceptions",
+  );
   assert(
     /no benchmarks/i.test(body),
     "the Quality Gates section no longer says which categories a quality " +

@@ -109,8 +109,8 @@ settles, so you can watch progress. Never background it and poll with a
 seconds, and the usual reason a correct change goes red in CI (Issue #1483);
 the full gate is the last step before the PR.
 
-**The gate needs PowerShell 7** (Issue #1598). Its unit suite runs the three
-`run.ps1` launcher suites, so a host without `pwsh` fails the gate with a
+**The gate needs PowerShell 7** (Issue #1598). It runs the `run.ps1` launcher
+suites, so a host without `pwsh` fails the gate with a
 message naming the remedy rather than skipping them quietly — a skipped test
 is not a passed one. The container image ships PowerShell 7.6.8 at
 `/usr/local/bin/pwsh` (Issue #1596); on a host, install PowerShell 7 or set

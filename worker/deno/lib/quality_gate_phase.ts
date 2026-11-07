@@ -736,7 +736,11 @@ export function isMissingCommandFailure(output: string): boolean {
     // deno-lint-ignore no-control-regex
     const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trimEnd();
     if (inDenoOutput) {
-      if (DENO_OUTPUT_END.test(line)) inDenoOutput = false;
+      // Deno can append the marker to a test name or output without a newline.
+      const marker = line.lastIndexOf("--- ");
+      if (marker >= 0 && DENO_OUTPUT_END.test(line.slice(marker))) {
+        inDenoOutput = false;
+      }
       continue;
     }
     if (DENO_OUTPUT_START.test(line)) {
