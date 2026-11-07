@@ -249,8 +249,9 @@ async function finishOrRetry(
       "Analysis-only issue produced its analysis — closing it as completed (Issue #4298)",
       { repo: ctx.repo, issueNumber: ctx.issueNumber },
     );
+    // Issue #4298: no VibeCoder issue number in the posted text — it would link to an unrelated issue in the target repo (Issue #4700).
     const comment =
-      `## Analysis\n\nThis issue is analysis-only, so the analysis below is its deliverable and the issue is closed as completed (Issue #4298).\n\n<details>\n<summary>Claude's analysis</summary>\n\n\`\`\`\n${
+      `## Analysis\n\nThis issue is analysis-only, so the analysis below is its deliverable and the issue is closed as completed.\n\n<details>\n<summary>Claude's analysis</summary>\n\n\`\`\`\n${
         publishableSnippet(state.claudeOutput)
       }\n\`\`\`\n\n</details>`;
     await closeAsCompleted(ctx, state, deps, comment);
@@ -389,8 +390,9 @@ export async function workOnIssueHandleNoChanges(
     );
 
     // Post a comment, close the issue, and unassign (Issue #1364)
+    // Issue #241: no VibeCoder issue number in the posted text — it would link to an unrelated issue in the target repo (Issue #4700).
     const closeComment =
-      `## Already Complete\n\nThis issue was verified as already resolved on the default branch, so it is closed with the evidence below rather than handed to a human (Issue #241).\n\n${
+      `## Already Complete\n\nThis issue was verified as already resolved on the default branch, so it is closed with the evidence below rather than handed to a human.\n\n${
         formatAlreadyResolvedEvidence(evidence)
       }\n\n<details>\n<summary>Claude's analysis</summary>\n\n\`\`\`\n${
         publishableSnippet(claudeOutput)
