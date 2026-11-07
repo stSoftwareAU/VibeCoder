@@ -145,9 +145,10 @@ explicit fallback can also select a metered provider.
   fixed-price plans waste any unused quota, so automatic routing spends it
   first.
 - **DeepSeek is paid per call.** The owner prefers to avoid this spend. The two
-  metered overflow paths are reviewer rounds and babysitter repairs: each uses
-  DeepSeek only after every eligible subscription is exhausted. Babysitter
-  overflow logs each ranked provider, credential label and exclusion reason in
+  policies that permit metered overflow are reviewer rounds and the babysitter
+  repair provider chooser: each selects DeepSeek only after every eligible
+  subscription has no budget. The babysitter chooser logs each ranked
+  provider, credential label and exclusion reason in
   `worker/deno/lib/babysitter_provider_choice.ts`. An operator who names
   DeepSeek explicitly as a provider is making a separate, deliberate choice,
   which is not overflow.
@@ -159,6 +160,8 @@ explicit fallback can also select a metered provider.
   subscriptions and selects DeepSeek as logged overflow only when no eligible
   subscription has budget. The chooser fails loudly when no DeepSeek
   credential can be exported; it does not wait or run a host fallback.
+  The chooser is available as a module; production babysitter command
+  orchestration does not call it yet.
 - **The worker keeps its auto-mode wait policy.** When every eligible
   subscription is exhausted or unavailable, auto-mode selection waits for the
   subscription reset (`retryAt` from `selectAutomaticProvider` in
@@ -172,9 +175,9 @@ explicit fallback can also select a metered provider.
   fleet raises it automatically.
 
 **Rationale:** fixed-price quota is lost if it goes unused, so it is spent
-first. Metered spend is paid per call, so reviewer and babysitter overflow do
-not change the worker's default wait policy. An explicit fallback is a separate
-operator choice.
+first. Metered spend is paid per call, so reviewer overflow and the babysitter
+chooser policy do not change the worker's default wait policy. An explicit
+fallback is a separate operator choice.
 
 ### Every slot busy, always — the fleet throughput invariant
 

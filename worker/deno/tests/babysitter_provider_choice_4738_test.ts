@@ -6,6 +6,7 @@ import {
 import { chooseBabysitterProvider } from "../lib/babysitter_provider_choice.ts";
 import type { EnvLookup } from "../lib/env_lookup.ts";
 import type { ProviderSubscriptionStatus } from "../lib/provider_quota.ts";
+import type { AutomaticProviderStatusResolver } from "../lib/provider_auto_runtime.ts";
 import { resetAutomaticProviderState } from "../lib/provider_auto_state.ts";
 import { envFrom } from "./support/env_lookup.ts";
 
@@ -64,7 +65,10 @@ function baseDeps(options: {
       readPaths.push(path);
       return JSON.stringify(config);
     },
-    resolveStatus: (providerId: string) => {
+    resolveStatus: (
+      providerId: string,
+      _context: Parameters<AutomaticProviderStatusResolver>[1],
+    ) => {
       statusCalls++;
       const found = options.statuses?.[providerId];
       if (found) return found;
@@ -245,12 +249,14 @@ Deno.test("missing optional config still honours the environment provider pin", 
 Deno.test("invalid babysitter config shape fails with the config path", async () => {
   await withProviderState(async () => {
     const fixture = baseDeps();
-    fixture.deps.readTextFile = async () => "[]";
-    await assertRejects(
-      () => chooseBabysitterProvider(fixture.deps),
-      Error,
-      "babysitter provider config /mounted/.config.json must contain a JSON object",
-    );
+    for (const text of ["[]", "null", '"auto"', "1", "true"]) {
+      fixture.deps.readTextFile = async () => text;
+      await assertRejects(
+        () => chooseBabysitterProvider(fixture.deps),
+        Error,
+        "babysitter provider config /mounted/.config.json must contain a JSON object",
+      );
+    }
   });
 });
 
@@ -299,4 +305,149 @@ Deno.test("babysitter chooser preserves config read errors as their cause", asyn
       );
     }
   });
+});
+
+Deno.test("existing provider-less config honours the environment pin without probing or overflow", async () => {
+  await withProviderState(async () => {
+    const fixture = baseDeps({
+      config: {},
+      env: testEnv({ VIBE_AGENT_PROVIDER: "codex" }),
+    });
+    const result = await chooseBabysitterProvider(fixture.deps);
+    assertEquals(result.providerId, "codex");
+    assertEquals(result.overflow, false);
+    assertEquals(result.env, fixture.runtimeEnv);
+    assertEquals(fixture.calls(), { statusCalls: 0, credentialCalls: 0 });
+  });
+});
+
+Deno.test("malformed babysitter config retains the syntax error cause", async () => {
+  const fixture = baseDeps();
+  fixture.deps.readTextFile = async () => "{malformed";
+  const error = await assertRejects(
+    () => chooseBabysitterProvider(fixture.deps),
+    Error,
+    "cannot parse babysitter provider config /mounted/.config.json",
+  );
+  assert(error.cause instanceof SyntaxError);
+});
+
+Deno.test("configured provider list pins its first provider ahead of the environment", async () => {
+  await withProviderState(async () => {
+    const fixture = baseDeps({
+      config: { agent_providers: ["codex", "claude"] },
+      env: testEnv({ VIBE_AGENT_PROVIDER: "claude" }),
+    });
+    const result = await chooseBabysitterProvider(fixture.deps);
+    assertEquals(result.providerId, "codex");
+    assertEquals(result.env, fixture.runtimeEnv);
+    assertEquals(result.overflow, false);
+    assertEquals(fixture.calls(), { statusCalls: 0, credentialCalls: 0 });
+  });
+});
+
+Deno.test("configured single-provider pin takes precedence over an environment pin", async () => {
+  await withProviderState(async () => {
+    const fixture = baseDeps({
+      config: { agent_provider: "codex" },
+      env: testEnv({ VIBE_AGENT_PROVIDER: "claude" }),
+    });
+    const result = await chooseBabysitterProvider(fixture.deps);
+    assertEquals(result.providerId, "codex");
+    assertEquals(result.env, fixture.runtimeEnv);
+    assertEquals(fixture.calls(), { statusCalls: 0, credentialCalls: 0 });
+  });
+});
+
+Deno.test("automatic status resolution receives the babysitter work directory and environment", async () => {
+  await withProviderState(async () => {
+    const fixture = baseDeps({ config: { agent_provider_mode: "auto" } });
+    const contexts: unknown[] = [];
+    fixture.deps.resolveStatus = (providerId, context) => {
+      contexts.push({
+        providerId,
+        workDir: context.workDir,
+        marker: context.env("BABYSITTER_TEST_CONTEXT"),
+        now: context.now,
+      });
+      return status(providerId, providerId === "codex" ? 70 : 10);
+    };
+    fixture.deps.env = testEnv({ BABYSITTER_TEST_CONTEXT: "repair-context" });
+    const result = await chooseBabysitterProvider(fixture.deps);
+    assertEquals(result.providerId, "codex");
+    assertEquals(contexts, [
+      {
+        providerId: "claude",
+        workDir: "/work",
+        marker: "repair-context",
+        now: NOW,
+      },
+      {
+        providerId: "codex",
+        workDir: "/work",
+        marker: "repair-context",
+        now: NOW,
+      },
+    ]);
+  });
+});
+
+Deno.test("default DeepSeek export reads only its provider credential and isolates the child environment", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "babysitter_credentials_" });
+  try {
+    await Deno.mkdir(`${dir}/deepseek`);
+    await Deno.mkdir(`${dir}/claude`);
+    await Deno.writeTextFile(
+      `${dir}/deepseek/provider.env`,
+      "DEEPSEEK_API_KEY=deepseek-fixture\n",
+    );
+    await Deno.writeTextFile(
+      `${dir}/claude/provider.env`,
+      "ANTHROPIC_API_KEY=claude-fixture\n",
+    );
+    const moduleUrl =
+      new URL("../lib/babysitter_provider_choice.ts", import.meta.url).href;
+    const output = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "eval",
+        `
+        import { chooseBabysitterProvider } from ${JSON.stringify(moduleUrl)};
+        const result = await chooseBabysitterProvider({
+          workDir: ${JSON.stringify(dir)},
+          enabledProviderIds: ["claude"],
+          readTextFile: async () => JSON.stringify({agent_provider_mode: "auto", agent_providers: ["claude"]}),
+          resolveStatus: (provider) => ({provider, credentialLabel: "exhausted", billingMode: "fixed-subscription", availability: "exhausted", windows: [], observedAt: 0, confidence: "authoritative"}),
+          readEnvironment: () => ({PATH: "/fixture-bin"}),
+          log: () => {},
+        });
+        console.log(JSON.stringify({result, leaked: Deno.env.get("DEEPSEEK_API_KEY") ?? null}));
+      `,
+      ],
+      env: {
+        VIBE_CREDENTIAL_DIR: dir,
+        VIBE_IMAGE_AGENT_PROVIDERS: "claude,codex,deepseek",
+      },
+      clearEnv: true,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(output.code, 0, new TextDecoder().decode(output.stderr));
+    assertEquals(JSON.parse(new TextDecoder().decode(output.stdout)), {
+      result: {
+        providerId: "deepseek",
+        overflow: true,
+        env: {
+          PATH: "/fixture-bin",
+          VIBE_AUDIT_DISABLED: "1",
+          DEEPSEEK_API_KEY: "deepseek-fixture",
+          ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+          ANTHROPIC_AUTH_TOKEN: "deepseek-fixture",
+        },
+      },
+      leaked: null,
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

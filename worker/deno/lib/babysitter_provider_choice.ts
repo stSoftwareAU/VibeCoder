@@ -5,10 +5,7 @@ import {
   DEFAULT_AGENT_PROVIDER_ID,
   resolveAgentProvider,
 } from "./agent_provider.ts";
-import {
-  applyProviderCredentialEnv,
-  selectFirstProviderToken,
-} from "./credential_preflight.ts";
+import { applyProviderCredentialEnv } from "./credential_preflight.ts";
 import { buildDeepSeekChildEnv } from "./deepseek_env.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import {
@@ -66,12 +63,12 @@ function parseConfig(text: string, path: string): RawProviderModeConfig {
 async function readConfig(
   path: string,
   reader: (path: string) => Promise<string>,
-): Promise<{ text: string; missing: boolean }> {
+): Promise<string> {
   try {
-    return { text: await reader(path), missing: false };
+    return await reader(path);
   } catch (cause) {
     if (cause instanceof Deno.errors.NotFound) {
-      return { text: "{}", missing: true };
+      return "{}";
     }
     throw new Error(`cannot read babysitter provider config ${path}`, {
       cause,
@@ -85,7 +82,6 @@ async function exportDeepSeekCredential(
   const values = resolveAgentProvider(DEEPSEEK_PROVIDER_ID);
   return await applyProviderCredentialEnv({
     providers: [values],
-    selectToken: selectFirstProviderToken,
     setEnv,
   });
 }
@@ -108,16 +104,15 @@ export async function chooseBabysitterProvider(
   const readTextFile = deps.readTextFile ?? ((path) => Deno.readTextFile(path));
   const path = env("CONFIG_PATH")?.trim() || ".config.json";
   const config = await readConfig(path, readTextFile);
-  const raw = parseConfig(config.text, path);
+  const raw = parseConfig(config, path);
   const pin = env("VIBE_AGENT_PROVIDER")?.trim();
-  const configured = config.missing
-    ? resolveAutomaticProviderConfig({ environmentProvider: pin })
-    : resolveAutomaticProviderConfig({
-      configuredMode: raw.agent_provider_mode,
-      configuredProvider: raw.agent_provider,
-      configuredProviders: raw.agent_providers,
-    });
-  const resolvedConfig = !config.missing && configured.mode === "auto" && pin
+  const configured = resolveAutomaticProviderConfig({
+    configuredMode: raw.agent_provider_mode,
+    configuredProvider: raw.agent_provider,
+    configuredProviders: raw.agent_providers,
+  });
+  const resolvedConfig = pin &&
+      (configured.mode === "auto" || configured.preference.length === 0)
     ? resolveAutomaticProviderConfig({ environmentProvider: pin })
     : configured;
 
@@ -136,7 +131,7 @@ export async function chooseBabysitterProvider(
     enabledProviderIds: deps.enabledProviderIds,
     env,
     now: deps.now,
-    readTextFile: async () => config.text,
+    readTextFile: async () => config,
     resolveStatus: deps.resolveStatus,
     log: deps.log,
   });
