@@ -632,9 +632,8 @@ When things go wrong during implementation, follow these guidelines:
    must pass before a PR exists, and the gate includes the semgrep SAST stage,
    so a PR raised over a failing one ships an
    unresolved security finding. (A gate the run budget could not cover is a
-   different thing entirely: it is skipped, recorded with the skip note, and
-   left to CI — that is not a failing check.) If a check still fails after
-   three attempts:
+   different thing entirely: it is skipped and recorded with the skip note —
+   that is not a failing check.) If a check still fails after three attempts:
    - do **not** create a pull request;
    - commit and push what you have, so the branch is preserved and the next
      run resumes from it rather than starting again;
@@ -682,7 +681,7 @@ reviewer.
 - All checks must pass before PR creation: lint, type checks, unit tests, and
   every other gate you ran. When the run budget did not cover the full gate,
   record the skip in the PR summary with the note the `<quality_instructions>`
-  block gives you — CI runs the same checks on the PR.
+  block gives you.
 
 ## Change Scope
 
@@ -740,7 +739,10 @@ The committed file must yield no finding from the file-scoped Actions checks in
 - `workflow-triggers` — no test/lint/scan workflow triggers on push to the
   default branch; those checks run on `pull_request`.
 - `checkout-persist-credentials` — every `actions/checkout` sets
-  `persist-credentials: false` unless the job pushes.
+  `persist-credentials: false` unless the job needs the checkout credential
+  (for example, a `run: git push` or `git fetch`, a push action using that
+  credential, or a submodules checkout). `peter-evans/create-pull-request`
+  uses its own token and does not count.
 - `milestone-branch-filters` — every `pull_request` branch filter also matches
   `milestone/<slug>` branches, so a milestone PR is not silently unchecked.
 - `ci-install-pins` — every `run:` package install pins an exact version.

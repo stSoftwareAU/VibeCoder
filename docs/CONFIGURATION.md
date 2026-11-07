@@ -2895,10 +2895,10 @@ agents were still inside it at 49 to 68 minutes. Starting it with ten minutes
 left cannot end well: the gate does not finish, nothing it reports gets fixed,
 and the runway needed to commit and push is gone.
 
-Nothing is lost by skipping it. CI runs the same checks on the PR in parallel
-shards on dedicated runners, and the worker runs its own gate
-(`phases/quality_gate_remediation_phase.ts`) after the agent stops. The agent's
-run is the third copy — the only one paid for out of the run budget.
+Nothing is lost by skipping it. The worker runs its own gate
+(`phases/quality_gate_remediation_phase.ts`) after the agent stops, before the
+PR is raised. The agent's run is the expensive copy — the only one paid for out
+of the run budget.
 
 So the instruction the agent receives is budget-aware, and it comes from one
 place: `buildQualityInstructions()` (`worker/deno/lib/repo_config.ts`), spliced
@@ -2918,10 +2918,10 @@ A skipped gate is never silent: that note goes in the PR summary (or
 that passed.
 
 **A slow gate is refused for most of a run, by design.** The refusal band is
-`gate + 180 s`, so a repo whose gate measurably takes 40 minutes refuses it
-from about 17 minutes into an hour-long run and does not offer it again. That
-is the intended trade: on such a repo the agent could never have finished the
-gate and acted on it anyway, and CI runs it in parallel shards regardless. A
+`gate + 180 s`, so a repo whose gate measurably takes 40 minutes refuses it from
+about 17 minutes into an hour-long run and does not offer it again. That is the
+intended trade: on such a repo the agent could never have finished the gate and
+acted on it anyway, and the worker runs it before the PR is raised regardless. A
 repo in that position should shorten its gate or set `quality_command` to the
 subset worth running locally.
 
@@ -2932,7 +2932,7 @@ flowchart TD
     B -- "yes" --> D{"remaining ≥ gate + 180s tail?"}
     D -- "yes" --> C
     D -- "no" --> E["Targeted checks only<br/>+ skip note in the PR"]
-    C --> F["Worker gate, then CI"]
+    C --> F["Worker gate before the PR is raised"]
     E --> F
     style E fill:#f4a261,stroke:#b5651d,color:#000
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff

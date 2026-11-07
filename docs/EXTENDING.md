@@ -376,10 +376,11 @@ before Issue #1639. Every emitted template now carries:
 - an explicit `pull_request` branch list, `[Develop, main, milestone/*]` —
   a GitHub `*` never matches a `/`, so the old `["*"]` skipped every
   `milestone/<slug>` PR;
-- `persist-credentials: false` on every read-only `actions/checkout`, so
-  the job token is not left in `.git/config` for a later step to read.
-  The two dependency-update templates keep the credential and say so in a
-  comment — `peter-evans/create-pull-request` pushes with it;
+- `persist-credentials: false` on every `actions/checkout`, including the
+  two dependency-update templates, so the job token is not left in
+  `.git/config` for a later step to read. Those templates do not need the
+  checkout credential because `peter-evans/create-pull-request` pushes with
+  its own `token` input;
 - a `concurrency:` group of `${{ github.workflow }}-${{ github.ref }}`
   with `cancel-in-progress: true`;
 - `timeout-minutes:` on every job — 10 for scan and quality jobs, 20 for
