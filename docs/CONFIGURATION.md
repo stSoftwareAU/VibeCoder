@@ -5175,10 +5175,11 @@ The hook runs two stages:
      repository's `.shellcheckrc` or configured `--rcfile`. A changed
      ShellCheck workflow or config rechecks the remaining tracked `.sh` files;
      deleted scripts are omitted. The gate checks the available binary against
-     the version declared by CI before running it. An unsupported command shape,
-     unreadable config or unavailable/mismatched tool is an incomplete
-     infrastructure result, never a successful validation. A repository with
-     no recognised CI ShellCheck invocation gets no ShellCheck check;
+     the version declared by CI before running it. An unsupported command
+     shape, delegated gate/action, unreadable config or unavailable/mismatched
+     tool is an incomplete infrastructure result, never a successful
+     validation. A repository with no CI ShellCheck invocation gets no
+     ShellCheck check;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push
      adds or modifies a file whose path starts with `infra/cloudformation/` and
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
@@ -5203,7 +5204,9 @@ It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
 `markdownlint-cli2` not found refuses the push; cspell configured and run by
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
-does not); a Floci deploy test that exits
+does not); a supported ShellCheck CI policy with a missing or mismatched
+binary, an unreadable config, or an unsupported workflow shape is incomplete
+and refuses to pass; a Floci deploy test that exits
 non-zero, including when Floci cannot be started or the `aws` CLI is missing for
 a deployable template, refuses the push; a missing hook module, spec or `deno`
 binary refuses the push. Refusals print lines starting
