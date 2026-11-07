@@ -17,7 +17,9 @@ Version bump: `VERSION` is not touched by this change.
   files, and gives a remedy that works in any language: export it or move it to
   a shared module, and switch the old callers.
 - The search procedure ("grep for the domain term") and the trigger list were
-  removed, as the issue proposes; the rule is shorter by about eight lines.
+  removed, as the issue proposes. The issue-prompt bullet goes from 13 lines to
+  12 with the independent-oracle sentence added; the `pr_feedback` paragraph
+  grows from 1 line to 8 and `CODING-STANDARDS.md` is +3/-2.
 
 ### Essential Design Decisions
 
