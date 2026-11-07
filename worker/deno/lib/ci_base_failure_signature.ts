@@ -360,18 +360,31 @@ function diagnosticPairs(lines: string[], loose: boolean): string[] {
   const pairs: string[] = [];
   let semgrepFile = "";
   let lintRule = "";
+  let checkRule = "";
   let shellFile = "";
   let previous = "";
   for (const line of values) {
     if (!line) continue;
+    if (OMISSION_MARKER.test(line)) {
+      semgrepFile = "";
+      previous = "";
+      lintRule = "";
+      checkRule = "";
+      shellFile = "";
+      continue;
+    }
     if (SEMGREP_RULE.test(line)) {
-      // A file header immediately precedes the first rule in a file block;
-      // subsequent rules follow the previous finding's source or separator.
-      if (/^[\w./-]+$/.test(previous) && !/^\d/.test(previous)) {
+      // Source, separator and autofix lines belong to the preceding finding.
+      if (
+        previous && !/[┆│]/.test(previous) &&
+        !/^(?:[-─]+|autofix\b|❯{0,3}❱)/i.test(previous)
+      ) {
         semgrepFile = previous;
       }
       if (semgrepFile) {
         pairs.push(JSON.stringify(["semgrep", semgrepFile, line]));
+      } else {
+        pairs.push(JSON.stringify(["unidentified-semgrep", line]));
       }
     }
     if (/^error\[[^\]]+\]:/.test(line)) lintRule = line;
@@ -379,8 +392,15 @@ function diagnosticPairs(lines: string[], loose: boolean): string[] {
       pairs.push(JSON.stringify(["lint", lintRule, line]));
       lintRule = "";
     }
+    if (/^TS\d+\s+\[ERROR\]:/i.test(line)) checkRule = line;
+    else if (checkRule && /^at\s+(?:file:\/\/)?\S+/.test(line)) {
+      pairs.push(JSON.stringify(["check", checkRule, line]));
+      checkRule = "";
+    }
     if (/^in\s+\S+\s+line\s+(?:\d+|<n>):/i.test(line)) shellFile = line;
-    const shellRule = line.match(/\bSC\d{4}\b/i)?.[0];
+    const shellRule = /^https?:\/\/www\.shellcheck\.net\/wiki\//i.test(line)
+      ? undefined
+      : line.match(/\bSC\d{4}\b/i)?.[0];
     if (shellFile && shellRule) {
       pairs.push(JSON.stringify(["shellcheck", shellFile, shellRule]));
     }
@@ -525,7 +545,9 @@ export async function compareBaseFailure(options: {
       : baseText.includes(line);
   if (
     !prLines.every(found) ||
-    !signature.pairs.every((pair) => basePairs.has(pair))
+    !signature.pairs.every((pair) =>
+      !pair.startsWith('["unidentified-semgrep",') && basePairs.has(pair)
+    )
   ) {
     return { state: "different" };
   }

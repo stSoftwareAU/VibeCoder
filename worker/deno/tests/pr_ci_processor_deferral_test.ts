@@ -1358,6 +1358,12 @@ Deno.test("processCiFailure - diagnostic rules stay paired with their files", as
         captured.comments.at(-1) ?? "",
         `<!-- vibe-ci-fix-${marker} `,
       );
+      assertEquals(
+        attemptOutcomes(captured.comments.at(-1) ?? "").includes(
+          "base-unverified",
+        ),
+        false,
+      );
     }
   }
   const cases = [
@@ -1385,6 +1391,12 @@ Deno.test("processCiFailure - diagnostic rules stay paired with their files", as
       assertStringIncludes(
         captured.comments.at(-1) ?? "",
         `<!-- vibe-ci-fix-${marker} `,
+      );
+      assertEquals(
+        attemptOutcomes(captured.comments.at(-1) ?? "").includes(
+          "base-unverified",
+        ),
+        false,
       );
     }
   }
@@ -1532,5 +1544,46 @@ TS2322 [ERROR]: Type string is not assignable to number.
       captured.comments.at(-1) ?? "",
       `<!-- vibe-ci-fix-${marker} `,
     );
+  }
+});
+
+Deno.test("processCiFailure - diagnostic pairing handles real log boundaries", async () => {
+  const cases: [string, string][] = [
+    ...[
+      "src/routes/+page.svelte",
+      "app/[id]/page.tsx",
+      "app/(auth)/login.ts",
+      "packages/@scope/lib/x.ts",
+      "path with space/a.ts",
+      "docs/2024/notes.ts",
+    ].map((path): [string, string] => [
+      `${path}\n❯❱ rule.one\n1┆ code`,
+      `${path}\n❯❱ rule.other\n1┆ code\nother.ts\n❯❱ rule.one\n1┆ code`,
+    ]),
+    [
+      "a.ts\n❯❱ rule.one\n1┆ code",
+      "a.ts\n❯❱ rule.other\n1┆ code\n[... 10 lines omitted ...]\n❯❱ rule.one\n1┆ code",
+    ],
+    [
+      "In other.sh line 12:\nSC2086: quote\nFor more information:\nhttps://www.shellcheck.net/wiki/SC2086 -- quote",
+      "In deploy.sh line 12:\nSC2086: quote\nIn other.sh line 12:\nSC2154: variable\nFor more information:\nhttps://www.shellcheck.net/wiki/SC2086 -- quote\nhttps://www.shellcheck.net/wiki/SC2154 -- variable",
+    ],
+    [
+      "TS2322 [ERROR]: incompatible type\n at file:///repo/new.ts:30:9",
+      "TS2322 [ERROR]: incompatible type\n at file:///repo/other.ts:30:9\nTS2345 [ERROR]: bad argument\n at file:///repo/new.ts:30:9",
+    ],
+  ];
+  const wrap = (s: string) =>
+    `##[endgroup]\n${s}\n##[error]Process completed with exit code 1.\n`;
+  for (const [pr, base] of cases) {
+    for (const [baseLog, marker] of [[base, "attempt"], [pr, "deferred"]]) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: wrap(pr!),
+        baseLog: wrap(baseLog!),
+      }, exitLineInput());
+      const body = captured.comments.at(-1) ?? "";
+      assertStringIncludes(body, `<!-- vibe-ci-fix-${marker} `);
+      assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+    }
   }
 });

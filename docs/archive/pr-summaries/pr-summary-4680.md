@@ -6,7 +6,7 @@ can represent a different failure. Closes #4680.
 
 - **Same:** every comparable PR failure line and diagnostic pair appears in the base log; defer
   without charging an attempt.
-- **Different:** at least one comparable line is absent; follow the ordinary
+- **Different:** a comparable line or diagnostic pair is absent; follow the ordinary
   charged path.
 - **Unreadable:** no comparable PR line or no readable base log; hold without
   charging, subject to the existing two-hold bound.
@@ -43,16 +43,18 @@ and `FAIL file.test.js`, node:test `✖`, Bats `✗`, TAP `not ok`, Mocha `N)`,
 Vitest `FAIL a > b`, pytest `FAILED id::name`, Go `--- FAIL:`, Deno or cargo
 `name ... FAILED` and Deno `name => path:line:col`) must equal a whole base-log
 line; Semgrep finding files and rules also require whole-line matches as a pair.
-Deno lint rule and locus and ShellCheck file and rule are also paired. Other
+Deno lint and check rule and locus and ShellCheck file and rule are also paired;
+ShellCheck wiki footer links are excluded. Other
 lines (annotation messages, lines with a failure word) may sit
 inside a longer base line.
 
 When no line qualifies, distinctive rule identifiers and file loci in the
 failing step output are compared with standalone numbers ignored. Run metadata
 and generic command echoes are not evidence; without a distinctive line the
-result is unreadable. Semgrep's finding-block file line is identified by its
-position before the first rule and carried across subsequent rules, including
-root-level and extensionless paths, at all four severity markers. Both file and rule remain evidence even when the output
+result is unreadable. Semgrep's finding-block file line is distinguished from
+source, separator and autofix lines and carried across subsequent rules, including
+paths with punctuation or spaces, at all four severity markers. An omission
+clears the carried file. Both file and rule remain evidence even when the output
 contains a failure word. Deno
 formatter `from <path>:` lines identify files and its
 file-count summary is ignored. Deno lint and check locations, and shellcheck
@@ -83,11 +85,17 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`:
-  93 passed, 0 failed (51 and 42 tests respectively).
+  95 passed, 0 failed (52 and 43 tests respectively).
 - Crossed diagnostic files and rules no longer match independently. Identical
   pairs still defer, including multiple Semgrep rules in one file block.
   Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic rules stay paired with their files`
   and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - diagnostic rules stay paired with their files`.
+- The obsolete comparison could carry the wrong Semgrep file, treat ShellCheck
+  footer links as findings, or match Deno check rules and loci independently.
+  It now retains file and rule association across paths with punctuation, spaces
+  or numeric segments, omitted headers, footers and Deno check diagnostics.
+  Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic pairing handles real log boundaries`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - diagnostic pairing handles real log boundaries`.
 - `worker/deno/tests/ci_base_failure_signature_test.ts` covers Jest console
   output, differing formatter and diagnostic file loci, shellcheck rules, and npm log paths.
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` covers deferral using
