@@ -488,8 +488,9 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   the same run and compares it with the pull request's own failure. The pull
   request's failure lines are its annotation messages and log lines containing
   `error`, `fail`, `panic`, `exception`, `fatal`, `assert`, `cannot` or
-  `denied`, as well as Jest `●`, node:test `✖`, and Bats `not ok` failing-test
-  names. An annotation without a failure word is excluded; each line is
+  `denied`, as well as Jest `●`, node:test `✖`, TAP `not ok` and Mocha
+  numbered failing-test names. TAP and Mocha sequence numbers are normalised.
+  An annotation without a failure word is excluded; each line is
   normalised, and the generic
   runner summaries, passing test lines and generic assertion lines are ignored. The comparison gives one
   of three signatures:

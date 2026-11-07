@@ -1,201 +1,78 @@
 ## Summary
 
-The CI-fix base-branch deferral (#1880) used to defer on a red base
-_conclusion_. Earlier work on #4680 (#4836) read the failing check by workflow
-identity and held claims it could not verify. This change closes the remaining
-gap: a red base run (on the base head, or the same workflow's run on a merged PR
-head with the base head's tree) is only accepted when its log carries the pull
-request's own failure. Two unrelated failures in the same job no longer look
-like one base defect.
+The CI-fix base-branch deferral now compares the pull request's failure with
+the red base run's log before accepting a `Depends on` claim. A red conclusion
+alone can represent a different failure. Closes #4680.
 
-`_resolveBaseBranchDeferral` now calls `compareBaseFailure`
-(`worker/deno/lib/ci_base_failure_signature.ts`) for a red base:
+- **Same:** every comparable PR failure line appears in the base log; defer
+  without charging an attempt.
+- **Different:** at least one comparable line is absent; follow the ordinary
+  charged path.
+- **Unreadable:** no comparable PR line or no readable base log; hold without
+  charging, subject to the existing two-hold bound.
 
-- **same failure** (every comparable normalised PR failure line appears in the
-  base run's log) — the existing deferral: `Depends on` issue and
-  `vibe-ci-fix-deferred` marker, resumed by the existing scanner when the
-  blocker closes;
-- **different failure** (the base log was read and is missing at least one of
-  the PR's comparable failure lines) — the base is red for another reason, so
-  the claim is not verified as this failure: the ordinary charged path, no
-  deferral, no hold;
-- **unreadable** (no comparable PR line, non-Actions check, log fetch error or
-  an empty base log) — held as unverified (`base-unverified`, no attempt
-  charged), sharing the existing bound of two holds.
-
-The worker still does not re-run the check on the base tree. The CI-fix prompt,
-`docs/workflows/ci-fix.md` and the three one-line restatements of the rule
-(`docs/PROMPTS.md`, `CODING-STANDARDS.md`,
-`prompts/coding_guidelines/prompt.md`) say the log must match. Closes #4680.
-
-Version bump: `VERSION` is not changed by this PR.
-
-```mermaid
-flowchart TD
-    A[Red base run: head or tree-equivalent] --> B[Read the base run's log]
-    B -- All comparable PR failure lines found --> C[Same: defer, no attempt]
-    B -- log read, a PR line missing --> D[Different: charged path]
-    B -- unreadable / nothing to compare --> E{Holds < 2?}
-    E -- yes --> F[Hold: base-unverified, no attempt]
-    E -- no --> D
-```
+The base evidence remains the same check on the base head, or the same
+workflow on a merged PR head with an identical tree. The worker does not rerun
+the check on the base tree. Dependency audits retain their existing exception.
+`VERSION` is unchanged.
 
 ## Spec
 
 ### Intent and Rationale
 
-- #4836 verified _which_ check ran on the base, but a red conclusion could still
-  come from an unrelated failure; the issue (item 2) asks for the same failure
-  signature and cause in the base tree.
-- Commit-bound evidence from the same workflow (the tree-equivalent merged-PR
-  run, from #4836) was kept; only its failure text is now compared.
+Comparing failure text prevents an unrelated red base check from automatically
+deferring a PR failure. The comparison is conservative when logs cannot be read.
 
 ### Essential Design Decisions
 
-- A line counts when it carries a failure word outside a command-line flag and
-  is at least 20 normalised characters, or names a failing Jest, node:test or
-  Bats test; it must not be a command echo
-  (`##[group]`, `##[endgroup]`, `##[command]`, `[command]` lines such as
-  `Run cargo test --no-fail-fast`) and is not the runner's generic
-  `Process completed with exit code N` line (every failed job has it). Flags
-  such as `--no-fail-fast` or `curl --fail` are blanked before the failure-word
-  test, so a shared command echo is never failure evidence. Passing test lines,
-  generic assertion and cargo, npm and lifecycle summaries are excluded. All
-  remaining comparable PR lines must appear in the base log to grant deferral.
-- "Different" charges the attempt (no hold): a base that is red for another
-  reason proves nothing about this failure, and holding would only delay it.
-- The hold decision moved into `_holdOrChargeUnverified` so every unverified
-  reading shares one bound.
+`compareBaseFailure` extracts comparable failure lines, removes command echoes,
+passing results, generic assertion and runner summaries, and compares all
+remaining lines against the normalised base log. It recognises Jest, node:test,
+TAP and Mocha failing-test names; TAP and Mocha sequence numbers are normalised.
+Vitest file and test tallies are excluded, as are Deno, cargo, Jest and pytest
+summaries. An annotation without a failure word is not comparable. Distinctive
+failure text from other tools is still compared; unknown runner formats can
+produce generic-only matches or prevent a match, so this is not proof that all
+unrelated failures are distinguished.
 
 ### Undiscoverable Facts
 
-- Observed only in the test fixtures: `fetchGithubActionsLogExcerpt` is called
-  with the base _check-run id_ and reads `check-runs/{id}` then the job log; no
-  live GitHub response for a PR-only check was observed.
+The log fetcher receives the base check-run ID. The worker relies on the
+available excerpt and does not reproduce the check on the base tree.
 
 ## Evidence
 
-Backend-only change.
-
-- `deno task test:unit` on `worker/deno/tests/ci_base_failure_signature_test.ts`
-  (18), `worker/deno/tests/pr_ci_processor_deferral_test.ts` (28),
-  `worker/deno/tests/ci_base_branch_check_test.ts`,
-  `worker/deno/tests/ci_fix_attempt_markers_test.ts`,
-  `worker/deno/tests/ci_fix_audit_in_pr_3116_test.ts` and
-  `worker/deno/tests/pr_maintenance_ci_deferral_test.ts`: 145 passed, 0 failed
-  (the five-file run excluding the new signature test file).
-- Production readers: `compareBaseFailure` is called from
-  `_resolveBaseBranchDeferral` in `worker/deno/lib/pr_ci_processor.ts`;
-  `actionsLogFn` is threaded from `processorDeps.actionsLogFn` there.
-- Prose claims checked against: `worker/deno/lib/pr_ci_processor.ts`,
-  `worker/deno/lib/ci_base_failure_signature.ts`,
-  `worker/deno/lib/ci_base_branch_check.ts`.
-- Related rules checked: `prompts/ci_fix/prompt.md` Base-branch failures
-  section, the 3116 carve-out for dependency-audit checks (kept, pinned by
-  `ci_fix_audit_in_pr_3116_test.ts`) and the twinned restatement in
-  `CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md`. The phrase
-  "nothing on this branch can fix it" is absent.
+Backend-only change. `compareBaseFailure` is called by
+`_resolveBaseBranchDeferral` in `worker/deno/lib/pr_ci_processor.ts` and uses
+the injected Actions log fetcher. The matching rule is documented in
+`docs/workflows/ci-fix.md`, `prompts/ci_fix/prompt.md`, `docs/PROMPTS.md`,
+`CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md`; the latter two
+are twinned restatements. The new module has a lib-sweep coverage entry.
 
 ## Test Plan
 
-- `worker/deno/tests/ci_base_failure_signature_test.ts`: same failure across
-  timestamps and ANSI; a different error; a shared generic exit line alone is
-  `different`; two logs that share only a command-echo line
-  (`##[group]Run cargo test --workspace --no-fail-fast`, `curl --fail`) but
-  carry different errors are `different`; echoes and flag-only matches yield no
-  signature line; a repeated line is listed once; annotation-only text; empty
-  text, the real `formatCiAnnotations` fallback sentence and its header are
-  `unreadable` and never fetch the log; error, not-applicable and throwing log
-  providers (an `Error` or a non-`Error` rejection) are `unreadable` with the
-  exact cause in the reason; the caller's `gh` runner reaches the log fetcher;
-  an empty base log is `unreadable`; three hostile inputs return
-  deterministically. Red checks: removing the generic exclusion, the boilerplate
-  exclusion, the empty-log check and making `same` ignore the log each turned a
-  test red.
-- `worker/deno/tests/pr_ci_processor_deferral_test.ts`: red base with a
-  different failure is charged (no deferral, no hold); red base whose log cannot
-  be fetched is held; a tree-equivalent red with a differing log is charged; two
-  prior holds make an unreadable red base charged. The stub now serves the base
-  run's identity and job log, defaulting to the fixture's first failure message.
-  The hold tests for a
-  missing and a stale base run now assert the `Depends on` reference and the
-  base state in the comment, and a new test asserts the base run's log is
-  fetched with the failing check's name. Red checks: "different" falling through
-  to defer turns the first and third red; "unreadable" falling through turns the
-  second and fourth red; removing the hold bound for unreadable turns the fourth
-  red.
-- Call sites: the only caller of `compareBaseFailure` is
-  `_resolveBaseBranchDeferral`; reverting its call is the red check above.
-- Docs sweep: `docs/workflows/ci-fix.md` (base-branch section and both diagrams)
-  and `prompts/ci_fix/prompt.md` re-read; sibling hits found with
-  `git grep -n -i "base-unverified\|tree-equivalent\|Depends on"`.
-- Added `docs/audits/lib-sweep-coverage/top-up-4680.json` for the new module;
-  `deno task check:manifests` passes.
-- Full gate `./quality.sh` (run before the sweep slice was added):
-  `completeness
-  checks` failed only on the missing sweep slice, now added.
-  `deno tests` failed on that same ledger test and on two tests in
-  `worker/deno/tests/completion_phase_repo_formatters_test.ts` (cargo fmt
-  staging), which fail the same way on the base branch and are not touched by
-  this change; its serial pass did not run after that. Markdownlint, semgrep,
-  lint, type check and fmt passed.
+- `deno task test:unit tests/ci_base_failure_signature_test.ts
+  tests/pr_ci_processor_deferral_test.ts`: 58 passed, 0 failed.
+- `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - TAP numbers change without changing the failure`
+  covers shifted Bats and node:test numbers; the existing
+  `compareBaseFailure - node and bats test names distinguish unrelated failures`
+  now uses the same number for different names. The obsolete assumption that
+  sequence numbers identify a test is replaced by name comparison.
+- `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - Vitest file tallies do not obscure the same failure`
+  covers changing file counts; generic tally comparison is obsolete and
+  distinctive failure lines remain required.
+- `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - Mocha names distinguish failures and ignore sequence numbers`
+  covers both changed numbers and unrelated names with a shared assertion.
+  These three tests failed before the fix and pass with it.
+- `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - unrelated cargo and Deno failures do not match shared runner output`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - unrelated test failures sharing runner output are charged`
+  cover different failures; `processCiFailure - same test failure with different tallies is deferred`
+  covers the matching processor path.
+- Existing deferral fixtures now include failure words in their semgrep and
+  lint annotations because annotations without one are no longer comparable.
+  The remaining deferral behaviour is covered by
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
 
-Mutation survivors named by the completion check (`ci_base_failure_signature.ts`
-seen-set add, `ghFn` argument, error-message ternary; `pr_ci_processor.ts` hold
-`ref`, hold `state`, `checkName` to the comparison) are each pinned by a test
-above; none is exempted.
-
-Not done / risk: no live GitHub run of a PR-only check; the comparison matches
-on all comparable lines, so differing log excerpts can prevent a deferral; the
-worker does not re-run the check on the base tree.
-
-Review follow-up: the obsolete any-shared-line match is replaced by requiring
-all comparable failure lines, while same-failure deferral remains covered by
-`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - the same failure across timestamps, run numbers and ANSI is same`.
-Unrelated cargo and Deno failures and shared generic output are covered by
-`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - unrelated cargo and Deno failures do not match shared runner output`
-and
-`worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - unrelated test failures sharing runner output are charged`.
-Generic-only output remains unreadable, covered by
-`worker/deno/tests/ci_base_failure_signature_test.ts::failureSignatureLines - generic runner output alone is unreadable`.
-
-Review follow-up validation: the two focused test files pass (49 tests), as do
-the Deno formatter, lint and type check, and `deno task check:manifests`.
-The full local gate's parallel test process panicked in Deno 2.9.0 on macOS
-(`pledge test permissions called before restoring previous pledge`), so its
-serial pass did not run. The latest base's merged PR #4866 passed all four
-test shards in CI. Semgrep and Checkov were unavailable locally.
-
-Further review follow-up: test tallies, Jest suite headings, npm path and
-command lines, and the omitted-annotations note no longer serve as failure
-evidence. Jest failing-test names are compared, so a shared suite alone cannot
-defer unrelated failures. The obsolete comparison of generic tallies is replaced
-by comparison of specific failure lines; same-failure deferral remains covered
-by `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - same Deno and cargo failures ignore changing tallies`
-and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - same test failure with different tallies is deferred`.
-Different Jest tests and generic-only output are covered by
-`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - Jest identifies the failing test rather than shared suite output`.
-These three new tests failed before the fix. The processor comments and workflow
-diagram now specify that every comparable line must appear. The manual also
-lists the signature extraction rule and is updated alongside the implementation.
-
-Latest review follow-up: annotations without failure words are excluded, so a
-runner notice absent from the job log does not prevent deferral. The worker's
-own CI-log wrapper is excluded as boilerplate when both job logs are present.
-Deno step
-tallies, pytest and Vitest summaries are excluded, and minute and microsecond
-durations are normalised for this comparison. Jest, node:test and Bats failing
-test names distinguish unrelated failures. The obsolete assumption that every
-annotation is comparable is replaced by failure-word filtering; matching
-annotations with failure words remain covered by
-`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - an annotation with a failure word matches its message in the base log`.
-The non-audit lint fixture now includes a failure word to exercise the remaining
-deferral path, covered by
-`worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
-The notice and variable output are covered by
-`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - notices and variable runner output do not obscure the same failure`
-and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a runner notice absent from the job logs does not prevent deferral`.
-Different node:test and Bats names are covered by
-`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - node and bats test names distinguish unrelated failures`.
-Both comparison tests failed before the fix. The extraction rule's manual copy
-is `docs/workflows/ci-fix.md`; the CI-fix prompt does not enumerate the lines.
+Risk: matching depends on the available log excerpts and recognised formats;
+different excerpts can prevent deferral, and generic messages from unrecognised
+formats can still match.

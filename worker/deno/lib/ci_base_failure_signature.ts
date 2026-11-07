@@ -46,7 +46,7 @@ const COMMAND_ECHO =
 const FLAG_TOKEN = /(?:^|\s)--?[a-z][\w-]*/g;
 /** The runner's closing line, shared by every failed job; not evidence. */
 const GENERIC_LINE =
-  /process completed with exit code|^(?:<ts>\s*)?(?:##\[error\]\s*)?assertion `left (?:==|!=) right` failed\s*$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)|^(?:<ts>\s*)?(?:(?:ok|failed)\s*\|\s*\d+ passed(?:\s*\(\d+ steps?\))?\s*\||test result:|tests:|test suites:|tests\s+\d+\s+(?:failed|passed)\s*\||=+\s*\d+\s+(?:failed|passed)\b|fail\s+\S+\.(?:test|spec)\.[^\s]+\s*$|npm error (?:path|command)\s)/;
+  /process completed with exit code|^(?:<ts>\s*)?(?:##\[error\]\s*)?assertion `left (?:==|!=) right` failed\s*$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)|^(?:<ts>\s*)?(?:(?:ok|failed)\s*\|\s*\d+ passed(?:\s*\(\d+ steps?\))?\s*\||test result:|tests:|test suites:|(?:tests|test files)\s+\d+\s+(?:failed|passed)\s*\||=+\s*\d+\s+(?:failed|passed)\b|fail\s+\S+\.(?:test|spec)\.[^\s]+\s*$|npm error (?:path|command)\s)/;
 /** The worker's own boilerplate from formatCiAnnotations; not evidence. */
 const BOILERPLATE =
   /no specific annotations were available|following ci failure details were detected|\d+ further annotation\(s\) omitted|^## pr failure action output$|^the following excerpts were fetched by the configured ci log providers/;
@@ -56,7 +56,15 @@ const FAILURE_WORD =
 /** Normalise runner durations that the shared fingerprint normaliser does not cover. */
 function normaliseComparison(text: string): string {
   return normaliseLogExcerpt(
-    text.replace(/\b\d+m\d+(?:\.\d+)?s\b|\b\d+(?:\.\d+)?\s*[µμ]s\b/gi, "<dur>"),
+    text.replace(/\b\d+m\d+(?:\.\d+)?s\b|\b\d+(?:\.\d+)?\s*[µμ]s\b/gi, "<dur>")
+      .replace(
+        /^(\s*(?:\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?z?\s+)?)(not ok\s+)\d+(?=\s)/gim,
+        "$1$2<n>",
+      )
+      .replace(
+        /^(\s*(?:\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?z?\s+)?)\d+\)(?=\s+\S)/gim,
+        "$1<n>)",
+      ),
   );
 }
 
@@ -82,9 +90,10 @@ export function failureSignatureLines(text: string): string[] {
     line = line.replace(COMMAND_MARKER, "");
 
     const normalised = normaliseComparison(line);
-    const testName = /^(?:<ts>\s*)?(?:●\s+\S|✖\s+\S|not ok\s+\d+\s+\S)/.test(
-      normalised,
-    );
+    const testName =
+      /^(?:<ts>\s*)?(?:●\s+\S|✖\s+\S|not ok\s+<n>\s+\S|<n>\)\s+\S)/.test(
+        normalised,
+      );
     if (!testName && normalised.length < MIN_SIGNATURE_CHARS) continue;
     if (GENERIC_LINE.test(normalised)) continue;
     if (BOILERPLATE.test(normalised)) continue;

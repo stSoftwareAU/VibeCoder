@@ -87,7 +87,7 @@ Deno.test("compareBaseFailure - node and bats test names distinguish unrelated f
     ],
     [
       "not ok 3 parser rejects a bad header\n# command failed",
-      "not ok 4 renderer pads the title\n# command failed",
+      "not ok 3 renderer pads the title\n# command failed",
     ],
   ];
   for (const [pr, base] of cases) {
@@ -100,6 +100,67 @@ Deno.test("compareBaseFailure - node and bats test names distinguish unrelated f
       actionsLogFn: logFake(excerptOf(base)).fn,
     });
     assertEquals(result.state, "different");
+  }
+});
+
+Deno.test("compareBaseFailure - TAP numbers change without changing the failure", async () => {
+  for (
+    const [pr, base] of [
+      [
+        "not ok 4 parser rejects a bad header\n# command failed",
+        "not ok 3 parser rejects a bad header\n# command failed",
+      ],
+      [
+        "not ok 5 - adds 1 + 2\nAssertionError: expected 3",
+        "not ok 4 - adds 1 + 2\nAssertionError: expected 3",
+      ],
+    ] as [string, string][]
+  ) {
+    const result = await compareBaseFailure({
+      repo: REPO,
+      checkName: CHECK,
+      baseCheckRunId: BASE_RUN_ID,
+      failureText: pr,
+      ghFn: unusedGh,
+      actionsLogFn: logFake(excerptOf(base)).fn,
+    });
+    assertEquals(result.state, "same");
+  }
+});
+
+Deno.test("compareBaseFailure - Vitest file tallies do not obscure the same failure", async () => {
+  const failure =
+    "FAIL src/sum.test.ts > sum > adds\nAssertionError: expected 3 to be 4";
+  const result = await compareBaseFailure({
+    repo: REPO,
+    checkName: CHECK,
+    baseCheckRunId: BASE_RUN_ID,
+    failureText: `${failure}\nTest Files  1 failed | 6 passed (7)`,
+    ghFn: unusedGh,
+    actionsLogFn:
+      logFake(excerptOf(`${failure}\nTest Files  1 failed | 5 passed (6)`)).fn,
+  });
+  assertEquals(result.state, "same");
+});
+
+Deno.test("compareBaseFailure - Mocha names distinguish failures and ignore sequence numbers", async () => {
+  const error =
+    "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:";
+  for (
+    const [base, expected] of [[`2) adds 1 + 2\n${error}`, "same"], [
+      `1) subtracts 5 - 2\n${error}`,
+      "different",
+    ]] as [string, string][]
+  ) {
+    const result = await compareBaseFailure({
+      repo: REPO,
+      checkName: CHECK,
+      baseCheckRunId: BASE_RUN_ID,
+      failureText: `1) adds 1 + 2\n${error}`,
+      ghFn: unusedGh,
+      actionsLogFn: logFake(excerptOf(base)).fn,
+    });
+    assertEquals(result.state, expected);
   }
 });
 
