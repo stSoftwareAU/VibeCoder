@@ -25,6 +25,12 @@ import {
   runGhGuardCli,
 } from "../lib/gh_guard_cli.ts";
 import type { ClaimedIssue } from "../lib/claimed_issue_guard.ts";
+import {
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const CLAIM: ClaimedIssue = {
   repo: "stSoftwareAU/NEAT-AI-Backpropagation",
@@ -67,6 +73,34 @@ Deno.test("gh guard refuses `gh pr merge` on the claimed repo", () => {
   assertEquals(decision.marker, "PR_LIFECYCLE_REFUSED");
   assertStringIncludes(decision.reason ?? "", "pr-merge");
   assertStringIncludes(decision.reason ?? "", CLAIM.repo);
+});
+
+Deno.test("gh guard refusal no longer tells the agent to raise the PR (Issue #4871)", () => {
+  const decision = evaluateGhCommand(
+    ["pr", "merge", "12", "--repo", CLAIM.repo, "--squash"],
+    ctx(),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "PR_LIFECYCLE_REFUSED");
+  assertEquals((decision.reason ?? "").includes("Raise the PR"), false);
+  assertStringIncludes(decision.reason ?? "", "'gh pr create'");
+  assertStringIncludes(decision.reason ?? "", "unaffected");
+});
+
+Deno.test("coding guidelines no longer say raising the PR is the agent's job (Issue #4871)", async () => {
+  const prompt = await readRepoDoc("prompts/coding_guidelines/prompt.md");
+  assertEquals(
+    flatWholeFile(prompt).includes("Raising the PR is your job"),
+    false,
+  );
+  assertEquals(
+    flatWholeFile(prompt).includes("finish by creating the PR"),
+    false,
+  );
+  assertStringIncludes(
+    flat(section(prompt, "Nor is your own pull request")),
+    "Deciding whether a PR lands is not your job.",
+  );
 });
 
 Deno.test("gh guard refuses `gh pr merge` with no explicit repo (gh's cwd form)", () => {
