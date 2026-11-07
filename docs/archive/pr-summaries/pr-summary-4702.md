@@ -1,8 +1,8 @@
 ## Summary
 
 Corrected the stale module header to describe cargo-budget withholds as
-uncharged events that are not refusals, do not count toward `refusedCycles`,
-and do not climb the recovery ladder. Closes #4702.
+uncharged events that are not refusals, do not count toward `refusedCycles`, and
+do not climb the recovery ladder. Closes #4702.
 
 Version bump: no version files changed for this documentation-only correction.
 
@@ -19,15 +19,15 @@ Version bump: no version files changed for this documentation-only correction.
 
 ### Undiscoverable Facts
 
-- `gh issue view 4588` confirmed Issue #4588 is closed and fixes cargo
-  withholds incorrectly advancing `refusedCycles`.
+- `gh issue view 4588` confirmed Issue #4588 is closed and fixes cargo withholds
+  incorrectly advancing `refusedCycles`.
 
 ## Evidence
 
 - `judgeSyncFailure` returns cargo-budget withholds as `not-charged` without a
   refusal flag; `escalateRepeatedRefusal` returns those verdicts unchanged.
-- The `SyncStreakEntry.refusedCycles` doc comment says cargo-budget withholds
-  do not count. `docs/INTERNALS.md` and `docs/CONTAINER.md` state that a withhold
+- The `SyncStreakEntry.refusedCycles` doc comment says cargo-budget withholds do
+  not count. `docs/INTERNALS.md` and `docs/CONTAINER.md` state that a withhold
   is never charged and never climbs the recovery ladder.
 
 ## Test Plan
@@ -36,7 +36,8 @@ Version bump: no version files changed for this documentation-only correction.
   `worker/deno/tests/milestone_cargo_withhold_not_counted_4588_test.ts` —
   `deno task test:unit tests/milestone_merge_only_4326_test.ts tests/milestone_cargo_withhold_not_counted_4588_test.ts`
   passed (23 tests).
-- `deno fmt --check worker/deno/tests/milestone_merge_only_4326_test.ts` passed.
+- `deno fmt --check worker/deno/tests/milestone_merge_only_4326_test.ts docs/archive/pr-summaries/pr-summary-4702.md`
+  passed.
 - `timeout 900 ./quality.sh < /dev/null` failed its Deno unit-test time budget:
   unchanged `tests/launcher_harness_reclaim_stub_test.ts` exceeded the 1-second
   budget (2 tests, 3.23 seconds total). Lint, type check, formatting, and the
