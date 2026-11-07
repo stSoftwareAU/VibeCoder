@@ -193,6 +193,60 @@ jobs:
   assertEquals(scanCheckoutPersistCredentials(files), []);
 });
 
+Deno.test("scan - a job using create-pull-request with a persisting checkout is flagged", () => {
+  const files = [
+    wf(
+      ".github/workflows/dependency-update.yml",
+      `name: Dependency Updates
+on: workflow_dispatch
+jobs:
+  upgrade:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          token: \${{ secrets.ACTIONS_PUSH }}
+`,
+    ),
+  ];
+  const findings = scanCheckoutPersistCredentials(files);
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]!.steps.map((s) => s.job), ["upgrade"]);
+});
+
+Deno.test("scan - a job using create-pull-request with persist-credentials: false is not flagged", () => {
+  const files = [
+    wf(
+      ".github/workflows/dependency-update.yml",
+      `name: Dependency Updates
+on: workflow_dispatch
+jobs:
+  upgrade:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          token: \${{ secrets.ACTIONS_PUSH }}
+`,
+    ),
+  ];
+  assertEquals(scanCheckoutPersistCredentials(files), []);
+});
+
+Deno.test("jobNeedsCheckoutCredentials - create-pull-request alone is not a credential signal", () => {
+  assertEquals(
+    jobNeedsCheckoutCredentials([{
+      uses: "peter-evans/create-pull-request@v8",
+    }]),
+    false,
+  );
+  assert(
+    jobNeedsCheckoutCredentials([{ uses: "ad-m/github-push-action@master" }]),
+  );
+});
+
 Deno.test("scan - a checkout requesting submodules is skipped", () => {
   const files = [
     wf(

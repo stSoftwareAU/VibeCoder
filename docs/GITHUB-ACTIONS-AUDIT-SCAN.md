@@ -799,8 +799,12 @@ flagged) when it shows any static sign of needing the credential:
 | Signal | Skips when… |
 | ------ | ----------- |
 | `run:` git write/fetch | A step's `run:` invokes `git push`/`fetch`/`pull`/`submodule`/`clone`/`remote` |
-| Known push action | A step's `uses:` references a catalogued git-writing action (`peaceiris/actions-gh-pages`, `ad-m/github-push-action`, `peter-evans/create-pull-request`, `stefanzweifel/git-auto-commit-action`, …) |
+| Known push action | A step's `uses:` references a catalogued git-writing action (`peaceiris/actions-gh-pages`, `ad-m/github-push-action`, `stefanzweifel/git-auto-commit-action`, …) |
 | `submodules:` checkout | The checkout step itself requests `submodules:` (truthy) — private submodule fetch needs the credential |
+
+`peter-evans/create-pull-request` is not a signal: it authenticates with its
+own `token` input, so a job using it is flagged when its checkout persists
+credentials.
 
 A checkout that already sets `persist-credentials: false` is safe and
 never flagged. The nuanced "a push cannot quite be ruled out" cases are

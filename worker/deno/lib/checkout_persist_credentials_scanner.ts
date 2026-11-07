@@ -79,14 +79,18 @@ const GIT_CREDENTIAL_RUN =
   /\bgit\s+(?:-[^\s]+\s+)*(?:push|fetch|pull|submodule|clone|remote)\b/;
 
 /**
- * Known actions that push to / write the repository using the checkout
- * credential. A job invoking one is skipped. Compared against the action
- * coordinate (the `uses:` value without its `@ref`), lower-cased.
+ * The list holds actions that push using the checkout credential. A job
+ * invoking one is skipped. Compared against the action coordinate (the
+ * `uses:` value without its `@ref`), lower-cased.
+ *
+ * `peter-evans/create-pull-request` is deliberately absent: it sets up its
+ * own credential from its `token`/`branch-token` input (default
+ * `github.token`) before it touches the remote, so a job using it still gets
+ * flagged when its checkout persists credentials.
  */
 export const CREDENTIAL_USING_ACTIONS: readonly string[] = Object.freeze([
   "stefanzweifel/git-auto-commit-action",
   "ad-m/github-push-action",
-  "peter-evans/create-pull-request",
   "endbug/add-and-commit",
   "jamesives/github-pages-deploy-action",
   "peaceiris/actions-gh-pages",
