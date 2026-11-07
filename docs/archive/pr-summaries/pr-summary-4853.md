@@ -1,10 +1,11 @@
 ## Summary
 
-The milestone merge and resolution gates now read a Deno task failure whose
-ANSI escape bytes were already stripped (a bare `[0m[1m[31merror[0m: Failed
-caching npm package …`) as the same unreachable-registry gap as the coloured
-form, so the task is left to CI instead of refusing the merged tree. Closes
-#4853.
+The milestone merge and resolution gates now read a Deno task failure whose ANSI
+escape bytes were already stripped (a bare
+`[0m[1m[31merror[0m: Failed
+caching npm package …`) as the same
+unreachable-registry gap as the coloured form, so the task is left to CI instead
+of refusing the merged tree. Closes #4853.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -12,9 +13,10 @@ Version bump: `VERSION` is not touched by this change.
 
 ### Intent and Rationale
 
-- Issue #4853 is the same wedge as #4848 (GRQ-AutoTrader `web/` `deno task
-  check`, `Failed caching npm package 'playwright-core@1.60.0'`, DNS error),
-  reported 6 minutes after #4848's fix merged. The fix on main
+- Issue #4853 is the same wedge as #4848 (GRQ-AutoTrader `web/`
+  `deno task
+  check`, `Failed caching npm package 'playwright-core@1.60.0'`,
+  DNS error), reported 6 minutes after #4848's fix merged. The fix on main
   (`detectRemoteModuleGap` with `stripAnsi`) matches the output with its ESC
   bytes, and I confirmed it returns the gap for that form. The output as the
   issue prints it has no ESC bytes, leaving `[0m[1m[31merror[0m:`, and the
@@ -40,12 +42,13 @@ Version bump: `VERSION` is not touched by this change.
 
 Backend-only change; `detectRemoteModuleGap` is read by `checkMergedTree`,
 `verifyResolvedTree` and `runMergeFastChecks`, which all gain the behaviour.
-Docs updated: `docs/INTERNALS.md` and `docs/workflows/milestones.md` (the
-Issue #4848 paragraphs).
+Docs updated: `docs/INTERNALS.md` and `docs/workflows/milestones.md` (the Issue
+#4848 paragraphs).
 
 ## Reproduction
 
-- **symptom** — the gate refused a merged tree with `Failed caching npm package
+- **symptom** — the gate refused a merged tree with
+  `Failed caching npm package
   … dns error` output, repeatedly.
 - **status** — `partial` — reason: the ESC-less output printed in the issue was
   run against the unfixed detector (returned `undefined`) and the new test went
@@ -62,7 +65,8 @@ Issue #4848 paragraphs).
 - Red check: removing the `ORPHAN_SGR_RE` replacement turns the first test red;
   restored.
 - `deno task test:unit tests/milestone_merge_gate_test.ts
-  tests/milestone_resolution_gate_test.ts`: 91 passed, 0 failed.
+  tests/milestone_resolution_gate_test.ts`:
+  91 passed, 0 failed.
 - Full gate `./quality.sh`: markdownlint, semgrep, lint, type check and fmt
   passed. `deno tests` failed on two tests in
   `worker/deno/tests/completion_phase_repo_formatters_test.ts` (an unformatted
