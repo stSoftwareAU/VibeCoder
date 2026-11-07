@@ -516,6 +516,14 @@ Deno.test("workflow_definitions - Java dependency update specs are split by ecos
   assertNotEquals(maven, undefined);
   assertNotEquals(gradle, undefined);
 
+  // Display names, capabilities and filenames are distinct per ecosystem.
+  assertEquals(maven!.name, "Java Maven Dependency Updates");
+  assertEquals(gradle!.name, "Java Gradle Dependency Updates");
+  assertEquals(maven!.capabilities, ["Automated dependency updates"]);
+  assertEquals(gradle!.capabilities, ["Automated dependency updates"]);
+  assertEquals(maven!.suggestedFilename, "java-dependabot.yml");
+  assertEquals(gradle!.suggestedFilename, "java-gradle-dependabot.yml");
+
   // Each template files only its own Dependabot ecosystem.
   assertEquals(maven!.template.includes("package-ecosystem: maven"), true);
   assertEquals(maven!.template.includes("gradle"), false);

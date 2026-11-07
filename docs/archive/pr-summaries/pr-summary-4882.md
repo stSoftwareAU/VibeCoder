@@ -44,10 +44,14 @@ Backend-only change; no UI files. Tests below were run on the head.
 
 - `worker/deno/tests/workflow_definitions_test.ts` — Java specs include the
   Gradle id; new test "Java dependency update specs are split by ecosystem"
-  checks each template's ecosystem, the exact root markers and detection groups.
+  checks each template's ecosystem, the exact root markers and detection groups,
+  and each spec's display name, capabilities and suggested filename (kills the
+  four surviving mutants at `workflow_definitions.ts` lines 817, 846, 856 and 857).
 - `worker/deno/tests/workflow_auditor_test.ts` — new tests for `build.gradle`
   only, `build.gradle.kts` only, `pom.xml` only, and a workflow containing only
-  `package-ecosystem: maven` not satisfying the Gradle spec; two existing
+  `package-ecosystem: maven` (with a "Dependabot configuration for Maven" header
+  comment, as the old template had) not satisfying the Gradle spec, asserted as
+  missing, not present or partial; two existing
   expectations updated for the split (notApplicable lists now include both Java
   update ids where no root file exists).
 - `worker/deno/tests/workflow_template_audit_conformance_test.ts` — the Gradle
@@ -59,6 +63,11 @@ Backend-only change; no UI files. Tests below were run on the head.
   ("Maven pom.xml alone files only the Maven Dependabot spec", "split by
   ecosystem"); changing the Gradle template to `maven` made "split by ecosystem"
   fail. Both restored.
+- Red checks (follow-up): re-adding the bare `"dependabot"` pattern to the
+  Gradle detection group fails the auditor test "Maven-only Dependabot entry
+  does not satisfy the Gradle spec"; deleting the Maven name, Gradle name,
+  Gradle capabilities or Gradle suggestedFilename each fails the definitions
+  test "split by ecosystem". All restored; the three test files pass (125).
 - Docs: `docs/EXTENDING.md` (section on root markers for templates) updated;
   README and `docs/` (excluding archive) grepped for "Java dependency
   updates"/`java-dependency-updates` with no other stale hit.

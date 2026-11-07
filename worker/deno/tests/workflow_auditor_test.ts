@@ -1211,7 +1211,10 @@ Deno.test("workflow_auditor - Maven pom.xml alone files only the Maven Dependabo
 });
 
 Deno.test("workflow_auditor - Maven-only Dependabot entry does not satisfy the Gradle spec", async () => {
-  const mavenOnlyWorkflow = `version: 2
+  // The header names Dependabot, as the old template did: a bare `dependabot`
+  // detection pattern on the Gradle spec would wrongly match it.
+  const mavenOnlyWorkflow = `# Dependabot configuration for Maven
+version: 2
 updates:
   - package-ecosystem: maven
     directory: /
