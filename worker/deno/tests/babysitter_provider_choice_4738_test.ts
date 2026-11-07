@@ -225,6 +225,23 @@ Deno.test("missing optional config keeps the default provider pinned", async () 
   });
 });
 
+Deno.test("missing optional config still honours the environment provider pin", async () => {
+  await withProviderState(async () => {
+    const fixture = baseDeps({
+      env: testEnv({
+        CONFIG_PATH: "/mounted/.config.json",
+        VIBE_AGENT_PROVIDER: "codex",
+      }),
+    });
+    fixture.deps.readTextFile = async () => {
+      throw new Deno.errors.NotFound("config absent");
+    };
+    const result = await chooseBabysitterProvider(fixture.deps);
+    assertEquals(result.providerId, "codex");
+    assertEquals(fixture.calls(), { statusCalls: 0, credentialCalls: 0 });
+  });
+});
+
 Deno.test("invalid babysitter config shape fails with the config path", async () => {
   await withProviderState(async () => {
     const fixture = baseDeps();

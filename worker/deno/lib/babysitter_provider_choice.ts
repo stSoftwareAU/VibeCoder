@@ -66,11 +66,13 @@ function parseConfig(text: string, path: string): RawProviderModeConfig {
 async function readConfig(
   path: string,
   reader: (path: string) => Promise<string>,
-): Promise<string> {
+): Promise<{ text: string; missing: boolean }> {
   try {
-    return await reader(path);
+    return { text: await reader(path), missing: false };
   } catch (cause) {
-    if (cause instanceof Deno.errors.NotFound) return "{}";
+    if (cause instanceof Deno.errors.NotFound) {
+      return { text: "{}", missing: true };
+    }
     throw new Error(`cannot read babysitter provider config ${path}`, {
       cause,
     });
@@ -105,15 +107,17 @@ export async function chooseBabysitterProvider(
   const env = deps.env ?? ((name: string) => Deno.env.get(name));
   const readTextFile = deps.readTextFile ?? ((path) => Deno.readTextFile(path));
   const path = env("CONFIG_PATH")?.trim() || ".config.json";
-  const configText = await readConfig(path, readTextFile);
-  const raw = parseConfig(configText, path);
-  const configured = resolveAutomaticProviderConfig({
-    configuredMode: raw.agent_provider_mode,
-    configuredProvider: raw.agent_provider,
-    configuredProviders: raw.agent_providers,
-  });
+  const config = await readConfig(path, readTextFile);
+  const raw = parseConfig(config.text, path);
   const pin = env("VIBE_AGENT_PROVIDER")?.trim();
-  const resolvedConfig = configured.mode === "auto" && pin
+  const configured = config.missing
+    ? resolveAutomaticProviderConfig({ environmentProvider: pin })
+    : resolveAutomaticProviderConfig({
+      configuredMode: raw.agent_provider_mode,
+      configuredProvider: raw.agent_provider,
+      configuredProviders: raw.agent_providers,
+    });
+  const resolvedConfig = !config.missing && configured.mode === "auto" && pin
     ? resolveAutomaticProviderConfig({ environmentProvider: pin })
     : configured;
 
@@ -132,7 +136,7 @@ export async function chooseBabysitterProvider(
     enabledProviderIds: deps.enabledProviderIds,
     env,
     now: deps.now,
-    readTextFile: async () => configText,
+    readTextFile: async () => config.text,
     resolveStatus: deps.resolveStatus,
     log: deps.log,
   });
