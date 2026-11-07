@@ -25,7 +25,8 @@ Version bump: none; no version file changed.
   script path arrays. YAML block headers accept trailing comments.
 - The runner selects the nearest tracked repository `.shellcheckrc` or
   `shellcheckrc`, honours an explicit repository-relative rcfile, and otherwise
-  uses `--norc`. Worker HOME, XDG and external ancestor configs cannot affect it.
+  uses `--norc`. Worker HOME, XDG and external ancestor configs cannot affect
+  it.
 - Touched paths retain configuration deletions; execution targets exclude
   deleted scripts. Unsupported or uninterpretable policy, delegation and tool
   failures return incomplete infrastructure results rather than success.
@@ -37,10 +38,10 @@ Version bump: none; no version file changed.
 ### Undiscoverable Facts
 
 - #4625 originally added `publication_validation.ts` in commit `2350b1956`;
-  commit `1f8d83a1` reverted it before this branch's base. That module is absent,
-  so this change shares the existing pre-push runner and its extracted
-  ShellCheck implementation; it does not reuse #4625's reverted module or
-  depend on its restoration.
+  commit `1f8d83a1` reverted it before this branch's base. That module is
+  absent, so this change shares the existing pre-push runner and its extracted
+  ShellCheck implementation; it does not reuse #4625's reverted module or depend
+  on its restoration.
 - The behavioural tests use the available ShellCheck 0.11.0 binary, matching
   `.github/workflows/validate-scripts.yml`.
 
@@ -55,9 +56,9 @@ the CLI under `--no-config`, and conflicting ambient configuration.
 
 Read and updated the operator manual's **Agent pre-push hook and the
 changed-files check** section in `docs/CONFIGURATION.md`. Updated affected API
-comments to describe ShellCheck validation without a pre-flight spec. No
-second copy of the ShellCheck execution rule was found; all publication paths
-call the same implementation.
+comments to describe ShellCheck validation without a pre-flight spec. No second
+copy of the ShellCheck execution rule was found; all publication paths call the
+same implementation.
 
 ## Test Plan
 
@@ -71,27 +72,27 @@ call the same implementation.
 - `shellcheck_publication_test.ts`: unconfigured repair publication leaves the
   remote unchanged on SC2086; the babysitter refuses its commit. Both entry
   points block with a missing binary, then revalidate diagnostics after tool
-  recovery, and accept corrected content. The real CLI accepts this
-  repository's workflows with empty hook input and rejects SC2086 despite
-  HOME, XDG and external ancestor suppression files.
+  recovery, and accept corrected content. The real CLI accepts this repository's
+  workflows with empty hook input and rejects SC2086 despite HOME, XDG and
+  external ancestor suppression files.
 - In a disposable checkout of the original head, `f2a18ae1`, the two changed
   ShellCheck test files produced 65 passes and 13 failures. Those failures
   reproduce workflow discovery, the existing git/CLI caller regressions, YAML
   block comments, root/nested config deletion, both repair entry-point
   diagnostic and missing-tool checks, and ambient configuration suppression.
-  Both files pass with the fixes. The eight-file targeted suite passed all
-  147 tests, including completion, pre-flight, babysitter and hook coverage.
+  Both files pass with the fixes. The eight-file targeted suite passed all 147
+  tests, including completion, pre-flight, babysitter and hook coverage.
 - Reapplying 41 targeted mutations to the policy validation and replacement
   comment/version guards made a test fail in every case, against a passing
-  unmutated baseline. This is targeted evidence for the reported survivors,
-  not a claim that the entire diff received a mutation sweep.
-- The reported empty-path operand was unreachable after rcfile value
-  validation; it was removed. The empty-line operand was redundant with
-  invocation recognition and was removed when command discovery was corrected.
-  Comment and version-probe guards are pinned by direct policy tests. No
-  mutation exemption is claimed.
-- `./quality.sh < /dev/null`: passed on the final implementation, including
-  the full Deno suite, lint, type-check, formatting, Markdown lint, Semgrep and
+  unmutated baseline. This is targeted evidence for the reported survivors, not
+  a claim that the entire diff received a mutation sweep.
+- The reported empty-path operand was unreachable after rcfile value validation;
+  it was removed. The empty-line operand was redundant with invocation
+  recognition and was removed when command discovery was corrected. Comment and
+  version-probe guards are pinned by direct policy tests. No mutation exemption
+  is claimed.
+- `./quality.sh < /dev/null`: passed on the final implementation, including the
+  full Deno suite, lint, type-check, formatting, Markdown lint, Semgrep and
   completeness checks. Config integration and Checkov were skipped by the gate.
 - `deno task check:manifests`: 848 passed, 0 failed, 1 ignored.
 - `deno task pr-summary-check --base origin/main ../../docs/archive/pr-summaries/pr-summary-4631.md`:
