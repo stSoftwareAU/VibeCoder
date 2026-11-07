@@ -64,12 +64,12 @@ Backend-only change; no UI. Tests:
   `docs/*.md`, `prompts/`).
 - Mutation check: its report said the baseline tests failed before any mutation
   (seven test files: `fence_coverage_verifier`, `quality_gate_credentials_4705`,
-  `quality_gate_phase`, `repo_formatters_4113`, `tool_output_treat_as_data_3046`,
-  `untrusted_command_env`, `untrusted_gate_spawn`), so it judged no mutants.
-  They pass at the head here: `deno task test:unit` with stdin from `/dev/null`
-  over those seven files (153 passed, 0 failed), and each file alone under
-  `deno test -A`. The failure did not reproduce, so it is an environment fault
-  of the mutation runner's baseline, not a surviving mutant. The changed lines
-  are pinned by the red checks above (base `quality_gate_phase.ts` turns the
-  four negative `isDockerInfraFailure` tests and the `runQualityGateCheck` test
-  red).
+  `quality_gate_phase`, `repo_formatters_4113`,
+  `tool_output_treat_as_data_3046`, `untrusted_command_env`,
+  `untrusted_gate_spawn`), so it judged no mutants. They pass at the head here:
+  `deno task test:unit` with stdin from `/dev/null` over those seven files (153
+  passed, 0 failed), and each file alone under `deno test -A`. The failure did
+  not reproduce, so it is an environment fault of the mutation runner's
+  baseline, not a surviving mutant. The changed lines are pinned by the red
+  checks above (base `quality_gate_phase.ts` turns the four negative
+  `isDockerInfraFailure` tests and the `runQualityGateCheck` test red).
