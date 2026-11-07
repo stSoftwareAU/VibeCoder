@@ -1,10 +1,11 @@
 ## Summary
 
-PR maintenance now admits Dependabot and Renovate PRs. `gh pr list --json
-author` reports a GitHub App as `{"is_bot":true,"login":"app/dependabot"}`;
-`fetchAllOpenPRs` stored that login as is, so `listBotPrs` dropped every such PR
-at `isBotAuthorForMaintenance`. The listing now records an App author as
-`<slug>[bot]`. Closes #4719.
+PR maintenance now admits Dependabot and Renovate PRs.
+`gh pr list --json
+author` reports a GitHub App as
+`{"is_bot":true,"login":"app/dependabot"}`; `fetchAllOpenPRs` stored that login
+as is, so `listBotPrs` dropped every such PR at `isBotAuthorForMaintenance`. The
+listing now records an App author as `<slug>[bot]`. Closes #4719.
 
 Version bump: `VERSION` is not changed by this PR.
 
@@ -51,9 +52,9 @@ passes).
   (App slugs, unchanged inputs, malformed `app/` forms, a 100k-character hostile
   input, composition with `isBotAuthorForMaintenance`).
 - `worker/deno/tests/pr_bot_lookup_test.ts`: `prJson` default author is now the
-  real `gh` shape; added `app/renovate` admitted, human not admitted,
-  cross-repo App PR excluded, host's own App PR skipped, stale cached
-  `app/dependabot` row admitted.
+  real `gh` shape; added `app/renovate` admitted, human not admitted, cross-repo
+  App PR excluded, host's own App PR skipped, stale cached `app/dependabot` row
+  admitted.
 - `worker/deno/tests/issue_query_test.ts`: `is_bot: true` → `dependabot[bot]`;
   `is_bot: false` and a missing `is_bot` left unchanged.
 - Edited expectation: the `prJson` default author. Red check: with both
